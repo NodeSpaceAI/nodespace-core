@@ -45,18 +45,47 @@ gh issue view <issue-number> --web
 
 **Development Philosophy:**
 - UI-first approach: Build interfaces before storage integration
-- Real services testing: No mocking, use actual implementations
+- Real services testing: No mocks - use actual implementations with test configurations
 - Build-time plugins: Compile-time extensibility for performance
 - Design system driven: Consistent UI patterns from the start
 
-### 4. Implementation Approach
+### 4. Implementation Workflow
 
-**Recommended Sequence:**
-1. **Foundation**: Tauri + Svelte project structure
-2. **Design System**: Tokens, patterns, component architecture
-3. **Desktop Shell**: Multi-panel layout system
-4. **Core Components**: TextNode, TaskNode, etc.
-5. **Backend Integration**: Storage, AI, real-time updates
+**Step-by-Step Process:**
+
+1. **Pick an Issue**
+   ```bash
+   gh issue list
+   gh issue view <number>
+   ```
+
+2. **Create Feature Branch**
+   ```bash
+   git checkout -b feature/issue-<number>-brief-description
+   ```
+
+3. **Implement with Real Services Approach**
+   - Use real implementations with test configurations (see `/docs/architecture/deployment/testing-strategies.md`)
+   - Set up isolated test environments (separate databases, file paths)
+   - Build features to work end-to-end with actual services
+   - Follow existing patterns and architecture
+
+4. **Complete Acceptance Criteria**
+   - Check off each `- [ ]` item in the issue as you complete it
+   - Test thoroughly with the requirements
+
+5. **Submit Work**
+   ```bash
+   git add .
+   git commit -m "Implement feature (addresses #<number>)"
+   git push -u origin feature/issue-<number>-brief-description
+   gh pr create --title "Implement Issue #<number>" --body "Closes #<number>"
+   ```
+
+6. **Find Next Task**
+   - Check for follow-up issues created during implementation
+   - Look for related work or next priority items
+   - Update project status if needed
 
 **Before Starting Any Task:**
 1. Check issue acceptance criteria and requirements
@@ -70,12 +99,19 @@ gh issue view <issue-number> --web
 - Follow Rust formatting standards (rustfmt)
 - Use TypeScript for frontend type safety
 - Implement comprehensive error handling with anyhow/thiserror
-- Write integration tests with real services (no mocks)
+- Write integration tests with real services (no mocks - use isolated test environments)
 
 **Git Workflow:**
 - Create feature branches: `feature/issue-<number>-brief-description`
 - Link commits to issues: `git commit -m "Add TextNode component (closes #4)"`
 - Include Claude Code attribution in commit messages
+
+**Development Process:**
+1. **Start Implementation**: Create feature branch and begin work
+2. **Follow Self-Contained Approach**: Use mocks for dependencies, make features work independently
+3. **Check Acceptance Criteria**: Complete all checkboxes in the issue
+4. **Submit for Review**: Create Pull Request when ready
+5. **Next Steps**: Look for follow-up issues or new tasks
 
 **Documentation:**
 - Update relevant docs when changing architecture
