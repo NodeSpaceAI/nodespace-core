@@ -16,16 +16,16 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 
 ### 2. Finding Tasks to Work On
 
-**Primary Task Source: GitLab Issues**
+**Primary Task Source: GitHub Issues**
 ```bash
 # List all open issues
-glab issue list
+gh issue list
 
 # View specific issue details
-glab issue view <issue-number>
+gh issue view <issue-number>
 
 # Check issue status and acceptance criteria
-glab issue view <issue-number> --web
+gh issue view <issue-number> --web
 ```
 
 **Issue Priority Guidelines:**
@@ -87,7 +87,7 @@ glab issue view <issue-number> --web
 **Resources Available:**
 - `/docs/architecture/` - Complete technical specifications
 - `README.md` - Quick start and overview
-- GitLab issues - Detailed implementation requirements
+- GitHub issues - Detailed implementation requirements
 - Existing NodeSpace repositories in `/Users/malibio/nodespace/` for reference patterns
 
 **When Stuck:**
@@ -110,7 +110,7 @@ nodespace-core/
 ## Current Project Status
 
 - ✅ Architecture documentation complete
-- ✅ GitLab project management setup
+- ✅ GitHub project management setup
 - ✅ Technology versions updated to current releases
 - ⏳ Foundation implementation (Issue #1) - Ready for agent pickup
 - ⏳ Design system, desktop shell, and core components - Planned
