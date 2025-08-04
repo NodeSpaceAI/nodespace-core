@@ -53,8 +53,7 @@ out/
 .DS_Store
 Thumbs.db
 
-# AI tool configurations
-CLAUDE.md
+# AI tool configurations (excluding CLAUDE.md which is project documentation)
 .cursor-rules
 .aider*
 
