@@ -1,0 +1,26 @@
+{
+  "name": "nodespace-core",
+  "version": "0.1.0",
+  "description": "NodeSpace AI-native knowledge management system with plugin architecture",
+  "type": "module",
+  "private": true,
+  "workspaces": [
+    "nodespace-app"
+  ],
+  "scripts": {
+    "dev": "bun run --cwd nodespace-app dev",
+    "build": "bun run --cwd nodespace-app build",
+    "check": "bun run --cwd nodespace-app check",
+    "check:watch": "bun run --cwd nodespace-app check:watch",
+    "tauri:dev": "cd nodespace-app && bun run tauri:dev",
+    "tauri:build": "cd nodespace-app && bun run tauri:build",
+    "install:all": "bun install"
+  },
+  "devDependencies": {
+    "bun-types": "latest"
+  },
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}
