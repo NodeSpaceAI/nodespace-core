@@ -60,8 +60,8 @@ NodeSpace is a next-generation knowledge management system designed from the gro
 ## Quick Start
 
 ### Prerequisites
-- Rust 1.70+ with Cargo
-- Node.js 18+ for frontend development
+- Rust 1.80+ with Cargo
+- Node.js 20 LTS for frontend development
 - 8GB+ RAM recommended for AI model
 - macOS with Metal GPU support (optimal performance)
 
