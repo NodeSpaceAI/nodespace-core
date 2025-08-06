@@ -6,9 +6,34 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 
 ## Getting Started as an Agent
 
-> 🚨 **CRITICAL: READ DEVELOPMENT PROCESS FIRST** 🚨
+> ## 🚨 MANDATORY FIRST STEPS FOR EVERY TASK 🚨
 > 
-> **BEFORE STARTING ANY TASK, YOU MUST READ:**
+> **BEFORE ANY IMPLEMENTATION WORK - COMPLETE THIS EXACT SEQUENCE:**
+> 
+> 1. **Check git status**: `git status` - commit any pending changes first
+> 2. **Create feature branch**: `git checkout -b feature/issue-<number>-brief-description`
+> 3. **Assign issue**: `gh issue edit <number> --add-assignee "@me"`
+> 4. **Update project status**: Todo → In Progress (GitHub web interface)
+> 5. **Select subagent**: Use decision tree below to choose specialized agent
+> 6. **Read issue requirements**: Understand all acceptance criteria
+> 7. **Plan implementation**: Self-contained approach with appropriate subagent
+> 
+> **🔴 CRITICAL PROCESS VIOLATIONS**
+> 
+> **If you start implementation work without completing the startup sequence:**
+> 1. STOP immediately  
+> 2. Complete the startup sequence
+> 3. Restart implementation with proper branch and issue assignment
+> 
+> **Common mistakes agents make:**
+> - Reading files before creating feature branch
+> - Planning implementation before assigning issue  
+> - Using TodoWrite without including startup sequence as first item
+> - Skipping git checkout step entirely
+
+> 🚨 **ADDITIONAL CRITICAL REQUIREMENTS** 🚨
+> 
+> **BEFORE STARTING ANY TASK, YOU MUST ALSO READ:**
 > - [`/docs/architecture/development/development-process.md`](docs/architecture/development/development-process.md)
 > 
 > **KEY PRINCIPLES YOU MUST FOLLOW:**
@@ -125,11 +150,17 @@ gh issue view <issue-number> --web
    - If review shows ready to merge: Immediately approve and merge
    - If review shows issues: Request changes with specific feedback
 
+**TodoWrite Tool Users - CRITICAL:**
+- Your **FIRST todo item** must be: "Complete mandatory startup sequence (git status, checkout, assign issue, select subagent)"
+- Do NOT break the startup sequence into separate todo items
+- Only after completing the startup sequence should you add implementation todos
+
 **Before Starting Any Task:**
-1. **READ THE DEVELOPMENT PROCESS DOCUMENTATION** - This is mandatory
-2. **Select appropriate subagent** using the decision tree above
-3. Check issue acceptance criteria and requirements
-4. Plan self-contained implementation with mock dependencies
+1. **COMPLETE THE MANDATORY STARTUP SEQUENCE** (steps 1-7 above)
+2. **READ THE DEVELOPMENT PROCESS DOCUMENTATION** - This is mandatory
+3. **Verify subagent selection** using the decision tree above
+4. Check issue acceptance criteria and requirements
+5. Plan self-contained implementation with mock dependencies
 
 ### 6. Development Standards
 
@@ -153,11 +184,14 @@ gh issue view <issue-number> --web
 
 **EVERY AGENT MUST COMPLETE THIS CHECKLIST FOR EACH TASK:**
 
-**Before Starting:**
-- [ ] Read development process documentation (`/docs/architecture/development/development-process.md`)
-- [ ] Selected appropriate subagent using the decision tree
+**Startup Sequence (MANDATORY - Steps 1-7 from above):**
+- [ ] Checked git status and committed any pending changes
+- [ ] Created feature branch: `feature/issue-<number>-brief-description`
 - [ ] Assigned issue to self (`gh issue edit <number> --add-assignee "@me"`)
 - [ ] Updated GitHub project status: Todo → In Progress (manual update)
+- [ ] Selected appropriate subagent using the decision tree
+- [ ] Read issue requirements and acceptance criteria
+- [ ] Read development process documentation (`/docs/architecture/development/development-process.md`)
 - [ ] Planned self-contained implementation with mock dependencies
 
 **During Implementation:**
