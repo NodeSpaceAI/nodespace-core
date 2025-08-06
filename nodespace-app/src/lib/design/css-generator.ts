@@ -76,6 +76,15 @@ export function generateCSSCustomProperties(tokens: DesignTokens, nodeTokens: No
     cssProperties.push(`  ${CSS_PREFIX}-radius-${key}: ${value};`);
   });
 
+  // Component size tokens
+  Object.entries(tokens.componentSize).forEach(([componentName, sizes]) => {
+    Object.entries(sizes).forEach(([sizeKey, value]) => {
+      cssProperties.push(
+        `  ${CSS_PREFIX}-${componentName.replace(/([A-Z])/g, '-$1').toLowerCase()}-${sizeKey}: ${value};`
+      );
+    });
+  });
+
   // Animation tokens
   Object.entries(tokens.animation.duration).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-duration-${key}: ${value};`);
@@ -421,6 +430,11 @@ export const cssVars = {
 
   // Spacing
   spacing: (size: string) => cssVar(`spacing-${size}`),
+
+  // Component sizes
+  componentSize: {
+    nodeIndicator: (property: string) => cssVar(`node-indicator-${property}`)
+  },
 
   // Other tokens
   shadow: (size: string) => cssVar(`shadow-${size}`),

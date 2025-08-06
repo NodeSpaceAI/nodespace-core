@@ -200,7 +200,7 @@
     <header class="ns-node__header">
       <!-- Node type indicator -->
       <div class="ns-node__type-indicator">
-        <Icon name={selectedIcon} size={12} className="ns-node__icon" color="white" />
+        <Icon name={selectedIcon} size={12} className="ns-node__icon" />
       </div>
 
       <!-- Node title and subtitle -->
@@ -284,7 +284,7 @@
     <header class="ns-node__header">
       <!-- Node type indicator -->
       <div class="ns-node__type-indicator">
-        <Icon name={selectedIcon} size={12} className="ns-node__icon" color="white" />
+        <Icon name={selectedIcon} size={12} className="ns-node__icon" />
       </div>
 
       <!-- Node title and subtitle -->
@@ -466,8 +466,8 @@
 
   .ns-node__type-indicator {
     flex-shrink: 0;
-    width: calc(var(--ns-font-size-base) * 1);
-    height: calc(var(--ns-font-size-base) * 1);
+    width: var(--ns-node-indicator-container);
+    height: var(--ns-node-indicator-container);
     position: relative;
     display: flex;
     align-items: center;
@@ -485,19 +485,19 @@
     transform: translate(-50%, -50%);
   }
 
-  /* Background circle (for parent nodes) - 16px with semi-transparent background */
+  /* Background circle (for parent nodes) - container size with semi-transparent background */
   .ns-node__type-indicator::before {
-    width: calc(var(--ns-font-size-base) * 1);
-    height: calc(var(--ns-font-size-base) * 1);
+    width: var(--ns-node-indicator-container);
+    height: var(--ns-node-indicator-container);
     background-color: transparent;
     border: none;
     z-index: 0;
   }
 
-  /* Main circle - 10px solid circle centered in 16px container */
+  /* Main circle - inner solid circle centered in container */
   .ns-node__type-indicator::after {
-    width: calc(var(--ns-font-size-base) * 0.625);
-    height: calc(var(--ns-font-size-base) * 0.625);
+    width: var(--ns-node-indicator-circle);
+    height: var(--ns-node-indicator-circle);
     background-color: var(--ns-node-text-accent);
     z-index: 1;
   }
@@ -550,13 +550,14 @@
   }
 
   .ns-node__icon {
-    /* Position the SVG icon centered within the 10px solid circle */
+    /* Position the SVG icon centered within the solid circle */
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
     z-index: 2;
     pointer-events: none;
+    color: var(--ns-color-text-inverse);
   }
 
   .ns-node__title-section {

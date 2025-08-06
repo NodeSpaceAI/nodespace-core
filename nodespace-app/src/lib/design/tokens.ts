@@ -153,6 +153,14 @@ export interface RadiusTokens {
   full: string;
 }
 
+// Component size tokens
+export interface ComponentSizeTokens {
+  nodeIndicator: {
+    container: string; // Outer circle container size
+    circle: string; // Inner circle size
+  };
+}
+
 // Animation and transition tokens
 export interface AnimationTokens {
   duration: {
@@ -187,6 +195,7 @@ export interface DesignTokens {
   spacing: SpacingTokens;
   shadow: ShadowTokens;
   radius: RadiusTokens;
+  componentSize: ComponentSizeTokens;
   animation: AnimationTokens;
   breakpoint: BreakpointTokens;
 }
@@ -328,6 +337,13 @@ export const lightTokens: DesignTokens = {
     '2xl': '1rem', // 16px
     '3xl': '1.5rem', // 24px
     full: '9999px'
+  },
+
+  componentSize: {
+    nodeIndicator: {
+      container: '1rem', // 16px - outer circle container
+      circle: '0.625rem' // 10px - inner solid circle
+    }
   },
 
   animation: {
