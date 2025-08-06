@@ -78,7 +78,6 @@ export default [
       'svelte/no-unused-svelte-ignore': 'error',
       'svelte/no-at-html-tags': 'warn',
       'svelte/valid-compile': 'error',
-      'svelte/a11y-no-noninteractive-tabindex': 'off'
     }
   },
   {

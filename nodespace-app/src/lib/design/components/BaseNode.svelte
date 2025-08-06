@@ -24,7 +24,8 @@
   export let loading: boolean = false;
   export let draggable: boolean = false;
   export let clickable: boolean = true;
-  export let focusable: boolean = true;
+  // focusable is automatically handled by clickable buttons
+  // export let focusable: boolean = true;
   export let showActions: boolean = true;
   export let compact: boolean = false;
   export let className: string = '';
@@ -161,98 +162,195 @@
     .join(' ');
 </script>
 
-<!-- Node container -->
-<!-- svelte-ignore a11y-no-noninteractive-tabindex -->
-<div
-  class={nodeClasses}
-  role={clickable ? 'button' : undefined}
-  tabindex={clickable && focusable && !disabled ? 0 : undefined}
-  aria-label="{getNodeTypeLabel(nodeType)}: {title || 'Untitled'}"
-  aria-selected={clickable ? selected : undefined}
-  aria-disabled={disabled}
-  draggable={draggable && !disabled}
-  data-node-id={nodeId}
-  data-node-type={nodeType}
-  on:click={handleClick}
-  on:keydown={handleKeyDown}
-  on:focus={handleFocus}
-  on:blur={handleBlur}
-  on:mouseenter
-  on:mouseleave
-  on:dragstart={handleDragStart}
-  on:dragend={handleDragEnd}
->
-  <!-- Loading overlay -->
-  {#if loading}
-    <div class="ns-node__loading-overlay">
-      <div class="ns-node__spinner" aria-label="Loading..."></div>
-    </div>
-  {/if}
-
-  <!-- Node header -->
-  <header class="ns-node__header">
-    <!-- Node type indicator -->
-    <div class="ns-node__type-indicator">
-      <span class="ns-node__icon" role="img" aria-label={getNodeTypeLabel(nodeType)}>
-        {getNodeIcon(nodeType)}
-      </span>
-    </div>
-
-    <!-- Node title and subtitle -->
-    <div class="ns-node__title-section">
-      {#if title}
-        <h3 class="ns-node__title">{title}</h3>
-      {/if}
-      {#if subtitle}
-        <p class="ns-node__subtitle">{subtitle}</p>
-      {/if}
-    </div>
-
-    <!-- Node actions -->
-    {#if showActions && !loading && !disabled}
-      <div class="ns-node__actions">
-        <slot name="actions">
-          <button
-            class="ns-node__action-btn"
-            type="button"
-            title="More actions"
-            on:click|stopPropagation={() => handleAction('menu')}
-          >
-            ⋯
-          </button>
-        </slot>
+{#if clickable}
+  <!-- Interactive node container -->
+  <button
+    type="button"
+    class={nodeClasses}
+    aria-label="{getNodeTypeLabel(nodeType)}: {title || 'Untitled'}"
+    aria-pressed={selected}
+    {disabled}
+    data-node-id={nodeId}
+    data-node-type={nodeType}
+    on:click={handleClick}
+    on:keydown={handleKeyDown}
+    on:focus={handleFocus}
+    on:blur={handleBlur}
+    on:mouseenter
+    on:mouseleave
+    on:dragstart={draggable && !disabled ? handleDragStart : undefined}
+    on:dragend={draggable && !disabled ? handleDragEnd : undefined}
+    draggable={draggable && !disabled}
+  >
+    <!-- Loading overlay -->
+    {#if loading}
+      <div class="ns-node__loading-overlay">
+        <div class="ns-node__spinner" aria-label="Loading..."></div>
       </div>
     {/if}
-  </header>
 
-  <!-- Node content -->
-  <div class="ns-node__content">
-    <slot>
-      {#if content}
-        <p class="ns-node__default-content">{content}</p>
-      {:else}
-        <p class="ns-node__empty-content">No content</p>
+    <!-- Node header -->
+    <header class="ns-node__header">
+      <!-- Node type indicator -->
+      <div class="ns-node__type-indicator">
+        <span class="ns-node__icon" role="img" aria-label={getNodeTypeLabel(nodeType)}>
+          {getNodeIcon(nodeType)}
+        </span>
+      </div>
+
+      <!-- Node title and subtitle -->
+      <div class="ns-node__title-section">
+        {#if title}
+          <h3 class="ns-node__title">{title}</h3>
+        {/if}
+        {#if subtitle}
+          <p class="ns-node__subtitle">{subtitle}</p>
+        {/if}
+      </div>
+
+      <!-- Node actions -->
+      {#if showActions && !loading && !disabled}
+        <div class="ns-node__actions">
+          <slot name="actions">
+            <span
+              class="ns-node__action-btn"
+              role="button"
+              tabindex="0"
+              title="More actions"
+              on:click|stopPropagation={() => handleAction('menu')}
+              on:keydown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  handleAction('menu');
+                }
+              }}
+            >
+              ⋯
+            </span>
+          </slot>
+        </div>
       {/if}
-    </slot>
+    </header>
+
+    <!-- Node content -->
+    <div class="ns-node__content">
+      <slot>
+        {#if content}
+          <p class="ns-node__default-content">{content}</p>
+        {:else}
+          <p class="ns-node__empty-content">No content</p>
+        {/if}
+      </slot>
+    </div>
+
+    <!-- Node footer -->
+    <footer class="ns-node__footer">
+      <slot name="footer" />
+    </footer>
+
+    <!-- Selection indicator -->
+    {#if selected}
+      <div class="ns-node__selection-indicator" aria-hidden="true"></div>
+    {/if}
+
+    <!-- Focus ring -->
+    <div class="ns-node__focus-ring" aria-hidden="true"></div>
+  </button>
+{:else}
+  <!-- Non-interactive node container -->
+  <div
+    class={nodeClasses}
+    role={draggable && !disabled ? 'listitem' : 'article'}
+    aria-label="{getNodeTypeLabel(nodeType)}: {title || 'Untitled'}"
+    data-node-id={nodeId}
+    data-node-type={nodeType}
+    draggable={draggable && !disabled}
+    on:dragstart={draggable && !disabled ? handleDragStart : undefined}
+    on:dragend={draggable && !disabled ? handleDragEnd : undefined}
+  >
+    <!-- Loading overlay -->
+    {#if loading}
+      <div class="ns-node__loading-overlay">
+        <div class="ns-node__spinner" aria-label="Loading..."></div>
+      </div>
+    {/if}
+
+    <!-- Node header -->
+    <header class="ns-node__header">
+      <!-- Node type indicator -->
+      <div class="ns-node__type-indicator">
+        <span class="ns-node__icon" role="img" aria-label={getNodeTypeLabel(nodeType)}>
+          {getNodeIcon(nodeType)}
+        </span>
+      </div>
+
+      <!-- Node title and subtitle -->
+      <div class="ns-node__title-section">
+        {#if title}
+          <h3 class="ns-node__title">{title}</h3>
+        {/if}
+        {#if subtitle}
+          <p class="ns-node__subtitle">{subtitle}</p>
+        {/if}
+      </div>
+
+      <!-- Node actions -->
+      {#if showActions && !loading && !disabled}
+        <div class="ns-node__actions">
+          <slot name="actions">
+            <span
+              class="ns-node__action-btn"
+              role="button"
+              tabindex="0"
+              title="More actions"
+              on:click|stopPropagation={() => handleAction('menu')}
+              on:keydown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  handleAction('menu');
+                }
+              }}
+            >
+              ⋯
+            </span>
+          </slot>
+        </div>
+      {/if}
+    </header>
+
+    <!-- Node content -->
+    <div class="ns-node__content">
+      <slot>
+        {#if content}
+          <p class="ns-node__default-content">{content}</p>
+        {:else}
+          <p class="ns-node__empty-content">No content</p>
+        {/if}
+      </slot>
+    </div>
+
+    <!-- Node footer -->
+    <footer class="ns-node__footer">
+      <slot name="footer" />
+    </footer>
+
+    <!-- Selection indicator -->
+    {#if selected}
+      <div class="ns-node__selection-indicator" aria-hidden="true"></div>
+    {/if}
+
+    <!-- Focus ring -->
+    <div class="ns-node__focus-ring" aria-hidden="true"></div>
   </div>
-
-  <!-- Node footer -->
-  <footer class="ns-node__footer">
-    <slot name="footer" />
-  </footer>
-
-  <!-- Selection indicator -->
-  {#if selected}
-    <div class="ns-node__selection-indicator" aria-hidden="true"></div>
-  {/if}
-
-  <!-- Focus ring -->
-  <div class="ns-node__focus-ring" aria-hidden="true"></div>
-</div>
+{/if}
 
 <style>
   /* Base node styling using design system tokens */
   .ns-node {
+    /* Reset button styles when used as button */
+    background: none;
+    font: inherit;
+    text-align: inherit;
     position: relative;
     display: flex;
     flex-direction: column;
