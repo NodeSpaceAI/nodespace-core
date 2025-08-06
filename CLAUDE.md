@@ -11,12 +11,13 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 > **BEFORE ANY IMPLEMENTATION WORK - COMPLETE THIS EXACT SEQUENCE:**
 > 
 > 1. **Check git status**: `git status` - commit any pending changes first
-> 2. **Create feature branch**: `git checkout -b feature/issue-<number>-brief-description`
-> 3. **Assign issue**: `gh issue edit <number> --add-assignee "@me"`
-> 4. **Update project status**: Todo → In Progress (GitHub web interface)
-> 5. **Select subagent**: Use decision tree below to choose specialized agent
-> 6. **Read issue requirements**: Understand all acceptance criteria
-> 7. **Plan implementation**: Self-contained approach with appropriate subagent
+> 2. **Determine branching strategy**: Check parent issue for specified approach (single branch vs. individual branches)
+> 3. **Create/switch to branch**: Based on strategy - either `git checkout -b feature/issue-<number>-brief-description` OR switch to existing parent issue branch
+> 4. **Assign issue**: `gh issue edit <number> --add-assignee "@me"`
+> 5. **Update project status**: Todo → In Progress (GitHub web interface)
+> 6. **Select subagent**: Use decision tree below to choose specialized agent
+> 7. **Read issue requirements**: Understand all acceptance criteria
+> 8. **Plan implementation**: Self-contained approach with appropriate subagent
 > 
 > **🔴 CRITICAL PROCESS VIOLATIONS**
 > 
@@ -105,6 +106,72 @@ gh issue view <issue-number> --web
 4. **Is this about architecture review or complex system design?** → Use `senior-architect-reviewer`
 5. **Is this complex research or multi-step work?** → Use `general-purpose`
 
+### 4.1. Subagent Instruction Guidelines
+
+**🚨 CRITICAL: When using Task tool with subagents, ALWAYS include these instructions:**
+
+#### **Branching Strategy Instructions**
+Every subagent prompt MUST explicitly specify the branching approach:
+
+**For Parent Issue Implementation (Default Approach):**
+```
+BRANCHING STRATEGY: Work on existing branch `feature/issue-<parent-number>-name`
+PR POLICY: DO NOT create any PRs - this will be included in parent issue PR
+SCOPE: Implement only the specific requirements for this sub-issue as part of larger feature
+```
+
+**For Individual Sub-Issue Implementation:**
+```
+BRANCHING STRATEGY: Create new branch `feature/issue-<number>-brief-description`
+PR POLICY: Create individual PR for this sub-issue when implementation is complete
+SCOPE: Complete independent implementation with all acceptance criteria
+```
+
+#### **Issue Structure Decision Framework**
+
+**Use Parent Issue Branch (Option 1) When:**
+- Sub-issues are tightly coupled and interdependent
+- Total implementation is < 2 weeks of work
+- Feature should be reviewed as a cohesive unit
+- Parent issue explicitly specifies "single branch approach"
+
+**Use Individual Branches (Option 2) When:**
+- Sub-issues can be implemented and reviewed independently
+- Sub-issues might be worked on by different people
+- Feature is large/complex and benefits from incremental review
+- Parent issue explicitly specifies "individual branch approach"
+
+#### **Mandatory Subagent Prompt Template**
+
+```markdown
+I need to implement Issue #X [TITLE]. 
+
+**BRANCHING STRATEGY:** [Specify approach based on parent issue]
+**PR POLICY:** [Specify whether to create PR or not]
+**SCOPE:** [Define exact scope of work]
+
+## Context
+[Provide project context and current state]
+
+## Requirements
+[List specific technical requirements from issue]
+
+## What I Need You To Do
+[Clear, specific instructions for implementation]
+
+**CRITICAL CONSTRAINTS:**
+- Follow the specified branching strategy exactly
+- Do NOT deviate from the PR policy specified above
+- Stay within the defined scope
+```
+
+#### **Process Verification**
+Before using any subagent:
+1. **Check parent issue** for specified branching strategy
+2. **If not specified** in parent issue, default to Parent Issue Branch (Option 1)
+3. **Include explicit instructions** in every subagent prompt
+4. **Verify subagent follows instructions** - if they deviate, immediately correct
+
 ### 5. Implementation Workflow
 
 **CRITICAL**: Follow the complete development process in `/docs/architecture/development/development-process.md`
@@ -151,12 +218,12 @@ gh issue view <issue-number> --web
    - If review shows issues: Request changes with specific feedback
 
 **TodoWrite Tool Users - CRITICAL:**
-- Your **FIRST todo item** must be: "Complete mandatory startup sequence (git status, checkout, assign issue, select subagent)"
+- Your **FIRST todo item** must be: "Complete mandatory startup sequence (git status, determine branching strategy, checkout/switch branch, assign issue, select subagent)"
 - Do NOT break the startup sequence into separate todo items
 - Only after completing the startup sequence should you add implementation todos
 
 **Before Starting Any Task:**
-1. **COMPLETE THE MANDATORY STARTUP SEQUENCE** (steps 1-7 above)
+1. **COMPLETE THE MANDATORY STARTUP SEQUENCE** (steps 1-8 above)
 2. **READ THE DEVELOPMENT PROCESS DOCUMENTATION** - This is mandatory
 3. **Verify subagent selection** using the decision tree above
 4. Check issue acceptance criteria and requirements
@@ -184,9 +251,10 @@ gh issue view <issue-number> --web
 
 **EVERY AGENT MUST COMPLETE THIS CHECKLIST FOR EACH TASK:**
 
-**Startup Sequence (MANDATORY - Steps 1-7 from above):**
+**Startup Sequence (MANDATORY - Steps 1-8 from above):**
 - [ ] Checked git status and committed any pending changes
-- [ ] Created feature branch: `feature/issue-<number>-brief-description`
+- [ ] Determined branching strategy from parent issue (single branch vs. individual branches)
+- [ ] Created/switched to appropriate branch based on strategy
 - [ ] Assigned issue to self (`gh issue edit <number> --add-assignee "@me"`)
 - [ ] Updated GitHub project status: Todo → In Progress (manual update)
 - [ ] Selected appropriate subagent using the decision tree

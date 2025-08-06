@@ -12,7 +12,7 @@
 
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import Icon from '../icons/index.js';
+  import Icon, { type IconName } from '../icons/index.js';
 
   // Props
   export let nodeType: NodeType = 'text';
@@ -30,6 +30,7 @@
   export let showActions: boolean = true;
   export let compact: boolean = false;
   export let hasChildren: boolean = false;
+  export let nodeIcon: IconName | undefined = undefined;
   export let className: string = '';
 
   // Interactive state
@@ -47,23 +48,26 @@
     action: { nodeId: string; action: string };
   }>();
 
-  // Get node type icon
-  function getNodeIcon(type: NodeType): string {
+  // Get node type icon - auto-select based on nodeType, allow override with nodeIcon prop
+  function getNodeTypeIcon(type: NodeType): IconName {
     switch (type) {
       case 'text':
-        return '📝';
+        return 'text';
       case 'task':
-        return '✅';
+        return 'text'; // Future: 'task' when icon added
       case 'ai-chat':
-        return '🤖';
+        return 'text'; // Future: 'ai' when icon added
       case 'entity':
-        return '📊';
+        return 'text'; // Future: 'entity' when icon added
       case 'query':
-        return '🔍';
+        return 'text'; // Future: 'query' when icon added
       default:
-        return '📄';
+        return 'text';
     }
   }
+
+  // Icon selection logic - nodeIcon prop overrides default
+  $: selectedIcon = nodeIcon || getNodeTypeIcon(nodeType);
 
   // Get node type label
   function getNodeTypeLabel(type: NodeType): string {
@@ -196,13 +200,7 @@
     <header class="ns-node__header">
       <!-- Node type indicator -->
       <div class="ns-node__type-indicator">
-        {#if nodeType === 'text'}
-          <Icon name="text" size={20} className="ns-node__icon" color="currentColor" />
-        {:else}
-          <span class="ns-node__icon" role="img" aria-label={getNodeTypeLabel(nodeType)}>
-            {getNodeIcon(nodeType)}
-          </span>
-        {/if}
+        <Icon name={selectedIcon} size={12} className="ns-node__icon" color="white" />
       </div>
 
       <!-- Node title and subtitle -->
@@ -286,13 +284,7 @@
     <header class="ns-node__header">
       <!-- Node type indicator -->
       <div class="ns-node__type-indicator">
-        {#if nodeType === 'text'}
-          <Icon name="text" size={20} className="ns-node__icon" color="currentColor" />
-        {:else}
-          <span class="ns-node__icon" role="img" aria-label={getNodeTypeLabel(nodeType)}>
-            {getNodeIcon(nodeType)}
-          </span>
-        {/if}
+        <Icon name={selectedIcon} size={12} className="ns-node__icon" color="white" />
       </div>
 
       <!-- Node title and subtitle -->
@@ -558,8 +550,13 @@
   }
 
   .ns-node__icon {
-    /* Hide the emoji icon as we're using circles now */
-    display: none;
+    /* Position the SVG icon centered within the 10px solid circle */
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 2;
+    pointer-events: none;
   }
 
   .ns-node__title-section {

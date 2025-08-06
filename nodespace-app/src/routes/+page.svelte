@@ -189,6 +189,16 @@
                 content="AI Assistant: How can I help you organize your knowledge today?"
                 hasChildren={true}
               />
+
+              <BaseNode
+                nodeType="task"
+                nodeId="example-icon-override"
+                title="Icon Override Test"
+                subtitle="Using nodeIcon prop to override default"
+                content="This node has nodeType='task' but uses the 'text' icon via nodeIcon prop."
+                nodeIcon="text"
+                hasChildren={true}
+              />
             </div>
           </div>
         </div>
