@@ -120,6 +120,7 @@ gh issue view <issue-number> --web
    Then manually update project status: In Progress → Ready for Review
 
 6. **Conduct Code Review**
+   - **CRITICAL: Review against original issue requirements FIRST** - verify all acceptance criteria
    - Use `senior-architect-reviewer` agent for complex features
    - If review shows ready to merge: Immediately approve and merge
    - If review shows issues: Request changes with specific feedback
