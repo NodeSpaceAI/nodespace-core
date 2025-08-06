@@ -248,9 +248,9 @@ export const lightTokens: DesignTokens = {
 
   typography: {
     fontFamily: {
-      ui: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      ui: '"SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, monospace',
       mono: '"SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, monospace',
-      brand: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+      brand: '"SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, monospace'
     },
 
     fontSize: {
