@@ -80,6 +80,7 @@
               title="Daily Notes"
               content="Today's thoughts and observations"
               compact={true}
+              hasChildren={true}
             />
             <BaseNode
               nodeType="text"
@@ -108,6 +109,7 @@
               title="Templates"
               content="Reusable document templates"
               compact={true}
+              hasChildren={true}
             />
             <BaseNode
               nodeType="query"
@@ -122,6 +124,7 @@
               title="Reports"
               content="Generated analytics and insights"
               compact={true}
+              hasChildren={true}
             />
           </div>
         </div>
@@ -139,25 +142,52 @@
               <BaseNode
                 nodeType="text"
                 nodeId="example-text"
-                title="TextNode Example"
+                title="TextNode Example (Childless)"
                 subtitle="Rich markdown content"
                 content="This is an example of a text node with markdown support and rich formatting capabilities."
               />
 
               <BaseNode
+                nodeType="text"
+                nodeId="example-text-parent"
+                title="TextNode Example (Parent)"
+                subtitle="Rich markdown content with children"
+                content="This is an example of a parent text node that contains child nodes."
+                hasChildren={true}
+              />
+
+              <BaseNode
                 nodeType="task"
                 nodeId="example-task"
-                title="TaskNode Example"
+                title="TaskNode Example (Childless)"
                 subtitle="Todo management"
                 content="☐ Complete design system implementation\n☑ Set up Tauri app structure\n☐ Add AI integration"
               />
 
               <BaseNode
+                nodeType="task"
+                nodeId="example-task-parent"
+                title="TaskNode Example (Parent)"
+                subtitle="Todo management with subtasks"
+                content="☐ Complete design system implementation\n☑ Set up Tauri app structure\n☐ Add AI integration"
+                hasChildren={true}
+              />
+
+              <BaseNode
                 nodeType="ai-chat"
                 nodeId="example-ai-chat"
-                title="AIChatNode Example"
+                title="AIChatNode Example (Childless)"
                 subtitle="AI conversations"
                 content="AI Assistant: How can I help you organize your knowledge today?"
+              />
+
+              <BaseNode
+                nodeType="ai-chat"
+                nodeId="example-ai-chat-parent"
+                title="AIChatNode Example (Parent)"
+                subtitle="AI conversations with follow-ups"
+                content="AI Assistant: How can I help you organize your knowledge today?"
+                hasChildren={true}
               />
             </div>
           </div>

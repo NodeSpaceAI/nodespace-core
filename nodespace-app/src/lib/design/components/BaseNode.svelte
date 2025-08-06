@@ -28,6 +28,7 @@
   // export let focusable: boolean = true;
   export let showActions: boolean = true;
   export let compact: boolean = false;
+  export let hasChildren: boolean = false;
   export let className: string = '';
 
   // Interactive state
@@ -156,6 +157,7 @@
     loading && 'ns-node--loading',
     isDragging && 'ns-node--dragging',
     compact && 'ns-node--compact',
+    hasChildren && 'ns-node--has-children',
     className
   ]
     .filter(Boolean)
@@ -463,18 +465,92 @@
 
   .ns-node__type-indicator {
     flex-shrink: 0;
-    width: 24px;
-    height: 24px;
+    width: calc(var(--ns-font-size-base) * 1);
+    height: calc(var(--ns-font-size-base) * 1);
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
-    background-color: var(--ns-color-surface-panel);
-    border-radius: var(--ns-radius-base);
+  }
+
+  /* Layered circle indicator system using pseudo-elements */
+  .ns-node__type-indicator::before,
+  .ns-node__type-indicator::after {
+    content: '';
+    position: absolute;
+    border-radius: 50%;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+  }
+
+  /* Background circle (for parent nodes) - 16px with semi-transparent background */
+  .ns-node__type-indicator::before {
+    width: calc(var(--ns-font-size-base) * 1);
+    height: calc(var(--ns-font-size-base) * 1);
+    background-color: transparent;
+    border: none;
+    z-index: 0;
+  }
+
+  /* Main circle - 10px solid circle centered in 16px container */
+  .ns-node__type-indicator::after {
+    width: calc(var(--ns-font-size-base) * 0.625);
+    height: calc(var(--ns-font-size-base) * 0.625);
+    background-color: var(--ns-node-text-accent);
+    z-index: 1;
+  }
+
+  /* Node type variant colors for circles */
+  .ns-node--text .ns-node__type-indicator::after {
+    background-color: var(--ns-node-text-accent);
+  }
+
+  .ns-node--task .ns-node__type-indicator::after {
+    background-color: var(--ns-node-task-accent);
+  }
+
+  .ns-node--ai-chat .ns-node__type-indicator::after {
+    background-color: var(--ns-node-aiChat-accent);
+  }
+
+  .ns-node--entity .ns-node__type-indicator::after {
+    background-color: var(--ns-node-entity-accent);
+  }
+
+  .ns-node--query .ns-node__type-indicator::after {
+    background-color: var(--ns-node-query-accent);
+  }
+
+  /* Parent node indicator - show semi-transparent background circle at 25% opacity */
+  .ns-node--text.ns-node--has-children .ns-node__type-indicator::before {
+    background-color: var(--ns-node-text-accent);
+    opacity: 0.25;
+  }
+
+  .ns-node--task.ns-node--has-children .ns-node__type-indicator::before {
+    background-color: var(--ns-node-task-accent);
+    opacity: 0.25;
+  }
+
+  .ns-node--ai-chat.ns-node--has-children .ns-node__type-indicator::before {
+    background-color: var(--ns-node-aiChat-accent);
+    opacity: 0.25;
+  }
+
+  .ns-node--entity.ns-node--has-children .ns-node__type-indicator::before {
+    background-color: var(--ns-node-entity-accent);
+    opacity: 0.25;
+  }
+
+  .ns-node--query.ns-node--has-children .ns-node__type-indicator::before {
+    background-color: var(--ns-node-query-accent);
+    opacity: 0.25;
   }
 
   .ns-node__icon {
-    font-size: var(--ns-font-size-sm);
-    line-height: 1;
+    /* Hide the emoji icon as we're using circles now */
+    display: none;
   }
 
   .ns-node__title-section {
