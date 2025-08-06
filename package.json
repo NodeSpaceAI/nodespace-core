@@ -8,6 +8,7 @@
     "nodespace-app"
   ],
   "scripts": {
+    "preinstall": "node enforce-bun.js",
     "dev": "bun run --cwd nodespace-app dev",
     "build": "bun run --cwd nodespace-app build",
     "check": "bun run --cwd nodespace-app check",
@@ -21,6 +22,10 @@
   },
   "license": "MIT",
   "engines": {
-    "bun": ">=1.0.0"
-  }
+    "bun": ">=1.0.0",
+    "npm": "Please use Bun instead",
+    "yarn": "Please use Bun instead",
+    "pnpm": "Please use Bun instead"
+  },
+  "packageManager": "bun@1.0.0"
 }

@@ -22,14 +22,18 @@ export default [
         MediaQueryListEvent: 'readonly',
         CustomEvent: 'readonly',
         HTMLStyleElement: 'readonly',
+        HTMLTextAreaElement: 'readonly',
         getComputedStyle: 'readonly',
         HTMLElement: 'readonly',
         performance: 'readonly',
         setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        requestAnimationFrame: 'readonly',
         MouseEvent: 'readonly',
         FocusEvent: 'readonly',
         KeyboardEvent: 'readonly',
-        DragEvent: 'readonly'
+        DragEvent: 'readonly',
+        NodeJS: 'readonly'
       }
     },
     plugins: {
@@ -59,14 +63,18 @@ export default [
         MediaQueryListEvent: 'readonly',
         CustomEvent: 'readonly',
         HTMLStyleElement: 'readonly',
+        HTMLTextAreaElement: 'readonly',
         getComputedStyle: 'readonly',
         HTMLElement: 'readonly',
         performance: 'readonly',
         setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        requestAnimationFrame: 'readonly',
         MouseEvent: 'readonly',
         FocusEvent: 'readonly',
         KeyboardEvent: 'readonly',
-        DragEvent: 'readonly'
+        DragEvent: 'readonly',
+        NodeJS: 'readonly'
       }
     },
     plugins: {

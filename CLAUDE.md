@@ -237,6 +237,21 @@ Before using any subagent:
 - Implement comprehensive error handling with anyhow/thiserror
 - Write tests with mock services temporarily for independent development (transitioning to real services soon)
 
+**Linting Policy:**
+- **NO lint suppression allowed** - Fix issues properly, don't suppress warnings
+- **SINGLE EXCEPTION**: `TextNode.svelte` markdown rendering uses controlled HTML injection
+  - This follows industry standard (GitHub, React Markdown, etc.)
+  - HTML is safely escaped before parsing in `markdownUtils.ts`
+  - Suppression documented with detailed justification comment
+  - This is the ONLY approved suppression in the entire codebase
+
+**Package Manager Enforcement:**
+- **MANDATORY: Use Bun only** - npm, yarn, and pnpm are blocked
+- Project includes automatic enforcement via preinstall hooks
+- Install Bun: `curl -fsSL https://bun.sh/install | bash`
+- Install packages: `bun install` (not npm install)
+- Run commands: `bun run dev`, `bun run build`, etc.
+
 **Git Workflow:**
 - Create feature branches: `feature/issue-<number>-brief-description`
 - Link commits to issues: `git commit -m "Add TextNode component (closes #4)"`

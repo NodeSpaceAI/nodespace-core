@@ -4,6 +4,7 @@
   "description": "NodeSpace AI-native knowledge management desktop application",
   "type": "module",
   "scripts": {
+    "preinstall": "node ../enforce-bun.js",
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
@@ -40,5 +41,12 @@
     "svelte-check": "^4.0.0",
     "typescript": "~5.6.2",
     "vite": "^6.0.3"
-  }
+  },
+  "engines": {
+    "bun": ">=1.0.0",
+    "npm": "Please use Bun instead",
+    "yarn": "Please use Bun instead",
+    "pnpm": "Please use Bun instead"
+  },
+  "packageManager": "bun@1.0.0"
 }

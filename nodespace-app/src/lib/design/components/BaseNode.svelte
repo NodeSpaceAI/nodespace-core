@@ -8,6 +8,27 @@
 <script context="module" lang="ts">
   // Node type for styling variants
   export type NodeType = 'text' | 'task' | 'ai-chat' | 'entity' | 'query';
+
+  // Navigation interface for cross-node keyboard navigation
+  export interface NodeNavigationMethods {
+    // Can this node accept keyboard navigation?
+    canAcceptNavigation(): boolean;
+
+    // Enter node from top (arrow down from previous node)
+    enterFromTop(): boolean;
+
+    // Enter node from bottom (arrow up from next node)
+    enterFromBottom(): boolean;
+
+    // Exit node going up (cursor at first line, arrow up pressed)
+    exitToTop(): { canExit: boolean; columnPosition: number };
+
+    // Exit node going down (cursor at last line, arrow down pressed)
+    exitToBottom(): { canExit: boolean; columnPosition: number };
+
+    // Get current cursor column for cross-node consistency
+    getCurrentColumn(): number;
+  }
 </script>
 
 <script lang="ts">
@@ -68,7 +89,6 @@
 
   // Icon selection logic - nodeIcon prop overrides default
   $: selectedIcon = nodeIcon || getNodeTypeIcon(nodeType);
-
   // Get node type label
   function getNodeTypeLabel(type: NodeType): string {
     switch (type) {
@@ -153,6 +173,32 @@
     dispatch('action', { nodeId, action });
   }
 
+  // Default navigation methods (no-op implementations)
+  // Derived nodes can override these for custom navigation behavior
+  export function canAcceptNavigation(): boolean {
+    return false; // By default, nodes don't support navigation
+  }
+
+  export function enterFromTop(): boolean {
+    return false; // No-op: derived nodes should implement
+  }
+
+  export function enterFromBottom(): boolean {
+    return false; // No-op: derived nodes should implement
+  }
+
+  export function exitToTop(): { canExit: boolean; columnPosition: number } {
+    return { canExit: false, columnPosition: 0 }; // No-op: derived nodes should implement
+  }
+
+  export function exitToBottom(): { canExit: boolean; columnPosition: number } {
+    return { canExit: false, columnPosition: 0 }; // No-op: derived nodes should implement
+  }
+
+  export function getCurrentColumn(): number {
+    return 0; // No-op: derived nodes should implement
+  }
+
   // CSS classes
   $: nodeClasses = [
     'ns-node',
@@ -198,10 +244,14 @@
 
     <!-- Node header -->
     <header class="ns-node__header">
-      <!-- Node type indicator -->
-      <div class="ns-node__type-indicator">
-        <Icon name={selectedIcon} size={12} className="ns-node__icon" />
-      </div>
+      <!-- Node hierarchy indicator -->
+      <div
+        class="ns-node__hierarchy-indicator"
+        class:ns-node__hierarchy-indicator--has-children={hasChildren}
+        data-node-type={nodeType}
+        role="img"
+        aria-label="{hasChildren ? 'Parent node' : 'Childless node'} - {getNodeTypeLabel(nodeType)}"
+      ></div>
 
       <!-- Node title and subtitle -->
       <div class="ns-node__title-section">
@@ -282,10 +332,14 @@
 
     <!-- Node header -->
     <header class="ns-node__header">
-      <!-- Node type indicator -->
-      <div class="ns-node__type-indicator">
-        <Icon name={selectedIcon} size={12} className="ns-node__icon" />
-      </div>
+      <!-- Node hierarchy indicator -->
+      <div
+        class="ns-node__hierarchy-indicator"
+        class:ns-node__hierarchy-indicator--has-children={hasChildren}
+        data-node-type={nodeType}
+        role="img"
+        aria-label="{hasChildren ? 'Parent node' : 'Childless node'} - {getNodeTypeLabel(nodeType)}"
+      ></div>
 
       <!-- Node title and subtitle -->
       <div class="ns-node__title-section">
@@ -456,7 +510,7 @@
     border-left: 4px solid var(--ns-node-query-accent);
   }
 
-  /* Header layout */
+  /* Header layout - flex-start ensures consistent top-alignment */
   .ns-node__header {
     display: flex;
     align-items: flex-start;
@@ -464,100 +518,87 @@
     margin-bottom: var(--ns-spacing-3);
   }
 
-  .ns-node__type-indicator {
-    flex-shrink: 0;
-    width: var(--ns-node-indicator-container);
-    height: var(--ns-node-indicator-container);
+  /* Layered Circle Hierarchy Indicator System */
+  .ns-node__hierarchy-indicator {
     position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    /* Size tied to app zoom level, not content font sizes */
+    font-size: var(--ns-font-size-base);
   }
 
-  /* Layered circle indicator system using pseudo-elements */
-  .ns-node__type-indicator::before,
-  .ns-node__type-indicator::after {
+  /* Childless nodes: 10px solid circle centered in 16px container */
+  .ns-node__hierarchy-indicator::before {
     content: '';
     position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 10px;
+    height: 10px;
+    transform: translate(-50%, -50%);
     border-radius: 50%;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
+    transition: all var(--ns-duration-fast) var(--ns-easing-easeInOut);
   }
 
-  /* Background circle (for parent nodes) - container size with semi-transparent background */
-  .ns-node__type-indicator::before {
-    width: var(--ns-node-indicator-container);
-    height: var(--ns-node-indicator-container);
-    background-color: transparent;
-    border: none;
-    z-index: 0;
-  }
-
-  /* Main circle - inner solid circle centered in container */
-  .ns-node__type-indicator::after {
-    width: var(--ns-node-indicator-circle);
-    height: var(--ns-node-indicator-circle);
-    background-color: var(--ns-node-text-accent);
-    z-index: 1;
-  }
-
-  /* Node type variant colors for circles */
-  .ns-node--text .ns-node__type-indicator::after {
-    background-color: var(--ns-node-text-accent);
-  }
-
-  .ns-node--task .ns-node__type-indicator::after {
-    background-color: var(--ns-node-task-accent);
-  }
-
-  .ns-node--ai-chat .ns-node__type-indicator::after {
-    background-color: var(--ns-node-aiChat-accent);
-  }
-
-  .ns-node--entity .ns-node__type-indicator::after {
-    background-color: var(--ns-node-entity-accent);
-  }
-
-  .ns-node--query .ns-node__type-indicator::after {
-    background-color: var(--ns-node-query-accent);
-  }
-
-  /* Parent node indicator - show semi-transparent background circle at 25% opacity */
-  .ns-node--text.ns-node--has-children .ns-node__type-indicator::before {
-    background-color: var(--ns-node-text-accent);
-    opacity: 0.25;
-  }
-
-  .ns-node--task.ns-node--has-children .ns-node__type-indicator::before {
-    background-color: var(--ns-node-task-accent);
-    opacity: 0.25;
-  }
-
-  .ns-node--ai-chat.ns-node--has-children .ns-node__type-indicator::before {
-    background-color: var(--ns-node-aiChat-accent);
-    opacity: 0.25;
-  }
-
-  .ns-node--entity.ns-node--has-children .ns-node__type-indicator::before {
-    background-color: var(--ns-node-entity-accent);
-    opacity: 0.25;
-  }
-
-  .ns-node--query.ns-node--has-children .ns-node__type-indicator::before {
-    background-color: var(--ns-node-query-accent);
-    opacity: 0.25;
-  }
-
-  .ns-node__icon {
-    /* Position the SVG icon centered within the solid circle */
+  /* Parent nodes: 16px semi-transparent background circle */
+  .ns-node__hierarchy-indicator--has-children::after {
+    content: '';
     position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 2;
-    pointer-events: none;
-    color: var(--ns-color-text-inverse);
+    top: 0;
+    left: 0;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    opacity: 0.25;
+    transition: all var(--ns-duration-fast) var(--ns-easing-easeInOut);
+  }
+
+  /* Node type accent colors for circle indicators */
+  /* Text nodes - Green */
+  .ns-node__hierarchy-indicator[data-node-type='text']::before {
+    background-color: var(--ns-node-text-accent);
+  }
+  .ns-node__hierarchy-indicator--has-children[data-node-type='text']::after {
+    background-color: var(--ns-node-text-accent);
+  }
+
+  /* Task nodes - Orange */
+  .ns-node__hierarchy-indicator[data-node-type='task']::before {
+    background-color: var(--ns-node-task-accent);
+  }
+  .ns-node__hierarchy-indicator--has-children[data-node-type='task']::after {
+    background-color: var(--ns-node-task-accent);
+  }
+
+  /* AI Chat nodes - Blue */
+  .ns-node__hierarchy-indicator[data-node-type='ai-chat']::before {
+    background-color: var(--ns-node-aiChat-accent);
+  }
+  .ns-node__hierarchy-indicator--has-children[data-node-type='ai-chat']::after {
+    background-color: var(--ns-node-aiChat-accent);
+  }
+
+  /* Entity nodes - Purple */
+  .ns-node__hierarchy-indicator[data-node-type='entity']::before {
+    background-color: var(--ns-node-entity-accent);
+  }
+  .ns-node__hierarchy-indicator--has-children[data-node-type='entity']::after {
+    background-color: var(--ns-node-entity-accent);
+  }
+
+  /* Query nodes - Pink */
+  .ns-node__hierarchy-indicator[data-node-type='query']::before {
+    background-color: var(--ns-node-query-accent);
+  }
+  .ns-node__hierarchy-indicator--has-children[data-node-type='query']::after {
+    background-color: var(--ns-node-query-accent);
+  }
+
+  /* Enhanced visibility on hover/focus for better accessibility */
+  .ns-node:hover .ns-node__hierarchy-indicator--has-children::after,
+  .ns-node:focus .ns-node__hierarchy-indicator--has-children::after {
+    opacity: 0.75;
   }
 
   .ns-node__title-section {

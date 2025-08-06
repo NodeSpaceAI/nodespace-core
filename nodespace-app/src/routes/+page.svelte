@@ -3,7 +3,9 @@
   import { getName, getVersion } from '@tauri-apps/api/app';
   import { onMount } from 'svelte';
   import ThemeProvider from '$lib/design/components/ThemeProvider.svelte';
-  import BaseNode from '$lib/design/components/BaseNode.svelte';
+  import TextNode from '$lib/components/TextNode.svelte';
+  import HierarchyDemo from '$lib/components/HierarchyDemo.svelte';
+  import TextNodeDemo from '$lib/components/TextNodeDemo.svelte';
   import { themePreference, currentTheme } from '$lib/design/theme.js';
 
   let appName = $state('NodeSpace');
@@ -74,23 +76,20 @@
           <h3>JournalView</h3>
           <p>Hierarchical note organization panel</p>
           <div class="placeholder-content">
-            <BaseNode
-              nodeType="text"
+            <TextNode
               nodeId="daily-notes"
               title="Daily Notes"
               content="Today's thoughts and observations"
               compact={true}
               hasChildren={true}
             />
-            <BaseNode
-              nodeType="text"
+            <TextNode
               nodeId="projects"
               title="Projects"
               content="Active project documentation"
               compact={true}
             />
-            <BaseNode
-              nodeType="text"
+            <TextNode
               nodeId="ideas"
               title="Ideas"
               content="Creative concepts and inspiration"
@@ -103,23 +102,20 @@
           <h3>LibraryView</h3>
           <p>Knowledge base and documents</p>
           <div class="placeholder-content">
-            <BaseNode
-              nodeType="entity"
+            <TextNode
               nodeId="templates"
               title="Templates"
               content="Reusable document templates"
               compact={true}
               hasChildren={true}
             />
-            <BaseNode
-              nodeType="query"
+            <TextNode
               nodeId="saved-searches"
               title="Saved Searches"
               content="Frequently used search queries"
               compact={true}
             />
-            <BaseNode
-              nodeType="entity"
+            <TextNode
               nodeId="reports"
               title="Reports"
               content="Generated analytics and insights"
@@ -133,71 +129,60 @@
       <main class="main-content">
         <div class="ns-panel node-viewer">
           <h3>NodeViewer</h3>
-          <p>Main content editing and viewing area</p>
+          <p>Main content editing and viewing area with hierarchical display patterns</p>
+
+          <!-- TextNode Demo for Testing Refactored Component -->
+          <TextNodeDemo />
+
+          <div class="divider"></div>
+
+          <!-- Hierarchical Display Demo -->
+          <HierarchyDemo />
+
           <div class="editor-placeholder">
-            <p>Select a node from the sidebar to begin editing...</p>
-            <p>This area will render different node types:</p>
+            <p>TextNode examples with enhanced editing and markdown support:</p>
 
             <div class="node-examples">
-              <BaseNode
-                nodeType="text"
+              <TextNode
                 nodeId="example-text"
                 title="TextNode Example (Childless)"
-                subtitle="Rich markdown content"
-                content="This is an example of a text node with markdown support and rich formatting capabilities."
+                content="This is an example of a text node with **markdown support** and rich formatting capabilities. Notice the enhanced TextNode with inline editing functionality."
               />
 
-              <BaseNode
-                nodeType="text"
+              <TextNode
                 nodeId="example-text-parent"
                 title="TextNode Example (Parent)"
-                subtitle="Rich markdown content with children"
-                content="This is an example of a parent text node that contains child nodes."
-                hasChildren={true}
+                content="This is an example of a parent text node that contains child nodes with rich markdown support."
               />
 
-              <BaseNode
-                nodeType="task"
+              <TextNode
                 nodeId="example-task"
                 title="TaskNode Example (Childless)"
-                subtitle="Todo management"
-                content="☐ Complete design system implementation\n☑ Set up Tauri app structure\n☐ Add AI integration"
+                content="☐ Complete design system implementation\n☑ Set up Tauri app structure\n☐ Add AI integration\n\nClick to edit and experience the enhanced TextNode functionality."
               />
 
-              <BaseNode
-                nodeType="task"
+              <TextNode
                 nodeId="example-task-parent"
-                title="TaskNode Example (Parent)"
-                subtitle="Todo management with subtasks"
-                content="☐ Complete design system implementation\n☑ Set up Tauri app structure\n☐ Add AI integration"
-                hasChildren={true}
+                title="TaskNode Example (Parent)" 
+                content="☐ Complete design system implementation\n☑ Set up Tauri app structure\n☐ Add AI integration\n\nThis is a parent task node with subtasks."
               />
 
-              <BaseNode
-                nodeType="ai-chat"
+              <TextNode
                 nodeId="example-ai-chat"
                 title="AIChatNode Example (Childless)"
-                subtitle="AI conversations"
-                content="AI Assistant: How can I help you organize your knowledge today?"
+                content="AI Assistant: How can I help you organize your knowledge today?\n\nThis enhanced TextNode supports inline editing with auto-save functionality."
               />
 
-              <BaseNode
-                nodeType="ai-chat"
+              <TextNode
                 nodeId="example-ai-chat-parent"
                 title="AIChatNode Example (Parent)"
-                subtitle="AI conversations with follow-ups"
-                content="AI Assistant: How can I help you organize your knowledge today?"
-                hasChildren={true}
+                content="AI Assistant: How can I help you organize your knowledge today?\n\nThis is a conversation with follow-ups and enhanced TextNode capabilities."
               />
 
-              <BaseNode
-                nodeType="task"
+              <TextNode
                 nodeId="example-icon-override"
-                title="Icon Override Test"
-                subtitle="Using nodeIcon prop to override default"
-                content="This node has nodeType='task' but uses the 'text' icon via nodeIcon prop."
-                nodeIcon="text"
-                hasChildren={true}
+                title="Enhanced TextNode Features"
+                content="This TextNode demonstrates the enhanced inline editing capabilities with markdown support, auto-save functionality, and responsive panel behavior."
               />
             </div>
           </div>
@@ -209,8 +194,7 @@
           <h3>AIChatView</h3>
           <p>AI assistant interaction panel</p>
           <div class="chat-placeholder">
-            <BaseNode
-              nodeType="ai-chat"
+            <TextNode
               nodeId="chat-example"
               title="AI Conversation"
               content="How can I organize my notes effectively?"
@@ -355,6 +339,12 @@
   .editor-placeholder p {
     margin: 0 0 var(--ns-spacing-4, 1rem) 0;
     color: var(--ns-color-text-secondary, #333333);
+  }
+
+  .divider {
+    height: 1px;
+    background: var(--ns-color-border-default, #e1e5e9);
+    margin: var(--ns-spacing-6, 1.5rem) 0;
   }
 
   .node-examples {
