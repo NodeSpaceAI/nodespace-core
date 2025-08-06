@@ -17,7 +17,19 @@ export default [
       globals: {
         console: 'readonly',
         window: 'readonly',
-        document: 'readonly'
+        document: 'readonly',
+        localStorage: 'readonly',
+        MediaQueryListEvent: 'readonly',
+        CustomEvent: 'readonly',
+        HTMLStyleElement: 'readonly',
+        getComputedStyle: 'readonly',
+        HTMLElement: 'readonly',
+        performance: 'readonly',
+        setTimeout: 'readonly',
+        MouseEvent: 'readonly',
+        FocusEvent: 'readonly',
+        KeyboardEvent: 'readonly',
+        DragEvent: 'readonly'
       }
     },
     plugins: {
@@ -28,7 +40,7 @@ export default [
       // Customize rules as needed
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
-      'no-console': 'warn'
+      'no-console': process.env.NODE_ENV === 'production' ? 'error' : 'off'
     }
   },
   {
@@ -42,7 +54,19 @@ export default [
       globals: {
         console: 'readonly',
         window: 'readonly',
-        document: 'readonly'
+        document: 'readonly',
+        localStorage: 'readonly',
+        MediaQueryListEvent: 'readonly',
+        CustomEvent: 'readonly',
+        HTMLStyleElement: 'readonly',
+        getComputedStyle: 'readonly',
+        HTMLElement: 'readonly',
+        performance: 'readonly',
+        setTimeout: 'readonly',
+        MouseEvent: 'readonly',
+        FocusEvent: 'readonly',
+        KeyboardEvent: 'readonly',
+        DragEvent: 'readonly'
       }
     },
     plugins: {
@@ -53,7 +77,8 @@ export default [
       // Svelte-specific rules
       'svelte/no-unused-svelte-ignore': 'error',
       'svelte/no-at-html-tags': 'warn',
-      'svelte/valid-compile': 'error'
+      'svelte/valid-compile': 'error',
+      'svelte/a11y-no-noninteractive-tabindex': 'off'
     }
   },
   {

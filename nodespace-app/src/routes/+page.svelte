@@ -1,10 +1,10 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { getName, getVersion } from '@tauri-apps/api/app';
-  import { onMount, getContext } from 'svelte';
+  import { onMount } from 'svelte';
   import ThemeProvider from '$lib/design/components/ThemeProvider.svelte';
   import BaseNode from '$lib/design/components/BaseNode.svelte';
-  import { themePreference, currentTheme, type ThemeContext } from '$lib/design/theme.js';
+  import { themePreference, currentTheme } from '$lib/design/theme.js';
 
   let appName = $state('NodeSpace');
   let appVersion = $state('0.1.0');
@@ -41,10 +41,14 @@
 
   function getThemeIcon(theme: string): string {
     switch (theme) {
-      case 'light': return '☀️';
-      case 'dark': return '🌙';
-      case 'system': return '🖥️';
-      default: return '🖥️';
+      case 'light':
+        return '☀️';
+      case 'dark':
+        return '🌙';
+      case 'system':
+        return '🖥️';
+      default:
+        return '🖥️';
     }
   }
 </script>
@@ -55,14 +59,12 @@
       <h1>{appName}</h1>
       <div class="app-info">
         <span class="version">v{appVersion}</span>
-        <button 
-          class="ns-button" 
-          onclick={toggleTheme}
-          title="Toggle theme ({$themePreference})"
-        >
+        <button class="ns-button" onclick={toggleTheme} title="Toggle theme ({$themePreference})">
           {getThemeIcon($themePreference)}
         </button>
-        <button class="ns-button ns-button--primary" onclick={testConnection}>Test Connection</button>
+        <button class="ns-button ns-button--primary" onclick={testConnection}
+          >Test Connection</button
+        >
       </div>
     </header>
 
@@ -72,24 +74,24 @@
           <h3>JournalView</h3>
           <p>Hierarchical note organization panel</p>
           <div class="placeholder-content">
-            <BaseNode 
-              nodeType="text" 
-              nodeId="daily-notes" 
-              title="Daily Notes" 
+            <BaseNode
+              nodeType="text"
+              nodeId="daily-notes"
+              title="Daily Notes"
               content="Today's thoughts and observations"
               compact={true}
             />
-            <BaseNode 
-              nodeType="text" 
-              nodeId="projects" 
-              title="Projects" 
+            <BaseNode
+              nodeType="text"
+              nodeId="projects"
+              title="Projects"
               content="Active project documentation"
               compact={true}
             />
-            <BaseNode 
-              nodeType="text" 
-              nodeId="ideas" 
-              title="Ideas" 
+            <BaseNode
+              nodeType="text"
+              nodeId="ideas"
+              title="Ideas"
               content="Creative concepts and inspiration"
               compact={true}
             />
@@ -100,24 +102,24 @@
           <h3>LibraryView</h3>
           <p>Knowledge base and documents</p>
           <div class="placeholder-content">
-            <BaseNode 
-              nodeType="entity" 
-              nodeId="templates" 
-              title="Templates" 
+            <BaseNode
+              nodeType="entity"
+              nodeId="templates"
+              title="Templates"
               content="Reusable document templates"
               compact={true}
             />
-            <BaseNode 
-              nodeType="query" 
-              nodeId="saved-searches" 
-              title="Saved Searches" 
+            <BaseNode
+              nodeType="query"
+              nodeId="saved-searches"
+              title="Saved Searches"
               content="Frequently used search queries"
               compact={true}
             />
-            <BaseNode 
-              nodeType="entity" 
-              nodeId="reports" 
-              title="Reports" 
+            <BaseNode
+              nodeType="entity"
+              nodeId="reports"
+              title="Reports"
               content="Generated analytics and insights"
               compact={true}
             />
@@ -132,28 +134,28 @@
           <div class="editor-placeholder">
             <p>Select a node from the sidebar to begin editing...</p>
             <p>This area will render different node types:</p>
-            
+
             <div class="node-examples">
-              <BaseNode 
-                nodeType="text" 
-                nodeId="example-text" 
-                title="TextNode Example" 
+              <BaseNode
+                nodeType="text"
+                nodeId="example-text"
+                title="TextNode Example"
                 subtitle="Rich markdown content"
                 content="This is an example of a text node with markdown support and rich formatting capabilities."
               />
-              
-              <BaseNode 
-                nodeType="task" 
-                nodeId="example-task" 
-                title="TaskNode Example" 
+
+              <BaseNode
+                nodeType="task"
+                nodeId="example-task"
+                title="TaskNode Example"
                 subtitle="Todo management"
                 content="☐ Complete design system implementation\n☑ Set up Tauri app structure\n☐ Add AI integration"
               />
-              
-              <BaseNode 
-                nodeType="ai-chat" 
-                nodeId="example-ai-chat" 
-                title="AIChatNode Example" 
+
+              <BaseNode
+                nodeType="ai-chat"
+                nodeId="example-ai-chat"
+                title="AIChatNode Example"
                 subtitle="AI conversations"
                 content="AI Assistant: How can I help you organize your knowledge today?"
               />
@@ -167,10 +169,10 @@
           <h3>AIChatView</h3>
           <p>AI assistant interaction panel</p>
           <div class="chat-placeholder">
-            <BaseNode 
-              nodeType="ai-chat" 
-              nodeId="chat-example" 
-              title="AI Conversation" 
+            <BaseNode
+              nodeType="ai-chat"
+              nodeId="chat-example"
+              title="AI Conversation"
               content="How can I organize my notes effectively?"
               compact={true}
             />
@@ -208,7 +210,14 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    font-family: var(--ns-font-family-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+    font-family: var(
+      --ns-font-family-ui,
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      Roboto,
+      sans-serif
+    );
     background-color: var(--ns-color-surface-background, #ffffff);
     color: var(--ns-color-text-primary, #1a1a1a);
   }
@@ -359,7 +368,7 @@
     .app-layout {
       flex-direction: column;
     }
-    
+
     .sidebar,
     .right-sidebar {
       width: 100%;
@@ -367,12 +376,12 @@
       border-top: 1px solid var(--ns-color-border-default, #e1e5e9);
       max-height: 200px;
     }
-    
+
     .app-info {
       flex-wrap: wrap;
       gap: var(--ns-spacing-2, 0.5rem);
     }
-    
+
     .status-bar {
       flex-direction: column;
       align-items: flex-start;
@@ -385,11 +394,11 @@
     .ns-panel {
       border-width: 2px;
     }
-    
+
     .app-header {
       border-bottom-width: 2px;
     }
-    
+
     .sidebar,
     .right-sidebar {
       border-width: 2px;
@@ -412,12 +421,12 @@
     .right-sidebar {
       display: none;
     }
-    
+
     .main-content {
       width: 100%;
       overflow: visible;
     }
-    
+
     .ns-panel {
       box-shadow: none;
       border: 1px solid var(--ns-color-border-default, #e1e5e9);

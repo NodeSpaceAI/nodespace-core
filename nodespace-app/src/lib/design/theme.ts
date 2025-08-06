@@ -1,6 +1,6 @@
 /**
  * Theme Management System
- * 
+ *
  * Provides theme switching functionality with Svelte stores,
  * system preference detection, and CSS custom property updates.
  */
@@ -8,7 +8,14 @@
 import { writable, derived, get } from 'svelte/store';
 import { browser } from '$app/environment';
 import type { Theme } from './tokens.js';
-import { getTokens, getNodeTokens, lightTokens, darkTokens, lightNodeTokens, darkNodeTokens } from './tokens.js';
+import {
+  getTokens,
+  getNodeTokens,
+  lightTokens,
+  darkTokens,
+  lightNodeTokens,
+  darkNodeTokens
+} from './tokens.js';
 import { generateThemeCSS } from './css-generator.js';
 
 // Theme preference store
@@ -95,9 +102,11 @@ function applyThemeToDOM(theme: 'light' | 'dark') {
   updateDesignSystemCSS();
 
   // Dispatch custom event for theme change
-  window.dispatchEvent(new CustomEvent('themechange', { 
-    detail: { theme, tokens: getTokens(theme), nodeTokens: getNodeTokens(theme) } 
-  }));
+  window.dispatchEvent(
+    new CustomEvent('themechange', {
+      detail: { theme, tokens: getTokens(theme), nodeTokens: getNodeTokens(theme) }
+    })
+  );
 }
 
 // Update design system CSS in the DOM
@@ -126,7 +135,7 @@ export function setTheme(theme: Theme) {
 
 export function toggleTheme() {
   const current = get(themePreference);
-  
+
   if (current === 'system') {
     // If system, switch to opposite of current system theme
     const system = get(systemTheme);
@@ -201,26 +210,25 @@ export const createThemeContext = (): ThemeContext => {
     nodeTokens: get(nodeTokens),
     setTheme,
     toggleTheme,
-    resetThemeToSystem,
+    resetThemeToSystem
   };
 };
 
 // Animation utilities for theme transitions
-export function createThemeTransition(element: HTMLElement, options: {
-  property?: string;
-  duration?: number;
-  easing?: string;
-} = {}) {
-  const {
-    property = 'all',
-    duration = 300,
-    easing = 'cubic-bezier(0.4, 0, 0.2, 1)'
-  } = options;
+export function createThemeTransition(
+  element: HTMLElement,
+  options: {
+    property?: string;
+    duration?: number;
+    easing?: string;
+  } = {}
+) {
+  const { property = 'all', duration = 300, easing = 'cubic-bezier(0.4, 0, 0.2, 1)' } = options;
 
   const transitionValue = `${property} ${duration}ms ${easing}`;
-  
+
   element.style.transition = transitionValue;
-  
+
   return {
     destroy() {
       element.style.transition = '';
@@ -229,11 +237,14 @@ export function createThemeTransition(element: HTMLElement, options: {
 }
 
 // Svelte action for theme transitions
-export function themeTransition(element: HTMLElement, options?: {
-  property?: string;
-  duration?: number;
-  easing?: string;
-}) {
+export function themeTransition(
+  element: HTMLElement,
+  options?: {
+    property?: string;
+    duration?: number;
+    easing?: string;
+  }
+) {
   return createThemeTransition(element, options);
 }
 
@@ -262,15 +273,21 @@ export function importThemeSettings(settingsJSON: string): boolean {
 // Theme debugging utilities (development only)
 export function debugTheme() {
   if (typeof window === 'undefined') return;
-  
-  console.group('NodeSpace Theme Debug');
-  console.log('Theme Preference:', get(themePreference));
-  console.log('System Theme:', get(systemTheme));
-  console.log('Current Theme:', get(currentTheme));
-  console.log('Design Tokens:', get(designTokens));
-  console.log('Node Tokens:', get(nodeTokens));
-  console.log('CSS Variables:', Array.from(document.documentElement.style).filter(prop => prop.startsWith('--ns-')));
-  console.groupEnd();
+
+  // Development debugging only
+  if (import.meta.env.DEV) {
+    console.group('NodeSpace Theme Debug');
+    console.log('Theme Preference:', get(themePreference));
+    console.log('System Theme:', get(systemTheme));
+    console.log('Current Theme:', get(currentTheme));
+    console.log('Design Tokens:', get(designTokens));
+    console.log('Node Tokens:', get(nodeTokens));
+    console.log(
+      'CSS Variables:',
+      Array.from(document.documentElement.style).filter((prop) => prop.startsWith('--ns-'))
+    );
+    console.groupEnd();
+  }
 }
 
 // Performance monitoring for theme switches
@@ -283,7 +300,9 @@ export function startThemeChangePerformanceMonitoring() {
 export function endThemeChangePerformanceMonitoring() {
   if (themeChangeStart > 0) {
     const duration = performance.now() - themeChangeStart;
-    console.log(`Theme change completed in ${duration.toFixed(2)}ms`);
+    if (import.meta.env.DEV) {
+      console.log(`Theme change completed in ${duration.toFixed(2)}ms`);
+    }
     themeChangeStart = 0;
   }
 }

@@ -1,6 +1,6 @@
 /**
  * CSS Custom Properties Generator
- * 
+ *
  * Generates CSS custom properties from design tokens for theme switching
  * and consistent styling across the application.
  */
@@ -14,89 +14,89 @@ const CSS_PREFIX = '--ns'; // NodeSpace prefix
 // Convert nested token object to flat CSS custom properties
 export function generateCSSCustomProperties(tokens: DesignTokens, nodeTokens: NodeTokens): string {
   const cssProperties: string[] = [];
-  
+
   // Color tokens
   Object.entries(tokens.color.primary).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-color-primary-${key}: ${value};`);
   });
-  
+
   Object.entries(tokens.color.surface).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-color-surface-${key}: ${value};`);
   });
-  
+
   Object.entries(tokens.color.text).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-color-text-${key}: ${value};`);
   });
-  
+
   Object.entries(tokens.color.border).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-color-border-${key}: ${value};`);
   });
-  
+
   Object.entries(tokens.color.state).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-color-state-${key}: ${value};`);
   });
-  
+
   Object.entries(tokens.color.interactive).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-color-interactive-${key}: ${value};`);
   });
-  
+
   // Typography tokens
   Object.entries(tokens.typography.fontFamily).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-font-family-${key}: ${value};`);
   });
-  
+
   Object.entries(tokens.typography.fontSize).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-font-size-${key}: ${value};`);
   });
-  
+
   Object.entries(tokens.typography.fontWeight).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-font-weight-${key}: ${value};`);
   });
-  
+
   Object.entries(tokens.typography.lineHeight).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-line-height-${key}: ${value};`);
   });
-  
+
   Object.entries(tokens.typography.letterSpacing).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-letter-spacing-${key}: ${value};`);
   });
-  
+
   // Spacing tokens
   Object.entries(tokens.spacing).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-spacing-${key}: ${value};`);
   });
-  
+
   // Shadow tokens
   Object.entries(tokens.shadow).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-shadow-${key}: ${value};`);
   });
-  
+
   // Radius tokens
   Object.entries(tokens.radius).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-radius-${key}: ${value};`);
   });
-  
+
   // Animation tokens
   Object.entries(tokens.animation.duration).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-duration-${key}: ${value};`);
   });
-  
+
   Object.entries(tokens.animation.easing).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-easing-${key}: ${value};`);
   });
-  
+
   // Breakpoint tokens
   Object.entries(tokens.breakpoint).forEach(([key, value]) => {
     cssProperties.push(`  ${CSS_PREFIX}-breakpoint-${key}: ${value};`);
   });
-  
+
   // Node-specific tokens
   Object.entries(nodeTokens.nodeType).forEach(([nodeType, colors]) => {
     Object.entries(colors).forEach(([property, value]) => {
       cssProperties.push(`  ${CSS_PREFIX}-node-${nodeType}-${property}: ${value};`);
     });
   });
-  
+
   // Node state tokens
   Object.entries(nodeTokens.state).forEach(([state, values]) => {
     if (typeof values === 'object' && 'background' in values) {
@@ -105,15 +105,20 @@ export function generateCSSCustomProperties(tokens: DesignTokens, nodeTokens: No
       });
     }
   });
-  
+
   return cssProperties.join('\n');
 }
 
 // Generate complete CSS with theme support
-export function generateThemeCSS(lightTokens: DesignTokens, darkTokens: DesignTokens, lightNodeTokens: NodeTokens, darkNodeTokens: NodeTokens): string {
+export function generateThemeCSS(
+  lightTokens: DesignTokens,
+  darkTokens: DesignTokens,
+  lightNodeTokens: NodeTokens,
+  darkNodeTokens: NodeTokens
+): string {
   const lightProperties = generateCSSCustomProperties(lightTokens, lightNodeTokens);
   const darkProperties = generateCSSCustomProperties(darkTokens, darkNodeTokens);
-  
+
   return `/* NodeSpace Design System CSS Custom Properties */
 
 :root {
@@ -402,30 +407,30 @@ export const cssVars = {
     text: (type: string) => cssVar(`color-text-${type}`),
     border: (type: string) => cssVar(`color-border-${type}`),
     state: (state: string) => cssVar(`color-state-${state}`),
-    interactive: (state: string) => cssVar(`color-interactive-${state}`),
+    interactive: (state: string) => cssVar(`color-interactive-${state}`)
   },
-  
+
   // Typography
   typography: {
     fontFamily: (type: string) => cssVar(`font-family-${type}`),
     fontSize: (size: string) => cssVar(`font-size-${size}`),
     fontWeight: (weight: string) => cssVar(`font-weight-${weight}`),
     lineHeight: (height: string) => cssVar(`line-height-${height}`),
-    letterSpacing: (spacing: string) => cssVar(`letter-spacing-${spacing}`),
+    letterSpacing: (spacing: string) => cssVar(`letter-spacing-${spacing}`)
   },
-  
+
   // Spacing
   spacing: (size: string) => cssVar(`spacing-${size}`),
-  
+
   // Other tokens
   shadow: (size: string) => cssVar(`shadow-${size}`),
   radius: (size: string) => cssVar(`radius-${size}`),
   duration: (speed: string) => cssVar(`duration-${speed}`),
   easing: (type: string) => cssVar(`easing-${type}`),
-  
+
   // Node-specific
   node: {
     type: (nodeType: string, property: string) => cssVar(`node-${nodeType}-${property}`),
-    state: (state: string, property: string) => cssVar(`node-state-${state}-${property}`),
-  },
+    state: (state: string, property: string) => cssVar(`node-state-${state}-${property}`)
+  }
 };
