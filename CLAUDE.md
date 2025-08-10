@@ -35,7 +35,8 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 > 🚨 **ADDITIONAL CRITICAL REQUIREMENTS** 🚨
 > 
 > **BEFORE STARTING ANY TASK, YOU MUST ALSO READ:**
-> - [`/docs/architecture/development/development-process.md`](docs/architecture/development/development-process.md)
+> - [`/docs/architecture/development/overview.md`](docs/architecture/development/overview.md) - Complete development process overview
+> - [`/docs/architecture/development/process/startup-sequence.md`](docs/architecture/development/process/startup-sequence.md) - Mandatory pre-implementation steps
 > 
 > **KEY PRINCIPLES YOU MUST FOLLOW:**
 > - ✅ **Self-Contained Implementation**: Each issue must work independently with full functionality
@@ -163,7 +164,7 @@ I need to implement Issue #X [TITLE].
 - Follow the specified branching strategy exactly
 - Do NOT deviate from the PR policy specified above
 - Stay within the defined scope
-- **FOLLOW UNIVERSAL PROCESS**: All quality gates and requirements in `/docs/architecture/development/development-process.md` apply to ALL team members (AI agents & humans)
+- **FOLLOW UNIVERSAL PROCESS**: All quality gates and requirements in the [development documentation](docs/architecture/development/overview.md) apply to ALL team members (AI agents & humans)
 
 #### **Process Verification**
 Before using any subagent:
@@ -174,7 +175,7 @@ Before using any subagent:
 
 ### 5. Implementation Workflow
 
-**CRITICAL**: Follow the complete development process in `/docs/architecture/development/development-process.md`
+**CRITICAL**: Follow the complete development process in the [development documentation](docs/architecture/development/overview.md)
 
 **Step-by-Step Process (Summary - See Full Process Documentation):**
 
@@ -212,7 +213,7 @@ Before using any subagent:
    Then manually update project status: In Progress → Ready for Review
 
 6. **Conduct Code Review**
-   - **FOLLOW UNIVERSAL PROCESS**: Use the code review guidelines in `/docs/architecture/development/development-process.md` 
+   - **FOLLOW UNIVERSAL PROCESS**: Use the code review guidelines in the [PR review documentation](docs/architecture/development/process/pr-review.md) 
    - Use `senior-architect-reviewer` agent for complex features
    - All quality gates and review requirements apply universally to AI agents and human reviewers
 
@@ -223,7 +224,7 @@ Before using any subagent:
 
 **Before Starting Any Task:**
 1. **COMPLETE THE MANDATORY STARTUP SEQUENCE** (steps 1-8 above)
-2. **READ THE DEVELOPMENT PROCESS DOCUMENTATION** - This is mandatory
+2. **READ THE DEVELOPMENT PROCESS DOCUMENTATION** - Start with the [overview](docs/architecture/development/overview.md) and [startup sequence](docs/architecture/development/process/startup-sequence.md)
 3. **Verify subagent selection** using the decision tree above
 4. Check issue acceptance criteria and requirements
 5. Plan self-contained implementation with mock dependencies
@@ -271,7 +272,7 @@ Before using any subagent:
 - [ ] Updated GitHub project status: Todo → In Progress (manual update)
 - [ ] Selected appropriate subagent using the decision tree
 - [ ] Read issue requirements and acceptance criteria
-- [ ] Read development process documentation (`/docs/architecture/development/development-process.md`)
+- [ ] Read development process documentation (start with [overview](docs/architecture/development/overview.md))
 - [ ] Planned self-contained implementation with mock dependencies
 
 **During Implementation:**
