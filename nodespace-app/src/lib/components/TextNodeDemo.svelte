@@ -7,25 +7,26 @@
 
 <script lang="ts">
   import TextNode from './TextNode.svelte';
+  import BaseNode from '$lib/design/components/BaseNode.svelte';
 
   let demoNodes = [
     {
       id: 'demo-1',
-      content: 'This is a basic text node. Click to edit!',
+      content: 'Simple text without markdown. Click to edit!',
       editable: true,
       markdown: false
     },
     {
       id: 'demo-2',
       content:
-        '# Welcome to NodeSpace\n\nThis node supports **markdown** formatting:\n\n- *Italic text*\n- **Bold text** \n- `inline code`\n- [Links](https://example.com)\n\n## Features\n\n1. Click-to-edit\n2. Auto-save\n3. Background saving with cursor preservation',
+        '# Welcome to NodeSpace\n\nThis TextNode supports **markdown** formatting:\n\n- *Italic text*\n- **Bold text** \n- `inline code`\n- [Links](https://example.com)\n\n## Features\n\n1. Multi-line editing\n2. Auto-save\n3. Markdown rendering',
       editable: true,
       markdown: true
     },
     {
       id: 'demo-3',
       content:
-        'This node is read-only and cannot be edited. It demonstrates the display-only mode.',
+        'This node is **read-only** and cannot be edited. It still renders markdown but demonstrates display-only mode.',
       editable: false,
       markdown: true
     },
@@ -101,7 +102,6 @@
             : 'Click to add text...'}
           on:save={handleSave}
           on:error={handleError}
-          on:cancel={handleCancel}
           on:contentChanged={handleContentChanged}
           on:focus={handleFocus}
           on:blur={handleBlur}
@@ -130,13 +130,18 @@
       </div>
 
       <div class="instruction">
-        <h4>Auto-save with Cursor Preservation</h4>
-        <p>Start editing any node and wait 500ms. You'll see the auto-save indicator, and your cursor position will be preserved during background saves.</p>
+        <h4>Multi-line Editing</h4>
+        <p>TextNodes support multi-line editing. Use Shift+Enter for line breaks, or just press Enter normally in the textarea.</p>
       </div>
 
       <div class="instruction">
-        <h4>Node Switching</h4>
-        <p>Start editing one node, then click on another. The first node will auto-save and render its markdown when you switch away.</p>
+        <h4>Markdown Rendering</h4>
+        <p>Second node shows markdown rendering in display mode. Edit to see raw markdown, blur to see rendered output.</p>
+      </div>
+
+      <div class="instruction">
+        <h4>Read-only Mode</h4>
+        <p>Third node demonstrates read-only display with markdown rendering but no editing capability.</p>
       </div>
 
       <div class="instruction">

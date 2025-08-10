@@ -11,7 +11,7 @@
 </script>
 
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, tick } from 'svelte';
   import Icon, { type IconName } from '../icons/index.js';
 
   // Essential Props (Simplified to 5 core + processing)
@@ -20,6 +20,10 @@
   export let content: string = '';
   export let hasChildren: boolean = false;
   export let className: string = '';
+  export let editable: boolean = true;
+  export let contentEditable: boolean = true; // Can content be directly edited by user?
+  export let multiline: boolean = false; // Single-line by default
+  export let placeholder: string = 'Click to add content...';
 
   // SVG Icon System
   export let iconName: IconName | undefined = undefined;
@@ -29,21 +33,202 @@
   export let processingAnimation: 'blink' | 'pulse' | 'spin' | 'fade' = 'pulse';
   export let processingIcon: IconName | undefined = undefined;
 
-  // Simple event dispatcher for click events
+  // Edit state
+  let focused = false;
+  let textareaElement: HTMLTextAreaElement;
+
+  // Event dispatcher
   const dispatch = createEventDispatcher<{
     click: { nodeId: string; event: MouseEvent };
+    focus: { nodeId: string };
+    blur: { nodeId: string };
+    contentChanged: { nodeId: string; content: string };
   }>();
 
-  // Event handler
-  function handleClick(event: MouseEvent) {
-    dispatch('click', { nodeId, event });
+  // Handle display click to start editing
+  function handleDisplayClick(event: MouseEvent) {
+    if (!editable || !contentEditable || focused) return;
+    startEditing(event);
   }
 
+  // Start editing mode
+  async function startEditing(clickEvent?: MouseEvent) {
+    focused = true;
+    dispatch('focus', { nodeId });
+
+    await tick();
+    if (textareaElement) {
+      // Auto-resize for multiline content on focus
+      if (multiline) {
+        autoResizeTextarea(textareaElement);
+      }
+      
+      textareaElement.focus();
+      
+      // Position cursor based on click location
+      if (clickEvent) {
+        await tick(); // Wait for textarea to be fully rendered
+        positionCursorFromClick(clickEvent);
+      } else {
+        // No click event, place at end
+        textareaElement.setSelectionRange(textareaElement.value.length, textareaElement.value.length);
+      }
+    }
+  }
+
+  // Position cursor based on click coordinates
+  async function positionCursorFromClick(clickEvent: MouseEvent) {
+    if (!textareaElement) return;
+
+    // Get the display element that was clicked to get relative position
+    const displayElement = clickEvent.target as HTMLElement;
+    
+    // Create a temporary element to measure text
+    const tempElement = document.createElement('div');
+    tempElement.style.position = 'absolute';
+    tempElement.style.visibility = 'hidden';
+    tempElement.style.whiteSpace = multiline ? 'pre-wrap' : 'nowrap';
+    tempElement.style.fontFamily = getComputedStyle(textareaElement).fontFamily;
+    tempElement.style.fontSize = getComputedStyle(textareaElement).fontSize;
+    tempElement.style.lineHeight = getComputedStyle(textareaElement).lineHeight;
+    tempElement.style.width = textareaElement.offsetWidth + 'px';
+    document.body.appendChild(tempElement);
+
+    try {
+      const text = textareaElement.value;
+      const rect = displayElement.getBoundingClientRect();
+      const clickX = clickEvent.clientX - rect.left;
+      const clickY = clickEvent.clientY - rect.top;
+
+      let bestPosition = 0;
+      let minDistance = Infinity;
+
+      // For single line, only consider X position
+      if (!multiline) {
+        // Binary search for closest character position
+        let left = 0;
+        let right = text.length;
+        
+        while (left <= right) {
+          const mid = Math.floor((left + right) / 2);
+          const testText = text.substring(0, mid);
+          tempElement.textContent = testText;
+          const testWidth = tempElement.offsetWidth;
+          
+          if (testWidth <= clickX) {
+            bestPosition = mid;
+            left = mid + 1;
+          } else {
+            right = mid - 1;
+          }
+        }
+      } else {
+        // For multi-line, consider both X and Y positions
+        const lines = text.split('\n');
+        let currentPos = 0;
+        
+        for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+          const line = lines[lineIndex];
+          tempElement.textContent = 'M'; // Use M as height reference
+          const lineHeight = tempElement.offsetHeight;
+          const lineY = lineIndex * lineHeight;
+          
+          // Check if click is on this line
+          if (clickY >= lineY && clickY <= lineY + lineHeight) {
+            // Binary search within this line
+            let left = 0;
+            let right = line.length;
+            let linePosition = 0;
+            
+            while (left <= right) {
+              const mid = Math.floor((left + right) / 2);
+              const testText = line.substring(0, mid);
+              tempElement.textContent = testText;
+              const testWidth = tempElement.offsetWidth;
+              
+              if (testWidth <= clickX) {
+                linePosition = mid;
+                left = mid + 1;
+              } else {
+                right = mid - 1;
+              }
+            }
+            
+            bestPosition = currentPos + linePosition;
+            break;
+          }
+          
+          currentPos += line.length + 1; // +1 for newline
+        }
+      }
+
+      // Set cursor position
+      textareaElement.setSelectionRange(bestPosition, bestPosition);
+      
+    } finally {
+      document.body.removeChild(tempElement);
+    }
+  }
+
+  // Handle textarea input
+  function handleInput(event: Event) {
+    const target = event.target as HTMLTextAreaElement;
+    
+    // For single-line, replace newlines with spaces
+    if (!multiline) {
+      target.value = target.value.replace(/\n/g, ' ');
+    }
+    
+    content = target.value;
+    
+    // Auto-resize only if multiline
+    if (multiline) {
+      autoResizeTextarea(target);
+    }
+    
+    dispatch('contentChanged', { nodeId, content });
+  }
+
+  // Auto-resize textarea (only for multiline)
+  function autoResizeTextarea(textarea: HTMLTextAreaElement) {
+    textarea.style.height = 'auto';
+    textarea.style.height = textarea.scrollHeight + 'px';
+  }
+
+  // Handle blur
+  function handleBlur() {
+    if (!focused) return;
+    focused = false;
+    dispatch('blur', { nodeId });
+  }
+
+  // Handle keyboard shortcuts
   function handleKeyDown(event: KeyboardEvent) {
-    // Handle click with Enter or Space
-    if (event.code === 'Enter' || event.code === 'Space') {
+    if (focused) {
+      // When editing, handle Escape and Enter
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        focused = false;
+        dispatch('blur', { nodeId });
+        return;
+      }
+      
+      // For single-line, Enter saves and exits
+      if (!multiline && event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        focused = false;
+        dispatch('blur', { nodeId });
+        return;
+      }
+      
+      // Other keys pass through naturally
+      return;
+    }
+
+    // When not editing, handle Enter/Space to start editing
+    if (editable && contentEditable && (event.code === 'Enter' || event.code === 'Space')) {
       event.preventDefault();
-      dispatch('click', { nodeId, event: new MouseEvent('click') });
+      startEditing();
     }
   }
 
@@ -83,14 +268,15 @@
   $: iconAnimationClass = isProcessing ? `ns-node__icon--${processingAnimation}` : '';
 </script>
 
-<!-- Simplified node container - single template approach -->
-<button
-  type="button"
+<!-- Simplified node container - div approach to avoid button/contenteditable conflicts -->
+<div
   class={nodeClasses}
+  role="region"
   aria-label="{getNodeTypeLabel(nodeType)}: {content || 'Empty node'}"
   data-node-id={nodeId}
   data-node-type={nodeType}
   on:click={handleClick}
+  tabindex="0"
   on:keydown={handleKeyDown}
 >
   <!-- Node header -->
@@ -108,27 +294,70 @@
       {/if}
     </div>
 
-    <!-- Node content -->
+    <!-- Node content with edit/display logic -->
     <div class="ns-node__content">
-      <slot>
-        {#if content}
-          <span class="ns-node__text">{content}</span>
+      <slot name="content">
+        {#if focused && contentEditable}
+          <!-- Edit mode (only if content is directly editable) -->
+          <textarea
+            bind:this={textareaElement}
+            class="ns-node__textarea {multiline ? 'ns-node__textarea--multiline' : 'ns-node__textarea--single'}"
+            bind:value={content}
+            on:input={handleInput}
+            on:blur={handleBlur}
+            on:keydown={handleKeyDown}
+            on:keydown|stopPropagation
+            {placeholder}
+            rows={multiline ? "1" : "1"}
+          ></textarea>
         {:else}
-          <span class="ns-node__empty">Empty</span>
+          <!-- Display mode -->
+          {#if editable && contentEditable}
+            <div
+              class="ns-node__display ns-node__display--clickable"
+              role="button"
+              tabindex="0"
+              on:click={handleDisplayClick}
+              on:keydown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  startEditing();
+                }
+              }}
+              aria-label="Click to edit content"
+            >
+              <slot name="display-content">
+                {#if content}
+                  <span class="ns-node__text">{content}</span>
+                {:else}
+                  <span class="ns-node__empty">{placeholder}</span>
+                {/if}
+              </slot>
+            </div>
+          {:else}
+            <!-- Non-editable display -->
+            <div class="ns-node__display" role="region">
+              <slot name="display-content">
+                {#if content}
+                  <span class="ns-node__text">{content}</span>
+                {:else}
+                  <span class="ns-node__empty">{placeholder}</span>
+                {/if}
+              </slot>
+            </div>
+          {/if}
         {/if}
       </slot>
+      
+      <!-- Additional node-specific content -->
+      <slot></slot>
     </div>
   </header>
-</button>
+</div>
 
 <style>
   /* Simplified Base Node Styling */
   .ns-node {
-    /* Reset button styles */
-    background: none;
-    font: inherit;
-    text-align: left;
-
     /* Layout */
     display: flex;
     width: 100%;
@@ -142,6 +371,10 @@
     cursor: text;
     outline: none;
     transition: all 200ms ease;
+    
+    /* Text styling */
+    font: inherit;
+    text-align: left;
   }
 
   /* Hover state - minimal for clean appearance - no styles needed */
@@ -219,6 +452,52 @@
   .ns-node__content {
     flex: 1;
     min-width: 0; /* Prevent overflow */
+  }
+
+  /* Textarea styling */
+  .ns-node__textarea {
+    width: 100%;
+    min-height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.4;
+    background: transparent;
+    color: hsl(var(--foreground));
+    outline: none;
+    resize: none;
+    overflow: hidden;
+  }
+
+  /* Single-line textarea (default) */
+  .ns-node__textarea--single {
+    height: 20px;
+    white-space: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  /* Multi-line textarea */
+  .ns-node__textarea--multiline {
+    min-height: 20px;
+    white-space: pre-wrap;
+    overflow-y: auto;
+  }
+
+  .ns-node__textarea::placeholder {
+    color: hsl(var(--muted-foreground));
+    font-style: italic;
+  }
+
+  /* Display styling */
+  .ns-node__display {
+    min-height: 20px;
+  }
+
+  .ns-node__display--clickable {
+    cursor: text;
   }
 
   .ns-node__text {
