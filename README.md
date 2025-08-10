@@ -18,11 +18,17 @@ NodeSpace is a next-generation knowledge management system designed from the gro
 ## Key Features
 
 ### 🧠 **Intelligent Node Types**
-- **Text Nodes**: Rich markdown content with AI-assisted editing
+- **Text Nodes**: Hybrid markdown rendering with precise cursor positioning and AI-assisted editing
 - **Task Nodes**: Project management with natural language task creation
 - **AI Chat Nodes**: Conversational interfaces with context awareness
 - **Entity Nodes**: Structured data with calculated fields and natural language operations
 - **Query Nodes**: Live data queries with real-time updates
+
+### 🎨 **Modern Interface**
+- **Multi-Node Selection**: Advanced selection system (single, range, multi-select) with full keyboard navigation
+- **Hierarchical Visualization**: Modern chevron controls with visual connecting lines
+- **Accessibility**: WCAG 2.1 compliant with comprehensive screen reader support
+- **Cross-Platform**: Consistent experience across macOS, Windows, and Linux
 
 ### ⚡ **Real-Time Architecture**
 - Live query results that update automatically as data changes
