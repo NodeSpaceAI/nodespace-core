@@ -11,22 +11,19 @@
   let demoNodes = [
     {
       id: 'demo-1',
-      title: 'Basic Text Node',
       content: 'This is a basic text node. Click to edit!',
       editable: true,
       markdown: false
     },
     {
       id: 'demo-2',
-      title: 'Markdown Enabled',
       content:
-        '# Welcome to NodeSpace\n\nThis node supports **markdown** formatting:\n\n- *Italic text*\n- **Bold text** \n- `inline code`\n- [Links](https://example.com)\n\n## Features\n\n1. Click-to-edit\n2. Auto-save\n3. Keyboard shortcuts (Ctrl+Enter to save, Esc to cancel)',
+        '# Welcome to NodeSpace\n\nThis node supports **markdown** formatting:\n\n- *Italic text*\n- **Bold text** \n- `inline code`\n- [Links](https://example.com)\n\n## Features\n\n1. Click-to-edit\n2. Auto-save\n3. Background saving with cursor preservation',
       editable: true,
       markdown: true
     },
     {
       id: 'demo-3',
-      title: 'Read-only Node',
       content:
         'This node is read-only and cannot be edited. It demonstrates the display-only mode.',
       editable: false,
@@ -34,7 +31,6 @@
     },
     {
       id: 'new-node',
-      title: '',
       content: '',
       editable: true,
       markdown: true
@@ -51,6 +47,22 @@
 
   function handleCancel(event: CustomEvent) {
     console.log('Node edit cancelled:', event.detail);
+  }
+
+  function handleContentChanged(event: CustomEvent) {
+    console.log('Node content changed:', event.detail);
+    // This event fires during editing before save, allowing parent components
+    // to track which nodes have unsaved changes
+  }
+
+  function handleFocus(event: CustomEvent) {
+    console.log('Node focused:', event.detail);
+    // When a node gains focus, you could save other nodes with pending changes
+  }
+
+  function handleBlur(event: CustomEvent) {
+    console.log('Node blurred:', event.detail);
+    // When a node loses focus, it automatically saves and renders markdown
   }
 </script>
 
@@ -72,7 +84,7 @@
     {#each demoNodes as node (node.id)}
       <div class="demo-node-container">
         <h3 class="demo-node-title">
-          {node.title || 'New Node'}
+          {node.id === 'new-node' ? 'New Node' : `Demo Node ${node.id.split('-')[1]}`}
           <span class="demo-node-config">
             {node.editable ? '(Editable)' : '(Read-only)'}
             {node.markdown ? ' + Markdown' : ''}
@@ -81,7 +93,6 @@
 
         <TextNode
           nodeId={node.id}
-          title={node.title}
           content={node.content}
           editable={node.editable}
           markdown={node.markdown}
@@ -91,6 +102,9 @@
           on:save={handleSave}
           on:error={handleError}
           on:cancel={handleCancel}
+          on:contentChanged={handleContentChanged}
+          on:focus={handleFocus}
+          on:blur={handleBlur}
         />
       </div>
     {/each}
@@ -116,8 +130,13 @@
       </div>
 
       <div class="instruction">
-        <h4>Auto-save</h4>
-        <p>Start editing any node and wait 2 seconds. You'll see the auto-save indicator.</p>
+        <h4>Auto-save with Cursor Preservation</h4>
+        <p>Start editing any node and wait 500ms. You'll see the auto-save indicator, and your cursor position will be preserved during background saves.</p>
+      </div>
+
+      <div class="instruction">
+        <h4>Node Switching</h4>
+        <p>Start editing one node, then click on another. The first node will auto-save and render its markdown when you switch away.</p>
       </div>
 
       <div class="instruction">

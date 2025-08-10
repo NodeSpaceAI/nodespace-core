@@ -17,7 +17,6 @@
 
   // Props
   export let nodeId: string;
-  export let title: string = '';
   export let content: string = '';
   export let editable: boolean = true;
   export let markdown: boolean = true;
@@ -28,21 +27,24 @@
   // Component state
   let isEditing = false;
   let editContent = content;
-  let editTitle = title;
   let saveStatus: 'saved' | 'saving' | 'unsaved' | 'error' = 'saved';
   let saveError = '';
   let contentEditableElement: any;
   let textNodeData: TextNodeData | null = null;
   let lastSavedContent = content;
-  let lastSavedTitle = title;
+  
+  // Cursor position preservation
+  let cursorPosition: { start: number; end: number } | null = null;
+  let shouldRestoreCursor = false;
 
   // Event dispatcher
   const dispatch = createEventDispatcher<{
-    save: { nodeId: string; content: string; title: string };
+    save: { nodeId: string; content: string };
     cancel: { nodeId: string };
     error: { nodeId: string; error: string };
     focus: { nodeId: string };
     blur: { nodeId: string };
+    contentChanged: { nodeId: string; content: string; hasUnsavedChanges: boolean };
   }>();
 
   // Load existing node data on mount if nodeId provided
@@ -52,11 +54,8 @@
         textNodeData = await mockTextService.loadTextNode(nodeId);
         if (textNodeData) {
           content = textNodeData.content;
-          title = textNodeData.title;
           editContent = content;
-          editTitle = title;
           lastSavedContent = content;
-          lastSavedTitle = title;
           saveStatus = 'saved';
         }
       } catch (error) {
@@ -79,7 +78,7 @@
 
     debounceTimeout = setTimeout(async () => {
       // Only save if content has actually changed
-      if (editContent !== lastSavedContent || editTitle !== lastSavedTitle) {
+      if (editContent !== lastSavedContent) {
         await handleAutoSave();
       }
     }, DEBOUNCE_DELAY);
@@ -96,8 +95,7 @@
   async function startEditing(clickEvent?: MouseEvent) {
     isEditing = true;
     editContent = content;
-    editTitle = title;
-    saveStatus = content === lastSavedContent && title === lastSavedTitle ? 'saved' : 'unsaved';
+    saveStatus = content === lastSavedContent ? 'saved' : 'unsaved';
 
     // Focus the contenteditable element after DOM update
     await tick();
@@ -170,7 +168,6 @@
 
     // Revert changes
     editContent = lastSavedContent;
-    editTitle = lastSavedTitle;
     isEditing = false;
     saveStatus = 'saved';
     saveError = '';
@@ -200,10 +197,10 @@
 
       if (nodeId && nodeId !== 'new') {
         // Update existing node
-        result = await mockTextService.saveTextNode(nodeId, editContent, editTitle);
+        result = await mockTextService.saveTextNode(nodeId, editContent, '');
       } else {
         // Create new node
-        const newNodeData = await mockTextService.createTextNode(editContent, editTitle);
+        const newNodeData = await mockTextService.createTextNode(editContent, '');
         nodeId = newNodeData.id;
         result = { success: true, id: newNodeData.id, timestamp: new Date() };
       }
@@ -211,16 +208,14 @@
       if (result.success) {
         // Update local state
         content = editContent;
-        title = editTitle;
         lastSavedContent = editContent;
-        lastSavedTitle = editTitle;
         saveStatus = 'saved';
         isEditing = false;
 
         // Update node data
         textNodeData = await mockTextService.loadTextNode(nodeId);
 
-        dispatch('save', { nodeId, content: editContent, title: editTitle });
+        dispatch('save', { nodeId, content: editContent });
       } else {
         saveError = result.error || 'Save failed';
         saveStatus = 'error';
@@ -233,37 +228,102 @@
     }
   }
 
+  // Save cursor position before any operations that might cause re-render
+  function saveCursorPosition() {
+    if (!contentEditableElement || !isEditing) return;
+    
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0) {
+      const range = selection.getRangeAt(0);
+      const preCaretRange = range.cloneRange();
+      preCaretRange.selectNodeContents(contentEditableElement);
+      preCaretRange.setEnd(range.startContainer, range.startOffset);
+      const start = preCaretRange.toString().length;
+      
+      preCaretRange.setEnd(range.endContainer, range.endOffset);
+      const end = preCaretRange.toString().length;
+      
+      cursorPosition = { start, end };
+    }
+  }
+  
+  // Restore cursor position after re-render
+  async function restoreCursorPosition() {
+    if (!contentEditableElement || !cursorPosition || !shouldRestoreCursor) return;
+    
+    await tick(); // Wait for DOM update
+    
+    try {
+      const textNode = contentEditableElement.firstChild;
+      if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+        const range = document.createRange();
+        const selection = window.getSelection();
+        
+        const maxLength = textNode.textContent?.length || 0;
+        const start = Math.min(cursorPosition.start, maxLength);
+        const end = Math.min(cursorPosition.end, maxLength);
+        
+        range.setStart(textNode, start);
+        range.setEnd(textNode, end);
+        
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
+    } catch (error) {
+      console.warn('Failed to restore cursor position:', error);
+    } finally {
+      shouldRestoreCursor = false;
+      cursorPosition = null;
+    }
+  }
+  
   // Handle contenteditable input with debounced saving
   function handleContentInput(event: any) {
     const target = event.target as any;
     editContent = target.textContent || '';
+    
+    // Dispatch content changed event
+    const hasUnsavedChanges = editContent !== lastSavedContent;
+    dispatch('contentChanged', { 
+      nodeId, 
+      content: editContent,
+      hasUnsavedChanges
+    });
+    
     debounceAutoSave();
   }
 
-  // Auto-save handler
+  // Auto-save handler with cursor preservation
   async function handleAutoSave() {
     if (!autoSave || !nodeId || nodeId === 'new') return;
 
+    // Save cursor position before any state changes
+    saveCursorPosition();
+    shouldRestoreCursor = true;
+    
     saveStatus = 'saving';
 
     try {
-      const result = await mockTextService.scheduleAutoSave(nodeId, editContent, editTitle, 100);
+      const result = await mockTextService.scheduleAutoSave(nodeId, editContent, '', 100);
 
       if (result.success) {
         lastSavedContent = editContent;
-        lastSavedTitle = editTitle;
         saveStatus = 'saved';
 
-        // Update displayed content
+        // Update displayed content without affecting editing state
         content = editContent;
-        title = editTitle;
+        
+        // Restore cursor position after state update
+        await restoreCursorPosition();
       } else {
         saveError = result.error || 'Auto-save failed';
         saveStatus = 'error';
+        shouldRestoreCursor = false;
       }
     } catch (error) {
       saveError = error instanceof Error ? error.message : 'Auto-save error';
       saveStatus = 'error';
+      shouldRestoreCursor = false;
     }
   }
 
@@ -285,26 +345,41 @@
     clearTimeout(debounceTimeout);
 
     // Save any unsaved changes first
-    if (editContent !== lastSavedContent || editTitle !== lastSavedTitle) {
+    if (editContent !== lastSavedContent) {
       await handleAutoSave();
     }
 
-    // Switch to read-only mode seamlessly
+    // Switch to read-only mode and render markdown
     content = editContent;
-    title = editTitle;
     isEditing = false;
     saveStatus = 'saved';
+    
+    // Trigger markdown rendering update
+    renderedContent = markdown && content ? parseMarkdown(content) : content;
   }
 
   // Render markdown content (updates when content changes or when switching from edit to read)
   $: renderedContent = markdown && content ? parseMarkdown(content) : content;
+  
+  // Reactive update for markdown rendering when switching nodes
+  let lastRenderedContent = '';
+
+  // Public method for parent components to trigger save when switching nodes
+  export async function saveIfNeeded(): Promise<void> {
+    if (isEditing && editContent !== lastSavedContent) {
+      await handleAutoSave();
+    }
+  }
+  
+  // Public method to check if there are unsaved changes
+  export function hasUnsavedChanges(): boolean {
+    return isEditing && editContent !== lastSavedContent;
+  }
 
   // Get display title (fallback to content preview)
-  $: displayTitle =
-    title ||
-    (content
-      ? stripMarkdown(content).substring(0, 50) + (content.length > 50 ? '...' : '')
-      : 'Untitled');
+  $: displayTitle = content
+    ? stripMarkdown(content).substring(0, 50) + (content.length > 50 ? '...' : '')
+    : 'Untitled';
 
   // Save status indicator
   $: saveStatusClass = {
