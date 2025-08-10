@@ -43,7 +43,6 @@
         textNodeData = await mockTextService.loadTextNode(nodeId);
         if (textNodeData) {
           content = textNodeData.content;
-          editContent = content;
           lastSavedContent = content;
           saveStatus = 'saved';
         }
@@ -109,6 +108,9 @@
   $: displayTitle = content
     ? stripMarkdown(content).substring(0, 50) + (content.length > 50 ? '...' : '')
     : 'Untitled';
+
+  // Dynamic multiline based on content - starts single-line, becomes multiline if content has line breaks
+  $: isMultiline = content.includes('\n');
 </script>
 
 <BaseNode
@@ -119,7 +121,7 @@
   isProcessing={saveStatus === 'saving'}
   {editable}
   contentEditable={true}
-  multiline={true}
+  multiline={isMultiline}
   {placeholder}
   className="ns-text-node {compact ? 'ns-text-node--compact' : ''}"
   on:contentChanged={handleContentChanged}

@@ -94,8 +94,12 @@
   async function positionCursorFromClick(clickEvent: MouseEvent) {
     if (!textareaElement) return;
 
-    // Get the display element that was clicked to get relative position
-    const displayElement = clickEvent.target as HTMLElement;
+    // Get the display container (not just the clicked target which might be a child element)
+    const clickedElement = clickEvent.target as HTMLElement;
+    const displayElement = clickedElement.closest('.ns-node__display--clickable') || clickedElement;
+    
+    // Get bounds from the textarea instead of the display element (which may be hidden now)
+    const textareaRect = textareaElement.getBoundingClientRect();
     
     // Create a temporary element to measure text
     const tempElement = document.createElement('div');
@@ -105,20 +109,34 @@
     tempElement.style.fontFamily = getComputedStyle(textareaElement).fontFamily;
     tempElement.style.fontSize = getComputedStyle(textareaElement).fontSize;
     tempElement.style.lineHeight = getComputedStyle(textareaElement).lineHeight;
-    tempElement.style.width = textareaElement.offsetWidth + 'px';
+    // Don't set width - let it auto-size to content for accurate measurements
+    // tempElement.style.width = textareaElement.offsetWidth + 'px';
+    tempElement.style.display = 'inline-block';
     document.body.appendChild(tempElement);
 
     try {
       const text = textareaElement.value;
-      const rect = displayElement.getBoundingClientRect();
-      const clickX = clickEvent.clientX - rect.left;
-      const clickY = clickEvent.clientY - rect.top;
+      
+      // Calculate click position relative to the textarea (which has the same position as the display was)
+      const clickX = clickEvent.clientX - textareaRect.left;
+      const clickY = clickEvent.clientY - textareaRect.top;
+      
+      console.log('Debug cursor positioning:', {
+        text: text.substring(0, 20) + '...',
+        clickX,
+        clickY,
+        textareaWidth: textareaRect.width,
+        textareaHeight: textareaRect.height,
+        displayElement: displayElement.className,
+        multiline: multiline
+      });
 
       let bestPosition = 0;
       let minDistance = Infinity;
 
       // For single line, only consider X position
       if (!multiline) {
+        console.log('Starting binary search for single line, text length:', text.length);
         // Binary search for closest character position
         let left = 0;
         let right = text.length;
@@ -129,6 +147,8 @@
           tempElement.textContent = testText;
           const testWidth = tempElement.offsetWidth;
           
+          console.log(`Binary search: mid=${mid}, testText="${testText}", testWidth=${testWidth}, clickX=${clickX}`);
+          
           if (testWidth <= clickX) {
             bestPosition = mid;
             left = mid + 1;
@@ -136,6 +156,7 @@
             right = mid - 1;
           }
         }
+        console.log('Binary search complete, bestPosition:', bestPosition);
       } else {
         // For multi-line, consider both X and Y positions
         const lines = text.split('\n');
@@ -177,7 +198,13 @@
       }
 
       // Set cursor position
+      console.log('Setting cursor position to:', bestPosition);
       textareaElement.setSelectionRange(bestPosition, bestPosition);
+      
+      // Verify the cursor was set correctly
+      setTimeout(() => {
+        console.log('Actual cursor position after set:', textareaElement.selectionStart);
+      }, 10);
       
     } finally {
       document.body.removeChild(tempElement);
