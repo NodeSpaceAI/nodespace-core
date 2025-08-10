@@ -209,7 +209,7 @@ export function findCharacterFromClickFast(
       const rect = span.getBoundingClientRect();
       const spanY = rect.top - mockRect.top;
 
-      candidates.push(span);
+      candidates.push(span as HTMLElement);
 
       if (spanY < relativeY) {
         left = mid + 1;
@@ -222,7 +222,7 @@ export function findCharacterFromClickFast(
         const end = Math.min(allSpans.length - 1, mid + expansion);
 
         for (let i = start; i <= end; i++) {
-          if (i !== mid) candidates.push(allSpans[i]);
+          if (i !== mid) candidates.push(allSpans[i] as HTMLElement);
         }
         break;
       }
@@ -280,8 +280,8 @@ export function isClickWithinTextBounds(
 
   return (
     clickX >= textareaRect.left - padding &&
-    clickX <= textareaRect.right + padding &&
+    clickX <= textareaRect.left + textareaRect.width + padding &&
     clickY >= textareaRect.top - padding &&
-    clickY <= textareaRect.bottom + padding
+    clickY <= textareaRect.top + textareaRect.height + padding
   );
 }

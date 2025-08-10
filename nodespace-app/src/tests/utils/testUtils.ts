@@ -73,10 +73,10 @@ export function createTestNode(overrides: Partial<MockNodeData> = {}): MockNodeD
 }
 
 // Enhanced render function with common utilities
-export function renderWithContext<T>(
+export function renderWithContext(
   component: any,
-  props: ComponentProps<T> = {} as ComponentProps<T>
-): RenderResult<T> & { user: ReturnType<typeof userEvent.setup> } {
+  props: any = {}
+): any {
   const mockStore = SimpleMockStore.getInstance();
   mockStore.clear(); // Clean slate for each test
 

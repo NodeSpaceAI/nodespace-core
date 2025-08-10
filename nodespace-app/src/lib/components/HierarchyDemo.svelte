@@ -76,13 +76,13 @@
 
   // Handle node updates
   async function handleNodeUpdate(
-    event: CustomEvent<{ nodeId: string; content: string; title: string }>
+    event: CustomEvent<{ nodeId: string; content: string }>
   ) {
-    const { nodeId, content, title } = event.detail;
-    console.log('Node updated:', { nodeId, content, title });
+    const { nodeId, content } = event.detail;
+    console.log('Node updated:', { nodeId, content });
 
     try {
-      await mockTextService.saveTextNode(nodeId, content, title);
+      await mockTextService.saveTextNode(nodeId, content);
       // Reload data to reflect changes
       await loadHierarchicalData();
     } catch (err) {

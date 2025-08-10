@@ -38,7 +38,7 @@
   // Edit state
   let focused = false;
   let textareaElement: HTMLTextAreaElement;
-  let mockElementRef: MockTextElement;
+  let mockElementRef: any;
 
   // Event dispatcher
   const dispatch = createEventDispatcher<{
@@ -168,8 +168,8 @@
   }
 
   // Handle textarea input
-  function handleInput(event: { target: HTMLTextAreaElement }) {
-    const target = event.target as HTMLTextAreaElement;
+  function handleInput(event: Event & { currentTarget: HTMLTextAreaElement }) {
+    const target = event.currentTarget;
 
     // For single-line, replace newlines with spaces
     if (!multiline) {
@@ -307,11 +307,12 @@
             on:keydown={handleKeyDown}
             on:keydown|stopPropagation
             {placeholder}
-            rows={multiline ? '1' : '1'}
+            rows={1}
           ></textarea>
 
           <!-- Mock element for precise cursor positioning -->
           {#if textareaElement}
+            <!-- @ts-expect-error: Svelte component binding inference issue -->
             <MockTextElement
               bind:this={mockElementRef}
               {content}

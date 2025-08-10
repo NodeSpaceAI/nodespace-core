@@ -22,7 +22,7 @@
   const dispatch = createEventDispatcher<{
     nodeSelect: { nodeId: string; node: TreeNodeData };
     nodeExpand: { nodeId: string; expanded: boolean };
-    nodeUpdate: { nodeId: string; content: string; title: string };
+    nodeUpdate: { nodeId: string; content: string };
     nodeDelete: { nodeId: string };
     nodeMove: { nodeId: string; newParentId: string | null; newDepth: number };
   }>();
@@ -69,7 +69,7 @@
   }
 
   // Handle node events
-  function handleNodeSave(event: CustomEvent<{ nodeId: string; content: string; title: string }>) {
+  function handleNodeSave(event: CustomEvent<{ nodeId: string; content: string }>) {
     dispatch('nodeUpdate', event.detail);
   }
 
@@ -121,7 +121,6 @@
         {#if node.nodeType === 'text'}
           <TextNode
             nodeId={node.id}
-            title={node.title}
             content={node.content}
             editable={allowEdit}
             on:save={handleNodeSave}

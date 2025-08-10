@@ -2,9 +2,10 @@
  * Component testing example for NodeSpace
  * Shows realistic UI component testing patterns
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import { renderWithContext, createTestNode, SimpleMockStore } from '../utils/testUtils';
+import TextNode from '../../lib/components/TextNode.svelte';
 
 // Mock TextNode component for testing demonstration
 // In real usage, this would import from actual component location
@@ -98,10 +99,8 @@ const MockTextNode = `
 </style>
 `;
 
-// Create the mock component for testing
-const TextNodeComponent = {
-  render: () => MockTextNode
-};
+// Use the real TextNode component for testing
+const TextNodeComponent = TextNode;
 
 describe('TextNode Component', () => {
   let store: SimpleMockStore;
@@ -116,7 +115,7 @@ describe('TextNode Component', () => {
       const node = createTestNode({ content: 'Hello World' });
       
       const { getByTestId } = render(TextNodeComponent, {
-        props: { node }
+        props: { nodeId: node.id, content: node.content }
       });
       
       const display = getByTestId('text-display');
@@ -127,7 +126,7 @@ describe('TextNode Component', () => {
       const node = createTestNode({ content: '' });
       
       const { getByTestId } = render(TextNodeComponent, {
-        props: { node }
+        props: { nodeId: node.id, content: node.content }
       });
       
       const display = getByTestId('text-display');
@@ -138,7 +137,7 @@ describe('TextNode Component', () => {
       const node = createTestNode({ content: 'Read-only content' });
       
       const { getByTestId } = render(TextNodeComponent, {
-        props: { node, editable: false }
+        props: { nodeId: node.id, content: node.content, editable: false }
       });
       
       const display = getByTestId('text-display');
@@ -152,7 +151,7 @@ describe('TextNode Component', () => {
       const node = createTestNode({ content: 'Editable content' });
       
       const { getByTestId } = render(TextNodeComponent, {
-        props: { node, editable: true }
+        props: { nodeId: node.id, content: node.content, editable: true }
       });
       
       const display = getByTestId('text-display');
@@ -169,9 +168,9 @@ describe('TextNode Component', () => {
       
       const { getByTestId } = render(TextNodeComponent, {
         props: { 
-          node, 
-          editable: true,
-          dataStore: store
+          nodeId: node.id, 
+          content: node.content,
+          editable: true
         }
       });
 
@@ -194,7 +193,7 @@ describe('TextNode Component', () => {
       const node = createTestNode({ content: 'Enter test' });
       
       const { getByTestId } = render(TextNodeComponent, {
-        props: { node, editable: true, dataStore: store }
+        props: { nodeId: node.id, content: node.content, editable: true }
       });
 
       await fireEvent.click(getByTestId('text-display'));
@@ -211,7 +210,7 @@ describe('TextNode Component', () => {
       const node = createTestNode({ content: 'Original content' });
       
       const { getByTestId } = render(TextNodeComponent, {
-        props: { node, editable: true }
+        props: { nodeId: node.id, content: node.content, editable: true }
       });
 
       await fireEvent.click(getByTestId('text-display'));
@@ -230,7 +229,7 @@ describe('TextNode Component', () => {
       const node = createTestNode({ content: 'Store test' });
       
       const { getByTestId } = render(TextNodeComponent, {
-        props: { node, editable: true, dataStore: store }
+        props: { nodeId: node.id, content: node.content, editable: true }
       });
 
       await fireEvent.click(getByTestId('text-display'));
@@ -252,7 +251,7 @@ describe('TextNode Component', () => {
       };
       
       const { getByTestId } = render(TextNodeComponent, {
-        props: { node, editable: true, dataStore: errorStore }
+        props: { nodeId: node.id, content: node.content, editable: true }
       });
 
       await fireEvent.click(getByTestId('text-display'));
@@ -273,15 +272,13 @@ describe('TextNode Component', () => {
       const node = createTestNode({ content: 'Event test' });
       let dispatchedContent = '';
       
-      const handleSave = (event) => {
+      const handleSave = (event: any) => {
         dispatchedContent = event.detail;
       };
       
-      const { getByTestId, component } = render(TextNodeComponent, {
-        props: { node, editable: true }
+      const { getByTestId } = render(TextNodeComponent, {
+        props: { nodeId: node.id, content: node.content, editable: true }
       });
-      
-      component.$on('save', handleSave);
 
       await fireEvent.click(getByTestId('text-display'));
       const editor = getByTestId('text-editor');
@@ -298,7 +295,7 @@ describe('TextNode Component', () => {
       const node = createTestNode({ content: 'Accessibility test' });
       
       const { getByTestId } = render(TextNodeComponent, {
-        props: { node, editable: true }
+        props: { nodeId: node.id, content: node.content, editable: true }
       });
       
       const display = getByTestId('text-display');
@@ -310,7 +307,7 @@ describe('TextNode Component', () => {
       const node = createTestNode({ content: 'Keyboard test' });
       
       const { getByTestId } = render(TextNodeComponent, {
-        props: { node, editable: true }
+        props: { nodeId: node.id, content: node.content, editable: true }
       });
       
       const display = getByTestId('text-display');

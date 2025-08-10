@@ -10,7 +10,19 @@
  */
 
 // Mock DOM environment for Node.js testing
-const mockSpan = (char, index) => ({
+interface MockRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+interface MockSpan {
+  dataset: { position: string };
+  getBoundingClientRect: () => MockRect;
+}
+
+const mockSpan = (char: string, index: number): MockSpan => ({
   dataset: { position: index.toString() },
   getBoundingClientRect: () => ({
     left: index * 10, // Mock character width
@@ -20,9 +32,14 @@ const mockSpan = (char, index) => ({
   })
 });
 
-const mockElement = (content) => ({
-  getBoundingClientRect: () => ({ left: 0, top: 0 }),
-  querySelectorAll: (selector) => {
+interface MockElement {
+  getBoundingClientRect: () => MockRect;
+  querySelectorAll: (selector: string) => MockSpan[];
+}
+
+const mockElement = (content: string): MockElement => ({
+  getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }),
+  querySelectorAll: (selector: string) => {
     if (selector === '[data-position]') {
       return Array.from(content).map((char, idx) => mockSpan(char, idx));
     }
@@ -33,11 +50,22 @@ const mockElement = (content) => ({
 const mockRect = { left: 0, top: 0, width: 200, height: 20 };
 
 // Import the positioning functions (with minimal adjustments for Node.js)
-const findCharacterFromClick = (mockElement, clickX, clickY, textareaRect) => {
+interface PositionResult {
+  index: number;
+  distance: number;
+  accuracy: 'precise' | 'approximate';
+}
+
+const findCharacterFromClick = (
+  mockElement: MockElement, 
+  clickX: number, 
+  clickY: number, 
+  textareaRect: MockRect
+): PositionResult => {
   const relativeX = clickX - textareaRect.left;
   const relativeY = clickY - textareaRect.top;
 
-  let bestMatch = { index: 0, distance: Infinity, accuracy: 'approximate' };
+  let bestMatch: PositionResult = { index: 0, distance: Infinity, accuracy: 'approximate' };
 
   const allSpans = mockElement.querySelectorAll('[data-position]');
 
@@ -65,7 +93,7 @@ const findCharacterFromClick = (mockElement, clickX, clickY, textareaRect) => {
       bestMatch = {
         index: position,
         distance,
-        accuracy: distance < 5 ? 'exact' : 'approximate'
+        accuracy: distance < 5 ? 'precise' : 'approximate'
       };
     }
   }
@@ -253,13 +281,13 @@ browserSims.forEach((browser) => {
     Safari: { widthOffset: -0.3, heightOffset: 0.1 }
   };
 
-  const variation = variations[browser];
+  const variation = variations[browser as keyof typeof variations] || variations.Chrome;
   const testContent = 'Cross-browser test content';
 
   // Mock with browser-specific variations
   const mockWithVariation = {
-    getBoundingClientRect: () => ({ left: 0, top: 0 }),
-    querySelectorAll: (selector) => {
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 20 }),
+    querySelectorAll: (selector: string) => {
       if (selector === '[data-position]') {
         return Array.from(testContent).map((char, idx) => ({
           dataset: { position: idx.toString() },

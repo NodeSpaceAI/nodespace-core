@@ -89,23 +89,13 @@
   }
 }
 
-/* Legacy NodeSpace design token compatibility (deprecated - use shadcn variables) */
+/* NodeSpace Extensions - Minimal additions to shadcn-svelte foundation */
 :root {
-  /* Map old tokens to new shadcn variables for gradual migration */
-  --ns-color-surface-background: hsl(var(--background));
-  --ns-color-text-primary: hsl(var(--foreground));
-  --ns-color-primary-500: hsl(var(--primary));
-  --ns-color-border-default: hsl(var(--border));
-  --ns-color-surface-panel: hsl(var(--muted));
-  --ns-color-text-secondary: hsl(var(--muted-foreground));
-}
-
-.dark {
-  /* Dark mode mappings for legacy tokens */
-  --ns-color-surface-background: hsl(var(--background));
-  --ns-color-text-primary: hsl(var(--foreground));
-  --ns-color-primary-500: hsl(var(--primary));
-  --ns-color-border-default: hsl(var(--border));
-  --ns-color-surface-panel: hsl(var(--muted));
-  --ns-color-text-secondary: hsl(var(--muted-foreground));
+  /* NodeSpace node-specific extensions only */
+  --node-text: 142 71% 45%;
+  --node-task: 25 95% 53%;
+  --node-ai-chat: 221 83% 53%;
+  --node-entity: 271 81% 56%;
+  --node-query: 330 81% 60%;
+  --processing-opacity: 0.7;
 }

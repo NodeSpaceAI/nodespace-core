@@ -8,6 +8,17 @@
 <script lang="ts">
   import { afterUpdate } from 'svelte';
 
+  // Props interface
+  interface Props {
+    content?: string;
+    fontFamily?: string;
+    fontSize?: string;
+    fontWeight?: string;
+    lineHeight?: string;
+    width?: number;
+    multiline?: boolean;
+  }
+
   // Props match textarea styling for accurate mirroring
   export let content = '';
   export let fontFamily = '';
@@ -17,12 +28,12 @@
   export let width = 0;
   export let multiline = false;
 
-  // Element reference for external access
-  let mockElement: HTMLDivElement;
+  // Element reference for external access  
+  let internalMockElement: HTMLDivElement | undefined;
 
   // Expose the element reference for position calculations
   export function getElement(): HTMLDivElement | undefined {
-    return mockElement;
+    return internalMockElement;
   }
 
   // Split content into characters with support for grapheme clusters
@@ -41,11 +52,10 @@
   });
 
   // Expose mock element for external positioning calculations
-  export { mockElement };
 </script>
 
 <div
-  bind:this={mockElement}
+  bind:this={internalMockElement}
   class="mock-text-element"
   style="
     font-family: {fontFamily};

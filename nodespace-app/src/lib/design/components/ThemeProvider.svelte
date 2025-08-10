@@ -11,9 +11,9 @@
     initializeTheme,
     currentTheme,
     themePreference,
-    designTokens,
-    nodeTokens,
-    type ThemeContext
+    setTheme,
+    toggleTheme,
+    resetThemeToSystem
   } from '../theme.js';
 
   // Props
@@ -21,7 +21,13 @@
   export let transitionDuration = 300;
 
   // Theme context for child components
-  let themeContext: ThemeContext;
+  let themeContext: {
+    theme: 'light' | 'dark';
+    preference: string;
+    setTheme: typeof setTheme;
+    toggleTheme: typeof toggleTheme;
+    resetThemeToSystem: typeof resetThemeToSystem;
+  };
   let cleanupTheme: (() => void) | undefined;
 
   // Create and provide theme context
@@ -29,20 +35,9 @@
     themeContext = {
       theme: $currentTheme,
       preference: $themePreference,
-      tokens: $designTokens,
-      nodeTokens: $nodeTokens,
-      setTheme: (theme) => themePreference.set(theme),
-      toggleTheme: () => {
-        const current = $themePreference;
-        if (current === 'system') {
-          themePreference.set($currentTheme === 'dark' ? 'light' : 'dark');
-        } else if (current === 'light') {
-          themePreference.set('dark');
-        } else {
-          themePreference.set('light');
-        }
-      },
-      resetThemeToSystem: () => themePreference.set('system')
+      setTheme,
+      toggleTheme,
+      resetThemeToSystem
     };
 
     // Provide context to child components
@@ -106,8 +101,8 @@
     min-width: 100vw;
 
     /* Apply theme-aware background */
-    background-color: var(--ns-color-surface-background);
-    color: var(--ns-color-text-primary);
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
 
     /* Font smoothing for better text rendering */
     -webkit-font-smoothing: antialiased;
@@ -127,20 +122,15 @@
 
   /* Global text selection styling */
   :global(.theme-provider ::selection) {
-    background-color: var(--ns-color-primary-200);
-    color: var(--ns-color-text-primary);
-  }
-
-  :global([data-theme='dark'] .theme-provider ::selection) {
-    background-color: var(--ns-color-primary-800);
-    color: var(--ns-color-text-primary);
+    background-color: hsl(var(--primary) / 0.2);
+    color: hsl(var(--foreground));
   }
 
   /* Focus ring styling */
   :global(.theme-provider :focus-visible) {
-    outline: 2px solid var(--ns-color-primary-500);
+    outline: 2px solid hsl(var(--ring));
     outline-offset: 2px;
-    border-radius: var(--ns-radius-base);
+    border-radius: var(--radius);
   }
 
   /* Scrollbar styling for webkit browsers */
@@ -150,26 +140,17 @@
   }
 
   :global(.theme-provider ::-webkit-scrollbar-track) {
-    background: var(--ns-color-surface-panel);
-    border-radius: var(--ns-radius-base);
+    background: hsl(var(--muted));
+    border-radius: var(--radius);
   }
 
   :global(.theme-provider ::-webkit-scrollbar-thumb) {
-    background: var(--ns-color-border-strong);
-    border-radius: var(--ns-radius-base);
-    border: 2px solid var(--ns-color-surface-panel);
+    background: hsl(var(--border));
+    border-radius: var(--radius);
+    border: 2px solid hsl(var(--muted));
   }
 
   :global(.theme-provider ::-webkit-scrollbar-thumb:hover) {
-    background: var(--ns-color-text-tertiary);
-  }
-
-  /* Dark theme scrollbar adjustments */
-  :global([data-theme='dark'] .theme-provider ::-webkit-scrollbar-thumb) {
-    background: var(--ns-color-border-default);
-  }
-
-  :global([data-theme='dark'] .theme-provider ::-webkit-scrollbar-thumb:hover) {
-    background: var(--ns-color-text-tertiary);
+    background: hsl(var(--muted-foreground));
   }
 </style>

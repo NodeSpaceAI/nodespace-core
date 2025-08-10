@@ -93,20 +93,23 @@
           <div class="placeholder-content">
             <TextNode
               nodeId="daily-notes"
-              title="Daily Notes"
-              content="Today's thoughts and observations"
+              content="**Daily Notes**
+
+Today's thoughts and observations"
               compact={true}
             />
             <TextNode
               nodeId="projects"
-              title="Projects"
-              content="Active project documentation"
+              content="**Projects**
+
+Active project documentation"
               compact={true}
             />
             <TextNode
               nodeId="ideas"
-              title="Ideas"
-              content="Creative concepts and inspiration"
+              content="**Ideas**
+
+Creative concepts and inspiration"
               compact={true}
             />
           </div>
@@ -118,20 +121,23 @@
           <div class="placeholder-content">
             <TextNode
               nodeId="templates"
-              title="Templates"
-              content="Reusable document templates"
+              content="**Templates**
+
+Reusable document templates"
               compact={true}
             />
             <TextNode
               nodeId="saved-searches"
-              title="Saved Searches"
-              content="Frequently used search queries"
+              content="**Saved Searches**
+
+Frequently used search queries"
               compact={true}
             />
             <TextNode
               nodeId="reports"
-              title="Reports"
-              content="Generated analytics and insights"
+              content="**Reports**
+
+Generated analytics and insights"
               compact={true}
             />
           </div>
@@ -185,44 +191,51 @@
             <div class="node-examples">
               <TextNode
                 nodeId="example-text"
-                title="TextNode Example (Childless)"
-                content="This is an example of a text node with **markdown support** and rich formatting capabilities. Notice the enhanced TextNode with inline editing functionality."
+                content="**TextNode Example (Childless)**
+
+This is an example of a text node with **markdown support** and rich formatting capabilities. Notice the enhanced TextNode with inline editing functionality."
               />
 
               <TextNode
                 nodeId="example-text-parent"
-                title="TextNode Example (Parent)"
-                content="This is an example of a parent text node that contains child nodes with rich markdown support."
+                content="**TextNode Example (Parent)**
+
+This is an example of a parent text node that contains child nodes with rich markdown support."
               />
 
               <TextNode
                 nodeId="example-task"
-                title="TaskNode Example (Childless)"
-                content="☐ Complete design system implementation\n☑ Set up Tauri app structure\n☐ Add AI integration\n\nClick to edit and experience the enhanced TextNode functionality."
+                content="**TaskNode Example (Childless)**
+
+☐ Complete design system implementation\n☑ Set up Tauri app structure\n☐ Add AI integration\n\nClick to edit and experience the enhanced TextNode functionality."
               />
 
               <TextNode
                 nodeId="example-task-parent"
-                title="TaskNode Example (Parent)"
-                content="☐ Complete design system implementation\n☑ Set up Tauri app structure\n☐ Add AI integration\n\nThis is a parent task node with subtasks."
+                content="**TaskNode Example (Parent)**
+
+☐ Complete design system implementation\n☑ Set up Tauri app structure\n☐ Add AI integration\n\nThis is a parent task node with subtasks."
               />
 
               <TextNode
                 nodeId="example-ai-chat"
-                title="AIChatNode Example (Childless)"
-                content="AI Assistant: How can I help you organize your knowledge today?\n\nThis enhanced TextNode supports inline editing with auto-save functionality."
+                content="**AIChatNode Example (Childless)**
+
+AI Assistant: How can I help you organize your knowledge today?\n\nThis enhanced TextNode supports inline editing with auto-save functionality."
               />
 
               <TextNode
                 nodeId="example-ai-chat-parent"
-                title="AIChatNode Example (Parent)"
-                content="AI Assistant: How can I help you organize your knowledge today?\n\nThis is a conversation with follow-ups and enhanced TextNode capabilities."
+                content="**AIChatNode Example (Parent)**
+
+AI Assistant: How can I help you organize your knowledge today?\n\nThis is a conversation with follow-ups and enhanced TextNode capabilities."
               />
 
               <TextNode
                 nodeId="example-icon-override"
-                title="Enhanced TextNode Features"
-                content="This TextNode demonstrates the enhanced inline editing capabilities with markdown support, auto-save functionality, and responsive panel behavior."
+                content="**Enhanced TextNode Features**
+
+This TextNode demonstrates the enhanced inline editing capabilities with markdown support, auto-save functionality, and responsive panel behavior."
               />
             </div>
           </div>
@@ -241,8 +254,9 @@
           <div class="chat-placeholder">
             <TextNode
               nodeId="chat-example"
-              title="AI Conversation"
-              content="How can I organize my notes effectively?"
+              content="**AI Conversation**
+
+How can I organize my notes effectively?"
               compact={true}
             />
             <div class="chat-input-area">
