@@ -238,11 +238,9 @@ Before using any subagent:
 
 **Linting Policy:**
 - **NO lint suppression allowed** - Fix issues properly, don't suppress warnings
-- **SINGLE EXCEPTION**: `TextNode.svelte` markdown rendering uses controlled HTML injection
-  - This follows industry standard (GitHub, React Markdown, etc.)
-  - HTML is safely escaped before parsing in `markdownUtils.ts`
-  - Suppression documented with detailed justification comment
-  - This is the ONLY approved suppression in the entire codebase
+- **NO EXCEPTIONS** - All lint warnings and errors must be fixed with proper solutions
+- Use proper TypeScript types instead of `any`
+- Follow Svelte best practices and avoid unsafe patterns like `{@html}`
 
 **Package Manager Enforcement:**
 - **MANDATORY: Use Bun only** - npm, yarn, and pnpm are blocked

@@ -100,7 +100,7 @@ describe('Basic Function Testing', () => {
       const validTypes = ['text', 'task', 'ai-chat'];
       
       validTypes.forEach(type => {
-        const node = createTestNode({ type: type as any });
+        const node = createTestNode({ type: type as 'text' | 'task' | 'ai-chat' });
         expect(validTypes).toContain(node.type);
       });
     });

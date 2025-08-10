@@ -3,16 +3,16 @@
  * Tests complete workflows across multiple components and systems
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { SimpleMockStore, createTestNode } from '../utils/testUtils';
+import { SimpleMockStore, createTestNode, type MockNodeData } from '../utils/testUtils';
 
 // Mock API layer for integration testing
 class MockNodeAPI {
   constructor(private dataStore: SimpleMockStore) {}
 
-  async createNode(nodeData: { content: string; type: string }) {
+  async createNode(nodeData: { content: string; type: 'text' | 'task' | 'ai-chat' }) {
     const node = createTestNode({
       content: nodeData.content,
-      type: nodeData.type as any
+      type: nodeData.type
     });
     
     await this.dataStore.save(node);
@@ -120,7 +120,7 @@ class MockNodeManager {
     return results;
   }
 
-  private async processNode(node: any) {
+  private async processNode(node: MockNodeData) {
     // Simulate processing delay
     await new Promise(resolve => setTimeout(resolve, 10));
     

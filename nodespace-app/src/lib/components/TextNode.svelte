@@ -8,8 +8,8 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from 'svelte';
   import BaseNode from '$lib/design/components/BaseNode.svelte';
+  import MarkdownRenderer from '$lib/components/MarkdownRenderer.svelte';
   import { mockTextService, type TextNodeData } from '$lib/services/mockTextService';
-  import { parseMarkdown } from '$lib/services/markdownUtils';
 
   // Props
   export let nodeId: string;
@@ -96,8 +96,7 @@
     }
   }
 
-  // Render markdown content
-  $: renderedContent = markdown && content ? parseMarkdown(content) : content;
+  // No need for HTML rendering - MarkdownRenderer handles it safely
 
   // Dynamic multiline based on content - starts single-line, becomes multiline if content has line breaks
   $: isMultiline = content.includes('\n');
@@ -121,14 +120,7 @@
     {#if content}
       {#if markdown}
         <div class="ns-text-node__markdown">
-          <!-- 
-            ESLint suppression approved: This is the ONLY exception in the codebase.
-            Safe because: HTML is generated from controlled markdown parsing with HTML escaping.
-            Follows industry standard: GitHub, React Markdown, etc. use same approach.
-            See CLAUDE.md for lint suppression policy.
-          -->
-          <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-          {@html renderedContent}
+          <MarkdownRenderer {content} />
         </div>
       {:else}
         <span class="ns-node__text">{content}</span>
