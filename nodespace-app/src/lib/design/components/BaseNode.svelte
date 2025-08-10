@@ -51,6 +51,20 @@
     startEditing(event);
   }
 
+  // Handle general node clicks
+  function handleClick(event: MouseEvent) {
+    dispatch('click', { nodeId, event });
+    
+    // If clicking on display content, delegate to handleDisplayClick
+    if (!focused && editable && contentEditable) {
+      const target = event.target as HTMLElement;
+      const displayElement = target.closest('.ns-node__display--clickable');
+      if (displayElement) {
+        handleDisplayClick(event);
+      }
+    }
+  }
+
   // Start editing mode
   async function startEditing(clickEvent?: MouseEvent) {
     focused = true;
