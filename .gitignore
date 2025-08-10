@@ -107,6 +107,16 @@ session*.rs
 check_*.rs
 temp_*.rs
 
+# Testing artifacts (never commit)
+test-results/
+coverage/
+**/coverage/
+*.coverage
+junit.xml
+*.xml
+*.html.meta.json.gz
+results.json
+
 # Temporary files
 *.tmp
 *.temp
