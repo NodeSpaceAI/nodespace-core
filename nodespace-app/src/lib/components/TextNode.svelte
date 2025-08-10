@@ -69,7 +69,7 @@
 
   // Debounced auto-save functionality
   let debounceTimeout: NodeJS.Timeout;
-  const DEBOUNCE_DELAY = 400; // 400ms debounce for better UX
+  const DEBOUNCE_DELAY = 500; // 500ms debounce for better UX
 
   function debounceAutoSave() {
     if (!autoSave || !isEditing) return;
@@ -267,38 +267,36 @@
     }
   }
 
-  // Handle keyboard shortcuts
+  // Handle keyboard shortcuts (simplified - no manual save/cancel)
   function handleKeyDown(event: KeyboardEvent) {
     if (!isEditing) return;
-
-    // Ctrl+Enter or Cmd+Enter to save and exit edit mode
-    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-      event.preventDefault();
-      saveChanges();
-      return;
-    }
-
-    // Escape to cancel
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelEditing();
-      return;
-    }
+    
+    // Just let natural keyboard input happen - auto-save handles persistence
+    // No manual save/cancel shortcuts needed for seamless experience
   }
 
-  // Handle blur (save on blur if auto-save is disabled)
+  // Handle blur - switch to read-only mode and save if needed
   async function handleBlur() {
     if (!isEditing) return;
 
     dispatch('blur', { nodeId });
 
-    // If auto-save is disabled, save on blur
-    if (!autoSave) {
-      await saveChanges();
+    // Clear any pending debounce timeout
+    clearTimeout(debounceTimeout);
+
+    // Save any unsaved changes first
+    if (editContent !== lastSavedContent || editTitle !== lastSavedTitle) {
+      await handleAutoSave();
     }
+
+    // Switch to read-only mode seamlessly
+    content = editContent;
+    title = editTitle;
+    isEditing = false;
+    saveStatus = 'saved';
   }
 
-  // Render markdown content
+  // Render markdown content (updates when content changes or when switching from edit to read)
   $: renderedContent = markdown && content ? parseMarkdown(content) : content;
 
   // Get display title (fallback to content preview)
@@ -323,7 +321,6 @@
   content={displayTitle}
   hasChildren={textNodeData?.metadata.hasChildren || false}
   isProcessing={saveStatus === 'saving'}
-  iconName="text"
   className="ns-text-node {isEditing ? 'ns-text-node--editing' : ''} {compact
     ? 'ns-text-node--compact'
     : ''}"
@@ -351,7 +348,7 @@
 
         {#if markdown}
           <div class="ns-text-node__hint">
-            Tip: Use **bold**, *italic*, # headers • Press Ctrl+Enter to save • Esc to cancel
+            Tip: Use **bold**, *italic*, # headers • Auto-saves as you type
           </div>
         {/if}
       </div>
@@ -463,24 +460,22 @@
 
   .ns-text-node__contenteditable {
     width: 100%;
-    min-height: 80px;
-    padding: var(--ns-spacing-3);
-    border: 1px solid var(--ns-color-border-default);
-    border-radius: var(--ns-radius-md);
+    min-height: 40px;
+    padding: 0;
+    border: none;
+    border-radius: 0;
     font-family: inherit;
     font-size: var(--ns-font-size-sm);
     line-height: var(--ns-line-height-relaxed);
-    background: var(--ns-color-surface-default);
+    background: transparent;
     color: var(--ns-color-text-primary);
     outline: none;
     white-space: pre-wrap;
     word-break: break-word;
-    transition: border-color var(--ns-duration-fast) var(--ns-easing-easeInOut);
+    resize: none;
   }
 
-  .ns-text-node__contenteditable:focus {
-    border-color: var(--ns-color-primary-500);
-  }
+  /* .ns-text-node__contenteditable:focus - No special focus styling for seamless experience */
 
   .ns-text-node__contenteditable:empty::before {
     content: attr(data-placeholder);
@@ -504,14 +499,10 @@
   }
 
   .ns-text-node__display--clickable {
-    cursor: pointer;
+    cursor: text;
   }
 
-  .ns-text-node__display--clickable:hover {
-    background: var(--ns-color-surface-panel);
-    border-radius: var(--ns-radius-sm);
-    transition: background-color var(--ns-duration-fast) var(--ns-easing-easeInOut);
-  }
+  /* .ns-text-node__display--clickable:hover - No hover background for clean seamless appearance */
 
   .ns-text-node__plain {
     white-space: pre-wrap;
@@ -634,11 +625,7 @@
     color: var(--ns-color-text-tertiary);
   }
 
-  /* Editing state modifier */
-  :global(.ns-text-node--editing) {
-    border-color: var(--ns-color-primary-500);
-    box-shadow: 0 0 0 1px var(--ns-color-primary-500);
-  }
+  /* Editing state modifier - no visual changes for seamless experience - editing looks same as reading */
 
   /* Compact mode modifier for responsive panels */
   :global(.ns-text-node--compact) .ns-text-node__content {

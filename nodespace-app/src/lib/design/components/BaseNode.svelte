@@ -136,20 +136,15 @@
     margin: 4px 0;
 
     /* Styling */
-    background-color: hsl(var(--background));
-    border: 1px solid hsl(var(--border));
+    background-color: transparent;
+    border: none;
     border-radius: 8px;
-    cursor: pointer;
+    cursor: text;
     outline: none;
     transition: all 200ms ease;
   }
 
-  /* Hover state */
-  .ns-node:hover {
-    background-color: hsl(var(--muted));
-    border-color: hsl(var(--border));
-    transform: translateY(-1px);
-  }
+  /* Hover state - minimal for clean appearance - no styles needed */
 
   /* Focus state */
   .ns-node:focus-visible {
@@ -157,27 +152,7 @@
     outline-offset: 2px;
   }
 
-  /* Processing state */
-  .ns-node--processing {
-    border-color: hsl(var(--primary));
-  }
-
-  /* Node type variants with left border accent */
-  .ns-node--text {
-    border-left: 3px solid hsl(142 71% 45%);
-  } /* Green */
-  .ns-node--task {
-    border-left: 3px solid hsl(25 95% 53%);
-  } /* Orange */
-  .ns-node--ai-chat {
-    border-left: 3px solid hsl(221 83% 53%);
-  } /* Blue */
-  .ns-node--entity {
-    border-left: 3px solid hsl(271 81% 56%);
-  } /* Purple */
-  .ns-node--query {
-    border-left: 3px solid hsl(330 81% 60%);
-  } /* Pink */
+  /* Processing state - indication through circle animation, no border styles needed */
 
   /* Header layout */
   .ns-node__header {
