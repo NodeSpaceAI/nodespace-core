@@ -57,7 +57,7 @@
   // Handle general node clicks
   function handleClick(event: MouseEvent) {
     dispatch('click', { nodeId, event });
-    
+
     // If clicking on display content, delegate to handleDisplayClick
     if (!focused && editable && contentEditable) {
       const target = event.target as HTMLElement;
@@ -79,16 +79,19 @@
       if (multiline) {
         autoResizeTextarea(textareaElement);
       }
-      
+
       textareaElement.focus();
-      
+
       // Position cursor based on click location
       if (clickEvent) {
         await tick(); // Wait for textarea to be fully rendered
         positionCursorFromClick(clickEvent);
       } else {
         // No click event, place at end
-        textareaElement.setSelectionRange(textareaElement.value.length, textareaElement.value.length);
+        textareaElement.setSelectionRange(
+          textareaElement.value.length,
+          textareaElement.value.length
+        );
       }
     }
   }
@@ -98,7 +101,7 @@
     if (!textareaElement || !mockElementRef) return;
 
     const textareaRect = textareaElement.getBoundingClientRect();
-    
+
     // Validate click is within reasonable bounds
     if (!isClickWithinTextBounds(clickEvent.clientX, clickEvent.clientY, textareaRect)) {
       // Click is too far from text area, position at end
@@ -106,12 +109,17 @@
       textareaElement.setSelectionRange(textLength, textLength);
       return;
     }
-    
+
     console.log('Mock element positioning:', {
       content: content.substring(0, 20) + '...',
       clickX: clickEvent.clientX,
       clickY: clickEvent.clientY,
-      textareaRect: { left: textareaRect.left, top: textareaRect.top, width: textareaRect.width, height: textareaRect.height },
+      textareaRect: {
+        left: textareaRect.left,
+        top: textareaRect.top,
+        width: textareaRect.width,
+        height: textareaRect.height
+      },
       multiline: multiline
     });
 
@@ -134,21 +142,23 @@
       );
 
       // Set cursor position based on result
-      const targetPosition = Math.max(0, Math.min(positionResult.index, textareaElement.value.length));
-      
+      const targetPosition = Math.max(
+        0,
+        Math.min(positionResult.index, textareaElement.value.length)
+      );
+
       console.log('Mock element positioning result:', {
         targetPosition,
         accuracy: positionResult.accuracy,
         distance: positionResult.distance
       });
-      
+
       textareaElement.setSelectionRange(targetPosition, targetPosition);
-      
+
       // Verify the cursor was set correctly
       setTimeout(() => {
         console.log('Actual cursor position after set:', textareaElement.selectionStart);
       }, 10);
-      
     } catch (error) {
       console.error('Error in mock element positioning:', error);
       // Fallback to end position
@@ -158,21 +168,21 @@
   }
 
   // Handle textarea input
-  function handleInput(event: Event) {
+  function handleInput(event: { target: HTMLTextAreaElement }) {
     const target = event.target as HTMLTextAreaElement;
-    
+
     // For single-line, replace newlines with spaces
     if (!multiline) {
       target.value = target.value.replace(/\n/g, ' ');
     }
-    
+
     content = target.value;
-    
+
     // Auto-resize only if multiline
     if (multiline) {
       autoResizeTextarea(target);
     }
-    
+
     dispatch('contentChanged', { nodeId, content });
   }
 
@@ -199,7 +209,7 @@
         dispatch('blur', { nodeId });
         return;
       }
-      
+
       // For single-line, Enter saves and exits
       if (!multiline && event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
@@ -207,7 +217,7 @@
         dispatch('blur', { nodeId });
         return;
       }
-      
+
       // Other keys pass through naturally
       return;
     }
@@ -258,12 +268,12 @@
 <!-- Simplified node container - div approach to avoid button/contenteditable conflicts -->
 <div
   class={nodeClasses}
-  role="region"
+  role="button"
+  tabindex="0"
   aria-label="{getNodeTypeLabel(nodeType)}: {content || 'Empty node'}"
   data-node-id={nodeId}
   data-node-type={nodeType}
   on:click={handleClick}
-  tabindex="0"
   on:keydown={handleKeyDown}
 >
   <!-- Node header -->
@@ -288,19 +298,21 @@
           <!-- Edit mode (only if content is directly editable) -->
           <textarea
             bind:this={textareaElement}
-            class="ns-node__textarea {multiline ? 'ns-node__textarea--multiline' : 'ns-node__textarea--single'}"
+            class="ns-node__textarea {multiline
+              ? 'ns-node__textarea--multiline'
+              : 'ns-node__textarea--single'}"
             bind:value={content}
             on:input={handleInput}
             on:blur={handleBlur}
             on:keydown={handleKeyDown}
             on:keydown|stopPropagation
             {placeholder}
-            rows={multiline ? "1" : "1"}
+            rows={multiline ? '1' : '1'}
           ></textarea>
-          
+
           <!-- Mock element for precise cursor positioning -->
           {#if textareaElement}
-            <MockTextElement 
+            <MockTextElement
               bind:this={mockElementRef}
               {content}
               fontFamily={getComputedStyle(textareaElement).fontFamily}
@@ -349,7 +361,7 @@
           {/if}
         {/if}
       </slot>
-      
+
       <!-- Additional node-specific content -->
       <slot></slot>
     </div>
@@ -372,7 +384,7 @@
     cursor: text;
     outline: none;
     transition: all 200ms ease;
-    
+
     /* Text styling */
     font: inherit;
     text-align: left;

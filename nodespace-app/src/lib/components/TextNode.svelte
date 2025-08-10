@@ -8,12 +8,8 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from 'svelte';
   import BaseNode from '$lib/design/components/BaseNode.svelte';
-  import {
-    mockTextService,
-    type TextNodeData,
-    type TextSaveResult
-  } from '$lib/services/mockTextService';
-  import { parseMarkdown, stripMarkdown } from '$lib/services/markdownUtils';
+  import { mockTextService, type TextNodeData } from '$lib/services/mockTextService';
+  import { parseMarkdown } from '$lib/services/markdownUtils';
 
   // Props
   export let nodeId: string;
@@ -54,7 +50,7 @@
     }
   });
 
-  // Auto-save functionality  
+  // Auto-save functionality
   let debounceTimeout: NodeJS.Timeout;
   const DEBOUNCE_DELAY = 2000;
 
@@ -77,11 +73,10 @@
     debounceAutoSave();
   }
 
-
   // Auto-save handler
   async function handleAutoSave() {
     if (!autoSave || !nodeId || nodeId === 'new') return;
-    
+
     try {
       const result = await mockTextService.scheduleAutoSave(nodeId, content, '', 100);
 
@@ -103,11 +98,6 @@
 
   // Render markdown content
   $: renderedContent = markdown && content ? parseMarkdown(content) : content;
-
-  // Get display title for BaseNode
-  $: displayTitle = content
-    ? stripMarkdown(content).substring(0, 50) + (content.length > 50 ? '...' : '')
-    : 'Untitled';
 
   // Dynamic multiline based on content - starts single-line, becomes multiline if content has line breaks
   $: isMultiline = content.includes('\n');

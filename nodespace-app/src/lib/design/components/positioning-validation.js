@@ -1,9 +1,9 @@
 /**
  * Mock Element Positioning System Validation
- * 
+ *
  * This script validates the implementation meets all acceptance criteria:
  * - Character-level precision
- * - Font size awareness  
+ * - Font size awareness
  * - Multi-line support
  * - Performance < 50ms
  * - Unicode support including emojis and grapheme clusters
@@ -36,41 +36,40 @@ const mockRect = { left: 0, top: 0, width: 200, height: 20 };
 const findCharacterFromClick = (mockElement, clickX, clickY, textareaRect) => {
   const relativeX = clickX - textareaRect.left;
   const relativeY = clickY - textareaRect.top;
-  
+
   let bestMatch = { index: 0, distance: Infinity, accuracy: 'approximate' };
-  
+
   const allSpans = mockElement.querySelectorAll('[data-position]');
-  
+
   if (allSpans.length === 0) {
     return { index: 0, distance: 0, accuracy: 'approximate' };
   }
 
   const mockRect = mockElement.getBoundingClientRect();
-  
+
   for (const span of allSpans) {
     const rect = span.getBoundingClientRect();
-    
+
     const spanX = rect.left - mockRect.left;
     const spanY = rect.top - mockRect.top;
-    
+
     const spanCenterX = spanX + rect.width / 2;
     const spanCenterY = spanY + rect.height / 2;
-    
+
     const distance = Math.sqrt(
-      Math.pow(spanCenterX - relativeX, 2) + 
-      Math.pow(spanCenterY - relativeY, 2)
+      Math.pow(spanCenterX - relativeX, 2) + Math.pow(spanCenterY - relativeY, 2)
     );
-    
+
     if (distance < bestMatch.distance) {
       const position = parseInt(span.dataset.position || '0');
-      bestMatch = { 
-        index: position, 
-        distance, 
+      bestMatch = {
+        index: position,
+        distance,
         accuracy: distance < 5 ? 'exact' : 'approximate'
       };
     }
   }
-  
+
   return bestMatch;
 };
 
@@ -117,7 +116,7 @@ const performanceTests = [
 ];
 
 console.log('🔍 Mock Element Positioning System Validation\n');
-console.log('=' .repeat(60));
+console.log('='.repeat(60));
 
 // Test 1: Character-level precision
 console.log('\n📍 Test 1: Character-level Precision');
@@ -126,38 +125,43 @@ console.log('-'.repeat(40));
 let precisionTestsPassed = 0;
 let precisionTestsTotal = testScenarios.length;
 
-testScenarios.forEach(scenario => {
+testScenarios.forEach((scenario) => {
   const mock = mockElement(scenario.content);
-  
+
   // Test clicking at various positions
   const testClicks = [
     { x: 0, expectedIndex: 0, name: 'start' },
     { x: 50, expectedIndex: Math.floor(scenario.content.length / 2), name: 'middle' },
     { x: 100, expectedIndex: scenario.content.length - 1, name: 'end' }
   ];
-  
+
   let scenarioPassedClicks = 0;
-  
-  testClicks.forEach(click => {
+
+  testClicks.forEach((click) => {
     const startTime = performance.now();
     const result = findCharacterFromClick(mock, click.x, 0, mockRect);
     const duration = performance.now() - startTime;
-    
-    const withinPrecision = Math.abs(result.index - click.expectedIndex) <= scenario.expectedPrecision;
+
+    const withinPrecision =
+      Math.abs(result.index - click.expectedIndex) <= scenario.expectedPrecision;
     const withinPerformance = duration < 50;
-    
+
     if (withinPrecision && withinPerformance) {
       scenarioPassedClicks++;
     }
-    
-    console.log(`  ${scenario.name} (${click.name}): ${withinPrecision ? '✅' : '❌'} position ${result.index}/${click.expectedIndex} (${duration.toFixed(2)}ms)`);
+
+    console.log(
+      `  ${scenario.name} (${click.name}): ${withinPrecision ? '✅' : '❌'} position ${result.index}/${click.expectedIndex} (${duration.toFixed(2)}ms)`
+    );
   });
-  
+
   if (scenarioPassedClicks === testClicks.length) {
     precisionTestsPassed++;
     console.log(`  ✅ ${scenario.name}: ALL CLICKS PASSED`);
   } else {
-    console.log(`  ❌ ${scenario.name}: ${scenarioPassedClicks}/${testClicks.length} CLICKS PASSED`);
+    console.log(
+      `  ❌ ${scenario.name}: ${scenarioPassedClicks}/${testClicks.length} CLICKS PASSED`
+    );
   }
 });
 
@@ -170,31 +174,35 @@ console.log('-'.repeat(40));
 let performanceTestsPassed = 0;
 let performanceTestsTotal = performanceTests.length;
 
-performanceTests.forEach(test => {
+performanceTests.forEach((test) => {
   const content = 'a'.repeat(test.contentLength);
   const mock = mockElement(content);
-  
+
   // Run multiple iterations to get average
   const iterations = 10;
   let totalTime = 0;
-  
+
   for (let i = 0; i < iterations; i++) {
     const startTime = performance.now();
     findCharacterFromClick(mock, 50, 0, mockRect);
     totalTime += performance.now() - startTime;
   }
-  
+
   const averageTime = totalTime / iterations;
   const passed = averageTime < 50;
-  
+
   if (passed) {
     performanceTestsPassed++;
   }
-  
-  console.log(`  ${test.contentLength} chars: ${passed ? '✅' : '❌'} ${averageTime.toFixed(2)}ms avg (target: <${test.expectedTime}ms)`);
+
+  console.log(
+    `  ${test.contentLength} chars: ${passed ? '✅' : '❌'} ${averageTime.toFixed(2)}ms avg (target: <${test.expectedTime}ms)`
+  );
 });
 
-console.log(`\nPerformance Tests: ${performanceTestsPassed}/${performanceTestsTotal} benchmarks passed`);
+console.log(
+  `\nPerformance Tests: ${performanceTestsPassed}/${performanceTestsTotal} benchmarks passed`
+);
 
 // Test 3: Unicode and grapheme cluster support
 console.log('\n🌐 Test 3: Unicode Support');
@@ -210,20 +218,22 @@ const unicodeTests = [
 let unicodeTestsPassed = 0;
 let unicodeTestsTotal = unicodeTests.length;
 
-unicodeTests.forEach(test => {
+unicodeTests.forEach((test) => {
   const chars = Array.from(test.content); // Proper grapheme cluster splitting
   const hasCorrectLength = chars.includes(test.char);
-  
+
   const mock = mockElement(test.content);
   const result = findCharacterFromClick(mock, 10, 0, mockRect);
-  
+
   const passed = hasCorrectLength && result.index >= 0 && result.index < chars.length;
-  
+
   if (passed) {
     unicodeTestsPassed++;
   }
-  
-  console.log(`  "${test.content}": ${passed ? '✅' : '❌'} ${chars.length} chars, positioned at ${result.index}`);
+
+  console.log(
+    `  "${test.content}": ${passed ? '✅' : '❌'} ${chars.length} chars, positioned at ${result.index}`
+  );
 });
 
 console.log(`\nUnicode Tests: ${unicodeTestsPassed}/${unicodeTestsTotal} tests passed`);
@@ -235,17 +245,17 @@ console.log('-'.repeat(40));
 const browserSims = ['Chrome', 'Firefox', 'Safari'];
 let compatibilityPassed = 0;
 
-browserSims.forEach(browser => {
+browserSims.forEach((browser) => {
   // Simulate slight variations in getBoundingClientRect behavior
   const variations = {
     Chrome: { widthOffset: 0, heightOffset: 0 },
     Firefox: { widthOffset: 0.5, heightOffset: 0.2 },
     Safari: { widthOffset: -0.3, heightOffset: 0.1 }
   };
-  
+
   const variation = variations[browser];
   const testContent = 'Cross-browser test content';
-  
+
   // Mock with browser-specific variations
   const mockWithVariation = {
     getBoundingClientRect: () => ({ left: 0, top: 0 }),
@@ -264,15 +274,17 @@ browserSims.forEach(browser => {
       return [];
     }
   };
-  
+
   const result = findCharacterFromClick(mockWithVariation, 50, 0, mockRect);
   const reasonable = result.index >= 0 && result.index < testContent.length;
-  
+
   if (reasonable) {
     compatibilityPassed++;
   }
-  
-  console.log(`  ${browser}: ${reasonable ? '✅' : '❌'} position ${result.index} (expected range: 0-${testContent.length})`);
+
+  console.log(
+    `  ${browser}: ${reasonable ? '✅' : '❌'} position ${result.index} (expected range: 0-${testContent.length})`
+  );
 });
 
 console.log(`\nCompatibility Tests: ${compatibilityPassed}/${browserSims.length} browsers passed`);
@@ -282,22 +294,34 @@ console.log('\n' + '='.repeat(60));
 console.log('📊 FINAL VALIDATION RESULTS');
 console.log('='.repeat(60));
 
-const totalTests = precisionTestsTotal + performanceTestsTotal + unicodeTestsTotal + browserSims.length;
-const totalPassed = precisionTestsPassed + performanceTestsPassed + unicodeTestsPassed + compatibilityPassed;
+const totalTests =
+  precisionTestsTotal + performanceTestsTotal + unicodeTestsTotal + browserSims.length;
+const totalPassed =
+  precisionTestsPassed + performanceTestsPassed + unicodeTestsPassed + compatibilityPassed;
 
-console.log(`\n✨ Overall Score: ${totalPassed}/${totalTests} tests passed (${Math.round(totalPassed/totalTests*100)}%)`);
+console.log(
+  `\n✨ Overall Score: ${totalPassed}/${totalTests} tests passed (${Math.round((totalPassed / totalTests) * 100)}%)`
+);
 
 if (totalPassed === totalTests) {
-  console.log('🎉 ALL TESTS PASSED! Mock Element Positioning System meets all acceptance criteria.');
+  console.log(
+    '🎉 ALL TESTS PASSED! Mock Element Positioning System meets all acceptance criteria.'
+  );
 } else {
   console.log('⚠️  Some tests failed. Review implementation for areas needing improvement.');
 }
 
 console.log('\n📋 Acceptance Criteria Status:');
-console.log(`   ✅ Character-level precision: ${precisionTestsPassed}/${precisionTestsTotal} scenarios`);
-console.log(`   ✅ Performance < 50ms: ${performanceTestsPassed}/${performanceTestsTotal} benchmarks`);
+console.log(
+  `   ✅ Character-level precision: ${precisionTestsPassed}/${precisionTestsTotal} scenarios`
+);
+console.log(
+  `   ✅ Performance < 50ms: ${performanceTestsPassed}/${performanceTestsTotal} benchmarks`
+);
 console.log(`   ✅ Unicode support: ${unicodeTestsPassed}/${unicodeTestsTotal} tests`);
-console.log(`   ✅ Cross-browser compatibility: ${compatibilityPassed}/${browserSims.length} browsers`);
+console.log(
+  `   ✅ Cross-browser compatibility: ${compatibilityPassed}/${browserSims.length} browsers`
+);
 console.log(`   ✅ Multi-line support: Included in precision tests`);
 console.log(`   ✅ Font size awareness: Handled by mock element mirroring`);
 console.log(`   ✅ No memory leaks: Mock elements are properly cleaned up`);
@@ -305,7 +329,7 @@ console.log(`   ✅ BaseNode API compatibility: Integration maintains existing i
 
 console.log('\n🔧 Implementation Summary:');
 console.log('   • MockTextElement.svelte: Character-level span mapping ✅');
-console.log('   • CursorPositioning.ts: Coordinate-to-character utilities ✅'); 
+console.log('   • CursorPositioning.ts: Coordinate-to-character utilities ✅');
 console.log('   • BaseNode integration: Replaces binary search ✅');
 console.log('   • Performance optimized: < 50ms positioning ✅');
 console.log('   • Unicode compliant: Grapheme cluster support ✅');

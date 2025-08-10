@@ -6,7 +6,7 @@
 -->
 
 <script lang="ts">
-  import { onMount, afterUpdate } from 'svelte';
+  import { afterUpdate } from 'svelte';
 
   // Props match textarea styling for accurate mirroring
   export let content = '';
@@ -32,7 +32,7 @@
   // Update positioning on content or style changes
   let lastContent = '';
   let lastWidth = 0;
-  
+
   afterUpdate(() => {
     if (content !== lastContent || width !== lastWidth) {
       lastContent = content;
@@ -44,7 +44,7 @@
   export { mockElement };
 </script>
 
-<div 
+<div
   bind:this={mockElement}
   class="mock-text-element"
   style="
@@ -69,11 +69,7 @@
   aria-hidden="true"
 >
   {#each characters as { char, idx }}
-    <span 
-      id="mock-char-{idx}" 
-      data-position="{idx}"
-      class="mock-char"
-    >
+    <span id="mock-char-{idx}" data-position={idx} class="mock-char">
       {#if char === '\n'}
         <br />
       {:else if char === ' '}

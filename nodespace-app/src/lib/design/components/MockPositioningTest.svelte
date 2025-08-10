@@ -37,7 +37,7 @@
       nodeStyle: ''
     },
     {
-      name: 'Large Text (H1 - 2.5rem)', 
+      name: 'Large Text (H1 - 2.5rem)',
       content: 'This is large H1 text for testing',
       fontSize: '2.5rem',
       multiline: false,
@@ -46,7 +46,7 @@
     {
       name: 'Medium Text (H2 - 2rem)',
       content: 'This is medium H2 text for testing positioning',
-      fontSize: '2rem', 
+      fontSize: '2rem',
       multiline: false,
       nodeStyle: 'font-size: 2rem; font-weight: 600;'
     },
@@ -59,7 +59,8 @@
     },
     {
       name: 'Multi-line Normal Text',
-      content: 'Line 1 of multi-line text\nLine 2 with different content\nLine 3 for comprehensive testing',
+      content:
+        'Line 1 of multi-line text\nLine 2 with different content\nLine 3 for comprehensive testing',
       fontSize: '14px',
       multiline: true,
       nodeStyle: ''
@@ -80,7 +81,8 @@
     },
     {
       name: 'Long Multi-line Content',
-      content: 'This is a very long line of text that should wrap to multiple lines when displayed in a constrained width container, allowing us to test cursor positioning accuracy across wrapped content.\n\nSecond paragraph with more content to test multi-line scenarios.\n\nThird paragraph for comprehensive testing.',
+      content:
+        'This is a very long line of text that should wrap to multiple lines when displayed in a constrained width container, allowing us to test cursor positioning accuracy across wrapped content.\n\nSecond paragraph with more content to test multi-line scenarios.\n\nThird paragraph for comprehensive testing.',
       fontSize: '14px',
       multiline: true,
       nodeStyle: ''
@@ -89,7 +91,7 @@
 
   let activeTests: Array<{
     id: string;
-    scenario: typeof testScenarios[0];
+    scenario: (typeof testScenarios)[0];
     nodeRef: BaseNode;
   }> = [];
 
@@ -107,21 +109,23 @@
     testResults = [];
     performanceResults = [];
 
-    testScenarios.forEach((scenario, index) => {
+    testScenarios.forEach((scenario) => {
       const startTime = performance.now();
-      
+
       try {
         // Test basic positioning accuracy (this is a mock test)
         const testPassed = true; // In real implementation, we would test actual click coordinates
         const duration = performance.now() - startTime;
-        
+
         testResults.push({
           name: scenario.name,
           content: scenario.content.substring(0, 50) + (scenario.content.length > 50 ? '...' : ''),
           fontSize: scenario.fontSize,
           multiline: scenario.multiline,
           passed: testPassed,
-          details: testPassed ? 'Positioning within acceptable range' : 'Positioning accuracy failed'
+          details: testPassed
+            ? 'Positioning within acceptable range'
+            : 'Positioning accuracy failed'
         });
 
         performanceResults.push({
@@ -129,7 +133,6 @@
           duration,
           passed: duration < 50
         });
-
       } catch (error) {
         testResults.push({
           name: scenario.name,
@@ -154,28 +157,29 @@
   }
 
   // Performance test results summary
-  $: passedTests = testResults.filter(t => t.passed).length;
-  $: failedTests = testResults.filter(t => !t.passed).length;
-  $: avgPerformance = performanceResults.length > 0 
-    ? performanceResults.reduce((acc, p) => acc + p.duration, 0) / performanceResults.length 
-    : 0;
-  $: performancePassed = performanceResults.filter(p => p.passed).length;
+  $: passedTests = testResults.filter((t) => t.passed).length;
+  $: failedTests = testResults.filter((t) => !t.passed).length;
+  $: avgPerformance =
+    performanceResults.length > 0
+      ? performanceResults.reduce((acc, p) => acc + p.duration, 0) / performanceResults.length
+      : 0;
+  $: performancePassed = performanceResults.filter((p) => p.passed).length;
 </script>
 
 <div class="mock-positioning-test">
   <h2>Mock Element Positioning System Test</h2>
-  
+
   <div class="test-controls">
-    <button on:click={runPositioningTests} class="run-tests-btn">
-      Run Positioning Tests
-    </button>
-    
+    <button on:click={runPositioningTests} class="run-tests-btn"> Run Positioning Tests </button>
+
     {#if testResults.length > 0}
       <div class="test-summary">
         <span class="summary-item passed">✅ Passed: {passedTests}</span>
         <span class="summary-item failed">❌ Failed: {failedTests}</span>
         <span class="summary-item performance">⚡ Avg: {avgPerformance.toFixed(2)}ms</span>
-        <span class="summary-item performance">🚀 Performance: {performancePassed}/{performanceResults.length}</span>
+        <span class="summary-item performance"
+          >🚀 Performance: {performancePassed}/{performanceResults.length}</span
+        >
       </div>
     {/if}
   </div>
@@ -184,7 +188,7 @@
   <div class="test-scenarios">
     <h3>Interactive Test Scenarios</h3>
     <p>Click on the text content below to test cursor positioning accuracy:</p>
-    
+
     {#each activeTests as test (test.id)}
       <div class="test-scenario" style={test.scenario.nodeStyle}>
         <h4>{test.scenario.name}</h4>
@@ -203,9 +207,9 @@
         </div>
         <div class="scenario-info">
           <small>
-            Font Size: {test.scenario.fontSize} | 
-            Multiline: {test.scenario.multiline ? 'Yes' : 'No'} | 
-            Content Length: {test.scenario.content.length} chars
+            Font Size: {test.scenario.fontSize} | Multiline: {test.scenario.multiline
+              ? 'Yes'
+              : 'No'} | Content Length: {test.scenario.content.length} chars
           </small>
         </div>
       </div>
@@ -216,7 +220,7 @@
   {#if testResults.length > 0}
     <div class="test-results">
       <h3>Test Results</h3>
-      
+
       <div class="results-grid">
         {#each testResults as result}
           <div class="result-card" class:passed={result.passed} class:failed={!result.passed}>
@@ -249,7 +253,7 @@
           </div>
         {/each}
       </div>
-      
+
       <div class="performance-summary">
         <p><strong>Performance Target:</strong> &lt; 50ms per positioning calculation</p>
         <p><strong>Average Performance:</strong> {avgPerformance.toFixed(2)}ms</p>
@@ -264,7 +268,10 @@
     padding: 20px;
     max-width: 1200px;
     margin: 0 auto;
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family:
+      system-ui,
+      -apple-system,
+      sans-serif;
   }
 
   h2 {

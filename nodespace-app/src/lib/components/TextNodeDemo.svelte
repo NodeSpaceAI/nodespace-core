@@ -7,7 +7,6 @@
 
 <script lang="ts">
   import TextNode from './TextNode.svelte';
-  import BaseNode from '$lib/design/components/BaseNode.svelte';
 
   let demoNodes = [
     {
@@ -44,10 +43,6 @@
 
   function handleError(event: CustomEvent) {
     console.error('Node error:', event.detail);
-  }
-
-  function handleCancel(event: CustomEvent) {
-    console.log('Node edit cancelled:', event.detail);
   }
 
   function handleContentChanged(event: CustomEvent) {
@@ -131,17 +126,26 @@
 
       <div class="instruction">
         <h4>Multi-line Editing</h4>
-        <p>TextNodes support multi-line editing. Use Shift+Enter for line breaks, or just press Enter normally in the textarea.</p>
+        <p>
+          TextNodes support multi-line editing. Use Shift+Enter for line breaks, or just press Enter
+          normally in the textarea.
+        </p>
       </div>
 
       <div class="instruction">
         <h4>Markdown Rendering</h4>
-        <p>Second node shows markdown rendering in display mode. Edit to see raw markdown, blur to see rendered output.</p>
+        <p>
+          Second node shows markdown rendering in display mode. Edit to see raw markdown, blur to
+          see rendered output.
+        </p>
       </div>
 
       <div class="instruction">
         <h4>Read-only Mode</h4>
-        <p>Third node demonstrates read-only display with markdown rendering but no editing capability.</p>
+        <p>
+          Third node demonstrates read-only display with markdown rendering but no editing
+          capability.
+        </p>
       </div>
 
       <div class="instruction">

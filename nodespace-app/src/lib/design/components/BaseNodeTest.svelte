@@ -13,22 +13,13 @@
   <!-- Test 1: Basic node with circle indicator -->
   <div class="test-case">
     <h3>1. Basic Text Node (Circle Indicator)</h3>
-    <BaseNode
-      nodeType="text"
-      nodeId="test-1"
-      content="Basic text node with circle indicator"
-    />
+    <BaseNode nodeType="text" nodeId="test-1" content="Basic text node with circle indicator" />
   </div>
 
   <!-- Test 2: Node with SVG icon -->
   <div class="test-case">
     <h3>2. Text Node with SVG Icon</h3>
-    <BaseNode
-      nodeType="text"
-      nodeId="test-2"
-      content="Text node with SVG icon"
-      iconName="text"
-    />
+    <BaseNode nodeType="text" nodeId="test-2" content="Text node with SVG icon" iconName="text" />
   </div>
 
   <!-- Test 3: Parent node with children -->
@@ -85,32 +76,11 @@
   <div class="test-case">
     <h3>5. Different Node Types</h3>
     <div class="node-types-grid">
-      <BaseNode
-        nodeType="text"
-        nodeId="test-5a"
-        content="Text Node"
-        iconName="text"
-      />
-      <BaseNode
-        nodeType="task"
-        nodeId="test-5b"
-        content="Task Node"
-      />
-      <BaseNode
-        nodeType="ai-chat"
-        nodeId="test-5c"
-        content="AI Chat Node"
-      />
-      <BaseNode
-        nodeType="entity"
-        nodeId="test-5d"
-        content="Entity Node"
-      />
-      <BaseNode
-        nodeType="query"
-        nodeId="test-5e"
-        content="Query Node"
-      />
+      <BaseNode nodeType="text" nodeId="test-5a" content="Text Node" iconName="text" />
+      <BaseNode nodeType="task" nodeId="test-5b" content="Task Node" />
+      <BaseNode nodeType="ai-chat" nodeId="test-5c" content="AI Chat Node" />
+      <BaseNode nodeType="entity" nodeId="test-5d" content="Entity Node" />
+      <BaseNode nodeType="query" nodeId="test-5e" content="Query Node" />
     </div>
   </div>
 </div>
