@@ -1,0 +1,111 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* NodeSpace Color Palette - migrated to shadcn-svelte variables */
+
+    /* Primary: Professional Blue (#007acc) */
+    --primary: 210 100% 40%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Background & Surfaces */
+    --background: 0 0% 100%; /* White backgrounds */
+    --foreground: 220 13% 10%; /* Dark text (#1a1a1a) */
+    --card: 0 0% 100%;
+    --card-foreground: 220 13% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 13% 10%;
+
+    /* Muted/Secondary colors */
+    --muted: 210 40% 98%; /* Light gray (#f8f9fa) */
+    --muted-foreground: 215 16% 47%; /* Medium gray for secondary text */
+    --secondary: 210 40% 98%;
+    --secondary-foreground: 215 16% 47%;
+
+    /* Accent colors */
+    --accent: 210 40% 98%;
+    --accent-foreground: 215 16% 47%;
+
+    /* Borders & Input */
+    --border: 214 32% 91%; /* Light border (#e1e5e9) */
+    --input: 214 32% 91%;
+    --ring: 210 100% 40%; /* Focus ring matches primary */
+
+    /* Destructive/Error */
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Border radius */
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    /* NodeSpace Dark Theme */
+
+    /* Primary: Same professional blue but adjusted for dark mode */
+    --primary: 210 100% 50%;
+    --primary-foreground: 220 13% 10%;
+
+    /* Dark backgrounds */
+    --background: 224 71% 4%; /* Very dark blue-gray */
+    --foreground: 213 31% 91%; /* Light text for dark mode */
+    --card: 224 71% 4%;
+    --card-foreground: 213 31% 91%;
+    --popover: 224 71% 4%;
+    --popover-foreground: 213 31% 91%;
+
+    /* Muted colors for dark mode */
+    --muted: 223 47% 11%; /* Dark muted background */
+    --muted-foreground: 215 20% 65%; /* Light muted text */
+    --secondary: 223 47% 11%;
+    --secondary-foreground: 215 20% 65%;
+
+    /* Accent colors for dark mode */
+    --accent: 223 47% 11%;
+    --accent-foreground: 215 20% 65%;
+
+    /* Borders for dark mode */
+    --border: 223 47% 11%;
+    --input: 223 47% 11%;
+    --ring: 210 100% 50%;
+
+    /* Destructive for dark mode */
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 213 31% 91%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    /* NodeSpace monospace font stack for precise editing */
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+  }
+}
+
+/* Legacy NodeSpace design token compatibility (deprecated - use shadcn variables) */
+:root {
+  /* Map old tokens to new shadcn variables for gradual migration */
+  --ns-color-surface-background: hsl(var(--background));
+  --ns-color-text-primary: hsl(var(--foreground));
+  --ns-color-primary-500: hsl(var(--primary));
+  --ns-color-border-default: hsl(var(--border));
+  --ns-color-surface-panel: hsl(var(--muted));
+  --ns-color-text-secondary: hsl(var(--muted-foreground));
+}
+
+.dark {
+  /* Dark mode mappings for legacy tokens */
+  --ns-color-surface-background: hsl(var(--background));
+  --ns-color-text-primary: hsl(var(--foreground));
+  --ns-color-primary-500: hsl(var(--primary));
+  --ns-color-border-default: hsl(var(--border));
+  --ns-color-surface-panel: hsl(var(--muted));
+  --ns-color-text-secondary: hsl(var(--muted-foreground));
+}

@@ -1,6 +1,6 @@
 /**
  * Tree Node Data Types
- * 
+ *
  * Shared type definitions for hierarchical tree structures.
  */
 

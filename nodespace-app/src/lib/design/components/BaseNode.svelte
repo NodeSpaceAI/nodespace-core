@@ -1,95 +1,53 @@
 <!--
-  Base Node Component
+  Simplified Base Node Component
   
-  Provides the foundational visual pattern for all node types in NodeSpace.
-  Includes interaction states, accessibility features, and theme awareness.
+  Clean foundational visual pattern for all node types in NodeSpace.
+  Simplified from ~400 lines to ~120-150 lines by removing over-engineering.
 -->
 
 <script context="module" lang="ts">
   // Node type for styling variants
   export type NodeType = 'text' | 'task' | 'ai-chat' | 'entity' | 'query';
-
-  // Navigation interface for cross-node keyboard navigation
-  export interface NodeNavigationMethods {
-    // Can this node accept keyboard navigation?
-    canAcceptNavigation(): boolean;
-
-    // Enter node from top (arrow down from previous node)
-    enterFromTop(): boolean;
-
-    // Enter node from bottom (arrow up from next node)
-    enterFromBottom(): boolean;
-
-    // Exit node going up (cursor at first line, arrow up pressed)
-    exitToTop(): { canExit: boolean; columnPosition: number };
-
-    // Exit node going down (cursor at last line, arrow down pressed)
-    exitToBottom(): { canExit: boolean; columnPosition: number };
-
-    // Get current cursor column for cross-node consistency
-    getCurrentColumn(): number;
-  }
 </script>
 
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import Icon, { type IconName } from '../icons/index.js';
 
-  // Props
+  // Essential Props (Simplified to 5 core + processing)
   export let nodeType: NodeType = 'text';
   export let nodeId: string = '';
-  export let title: string = '';
-  export let subtitle: string = '';
   export let content: string = '';
-  export let selected: boolean = false;
-  export let disabled: boolean = false;
-  export let loading: boolean = false;
-  export let draggable: boolean = false;
-  export let clickable: boolean = true;
-  // focusable is automatically handled by clickable buttons
-  // export let focusable: boolean = true;
-  export let showActions: boolean = true;
-  export let compact: boolean = false;
   export let hasChildren: boolean = false;
-  export let nodeIcon: IconName | undefined = undefined;
   export let className: string = '';
 
-  // Interactive state
-  let isDragging = false;
+  // SVG Icon System
+  export let iconName: IconName | undefined = undefined;
 
-  // Event dispatcher
+  // Processing State System
+  export let isProcessing: boolean = false;
+  export let processingAnimation: 'blink' | 'pulse' | 'spin' | 'fade' = 'pulse';
+  export let processingIcon: IconName | undefined = undefined;
+
+  // Simple event dispatcher for click events
   const dispatch = createEventDispatcher<{
     click: { nodeId: string; event: MouseEvent };
-    select: { nodeId: string; selected: boolean };
-    focus: { nodeId: string; event: FocusEvent };
-    blur: { nodeId: string; event: FocusEvent };
-    keydown: { nodeId: string; event: KeyboardEvent };
-    dragstart: { nodeId: string; event: DragEvent };
-    dragend: { nodeId: string; event: DragEvent };
-    action: { nodeId: string; action: string };
   }>();
 
-  // Get node type icon - auto-select based on nodeType, allow override with nodeIcon prop
-  function getNodeTypeIcon(type: NodeType): IconName {
-    switch (type) {
-      case 'text':
-        return 'text';
-      case 'task':
-        return 'text'; // Future: 'task' when icon added
-      case 'ai-chat':
-        return 'text'; // Future: 'ai' when icon added
-      case 'entity':
-        return 'text'; // Future: 'entity' when icon added
-      case 'query':
-        return 'text'; // Future: 'query' when icon added
-      default:
-        return 'text';
+  // Event handler
+  function handleClick(event: MouseEvent) {
+    dispatch('click', { nodeId, event });
+  }
+
+  function handleKeyDown(event: KeyboardEvent) {
+    // Handle click with Enter or Space
+    if (event.code === 'Enter' || event.code === 'Space') {
+      event.preventDefault();
+      dispatch('click', { nodeId, event: new MouseEvent('click') });
     }
   }
 
-  // Icon selection logic - nodeIcon prop overrides default
-  $: selectedIcon = nodeIcon || getNodeTypeIcon(nodeType);
-  // Get node type label
+  // Get node type label for accessibility
   function getNodeTypeLabel(type: NodeType): string {
     switch (type) {
       case 'text':
@@ -107,677 +65,277 @@
     }
   }
 
-  // Event handlers
-  function handleClick(event: MouseEvent) {
-    if (!clickable || disabled || loading) return;
-    dispatch('click', { nodeId, event });
-  }
-
-  function handleKeyDown(event: KeyboardEvent) {
-    if (disabled) return;
-
-    dispatch('keydown', { nodeId, event });
-
-    // Handle selection toggle with Space or Enter
-    if (event.code === 'Space' || event.code === 'Enter') {
-      event.preventDefault();
-      if (clickable) {
-        dispatch('click', { nodeId, event: new MouseEvent('click') });
-      }
-    }
-
-    // Handle selection with keyboard
-    if (event.code === 'Space' && !event.shiftKey) {
-      dispatch('select', { nodeId, selected: !selected });
-    }
-  }
-
-  function handleFocus(event: FocusEvent) {
-    if (disabled) return;
-    dispatch('focus', { nodeId, event });
-  }
-
-  function handleBlur(event: FocusEvent) {
-    dispatch('blur', { nodeId, event });
-  }
-
-  function handleDragStart(event: DragEvent) {
-    if (!draggable || disabled) {
-      event.preventDefault();
-      return;
-    }
-    isDragging = true;
-    if (event.dataTransfer) {
-      event.dataTransfer.effectAllowed = 'move';
-      event.dataTransfer.setData('text/plain', nodeId);
-      event.dataTransfer.setData(
-        'application/x-nodespace-node',
-        JSON.stringify({
-          id: nodeId,
-          type: nodeType,
-          title,
-          content
-        })
-      );
-    }
-    dispatch('dragstart', { nodeId, event });
-  }
-
-  function handleDragEnd(event: DragEvent) {
-    isDragging = false;
-    dispatch('dragend', { nodeId, event });
-  }
-
-  function handleAction(action: string) {
-    if (disabled) return;
-    dispatch('action', { nodeId, action });
-  }
-
-  // Default navigation methods (no-op implementations)
-  // Derived nodes can override these for custom navigation behavior
-  export function canAcceptNavigation(): boolean {
-    return false; // By default, nodes don't support navigation
-  }
-
-  export function enterFromTop(): boolean {
-    return false; // No-op: derived nodes should implement
-  }
-
-  export function enterFromBottom(): boolean {
-    return false; // No-op: derived nodes should implement
-  }
-
-  export function exitToTop(): { canExit: boolean; columnPosition: number } {
-    return { canExit: false, columnPosition: 0 }; // No-op: derived nodes should implement
-  }
-
-  export function exitToBottom(): { canExit: boolean; columnPosition: number } {
-    return { canExit: false, columnPosition: 0 }; // No-op: derived nodes should implement
-  }
-
-  export function getCurrentColumn(): number {
-    return 0; // No-op: derived nodes should implement
-  }
-
   // CSS classes
   $: nodeClasses = [
     'ns-node',
     `ns-node--${nodeType}`,
-    selected && 'ns-node--selected',
-    disabled && 'ns-node--disabled',
-    loading && 'ns-node--loading',
-    isDragging && 'ns-node--dragging',
-    compact && 'ns-node--compact',
     hasChildren && 'ns-node--has-children',
+    isProcessing && 'ns-node--processing',
     className
   ]
     .filter(Boolean)
     .join(' ');
+
+  // Icon selection: processing icon overrides regular icon when processing
+  $: displayIcon = isProcessing && processingIcon ? processingIcon : iconName;
+
+  // Animation class for processing state
+  $: iconAnimationClass = isProcessing ? `ns-node__icon--${processingAnimation}` : '';
 </script>
 
-{#if clickable}
-  <!-- Interactive node container -->
-  <button
-    type="button"
-    class={nodeClasses}
-    aria-label="{getNodeTypeLabel(nodeType)}: {title || 'Untitled'}"
-    aria-pressed={selected}
-    {disabled}
-    data-node-id={nodeId}
-    data-node-type={nodeType}
-    on:click={handleClick}
-    on:keydown={handleKeyDown}
-    on:focus={handleFocus}
-    on:blur={handleBlur}
-    on:mouseenter
-    on:mouseleave
-    on:dragstart={draggable && !disabled ? handleDragStart : undefined}
-    on:dragend={draggable && !disabled ? handleDragEnd : undefined}
-    draggable={draggable && !disabled}
-  >
-    <!-- Loading overlay -->
-    {#if loading}
-      <div class="ns-node__loading-overlay">
-        <div class="ns-node__spinner" aria-label="Loading..."></div>
-      </div>
-    {/if}
-
-    <!-- Node header -->
-    <header class="ns-node__header">
-      <!-- Node hierarchy indicator -->
-      <div
-        class="ns-node__hierarchy-indicator"
-        class:ns-node__hierarchy-indicator--has-children={hasChildren}
-        data-node-type={nodeType}
-        role="img"
-        aria-label="{hasChildren ? 'Parent node' : 'Childless node'} - {getNodeTypeLabel(nodeType)}"
-      ></div>
-
-      <!-- Node title and subtitle -->
-      <div class="ns-node__title-section">
-        {#if title}
-          <h3 class="ns-node__title">{title}</h3>
-        {/if}
-        {#if subtitle}
-          <p class="ns-node__subtitle">{subtitle}</p>
-        {/if}
-      </div>
-
-      <!-- Node actions -->
-      {#if showActions && !loading && !disabled}
-        <div class="ns-node__actions">
-          <slot name="actions">
-            <span
-              class="ns-node__action-btn"
-              role="button"
-              tabindex="0"
-              title="More actions"
-              on:click|stopPropagation={() => handleAction('menu')}
-              on:keydown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  handleAction('menu');
-                }
-              }}
-            >
-              ⋯
-            </span>
-          </slot>
-        </div>
+<!-- Simplified node container - single template approach -->
+<button
+  type="button"
+  class={nodeClasses}
+  aria-label="{getNodeTypeLabel(nodeType)}: {content || 'Empty node'}"
+  data-node-id={nodeId}
+  data-node-type={nodeType}
+  on:click={handleClick}
+  on:keydown={handleKeyDown}
+>
+  <!-- Node header -->
+  <header class="ns-node__header">
+    <!-- Icon or Circle Indicator -->
+    <div class="ns-node__indicator" data-node-type={nodeType}>
+      {#if displayIcon}
+        <Icon name={displayIcon} size={16} className="ns-node__icon {iconAnimationClass}" />
+      {:else}
+        <!-- Circle fallback indicator -->
+        <div
+          class="ns-node__circle {iconAnimationClass}"
+          class:ns-node__circle--has-children={hasChildren}
+        ></div>
       {/if}
-    </header>
+    </div>
 
     <!-- Node content -->
     <div class="ns-node__content">
       <slot>
         {#if content}
-          <p class="ns-node__default-content">{content}</p>
+          <span class="ns-node__text">{content}</span>
         {:else}
-          <p class="ns-node__empty-content">No content</p>
+          <span class="ns-node__empty">Empty</span>
         {/if}
       </slot>
     </div>
-
-    <!-- Node footer -->
-    <footer class="ns-node__footer">
-      <slot name="footer" />
-    </footer>
-
-    <!-- Selection indicator -->
-    {#if selected}
-      <div class="ns-node__selection-indicator" aria-hidden="true"></div>
-    {/if}
-
-    <!-- Focus ring -->
-    <div class="ns-node__focus-ring" aria-hidden="true"></div>
-  </button>
-{:else}
-  <!-- Non-interactive node container -->
-  <div
-    class={nodeClasses}
-    role={draggable && !disabled ? 'listitem' : 'article'}
-    aria-label="{getNodeTypeLabel(nodeType)}: {title || 'Untitled'}"
-    data-node-id={nodeId}
-    data-node-type={nodeType}
-    draggable={draggable && !disabled}
-    on:dragstart={draggable && !disabled ? handleDragStart : undefined}
-    on:dragend={draggable && !disabled ? handleDragEnd : undefined}
-  >
-    <!-- Loading overlay -->
-    {#if loading}
-      <div class="ns-node__loading-overlay">
-        <div class="ns-node__spinner" aria-label="Loading..."></div>
-      </div>
-    {/if}
-
-    <!-- Node header -->
-    <header class="ns-node__header">
-      <!-- Node hierarchy indicator -->
-      <div
-        class="ns-node__hierarchy-indicator"
-        class:ns-node__hierarchy-indicator--has-children={hasChildren}
-        data-node-type={nodeType}
-        role="img"
-        aria-label="{hasChildren ? 'Parent node' : 'Childless node'} - {getNodeTypeLabel(nodeType)}"
-      ></div>
-
-      <!-- Node title and subtitle -->
-      <div class="ns-node__title-section">
-        {#if title}
-          <h3 class="ns-node__title">{title}</h3>
-        {/if}
-        {#if subtitle}
-          <p class="ns-node__subtitle">{subtitle}</p>
-        {/if}
-      </div>
-
-      <!-- Node actions -->
-      {#if showActions && !loading && !disabled}
-        <div class="ns-node__actions">
-          <slot name="actions">
-            <span
-              class="ns-node__action-btn"
-              role="button"
-              tabindex="0"
-              title="More actions"
-              on:click|stopPropagation={() => handleAction('menu')}
-              on:keydown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  handleAction('menu');
-                }
-              }}
-            >
-              ⋯
-            </span>
-          </slot>
-        </div>
-      {/if}
-    </header>
-
-    <!-- Node content -->
-    <div class="ns-node__content">
-      <slot>
-        {#if content}
-          <p class="ns-node__default-content">{content}</p>
-        {:else}
-          <p class="ns-node__empty-content">No content</p>
-        {/if}
-      </slot>
-    </div>
-
-    <!-- Node footer -->
-    <footer class="ns-node__footer">
-      <slot name="footer" />
-    </footer>
-
-    <!-- Selection indicator -->
-    {#if selected}
-      <div class="ns-node__selection-indicator" aria-hidden="true"></div>
-    {/if}
-
-    <!-- Focus ring -->
-    <div class="ns-node__focus-ring" aria-hidden="true"></div>
-  </div>
-{/if}
+  </header>
+</button>
 
 <style>
-  /* Base node styling using design system tokens */
+  /* Simplified Base Node Styling */
   .ns-node {
-    /* Reset button styles when used as button */
+    /* Reset button styles */
     background: none;
     font: inherit;
-    text-align: inherit;
-    position: relative;
+    text-align: left;
+
+    /* Layout */
     display: flex;
-    flex-direction: column;
-    background-color: var(--ns-node-state-idle-background);
-    border: 1px solid var(--ns-node-state-idle-border);
-    border-radius: var(--ns-radius-lg);
-    box-shadow: var(--ns-node-state-idle-shadow);
-    padding: var(--ns-spacing-4);
-    margin: var(--ns-spacing-2);
-    transition: all var(--ns-duration-fast) var(--ns-easing-easeInOut);
+    width: 100%;
+    padding: 12px;
+    margin: 4px 0;
+
+    /* Styling */
+    background-color: hsl(var(--background));
+    border: 1px solid hsl(var(--border));
+    border-radius: 8px;
     cursor: pointer;
     outline: none;
-    min-height: 80px;
-    overflow: hidden;
+    transition: all 200ms ease;
   }
 
   /* Hover state */
-  .ns-node:hover:not(.ns-node--disabled):not(.ns-node--loading) {
-    background-color: var(--ns-node-state-hover-background);
-    border-color: var(--ns-node-state-hover-border);
-    box-shadow: var(--ns-node-state-hover-shadow);
+  .ns-node:hover {
+    background-color: hsl(var(--muted));
+    border-color: hsl(var(--border));
     transform: translateY(-1px);
   }
 
   /* Focus state */
   .ns-node:focus-visible {
-    background-color: var(--ns-node-state-focus-background);
-    border-color: var(--ns-node-state-focus-border);
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
   }
 
-  .ns-node:focus-visible .ns-node__focus-ring {
-    opacity: 1;
-    transform: scale(1);
+  /* Processing state */
+  .ns-node--processing {
+    border-color: hsl(var(--primary));
   }
 
-  /* Active state */
-  .ns-node:active:not(.ns-node--disabled) {
-    background-color: var(--ns-node-state-active-background);
-    border-color: var(--ns-node-state-active-border);
-    box-shadow: var(--ns-node-state-active-shadow);
-    transform: translateY(0);
-  }
-
-  /* Selected state */
-  .ns-node--selected {
-    background-color: var(--ns-node-state-selected-background);
-    border-color: var(--ns-node-state-selected-border);
-    box-shadow: var(--ns-node-state-selected-shadow);
-  }
-
-  /* Disabled state */
-  .ns-node--disabled {
-    background-color: var(--ns-node-state-disabled-background);
-    border-color: var(--ns-node-state-disabled-border);
-    opacity: var(--ns-node-state-disabled-opacity);
-    cursor: not-allowed;
-    pointer-events: none;
-  }
-
-  /* Loading state */
-  .ns-node--loading {
-    pointer-events: none;
-  }
-
-  /* Dragging state */
-  .ns-node--dragging {
-    opacity: 0.8;
-    transform: rotate(2deg) scale(1.02);
-    z-index: 1000;
-  }
-
-  /* Compact variant */
-  .ns-node--compact {
-    padding: var(--ns-spacing-2) var(--ns-spacing-3);
-    min-height: 48px;
-  }
-
-  .ns-node--compact .ns-node__header {
-    margin-bottom: var(--ns-spacing-1);
-  }
-
-  /* Node type variants with accent colors */
+  /* Node type variants with left border accent */
   .ns-node--text {
-    border-left: 4px solid var(--ns-node-text-accent);
-  }
-
+    border-left: 3px solid hsl(142 71% 45%);
+  } /* Green */
   .ns-node--task {
-    border-left: 4px solid var(--ns-node-task-accent);
-  }
-
+    border-left: 3px solid hsl(25 95% 53%);
+  } /* Orange */
   .ns-node--ai-chat {
-    border-left: 4px solid var(--ns-node-aiChat-accent);
-  }
-
+    border-left: 3px solid hsl(221 83% 53%);
+  } /* Blue */
   .ns-node--entity {
-    border-left: 4px solid var(--ns-node-entity-accent);
-  }
-
+    border-left: 3px solid hsl(271 81% 56%);
+  } /* Purple */
   .ns-node--query {
-    border-left: 4px solid var(--ns-node-query-accent);
-  }
+    border-left: 3px solid hsl(330 81% 60%);
+  } /* Pink */
 
-  /* Header layout - flex-start ensures consistent top-alignment */
+  /* Header layout */
   .ns-node__header {
     display: flex;
-    align-items: flex-start;
-    gap: var(--ns-spacing-3);
-    margin-bottom: var(--ns-spacing-3);
+    align-items: center;
+    gap: 12px;
+    width: 100%;
   }
 
-  /* Layered Circle Hierarchy Indicator System */
-  .ns-node__hierarchy-indicator {
-    position: relative;
+  /* Indicator container */
+  .ns-node__indicator {
     flex-shrink: 0;
     width: 16px;
     height: 16px;
-    /* Size tied to app zoom level, not content font sizes */
-    font-size: var(--ns-font-size-base);
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
-  /* Childless nodes: 10px solid circle centered in 16px container */
-  .ns-node__hierarchy-indicator::before {
-    content: '';
-    position: absolute;
-    top: 50%;
-    left: 50%;
+  /* SVG Icon styling */
+  .ns-node__icon {
+    color: currentColor;
+  }
+
+  /* Circle fallback indicator */
+  .ns-node__circle {
     width: 10px;
     height: 10px;
-    transform: translate(-50%, -50%);
     border-radius: 50%;
-    transition: all var(--ns-duration-fast) var(--ns-easing-easeInOut);
+    position: relative;
   }
 
-  /* Parent nodes: 16px semi-transparent background circle */
-  .ns-node__hierarchy-indicator--has-children::after {
+  /* Parent nodes get a ring effect */
+  .ns-node__circle--has-children::before {
     content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    opacity: 0.25;
-    transition: all var(--ns-duration-fast) var(--ns-easing-easeInOut);
-  }
-
-  /* Node type accent colors for circle indicators */
-  /* Text nodes - Green */
-  .ns-node__hierarchy-indicator[data-node-type='text']::before {
-    background-color: var(--ns-node-text-accent);
-  }
-  .ns-node__hierarchy-indicator--has-children[data-node-type='text']::after {
-    background-color: var(--ns-node-text-accent);
-  }
-
-  /* Task nodes - Orange */
-  .ns-node__hierarchy-indicator[data-node-type='task']::before {
-    background-color: var(--ns-node-task-accent);
-  }
-  .ns-node__hierarchy-indicator--has-children[data-node-type='task']::after {
-    background-color: var(--ns-node-task-accent);
-  }
-
-  /* AI Chat nodes - Blue */
-  .ns-node__hierarchy-indicator[data-node-type='ai-chat']::before {
-    background-color: var(--ns-node-aiChat-accent);
-  }
-  .ns-node__hierarchy-indicator--has-children[data-node-type='ai-chat']::after {
-    background-color: var(--ns-node-aiChat-accent);
-  }
-
-  /* Entity nodes - Purple */
-  .ns-node__hierarchy-indicator[data-node-type='entity']::before {
-    background-color: var(--ns-node-entity-accent);
-  }
-  .ns-node__hierarchy-indicator--has-children[data-node-type='entity']::after {
-    background-color: var(--ns-node-entity-accent);
-  }
-
-  /* Query nodes - Pink */
-  .ns-node__hierarchy-indicator[data-node-type='query']::before {
-    background-color: var(--ns-node-query-accent);
-  }
-  .ns-node__hierarchy-indicator--has-children[data-node-type='query']::after {
-    background-color: var(--ns-node-query-accent);
-  }
-
-  /* Enhanced visibility on hover/focus for better accessibility */
-  .ns-node:hover .ns-node__hierarchy-indicator--has-children::after,
-  .ns-node:focus .ns-node__hierarchy-indicator--has-children::after {
-    opacity: 0.75;
-  }
-
-  .ns-node__title-section {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .ns-node__title {
-    margin: 0 0 var(--ns-spacing-1) 0;
-    font-size: var(--ns-font-size-base);
-    font-weight: var(--ns-font-weight-semibold);
-    line-height: var(--ns-line-height-tight);
-    color: var(--ns-color-text-primary);
-    word-break: break-word;
-  }
-
-  .ns-node__subtitle {
-    margin: 0;
-    font-size: var(--ns-font-size-sm);
-    line-height: var(--ns-line-height-normal);
-    color: var(--ns-color-text-secondary);
-    word-break: break-word;
-  }
-
-  .ns-node__actions {
-    flex-shrink: 0;
-    opacity: 0;
-    transition: opacity var(--ns-duration-fast) var(--ns-easing-easeInOut);
-  }
-
-  .ns-node:hover .ns-node__actions,
-  .ns-node:focus-within .ns-node__actions {
-    opacity: 1;
-  }
-
-  .ns-node__action-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    background: none;
-    border: none;
-    border-radius: var(--ns-radius-sm);
-    color: var(--ns-color-text-tertiary);
-    cursor: pointer;
-    transition: all var(--ns-duration-fast) var(--ns-easing-easeInOut);
-  }
-
-  .ns-node__action-btn:hover {
-    background-color: var(--ns-color-surface-panel);
-    color: var(--ns-color-text-secondary);
-  }
-
-  /* Content section */
-  .ns-node__content {
-    flex: 1;
-    margin-bottom: var(--ns-spacing-2);
-  }
-
-  .ns-node__default-content {
-    margin: 0;
-    font-size: var(--ns-font-size-sm);
-    line-height: var(--ns-line-height-normal);
-    color: var(--ns-color-text-primary);
-    word-break: break-word;
-  }
-
-  .ns-node__empty-content {
-    margin: 0;
-    font-size: var(--ns-font-size-sm);
-    line-height: var(--ns-line-height-normal);
-    color: var(--ns-color-text-placeholder);
-    font-style: italic;
-  }
-
-  /* Footer section */
-  .ns-node__footer {
-    margin-top: auto;
-  }
-
-  /* Loading overlay */
-  .ns-node__loading-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: var(--ns-color-surface-overlay);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--ns-radius-lg);
-    z-index: 10;
-  }
-
-  .ns-node__spinner {
-    width: 20px;
-    height: 20px;
-    border: 2px solid var(--ns-color-border-default);
-    border-top-color: var(--ns-color-primary-500);
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  /* Selection indicator */
-  .ns-node__selection-indicator {
-    position: absolute;
-    top: var(--ns-spacing-2);
-    right: var(--ns-spacing-2);
-    width: 8px;
-    height: 8px;
-    background-color: var(--ns-color-primary-500);
-    border-radius: 50%;
-    animation: pulse 2s infinite;
-  }
-
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
-  }
-
-  /* Focus ring */
-  .ns-node__focus-ring {
     position: absolute;
     top: -3px;
     left: -3px;
     right: -3px;
     bottom: -3px;
-    border: 2px solid var(--ns-color-primary-500);
-    border-radius: calc(var(--ns-radius-lg) + 3px);
-    opacity: 0;
-    transform: scale(0.95);
-    transition: all var(--ns-duration-fast) var(--ns-easing-easeInOut);
-    pointer-events: none;
+    border-radius: 50%;
+    border: 1px solid currentColor;
+    opacity: 0.3;
+  }
+
+  /* Node type colors for circles */
+  .ns-node--text .ns-node__circle {
+    background-color: hsl(142 71% 45%);
+  }
+  .ns-node--task .ns-node__circle {
+    background-color: hsl(25 95% 53%);
+  }
+  .ns-node--ai-chat .ns-node__circle {
+    background-color: hsl(221 83% 53%);
+  }
+  .ns-node--entity .ns-node__circle {
+    background-color: hsl(271 81% 56%);
+  }
+  .ns-node--query .ns-node__circle {
+    background-color: hsl(330 81% 60%);
+  }
+
+  /* Content section */
+  .ns-node__content {
+    flex: 1;
+    min-width: 0; /* Prevent overflow */
+  }
+
+  .ns-node__text {
+    color: hsl(var(--foreground));
+    font-size: 14px;
+    line-height: 1.4;
+    word-break: break-word;
+  }
+
+  .ns-node__empty {
+    color: hsl(var(--muted-foreground));
+    font-size: 14px;
+    font-style: italic;
+  }
+
+  /* Processing Animations */
+  .ns-node__icon--pulse,
+  .ns-node__circle--pulse {
+    animation: pulse 2s infinite;
+  }
+
+  .ns-node__icon--blink,
+  .ns-node__circle--blink {
+    animation: blink 1s infinite;
+  }
+
+  .ns-node__icon--spin,
+  .ns-node__circle--spin {
+    animation: spin 1s linear infinite;
+  }
+
+  .ns-node__icon--fade,
+  .ns-node__circle--fade {
+    animation: fade 2s infinite;
+  }
+
+  /* Animation keyframes */
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.7;
+      transform: scale(1.1);
+    }
+  }
+
+  @keyframes blink {
+    0%,
+    50% {
+      opacity: 1;
+    }
+    51%,
+    100% {
+      opacity: 0.3;
+    }
+  }
+
+  @keyframes spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes fade {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
   }
 
   /* Responsive adjustments */
   @media (max-width: 640px) {
     .ns-node {
-      margin: var(--ns-spacing-1);
-      padding: var(--ns-spacing-3);
+      padding: 8px;
+      margin: 2px 0;
     }
 
     .ns-node__header {
-      gap: var(--ns-spacing-2);
-      margin-bottom: var(--ns-spacing-2);
+      gap: 8px;
     }
 
-    .ns-node__title {
-      font-size: var(--ns-font-size-sm);
-    }
-  }
-
-  /* Print styles */
-  @media print {
-    .ns-node {
-      box-shadow: none;
-      border: 1px solid var(--ns-color-border-default);
-      break-inside: avoid;
-      margin-bottom: var(--ns-spacing-4);
-    }
-
-    .ns-node__actions,
-    .ns-node__selection-indicator,
-    .ns-node__focus-ring {
-      display: none;
+    .ns-node__text {
+      font-size: 13px;
     }
   }
 </style>

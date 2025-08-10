@@ -319,13 +319,14 @@
 
 <BaseNode
   {nodeId}
-  title={displayTitle}
   nodeType="text"
+  content={displayTitle}
   hasChildren={textNodeData?.metadata.hasChildren || false}
-  clickable={false}
-  loading={saveStatus === 'saving'}
-  {compact}
-  className="ns-text-node {isEditing ? 'ns-text-node--editing' : ''} {compact ? 'ns-text-node--compact' : ''}"
+  isProcessing={saveStatus === 'saving'}
+  iconName="text"
+  className="ns-text-node {isEditing ? 'ns-text-node--editing' : ''} {compact
+    ? 'ns-text-node--compact'
+    : ''}"
 >
   <!-- Main content in default slot -->
   <div class="ns-text-node__content">
@@ -422,32 +423,30 @@
     {/if}
   </div>
 
-  <!-- Footer with save status -->
-  <div slot="footer" class="ns-text-node__footer">
-    {#if saveStatus !== 'saved' || saveError}
-      <div class="ns-text-node__status {saveStatusClass}">
-        {#if saveStatus === 'saving'}
-          <span class="ns-text-node__status-icon">⏳</span>
-          Saving...
-        {:else if saveStatus === 'unsaved'}
-          <span class="ns-text-node__status-icon">●</span>
-          Unsaved changes
-        {:else if saveStatus === 'error'}
-          <span class="ns-text-node__status-icon">⚠️</span>
-          {saveError || 'Save error'}
-        {/if}
-      </div>
-    {:else if textNodeData}
-      <div class="ns-text-node__meta">
-        <span class="ns-text-node__word-count">
-          {textNodeData.metadata.wordCount} words
-        </span>
-        <span class="ns-text-node__updated">
-          Updated {textNodeData.updatedAt.toLocaleDateString()}
-        </span>
-      </div>
-    {/if}
-  </div>
+  <!-- Status info inline with content -->
+  {#if saveStatus !== 'saved' || saveError}
+    <div class="ns-text-node__status {saveStatusClass}">
+      {#if saveStatus === 'saving'}
+        <span class="ns-text-node__status-icon">⏳</span>
+        Saving...
+      {:else if saveStatus === 'unsaved'}
+        <span class="ns-text-node__status-icon">●</span>
+        Unsaved changes
+      {:else if saveStatus === 'error'}
+        <span class="ns-text-node__status-icon">⚠️</span>
+        {saveError || 'Save error'}
+      {/if}
+    </div>
+  {:else if textNodeData && !isEditing}
+    <div class="ns-text-node__meta">
+      <span class="ns-text-node__word-count">
+        {textNodeData.metadata.wordCount} words
+      </span>
+      <span class="ns-text-node__updated">
+        Updated {textNodeData.updatedAt.toLocaleDateString()}
+      </span>
+    </div>
+  {/if}
 </BaseNode>
 
 <style>

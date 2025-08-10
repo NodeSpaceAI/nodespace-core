@@ -106,7 +106,8 @@
 
   function countDescendants(node: TreeNodeData): number {
     return (
-      node.children.length + node.children.reduce((sum: number, child: TreeNodeData) => sum + countDescendants(child), 0)
+      node.children.length +
+      node.children.reduce((sum: number, child: TreeNodeData) => sum + countDescendants(child), 0)
     );
   }
 
