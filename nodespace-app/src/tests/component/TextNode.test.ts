@@ -1,0 +1,323 @@
+/**
+ * Component testing example for NodeSpace
+ * Shows realistic UI component testing patterns
+ */
+import { describe, it, expect, beforeEach } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/svelte';
+import { renderWithContext, createTestNode, SimpleMockStore } from '../utils/testUtils';
+
+// Mock TextNode component for testing demonstration
+// In real usage, this would import from actual component location
+const MockTextNode = `
+<script>
+  import { createEventDispatcher } from 'svelte';
+  
+  export let node;
+  export let editable = true;
+  export let dataStore;
+  
+  const dispatch = createEventDispatcher();
+  let isEditing = false;
+  let content = node?.content || '';
+  
+  function handleClick() {
+    if (editable) {
+      isEditing = true;
+    }
+  }
+  
+  function handleSave() {
+    isEditing = false;
+    if (dataStore) {
+      dataStore.save({ ...node, content });
+    }
+    dispatch('save', content);
+  }
+  
+  function handleKeydown(event) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      handleSave();
+    } else if (event.key === 'Escape') {
+      content = node?.content || '';
+      isEditing = false;
+    }
+  }
+</script>
+
+{#if isEditing}
+  <textarea
+    bind:value={content}
+    on:keydown={handleKeydown}
+    on:blur={handleSave}
+    placeholder="Enter text content..."
+    data-testid="text-editor"
+    autofocus
+  />
+{:else}
+  <div
+    class="text-content"
+    on:click={handleClick}
+    on:keydown={(e) => e.key === 'Enter' && handleClick()}
+    tabindex={editable ? '0' : undefined}
+    role={editable ? 'button' : 'article'}
+    data-testid="text-display"
+  >
+    {content || 'Click to edit...'}
+  </div>
+{/if}
+
+<style>
+  .text-content {
+    min-height: 1.5rem;
+    padding: 0.5rem;
+    border: 1px solid transparent;
+    border-radius: 0.25rem;
+    cursor: pointer;
+  }
+  
+  .text-content:hover {
+    border-color: #e5e7eb;
+    background-color: #f9fafb;
+  }
+  
+  textarea {
+    width: 100%;
+    min-height: 4rem;
+    padding: 0.5rem;
+    border: 2px solid #3b82f6;
+    border-radius: 0.25rem;
+    resize: vertical;
+    font-family: inherit;
+  }
+  
+  textarea:focus {
+    outline: none;
+    border-color: #1d4ed8;
+  }
+</style>
+`;
+
+// Create the mock component for testing
+const TextNodeComponent = {
+  render: () => MockTextNode
+};
+
+describe('TextNode Component', () => {
+  let store: SimpleMockStore;
+  
+  beforeEach(() => {
+    SimpleMockStore.resetInstance();
+    store = SimpleMockStore.getInstance();
+  });
+
+  describe('Rendering', () => {
+    it('renders text content correctly', () => {
+      const node = createTestNode({ content: 'Hello World' });
+      
+      const { getByTestId } = render(TextNodeComponent, {
+        props: { node }
+      });
+      
+      const display = getByTestId('text-display');
+      expect(display).toHaveTextContent('Hello World');
+    });
+
+    it('shows placeholder for empty content', () => {
+      const node = createTestNode({ content: '' });
+      
+      const { getByTestId } = render(TextNodeComponent, {
+        props: { node }
+      });
+      
+      const display = getByTestId('text-display');
+      expect(display).toHaveTextContent('Click to edit...');
+    });
+
+    it('renders as non-editable when editable=false', () => {
+      const node = createTestNode({ content: 'Read-only content' });
+      
+      const { getByTestId } = render(TextNodeComponent, {
+        props: { node, editable: false }
+      });
+      
+      const display = getByTestId('text-display');
+      expect(display).toHaveAttribute('role', 'article');
+      expect(display).not.toHaveAttribute('tabindex');
+    });
+  });
+
+  describe('User Interactions', () => {
+    it('enters edit mode on click', async () => {
+      const node = createTestNode({ content: 'Editable content' });
+      
+      const { getByTestId } = render(TextNodeComponent, {
+        props: { node, editable: true }
+      });
+      
+      const display = getByTestId('text-display');
+      await fireEvent.click(display);
+      
+      const editor = getByTestId('text-editor');
+      expect(editor).toBeInTheDocument();
+      expect(editor).toHaveValue('Editable content');
+    });
+
+    it('saves content on blur', async () => {
+      const node = createTestNode({ content: 'Original content' });
+      let savedContent = '';
+      
+      const { getByTestId } = render(TextNodeComponent, {
+        props: { 
+          node, 
+          editable: true,
+          dataStore: store
+        }
+      });
+
+      // Enter edit mode
+      await fireEvent.click(getByTestId('text-display'));
+      
+      // Modify content
+      const editor = getByTestId('text-editor');
+      await fireEvent.input(editor, { target: { value: 'Modified content' } });
+      
+      // Blur to save
+      await fireEvent.blur(editor);
+      
+      // Should return to display mode
+      const display = getByTestId('text-display');
+      expect(display).toHaveTextContent('Modified content');
+    });
+
+    it('saves on Enter key', async () => {
+      const node = createTestNode({ content: 'Enter test' });
+      
+      const { getByTestId } = render(TextNodeComponent, {
+        props: { node, editable: true, dataStore: store }
+      });
+
+      await fireEvent.click(getByTestId('text-display'));
+      const editor = getByTestId('text-editor');
+      
+      await fireEvent.input(editor, { target: { value: 'New content' } });
+      await fireEvent.keyDown(editor, { key: 'Enter' });
+      
+      const display = getByTestId('text-display');
+      expect(display).toHaveTextContent('New content');
+    });
+
+    it('cancels editing on Escape key', async () => {
+      const node = createTestNode({ content: 'Original content' });
+      
+      const { getByTestId } = render(TextNodeComponent, {
+        props: { node, editable: true }
+      });
+
+      await fireEvent.click(getByTestId('text-display'));
+      const editor = getByTestId('text-editor');
+      
+      await fireEvent.input(editor, { target: { value: 'Modified content' } });
+      await fireEvent.keyDown(editor, { key: 'Escape' });
+      
+      const display = getByTestId('text-display');
+      expect(display).toHaveTextContent('Original content'); // Should revert
+    });
+  });
+
+  describe('Data Store Integration', () => {
+    it('saves to data store when content changes', async () => {
+      const node = createTestNode({ content: 'Store test' });
+      
+      const { getByTestId } = render(TextNodeComponent, {
+        props: { node, editable: true, dataStore: store }
+      });
+
+      await fireEvent.click(getByTestId('text-display'));
+      const editor = getByTestId('text-editor');
+      
+      await fireEvent.input(editor, { target: { value: 'Saved content' } });
+      await fireEvent.blur(editor);
+      
+      const savedNode = await store.load(node.id);
+      expect(savedNode?.content).toBe('Saved content');
+    });
+
+    it('handles store save errors gracefully', async () => {
+      const node = createTestNode({ content: 'Error test' });
+      
+      // Mock store that throws errors
+      const errorStore = {
+        save: vi.fn().mockRejectedValue(new Error('Save failed'))
+      };
+      
+      const { getByTestId } = render(TextNodeComponent, {
+        props: { node, editable: true, dataStore: errorStore }
+      });
+
+      await fireEvent.click(getByTestId('text-display'));
+      const editor = getByTestId('text-editor');
+      
+      await fireEvent.input(editor, { target: { value: 'New content' } });
+      await fireEvent.blur(editor);
+      
+      // Should still update display even if save fails
+      const display = getByTestId('text-display');
+      expect(display).toHaveTextContent('New content');
+      expect(errorStore.save).toHaveBeenCalled();
+    });
+  });
+
+  describe('Event Dispatching', () => {
+    it('dispatches save event with content', async () => {
+      const node = createTestNode({ content: 'Event test' });
+      let dispatchedContent = '';
+      
+      const handleSave = (event) => {
+        dispatchedContent = event.detail;
+      };
+      
+      const { getByTestId, component } = render(TextNodeComponent, {
+        props: { node, editable: true }
+      });
+      
+      component.$on('save', handleSave);
+
+      await fireEvent.click(getByTestId('text-display'));
+      const editor = getByTestId('text-editor');
+      
+      await fireEvent.input(editor, { target: { value: 'Dispatched content' } });
+      await fireEvent.blur(editor);
+      
+      expect(dispatchedContent).toBe('Dispatched content');
+    });
+  });
+
+  describe('Accessibility', () => {
+    it('has proper ARIA roles', () => {
+      const node = createTestNode({ content: 'Accessibility test' });
+      
+      const { getByTestId } = render(TextNodeComponent, {
+        props: { node, editable: true }
+      });
+      
+      const display = getByTestId('text-display');
+      expect(display).toHaveAttribute('role', 'button');
+      expect(display).toHaveAttribute('tabindex', '0');
+    });
+
+    it('supports keyboard navigation', async () => {
+      const node = createTestNode({ content: 'Keyboard test' });
+      
+      const { getByTestId } = render(TextNodeComponent, {
+        props: { node, editable: true }
+      });
+      
+      const display = getByTestId('text-display');
+      await fireEvent.keyDown(display, { key: 'Enter' });
+      
+      const editor = getByTestId('text-editor');
+      expect(editor).toBeInTheDocument();
+    });
+  });
+});
