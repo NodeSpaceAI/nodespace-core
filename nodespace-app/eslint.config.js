@@ -36,6 +36,9 @@ export default [
         FocusEvent: 'readonly',
         KeyboardEvent: 'readonly',
         DragEvent: 'readonly',
+        Event: 'readonly',
+        InputEvent: 'readonly',
+        HTMLSpanElement: 'readonly',
         NodeJS: 'readonly'
       }
     },
@@ -80,6 +83,9 @@ export default [
         FocusEvent: 'readonly',
         KeyboardEvent: 'readonly',
         DragEvent: 'readonly',
+        Event: 'readonly',
+        InputEvent: 'readonly',
+        HTMLSpanElement: 'readonly',
         NodeJS: 'readonly'
       }
     },

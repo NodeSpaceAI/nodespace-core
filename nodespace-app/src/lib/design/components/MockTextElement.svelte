@@ -8,16 +8,7 @@
 <script lang="ts">
   import { afterUpdate } from 'svelte';
 
-  // Props interface
-  interface Props {
-    content?: string;
-    fontFamily?: string;
-    fontSize?: string;
-    fontWeight?: string;
-    lineHeight?: string;
-    width?: number;
-    multiline?: boolean;
-  }
+  // Component props are exported below, no interface needed
 
   // Props match textarea styling for accurate mirroring
   export let content = '';

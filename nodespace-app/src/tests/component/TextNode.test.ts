@@ -3,101 +3,11 @@
  * Shows realistic UI component testing patterns
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/svelte';
-import { renderWithContext, createTestNode, SimpleMockStore } from '../utils/testUtils';
+import { render, fireEvent } from '@testing-library/svelte';
+import { createTestNode, SimpleMockStore } from '../utils/testUtils';
 import TextNode from '../../lib/components/TextNode.svelte';
 
-// Mock TextNode component for testing demonstration
-// In real usage, this would import from actual component location
-const MockTextNode = `
-<script>
-  import { createEventDispatcher } from 'svelte';
-  
-  export let node;
-  export let editable = true;
-  export let dataStore;
-  
-  const dispatch = createEventDispatcher();
-  let isEditing = false;
-  let content = node?.content || '';
-  
-  function handleClick() {
-    if (editable) {
-      isEditing = true;
-    }
-  }
-  
-  function handleSave() {
-    isEditing = false;
-    if (dataStore) {
-      dataStore.save({ ...node, content });
-    }
-    dispatch('save', content);
-  }
-  
-  function handleKeydown(event) {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      handleSave();
-    } else if (event.key === 'Escape') {
-      content = node?.content || '';
-      isEditing = false;
-    }
-  }
-</script>
-
-{#if isEditing}
-  <textarea
-    bind:value={content}
-    on:keydown={handleKeydown}
-    on:blur={handleSave}
-    placeholder="Enter text content..."
-    data-testid="text-editor"
-    autofocus
-  />
-{:else}
-  <div
-    class="text-content"
-    on:click={handleClick}
-    on:keydown={(e) => e.key === 'Enter' && handleClick()}
-    tabindex={editable ? '0' : undefined}
-    role={editable ? 'button' : 'article'}
-    data-testid="text-display"
-  >
-    {content || 'Click to edit...'}
-  </div>
-{/if}
-
-<style>
-  .text-content {
-    min-height: 1.5rem;
-    padding: 0.5rem;
-    border: 1px solid transparent;
-    border-radius: 0.25rem;
-    cursor: pointer;
-  }
-  
-  .text-content:hover {
-    border-color: #e5e7eb;
-    background-color: #f9fafb;
-  }
-  
-  textarea {
-    width: 100%;
-    min-height: 4rem;
-    padding: 0.5rem;
-    border: 2px solid #3b82f6;
-    border-radius: 0.25rem;
-    resize: vertical;
-    font-family: inherit;
-  }
-  
-  textarea:focus {
-    outline: none;
-    border-color: #1d4ed8;
-  }
-</style>
-`;
+// Using real TextNode component for testing
 
 // Use the real TextNode component for testing
 const TextNodeComponent = TextNode;
@@ -164,7 +74,7 @@ describe('TextNode Component', () => {
 
     it('saves content on blur', async () => {
       const node = createTestNode({ content: 'Original content' });
-      let savedContent = '';
+      // Track if save was called
       
       const { getByTestId } = render(TextNodeComponent, {
         props: { 
@@ -272,13 +182,16 @@ describe('TextNode Component', () => {
       const node = createTestNode({ content: 'Event test' });
       let dispatchedContent = '';
       
-      const handleSave = (event: any) => {
+      const handleSave = (event: CustomEvent<string>) => {
         dispatchedContent = event.detail;
       };
       
-      const { getByTestId } = render(TextNodeComponent, {
+      const { getByTestId, component } = render(TextNodeComponent, {
         props: { nodeId: node.id, content: node.content, editable: true }
       });
+      
+      // Listen for save events
+      component.$on('save', handleSave);
 
       await fireEvent.click(getByTestId('text-display'));
       const editor = getByTestId('text-editor');

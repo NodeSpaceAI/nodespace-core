@@ -1,9 +1,9 @@
 /**
  * Simple test utilities for NodeSpace components
  */
-import { render, type RenderResult } from '@testing-library/svelte';
+import { render } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
-import type { ComponentProps } from 'svelte';
+import type { ComponentType } from 'svelte';
 
 // Basic mock data types
 export interface MockNodeData {
@@ -74,9 +74,9 @@ export function createTestNode(overrides: Partial<MockNodeData> = {}): MockNodeD
 
 // Enhanced render function with common utilities
 export function renderWithContext(
-  component: any,
-  props: any = {}
-): any {
+  component: ComponentType,
+  props: Record<string, unknown> = {}
+) {
   const mockStore = SimpleMockStore.getInstance();
   mockStore.clear(); // Clean slate for each test
 
