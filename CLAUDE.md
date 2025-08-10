@@ -159,10 +159,19 @@ I need to implement Issue #X [TITLE].
 ## What I Need You To Do
 [Clear, specific instructions for implementation]
 
-**CRITICAL CONSTRAINTS:**
+**🚨 CRITICAL MANDATORY REQUIREMENTS:**
 - Follow the specified branching strategy exactly
 - Do NOT deviate from the PR policy specified above
 - Stay within the defined scope
+- **MANDATORY BEFORE PR**: Run `bun run quality:fix` and fix ALL linting/TypeScript errors
+- **ZERO TOLERANCE**: No PR creation with any linting errors
+- **VERIFICATION REQUIRED**: Show successful linting output before PR creation
+
+**CODE QUALITY GATE (BLOCKING):**
+You MUST run and pass ALL of these before creating any PR:
+```bash
+bun run quality:fix
+# Must show: ✅ ESLint: 0 errors, ✅ TypeScript: 0 errors, ✅ Svelte Check: 0 errors
 ```
 
 #### **Process Verification**
@@ -212,8 +221,10 @@ Before using any subagent:
    Then manually update project status: In Progress → Ready for Review
 
 6. **Conduct Code Review**
-   - **CRITICAL: Review against original issue requirements FIRST** - verify all acceptance criteria
-   - Use `senior-architect-reviewer` agent for complex features
+   - **🚨 MANDATORY FIRST**: Run `bun run quality:fix` and verify ZERO linting/TypeScript errors
+   - **CRITICAL: Review against original issue requirements SECOND** - verify all acceptance criteria
+   - Use `senior-architect-reviewer` agent for complex features with explicit linting verification
+   - **AUTOMATIC REJECTION**: If any linting errors found, reject immediately 
    - If review shows ready to merge: Immediately approve and merge
    - If review shows issues: Request changes with specific feedback
 
