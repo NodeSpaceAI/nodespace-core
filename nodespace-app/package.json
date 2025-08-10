@@ -16,6 +16,9 @@
     "format:check": "prettier --check .",
     "quality": "bun run lint:check && bun run format:check && bun run check",
     "quality:fix": "bun run lint && bun run format && bun run check",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "tauri": "bunx tauri",
     "tauri:dev": "bunx tauri dev",
     "tauri:build": "bunx tauri build"
@@ -33,11 +36,16 @@
     "@sveltejs/kit": "^2.9.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/svelte": "^5.2.5",
+    "@testing-library/user-event": "^14.5.2",
     "@typescript-eslint/eslint-plugin": "^8.39.0",
     "@typescript-eslint/parser": "^8.39.0",
+    "@vitest/coverage-v8": "^2.1.8",
     "autoprefixer": "^10.4.21",
     "eslint": "^9.32.0",
     "eslint-plugin-svelte": "^3.11.0",
+    "jsdom": "^25.0.1",
     "postcss": "^8.5.6",
     "prettier": "^3.6.2",
     "prettier-plugin-svelte": "^3.4.0",
@@ -46,7 +54,8 @@
     "tailwind-variants": "^1.0.0",
     "tailwindcss": "^4.1.11",
     "typescript": "~5.6.2",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "vitest": "^2.1.8"
   },
   "engines": {
     "bun": ">=1.0.0",
