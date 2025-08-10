@@ -13,6 +13,8 @@
 <script lang="ts">
   import { createEventDispatcher, tick } from 'svelte';
   import Icon, { type IconName } from '../icons/index.js';
+  import MockTextElement from './MockTextElement.svelte';
+  import { findCharacterFromClickFast, isClickWithinTextBounds } from './CursorPositioning';
 
   // Essential Props (Simplified to 5 core + processing)
   export let nodeType: NodeType = 'text';
@@ -36,6 +38,7 @@
   // Edit state
   let focused = false;
   let textareaElement: HTMLTextAreaElement;
+  let mockElementRef: MockTextElement;
 
   // Event dispatcher
   const dispatch = createEventDispatcher<{
@@ -90,124 +93,67 @@
     }
   }
 
-  // Position cursor based on click coordinates
+  // Position cursor based on click coordinates using mock element
   async function positionCursorFromClick(clickEvent: MouseEvent) {
-    if (!textareaElement) return;
+    if (!textareaElement || !mockElementRef) return;
 
-    // Get the display container (not just the clicked target which might be a child element)
-    const clickedElement = clickEvent.target as HTMLElement;
-    const displayElement = clickedElement.closest('.ns-node__display--clickable') || clickedElement;
-    
-    // Get bounds from the textarea instead of the display element (which may be hidden now)
     const textareaRect = textareaElement.getBoundingClientRect();
     
-    // Create a temporary element to measure text
-    const tempElement = document.createElement('div');
-    tempElement.style.position = 'absolute';
-    tempElement.style.visibility = 'hidden';
-    tempElement.style.whiteSpace = multiline ? 'pre-wrap' : 'nowrap';
-    tempElement.style.fontFamily = getComputedStyle(textareaElement).fontFamily;
-    tempElement.style.fontSize = getComputedStyle(textareaElement).fontSize;
-    tempElement.style.lineHeight = getComputedStyle(textareaElement).lineHeight;
-    // Don't set width - let it auto-size to content for accurate measurements
-    // tempElement.style.width = textareaElement.offsetWidth + 'px';
-    tempElement.style.display = 'inline-block';
-    document.body.appendChild(tempElement);
+    // Validate click is within reasonable bounds
+    if (!isClickWithinTextBounds(clickEvent.clientX, clickEvent.clientY, textareaRect)) {
+      // Click is too far from text area, position at end
+      const textLength = textareaElement.value.length;
+      textareaElement.setSelectionRange(textLength, textLength);
+      return;
+    }
+    
+    console.log('Mock element positioning:', {
+      content: content.substring(0, 20) + '...',
+      clickX: clickEvent.clientX,
+      clickY: clickEvent.clientY,
+      textareaRect: { left: textareaRect.left, top: textareaRect.top, width: textareaRect.width, height: textareaRect.height },
+      multiline: multiline
+    });
 
     try {
-      const text = textareaElement.value;
-      
-      // Calculate click position relative to the textarea (which has the same position as the display was)
-      const clickX = clickEvent.clientX - textareaRect.left;
-      const clickY = clickEvent.clientY - textareaRect.top;
-      
-      console.log('Debug cursor positioning:', {
-        text: text.substring(0, 20) + '...',
-        clickX,
-        clickY,
-        textareaWidth: textareaRect.width,
-        textareaHeight: textareaRect.height,
-        displayElement: displayElement.className,
-        multiline: multiline
-      });
-
-      let bestPosition = 0;
-      let minDistance = Infinity;
-
-      // For single line, only consider X position
-      if (!multiline) {
-        console.log('Starting binary search for single line, text length:', text.length);
-        // Binary search for closest character position
-        let left = 0;
-        let right = text.length;
-        
-        while (left <= right) {
-          const mid = Math.floor((left + right) / 2);
-          const testText = text.substring(0, mid);
-          tempElement.textContent = testText;
-          const testWidth = tempElement.offsetWidth;
-          
-          console.log(`Binary search: mid=${mid}, testText="${testText}", testWidth=${testWidth}, clickX=${clickX}`);
-          
-          if (testWidth <= clickX) {
-            bestPosition = mid;
-            left = mid + 1;
-          } else {
-            right = mid - 1;
-          }
-        }
-        console.log('Binary search complete, bestPosition:', bestPosition);
-      } else {
-        // For multi-line, consider both X and Y positions
-        const lines = text.split('\n');
-        let currentPos = 0;
-        
-        for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-          const line = lines[lineIndex];
-          tempElement.textContent = 'M'; // Use M as height reference
-          const lineHeight = tempElement.offsetHeight;
-          const lineY = lineIndex * lineHeight;
-          
-          // Check if click is on this line
-          if (clickY >= lineY && clickY <= lineY + lineHeight) {
-            // Binary search within this line
-            let left = 0;
-            let right = line.length;
-            let linePosition = 0;
-            
-            while (left <= right) {
-              const mid = Math.floor((left + right) / 2);
-              const testText = line.substring(0, mid);
-              tempElement.textContent = testText;
-              const testWidth = tempElement.offsetWidth;
-              
-              if (testWidth <= clickX) {
-                linePosition = mid;
-                left = mid + 1;
-              } else {
-                right = mid - 1;
-              }
-            }
-            
-            bestPosition = currentPos + linePosition;
-            break;
-          }
-          
-          currentPos += line.length + 1; // +1 for newline
-        }
+      // Get the mock element for position calculation
+      const mockElement = mockElementRef.getElement();
+      if (!mockElement) {
+        console.warn('Mock element not available, falling back to end position');
+        const textLength = textareaElement.value.length;
+        textareaElement.setSelectionRange(textLength, textLength);
+        return;
       }
 
-      // Set cursor position
-      console.log('Setting cursor position to:', bestPosition);
-      textareaElement.setSelectionRange(bestPosition, bestPosition);
+      // Use the fast positioning algorithm
+      const positionResult = findCharacterFromClickFast(
+        mockElement,
+        clickEvent.clientX,
+        clickEvent.clientY,
+        textareaRect
+      );
+
+      // Set cursor position based on result
+      const targetPosition = Math.max(0, Math.min(positionResult.index, textareaElement.value.length));
+      
+      console.log('Mock element positioning result:', {
+        targetPosition,
+        accuracy: positionResult.accuracy,
+        distance: positionResult.distance
+      });
+      
+      textareaElement.setSelectionRange(targetPosition, targetPosition);
       
       // Verify the cursor was set correctly
       setTimeout(() => {
         console.log('Actual cursor position after set:', textareaElement.selectionStart);
       }, 10);
       
-    } finally {
-      document.body.removeChild(tempElement);
+    } catch (error) {
+      console.error('Error in mock element positioning:', error);
+      // Fallback to end position
+      const textLength = textareaElement.value.length;
+      textareaElement.setSelectionRange(textLength, textLength);
     }
   }
 
@@ -351,6 +297,20 @@
             {placeholder}
             rows={multiline ? "1" : "1"}
           ></textarea>
+          
+          <!-- Mock element for precise cursor positioning -->
+          {#if textareaElement}
+            <MockTextElement 
+              bind:this={mockElementRef}
+              {content}
+              fontFamily={getComputedStyle(textareaElement).fontFamily}
+              fontSize={getComputedStyle(textareaElement).fontSize}
+              fontWeight={getComputedStyle(textareaElement).fontWeight}
+              lineHeight={getComputedStyle(textareaElement).lineHeight}
+              width={textareaElement.offsetWidth}
+              {multiline}
+            />
+          {/if}
         {:else}
           <!-- Display mode -->
           {#if editable && contentEditable}
