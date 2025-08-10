@@ -163,16 +163,7 @@ I need to implement Issue #X [TITLE].
 - Follow the specified branching strategy exactly
 - Do NOT deviate from the PR policy specified above
 - Stay within the defined scope
-- **MANDATORY BEFORE PR**: Run `bun run quality:fix` and fix ALL linting/TypeScript errors
-- **ZERO TOLERANCE**: No PR creation with any linting errors
-- **VERIFICATION REQUIRED**: Show successful linting output before PR creation
-
-**CODE QUALITY GATE (BLOCKING):**
-You MUST run and pass ALL of these before creating any PR:
-```bash
-bun run quality:fix
-# Must show: ✅ ESLint: 0 errors, ✅ TypeScript: 0 errors, ✅ Svelte Check: 0 errors
-```
+- **FOLLOW UNIVERSAL PROCESS**: All quality gates and requirements in `/docs/architecture/development/development-process.md` apply to ALL team members (AI agents & humans)
 
 #### **Process Verification**
 Before using any subagent:
@@ -221,12 +212,9 @@ Before using any subagent:
    Then manually update project status: In Progress → Ready for Review
 
 6. **Conduct Code Review**
-   - **🚨 MANDATORY FIRST**: Run `bun run quality:fix` and verify ZERO linting/TypeScript errors
-   - **CRITICAL: Review against original issue requirements SECOND** - verify all acceptance criteria
-   - Use `senior-architect-reviewer` agent for complex features with explicit linting verification
-   - **AUTOMATIC REJECTION**: If any linting errors found, reject immediately 
-   - If review shows ready to merge: Immediately approve and merge
-   - If review shows issues: Request changes with specific feedback
+   - **FOLLOW UNIVERSAL PROCESS**: Use the code review guidelines in `/docs/architecture/development/development-process.md` 
+   - Use `senior-architect-reviewer` agent for complex features
+   - All quality gates and review requirements apply universally to AI agents and human reviewers
 
 **TodoWrite Tool Users - CRITICAL:**
 - Your **FIRST todo item** must be: "Complete mandatory startup sequence (git status, determine branching strategy, checkout/switch branch, assign issue, select subagent)"
