@@ -13,8 +13,11 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 > 1. **Check git status**: `git status` - commit any pending changes first
 > 2. **Determine branching strategy**: Check parent issue for specified approach (single branch vs. individual branches)
 > 3. **Create/switch to branch**: Based on strategy - either `git checkout -b feature/issue-<number>-brief-description` OR switch to existing parent issue branch
-> 4. **Assign issue**: `gh issue edit <number> --add-assignee "@me"`
-> 5. **Update project status**: Todo → In Progress (GitHub web interface)
+> 4. **Assign issue**: `gh issue edit <number> --add-assignee "@me"`  
+> 5. **Update project status**: Use CANONICAL COMMAND (copy-paste, replace issue number):
+> ```bash
+> ISSUE_NUMBER=YOUR_ISSUE_NUMBER && ITEM_ID=$(gh project item-list 5 --owner malibio --limit 200 --format=json -q ".items[] | select(.content.number == $ISSUE_NUMBER) | .id") && gh project item-edit --id $ITEM_ID --project-id PVT_kwHOADHu9M4A_nxN --field-id PVTSSF_lAHOADHu9M4A_nxNzgyq13o --single-select-option-id 47fc9ee4 && echo "✅ Issue #$ISSUE_NUMBER updated to 'In Progress'"
+> ```
 > 6. **Select subagent**: Use decision tree below to choose specialized agent
 > 7. **Read issue requirements**: Understand all acceptance criteria
 > 8. **Plan implementation**: Self-contained approach with appropriate subagent
@@ -42,7 +45,7 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 > - ✅ **Self-Contained Implementation**: Each issue must work independently with full functionality
 > - ✅ **Early-Phase Mock Development**: Use mock data/services temporarily for parallel development (transitioning to real services soon)
 > - ✅ **Vertical Slicing**: Complete features end-to-end, not horizontal layers
-> - ✅ **GitHub Status Updates**: Manually update project status at each transition (Todo → In Progress → Ready for Review)
+> - ✅ **GitHub Status Updates**: Use CLI commands to update project status at each transition (Todo → In Progress → Ready for Review)
 > - ✅ **Use Appropriate Subagents**: Select specialized agents based on task type (see Subagent Selection Guide below)
 
 ### 1. Understanding the Project
@@ -88,90 +91,9 @@ gh issue view <issue-number> --web
 - Build-time plugins: Compile-time extensibility for performance
 - Design system driven: Consistent UI patterns from the start
 
-### 4. Subagent Selection Guide
+### 4. Specialized Agent Usage
 
-**MANDATORY**: You must use the appropriate specialized subagent for your task type. This ensures expert-level implementation quality.
-
-| Task Type | Recommended Subagent | When to Use | Examples |
-|-----------|---------------------|-------------|-----------|
-| **Design System, UI Patterns, Visual Design** | `ux-design-expert` | Creating design tokens, style guides, component patterns, user interface designs | Design system foundation, visual patterns, style guides, component architecture |
-| **Frontend Components, Svelte Development** | `frontend-expert` | Building UI components, Svelte apps, Tauri desktop integration, DOM manipulation | Svelte components, Tauri integration, desktop app features, interactive UI |
-| **AI/ML Integration, Local LLMs, Rust AI** | `ai-ml-engineer` | Implementing AI features, local model integration, NLP processing, mistral.rs setup | AI chat nodes, NLP integration, model loading, AI-powered features |
-| **Architecture Review, Code Review, System Design** | `senior-architect-reviewer` | Complex system design, comprehensive code review, architectural decisions, team coordination | System architecture, design reviews, complex feature planning, integration strategies |
-| **General Implementation, Research, Multi-step Tasks** | `general-purpose` | Complex research, file searching, multi-step implementations when no specialized agent fits | Project research, complex searches, general development tasks |
-
-**Selection Decision Tree:**
-1. **Is this about visual design, UI patterns, or design systems?** → Use `ux-design-expert`
-2. **Is this about frontend components, Svelte, or desktop app features?** → Use `frontend-expert`
-3. **Is this about AI integration, local models, or NLP?** → Use `ai-ml-engineer`
-4. **Is this about architecture review or complex system design?** → Use `senior-architect-reviewer`
-5. **Is this complex research or multi-step work?** → Use `general-purpose`
-
-### 4.1. Subagent Instruction Guidelines
-
-**🚨 CRITICAL: When using Task tool with subagents, ALWAYS include these instructions:**
-
-#### **Branching Strategy Instructions**
-Every subagent prompt MUST explicitly specify the branching approach:
-
-**For Parent Issue Implementation (Default Approach):**
-```
-BRANCHING STRATEGY: Work on existing branch `feature/issue-<parent-number>-name`
-PR POLICY: DO NOT create any PRs - this will be included in parent issue PR
-SCOPE: Implement only the specific requirements for this sub-issue as part of larger feature
-```
-
-**For Individual Sub-Issue Implementation:**
-```
-BRANCHING STRATEGY: Create new branch `feature/issue-<number>-brief-description`
-PR POLICY: Create individual PR for this sub-issue when implementation is complete
-SCOPE: Complete independent implementation with all acceptance criteria
-```
-
-#### **Issue Structure Decision Framework**
-
-**Use Parent Issue Branch (Option 1) When:**
-- Sub-issues are tightly coupled and interdependent
-- Total implementation is < 2 weeks of work
-- Feature should be reviewed as a cohesive unit
-- Parent issue explicitly specifies "single branch approach"
-
-**Use Individual Branches (Option 2) When:**
-- Sub-issues can be implemented and reviewed independently
-- Sub-issues might be worked on by different people
-- Feature is large/complex and benefits from incremental review
-- Parent issue explicitly specifies "individual branch approach"
-
-#### **Mandatory Subagent Prompt Template**
-
-```markdown
-I need to implement Issue #X [TITLE]. 
-
-**BRANCHING STRATEGY:** [Specify approach based on parent issue]
-**PR POLICY:** [Specify whether to create PR or not]
-**SCOPE:** [Define exact scope of work]
-
-## Context
-[Provide project context and current state]
-
-## Requirements
-[List specific technical requirements from issue]
-
-## What I Need You To Do
-[Clear, specific instructions for implementation]
-
-**🚨 CRITICAL MANDATORY REQUIREMENTS:**
-- Follow the specified branching strategy exactly
-- Do NOT deviate from the PR policy specified above
-- Stay within the defined scope
-- **FOLLOW UNIVERSAL PROCESS**: All quality gates and requirements in the [development documentation](docs/architecture/development/overview.md) apply to ALL team members (AI agents & humans)
-
-#### **Process Verification**
-Before using any subagent:
-1. **Check parent issue** for specified branching strategy
-2. **If not specified** in parent issue, default to Parent Issue Branch (Option 1)
-3. **Include explicit instructions** in every subagent prompt
-4. **Verify subagent follows instructions** - if they deviate, immediately correct
+Use the most appropriate specialized sub-agent available for complex tasks. Claude Code will automatically select the best agent based on task context and complexity.
 
 ### 5. Implementation Workflow
 
@@ -185,7 +107,7 @@ Before using any subagent:
    gh issue view <number>
    gh issue edit <number> --add-assignee "@me"
    ```
-   Then manually update project status: Todo → In Progress (via GitHub web interface)
+   Then update project status using CLI commands (see [startup-sequence.md](docs/architecture/development/process/startup-sequence.md))
 
 2. **Create Feature Branch**
    ```bash
@@ -210,15 +132,16 @@ Before using any subagent:
    git push -u origin feature/issue-<number>-brief-description
    gh pr create --title "Implement Issue #<number>" --body "Closes #<number>"
    ```
-   Then manually update project status: In Progress → Ready for Review
+   Then update project status using CLI commands: In Progress → Ready for Review
 
 6. **Conduct Code Review**
    - **FOLLOW UNIVERSAL PROCESS**: Use the code review guidelines in the [PR review documentation](docs/architecture/development/process/pr-review.md) 
    - Use `senior-architect-reviewer` agent for complex features
    - All quality gates and review requirements apply universally to AI agents and human reviewers
 
-**TodoWrite Tool Users - CRITICAL:**
-- Your **FIRST todo item** must be: "Complete mandatory startup sequence (git status, determine branching strategy, checkout/switch branch, assign issue, select subagent)"
+**TodoWrite Tool Users - UPDATED:**
+- Your **FIRST todo item** must be: "Complete startup sequence: git status, branch strategy, create branch, assign issue (gh issue edit N --add-assignee '@me'), update status (use canonical command), select subagent"
+- **Include the canonical status update command** in your planning 
 - Do NOT break the startup sequence into separate todo items
 - Only after completing the startup sequence should you add implementation todos
 
@@ -269,7 +192,7 @@ Before using any subagent:
 - [ ] Determined branching strategy from parent issue (single branch vs. individual branches)
 - [ ] Created/switched to appropriate branch based on strategy
 - [ ] Assigned issue to self (`gh issue edit <number> --add-assignee "@me"`)
-- [ ] Updated GitHub project status: Todo → In Progress (manual update)
+- [ ] Updated GitHub project status using CLI: Todo → In Progress
 - [ ] Selected appropriate subagent using the decision tree
 - [ ] Read issue requirements and acceptance criteria
 - [ ] Read development process documentation (start with [overview](docs/architecture/development/overview.md))
@@ -289,7 +212,7 @@ Before using any subagent:
 
 **PR and Review:**
 - [ ] Created PR with proper title and description
-- [ ] Updated GitHub project status: In Progress → Ready for Review (manual)
+- [ ] Updated GitHub project status using CLI: In Progress → Ready for Review
 - [ ] Used appropriate subagent for code review if needed
 - [ ] Merged immediately if review passes, or addressed feedback
 
