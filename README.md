@@ -71,6 +71,31 @@ NodeSpace is a next-generation knowledge management system designed from the gro
 - 8GB+ RAM recommended for AI model
 - macOS with Metal GPU support (optimal performance)
 
+### 🛠️ Development CLI Commands
+
+**Always use project CLI commands (never raw GitHub CLI):**
+
+```bash
+# View issue details  
+bun run gh:view <number>
+
+# List open issues
+bun run gh:list  
+
+# Assign issue to yourself
+bun run gh:assign <number> "@me"
+
+# Update issue status
+bun run gh:status <number> "In Progress"
+bun run gh:status <number> "Ready for Review"  
+bun run gh:status <number> "Done"
+
+# Create pull request
+bun run gh:pr <number>
+```
+
+**❌ Don't use:** `gh issue view`, `gh issue list` - these bypass project tooling and automation.
+
 ### Development Setup
 
 ```bash

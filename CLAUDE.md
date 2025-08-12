@@ -58,13 +58,13 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 **Primary Task Source: GitHub Issues**
 ```bash
 # List all open issues
-gh issue list
+bun run gh:list
 
 # View specific issue details
-gh issue view <issue-number>
+bun run gh:view <issue-number>
 
 # Check issue status and acceptance criteria
-gh issue view <issue-number> --web
+bun run gh:view <issue-number>
 ```
 
 **Issue Priority Guidelines:**
@@ -189,7 +189,7 @@ Use the most appropriate specialized sub-agent available for complex tasks. Clau
 - [ ] Checked git status and committed any pending changes
 - [ ] Determined branching strategy from parent issue (single branch vs. individual branches)
 - [ ] Created/switched to appropriate branch based on strategy
-- [ ] Assigned issue to self (`gh issue edit <number> --add-assignee "@me"`)
+- [ ] Assigned issue to self (`bun run gh:assign <number> "@me"`)
 - [ ] Updated GitHub project status using CLI: Todo → In Progress
 - [ ] Selected appropriate subagent using the decision tree
 - [ ] Read issue requirements and acceptance criteria
