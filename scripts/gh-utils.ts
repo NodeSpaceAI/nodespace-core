@@ -231,7 +231,8 @@ class NodeSpaceGitHubManager {
 
     try {
       console.log("Checking linting and formatting...");
-      const qualityResult = await $`bun run quality:fix`;
+      // Use the existing quality command from nodespace-app
+      const qualityResult = await $`bun run --cwd nodespace-app quality:fix`;
       console.log(qualityResult.text());
       
       console.log("✅ Quality checks passed!");
