@@ -15,7 +15,11 @@
     "check:watch": "bun run --cwd nodespace-app check:watch",
     "tauri:dev": "cd nodespace-app && bun run tauri:dev",
     "tauri:build": "cd nodespace-app && bun run tauri:build",
-    "install:all": "bun install"
+    "install:all": "bun install",
+    "gh:status": "bun run scripts/gh-utils.ts issues:status",
+    "gh:assign": "bun run scripts/gh-utils.ts issues:assign",
+    "gh:list": "bun run scripts/gh-utils.ts issues:list",
+    "gh:help": "bun run scripts/gh-utils.ts"
   },
   "devDependencies": {
     "bun-types": "latest"
