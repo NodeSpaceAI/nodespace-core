@@ -1,12 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(*gh project item-list*)",
-      "Bash(*gh project item-edit*)",
-      "Bash(for ISSUE_NUMBER in*)",
-      "Bash(*ITEM_ID=*)",
       "Bash(gh *)",
-      "Bash(*)"
+      "Bash(*gh *)",
+      "Bash(for ISSUE_NUMBER in * gh *)",
+      "Bash(*ITEM_ID=$(gh *)",
+      "Bash(for * in *; do ITEM_ID=$(gh *)"
     ]
   }
 }
