@@ -384,11 +384,6 @@ async function main() {
         await manager.createPRWorkflow(issueNumber, title);
         break;
       }
-
-      case "quality:check": {
-        await manager.qualityCheck();
-        break;
-      }
       
       case "help":
       default:
@@ -411,7 +406,7 @@ async function main() {
 
 📝 PR Management:
   bun run scripts/gh-utils.ts pr:create 45     # Create PR workflow
-  bun run scripts/gh-utils.ts quality:check    # Run quality gates
+  bun run --cwd nodespace-app quality:fix      # Run quality checks
 
 📊 Available Statuses:
   ${Object.keys(manager["statusOptions"]).map(s => `"${s}"`).join(", ")}

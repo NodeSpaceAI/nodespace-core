@@ -24,7 +24,6 @@
     "gh:startup": "GITHUB_TOKEN=$(gh auth token) bun run scripts/gh-utils.ts issues:startup",
     "gh:view": "GITHUB_TOKEN=$(gh auth token) bun run scripts/gh-utils.ts issues:view",
     "gh:pr": "GITHUB_TOKEN=$(gh auth token) bun run scripts/gh-utils.ts pr:create",
-    "gh:quality": "GITHUB_TOKEN=$(gh auth token) bun run scripts/gh-utils.ts quality:check",
     "gh:help": "GITHUB_TOKEN=$(gh auth token) bun run scripts/gh-utils.ts"
   },
   "devDependencies": {
