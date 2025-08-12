@@ -1,8 +1,9 @@
 /**
- * Cursor Positioning Utilities
+ * Cursor Positioning Utilities for ContentEditable Elements
  *
  * Character-level coordinate mapping for precise cursor positioning.
  * Uses mock element with character spans for accurate measurements.
+ * Optimized for cross-browser compatibility and < 50ms performance.
  */
 
 export interface PositionResult {
@@ -16,27 +17,27 @@ export interface PositionResult {
  * @param mockElement - The hidden mock element with character spans
  * @param clickX - Click X coordinate relative to the page
  * @param clickY - Click Y coordinate relative to the page
- * @param textareaRect - Bounding rectangle of the target textarea
+ * @param editableRect - Bounding rectangle of the target editable element
  * @returns Character index and distance information
  */
 export function findCharacterFromClick(
   mockElement: HTMLDivElement,
   clickX: number,
   clickY: number,
-  textareaRect: { left: number; top: number; width: number; height: number }
+  editableRect: { left: number; top: number; width: number; height: number }
 ): PositionResult {
   // Convert click coordinates to be relative to the mock element's container
-  const relativeX = clickX - textareaRect.left;
-  const relativeY = clickY - textareaRect.top;
+  const relativeX = clickX - editableRect.left;
+  const relativeY = clickY - editableRect.top;
 
   console.log('CursorPositioning Debug:', {
     clickX,
     clickY,
-    textareaRect: {
-      left: textareaRect.left,
-      top: textareaRect.top,
-      width: textareaRect.width,
-      height: textareaRect.height
+    editableRect: {
+      left: editableRect.left,
+      top: editableRect.top,
+      width: editableRect.width,
+      height: editableRect.height
     },
     relativeX,
     relativeY
@@ -92,7 +93,7 @@ export function findCharacterFromClick(
  * @param mockElement - The hidden mock element with character spans
  * @param clickX - Click X coordinate relative to the page
  * @param clickY - Click Y coordinate relative to the page
- * @param textareaRect - Bounding rectangle of the target textarea
+ * @param editableRect - Bounding rectangle of the target editable element
  * @param content - The text content for line-based calculations
  * @returns Character index with multi-line optimization
  */
@@ -100,11 +101,11 @@ export function findCharacterFromClickMultiline(
   mockElement: HTMLDivElement,
   clickX: number,
   clickY: number,
-  textareaRect: { left: number; top: number; width: number; height: number },
+  editableRect: { left: number; top: number; width: number; height: number },
   _content: string
 ): PositionResult {
-  const relativeX = clickX - textareaRect.left;
-  const relativeY = clickY - textareaRect.top;
+  const relativeX = clickX - editableRect.left;
+  const relativeY = clickY - editableRect.top;
 
   const allSpans = mockElement.querySelectorAll('[data-position]');
   if (allSpans.length === 0) {
@@ -169,25 +170,27 @@ export function findCharacterFromClickMultiline(
  * @param mockElement - The hidden mock element with character spans
  * @param clickX - Click X coordinate relative to the page
  * @param clickY - Click Y coordinate relative to the page
- * @param textareaRect - Bounding rectangle of the target textarea
+ * @param editableRect - Bounding rectangle of the target editable element
  * @returns Character index optimized for < 50ms performance
  */
 export function findCharacterFromClickFast(
   mockElement: HTMLDivElement,
   clickX: number,
   clickY: number,
-  textareaRect: { left: number; top: number; width: number; height: number }
+  editableRect: { left: number; top: number; width: number; height: number }
 ): PositionResult {
   const startTime = performance.now();
 
-  const relativeX = clickX - textareaRect.left;
-  const relativeY = clickY - textareaRect.top;
+  const relativeX = clickX - editableRect.left;
+  const relativeY = clickY - editableRect.top;
 
   let bestMatch: PositionResult = { index: 0, distance: Infinity, accuracy: 'approximate' };
 
   const allSpans = mockElement.querySelectorAll('[data-position]');
 
   if (allSpans.length === 0) {
+    const duration = performance.now() - startTime;
+    performanceMonitor.recordMeasurement(duration);
     return bestMatch;
   }
 
@@ -253,6 +256,7 @@ export function findCharacterFromClickFast(
   }
 
   const duration = performance.now() - startTime;
+  performanceMonitor.recordMeasurement(duration);
 
   if (duration > 50) {
     console.warn(`Cursor positioning took ${duration}ms, exceeding 50ms target`);
@@ -264,24 +268,100 @@ export function findCharacterFromClickFast(
 }
 
 /**
+ * Handle complex text scenarios (emojis, RTL, etc.) for ContentEditable
+ * @param content - Text content to analyze
+ * @returns Information about text complexity
+ */
+export function analyzeTextComplexity(content: string): {
+  hasEmojis: boolean;
+  hasRTL: boolean;
+  hasComplexGraphemes: boolean;
+  estimatedComplexity: 'low' | 'medium' | 'high';
+} {
+  const emojiRegex =
+    /[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu;
+  const rtlRegex = /[\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/;
+  const complexGraphemeRegex =
+    /[\u0300-\u036F]|[\u1AB0-\u1AFF]|[\u1DC0-\u1DFF]|[\u20D0-\u20FF]|[\uFE20-\uFE2F]/;
+
+  const hasEmojis = emojiRegex.test(content);
+  const hasRTL = rtlRegex.test(content);
+  const hasComplexGraphemes = complexGraphemeRegex.test(content);
+
+  let estimatedComplexity: 'low' | 'medium' | 'high' = 'low';
+
+  if (hasEmojis || hasComplexGraphemes) {
+    estimatedComplexity = hasRTL ? 'high' : 'medium';
+  } else if (hasRTL) {
+    estimatedComplexity = 'medium';
+  }
+
+  return {
+    hasEmojis,
+    hasRTL,
+    hasComplexGraphemes,
+    estimatedComplexity
+  };
+}
+
+/**
+ * Performance monitoring utility for cursor positioning operations
+ */
+export class PositioningPerformanceMonitor {
+  private measurements: number[] = [];
+  private readonly maxMeasurements = 100;
+
+  recordMeasurement(duration: number) {
+    this.measurements.push(duration);
+
+    // Keep only recent measurements
+    if (this.measurements.length > this.maxMeasurements) {
+      this.measurements.shift();
+    }
+  }
+
+  getStats() {
+    if (this.measurements.length === 0) {
+      return { average: 0, max: 0, min: 0, recent: 0 };
+    }
+
+    const sum = this.measurements.reduce((a, b) => a + b, 0);
+    const average = sum / this.measurements.length;
+    const max = Math.max(...this.measurements);
+    const min = Math.min(...this.measurements);
+    const recent = this.measurements[this.measurements.length - 1];
+
+    return { average, max, min, recent };
+  }
+
+  shouldWarnAboutPerformance(): boolean {
+    const stats = this.getStats();
+    return stats.average > 30 || stats.recent > 50;
+  }
+}
+
+// Global performance monitor instance
+export const performanceMonitor = new PositioningPerformanceMonitor();
+
+/**
  * Validate if click is within reasonable bounds of the text area
  * @param clickX - Click X coordinate
  * @param clickY - Click Y coordinate
- * @param textareaRect - Bounding rectangle of textarea
+ * @param editableRect - Bounding rectangle of editable element (textarea or contenteditable)
  * @returns True if click is within extended bounds
  */
 export function isClickWithinTextBounds(
   clickX: number,
   clickY: number,
-  textareaRect: { left: number; top: number; width: number; height: number }
+  editableRect: { left: number; top: number; width: number; height: number }
 ): boolean {
-  // Allow some padding around the textarea for better UX
+  // Allow some padding around the editable element for better UX
   const padding = 10;
 
   return (
-    clickX >= textareaRect.left - padding &&
-    clickX <= textareaRect.left + textareaRect.width + padding &&
-    clickY >= textareaRect.top - padding &&
-    clickY <= textareaRect.top + textareaRect.height + padding
+    clickX >= editableRect.left - padding &&
+    clickX <= editableRect.left + editableRect.width + padding &&
+    clickY >= editableRect.top - padding &&
+    clickY <= editableRect.top + editableRect.height + padding
   );
 }

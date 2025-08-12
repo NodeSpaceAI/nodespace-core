@@ -12,7 +12,7 @@ export const sampleTextNode: MockNodeData = {
 };
 
 export const sampleTaskNode: MockNodeData = {
-  id: 'sample-task-1', 
+  id: 'sample-task-1',
   type: 'task',
   content: 'Complete the testing setup',
   createdAt: new Date('2024-01-01T11:00:00Z'),
@@ -21,14 +21,10 @@ export const sampleTaskNode: MockNodeData = {
 
 export const sampleAIChatNode: MockNodeData = {
   id: 'sample-chat-1',
-  type: 'ai-chat', 
+  type: 'ai-chat',
   content: 'Help me understand this concept',
   createdAt: new Date('2024-01-01T12:00:00Z'),
   updatedAt: new Date('2024-01-01T12:05:00Z')
 };
 
-export const sampleNodes: MockNodeData[] = [
-  sampleTextNode,
-  sampleTaskNode,
-  sampleAIChatNode
-];
+export const sampleNodes: MockNodeData[] = [sampleTextNode, sampleTaskNode, sampleAIChatNode];

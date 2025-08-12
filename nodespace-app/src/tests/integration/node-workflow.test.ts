@@ -14,7 +14,7 @@ class MockNodeAPI {
       content: nodeData.content,
       type: nodeData.type
     });
-    
+
     await this.dataStore.save(node);
     return node;
   }
@@ -24,13 +24,13 @@ class MockNodeAPI {
     if (!existing) {
       throw new Error(`Node ${id} not found`);
     }
-    
+
     const updated = {
       ...existing,
       ...updates,
       updatedAt: new Date()
     };
-    
+
     await this.dataStore.save(updated);
     return updated;
   }
@@ -40,25 +40,23 @@ class MockNodeAPI {
     if (!existing) {
       return false;
     }
-    
+
     // Mock deletion by removing from store
     const allNodes = this.dataStore.getAll();
     this.dataStore.clear();
-    allNodes.filter(n => n.id !== id).forEach(n => this.dataStore.save(n));
-    
+    allNodes.filter((n) => n.id !== id).forEach((n) => this.dataStore.save(n));
+
     return true;
   }
 
   async searchNodes(query: string) {
     const allNodes = this.dataStore.getAll();
-    return allNodes.filter(node => 
-      node.content.toLowerCase().includes(query.toLowerCase())
-    );
+    return allNodes.filter((node) => node.content.toLowerCase().includes(query.toLowerCase()));
   }
 
   async getNodesByType(type: string) {
     const allNodes = this.dataStore.getAll();
-    return allNodes.filter(node => node.type === type);
+    return allNodes.filter((node) => node.type === type);
   }
 }
 
@@ -77,10 +75,10 @@ class MockNodeManager {
 
     // Create node via API
     const node = await this.api.createNode({ content, type });
-    
+
     // Simulate additional processing
     await this.processNode(node);
-    
+
     return node;
   }
 
@@ -91,10 +89,10 @@ class MockNodeManager {
 
     // Update via API
     const updated = await this.api.updateNode(id, { content: newContent });
-    
+
     // Simulate reprocessing
     await this.processNode(updated);
-    
+
     return updated;
   }
 
@@ -105,25 +103,25 @@ class MockNodeManager {
       // Log operation (in real app, might update audit log)
       console.log(`Deleting node: ${node.id} - ${node.content.substring(0, 50)}`);
     }
-    
+
     return await this.api.deleteNode(id);
   }
 
   async bulkCreateNodes(contents: string[]) {
     const results = [];
-    
+
     for (const content of contents) {
       const node = await this.createAndSaveNode(content);
       results.push(node);
     }
-    
+
     return results;
   }
 
   private async processNode(node: MockNodeData) {
     // Simulate processing delay
-    await new Promise(resolve => setTimeout(resolve, 10));
-    
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
     // Simulate node processing (e.g., extracting metadata, indexing, etc.)
     return node;
   }
@@ -169,14 +167,10 @@ describe('Node Management Integration Tests', () => {
 
     it('handles node creation with validation', async () => {
       // Should reject empty content
-      await expect(
-        nodeManager.createAndSaveNode('')
-      ).rejects.toThrow('Content cannot be empty');
+      await expect(nodeManager.createAndSaveNode('')).rejects.toThrow('Content cannot be empty');
 
       // Should reject whitespace-only content
-      await expect(
-        nodeManager.createAndSaveNode('   ')
-      ).rejects.toThrow('Content cannot be empty');
+      await expect(nodeManager.createAndSaveNode('   ')).rejects.toThrow('Content cannot be empty');
 
       // Should accept valid content
       const node = await nodeManager.createAndSaveNode('Valid content');
@@ -186,14 +180,10 @@ describe('Node Management Integration Tests', () => {
 
   describe('Multi-Node Workflows', () => {
     it('creates multiple nodes in bulk', async () => {
-      const contents = [
-        'First note',
-        'Second note', 
-        'Third note'
-      ];
+      const contents = ['First note', 'Second note', 'Third note'];
 
       const created = await nodeManager.bulkCreateNodes(contents);
-      
+
       expect(created).toHaveLength(3);
       expect(created[0].content).toBe('First note');
       expect(created[1].content).toBe('Second note');
@@ -216,10 +206,10 @@ describe('Node Management Integration Tests', () => {
       // Search for 'notes'
       const notesResults = await api.searchNodes('notes');
       expect(notesResults).toHaveLength(2);
-      expect(notesResults.some(n => n.content.includes('Meeting notes'))).toBe(true);
-      expect(notesResults.some(n => n.content.includes('Notes about'))).toBe(true);
+      expect(notesResults.some((n) => n.content.includes('Meeting notes'))).toBe(true);
+      expect(notesResults.some((n) => n.content.includes('Notes about'))).toBe(true);
 
-      // Search for 'project'  
+      // Search for 'project'
       const projectResults = await api.searchNodes('project');
       expect(projectResults).toHaveLength(1);
       expect(projectResults[0].content).toContain('Project roadmap');
@@ -239,7 +229,7 @@ describe('Node Management Integration Tests', () => {
       // Filter by type
       const textNodes = await api.getNodesByType('text');
       expect(textNodes).toHaveLength(2);
-      expect(textNodes.every(n => n.type === 'text')).toBe(true);
+      expect(textNodes.every((n) => n.type === 'text')).toBe(true);
 
       const taskNodes = await api.getNodesByType('task');
       expect(taskNodes).toHaveLength(1);
@@ -253,9 +243,9 @@ describe('Node Management Integration Tests', () => {
 
   describe('Error Handling and Edge Cases', () => {
     it('handles updating non-existent nodes', async () => {
-      await expect(
-        nodeManager.editNode('non-existent-id', 'New content')
-      ).rejects.toThrow('Node non-existent-id not found');
+      await expect(nodeManager.editNode('non-existent-id', 'New content')).rejects.toThrow(
+        'Node non-existent-id not found'
+      );
     });
 
     it('handles deleting non-existent nodes', async () => {
@@ -268,9 +258,7 @@ describe('Node Management Integration Tests', () => {
       const node = await nodeManager.createAndSaveNode('Original content');
 
       // Try to update with empty content
-      await expect(
-        nodeManager.editNode(node.id, '')
-      ).rejects.toThrow('Content cannot be empty');
+      await expect(nodeManager.editNode(node.id, '')).rejects.toThrow('Content cannot be empty');
 
       // Verify node content unchanged
       const unchanged = await dataStore.load(node.id);
@@ -287,7 +275,7 @@ describe('Node Management Integration Tests', () => {
       expect(results).toHaveLength(5);
 
       // All nodes should have unique IDs
-      const ids = results.map(n => n.id);
+      const ids = results.map((n) => n.id);
       const uniqueIds = new Set(ids);
       expect(uniqueIds.size).toBe(5);
 
@@ -300,11 +288,7 @@ describe('Node Management Integration Tests', () => {
   describe('Data Consistency', () => {
     it('maintains data integrity across operations', async () => {
       // Create initial nodes
-      const nodes = await nodeManager.bulkCreateNodes([
-        'Node 1',
-        'Node 2', 
-        'Node 3'
-      ]);
+      const nodes = await nodeManager.bulkCreateNodes(['Node 1', 'Node 2', 'Node 3']);
 
       // Update some nodes
       await nodeManager.editNode(nodes[0].id, 'Updated Node 1');
@@ -316,29 +300,29 @@ describe('Node Management Integration Tests', () => {
       // Verify final state
       const allNodes = dataStore.getAll();
       expect(allNodes).toHaveLength(2);
-      
+
       const node1 = await dataStore.load(nodes[0].id);
       expect(node1!.content).toBe('Updated Node 1');
-      
+
       const node2 = await dataStore.load(nodes[1].id);
       expect(node2).toBeNull();
-      
+
       const node3 = await dataStore.load(nodes[2].id);
       expect(node3!.content).toBe('Updated Node 3');
     });
 
     it('maintains timestamps correctly', async () => {
       const before = new Date();
-      
+
       // Create node
       const created = await nodeManager.createAndSaveNode('Timestamp test');
       expect(created.createdAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
       expect(created.updatedAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
-      
+
       // Wait a bit then update
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 50));
       const updateBefore = new Date();
-      
+
       const updated = await nodeManager.editNode(created.id, 'Updated content');
       expect(updated.createdAt.getTime()).toBe(created.createdAt.getTime()); // Should not change
       expect(updated.updatedAt.getTime()).toBeGreaterThanOrEqual(updateBefore.getTime()); // Should be updated
@@ -349,19 +333,19 @@ describe('Node Management Integration Tests', () => {
     it('handles reasonable number of nodes efficiently', async () => {
       const nodeCount = 100;
       const start = Date.now();
-      
+
       // Create many nodes
       const contents = Array.from({ length: nodeCount }, (_, i) => `Node ${i + 1}`);
       await nodeManager.bulkCreateNodes(contents);
-      
+
       const createTime = Date.now() - start;
       expect(createTime).toBeLessThan(5000); // Should complete in under 5 seconds
-      
+
       // Search should be fast
       const searchStart = Date.now();
       const results = await api.searchNodes('Node');
       const searchTime = Date.now() - searchStart;
-      
+
       expect(results).toHaveLength(nodeCount);
       expect(searchTime).toBeLessThan(100); // Should complete in under 100ms
     });
@@ -370,7 +354,7 @@ describe('Node Management Integration Tests', () => {
       // This is a simplified check - in real apps you might use memory profiling
       const initialNodes = dataStore.getAll().length;
       expect(initialNodes).toBe(0);
-      
+
       // The previous test created 100 nodes, verify they can be garbage collected
       SimpleMockStore.resetInstance();
       const newStore = SimpleMockStore.getInstance();

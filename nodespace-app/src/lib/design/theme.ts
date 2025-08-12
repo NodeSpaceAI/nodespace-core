@@ -1,6 +1,6 @@
 /**
  * Theme Management System
- * 
+ *
  * Simplified theme switching using shadcn-svelte foundation.
  * Handles light/dark/system theme preferences and applies changes to DOM.
  */
@@ -13,7 +13,7 @@ import { getResolvedTheme } from './tokens.js';
 // Theme preference store
 export const themePreference = writable<Theme>('system');
 
-// System theme detection store  
+// System theme detection store
 export const systemTheme = writable<'light' | 'dark'>('light');
 
 // Resolved theme store (combines preference and system detection)
@@ -80,8 +80,8 @@ function applyThemeToDOM(theme: 'light' | 'dark') {
 
   // Dispatch custom event for theme change
   window.dispatchEvent(
-    new CustomEvent('themechange', { 
-      detail: { theme } 
+    new CustomEvent('themechange', {
+      detail: { theme }
     })
   );
 }
@@ -93,7 +93,7 @@ export function setTheme(theme: Theme) {
 
 export function toggleTheme() {
   const current = get(themePreference);
-  
+
   if (current === 'system') {
     // If system, switch to opposite of current system theme
     const system = get(systemTheme);
@@ -114,7 +114,7 @@ export function getThemeIcon(theme: Theme, currentResolvedTheme: 'light' | 'dark
   switch (theme) {
     case 'light':
       return '☀️';
-    case 'dark': 
+    case 'dark':
       return '🌙';
     case 'system':
       return currentResolvedTheme === 'dark' ? '🌙' : '☀️';
@@ -126,7 +126,7 @@ export function getThemeLabel(theme: Theme): string {
     case 'light':
       return 'Light';
     case 'dark':
-      return 'Dark'; 
+      return 'Dark';
     case 'system':
       return 'System';
   }

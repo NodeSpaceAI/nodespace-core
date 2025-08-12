@@ -38,7 +38,7 @@ export class SimpleMockStore {
       createdAt: node.createdAt || new Date(),
       updatedAt: new Date()
     } as MockNodeData;
-    
+
     this.nodes.set(id, nodeData);
     return id;
   }
@@ -73,10 +73,7 @@ export function createTestNode(overrides: Partial<MockNodeData> = {}): MockNodeD
 }
 
 // Enhanced render function with common utilities
-export function renderWithContext(
-  component: ComponentType,
-  props: Record<string, unknown> = {}
-) {
+export function renderWithContext(component: ComponentType, props: Record<string, unknown> = {}) {
   const mockStore = SimpleMockStore.getInstance();
   mockStore.clear(); // Clean slate for each test
 

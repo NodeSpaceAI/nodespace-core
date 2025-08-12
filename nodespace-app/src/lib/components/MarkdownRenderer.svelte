@@ -94,14 +94,14 @@
 
     while (remaining.length > 0) {
       // Look for bold (**text** or __text__)
-      const boldMatch = remaining.match(/^(.*?)\*\*(.*?)\*\*(.*)/s) || 
-                       remaining.match(/^(.*?)__(.*?)__(.*)/s);
-      
+      const boldMatch =
+        remaining.match(/^(.*?)\*\*(.*?)\*\*(.*)/s) || remaining.match(/^(.*?)__(.*?)__(.*)/s);
+
       if (boldMatch) {
         const [, before, boldText, after] = boldMatch;
         if (before) result.push({ type: 'text', content: before });
-        result.push({ 
-          type: 'bold', 
+        result.push({
+          type: 'bold',
           children: [{ type: 'text', content: boldText }],
           className: 'ns-markdown-bold'
         });
@@ -110,14 +110,15 @@
       }
 
       // Look for italic (*text* or _text_)
-      const italicMatch = remaining.match(/^(.*?)(?<!\*)\*(?!\*)([^*]+)\*(?!\*)(.*)/s) ||
-                         remaining.match(/^(.*?)(?<!_)_(?!_)([^_]+)_(?!_)(.*)/s);
-      
+      const italicMatch =
+        remaining.match(/^(.*?)(?<!\*)\*(?!\*)([^*]+)\*(?!\*)(.*)/s) ||
+        remaining.match(/^(.*?)(?<!_)_(?!_)([^_]+)_(?!_)(.*)/s);
+
       if (italicMatch) {
         const [, before, italicText, after] = italicMatch;
         if (before) result.push({ type: 'text', content: before });
-        result.push({ 
-          type: 'italic', 
+        result.push({
+          type: 'italic',
           children: [{ type: 'text', content: italicText }],
           className: 'ns-markdown-italic'
         });
@@ -130,8 +131,8 @@
       if (codeMatch) {
         const [, before, codeText, after] = codeMatch;
         if (before) result.push({ type: 'text', content: before });
-        result.push({ 
-          type: 'code', 
+        result.push({
+          type: 'code',
           content: codeText,
           className: 'ns-markdown-code'
         });
@@ -144,8 +145,8 @@
       if (linkMatch) {
         const [, before, linkText, url, after] = linkMatch;
         if (before) result.push({ type: 'text', content: before });
-        result.push({ 
-          type: 'link', 
+        result.push({
+          type: 'link',
           href: url,
           children: [{ type: 'text', content: linkText }],
           className: 'ns-markdown-link'
@@ -193,7 +194,12 @@
   {:else if node.type === 'code'}
     <code class={node.className || ''}>{node.content || ''}</code>
   {:else if node.type === 'link'}
-    <a href={node.href || ''} class={node.className || ''} target="_blank" rel="noopener noreferrer">
+    <a
+      href={node.href || ''}
+      class={node.className || ''}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
       <svelte:self nodes={node.children || []} />
     </a>
   {:else if node.type === 'br'}

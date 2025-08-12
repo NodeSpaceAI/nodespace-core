@@ -57,9 +57,9 @@ interface PositionResult {
 }
 
 const findCharacterFromClick = (
-  mockElement: MockElement, 
-  clickX: number, 
-  clickY: number, 
+  mockElement: MockElement,
+  clickX: number,
+  clickY: number,
   textareaRect: MockRect
 ): PositionResult => {
   const relativeX = clickX - textareaRect.left;

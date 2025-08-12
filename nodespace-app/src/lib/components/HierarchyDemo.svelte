@@ -75,9 +75,7 @@
   }
 
   // Handle node updates
-  async function handleNodeUpdate(
-    event: CustomEvent<{ nodeId: string; content: string }>
-  ) {
+  async function handleNodeUpdate(event: CustomEvent<{ nodeId: string; content: string }>) {
     const { nodeId, content } = event.detail;
     console.log('Node updated:', { nodeId, content });
 

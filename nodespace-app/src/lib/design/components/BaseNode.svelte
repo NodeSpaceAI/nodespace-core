@@ -35,10 +35,14 @@
   export let processingAnimation: 'blink' | 'pulse' | 'spin' | 'fade' = 'pulse';
   export let processingIcon: IconName | undefined = undefined;
 
-  // Edit state
-  let focused = false;
-  let textareaElement: HTMLTextAreaElement;
-  let mockElementRef: any;
+  // Edit state - ContentEditable approach (no focused state needed)
+  let contentEditableElement: HTMLDivElement;
+  let mockElementRef: MockTextElementRef;
+
+  // Interface for MockTextElement component
+  interface MockTextElementRef {
+    getElement(): HTMLDivElement | undefined;
+  }
 
   // Event dispatcher
   const dispatch = createEventDispatcher<{
@@ -48,77 +52,80 @@
     contentChanged: { nodeId: string; content: string };
   }>();
 
-  // Handle display click to start editing
+  // Handle display click to focus ContentEditable
   function handleDisplayClick(event: MouseEvent) {
-    if (!editable || !contentEditable || focused) return;
-    startEditing(event);
+    if (!editable || !contentEditable) return;
+    focusContentEditable(event);
   }
 
   // Handle general node clicks
   function handleClick(event: MouseEvent) {
     dispatch('click', { nodeId, event });
 
-    // If clicking on display content, delegate to handleDisplayClick
-    if (!focused && editable && contentEditable) {
+    // ContentEditable handles clicks natively, just dispatch events
+    if (editable && contentEditable) {
       const target = event.target as HTMLElement;
-      const displayElement = target.closest('.ns-node__display--clickable');
-      if (displayElement) {
+      if (target.closest('.ns-node__content-editable')) {
         handleDisplayClick(event);
       }
     }
   }
 
-  // Start editing mode
-  async function startEditing(clickEvent?: MouseEvent) {
-    focused = true;
+  // Focus ContentEditable and position cursor
+  async function focusContentEditable(clickEvent?: MouseEvent) {
     dispatch('focus', { nodeId });
 
     await tick();
-    if (textareaElement) {
-      // Auto-resize for multiline content on focus
-      if (multiline) {
-        autoResizeTextarea(textareaElement);
-      }
-
-      textareaElement.focus();
+    if (contentEditableElement) {
+      contentEditableElement.focus();
 
       // Position cursor based on click location
       if (clickEvent) {
-        await tick(); // Wait for textarea to be fully rendered
+        await tick(); // Wait for contenteditable to be fully rendered
         positionCursorFromClick(clickEvent);
       } else {
         // No click event, place at end
-        textareaElement.setSelectionRange(
-          textareaElement.value.length,
-          textareaElement.value.length
-        );
+        const range = document.createRange();
+        const selection = window.getSelection();
+        try {
+          range.selectNodeContents(contentEditableElement);
+          range.collapse(false);
+          selection?.removeAllRanges();
+          selection?.addRange(range);
+        } catch (error) {
+          console.warn('Selection API fallback failed:', error);
+        }
       }
     }
   }
 
   // Position cursor based on click coordinates using mock element
   async function positionCursorFromClick(clickEvent: MouseEvent) {
-    if (!textareaElement || !mockElementRef) return;
+    if (!contentEditableElement || !mockElementRef) return;
 
-    const textareaRect = textareaElement.getBoundingClientRect();
+    const editableRect = contentEditableElement.getBoundingClientRect();
 
     // Validate click is within reasonable bounds
-    if (!isClickWithinTextBounds(clickEvent.clientX, clickEvent.clientY, textareaRect)) {
-      // Click is too far from text area, position at end
-      const textLength = textareaElement.value.length;
-      textareaElement.setSelectionRange(textLength, textLength);
+    if (!isClickWithinTextBounds(clickEvent.clientX, clickEvent.clientY, editableRect)) {
+      // Click is too far from editable area, position at end
+      const range = document.createRange();
+      const selection = window.getSelection();
+      range.selectNodeContents(contentEditableElement);
+      range.collapse(false);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
       return;
     }
 
-    console.log('Mock element positioning:', {
+    console.log('Mock element positioning for ContentEditable:', {
       content: content.substring(0, 20) + '...',
       clickX: clickEvent.clientX,
       clickY: clickEvent.clientY,
-      textareaRect: {
-        left: textareaRect.left,
-        top: textareaRect.top,
-        width: textareaRect.width,
-        height: textareaRect.height
+      editableRect: {
+        left: editableRect.left,
+        top: editableRect.top,
+        width: editableRect.width,
+        height: editableRect.height
       },
       multiline: multiline
     });
@@ -128,8 +135,7 @@
       const mockElement = mockElementRef.getElement();
       if (!mockElement) {
         console.warn('Mock element not available, falling back to end position');
-        const textLength = textareaElement.value.length;
-        textareaElement.setSelectionRange(textLength, textLength);
+        setCursorPosition(content.length);
         return;
       }
 
@@ -138,14 +144,11 @@
         mockElement,
         clickEvent.clientX,
         clickEvent.clientY,
-        textareaRect
+        editableRect
       );
 
-      // Set cursor position based on result
-      const targetPosition = Math.max(
-        0,
-        Math.min(positionResult.index, textareaElement.value.length)
-      );
+      // Convert character index to ContentEditable selection
+      const targetPosition = Math.max(0, Math.min(positionResult.index, content.length));
 
       console.log('Mock element positioning result:', {
         targetPosition,
@@ -153,59 +156,121 @@
         distance: positionResult.distance
       });
 
-      textareaElement.setSelectionRange(targetPosition, targetPosition);
+      // Set cursor position using Selection API
+      const textNode = contentEditableElement.firstChild;
+      if (textNode && textNode.nodeType === 3 /* Node.TEXT_NODE */) {
+        const range = document.createRange();
+        const selection = window.getSelection();
+        const safePosition = Math.min(targetPosition, textNode.textContent?.length || 0);
+        range.setStart(textNode, safePosition);
+        range.setEnd(textNode, safePosition);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
 
       // Verify the cursor was set correctly
       setTimeout(() => {
-        console.log('Actual cursor position after set:', textareaElement.selectionStart);
+        const selection = window.getSelection();
+        console.log('Actual cursor position after set:', selection?.anchorOffset);
       }, 10);
     } catch (error) {
       console.error('Error in mock element positioning:', error);
       // Fallback to end position
-      const textLength = textareaElement.value.length;
-      textareaElement.setSelectionRange(textLength, textLength);
+      const range = document.createRange();
+      const selection = window.getSelection();
+      range.selectNodeContents(contentEditableElement);
+      range.collapse(false);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
     }
   }
 
-  // Handle textarea input
-  function handleInput(event: Event & { currentTarget: HTMLTextAreaElement }) {
+  // Handle ContentEditable input
+  function handleContentEditableInput(event: Event & { currentTarget: HTMLDivElement }) {
     const target = event.currentTarget;
+    const newContent = target.textContent || '';
 
     // For single-line, replace newlines with spaces
+    let processedContent = newContent;
     if (!multiline) {
-      target.value = target.value.replace(/\n/g, ' ');
+      processedContent = newContent.replace(/\n/g, ' ');
+      // Update the ContentEditable content if we processed it
+      if (processedContent !== newContent) {
+        const cursorPosition = window.getSelection()?.anchorOffset || processedContent.length;
+        target.textContent = processedContent;
+        // Restore cursor position
+        setTimeout(() => setCursorPosition(cursorPosition), 0);
+      }
     }
 
-    content = target.value;
-
-    // Auto-resize only if multiline
-    if (multiline) {
-      autoResizeTextarea(target);
-    }
-
+    content = processedContent;
     dispatch('contentChanged', { nodeId, content });
   }
 
-  // Auto-resize textarea (only for multiline)
-  function autoResizeTextarea(textarea: HTMLTextAreaElement) {
-    textarea.style.height = 'auto';
-    textarea.style.height = textarea.scrollHeight + 'px';
+  // Cross-browser compatible cursor positioning for ContentEditable
+  function setCursorPosition(position: number) {
+    if (!contentEditableElement) return;
+
+    const selection = window.getSelection();
+    if (!selection) return;
+
+    // Ensure we have a text node to work with
+    let textNode = contentEditableElement.firstChild;
+
+    // If no text node exists, create one
+    if (!textNode || textNode.nodeType !== 3 /* Node.TEXT_NODE */) {
+      if (content.length === 0) {
+        // Better empty content handling - position cursor at start
+        const range = document.createRange();
+        const selection = window.getSelection();
+        range.selectNodeContents(contentEditableElement);
+        range.collapse(true);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        return;
+      }
+
+      // Create text node if it doesn't exist
+      textNode = document.createTextNode(content);
+      contentEditableElement.innerHTML = '';
+      contentEditableElement.appendChild(textNode);
+    }
+
+    try {
+      const range = document.createRange();
+      const safePosition = Math.min(position, textNode.textContent?.length || 0);
+
+      // Set cursor position
+      range.setStart(textNode, safePosition);
+      range.setEnd(textNode, safePosition);
+
+      // Apply selection
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      console.log(`Cursor set to position ${safePosition}`);
+    } catch (error) {
+      console.error('Error setting cursor position:', error);
+      // Final fallback: focus the element
+      contentEditableElement.focus();
+    }
   }
 
   // Handle blur
   function handleBlur() {
-    if (!focused) return;
-    focused = false;
     dispatch('blur', { nodeId });
   }
 
   // Handle keyboard shortcuts
   function handleKeyDown(event: KeyboardEvent) {
-    if (focused) {
-      // When editing, handle Escape and Enter
+    const target = event.target as HTMLElement;
+    const isContentEditable = target.classList.contains('ns-node__content-editable');
+
+    if (isContentEditable) {
+      // When in ContentEditable, handle Escape
       if (event.key === 'Escape') {
         event.preventDefault();
-        focused = false;
+        contentEditableElement.blur();
         dispatch('blur', { nodeId });
         return;
       }
@@ -213,7 +278,7 @@
       // For single-line, Enter saves and exits
       if (!multiline && event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
-        focused = false;
+        contentEditableElement.blur();
         dispatch('blur', { nodeId });
         return;
       }
@@ -222,10 +287,10 @@
       return;
     }
 
-    // When not editing, handle Enter/Space to start editing
+    // When not in ContentEditable, handle Enter/Space to focus
     if (editable && contentEditable && (event.code === 'Enter' || event.code === 'Space')) {
       event.preventDefault();
-      startEditing();
+      focusContentEditable();
     }
   }
 
@@ -291,75 +356,54 @@
       {/if}
     </div>
 
-    <!-- Node content with edit/display logic -->
+    <!-- ContentEditable approach - always show single element -->
     <div class="ns-node__content">
       <slot name="content">
-        {#if focused && contentEditable}
-          <!-- Edit mode (only if content is directly editable) -->
-          <textarea
-            bind:this={textareaElement}
-            class="ns-node__textarea {multiline
-              ? 'ns-node__textarea--multiline'
-              : 'ns-node__textarea--single'}"
-            bind:value={content}
-            on:input={handleInput}
+        {#if contentEditable}
+          <!-- Always-visible ContentEditable element -->
+          <div
+            bind:this={contentEditableElement}
+            contenteditable="true"
+            class="ns-node__content-editable {multiline
+              ? 'ns-node__content-editable--multiline'
+              : 'ns-node__content-editable--single'}"
+            on:input={handleContentEditableInput}
             on:blur={handleBlur}
+            on:focus={() => dispatch('focus', { nodeId })}
             on:keydown={handleKeyDown}
             on:keydown|stopPropagation
-            {placeholder}
-            rows={1}
-          ></textarea>
+            role="textbox"
+            tabindex="0"
+            aria-label={content || placeholder}
+            data-placeholder={placeholder}
+          >
+            {content}
+          </div>
 
           <!-- Mock element for precise cursor positioning -->
-          {#if textareaElement}
-            <!-- @ts-expect-error: Svelte component binding inference issue -->
+          {#if contentEditableElement}
             <MockTextElement
               bind:this={mockElementRef}
               {content}
-              fontFamily={getComputedStyle(textareaElement).fontFamily}
-              fontSize={getComputedStyle(textareaElement).fontSize}
-              fontWeight={getComputedStyle(textareaElement).fontWeight}
-              lineHeight={getComputedStyle(textareaElement).lineHeight}
-              width={textareaElement.offsetWidth}
+              fontFamily={getComputedStyle(contentEditableElement).fontFamily}
+              fontSize={getComputedStyle(contentEditableElement).fontSize}
+              fontWeight={getComputedStyle(contentEditableElement).fontWeight}
+              lineHeight={getComputedStyle(contentEditableElement).lineHeight}
+              width={contentEditableElement.offsetWidth}
               {multiline}
             />
           {/if}
         {:else}
-          <!-- Display mode -->
-          {#if editable && contentEditable}
-            <div
-              class="ns-node__display ns-node__display--clickable"
-              role="button"
-              tabindex="0"
-              on:click={handleDisplayClick}
-              on:keydown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  startEditing();
-                }
-              }}
-              aria-label="Click to edit content"
-            >
-              <slot name="display-content">
-                {#if content}
-                  <span class="ns-node__text">{content}</span>
-                {:else}
-                  <span class="ns-node__empty">{placeholder}</span>
-                {/if}
-              </slot>
-            </div>
-          {:else}
-            <!-- Non-editable display -->
-            <div class="ns-node__display" role="region">
-              <slot name="display-content">
-                {#if content}
-                  <span class="ns-node__text">{content}</span>
-                {:else}
-                  <span class="ns-node__empty">{placeholder}</span>
-                {/if}
-              </slot>
-            </div>
-          {/if}
+          <!-- Non-editable display (read-only nodes) -->
+          <div class="ns-node__display" role="region">
+            <slot name="display-content">
+              {#if content}
+                <span class="ns-node__text">{content}</span>
+              {:else}
+                <span class="ns-node__empty">{placeholder}</span>
+              {/if}
+            </slot>
+          </div>
         {/if}
       </slot>
 
@@ -468,8 +512,8 @@
     min-width: 0; /* Prevent overflow */
   }
 
-  /* Textarea styling */
-  .ns-node__textarea {
+  /* ContentEditable styling */
+  .ns-node__content-editable {
     width: 100%;
     min-height: 20px;
     padding: 0;
@@ -481,28 +525,36 @@
     background: transparent;
     color: hsl(var(--foreground));
     outline: none;
-    resize: none;
-    overflow: hidden;
+    cursor: text;
   }
 
-  /* Single-line textarea (default) */
-  .ns-node__textarea--single {
-    height: 20px;
+  /* Single-line ContentEditable (default) */
+  .ns-node__content-editable--single {
+    min-height: 20px;
     white-space: nowrap;
     overflow-x: auto;
     overflow-y: hidden;
   }
 
-  /* Multi-line textarea */
-  .ns-node__textarea--multiline {
+  /* Multi-line ContentEditable */
+  .ns-node__content-editable--multiline {
     min-height: 20px;
     white-space: pre-wrap;
     overflow-y: auto;
   }
 
-  .ns-node__textarea::placeholder {
+  /* Placeholder styling using CSS pseudo-element */
+  .ns-node__content-editable:empty::before {
+    content: attr(data-placeholder);
     color: hsl(var(--muted-foreground));
     font-style: italic;
+    pointer-events: none;
+  }
+
+  /* Read-only ContentEditable styling for visual consistency */
+  :global(.ns-node__content-editable[contenteditable='false']) {
+    cursor: default;
+    color: hsl(var(--muted-foreground));
   }
 
   /* Display styling */
@@ -510,9 +562,7 @@
     min-height: 20px;
   }
 
-  .ns-node__display--clickable {
-    cursor: text;
-  }
+  /* Removed clickable display - ContentEditable handles this */
 
   .ns-node__text {
     color: hsl(var(--foreground));

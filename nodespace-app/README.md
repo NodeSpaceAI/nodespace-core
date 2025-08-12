@@ -33,6 +33,7 @@ bun run test:watch
 ```
 
 **Testing Standards:**
+
 - **Frontend**: 80% coverage (lines/functions/statements), 75% branches
 - **Backend**: 80% coverage target
 - **Integration**: 100% critical workflows tested
@@ -40,7 +41,7 @@ bun run test:watch
 ### Test Examples
 
 - **Unit Tests**: `src/tests/example/BasicFunctions.test.ts`
-- **Component Tests**: `src/tests/component/TextNode.test.ts`  
+- **Component Tests**: `src/tests/component/TextNode.test.ts`
 - **Integration Tests**: `src/tests/integration/node-workflow.test.ts`
 
 See `docs/architecture/development/testing-guide.md` for detailed testing patterns and examples.

@@ -19,7 +19,7 @@
   export let width = 0;
   export let multiline = false;
 
-  // Element reference for external access  
+  // Element reference for external access
   let internalMockElement: HTMLDivElement | undefined;
 
   // Expose the element reference for position calculations
