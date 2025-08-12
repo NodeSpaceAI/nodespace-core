@@ -19,6 +19,10 @@
     "gh:status": "bun run scripts/gh-utils.ts issues:status",
     "gh:assign": "bun run scripts/gh-utils.ts issues:assign",
     "gh:list": "bun run scripts/gh-utils.ts issues:list",
+    "gh:startup": "bun run scripts/gh-utils.ts issues:startup",
+    "gh:view": "bun run scripts/gh-utils.ts issues:view",
+    "gh:pr": "bun run scripts/gh-utils.ts pr:create",
+    "gh:quality": "bun run scripts/gh-utils.ts quality:check",
     "gh:help": "bun run scripts/gh-utils.ts"
   },
   "devDependencies": {
