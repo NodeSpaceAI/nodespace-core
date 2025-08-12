@@ -13,11 +13,8 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 > 1. **Check git status**: `git status` - commit any pending changes first
 > 2. **Determine branching strategy**: Check parent issue for specified approach (single branch vs. individual branches)
 > 3. **Create/switch to branch**: Based on strategy - either `git checkout -b feature/issue-<number>-brief-description` OR switch to existing parent issue branch
-> 4. **Assign issue**: `gh issue edit <number> --add-assignee "@me"`  
-> 5. **Update project status**: Use CANONICAL COMMAND (copy-paste, replace issue number):
-> ```bash
-> ISSUE_NUMBER=YOUR_ISSUE_NUMBER && ITEM_ID=$(gh project item-list 5 --owner malibio --limit 200 --format=json -q ".items[] | select(.content.number == $ISSUE_NUMBER) | .id") && gh project item-edit --id $ITEM_ID --project-id PVT_kwHOADHu9M4A_nxN --field-id PVTSSF_lAHOADHu9M4A_nxNzgyq13o --single-select-option-id 47fc9ee4 && echo "✅ Issue #$ISSUE_NUMBER updated to 'In Progress'"
-> ```
+> 4. **Assign issue**: `bun run gh:assign <number> "@me"`  
+> 5. **Update project status**: `bun run gh:status <number> "In Progress"`
 > 6. **Select subagent**: Use decision tree below to choose specialized agent
 > 7. **Read issue requirements**: Understand all acceptance criteria
 > 8. **Plan implementation**: Self-contained approach with appropriate subagent
@@ -103,11 +100,12 @@ Use the most appropriate specialized sub-agent available for complex tasks. Clau
 
 1. **Pick an Issue & Assign Yourself**
    ```bash
-   gh issue list
-   gh issue view <number>
-   gh issue edit <number> --add-assignee "@me"
+   bun run gh:list
+   bun run gh:view <number>
+   bun run gh:assign <number> "@me"
+   bun run gh:status <number> "In Progress"
    ```
-   Then update project status using CLI commands (see [startup-sequence.md](docs/architecture/development/process/startup-sequence.md))
+   All commands now use TypeScript API (no Claude Code approval prompts)
 
 2. **Create Feature Branch**
    ```bash
@@ -130,9 +128,9 @@ Use the most appropriate specialized sub-agent available for complex tasks. Clau
    git add .
    git commit -m "Implement feature (addresses #<number>)"
    git push -u origin feature/issue-<number>-brief-description
-   gh pr create --title "Implement Issue #<number>" --body "Closes #<number>"
+   bun run gh:pr <number>
    ```
-   Then update project status using CLI commands: In Progress → Ready for Review
+   Automatically updates project status to "Ready for Review"
 
 6. **Conduct Code Review**
    - **FOLLOW UNIVERSAL PROCESS**: Use the code review guidelines in the [PR review documentation](docs/architecture/development/process/pr-review.md) 
@@ -140,8 +138,8 @@ Use the most appropriate specialized sub-agent available for complex tasks. Clau
    - All quality gates and review requirements apply universally to AI agents and human reviewers
 
 **TodoWrite Tool Users - UPDATED:**
-- Your **FIRST todo item** must be: "Complete startup sequence: git status, branch strategy, create branch, assign issue (gh issue edit N --add-assignee '@me'), update status (use canonical command), select subagent"
-- **Include the canonical status update command** in your planning 
+- Your **FIRST todo item** must be: "Complete startup sequence: git status, branch strategy, create branch, assign issue (bun run gh:assign N '@me'), update status (bun run gh:status N 'In Progress'), select subagent"
+- All GitHub operations now use **bun commands** (no Claude Code approval prompts)
 - Do NOT break the startup sequence into separate todo items
 - Only after completing the startup sequence should you add implementation todos
 

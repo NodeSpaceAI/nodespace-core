@@ -516,6 +516,7 @@
 
   .ns-node__text {
     color: hsl(var(--foreground));
+    font-family: inherit;
     font-size: 14px;
     line-height: 1.4;
     word-break: break-word;

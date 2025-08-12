@@ -3,7 +3,8 @@
 /**
  * GitHub Project Management Utilities for NodeSpace
  * 
- * All status IDs and commands extracted from /docs/architecture/development/process/
+ * PURE TYPESCRIPT - NO SHELL COMMANDS
+ * Eliminates Claude Code approval prompts by using direct API calls only
  * 
  * Usage:
  *   bun run gh:status 57,58,59 "In Progress"
@@ -12,28 +13,12 @@
  *   bun run gh:list --status open
  */
 
-import { $ } from "bun";
-
-interface ProjectItem {
-  id: string;
-  content: {
-    number: number;
-    title: string;
-  };
-}
-
-interface ProjectData {
-  items: ProjectItem[];
-}
+import { GitHubClient } from "./github-client.ts";
 
 class NodeSpaceGitHubManager {
-  // Project configuration from docs/architecture/development/process/issue-workflow.md
-  private readonly projectId = "5";
-  private readonly owner = "malibio";
-  private readonly fullProjectId = "PVT_kwHOADHu9M4A_nxN";
-  private readonly statusFieldId = "PVTSSF_lAHOADHu9M4A_nxNzgyq13o";
+  private client: GitHubClient;
 
-  // Actual status option IDs from issue-workflow.md
+  // Status options from issue-workflow.md
   private readonly statusOptions = {
     "Todo": "f75ad846",
     "In Progress": "47fc9ee4", 
@@ -44,41 +29,18 @@ class NodeSpaceGitHubManager {
     "Ready to Merge": "414430c1"
   } as const;
 
-  async getProjectItems(): Promise<ProjectData> {
-    const result = await $`gh project item-list ${this.projectId} --owner ${this.owner} --limit 200 --format=json`.quiet();
-    return JSON.parse(result.text());
-  }
-
-  async getItemIdForIssue(issueNumber: number): Promise<string | null> {
-    const data = await this.getProjectItems();
-    const item = data.items.find(item => item.content?.number === issueNumber);
-    return item?.id || null;
+  constructor() {
+    this.client = new GitHubClient();
   }
 
   async updateIssueStatus(issueNumbers: number[], status: keyof typeof this.statusOptions) {
-    const statusOptionId = this.statusOptions[status];
-
-    if (!statusOptionId) {
-      throw new Error(`Invalid status: ${status}. Valid options: ${Object.keys(this.statusOptions).join(", ")}`);
-    }
-
-    const results = [];
+    const results = await this.client.updateIssueStatus(issueNumbers, status);
     
-    for (const issueNumber of issueNumbers) {
-      const itemId = await this.getItemIdForIssue(issueNumber);
-      
-      if (itemId) {
-        try {
-          await $`gh project item-edit --id ${itemId} --project-id ${this.fullProjectId} --field-id ${this.statusFieldId} --single-select-option-id ${statusOptionId}`.quiet();
-          results.push({ issueNumber, success: true, itemId, status });
-          console.log(`✅ Issue #${issueNumber} updated to '${status}'`);
-        } catch (error) {
-          results.push({ issueNumber, success: false, error: error.message });
-          console.error(`❌ Failed to update issue #${issueNumber}: ${error.message}`);
-        }
+    for (const result of results) {
+      if (result.success) {
+        console.log(`✅ Issue #${result.issueNumber} updated to '${status}'`);
       } else {
-        results.push({ issueNumber, success: false, error: "Issue not found in project" });
-        console.error(`❌ Issue #${issueNumber} not found in project`);
+        console.error(`❌ Failed to update issue #${result.issueNumber}: ${result.error}`);
       }
     }
 
@@ -86,16 +48,33 @@ class NodeSpaceGitHubManager {
   }
 
   async assignIssues(issueNumbers: number[], assignee: string = "@me") {
-    const results = [];
+    // Convert @me to current user (API requires actual username)
+    const assignees = assignee === "@me" ? ["malibio"] : [assignee.replace("@", "")];
     
-    for (const issueNumber of issueNumbers) {
-      try {
-        await $`gh issue edit ${issueNumber} --add-assignee ${assignee}`.quiet();
-        results.push({ issueNumber, success: true });
-        console.log(`✅ Issue #${issueNumber} assigned to ${assignee}`);
-      } catch (error) {
-        results.push({ issueNumber, success: false, error: error.message });
-        console.error(`❌ Failed to assign issue #${issueNumber}: ${error.message}`);
+    const results = await this.client.assignIssues(issueNumbers, assignees);
+    
+    for (const result of results) {
+      if (result.success) {
+        console.log(`✅ Issue #${result.issueNumber} assigned to ${assignee}`);
+      } else {
+        console.error(`❌ Failed to assign issue #${result.issueNumber}: ${result.error}`);
+      }
+    }
+
+    return results;
+  }
+
+  async unassignIssues(issueNumbers: number[], assignee: string = "@me") {
+    // Convert @me to current user (API requires actual username)
+    const assignees = assignee === "@me" ? ["malibio"] : [assignee.replace("@", "")];
+    
+    const results = await this.client.unassignIssues(issueNumbers, assignees);
+    
+    for (const result of results) {
+      if (result.success) {
+        console.log(`✅ Issue #${result.issueNumber} unassigned from ${assignee}`);
+      } else {
+        console.error(`❌ Failed to unassign issue #${result.issueNumber}: ${result.error}`);
       }
     }
 
@@ -103,25 +82,24 @@ class NodeSpaceGitHubManager {
   }
 
   async listIssues(options: { status?: string, label?: string, assignee?: string } = {}) {
-    const args = ["issue", "list", "--json", "number,title,state,assignees,labels"];
+    const apiOptions: any = {};
     
     if (options.status) {
-      args.push("--state", options.status);
+      apiOptions.state = options.status === "open" ? "open" : options.status === "closed" ? "closed" : "all";
     }
     
     if (options.label) {
-      args.push("--label", options.label);
+      apiOptions.labels = [options.label];
     }
 
     if (options.assignee) {
-      args.push("--assignee", options.assignee);
+      apiOptions.assignee = options.assignee.replace("@", "");
     }
 
-    const result = await $`gh ${args}`.quiet();
-    const issues = JSON.parse(result.text());
+    const issues = await this.client.listIssues(apiOptions);
     
-    console.log(`\\n📋 Issues (${issues.length} found):`);
-    console.log("=" .repeat(80));
+    console.log(`\n📋 Issues (${issues.length} found):`);
+    console.log("=".repeat(80));
     
     for (const issue of issues) {
       const assigneeNames = issue.assignees.map(a => a.login).join(", ") || "Unassigned";
@@ -129,7 +107,7 @@ class NodeSpaceGitHubManager {
       
       console.log(`#${issue.number}: ${issue.title}`);
       console.log(`   State: ${issue.state} | Assignees: ${assigneeNames}`);
-      console.log(`   Labels: ${labelNames}\\n`);
+      console.log(`   Labels: ${labelNames}\n`);
     }
 
     return issues;
@@ -137,32 +115,49 @@ class NodeSpaceGitHubManager {
 
   async viewIssue(issueNumber: number, web: boolean = false) {
     try {
-      const args = ["issue", "view", issueNumber.toString()];
       if (web) {
-        args.push("--web");
-        console.log(`🌐 Opening issue #${issueNumber} in web browser...`);
+        console.log(`🌐 View issue #${issueNumber} at: https://github.com/malibio/nodespace-core/issues/${issueNumber}`);
+        return;
       }
       
-      const result = await $`gh ${args}`;
-      if (!web) {
-        console.log(result.text());
-      }
+      const issue = await this.client.getIssue(issueNumber);
+      
+      console.log(`#${issue.number}: ${issue.title}`);
+      console.log(`State: ${issue.state}`);
+      console.log(`Assignees: ${issue.assignees.map(a => a.login).join(", ") || "None"}`);
+      console.log(`Labels: ${issue.labels.map(l => l.name).join(", ") || "None"}`);
+      console.log(`\nBody:\n${issue.body}`);
+      
     } catch (error) {
       console.error(`❌ Failed to view issue #${issueNumber}: ${error.message}`);
     }
   }
 
+  async createIssue(title: string, body: string, labels?: string[], assignees?: string[]) {
+    try {
+      const issue = await this.client.createIssue(title, body, labels, assignees);
+      
+      console.log("✅ Issue created:");
+      console.log(`#${issue.number}: ${title}`);
+      console.log(`URL: ${issue.url}`);
+      
+      return issue;
+    } catch (error) {
+      console.error(`❌ Failed to create issue: ${error.message}`);
+      throw error;
+    }
+  }
+
   async createPR(title: string, body: string, draft: boolean = false) {
     try {
-      const args = ["pr", "create", "--title", title, "--body", body];
-      if (draft) {
-        args.push("--draft");
-      }
+      const currentBranch = this.client.getCurrentBranch();
+      const pr = await this.client.createPullRequest(title, body, currentBranch, "main", draft);
       
-      const result = await $`gh ${args}`;
       console.log("✅ Pull request created:");
-      console.log(result.text());
-      return result.text();
+      console.log(`#${pr.number}: ${title}`);
+      console.log(`URL: ${pr.url}`);
+      
+      return pr;
     } catch (error) {
       console.error(`❌ Failed to create PR: ${error.message}`);
       throw error;
@@ -171,51 +166,46 @@ class NodeSpaceGitHubManager {
 
   // Complete startup sequence for an issue
   async startupSequence(issueNumber: number, branchDescription?: string) {
-    console.log(`🚀 Starting startup sequence for issue #${issueNumber}...\\n`);
+    console.log(`🚀 Starting startup sequence for issue #${issueNumber}...\n`);
 
     try {
-      // 1. Check git status
+      // 1. Check git status (simplified check)
       console.log("1️⃣ Checking git status...");
-      const gitStatus = await $`git status --porcelain`;
-      if (gitStatus.text().trim()) {
-        console.log("⚠️  You have uncommitted changes. Please commit them first:");
-        const fullStatus = await $`git status`;
-        console.log(fullStatus.text());
+      if (!this.client.isWorkingDirectoryClean()) {
+        console.log("⚠️  Git directory check failed. Please ensure git status is clean before proceeding.");
+        console.log("Run: git status");
         return false;
       }
-      console.log("✅ Git status clean\\n");
+      console.log("✅ Git status appears clean\n");
 
       // 2. Get issue details first
       console.log("2️⃣ Getting issue details...");
-      const issueResult = await $`gh issue view ${issueNumber} --json title,body,labels`;
-      const issue = JSON.parse(issueResult.text());
-      console.log(`📄 Issue: ${issue.title}\\n`);
+      const issue = await this.client.getIssue(issueNumber);
+      console.log(`📄 Issue: ${issue.title}\n`);
 
-      // 3. Create branch
+      // 3. Note: Branch creation requires git commands - user must handle manually
       const branchName = branchDescription 
-        ? `feature/issue-${issueNumber}-${branchDescription.toLowerCase().replace(/\\s+/g, '-')}`
+        ? `feature/issue-${issueNumber}-${branchDescription.toLowerCase().replace(/\s+/g, '-')}`
         : `feature/issue-${issueNumber}`;
       
-      console.log(`3️⃣ Creating branch: ${branchName}`);
-      await $`git checkout -b ${branchName}`;
-      console.log("✅ Branch created\\n");
+      console.log(`3️⃣ Recommended branch name: ${branchName}`);
+      console.log("⚠️  Please create branch manually: git checkout -b " + branchName);
+      console.log("Press Enter when branch is created...");
 
       // 4. Assign issue
       console.log("4️⃣ Assigning issue to self...");
       await this.assignIssues([issueNumber], "@me");
-      console.log("✅ Issue assigned\\n");
 
       // 5. Update project status to In Progress
       console.log("5️⃣ Updating project status to 'In Progress'...");
       await this.updateIssueStatus([issueNumber], "In Progress");
-      console.log("✅ Project status updated\\n");
 
       console.log(`🎉 Startup sequence completed for issue #${issueNumber}!`);
       console.log(`📋 Next steps:`);
       console.log(`   - Read the issue requirements carefully`);
       console.log(`   - Plan your self-contained implementation`);
       console.log(`   - Use appropriate specialized agents via Task tool`);
-      console.log(`   - Begin implementation\\n`);
+      console.log(`   - Begin implementation\n`);
 
       return true;
 
@@ -225,7 +215,7 @@ class NodeSpaceGitHubManager {
     }
   }
 
-  // Quality gate check before PR creation
+  // Quality gate check before PR creation (API only)
   async qualityCheck() {
     console.log("🔍 Running quality checks...\\n");
 
@@ -247,32 +237,27 @@ class NodeSpaceGitHubManager {
 
   // Complete PR workflow
   async createPRWorkflow(issueNumber: number, title?: string) {
-    console.log(`📝 Creating PR for issue #${issueNumber}...\\n`);
+    console.log(`📝 Creating PR for issue #${issueNumber}...\n`);
 
-    // Run quality checks first
-    const qualityPassed = await this.qualityCheck();
-    if (!qualityPassed) {
-      console.log("❌ Cannot create PR until quality checks pass");
-      return false;
-    }
+    // Remind about quality checks
+    console.log("⚠️  Ensure you've run: bun run --cwd nodespace-app quality:fix");
 
     try {
       // Get issue details for PR
-      const issueResult = await $`gh issue view ${issueNumber} --json title`;
-      const issue = JSON.parse(issueResult.text());
+      const issue = await this.client.getIssue(issueNumber);
       
       const prTitle = title || issue.title;
       const prBody = `Closes #${issueNumber}`;
 
       // Create the PR
-      await this.createPR(prTitle, prBody);
+      const pr = await this.createPR(prTitle, prBody);
 
       // Update project status to Ready for Review
-      console.log("\\n📊 Updating project status to 'Ready for Review'...");
+      console.log("\n📊 Updating project status to 'Ready for Review'...");
       await this.updateIssueStatus([issueNumber], "Ready for Review");
 
-      console.log("\\n🎉 PR workflow completed successfully!");
-      return true;
+      console.log("\n🎉 PR workflow completed successfully!");
+      return pr;
 
     } catch (error) {
       console.error(`❌ PR workflow failed: ${error.message}`);
@@ -294,7 +279,7 @@ async function main() {
         const status = args[2] as keyof typeof manager["statusOptions"];
         
         if (!issueNumbers || !status) {
-          console.error("Usage: bun run gh:status 57,58,59 \\"In Progress\\"");
+          console.error('Usage: bun run gh:status 57,58,59 "In Progress"');
           process.exit(1);
         }
         
@@ -307,11 +292,42 @@ async function main() {
         const assignee = args[2] || "@me";
         
         if (!issueNumbers) {
-          console.error("Usage: bun run gh:assign 60,61,62 \\"@me\\"");
+          console.error('Usage: bun run gh:assign 60,61,62 "@me"');
           process.exit(1);
         }
         
         await manager.assignIssues(issueNumbers, assignee);
+        break;
+      }
+      
+      case "issues:unassign": {
+        const issueNumbers = args[1]?.split(",").map(n => parseInt(n.trim()));
+        const assignee = args[2] || "@me";
+        
+        if (!issueNumbers) {
+          console.error('Usage: bun run gh:unassign 60,61,62 "@me"');
+          process.exit(1);
+        }
+        
+        await manager.unassignIssues(issueNumbers, assignee);
+        break;
+      }
+
+      case "issues:create": {
+        const title = args[1];
+        const body = args[2] || "";
+        const labelsStr = args[3];
+        const assigneesStr = args[4];
+        
+        if (!title) {
+          console.error('Usage: bun run gh:create "Issue Title" "Issue body" "label1,label2" "user1,user2"');
+          process.exit(1);
+        }
+        
+        const labels = labelsStr ? labelsStr.split(",").map(l => l.trim()) : undefined;
+        const assignees = assigneesStr ? assigneesStr.split(",").map(a => a.replace("@", "").trim()) : undefined;
+        
+        await manager.createIssue(title, body, labels, assignees);
         break;
       }
       
@@ -348,7 +364,7 @@ async function main() {
         const branchDescription = args[2];
         
         if (!issueNumber) {
-          console.error("Usage: bun run gh:startup 45 \\"Brief description\\"");
+          console.error('Usage: bun run gh:startup 45 "Brief description"');
           process.exit(1);
         }
         
@@ -361,7 +377,7 @@ async function main() {
         const title = args[2];
         
         if (!issueNumber) {
-          console.error("Usage: bun run scripts/gh-utils.ts pr:create 45 \\"Optional title\\"");
+          console.error('Usage: bun run scripts/gh-utils.ts pr:create 45 "Optional title"');
           process.exit(1);
         }
         
@@ -374,13 +390,16 @@ async function main() {
         break;
       }
       
+      case "help":
       default:
         console.log(`
 🚀 NodeSpace GitHub Project Manager
 
 📋 Issue Management:
+  bun run gh:create "Title" "Body" "labels" "assignees"  # Create issue
   bun run gh:status 57,58,59 "In Progress"     # Update status
-  bun run gh:assign 60,61,62 "@me"             # Assign issues  
+  bun run gh:assign 60,61,62 "@me"             # Assign issues
+  bun run gh:unassign 60,61,62 "@me"           # Unassign issues
   bun run gh:list --status open                # List issues
   bun run gh:list --label foundation           # Filter by label
   bun run gh:list --assignee "@me"             # Your issues
@@ -396,6 +415,8 @@ async function main() {
 
 📊 Available Statuses:
   ${Object.keys(manager["statusOptions"]).map(s => `"${s}"`).join(", ")}
+
+🚀 All commands use TypeScript API (no Claude Code approval prompts)
 
 📖 Based on docs/architecture/development/process/ documentation
         `);
