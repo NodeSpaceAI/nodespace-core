@@ -2,7 +2,7 @@
  * NodeSpace SVG Icon System
  *
  * A modular, tree-shakable icon system with TypeScript support.
- * Supports theme integration via currentColor and follows Material Design specs.
+ * Supports theme integration via currentColor and follows shadcn-svelte design system.
  *
  * Usage:
  * ```svelte
@@ -23,10 +23,16 @@ export type { IconName } from './Icon.svelte';
 
 // Export individual icon paths for direct usage if needed
 export { textIcon } from './ui/text.js';
+export { circleIcon } from './ui/circle.js';
+export { circleRingIcon } from './ui/circle-ring.js';
+export { chevronRightIcon } from './ui/chevron-right.js';
 
 /**
  * Available Icons:
  * - text: Document with pencil icon for text content and editing
+ * - circle: Simple filled circle for node indicators
+ * - circle-ring: Circle with ring for parent node indicators
+ * - chevron-right: Right-pointing chevron for collapse/expand controls
  *
  * Future icons will be added to ./ui/ directory and exported here.
  */

@@ -18,11 +18,11 @@ NodeSpace is a next-generation knowledge management system designed from the gro
 ## Key Features
 
 ### 🧠 **Intelligent Node Types**
-- **Text Nodes**: Hybrid markdown rendering with precise cursor positioning and AI-assisted editing
-- **Task Nodes**: Project management with natural language task creation
-- **AI Chat Nodes**: Conversational interfaces with context awareness
-- **Entity Nodes**: Structured data with calculated fields and natural language operations
-- **Query Nodes**: Live data queries with real-time updates
+- **Text Nodes**: ✅ **Implemented** - Markdown support (headers, bold, italic, underline) with multiline editing and header inheritance
+- **Task Nodes**: 🚧 **Planned** - Project management with natural language task creation  
+- **AI Chat Nodes**: 🚧 **Planned** - Conversational interfaces with context awareness
+- **Entity Nodes**: 🚧 **Planned** - Structured data with calculated fields and natural language operations
+- **Query Nodes**: 🚧 **Planned** - Live data queries with real-time updates
 
 ### 🎨 **Modern Interface**
 - **Multi-Node Selection**: Advanced selection system (single, range, multi-select) with full keyboard navigation
@@ -141,7 +141,7 @@ Comprehensive architecture documentation is organized in the `docs/architecture/
 - [Data Flow](docs/architecture/core/data-flow.md) - Information flow through the system
 
 ### 🔧 **Components**
-- [Node Types](docs/architecture/components/node-types.md) - Core node type implementations
+- [ContentEditable Implementation](docs/architecture/components/contenteditable-implementation.md) - ✅ **Current implementation** of MinimalBaseNode, TextNode, and markdown support
 - [Entity Management](docs/architecture/components/entity-management.md) - Structured data with calculated fields
 - [AI Integration](docs/architecture/components/ai-integration.md) - Natural language processing and RAG
 - [Validation System](docs/architecture/components/validation-system.md) - Business rules and validation
@@ -220,12 +220,15 @@ When creating new node types:
 ## Roadmap
 
 ### Current Phase: MVP Development
-- ✅ Core node types implementation
-- ✅ AI integration with mistral.rs
-- ✅ Real-time query system
-- 🚧 Entity management with calculated fields
-- 🚧 Validation system implementation
-- 🚧 Plugin architecture completion
+- ✅ **ContentEditable Foundation**: MinimalBaseNode architecture with TextNode specialization
+- ✅ **Markdown Support**: Headers (H1-H6), bold, italic, underline with multiline support
+- ✅ **Header Features**: CSS-based styling, inheritance, content preservation, single-line enforcement
+- ✅ **Node Management**: Creation, focus handling, reactive state management
+- 🚧 **Parent/Child Relationships**: Hierarchical node structure (next priority)
+- 🚧 **Additional Markdown**: Lists, blockquotes, code spans, links
+- 🚧 **AI Integration**: Natural language processing integration
+- 🚧 **Entity Management**: Structured data with calculated fields
+- 🚧 **Plugin Architecture**: Build-time extensibility system
 
 ### Post-MVP: Enterprise Features
 See [Post-MVP Roadmap](docs/architecture/design-decisions/post-mvp-roadmap.md) for detailed plans including:

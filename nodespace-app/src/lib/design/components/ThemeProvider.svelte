@@ -120,11 +120,6 @@
     z-index: 0;
   }
 
-  /* Global text selection styling */
-  :global(.theme-provider ::selection) {
-    background-color: hsl(var(--primary) / 0.2);
-    color: hsl(var(--foreground));
-  }
 
   /* Focus ring styling */
   :global(.theme-provider :focus-visible) {

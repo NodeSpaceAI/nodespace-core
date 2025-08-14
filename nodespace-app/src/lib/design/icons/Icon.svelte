@@ -1,14 +1,20 @@
 <script context="module" lang="ts">
   // Icon name type (expandable for future icons)
-  export type IconName = 'text';
+  export type IconName = 'text' | 'circle' | 'circle-ring' | 'chevron-right';
 </script>
 
 <script lang="ts">
   import { textIcon } from './ui/text.js';
+  import { circleIcon } from './ui/circle.js';
+  import { circleRingIcon } from './ui/circle-ring.js';
+  import { chevronRightIcon } from './ui/chevron-right.js';
 
   // Icon registry mapping names to SVG paths
   const iconRegistry: Record<IconName, string> = {
-    text: textIcon
+    text: textIcon,
+    circle: circleIcon,
+    'circle-ring': circleRingIcon,
+    'chevron-right': chevronRightIcon
   };
 
   // Component props
@@ -28,25 +34,39 @@
 
 <!-- 
   SVG Icon Component
-  - Uses Material Design icon specifications (viewBox "0 -960 960 960")
-  - Supports currentColor for theme integration
+  - Uses standard SVG viewBox coordinate system (viewBox "0 -960 960 960")
+  - Supports currentColor for shadcn-svelte theme integration
   - Default size: 20px (can be overridden)
   - Accessible with proper ARIA labeling
 -->
 <svg
   width={size}
   height={size}
-  viewBox="0 -960 960 960"
+  viewBox="{name === 'circle' || name === 'circle-ring' || name === 'chevron-right' ? '0 0 16 16' : '0 -960 960 960'}"
   fill={color}
   class={`ns-icon ns-icon--${name} ${className}`}
   role="img"
   aria-label={`${name} icon`}
 >
   {#if iconPath}
-    <path d={iconPath} />
-  {:else}
-    <!-- Fallback for missing icons - simple square -->
-    <rect x="200" y="-760" width="560" height="560" rx="40" />
+    {#if name === 'circle'}
+      <!-- Simple filled circle: both circles always present, ring transparent -->
+      <!-- Background ring: 16px diameter (transparent when no children) -->
+      <circle cx="8" cy="8" r="7" fill={color} opacity="0" />
+      <!-- Inner circle: 10px diameter -->
+      <circle cx="8" cy="8" r="4" fill={color} />
+    {:else if name === 'circle-ring'}
+      <!-- Layered circles: 16px parent ring + 10px inner circle -->
+      <!-- Background ring: 16px diameter filled area -->
+      <circle cx="8" cy="8" r="7" fill={color} opacity="0.5" />
+      <!-- Inner circle: 10px diameter (covers center, creating ring effect) -->
+      <circle cx="8" cy="8" r="4" fill={color} />
+    {:else if name === 'chevron-right'}
+      <!-- Chevron right: 16x16 viewBox, points right by default -->
+      <path d={iconPath} fill={color} />
+    {:else}
+      <path d={iconPath} />
+    {/if}
   {/if}
 </svg>
 

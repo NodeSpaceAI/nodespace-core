@@ -13,8 +13,6 @@
 <script lang="ts">
   import { createEventDispatcher, tick } from 'svelte';
   import Icon, { type IconName } from '../icons/index.js';
-  import MockTextElement from './MockTextElement.svelte';
-  import { findCharacterFromClickFast, isClickWithinTextBounds } from './CursorPositioning';
 
   // Essential Props (Simplified to 5 core + processing)
   export let nodeType: NodeType = 'text';
@@ -25,7 +23,6 @@
   export let editable: boolean = true;
   export let contentEditable: boolean = true; // Can content be directly edited by user?
   export let multiline: boolean = false; // Single-line by default
-  export let placeholder: string = 'Click to add content...';
 
   // SVG Icon System
   export let iconName: IconName | undefined = undefined;
@@ -37,12 +34,6 @@
 
   // Edit state - ContentEditable approach (no focused state needed)
   let contentEditableElement: HTMLDivElement;
-  let mockElementRef: MockTextElementRef;
-
-  // Interface for MockTextElement component
-  interface MockTextElementRef {
-    getElement(): HTMLDivElement | undefined;
-  }
 
   // Event dispatcher
   const dispatch = createEventDispatcher<{
@@ -71,190 +62,24 @@
     }
   }
 
-  // Focus ContentEditable and position cursor
-  async function focusContentEditable(clickEvent?: MouseEvent) {
+  // Focus ContentEditable 
+  async function focusContentEditable() {
     dispatch('focus', { nodeId });
-
     await tick();
     if (contentEditableElement) {
       contentEditableElement.focus();
-
-      // Position cursor based on click location
-      if (clickEvent) {
-        await tick(); // Wait for contenteditable to be fully rendered
-        positionCursorFromClick(clickEvent);
-      } else {
-        // No click event, place at end
-        const range = document.createRange();
-        const selection = window.getSelection();
-        try {
-          range.selectNodeContents(contentEditableElement);
-          range.collapse(false);
-          selection?.removeAllRanges();
-          selection?.addRange(range);
-        } catch (error) {
-          console.warn('Selection API fallback failed:', error);
-        }
-      }
     }
   }
 
-  // Position cursor based on click coordinates using mock element
-  async function positionCursorFromClick(clickEvent: MouseEvent) {
-    if (!contentEditableElement || !mockElementRef) return;
 
-    const editableRect = contentEditableElement.getBoundingClientRect();
-
-    // Validate click is within reasonable bounds
-    if (!isClickWithinTextBounds(clickEvent.clientX, clickEvent.clientY, editableRect)) {
-      // Click is too far from editable area, position at end
-      const range = document.createRange();
-      const selection = window.getSelection();
-      range.selectNodeContents(contentEditableElement);
-      range.collapse(false);
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-      return;
-    }
-
-    console.log('Mock element positioning for ContentEditable:', {
-      content: content.substring(0, 20) + '...',
-      clickX: clickEvent.clientX,
-      clickY: clickEvent.clientY,
-      editableRect: {
-        left: editableRect.left,
-        top: editableRect.top,
-        width: editableRect.width,
-        height: editableRect.height
-      },
-      multiline: multiline
-    });
-
-    try {
-      // Get the mock element for position calculation
-      const mockElement = mockElementRef.getElement();
-      if (!mockElement) {
-        console.warn('Mock element not available, falling back to end position');
-        setCursorPosition(content.length);
-        return;
-      }
-
-      // Use the fast positioning algorithm
-      const positionResult = findCharacterFromClickFast(
-        mockElement,
-        clickEvent.clientX,
-        clickEvent.clientY,
-        editableRect
-      );
-
-      // Convert character index to ContentEditable selection
-      const targetPosition = Math.max(0, Math.min(positionResult.index, content.length));
-
-      console.log('Mock element positioning result:', {
-        targetPosition,
-        accuracy: positionResult.accuracy,
-        distance: positionResult.distance
-      });
-
-      // Set cursor position using Selection API
-      const textNode = contentEditableElement.firstChild;
-      if (textNode && textNode.nodeType === 3 /* Node.TEXT_NODE */) {
-        const range = document.createRange();
-        const selection = window.getSelection();
-        const safePosition = Math.min(targetPosition, textNode.textContent?.length || 0);
-        range.setStart(textNode, safePosition);
-        range.setEnd(textNode, safePosition);
-        selection?.removeAllRanges();
-        selection?.addRange(range);
-      }
-
-      // Verify the cursor was set correctly
-      setTimeout(() => {
-        const selection = window.getSelection();
-        console.log('Actual cursor position after set:', selection?.anchorOffset);
-      }, 10);
-    } catch (error) {
-      console.error('Error in mock element positioning:', error);
-      // Fallback to end position
-      const range = document.createRange();
-      const selection = window.getSelection();
-      range.selectNodeContents(contentEditableElement);
-      range.collapse(false);
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-    }
-  }
-
-  // Handle ContentEditable input
+  // Handle ContentEditable input - minimal processing
   function handleContentEditableInput(event: Event & { currentTarget: HTMLDivElement }) {
     const target = event.currentTarget;
     const newContent = target.textContent || '';
-
-    // For single-line, replace newlines with spaces
-    let processedContent = newContent;
-    if (!multiline) {
-      processedContent = newContent.replace(/\n/g, ' ');
-      // Update the ContentEditable content if we processed it
-      if (processedContent !== newContent) {
-        const cursorPosition = window.getSelection()?.anchorOffset || processedContent.length;
-        target.textContent = processedContent;
-        // Restore cursor position
-        setTimeout(() => setCursorPosition(cursorPosition), 0);
-      }
-    }
-
-    content = processedContent;
+    content = newContent;
     dispatch('contentChanged', { nodeId, content });
   }
 
-  // Cross-browser compatible cursor positioning for ContentEditable
-  function setCursorPosition(position: number) {
-    if (!contentEditableElement) return;
-
-    const selection = window.getSelection();
-    if (!selection) return;
-
-    // Ensure we have a text node to work with
-    let textNode = contentEditableElement.firstChild;
-
-    // If no text node exists, create one
-    if (!textNode || textNode.nodeType !== 3 /* Node.TEXT_NODE */) {
-      if (content.length === 0) {
-        // Better empty content handling - position cursor at start
-        const range = document.createRange();
-        const selection = window.getSelection();
-        range.selectNodeContents(contentEditableElement);
-        range.collapse(true);
-        selection?.removeAllRanges();
-        selection?.addRange(range);
-        return;
-      }
-
-      // Create text node if it doesn't exist
-      textNode = document.createTextNode(content);
-      contentEditableElement.innerHTML = '';
-      contentEditableElement.appendChild(textNode);
-    }
-
-    try {
-      const range = document.createRange();
-      const safePosition = Math.min(position, textNode.textContent?.length || 0);
-
-      // Set cursor position
-      range.setStart(textNode, safePosition);
-      range.setEnd(textNode, safePosition);
-
-      // Apply selection
-      selection.removeAllRanges();
-      selection.addRange(range);
-
-      console.log(`Cursor set to position ${safePosition}`);
-    } catch (error) {
-      console.error('Error setting cursor position:', error);
-      // Final fallback: focus the element
-      contentEditableElement.focus();
-    }
-  }
 
   // Handle blur
   function handleBlur() {
@@ -374,25 +199,11 @@
             on:keydown|stopPropagation
             role="textbox"
             tabindex="0"
-            aria-label={content || placeholder}
-            data-placeholder={placeholder}
+            aria-label={content || 'Text input'}
           >
             {content}
           </div>
 
-          <!-- Mock element for precise cursor positioning -->
-          {#if contentEditableElement}
-            <MockTextElement
-              bind:this={mockElementRef}
-              {content}
-              fontFamily={getComputedStyle(contentEditableElement).fontFamily}
-              fontSize={getComputedStyle(contentEditableElement).fontSize}
-              fontWeight={getComputedStyle(contentEditableElement).fontWeight}
-              lineHeight={getComputedStyle(contentEditableElement).lineHeight}
-              width={contentEditableElement.offsetWidth}
-              {multiline}
-            />
-          {/if}
         {:else}
           <!-- Non-editable display (read-only nodes) -->
           <div class="ns-node__display" role="region">
@@ -400,7 +211,7 @@
               {#if content}
                 <span class="ns-node__text">{content}</span>
               {:else}
-                <span class="ns-node__empty">{placeholder}</span>
+                <span class="ns-node__empty">Empty</span>
               {/if}
             </slot>
           </div>
@@ -543,19 +354,13 @@
     overflow-y: auto;
   }
 
-  /* Placeholder styling using CSS pseudo-element */
-  .ns-node__content-editable:empty::before {
-    content: attr(data-placeholder);
-    color: hsl(var(--muted-foreground));
-    font-style: italic;
-    pointer-events: none;
-  }
 
   /* Read-only ContentEditable styling for visual consistency */
   :global(.ns-node__content-editable[contenteditable='false']) {
     cursor: default;
     color: hsl(var(--muted-foreground));
   }
+
 
   /* Display styling */
   .ns-node__display {

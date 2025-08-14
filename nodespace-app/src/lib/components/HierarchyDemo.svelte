@@ -50,7 +50,6 @@
       hierarchicalNodes = convertToTreeNodes(nodes);
     } catch (err) {
       error = err instanceof Error ? err.message : 'Failed to load hierarchical data';
-      console.error('Error loading hierarchical data:', err);
     } finally {
       loading = false;
     }
@@ -58,33 +57,30 @@
 
   // Handle node selection
   function handleNodeSelect(event: CustomEvent<{ nodeId: string; node: TreeNodeData }>) {
-    console.log('Node selected:', event.detail);
     // Could implement focus/selection logic here
   }
 
   // Handle node expansion
   async function handleNodeExpand(event: CustomEvent<{ nodeId: string; expanded: boolean }>) {
     const { nodeId, expanded } = event.detail;
-    console.log(`Node ${nodeId} ${expanded ? 'expanded' : 'collapsed'}`);
 
     try {
       await mockTextService.toggleNodeExpansion(nodeId);
     } catch (err) {
-      console.error('Error toggling node expansion:', err);
+      // Silently handle expansion errors
     }
   }
 
   // Handle node updates
   async function handleNodeUpdate(event: CustomEvent<{ nodeId: string; content: string }>) {
     const { nodeId, content } = event.detail;
-    console.log('Node updated:', { nodeId, content });
 
     try {
       await mockTextService.saveTextNode(nodeId, content);
       // Reload data to reflect changes
       await loadHierarchicalData();
     } catch (err) {
-      console.error('Error updating node:', err);
+      // Silently handle update errors
     }
   }
 

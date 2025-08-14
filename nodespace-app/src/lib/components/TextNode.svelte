@@ -1,190 +1,264 @@
 <!--
-  TextNode Component
-  
-  Extends BaseNode with markdown support for display mode.
-  Inherits universal edit/display functionality from BaseNode.
+  TextNode Component - Minimal wrapper around BaseNode
 -->
 
 <script lang="ts">
-  import { createEventDispatcher, onMount } from 'svelte';
-  import BaseNode from '$lib/design/components/BaseNode.svelte';
-  import MarkdownRenderer from '$lib/components/MarkdownRenderer.svelte';
-  import { mockTextService, type TextNodeData } from '$lib/services/mockTextService';
+  import { createEventDispatcher } from 'svelte';
+  import MinimalBaseNode from '$lib/design/components/MinimalBaseNode.svelte';
 
-  // Props
+  // Minimal props
   export let nodeId: string;
+  export let autoFocus: boolean = false;
   export let content: string = '';
-  export let editable: boolean = true;
-  export let markdown: boolean = true;
-  export let placeholder: string = 'Click to add text...';
-  export let autoSave: boolean = true;
-  export let compact: boolean = false;
+  export let inheritHeaderLevel: number = 0; // Header level inherited from parent node
+  export let children: any[] = []; // Passthrough for MinimalBaseNode
+  
+  // Header state for CSS styling - initialize with inherited level
+  let headerLevel: number = inheritHeaderLevel;
+  
+  // Parse header level from content and get display text
+  $: {
+    if (content.startsWith('#')) {
+      const headerMatch = content.match(/^(#{1,6})\s+(.*)$/);
+      if (headerMatch) {
+        headerLevel = headerMatch[1].length;
+        displayContent = headerMatch[2];
+      } else {
+        headerLevel = inheritHeaderLevel;
+        displayContent = content;
+      }
+    } else {
+      headerLevel = inheritHeaderLevel;
+      displayContent = content;
+    }
+  }
+  
+  // Content to display (without markdown header syntax)
+  let displayContent: string = content;
+  let baseNodeRef: any;
 
-  // Component state
-  let saveStatus: 'saved' | 'saving' | 'unsaved' | 'error' = 'saved';
-  let saveError = '';
-  let textNodeData: TextNodeData | null = null;
-  let lastSavedContent = content;
-
-  // Event dispatcher
   const dispatch = createEventDispatcher<{
-    save: { nodeId: string; content: string };
-    error: { nodeId: string; error: string };
+    createNewNode: { 
+      afterNodeId: string; 
+      nodeType: string; 
+      currentContent?: string; 
+      newContent?: string;
+      inheritHeaderLevel?: number; // Header level to inherit
+    };
+    contentChanged: { nodeId: string; content: string };
+    indentNode: { nodeId: string };
+    outdentNode: { nodeId: string };
   }>();
 
-  // Load existing node data on mount if nodeId provided
-  onMount(async () => {
-    if (nodeId && nodeId !== 'new') {
-      try {
-        textNodeData = await mockTextService.loadTextNode(nodeId);
-        if (textNodeData) {
-          content = textNodeData.content;
-          lastSavedContent = content;
-          saveStatus = 'saved';
+  // Forward the createNewNode event from BaseNode with header inheritance
+  function handleCreateNewNode(event: CustomEvent<{ 
+    afterNodeId: string; 
+    nodeType: string; 
+    currentContent?: string; 
+    newContent?: string; 
+  }>) {
+    // Add header level inheritance for new nodes
+    const eventDetail = {
+      ...event.detail,
+      inheritHeaderLevel: headerLevel // Pass current header level to new node
+    };
+    
+    dispatch('createNewNode', eventDetail);
+  }
+
+  // Handle content changes and notify parent
+  function handleContentChange(newContent: string) {
+    // If content becomes empty, reset header level
+    if (!newContent.trim()) {
+      headerLevel = 0;
+      content = '';
+      dispatch('contentChanged', { nodeId, content: '' });
+      return;
+    }
+    
+    // If we have a header level, store with markdown header syntax
+    // But also update displayContent for immediate UI feedback
+    const finalContent = headerLevel > 0 ? `${'#'.repeat(headerLevel)} ${newContent}` : newContent;
+    content = finalContent;
+    displayContent = newContent; // Update display without # symbols
+    dispatch('contentChanged', { nodeId, content: finalContent });
+  }
+
+  // Reactive className computation
+  $: nodeClassName = `text-node ${headerLevel ? `text-node--h${headerLevel}` : ''}`.trim();
+
+  // TextNode-specific header functionality with CSS approach
+  function handleTextNodeKeyDown(event: KeyboardEvent) {
+    // Prevent Shift+Enter in header mode (headers are single-line only)
+    if (event.key === 'Enter' && event.shiftKey && headerLevel > 0) {
+      event.preventDefault();
+      return;
+    }
+    
+    // Handle header syntax detection on space key
+    if (event.key === ' ') {
+      // Get the MinimalBaseNode's contenteditable element
+      const baseNodeElement = event.target as HTMLElement;
+      const contentEditableElement = baseNodeElement.closest('.markdown-editor') || baseNodeElement;
+      
+      if (contentEditableElement && contentEditableElement.textContent) {
+        const currentText = contentEditableElement.textContent;
+        const selection = window.getSelection();
+        
+        if (selection && selection.rangeCount > 0) {
+          const range = selection.getRangeAt(0);
+          const preCaretRange = range.cloneRange();
+          preCaretRange.selectNodeContents(contentEditableElement);
+          preCaretRange.setEnd(range.startContainer, range.startOffset);
+          const cursorPosition = preCaretRange.toString().length;
+          
+          const textBeforeCursor = currentText.substring(0, cursorPosition);
+          
+          // Check if we're about to complete header syntax
+          if (/^#{1,6}$/.test(textBeforeCursor)) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            
+            // Set header level for CSS styling
+            const detectedHeaderLevel = textBeforeCursor.length;
+            headerLevel = detectedHeaderLevel;
+            
+            // Preserve existing content after the cursor when switching header levels
+            const freshElement = document.getElementById(`contenteditable-${nodeId}`);
+            if (freshElement) {
+              const fullText = freshElement.textContent || '';
+              // After typing "## ", cursor position is at the end of "##"
+              // We want to preserve everything after the "##" part (not after the space)
+              const textAfterSpace = fullText.substring(cursorPosition);
+              
+              // Set content to just the text after the header syntax
+              freshElement.textContent = textAfterSpace;
+              
+              // Position cursor at the beginning for continued typing
+              const range = document.createRange();
+              const selection = window.getSelection();
+              
+              if (freshElement.firstChild) {
+                range.setStart(freshElement.firstChild, 0);
+                range.setEnd(freshElement.firstChild, 0);
+              } else {
+                // If no text content, position at the element
+                range.selectNodeContents(freshElement);
+                range.collapse(true);
+              }
+              
+              selection?.removeAllRanges();
+              selection?.addRange(range);
+              freshElement.focus();
+            }
+            
+            return;
+          }
         }
-      } catch (error) {
-        console.error('Failed to load text node:', error);
-        saveError = error instanceof Error ? error.message : 'Failed to load content';
-        saveStatus = 'error';
       }
     }
-  });
-
-  // Auto-save functionality
-  let debounceTimeout: NodeJS.Timeout;
-  const DEBOUNCE_DELAY = 2000;
-
-  function debounceAutoSave() {
-    if (!autoSave) return;
-
-    clearTimeout(debounceTimeout);
-    saveStatus = 'unsaved';
-
-    debounceTimeout = setTimeout(async () => {
-      if (content !== lastSavedContent) {
-        await handleAutoSave();
-      }
-    }, DEBOUNCE_DELAY);
   }
 
-  // Handle content changes from BaseNode
-  function handleContentChanged(event: CustomEvent) {
-    content = event.detail.content;
-    debounceAutoSave();
+  // HTML to Markdown conversion for TextNode (includes headers)
+  function htmlToMarkdown(htmlContent: string): string {
+    let markdown = htmlContent;
+    
+    // Convert header tags to markdown syntax
+    markdown = markdown.replace(/<h1[^>]*>(.*?)<\/h1>/g, '# $1');
+    markdown = markdown.replace(/<h2[^>]*>(.*?)<\/h2>/g, '## $1');
+    markdown = markdown.replace(/<h3[^>]*>(.*?)<\/h3>/g, '### $1');
+    markdown = markdown.replace(/<h4[^>]*>(.*?)<\/h4>/g, '#### $1');
+    markdown = markdown.replace(/<h5[^>]*>(.*?)<\/h5>/g, '##### $1');
+    markdown = markdown.replace(/<h6[^>]*>(.*?)<\/h6>/g, '###### $1');
+    
+    // Convert HTML spans to markdown syntax
+    markdown = markdown.replace(/<span class="markdown-bold">(.*?)<\/span>/g, '**$1**');
+    markdown = markdown.replace(/<span class="markdown-italic">(.*?)<\/span>/g, '*$1*');
+    markdown = markdown.replace(/<span class="markdown-underline">(.*?)<\/span>/g, '__$1__');
+    
+    // Clean up any remaining HTML tags
+    markdown = markdown.replace(/<[^>]*>/g, '');
+    
+    return markdown;
   }
-
-  // Auto-save handler
-  async function handleAutoSave() {
-    if (!autoSave || !nodeId || nodeId === 'new') return;
-
-    try {
-      const result = await mockTextService.scheduleAutoSave(nodeId, content, '', 100);
-
-      if (result.success) {
-        lastSavedContent = content;
-        saveStatus = 'saved';
-        dispatch('save', { nodeId, content });
-      } else {
-        saveError = result.error || 'Auto-save failed';
-        saveStatus = 'error';
-        dispatch('error', { nodeId, error: saveError });
-      }
-    } catch (error) {
-      saveError = error instanceof Error ? error.message : 'Auto-save error';
-      saveStatus = 'error';
-      dispatch('error', { nodeId, error: saveError });
-    }
-  }
-
-  // No need for HTML rendering - MarkdownRenderer handles it safely
-
-  // Dynamic multiline based on content - starts single-line, becomes multiline if content has line breaks
-  $: isMultiline = content.includes('\n');
 </script>
 
-<BaseNode
-  {nodeId}
-  nodeType="text"
-  bind:content
-  hasChildren={textNodeData?.metadata.hasChildren || false}
-  isProcessing={saveStatus === 'saving'}
-  {editable}
-  contentEditable={true}
-  multiline={isMultiline}
-  {placeholder}
-  className="ns-text-node {compact ? 'ns-text-node--compact' : ''}"
-  on:contentChanged={handleContentChanged}
->
-  <!-- Override display content for markdown rendering -->
-  <div slot="display-content">
-    {#if content}
-      {#if markdown}
-        <div class="ns-text-node__markdown">
-          <MarkdownRenderer {content} />
-        </div>
-      {:else}
-        <span class="ns-node__text">{content}</span>
-      {/if}
-    {:else}
-      <span class="ns-node__empty">{placeholder}</span>
-    {/if}
-  </div>
-
-  <!-- Additional TextNode-specific content in default slot -->
-  {#if saveStatus !== 'saved' || saveError}
-    <div class="ns-text-node__status">
-      {#if saveStatus === 'saving'}
-        <span class="ns-text-node__status-icon">⏳</span>
-        Saving...
-      {:else if saveStatus === 'unsaved'}
-        <span class="ns-text-node__status-icon">●</span>
-        Unsaved changes
-      {:else if saveStatus === 'error'}
-        <span class="ns-text-node__status-icon">⚠️</span>
-        {saveError || 'Save error'}
-      {/if}
-    </div>
-  {:else if textNodeData}
-    <div class="ns-text-node__meta">
-      <span class="ns-text-node__word-count">
-        {textNodeData.metadata.wordCount} words
-      </span>
-      <span class="ns-text-node__updated">
-        Updated {textNodeData.updatedAt.toLocaleDateString()}
-      </span>
-    </div>
-  {/if}
-</BaseNode>
+<div class="text-node-container" on:keydown={handleTextNodeKeyDown}>
+  <MinimalBaseNode
+    bind:this={baseNodeRef}
+    {nodeId}
+    nodeType="text"
+    {autoFocus}
+    content={displayContent}
+    {children}
+    allowNewNodeOnEnter={true}
+    splitContentOnEnter={true}
+    multiline={true}
+    className={nodeClassName}
+    on:createNewNode={handleCreateNewNode}
+    on:contentChanged={(e) => handleContentChange(e.detail.content)}
+    on:indentNode={(e) => dispatch('indentNode', e.detail)}
+    on:outdentNode={(e) => dispatch('outdentNode', e.detail)}
+  />
+</div>
 
 <style>
-  /* Markdown rendering */
-  .ns-text-node__markdown {
-    font-size: 14px;
+  /* CSS-based header styling for entire contenteditable element */
+  :global(.text-node--h1 .markdown-editor) {
+    font-size: 2rem;
+    font-weight: bold;
+    line-height: 1.2;
+    margin: 0;
+  }
+  
+  :global(.text-node--h2 .markdown-editor) {
+    font-size: 1.5rem;
+    font-weight: bold;
+    line-height: 1.3;
+    margin: 0;
+  }
+  
+  :global(.text-node--h3 .markdown-editor) {
+    font-size: 1.25rem;
+    font-weight: bold;
     line-height: 1.4;
-    word-break: break-word;
+    margin: 0;
   }
-
-  /* Save status styling */
-  .ns-text-node__status {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 12px;
-    font-weight: 500;
-    margin-top: 4px;
-    color: hsl(var(--muted-foreground));
+  
+  :global(.text-node--h4 .markdown-editor) {
+    font-size: 1.125rem;
+    font-weight: bold;
+    line-height: 1.4;
+    margin: 0;
   }
-
-  .ns-text-node__status-icon {
-    font-size: 10px;
+  
+  :global(.text-node--h5 .markdown-editor) {
+    font-size: 1rem;
+    font-weight: bold;
+    line-height: 1.4;
+    margin: 0;
   }
-
-  /* Meta information */
-  .ns-text-node__meta {
-    display: flex;
-    gap: 12px;
-    font-size: 12px;
-    margin-top: 4px;
-    color: hsl(var(--muted-foreground));
+  
+  :global(.text-node--h6 .markdown-editor) {
+    font-size: 0.875rem;
+    font-weight: bold;
+    line-height: 1.4;
+    margin: 0;
+  }
+  
+  /* Headers should wrap text properly to avoid horizontal scrolling */
+  :global(.text-node--h1 .markdown-editor),
+  :global(.text-node--h2 .markdown-editor),
+  :global(.text-node--h3 .markdown-editor),
+  :global(.text-node--h4 .markdown-editor),
+  :global(.text-node--h5 .markdown-editor),
+  :global(.text-node--h6 .markdown-editor) {
+    white-space: pre-wrap !important;
+    overflow-x: visible !important;
+    overflow-y: visible !important;
+    word-wrap: break-word !important;
+    width: 100% !important;
   }
 </style>
+
