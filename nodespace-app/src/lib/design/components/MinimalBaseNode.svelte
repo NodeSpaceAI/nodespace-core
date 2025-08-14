@@ -16,6 +16,7 @@
   export let className: string = ''; // Additional CSS classes for the container
   export let children: any[] = []; // Child nodes for parent indicator
   export let iconName: IconName | undefined = undefined; // Custom icon override
+  export let canHaveChildren: boolean = true; // Whether this node type can have child nodes
 
   let contentEditableElement: HTMLDivElement;
   let isApplyingHeaderFormatting = false; // Flag to prevent reactive interference

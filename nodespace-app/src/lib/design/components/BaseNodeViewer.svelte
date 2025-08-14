@@ -30,7 +30,7 @@
     return markdown;
   }
 
-  // Comprehensive test data for collapse/expand with formatting and deep nesting
+  // Comprehensive test data with mixed node types including AI-chat nodes (canHaveChildren=false)
   let nodes = $state([
     { 
       id: crypto.randomUUID(), 
@@ -47,6 +47,7 @@
           inheritHeaderLevel: 2, 
           children: [
             { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'User authentication with __underlined__ security', inheritHeaderLevel: 0, children: [], expanded: true },
+            { id: crypto.randomUUID(), type: 'ai-chat', autoFocus: false, content: 'AI Assistant: I can help explain authentication patterns. What specific approach are you considering?', inheritHeaderLevel: 0, children: [], expanded: true },
             { 
               id: crypto.randomUUID(), 
               type: 'text', 
@@ -55,6 +56,7 @@
               inheritHeaderLevel: 0, 
               children: [
                 { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'CRUD operations with **optimized** queries', inheritHeaderLevel: 0, children: [], expanded: true },
+                { id: crypto.randomUUID(), type: 'ai-chat', autoFocus: false, content: 'AI Assistant: Consider using database connection pooling and prepared statements for better performance.', inheritHeaderLevel: 0, children: [], expanded: true },
                 { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Data validation and *error handling*', inheritHeaderLevel: 0, children: [], expanded: true },
                 { 
                   id: crypto.randomUUID(), 
@@ -71,7 +73,8 @@
               ],
               expanded: true 
             },
-            { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'API endpoints with *RESTful* design', inheritHeaderLevel: 0, children: [], expanded: true }
+            { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'API endpoints with *RESTful* design', inheritHeaderLevel: 0, children: [], expanded: true },
+            { id: crypto.randomUUID(), type: 'ai-chat', autoFocus: false, content: 'AI Assistant: RESTful APIs should follow HTTP verb conventions. Would you like me to suggest endpoint patterns?', inheritHeaderLevel: 0, children: [], expanded: true }
           ],
           expanded: true 
         },
@@ -83,6 +86,7 @@
           inheritHeaderLevel: 2, 
           children: [
             { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Unit tests with **Jest** framework', inheritHeaderLevel: 0, children: [], expanded: true },
+            { id: crypto.randomUUID(), type: 'ai-chat', autoFocus: false, content: 'AI Assistant: Jest is excellent for unit testing. Consider adding coverage thresholds to maintain quality.', inheritHeaderLevel: 0, children: [], expanded: true },
             { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Integration tests for *API endpoints*', inheritHeaderLevel: 0, children: [], expanded: true },
             { 
               id: crypto.randomUUID(), 
@@ -110,6 +114,7 @@
       inheritHeaderLevel: 3, 
       children: [
         { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Use **TypeScript** for type safety', inheritHeaderLevel: 0, children: [], expanded: true },
+        { id: crypto.randomUUID(), type: 'ai-chat', autoFocus: false, content: 'AI Assistant: TypeScript catches errors at compile time. Try enabling strict mode for maximum safety.', inheritHeaderLevel: 0, children: [], expanded: true },
         { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Follow *ESLint* and __Prettier__ conventions', inheritHeaderLevel: 0, children: [], expanded: true },
         { 
           id: crypto.randomUUID(), 
@@ -120,6 +125,7 @@
           children: [
             { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Feature branches with **descriptive** names', inheritHeaderLevel: 0, children: [], expanded: true },
             { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Pull requests with *code review*', inheritHeaderLevel: 0, children: [], expanded: true },
+            { id: crypto.randomUUID(), type: 'ai-chat', autoFocus: false, content: 'AI Assistant: Code reviews improve quality and knowledge sharing. Consider using review checklists.', inheritHeaderLevel: 0, children: [], expanded: true },
             { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Automated CI/CD with __GitHub Actions__', inheritHeaderLevel: 0, children: [], expanded: true }
           ],
           expanded: true 
@@ -135,6 +141,7 @@
       inheritHeaderLevel: 0, 
       children: [
         { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: '**Production** environment setup', inheritHeaderLevel: 0, children: [], expanded: true },
+        { id: crypto.randomUUID(), type: 'ai-chat', autoFocus: false, content: 'AI Assistant: Production deployments should include health checks, monitoring, and rollback strategies.', inheritHeaderLevel: 0, children: [], expanded: true },
         { 
           id: crypto.randomUUID(), 
           type: 'text', 
@@ -152,10 +159,11 @@
       expanded: false 
     },
     { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Simple leaf node with **formatting**', inheritHeaderLevel: 0, children: [], expanded: true },
+    { id: crypto.randomUUID(), type: 'ai-chat', autoFocus: false, content: 'AI Assistant: This demonstrates mixed node types. Try using Tab to indent - AI-chat nodes cannot have children, so indentation will be blocked.', inheritHeaderLevel: 0, children: [], expanded: true },
     { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Another leaf with *italics* and __underline__', inheritHeaderLevel: 0, children: [], expanded: true }
   ]);
 
-  // Handle creating new nodes when Enter is pressed
+  // Handle creating new nodes when Enter is pressed with sophisticated children transfer
   function handleCreateNewNode(event: CustomEvent<{ 
     afterNodeId: string; 
     nodeType: string; 
@@ -213,6 +221,27 @@
         expanded: true // New nodes are expanded by default
       };
       
+      // Enhanced Enter key behavior with children transfer based on collapsed state
+      if (node.children && node.children.length > 0) {
+        const isCollapsed = !node.expanded; // Check if the node is collapsed
+        
+        if (isCollapsed) {
+          // When collapsed, children stay with the original (left) node
+          // No children transfer needed - preserve existing structure
+        } else {
+          // When expanded, children move to the new (right) node
+          newNode.children = [...node.children];
+          newNode.children.forEach(child => {
+            // Update parent references if we had them
+            if (child.parent) child.parent = newNode;
+          });
+          node.children = []; // Clear original node's children
+          
+          // Since the new node received children, ensure it's expanded
+          newNode.expanded = true;
+        }
+      }
+      
       // Insert new node after the current one in the appropriate array
       parentChildren.splice(index + 1, 0, newNode);
       nodes = [...nodes]; // Trigger reactivity
@@ -222,19 +251,43 @@
         setTimeout(() => {
           // Convert HTML content to markdown for storage
           const markdownContent = htmlToMarkdown(newContent);
-          const nodeIndex = nodes.findIndex(n => n.id === newNode.id);
-          if (nodeIndex !== -1) {
-            nodes[nodeIndex].content = markdownContent;
+          // Find the new node recursively in the updated tree
+          function findAndUpdateNode(nodesList: any[], targetId: string): boolean {
+            for (let i = 0; i < nodesList.length; i++) {
+              if (nodesList[i].id === targetId) {
+                nodesList[i].content = markdownContent;
+                return true;
+              }
+              if (nodesList[i].children && nodesList[i].children.length > 0) {
+                if (findAndUpdateNode(nodesList[i].children, targetId)) {
+                  return true;
+                }
+              }
+            }
+            return false;
+          }
+          
+          if (findAndUpdateNode(nodes, newNode.id)) {
             nodes = [...nodes]; // Trigger reactivity
           }
         }, 100); // Small delay to let the node initialize with HTML first
       }
       
-      // Node created successfully with header inheritance if applicable
+      // Node created successfully with header inheritance and children transfer if applicable
     }
   }
 
-  // Handle indenting nodes (Tab key)
+  // Enhanced indent validation
+  function canIndent(node: any, siblings: any[]): boolean {
+    const nodeIndex = siblings.findIndex(s => s.id === node.id);
+    if (nodeIndex <= 0) return false; // No previous sibling
+    
+    const previousSibling = siblings[nodeIndex - 1];
+    // Check if previous sibling can have children based on node type
+    return previousSibling.type !== 'ai-chat'; // AI-chat nodes cannot have children
+  }
+
+  // Handle indenting nodes (Tab key) with enhanced validation
   function handleIndentNode(event: CustomEvent<{ nodeId: string }>) {
     const { nodeId } = event.detail;
     
@@ -270,6 +323,12 @@
     
     if (nodeInfo) {
       const { node, index, parentChildren, previousSibling } = nodeInfo;
+      
+      // Enhanced validation: Check if we can indent into the previous sibling
+      if (!canIndent(node, parentChildren)) {
+        // Cannot indent - previous sibling doesn't support children
+        return;
+      }
       
       // Remove node from current position
       parentChildren.splice(index, 1);
@@ -359,14 +418,14 @@
     return textNodes;
   }
 
-  // Handle outdenting nodes (Shift+Tab key) 
+  // Enhanced outdent with sibling transfer (Shift+Tab key) 
   function handleOutdentNode(event: CustomEvent<{ nodeId: string }>) {
     const { nodeId } = event.detail;
     
     // Store cursor position before DOM changes
     const cursorPosition = saveCursorPosition(nodeId);
     
-    // Find the node and move it up one level recursively
+    // Find the node and move it up one level recursively with sibling transfer
     function findAndOutdentNode(nodesList: any[], targetId: string, grandparent: any = null, grandparentChildren: any[] = null): boolean {
       for (let i = 0; i < nodesList.length; i++) {
         const parent = nodesList[i];
@@ -375,8 +434,34 @@
           if (childIndex !== -1) {
             const node = parent.children[childIndex];
             
-            // Remove from parent's children
+            // Sophisticated outdent with sibling transfer:
+            // The next immediate sibling becomes a child of the outdented node
+            const nextSiblingIndex = childIndex + 1;
+            let nextSibling = null;
+            if (nextSiblingIndex < parent.children.length) {
+              nextSibling = parent.children[nextSiblingIndex];
+            }
+            
+            // Remove node from parent's children
             parent.children.splice(childIndex, 1);
+            
+            // If there's a next sibling, transfer it to become child of outdented node
+            if (nextSibling) {
+              // Remove the next sibling from its current position
+              const updatedNextSiblingIndex = parent.children.findIndex(child => child.id === nextSibling.id);
+              if (updatedNextSiblingIndex !== -1) {
+                parent.children.splice(updatedNextSiblingIndex, 1);
+              }
+              
+              // Add next sibling as child of outdented node
+              if (!node.children) {
+                node.children = [];
+              }
+              node.children.push(nextSibling);
+              
+              // Auto-expand the outdented node since it received a new child
+              node.expanded = true;
+            }
             
             if (grandparent && grandparentChildren) {
               // Move to grandparent's children (one level up)
@@ -439,6 +524,96 @@
   function getNodeColor(nodeType: string): string {
     return `hsl(var(--node-${nodeType}, var(--node-text)))`;
   }
+
+  // Sophisticated child transfer with depth-aware logic
+  function transferChildrenWithDepthPreservation(
+    sourceNode: any,
+    targetNode: any,
+    collapsedNodes: Set<string> = new Set()
+  ): void {
+    if (!sourceNode.children || sourceNode.children.length === 0) return;
+    
+    // Get the depth of the source node
+    const sourceDepth = getNodeDepth(sourceNode);
+    
+    // Determine the appropriate parent for the transferred children
+    let newParent: any;
+    let insertAtBeginning = false;
+    
+    if (sourceDepth === 0) {
+      // Source is a root node - children should go to target root ancestor
+      newParent = findRootAncestor(targetNode);
+      if (!newParent) return;
+      insertAtBeginning = collapsedNodes.has(newParent.id);
+    } else {
+      // Source is non-root - children go directly to target
+      newParent = targetNode;
+      insertAtBeginning = collapsedNodes.has(targetNode.id);
+    }
+    
+    // Transfer children with position awareness
+    if (insertAtBeginning) {
+      // Target was collapsed - insert children at the beginning
+      const existingChildren = [...newParent.children];
+      newParent.children = [...sourceNode.children, ...existingChildren];
+    } else {
+      // Target was expanded - append children at the end
+      newParent.children.push(...sourceNode.children);
+    }
+    
+    // Update parent references for all transferred children
+    sourceNode.children.forEach(child => {
+      child.parent = newParent;
+    });
+    
+    // Auto-expand the target node since it received new children
+    if (collapsedNodes.has(newParent.id)) {
+      collapsedNodes.delete(newParent.id);
+      newParent.expanded = true;
+    }
+    
+    // Clear the source node's children since they've been moved
+    sourceNode.children = [];
+  }
+
+  // Helper function to get node depth in hierarchy
+  function getNodeDepth(node: any): number {
+    let depth = 0;
+    let current = node.parent;
+    while (current) {
+      depth++;
+      current = current.parent;
+    }
+    return depth;
+  }
+
+  // Helper function to find root ancestor
+  function findRootAncestor(node: any): any | null {
+    // Find the node in the nodes array (root level)
+    function findInNodes(nodesList: any[], targetId: string): any | null {
+      for (let i = 0; i < nodesList.length; i++) {
+        if (nodesList[i].id === targetId) {
+          return nodesList[i];
+        }
+        if (nodesList[i].children && nodesList[i].children.length > 0) {
+          const result = findInNodes(nodesList[i].children, targetId);
+          if (result) {
+            // This node is not at root level, return the root ancestor
+            return nodesList[i];
+          }
+        }
+      }
+      return null;
+    }
+    
+    // If the node itself is already at root level
+    if (nodes.some(n => n.id === node.id)) {
+      return node;
+    }
+    
+    // Find the root ancestor
+    return findInNodes(nodes, node.id);
+  }
 </script>
 
 <div class="node-viewer">
@@ -464,6 +639,39 @@
           {#if node.type === 'text'}
             <TextNode
               nodeId={node.id}
+              nodeType={node.type}
+              autoFocus={node.autoFocus}
+              content={node.content}
+              inheritHeaderLevel={node.inheritHeaderLevel}
+              children={node.children}
+              on:createNewNode={handleCreateNewNode}
+              on:indentNode={handleIndentNode}
+              on:outdentNode={handleOutdentNode}
+              on:contentChanged={(e) => {
+                // Find node recursively and update content
+                function updateNodeContent(nodesList, targetId, newContent) {
+                  for (let i = 0; i < nodesList.length; i++) {
+                    if (nodesList[i].id === targetId) {
+                      nodesList[i].content = newContent;
+                      return true;
+                    }
+                    if (nodesList[i].children.length > 0) {
+                      if (updateNodeContent(nodesList[i].children, targetId, newContent)) {
+                        return true;
+                      }
+                    }
+                  }
+                  return false;
+                }
+                
+                updateNodeContent(nodes, node.id, e.detail.content);
+                nodes = [...nodes]; // Trigger reactivity
+              }}
+            />
+          {:else if node.type === 'ai-chat'}
+            <TextNode
+              nodeId={node.id}
+              nodeType={node.type}
               autoFocus={node.autoFocus}
               content={node.content}
               inheritHeaderLevel={node.inheritHeaderLevel}

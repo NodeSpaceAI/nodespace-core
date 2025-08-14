@@ -12,6 +12,7 @@
   export let content: string = '';
   export let inheritHeaderLevel: number = 0; // Header level inherited from parent node
   export let children: any[] = []; // Passthrough for MinimalBaseNode
+  export let nodeType: string = 'text'; // Node type for compatibility checking
   
   // Header state for CSS styling - initialize with inherited level
   let headerLevel: number = inheritHeaderLevel;
@@ -86,6 +87,9 @@
 
   // Reactive className computation
   $: nodeClassName = `text-node ${headerLevel ? `text-node--h${headerLevel}` : ''}`.trim();
+
+  // Determine if this node type can have children
+  $: canHaveChildren = nodeType !== 'ai-chat';
 
   // TextNode-specific header functionality with CSS approach
   function handleTextNodeKeyDown(event: KeyboardEvent) {
@@ -188,10 +192,11 @@
   <MinimalBaseNode
     bind:this={baseNodeRef}
     {nodeId}
-    nodeType="text"
+    {nodeType}
     {autoFocus}
     content={displayContent}
     {children}
+    {canHaveChildren}
     allowNewNodeOnEnter={true}
     splitContentOnEnter={true}
     multiline={true}
