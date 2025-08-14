@@ -10,6 +10,7 @@
   // Type aliases for DOM APIs to satisfy linter
   type DOMElement = globalThis.Element;
   type DOMText = globalThis.Text;
+  const NodeFilter = globalThis.NodeFilter;
 
   // HTML to Markdown conversion (duplicate of MinimalBaseNode function)
   function htmlToMarkdown(htmlContent: string): string {
@@ -896,7 +897,6 @@
         const selection = window.getSelection();
         if (selection) {
           // Calculate the actual DOM position by walking text nodes
-          const textContent = targetElement.textContent || '';
           const markdownContent = prevNode.content.substring(0, junctionPosition);
           
           // Convert markdown to HTML to find actual DOM position
