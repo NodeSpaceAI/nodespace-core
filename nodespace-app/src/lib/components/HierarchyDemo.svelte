@@ -56,17 +56,17 @@
   }
 
   // Handle node selection
-  function handleNodeSelect(event: CustomEvent<{ nodeId: string; node: TreeNodeData }>) {
+  function handleNodeSelect() {
     // Could implement focus/selection logic here
   }
 
   // Handle node expansion
   async function handleNodeExpand(event: CustomEvent<{ nodeId: string; expanded: boolean }>) {
-    const { nodeId, expanded } = event.detail;
+    const { nodeId } = event.detail;
 
     try {
       await mockTextService.toggleNodeExpansion(nodeId);
-    } catch (err) {
+    } catch {
       // Silently handle expansion errors
     }
   }
@@ -79,7 +79,7 @@
       await mockTextService.saveTextNode(nodeId, content);
       // Reload data to reflect changes
       await loadHierarchicalData();
-    } catch (err) {
+    } catch {
       // Silently handle update errors
     }
   }

@@ -1,19 +1,19 @@
 /**
  * Markdown Pattern Type Definitions
- * 
+ *
  * Defines the data structures for detecting and processing markdown patterns
  * in ContentEditable text editing system.
  */
 
-export type MarkdownPatternType = 
+export type MarkdownPatternType =
   // Block types (4 essential)
-  | 'header' 
-  | 'bullet' 
-  | 'blockquote' 
+  | 'header'
+  | 'bullet'
+  | 'blockquote'
   | 'codeblock'
   // Inline types (3 essential)
-  | 'bold' 
-  | 'italic' 
+  | 'bold'
+  | 'italic'
   | 'inlinecode';
 
 export interface MarkdownPattern {
@@ -63,31 +63,31 @@ export const WYSIWYG_TRANSFORMATIONS: Record<string, WYSIWYGTransformation> = {
     hideMarkup: true,
     htmlTag: 'h3'
   },
-  'bold': {
+  bold: {
     type: 'bold',
     cssClass: 'markdown-bold',
     hideMarkup: true,
     htmlTag: 'strong'
   },
-  'italic': {
+  italic: {
     type: 'italic',
     cssClass: 'markdown-italic',
     hideMarkup: true,
     htmlTag: 'em'
   },
-  'inlinecode': {
+  inlinecode: {
     type: 'inlinecode',
     cssClass: 'markdown-code',
     hideMarkup: true,
     htmlTag: 'code'
   },
-  'blockquote': {
+  blockquote: {
     type: 'blockquote',
     cssClass: 'markdown-blockquote',
     hideMarkup: true,
     htmlTag: 'blockquote'
   },
-  'bullet': {
+  bullet: {
     type: 'bullet',
     cssClass: 'markdown-bullet',
     hideMarkup: true

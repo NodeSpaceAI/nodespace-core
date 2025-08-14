@@ -13,36 +13,42 @@
   export let inheritHeaderLevel: number = 0; // Header level inherited from parent node
   export let children: any[] = []; // Passthrough for MinimalBaseNode
   export let nodeType: string = 'text'; // Node type for compatibility checking
-  
+
   // Header state for CSS styling - initialize with inherited level
   let headerLevel: number = inheritHeaderLevel;
-  
-  // Parse header level from content and get display text
+
+  // Parse header level from content
   $: {
     if (content.startsWith('#')) {
       const headerMatch = content.match(/^(#{1,6})\s+(.*)$/);
       if (headerMatch) {
         headerLevel = headerMatch[1].length;
-        displayContent = headerMatch[2];
       } else {
         headerLevel = inheritHeaderLevel;
-        displayContent = content;
       }
     } else {
       headerLevel = inheritHeaderLevel;
-      displayContent = content;
     }
   }
+
+  // Content to display (without markdown header syntax) - reactive to content changes
+  $: displayContent = (() => {
+    if (content.startsWith('#')) {
+      const headerMatch = content.match(/^(#{1,6})\s+(.*)$/);
+      if (headerMatch) {
+        return headerMatch[2]; // Return text without header markdown
+      }
+    }
+    return content; // Return content as-is for non-headers
+  })();
   
-  // Content to display (without markdown header syntax)
-  let displayContent: string = content;
   let baseNodeRef: any;
 
   const dispatch = createEventDispatcher<{
-    createNewNode: { 
-      afterNodeId: string; 
-      nodeType: string; 
-      currentContent?: string; 
+    createNewNode: {
+      afterNodeId: string;
+      nodeType: string;
+      currentContent?: string;
       newContent?: string;
       inheritHeaderLevel?: number; // Header level to inherit
     };
@@ -52,18 +58,20 @@
   }>();
 
   // Forward the createNewNode event from BaseNode with header inheritance
-  function handleCreateNewNode(event: CustomEvent<{ 
-    afterNodeId: string; 
-    nodeType: string; 
-    currentContent?: string; 
-    newContent?: string; 
-  }>) {
+  function handleCreateNewNode(
+    event: CustomEvent<{
+      afterNodeId: string;
+      nodeType: string;
+      currentContent?: string;
+      newContent?: string;
+    }>
+  ) {
     // Add header level inheritance for new nodes
     const eventDetail = {
       ...event.detail,
       inheritHeaderLevel: headerLevel // Pass current header level to new node
     };
-    
+
     dispatch('createNewNode', eventDetail);
   }
 
@@ -76,7 +84,7 @@
       dispatch('contentChanged', { nodeId, content: '' });
       return;
     }
-    
+
     // If we have a header level, store with markdown header syntax
     // But also update displayContent for immediate UI feedback
     const finalContent = headerLevel > 0 ? `${'#'.repeat(headerLevel)} ${newContent}` : newContent;
@@ -91,6 +99,25 @@
   // Determine if this node type can have children
   $: canHaveChildren = nodeType !== 'ai-chat';
 
+  // TextNode-specific combination logic
+  function canBeCombinedWith(): boolean {
+    // AI-chat nodes cannot be combined to preserve chat structure
+    if (nodeType === 'ai-chat') {
+      return false;
+    }
+    
+    // For text nodes: Check if content starts with header markdown directly
+    if (nodeType === 'text' && content.startsWith('#')) {
+      const headerMatch = content.match(/^#{1,6}\s/);
+      if (headerMatch) {
+        return false; // Headers cannot be combined
+      }
+    }
+    
+    // Regular text nodes (paragraphs) can be combined
+    return true;
+  }
+
   // TextNode-specific header functionality with CSS approach
   function handleTextNodeKeyDown(event: KeyboardEvent) {
     // Prevent Shift+Enter in header mode (headers are single-line only)
@@ -98,36 +125,36 @@
       event.preventDefault();
       return;
     }
-    
+
     // Handle header syntax detection on space key
     if (event.key === ' ') {
       // Get the MinimalBaseNode's contenteditable element
       const baseNodeElement = event.target as HTMLElement;
       const contentEditableElement = baseNodeElement.closest('.markdown-editor') || baseNodeElement;
-      
+
       if (contentEditableElement && contentEditableElement.textContent) {
         const currentText = contentEditableElement.textContent;
         const selection = window.getSelection();
-        
+
         if (selection && selection.rangeCount > 0) {
           const range = selection.getRangeAt(0);
           const preCaretRange = range.cloneRange();
           preCaretRange.selectNodeContents(contentEditableElement);
           preCaretRange.setEnd(range.startContainer, range.startOffset);
           const cursorPosition = preCaretRange.toString().length;
-          
+
           const textBeforeCursor = currentText.substring(0, cursorPosition);
-          
+
           // Check if we're about to complete header syntax
           if (/^#{1,6}$/.test(textBeforeCursor)) {
             event.preventDefault();
             event.stopPropagation();
             event.stopImmediatePropagation();
-            
+
             // Set header level for CSS styling
             const detectedHeaderLevel = textBeforeCursor.length;
             headerLevel = detectedHeaderLevel;
-            
+
             // Preserve existing content after the cursor when switching header levels
             const freshElement = document.getElementById(`contenteditable-${nodeId}`);
             if (freshElement) {
@@ -135,14 +162,14 @@
               // After typing "## ", cursor position is at the end of "##"
               // We want to preserve everything after the "##" part (not after the space)
               const textAfterSpace = fullText.substring(cursorPosition);
-              
+
               // Set content to just the text after the header syntax
               freshElement.textContent = textAfterSpace;
-              
+
               // Position cursor at the beginning for continued typing
               const range = document.createRange();
               const selection = window.getSelection();
-              
+
               if (freshElement.firstChild) {
                 range.setStart(freshElement.firstChild, 0);
                 range.setEnd(freshElement.firstChild, 0);
@@ -151,40 +178,17 @@
                 range.selectNodeContents(freshElement);
                 range.collapse(true);
               }
-              
+
               selection?.removeAllRanges();
               selection?.addRange(range);
               freshElement.focus();
             }
-            
+
             return;
           }
         }
       }
     }
-  }
-
-  // HTML to Markdown conversion for TextNode (includes headers)
-  function htmlToMarkdown(htmlContent: string): string {
-    let markdown = htmlContent;
-    
-    // Convert header tags to markdown syntax
-    markdown = markdown.replace(/<h1[^>]*>(.*?)<\/h1>/g, '# $1');
-    markdown = markdown.replace(/<h2[^>]*>(.*?)<\/h2>/g, '## $1');
-    markdown = markdown.replace(/<h3[^>]*>(.*?)<\/h3>/g, '### $1');
-    markdown = markdown.replace(/<h4[^>]*>(.*?)<\/h4>/g, '#### $1');
-    markdown = markdown.replace(/<h5[^>]*>(.*?)<\/h5>/g, '##### $1');
-    markdown = markdown.replace(/<h6[^>]*>(.*?)<\/h6>/g, '###### $1');
-    
-    // Convert HTML spans to markdown syntax
-    markdown = markdown.replace(/<span class="markdown-bold">(.*?)<\/span>/g, '**$1**');
-    markdown = markdown.replace(/<span class="markdown-italic">(.*?)<\/span>/g, '*$1*');
-    markdown = markdown.replace(/<span class="markdown-underline">(.*?)<\/span>/g, '__$1__');
-    
-    // Clean up any remaining HTML tags
-    markdown = markdown.replace(/<[^>]*>/g, '');
-    
-    return markdown;
   }
 </script>
 
@@ -197,6 +201,7 @@
     content={displayContent}
     {children}
     {canHaveChildren}
+    canBeCombined={canBeCombinedWith}
     allowNewNodeOnEnter={true}
     splitContentOnEnter={true}
     multiline={true}
@@ -205,6 +210,7 @@
     on:contentChanged={(e) => handleContentChange(e.detail.content)}
     on:indentNode={(e) => dispatch('indentNode', e.detail)}
     on:outdentNode={(e) => dispatch('outdentNode', e.detail)}
+    on:requestNodeJoining
   />
 </div>
 
@@ -216,42 +222,42 @@
     line-height: 1.2;
     margin: 0;
   }
-  
+
   :global(.text-node--h2 .markdown-editor) {
     font-size: 1.5rem;
     font-weight: bold;
     line-height: 1.3;
     margin: 0;
   }
-  
+
   :global(.text-node--h3 .markdown-editor) {
     font-size: 1.25rem;
     font-weight: bold;
     line-height: 1.4;
     margin: 0;
   }
-  
+
   :global(.text-node--h4 .markdown-editor) {
     font-size: 1.125rem;
     font-weight: bold;
     line-height: 1.4;
     margin: 0;
   }
-  
+
   :global(.text-node--h5 .markdown-editor) {
     font-size: 1rem;
     font-weight: bold;
     line-height: 1.4;
     margin: 0;
   }
-  
+
   :global(.text-node--h6 .markdown-editor) {
     font-size: 0.875rem;
     font-weight: bold;
     line-height: 1.4;
     margin: 0;
   }
-  
+
   /* Headers should wrap text properly to avoid horizontal scrolling */
   :global(.text-node--h1 .markdown-editor),
   :global(.text-node--h2 .markdown-editor),
@@ -266,4 +272,3 @@
     width: 100% !important;
   }
 </style>
-

@@ -120,7 +120,6 @@
     z-index: 0;
   }
 
-
   /* Focus ring styling */
   :global(.theme-provider :focus-visible) {
     outline: 2px solid hsl(var(--ring));

@@ -2,7 +2,7 @@
  * Circle Ring Icon - Layered circles for parent nodes
  *
  * Represents parent node indicator with layered approach:
- * - Outer circle (radius 7) maintains original size  
+ * - Outer circle (radius 7) maintains original size
  * - Inner circle (radius 6.5) almost fills the outer circle for testing
  */
 export const circleRingIcon =

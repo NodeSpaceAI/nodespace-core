@@ -62,7 +62,7 @@
     }
   }
 
-  // Focus ContentEditable 
+  // Focus ContentEditable
   async function focusContentEditable() {
     dispatch('focus', { nodeId });
     await tick();
@@ -71,7 +71,6 @@
     }
   }
 
-
   // Handle ContentEditable input - minimal processing
   function handleContentEditableInput(event: Event & { currentTarget: HTMLDivElement }) {
     const target = event.currentTarget;
@@ -79,7 +78,6 @@
     content = newContent;
     dispatch('contentChanged', { nodeId, content });
   }
-
 
   // Handle blur
   function handleBlur() {
@@ -203,7 +201,6 @@
           >
             {content}
           </div>
-
         {:else}
           <!-- Non-editable display (read-only nodes) -->
           <div class="ns-node__display" role="region">
@@ -354,13 +351,11 @@
     overflow-y: auto;
   }
 
-
   /* Read-only ContentEditable styling for visual consistency */
   :global(.ns-node__content-editable[contenteditable='false']) {
     cursor: default;
     color: hsl(var(--muted-foreground));
   }
-
 
   /* Display styling */
   .ns-node__display {
