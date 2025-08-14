@@ -22,10 +22,10 @@ export { default as Icon } from './Icon.svelte';
 export type { IconName } from './Icon.svelte';
 
 // Export individual icon paths for direct usage if needed
-export { textIcon } from './ui/text.js';
-export { circleIcon } from './ui/circle.js';
-export { circleRingIcon } from './ui/circle-ring.js';
-export { chevronRightIcon } from './ui/chevron-right.js';
+export { textIcon } from './ui/text.ts';
+export { circleIcon } from './ui/circle.ts';
+export { circleRingIcon } from './ui/circle-ring.ts';
+export { chevronRightIcon } from './ui/chevron-right.ts';
 
 /**
  * Available Icons:

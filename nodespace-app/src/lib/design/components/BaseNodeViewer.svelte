@@ -451,7 +451,7 @@
             <button 
               class="node-chevron" 
               class:expanded={node.expanded}
-              on:click={() => handleToggleExpanded(node.id)}
+              onclick={() => handleToggleExpanded(node.id)}
               aria-label={node.expanded ? 'Collapse' : 'Expand'}
             >
               <Icon name="chevron-right" size={16} color={getNodeColor(node.type)} />

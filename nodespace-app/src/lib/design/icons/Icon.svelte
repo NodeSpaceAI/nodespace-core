@@ -4,10 +4,10 @@
 </script>
 
 <script lang="ts">
-  import { textIcon } from './ui/text.js';
-  import { circleIcon } from './ui/circle.js';
-  import { circleRingIcon } from './ui/circle-ring.js';
-  import { chevronRightIcon } from './ui/chevron-right.js';
+  import { textIcon } from './ui/text.ts';
+  import { circleIcon } from './ui/circle.ts';
+  import { circleRingIcon } from './ui/circle-ring.ts';
+  import { chevronRightIcon } from './ui/chevron-right.ts';
 
   // Icon registry mapping names to SVG paths
   const iconRegistry: Record<IconName, string> = {
@@ -25,6 +25,7 @@
 
   // Get the SVG path for the specified icon
   $: iconPath = iconRegistry[name];
+
 
   // Validate that the icon exists
   $: if (!iconPath) {
@@ -52,15 +53,15 @@
     {#if name === 'circle'}
       <!-- Simple filled circle: both circles always present, ring transparent -->
       <!-- Background ring: 16px diameter (transparent when no children) -->
-      <circle cx="8" cy="8" r="7" fill={color} opacity="0" />
-      <!-- Inner circle: 10px diameter -->
-      <circle cx="8" cy="8" r="4" fill={color} />
+      <circle cx="8" cy="8" r="8" fill={color} opacity="0" />
+      <!-- Inner circle: 11px diameter (r=5.5) -->
+      <circle cx="8" cy="8" r="5.5" fill={color} />
     {:else if name === 'circle-ring'}
-      <!-- Layered circles: 16px parent ring + 10px inner circle -->
+      <!-- Layered circles: 16px parent ring + 11px inner circle -->
       <!-- Background ring: 16px diameter filled area -->
-      <circle cx="8" cy="8" r="7" fill={color} opacity="0.5" />
-      <!-- Inner circle: 10px diameter (covers center, creating ring effect) -->
-      <circle cx="8" cy="8" r="4" fill={color} />
+      <circle cx="8" cy="8" r="8" fill={color} opacity="0.5" />
+      <!-- Inner circle: 11px diameter (r=5.5) -->
+      <circle cx="8" cy="8" r="5.5" fill={color} />
     {:else if name === 'chevron-right'}
       <!-- Chevron right: 16x16 viewBox, points right by default -->
       <path d={iconPath} fill={color} />

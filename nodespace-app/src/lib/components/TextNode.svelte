@@ -184,7 +184,7 @@
   }
 </script>
 
-<div class="text-node-container" on:keydown={handleTextNodeKeyDown}>
+<div class="text-node-container" role="textbox" tabindex="0" on:keydown={handleTextNodeKeyDown}>
   <MinimalBaseNode
     bind:this={baseNodeRef}
     {nodeId}

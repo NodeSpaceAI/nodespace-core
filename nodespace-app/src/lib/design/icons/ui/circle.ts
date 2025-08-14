@@ -2,7 +2,7 @@
  * Circle Icon - Simple filled circle
  *
  * Represents basic node indicator for nodes without children.
- * 10px diameter circle (radius 50 in 960 viewBox) centered in icon space.
+ * 12px diameter circle (radius 6 in 16x16 viewBox) centered in icon space.
  */
 export const circleIcon =
-  'M480-430q-20 0-35-15t-15-35q0-20 15-35t35-15q20 0 35 15t15 35q0 20-15 35t-35 15Z';
+  'M8 2a6 6 0 1 0 0 12 6 6 0 0 0 0-12z';

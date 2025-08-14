@@ -515,6 +515,8 @@
     id="contenteditable-{nodeId}"
     bind:this={contentEditableElement}
     contenteditable="true"
+    role="textbox"
+    tabindex="0"
     on:input={handleInput}
     on:keydown={handleKeyDown}
     class="ns-node-content markdown-editor text-foreground {multiline ? 'ns-node-content--multiline markdown-editor--multiline' : 'ns-node-content--singleline markdown-editor--singleline'}"
