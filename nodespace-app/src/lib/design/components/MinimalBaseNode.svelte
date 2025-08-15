@@ -18,6 +18,7 @@
   export let className: string = ''; // Additional CSS classes for the container
   export let children: any[] = []; // Child nodes for parent indicator
   export let iconName: IconName | undefined = undefined; // Custom icon override
+  export let headerLevel: number = 0; // Header level for context-aware behavior
   export const canBeCombined: (() => boolean) | undefined = undefined; // Function to check if node can be combined
 
   let contentEditableElement: HTMLDivElement;
@@ -270,6 +271,13 @@
       nodeId: string; 
       direction: 'up' | 'down'; 
       columnHint: number;
+    };
+    combineWithPrevious: {
+      nodeId: string;
+      currentContent: string;
+    };
+    deleteNode: {
+      nodeId: string;
     };
   }>();
 
@@ -666,14 +674,47 @@
       return;
     }
 
-    if (event.key === 'Enter') {
-      // Handle Shift+Enter for line breaks in multiline mode
-      if (event.shiftKey && multiline) {
-        // Allow default behavior for Shift+Enter (creates line break)
+    // Handle Backspace for node combination
+    if (event.key === 'Backspace') {
+      const content = contentEditableElement.textContent || '';
+      const cursorPosition = getCursorPosition();
+      
+      // Only trigger node combination if cursor is at the very start (position 0)
+      if (cursorPosition === 0 && content.length > 0) {
+        // Node has content and cursor is at start - try to combine with previous node
+        event.preventDefault();
+        dispatch('combineWithPrevious', { 
+          nodeId,
+          currentContent: content 
+        });
+        return;
+      } else if (cursorPosition === 0 && content.length === 0) {
+        // Empty node at start position - delete this node and focus previous
+        event.preventDefault();
+        dispatch('deleteNode', { 
+          nodeId 
+        });
         return;
       }
       
-      // Regular Enter key handling
+      // Otherwise, allow normal backspace behavior within the node
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      // Handle Shift+Enter: block for headers, allow for non-headers
+      if (event.shiftKey) {
+        if (headerLevel > 0) {
+          // Block Shift+Enter for headers (H1-H6)
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        // Allow Shift+Enter for non-header text nodes (headerLevel === 0)
+        return;
+      }
+      
+      // Regular Enter: always prevent default and handle node creation
       event.preventDefault();
       
       // Only create new node if allowed

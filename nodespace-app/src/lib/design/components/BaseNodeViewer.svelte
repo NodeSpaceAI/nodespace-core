@@ -607,6 +607,202 @@
       // Cursor positioning failed silently
     }
   }
+
+  // Handle combining current node with previous node (Backspace at start of node)
+  function handleCombineWithPrevious(event: CustomEvent<{ nodeId: string; currentContent: string }>) {
+    const { nodeId, currentContent } = event.detail;
+    
+    // Get all visible nodes in order (like nodespace-core-ui getVisibleNodes)
+    function getVisibleNodes(): any[] {
+      const result: any[] = [];
+      
+      function collectNodes(nodeList: any[]) {
+        for (const node of nodeList) {
+          result.push(node);
+          if (node.children && node.children.length > 0 && node.expanded) {
+            collectNodes(node.children);
+          }
+        }
+      }
+      
+      collectNodes(nodes);
+      return result;
+    }
+    
+    const visibleNodes = getVisibleNodes();
+    const currentIndex = visibleNodes.findIndex(n => n.id === nodeId);
+    
+    if (currentIndex <= 0) {
+      return; // No previous node to combine with
+    }
+    
+    const currentNode = visibleNodes[currentIndex];
+    const prevNode = visibleNodes[currentIndex - 1];
+    const prevContent = prevNode.content;
+    
+    if (currentContent.trim() === '') {
+      // Empty node - just remove it (similar to nodespace-core-ui empty removal logic)
+      removeNodeFromTree(currentNode);
+      
+      // Focus previous node at end of content
+      setTimeout(() => {
+        const previousElement = document.getElementById(`contenteditable-${prevNode.id}`);
+        if (previousElement) {
+          previousElement.focus();
+          setCursorAtPosition(previousElement, prevContent.length);
+        }
+      }, 0);
+    } else {
+      // Simple direct approach: combine content and remove node using Svelte reactivity
+      const junctionPosition = prevContent.length;
+      
+      // Directly update previous node content (Svelte $state will handle reactivity)
+      prevNode.content = prevNode.content + currentContent;
+      
+      // Transfer children from current node to previous node
+      if (currentNode.children && currentNode.children.length > 0) {
+        if (!prevNode.children) prevNode.children = [];
+        prevNode.children.push(...currentNode.children);
+      }
+      
+      // Remove current node using simple helper
+      removeNodeFromNodesArray(currentNode.id);
+      
+      // Force Svelte reactivity by triggering state change
+      nodes = [...nodes];
+      
+      // Focus previous node at junction point
+      setTimeout(() => {
+        const previousElement = document.getElementById(`contenteditable-${prevNode.id}`);
+        if (previousElement) {
+          previousElement.focus();
+          setCursorAtPosition(previousElement, junctionPosition);
+        }
+      }, 0);
+    }
+  }
+
+  // Handle deleting empty node (Backspace at start of empty node)
+  function handleDeleteNode(event: CustomEvent<{ nodeId: string }>) {
+    const { nodeId } = event.detail;
+    
+    // Get all visible nodes in order
+    function getVisibleNodes(): any[] {
+      const result: any[] = [];
+      
+      function collectNodes(nodeList: any[]) {
+        for (const node of nodeList) {
+          result.push(node);
+          if (node.children && node.children.length > 0 && node.expanded) {
+            collectNodes(node.children);
+          }
+        }
+      }
+      
+      collectNodes(nodes);
+      return result;
+    }
+    
+    const visibleNodes = getVisibleNodes();
+    const currentIndex = visibleNodes.findIndex(n => n.id === nodeId);
+    
+    if (currentIndex <= 0) {
+      return; // No previous node to focus
+    }
+    
+    const currentNode = visibleNodes[currentIndex];
+    const previousNode = visibleNodes[currentIndex - 1];
+    
+    // Remove the empty node from tree
+    removeNodeFromTree(currentNode);
+    
+    // Trigger reactivity
+    nodes = [...nodes];
+    
+    // Focus previous node at end of content
+    setTimeout(() => {
+      const previousElement = document.getElementById(`contenteditable-${previousNode.id}`);
+      if (previousElement) {
+        previousElement.focus();
+        const content = previousElement.textContent || '';
+        setCursorAtPosition(previousElement, content.length);
+      }
+    }, 0);
+  }
+  
+  // Helper function to update node content directly (like nodespace-core-ui prevNode.setContent)
+  function updateNodeContentById(nodeId: string, newContent: string): void {
+    console.log('🔄 updateNodeContentById called:', nodeId, '|', newContent);
+    function updateNode(nodesList: any[]): boolean {
+      for (let i = 0; i < nodesList.length; i++) {
+        if (nodesList[i].id === nodeId) {
+          console.log('✅ Found node to update:', nodesList[i].id, 'old:', nodesList[i].content);
+          nodesList[i].content = newContent;
+          console.log('✅ Updated content to:', nodesList[i].content);
+          return true;
+        }
+        if (nodesList[i].children && updateNode(nodesList[i].children)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    
+    const success = updateNode(nodes);
+    console.log('🎯 updateNodeContentById result:', success);
+  }
+  
+  // Helper function to remove a node from the tree structure (like nodespace-core-ui removeNodeFromTree)
+  function removeNodeFromTree(nodeToRemove: any): void {
+    function removeNode(nodesList: any[]): boolean {
+      for (let i = 0; i < nodesList.length; i++) {
+        if (nodesList[i].id === nodeToRemove.id) {
+          // Remove from current level
+          nodesList.splice(i, 1);
+          return true;
+        }
+        if (nodesList[i].children && nodesList[i].children.length > 0) {
+          if (removeNode(nodesList[i].children)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+    
+    removeNode(nodes);
+  }
+  
+  // Helper function to transfer children from source to target node (like nodespace-core-ui children transfer)
+  function transferChildren(sourceNode: any, targetNode: any): void {
+    if (sourceNode.children && sourceNode.children.length > 0) {
+      if (!targetNode.children) {
+        targetNode.children = [];
+      }
+      // Add source children to target's children
+      targetNode.children.push(...sourceNode.children);
+      // Clear source children
+      sourceNode.children = [];
+    }
+  }
+  
+  // Simple helper to remove node from reactive nodes array
+  function removeNodeFromNodesArray(nodeIdToRemove: string): void {
+    function removeFromArray(nodesList: any[]): boolean {
+      for (let i = 0; i < nodesList.length; i++) {
+        if (nodesList[i].id === nodeIdToRemove) {
+          nodesList.splice(i, 1);
+          return true;
+        }
+        if (nodesList[i].children && removeFromArray(nodesList[i].children)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    
+    removeFromArray(nodes);
+  }
 </script>
 
 <div class="node-viewer">
@@ -660,6 +856,8 @@
                 updateNodeContent(nodes, node.id, e.detail.content);
                 nodes = [...nodes]; // Trigger reactivity
               }}
+              on:combineWithPrevious={handleCombineWithPrevious}
+              on:deleteNode={handleDeleteNode}
             />
           {/if}
         </div>

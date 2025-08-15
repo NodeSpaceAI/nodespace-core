@@ -14,28 +14,34 @@
   export let inheritHeaderLevel: number = 0; // Header level inherited from parent node
   export let children: any[] = []; // Passthrough for MinimalBaseNode
   
+  // Internal reactive state that tracks content changes
+  let internalContent: string = content;
+  
   // Header state for CSS styling - initialize with inherited level
   let headerLevel: number = inheritHeaderLevel;
   
+  // Sync internalContent when content prop changes (reactive to parent updates)
+  $: internalContent = content;
+  
   // Parse header level from content and get display text
   $: {
-    if (content.startsWith('#')) {
-      const headerMatch = content.match(/^(#{1,6})\s+(.*)$/);
+    if (internalContent.startsWith('#')) {
+      const headerMatch = internalContent.match(/^(#{1,6})\s+(.*)$/);
       if (headerMatch) {
         headerLevel = headerMatch[1].length;
         displayContent = headerMatch[2];
       } else {
         headerLevel = inheritHeaderLevel;
-        displayContent = content;
+        displayContent = internalContent;
       }
     } else {
       headerLevel = inheritHeaderLevel;
-      displayContent = content;
+      displayContent = internalContent;
     }
   }
   
   // Content to display (without markdown header syntax)
-  let displayContent: string = content;
+  let displayContent: string = internalContent;
   let baseNodeRef: any;
 
   // Expose navigation methods from MinimalBaseNode
@@ -64,6 +70,13 @@
       direction: 'up' | 'down'; 
       columnHint: number;
     };
+    combineWithPrevious: {
+      nodeId: string;
+      currentContent: string;
+    };
+    deleteNode: {
+      nodeId: string;
+    };
   }>();
 
   // Forward the createNewNode event from BaseNode with header inheritance
@@ -73,9 +86,22 @@
     currentContent?: string; 
     newContent?: string; 
   }>) {
+    // Preserve header formatting in current node when splitting
+    let preservedCurrentContent = event.detail.currentContent;
+    if (headerLevel > 0 && preservedCurrentContent !== undefined) {
+      // If we had a header and the current content doesn't start with #, restore it
+      if (!preservedCurrentContent.startsWith('#')) {
+        // Only add header prefix if there's actual content or if content is empty (pure header)
+        preservedCurrentContent = preservedCurrentContent.trim() 
+          ? `${'#'.repeat(headerLevel)} ${preservedCurrentContent}`
+          : `${'#'.repeat(headerLevel)} `;
+      }
+    }
+    
     // Add header level inheritance for new nodes
     const eventDetail = {
       ...event.detail,
+      currentContent: preservedCurrentContent,
       inheritHeaderLevel: headerLevel // Pass current header level to new node
     };
     
@@ -87,7 +113,7 @@
     // If content becomes empty, reset header level
     if (!newContent.trim()) {
       headerLevel = 0;
-      content = '';
+      internalContent = '';
       dispatch('contentChanged', { nodeId, content: '' });
       return;
     }
@@ -95,7 +121,7 @@
     // If we have a header level, store with markdown header syntax
     // But also update displayContent for immediate UI feedback
     const finalContent = headerLevel > 0 ? `${'#'.repeat(headerLevel)} ${newContent}` : newContent;
-    content = finalContent;
+    internalContent = finalContent;
     displayContent = newContent; // Update display without # symbols
     dispatch('contentChanged', { nodeId, content: finalContent });
   }
@@ -105,18 +131,35 @@
 
   // TextNode-specific combination logic - determine if this node can be combined with others
   function canBeCombined(): boolean {
-    if (content.startsWith('#')) {
-      const headerMatch = content.match(/^#{1,6}\s/);
+    if (internalContent.startsWith('#')) {
+      const headerMatch = internalContent.match(/^#{1,6}\s/);
       if (headerMatch) return false;
     }
     return true;
   }
 
-  // TextNode-specific header functionality with CSS approach
+  // TextNode-specific Enter key handling
   function handleTextNodeKeyDown(event: KeyboardEvent) {
-    // Prevent Shift+Enter in header mode (headers are single-line only)
-    if (event.key === 'Enter' && event.shiftKey && headerLevel > 0) {
-      event.preventDefault();
+    if (event.key === 'Enter') {
+      // Headers: block Shift+Enter, allow regular Enter to create new nodes
+      if (headerLevel > 0) {
+        if (event.shiftKey) {
+          // Block Shift+Enter in headers
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        // Regular Enter in headers: let MinimalBaseNode handle new node creation
+        return;
+      }
+      
+      // Non-header text nodes: allow Shift+Enter for manual line breaks
+      if (event.shiftKey) {
+        // Allow Shift+Enter to create line breaks in non-header text
+        return;
+      }
+      
+      // Regular Enter: let MinimalBaseNode handle new node creation
       return;
     }
     
@@ -187,7 +230,7 @@
 
 </script>
 
-<div class="text-node-container" role="textbox" tabindex="0" on:keydown={handleTextNodeKeyDown}>
+<div class="text-node-container" role="textbox" tabindex="0">
   <MinimalBaseNode
     bind:this={baseNodeRef}
     {nodeId}
@@ -198,6 +241,7 @@
     allowNewNodeOnEnter={true}
     splitContentOnEnter={true}
     multiline={true}
+    headerLevel={headerLevel}
     className={nodeClassName}
     {canBeCombined}
     on:createNewNode={handleCreateNewNode}
@@ -205,6 +249,8 @@
     on:indentNode={(e) => dispatch('indentNode', e.detail)}
     on:outdentNode={(e) => dispatch('outdentNode', e.detail)}
     on:navigateArrow={(e) => dispatch('navigateArrow', e.detail)}
+    on:combineWithPrevious={(e) => dispatch('combineWithPrevious', e.detail)}
+    on:deleteNode={(e) => dispatch('deleteNode', e.detail)}
   />
 </div>
 
@@ -215,6 +261,17 @@
     font-weight: bold;
     line-height: 1.2;
     margin: 0;
+  }
+  
+  /* Fix empty state cursor for headers - use consistent size instead of scaling */
+  :global(.text-node--h1 .ns-node-content.markdown-editor:empty::before),
+  :global(.text-node--h2 .ns-node-content.markdown-editor:empty::before),
+  :global(.text-node--h3 .ns-node-content.markdown-editor:empty::before),
+  :global(.text-node--h4 .ns-node-content.markdown-editor:empty::before),
+  :global(.text-node--h5 .ns-node-content.markdown-editor:empty::before),
+  :global(.text-node--h6 .ns-node-content.markdown-editor:empty::before) {
+    height: 1.25rem !important; /* Fixed height instead of 1em that scales */
+    background-color: hsl(var(--muted-foreground) / 0.2) !important; /* Slightly more subtle */
   }
   
   :global(.text-node--h2 .markdown-editor) {
