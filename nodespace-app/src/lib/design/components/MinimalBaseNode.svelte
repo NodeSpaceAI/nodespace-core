@@ -5,6 +5,8 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import Icon, { type IconName } from '$lib/design/icons';
+  import { isAtNodeBoundary } from '$lib/utils/navigationUtils.js';
+  import type { NodeNavigationMethods } from '$lib/types/navigation.js';
 
   export let nodeId: string = '';
   export let nodeType: string = 'text'; // Type of node for creating new instances
@@ -16,6 +18,7 @@
   export let className: string = ''; // Additional CSS classes for the container
   export let children: any[] = []; // Child nodes for parent indicator
   export let iconName: IconName | undefined = undefined; // Custom icon override
+  export const canBeCombined: (() => boolean) | undefined = undefined; // Function to check if node can be combined
 
   let contentEditableElement: HTMLDivElement;
   let isApplyingHeaderFormatting = false; // Flag to prevent reactive interference
@@ -81,9 +84,8 @@
   function applyManualFormatting(formatType: 'bold' | 'italic' | 'underline', selection: Selection) {
     const range = selection.getRangeAt(0);
     
-    // Get the start and end containers to check for existing formatting
+    // Get the start container to check for existing formatting
     const startContainer = range.startContainer;
-    const endContainer = range.endContainer;
     
     // Find if selection is entirely within a formatting span of the target type
     let formatSpan = null;
@@ -108,12 +110,7 @@
     if (formatSpan) {
       // Remove formatting: unwrap the span while preserving selection
       const selectedText = selection.toString();
-      const selectedLength = selectedText.length;
       const parent = formatSpan.parentNode;
-      
-      // Store relative position info before unwrapping
-      const beforeSpan = formatSpan.previousSibling;
-      const afterSpan = formatSpan.nextSibling;
       
       // Unwrap the span
       const unwrappedNodes = [];
@@ -168,34 +165,6 @@
       dispatch('contentChanged', { content: markdownContent });
     }
   }
-
-  // Restore cursor position after innerHTML change
-  function restoreCursorPosition(offset: number) {
-    if (!contentEditableElement) return;
-    
-    try {
-      const selection = window.getSelection();
-      if (!selection) return;
-      
-      const range = document.createRange();
-      const textNodes = getTextNodes(contentEditableElement);
-      
-      let currentOffset = 0;
-      for (const textNode of textNodes) {
-        const nodeLength = textNode.textContent?.length || 0;
-        if (currentOffset + nodeLength >= offset) {
-          range.setStart(textNode, Math.max(0, offset - currentOffset));
-          range.collapse(true);
-          selection.removeAllRanges();
-          selection.addRange(range);
-          break;
-        }
-        currentOffset += nodeLength;
-      }
-    } catch (error) {
-      // Silently handle cursor restoration errors
-    }
-  }
   
   // Get all text nodes within an element
   function getTextNodes(element: Element): Text[] {
@@ -227,16 +196,12 @@
 
     const range = selection.getRangeAt(0);
     
-    // Save original HTML
-    const originalHtml = contentEditableElement.innerHTML;
-    
     // Create a temporary container to work with ranges
     const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = originalHtml;
+    tempDiv.innerHTML = contentEditableElement.innerHTML;
     
     // Create range in temp container matching cursor position
     const cursorOffset = getCursorPosition();
-    const tempRange = document.createRange();
     
     // Find the text position in the temp container
     let currentOffset = 0;
@@ -261,10 +226,11 @@
     }
     
     if (!splitNode) {
-      return { currentNodeHtml: originalHtml, newNodeHtml: '' };
+      return { currentNodeHtml: tempDiv.innerHTML, newNodeHtml: '' };
     }
     
     // Split at the found position
+    const tempRange = document.createRange();
     tempRange.setStart(splitNode, splitOffset);
     tempRange.setEndAfter(tempDiv.lastChild!);
     
@@ -300,6 +266,11 @@
     contentChanged: { content: string };
     indentNode: { nodeId: string };
     outdentNode: { nodeId: string };
+    navigateArrow: { 
+      nodeId: string; 
+      direction: 'up' | 'down'; 
+      columnHint: number;
+    };
   }>();
 
   // Auto-focus when autoFocus prop is true and initialize content
@@ -347,18 +318,233 @@
   //   applyWYSIWYGFormatting();
   // }
 
-  // Get cursor position in contenteditable
-  function getCursorPosition(): number {
+  // Get cursor position in visible text only (ignoring HTML markup)
+  function getVisibleTextPosition(): number {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return 0;
     
     const range = selection.getRangeAt(0);
-    const preCaretRange = range.cloneRange();
-    preCaretRange.selectNodeContents(contentEditableElement);
-    preCaretRange.setEnd(range.startContainer, range.startOffset);
     
-    return preCaretRange.toString().length;
+    // Walk through all text nodes to find the actual cursor position in visible text
+    const textNodes = getTextNodes(contentEditableElement);
+    let textPosition = 0;
+    
+    for (const textNode of textNodes) {
+      if (range.startContainer === textNode) {
+        return textPosition + range.startOffset;
+      }
+      
+      // Check if cursor is before this text node
+      const nodeRange = document.createRange();
+      nodeRange.selectNode(textNode);
+      
+      if (range.compareBoundaryPoints(Range.START_TO_START, nodeRange) < 0) {
+        // Cursor is before this text node, return current position
+        return textPosition;
+      }
+      
+      textPosition += textNode.textContent?.length || 0;
+    }
+    
+    return textPosition;
   }
+
+  // Legacy method for backward compatibility
+  function getCursorPosition(): number {
+    return getVisibleTextPosition();
+  }
+
+  // Get hierarchy level (number of parent .node-children elements)
+  function getHierarchyLevel(): number {
+    if (!contentEditableElement) return 0;
+    let level = 0;
+    let element = contentEditableElement.closest('.node-container');
+    
+    while (element && element.parentElement) {
+      if (element.parentElement.classList.contains('node-children')) {
+        level++;
+      }
+      element = element.parentElement.closest('.node-container');
+    }
+    
+    return level;
+  }
+
+  // Get font scaling factor based on node styling
+  function getFontScaling(): number {
+    if (!contentEditableElement) return 1;
+    
+    // Look for header classes in the ns-node-container (direct parent of contenteditable)
+    const container = contentEditableElement.closest('.ns-node-container');
+    if (!container) return 1;
+    
+    if (container.classList.contains('text-node--h1')) return 2.0;
+    if (container.classList.contains('text-node--h2')) return 1.5;
+    if (container.classList.contains('text-node--h3')) return 1.25;
+    if (container.classList.contains('text-node--h4')) return 1.125;
+    if (container.classList.contains('text-node--h5')) return 1.0;
+    if (container.classList.contains('text-node--h6')) return 0.875;
+    
+    return 1.0; // Normal text
+  }
+
+
+  // Navigation Methods Implementation (GitHub Issue #28)
+  function canAcceptNavigation(): boolean {
+    return true; // MinimalBaseNode accepts navigation
+  }
+
+  function enterFromTop(columnHint: number = 0): boolean {
+    if (!contentEditableElement) return false;
+    
+    contentEditableElement.focus();
+    
+    // Calculate visual position accounting for this node's indentation and font
+    const visualPosition = calculateVisualCursorPosition(columnHint, 'first-line');
+    setCursorPosition(visualPosition);
+    return true;
+  }
+
+  function enterFromBottom(columnHint: number = 0): boolean {
+    if (!contentEditableElement) return false;
+    
+    contentEditableElement.focus();
+    
+    // Calculate visual position accounting for this node's indentation and font
+    const visualPosition = calculateVisualCursorPosition(columnHint, 'last-line');
+    setCursorPosition(visualPosition);
+    return true;
+  }
+
+  function exitToTop(): { canExit: boolean; columnPosition: number } {
+    if (!contentEditableElement) return { canExit: false, columnPosition: 0 };
+    
+    const content = contentEditableElement.textContent || '';
+    const cursorPosition = getCursorPosition();
+    
+    const boundaryInfo = isAtNodeBoundary(content, cursorPosition, true);
+    
+    return {
+      canExit: boundaryInfo.isAtBoundary,
+      columnPosition: calculateVisualColumnPosition()
+    };
+  }
+
+  function exitToBottom(): { canExit: boolean; columnPosition: number } {
+    if (!contentEditableElement) return { canExit: false, columnPosition: 0 };
+    
+    const content = contentEditableElement.textContent || '';
+    const cursorPosition = getCursorPosition();
+    
+    const boundaryInfo = isAtNodeBoundary(content, cursorPosition, false);
+    
+    return {
+      canExit: boundaryInfo.isAtBoundary,
+      columnPosition: calculateVisualColumnPosition()
+    };
+  }
+
+  function getCurrentColumn(): number {
+    return calculateVisualColumnPosition();
+  }
+
+  // Calculate visual column position with fixed assumptions
+  function calculateVisualColumnPosition(): number {
+    if (!contentEditableElement) return 0;
+    
+    const content = contentEditableElement.textContent || '';
+    const cursorPosition = getVisibleTextPosition();
+    
+    // Get current line and column in visible text
+    const textBeforeCursor = content.substring(0, cursorPosition);
+    const currentLineStartIndex = textBeforeCursor.lastIndexOf('\n') + 1;
+    const columnInLine = cursorPosition - currentLineStartIndex;
+    
+    // Fixed assumptions approach
+    const hierarchyLevel = getHierarchyLevel();
+    const fontScaling = getFontScaling();
+    
+    // Visual column = logical column + (hierarchy * 4 spaces) + font scaling adjustment
+    const indentationOffset = hierarchyLevel * 4;
+    const fontAdjustment = Math.round((fontScaling - 1.0) * columnInLine); // Scale the column position
+    
+    return columnInLine + indentationOffset + fontAdjustment;
+  }
+
+  // Calculate cursor position for entry, converting visual column hint to logical position
+  function calculateVisualCursorPosition(columnHint: number, lineTarget: 'first-line' | 'last-line'): number {
+    if (!contentEditableElement) return 0;
+    
+    const content = contentEditableElement.textContent || '';
+    const lines = content.split('\n');
+    
+    // Get target line
+    const targetLine = lineTarget === 'first-line' ? lines[0] || '' : lines[lines.length - 1] || '';
+    const targetLineStart = lineTarget === 'first-line' ? 0 : content.length - targetLine.length;
+    
+    // Reverse the visual column calculation: convert visual columnHint back to logical position
+    const hierarchyLevel = getHierarchyLevel();
+    const fontScaling = getFontScaling();
+    
+    const indentationOffset = hierarchyLevel * 4;
+    
+    // Remove indentation offset from columnHint to get logical column
+    let logicalColumn = Math.max(0, columnHint - indentationOffset);
+    
+    // Adjust for font scaling (reverse the scaling)
+    if (fontScaling !== 1.0) {
+      logicalColumn = Math.round(logicalColumn / fontScaling);
+    }
+    
+    // Position within the target line (visible text)
+    const positionInLine = Math.min(logicalColumn, targetLine.length);
+    
+    return targetLineStart + positionInLine;
+  }
+
+  function setCursorPosition(position: number): void {
+    if (!contentEditableElement) return;
+    
+    const textNodes = getTextNodes(contentEditableElement);
+    let currentOffset = 0;
+    
+    for (const textNode of textNodes) {
+      const nodeLength = textNode.textContent?.length || 0;
+      if (currentOffset + nodeLength >= position) {
+        const range = document.createRange();
+        const selection = window.getSelection();
+        
+        range.setStart(textNode, Math.max(0, position - currentOffset));
+        range.collapse(true);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        return;
+      }
+      currentOffset += nodeLength;
+    }
+    
+    // If position is beyond content, place at end
+    if (textNodes.length > 0) {
+      const lastNode = textNodes[textNodes.length - 1];
+      const range = document.createRange();
+      const selection = window.getSelection();
+      
+      range.setStart(lastNode, lastNode.textContent?.length || 0);
+      range.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+  }
+
+  // Expose navigation methods for external access
+  export const navigationMethods: NodeNavigationMethods = {
+    canAcceptNavigation,
+    enterFromTop,
+    enterFromBottom,
+    exitToTop,
+    exitToBottom,
+    getCurrentColumn
+  };
 
   // Handle input to update content prop (convert HTML to markdown for storage)
   function handleInput(event: Event & { currentTarget: HTMLDivElement }) {
@@ -393,8 +579,8 @@
     
     // Create the header element and position cursor
     const headerElement = document.createElement(`h${headerLevel}`);
-    const textNode = document.createTextNode('');
-    headerElement.appendChild(textNode);
+    const headerTextNode = document.createTextNode('');
+    headerElement.appendChild(headerTextNode);
     contentEditableElement.appendChild(headerElement);
     
     // Position cursor inside the header using more direct DOM manipulation
@@ -403,8 +589,8 @@
       const selection = window.getSelection();
       
       // Position cursor at the start of the text node inside header
-      range.setStart(textNode, 0);
-      range.setEnd(textNode, 0);
+      range.setStart(headerTextNode, 0);
+      range.setEnd(headerTextNode, 0);
       
       selection?.removeAllRanges();
       selection?.addRange(range);
@@ -456,6 +642,28 @@
         // Tab: Indent (move to be child of previous sibling)
         dispatch('indentNode', { nodeId });
       }
+      return;
+    }
+
+    // Handle Arrow Up/Down for node navigation using entry/exit methods
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      const isUpArrow = event.key === 'ArrowUp';
+      
+      // Check if node can exit in this direction
+      const exitInfo = isUpArrow ? exitToTop() : exitToBottom();
+      
+      if (exitInfo.canExit) {
+        // Node allows exit - dispatch navigation event
+        event.preventDefault();
+        dispatch('navigateArrow', {
+          nodeId,
+          direction: isUpArrow ? 'up' : 'down',
+          columnHint: exitInfo.columnPosition
+        });
+        return;
+      }
+      
+      // Not at exit boundary - allow normal arrow key behavior within the node
       return;
     }
 

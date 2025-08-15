@@ -195,6 +195,83 @@ NodeSpace uses "NodeType Extensions" for internal parallel development:
 - Shared interfaces for consistent behavior
 - Examples and templates for rapid development
 
+## Repository Structure
+
+```
+nodespace-core/
+├── docs/                       # Documentation and specifications
+│   ├── architecture/           # Complete technical architecture
+│   │   ├── core/              # Core system design (system-overview, tech stack)
+│   │   ├── components/        # Component specifications (AI, entities, validation)
+│   │   ├── deployment/        # Development and testing setup
+│   │   ├── development/       # Development process and standards
+│   │   ├── decisions/         # Architecture decision records (ADRs)
+│   │   ├── design-decisions/  # Strategic technology choices
+│   │   └── plugins/           # Plugin development guide
+│   └── design-system/         # UI design system with live examples
+├── nodespace-app/             # Main Svelte frontend application
+│   ├── src/                   # Application source code
+│   │   ├── lib/               # Shared libraries and components
+│   │   │   ├── components/    # Reusable Svelte components (TextNode, UI)
+│   │   │   ├── design/        # Design system components and theming
+│   │   │   ├── services/      # Data services and utilities
+│   │   │   └── types/         # TypeScript type definitions
+│   │   ├── routes/            # SvelteKit application routes
+│   │   └── tests/             # Test suites (component, integration, unit)
+│   ├── src-tauri/             # Tauri desktop application wrapper
+│   │   ├── src/               # Rust backend code
+│   │   ├── icons/             # Application icons for all platforms
+│   │   └── capabilities/      # Tauri security capabilities
+│   ├── static/                # Static web assets
+│   └── [config files]         # Package.json, Svelte config, Tailwind, etc.
+├── scripts/                   # Project automation scripts
+│   ├── gh-api.ts             # GitHub API integration
+│   ├── gh-utils.ts           # GitHub CLI utilities
+│   └── github-client.ts      # GitHub client configuration
+├── target/                    # Rust build output (generated)
+├── Cargo.toml                 # Rust workspace configuration
+├── package.json               # Project dependencies and scripts
+├── README.md                  # This file - project overview
+├── CLAUDE.md                  # AI agent development guidance
+└── [build artifacts]         # Generated files (node_modules, coverage, etc.)
+```
+
+### Key Directory Purposes
+
+**Core Application:**
+- `nodespace-app/src/lib/components/` - Main UI components (TextNode, NodeTree, etc.)
+- `nodespace-app/src/lib/design/` - Design system and theming infrastructure
+- `nodespace-app/src/lib/services/` - Business logic and data services
+- `nodespace-app/src-tauri/src/` - Rust backend for desktop integration
+
+**Documentation:**
+- `docs/architecture/core/` - High-level system architecture and technology decisions
+- `docs/architecture/development/` - Development process, standards, and workflow guides
+- `docs/design-system/` - Live UI component documentation with interactive examples
+
+**Testing:**
+- `nodespace-app/src/tests/` - All test suites organized by type (component, integration, unit)
+- `coverage/` - Test coverage reports (generated)
+
+**Automation:**
+- `scripts/` - GitHub integration and project management automation
+- Bun scripts in `package.json` for CLI commands (gh:view, gh:assign, etc.)
+
+### Development Entry Points
+
+**For New Engineers:**
+1. Start with `README.md` (this file) for project overview
+2. Read `docs/architecture/core/system-overview.md` for technical architecture
+3. Review `docs/architecture/development/overview.md` for development process
+4. Check `CLAUDE.md` for AI agent-specific workflow guidance
+5. Explore `docs/design-system/index.html` for UI component examples
+
+**For Implementation Work:**
+- Component development: `nodespace-app/src/lib/components/`
+- Design system updates: `nodespace-app/src/lib/design/`
+- Backend logic: `nodespace-app/src-tauri/src/`
+- Documentation: `docs/architecture/` (update when making architectural changes)
+
 ## Contributing
 
 ### Code Standards

@@ -6,93 +6,72 @@
 <script lang="ts">
   import TextNode from '$lib/components/TextNode.svelte';
   import Icon from '$lib/design/icons';
-
-  // HTML to Markdown conversion (duplicate of MinimalBaseNode function)
-  function htmlToMarkdown(htmlContent: string): string {
-    let markdown = htmlContent;
-    
-    // Convert header tags to markdown syntax (check first to preserve header level)
-    markdown = markdown.replace(/<h1[^>]*>(.*?)<\/h1>/g, '# $1');
-    markdown = markdown.replace(/<h2[^>]*>(.*?)<\/h2>/g, '## $1');
-    markdown = markdown.replace(/<h3[^>]*>(.*?)<\/h3>/g, '### $1');
-    markdown = markdown.replace(/<h4[^>]*>(.*?)<\/h4>/g, '#### $1');
-    markdown = markdown.replace(/<h5[^>]*>(.*?)<\/h5>/g, '##### $1');
-    markdown = markdown.replace(/<h6[^>]*>(.*?)<\/h6>/g, '###### $1');
-    
-    // Convert HTML spans to markdown syntax
-    markdown = markdown.replace(/<span class="markdown-bold">(.*?)<\/span>/g, '**$1**');
-    markdown = markdown.replace(/<span class="markdown-italic">(.*?)<\/span>/g, '*$1*');
-    markdown = markdown.replace(/<span class="markdown-underline">(.*?)<\/span>/g, '__$1__');
-    
-    // Clean up any remaining HTML tags
-    markdown = markdown.replace(/<[^>]*>/g, '');
-    
-    return markdown;
-  }
+  import { htmlToMarkdown } from '$lib/utils/markdown.js';
+  import { v4 as uuidv4 } from 'uuid';
 
   // Comprehensive test data for collapse/expand with formatting and deep nesting
   let nodes = $state([
     { 
-      id: crypto.randomUUID(), 
+      id: uuidv4(), 
       type: 'text', 
       autoFocus: false, 
       content: '# Main Project Overview', 
       inheritHeaderLevel: 1, 
       children: [
         { 
-          id: crypto.randomUUID(), 
+          id: uuidv4(), 
           type: 'text', 
           autoFocus: false, 
           content: '## Features with **bold** and *italic* text', 
           inheritHeaderLevel: 2, 
           children: [
-            { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'User authentication with __underlined__ security', inheritHeaderLevel: 0, children: [], expanded: true },
+            { id: uuidv4(), type: 'text', autoFocus: false, content: 'User authentication with __underlined__ security', inheritHeaderLevel: 0, children: [], expanded: true },
             { 
-              id: crypto.randomUUID(), 
+              id: uuidv4(), 
               type: 'text', 
               autoFocus: false, 
               content: 'Database operations', 
               inheritHeaderLevel: 0, 
               children: [
-                { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'CRUD operations with **optimized** queries', inheritHeaderLevel: 0, children: [], expanded: true },
-                { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Data validation and *error handling*', inheritHeaderLevel: 0, children: [], expanded: true },
+                { id: uuidv4(), type: 'text', autoFocus: false, content: 'CRUD operations with **optimized** queries', inheritHeaderLevel: 0, children: [], expanded: true },
+                { id: uuidv4(), type: 'text', autoFocus: false, content: 'Data validation and *error handling*', inheritHeaderLevel: 0, children: [], expanded: true },
                 { 
-                  id: crypto.randomUUID(), 
+                  id: uuidv4(), 
                   type: 'text', 
                   autoFocus: false, 
                   content: 'Advanced features', 
                   inheritHeaderLevel: 0, 
                   children: [
-                    { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Real-time updates via __WebSocket__', inheritHeaderLevel: 0, children: [], expanded: true },
-                    { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Caching with **Redis** integration', inheritHeaderLevel: 0, children: [], expanded: true }
+                    { id: uuidv4(), type: 'text', autoFocus: false, content: 'Real-time updates via __WebSocket__', inheritHeaderLevel: 0, children: [], expanded: true },
+                    { id: uuidv4(), type: 'text', autoFocus: false, content: 'Caching with **Redis** integration', inheritHeaderLevel: 0, children: [], expanded: true }
                   ],
                   expanded: true 
                 }
               ],
               expanded: true 
             },
-            { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'API endpoints with *RESTful* design', inheritHeaderLevel: 0, children: [], expanded: true }
+            { id: uuidv4(), type: 'text', autoFocus: false, content: 'API endpoints with *RESTful* design', inheritHeaderLevel: 0, children: [], expanded: true }
           ],
           expanded: true 
         },
         { 
-          id: crypto.randomUUID(), 
+          id: uuidv4(), 
           type: 'text', 
           autoFocus: false, 
           content: '## Testing Strategy (collapsed)', 
           inheritHeaderLevel: 2, 
           children: [
-            { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Unit tests with **Jest** framework', inheritHeaderLevel: 0, children: [], expanded: true },
-            { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Integration tests for *API endpoints*', inheritHeaderLevel: 0, children: [], expanded: true },
+            { id: uuidv4(), type: 'text', autoFocus: false, content: 'Unit tests with **Jest** framework', inheritHeaderLevel: 0, children: [], expanded: true },
+            { id: uuidv4(), type: 'text', autoFocus: false, content: 'Integration tests for *API endpoints*', inheritHeaderLevel: 0, children: [], expanded: true },
             { 
-              id: crypto.randomUUID(), 
+              id: uuidv4(), 
               type: 'text', 
               autoFocus: false, 
               content: 'E2E testing', 
               inheritHeaderLevel: 0, 
               children: [
-                { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Playwright for __browser automation__', inheritHeaderLevel: 0, children: [], expanded: true },
-                { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Visual regression with **Chromatic**', inheritHeaderLevel: 0, children: [], expanded: true }
+                { id: uuidv4(), type: 'text', autoFocus: false, content: 'Playwright for __browser automation__', inheritHeaderLevel: 0, children: [], expanded: true },
+                { id: uuidv4(), type: 'text', autoFocus: false, content: 'Visual regression with **Chromatic**', inheritHeaderLevel: 0, children: [], expanded: true }
               ],
               expanded: true 
             }
@@ -103,24 +82,24 @@
       expanded: true 
     },
     { 
-      id: crypto.randomUUID(), 
+      id: uuidv4(), 
       type: 'text', 
       autoFocus: false, 
       content: '### Development Notes', 
       inheritHeaderLevel: 3, 
       children: [
-        { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Use **TypeScript** for type safety', inheritHeaderLevel: 0, children: [], expanded: true },
-        { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Follow *ESLint* and __Prettier__ conventions', inheritHeaderLevel: 0, children: [], expanded: true },
+        { id: uuidv4(), type: 'text', autoFocus: false, content: 'Use **TypeScript** for type safety', inheritHeaderLevel: 0, children: [], expanded: true },
+        { id: uuidv4(), type: 'text', autoFocus: false, content: 'Follow *ESLint* and __Prettier__ conventions', inheritHeaderLevel: 0, children: [], expanded: true },
         { 
-          id: crypto.randomUUID(), 
+          id: uuidv4(), 
           type: 'text', 
           autoFocus: false, 
           content: 'Git workflow', 
           inheritHeaderLevel: 0, 
           children: [
-            { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Feature branches with **descriptive** names', inheritHeaderLevel: 0, children: [], expanded: true },
-            { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Pull requests with *code review*', inheritHeaderLevel: 0, children: [], expanded: true },
-            { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Automated CI/CD with __GitHub Actions__', inheritHeaderLevel: 0, children: [], expanded: true }
+            { id: uuidv4(), type: 'text', autoFocus: false, content: 'Feature branches with **descriptive** names', inheritHeaderLevel: 0, children: [], expanded: true },
+            { id: uuidv4(), type: 'text', autoFocus: false, content: 'Pull requests with *code review*', inheritHeaderLevel: 0, children: [], expanded: true },
+            { id: uuidv4(), type: 'text', autoFocus: false, content: 'Automated CI/CD with __GitHub Actions__', inheritHeaderLevel: 0, children: [], expanded: true }
           ],
           expanded: true 
         }
@@ -128,31 +107,31 @@
       expanded: true 
     },
     { 
-      id: crypto.randomUUID(), 
+      id: uuidv4(), 
       type: 'text', 
       autoFocus: false, 
       content: 'Deployment (collapsed branch)', 
       inheritHeaderLevel: 0, 
       children: [
-        { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: '**Production** environment setup', inheritHeaderLevel: 0, children: [], expanded: true },
+        { id: uuidv4(), type: 'text', autoFocus: false, content: '**Production** environment setup', inheritHeaderLevel: 0, children: [], expanded: true },
         { 
-          id: crypto.randomUUID(), 
+          id: uuidv4(), 
           type: 'text', 
           autoFocus: false, 
           content: 'Staging environment', 
           inheritHeaderLevel: 0, 
           children: [
-            { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Mirror of *production* with test data', inheritHeaderLevel: 0, children: [], expanded: true },
-            { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Automated deployment from __main branch__', inheritHeaderLevel: 0, children: [], expanded: true }
+            { id: uuidv4(), type: 'text', autoFocus: false, content: 'Mirror of *production* with test data', inheritHeaderLevel: 0, children: [], expanded: true },
+            { id: uuidv4(), type: 'text', autoFocus: false, content: 'Automated deployment from __main branch__', inheritHeaderLevel: 0, children: [], expanded: true }
           ],
           expanded: true 
         },
-        { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Monitoring and *alerting* systems', inheritHeaderLevel: 0, children: [], expanded: true }
+        { id: uuidv4(), type: 'text', autoFocus: false, content: 'Monitoring and *alerting* systems', inheritHeaderLevel: 0, children: [], expanded: true }
       ], 
       expanded: false 
     },
-    { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Simple leaf node with **formatting**', inheritHeaderLevel: 0, children: [], expanded: true },
-    { id: crypto.randomUUID(), type: 'text', autoFocus: false, content: 'Another leaf with *italics* and __underline__', inheritHeaderLevel: 0, children: [], expanded: true }
+    { id: uuidv4(), type: 'text', autoFocus: false, content: 'Simple leaf node with **formatting**', inheritHeaderLevel: 0, children: [], expanded: true },
+    { id: uuidv4(), type: 'text', autoFocus: false, content: 'Another leaf with *italics* and __underline__', inheritHeaderLevel: 0, children: [], expanded: true }
   ]);
 
   // Handle creating new nodes when Enter is pressed
@@ -186,7 +165,7 @@
     const nodeLocation = findNodeLocation(nodes, afterNodeId);
     
     if (nodeLocation) {
-      const { node, index, parent, parentChildren } = nodeLocation;
+      const { node, index, parentChildren } = nodeLocation;
       
       // First, set all existing nodes to not auto-focus recursively
       function clearAutoFocus(nodesList: any[]) {
@@ -204,7 +183,7 @@
       
       // Create new node with UUID, auto-focus, and header inheritance
       const newNode = {
-        id: crypto.randomUUID(),
+        id: uuidv4(),
         type: nodeType,
         autoFocus: true,
         content: newContent || '', // Use split content or empty string
@@ -338,7 +317,7 @@
         selection.addRange(range);
         element.focus();
       }
-    } catch (error) {
+    } catch {
       // Silently handle cursor restoration errors
     }
   }
@@ -439,6 +418,194 @@
   function getNodeColor(nodeType: string): string {
     return `hsl(var(--node-${nodeType}, var(--node-text)))`;
   }
+
+  // Handle arrow key navigation between nodes using entry/exit methods
+  function handleArrowNavigation(event: CustomEvent<{ 
+    nodeId: string; 
+    direction: 'up' | 'down'; 
+    columnHint: number;
+  }>) {
+    const { nodeId, direction, columnHint } = event.detail;
+    
+    // Find navigable nodes (respecting node autonomy)
+    function findNavigableNodes(): any[] {
+      const result: any[] = [];
+      
+      function collectNodes(nodeList: any[]) {
+        for (const node of nodeList) {
+          result.push(node);
+          if (node.children && node.children.length > 0 && node.expanded) {
+            collectNodes(node.children);
+          }
+        }
+      }
+      
+      collectNodes(nodes);
+      return result;
+    }
+    
+    const navigableNodes = findNavigableNodes();
+    const currentIndex = navigableNodes.findIndex(n => n.id === nodeId);
+    
+    if (currentIndex === -1) return;
+    
+    // Find next navigable node that accepts navigation
+    let targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    
+    while (targetIndex >= 0 && targetIndex < navigableNodes.length) {
+      const candidateNode = navigableNodes[targetIndex];
+      
+      // Check if this node accepts navigation (skip if it doesn't)
+      // For now, assume all nodes accept navigation (will be refined per node type)
+      const acceptsNavigation = true; // candidateNode.navigationMethods?.canAcceptNavigation() ?? true;
+      
+      if (acceptsNavigation) {
+        // Found a node that accepts navigation - try to enter it
+        const success = enterNodeAtPosition(candidateNode.id, direction, columnHint);
+        if (success) return;
+      }
+      
+      // This node doesn't accept navigation or entry failed - try next one
+      targetIndex = direction === 'up' ? targetIndex - 1 : targetIndex + 1;
+    }
+  }
+
+  // Enter a node using its entry methods or fallback positioning
+  function enterNodeAtPosition(targetNodeId: string, direction: 'up' | 'down', columnHint: number): boolean {
+    // Try component-level navigation methods first (future enhancement)
+    // const nodeComponent = getNodeComponent(targetNodeId);
+    // if (nodeComponent?.navigationMethods) {
+    //   return direction === 'up' 
+    //     ? nodeComponent.navigationMethods.enterFromBottom(columnHint)
+    //     : nodeComponent.navigationMethods.enterFromTop(columnHint);
+    // }
+    
+    // Fallback: direct DOM entry point positioning
+    setTimeout(() => {
+      const targetElement = document.getElementById(`contenteditable-${targetNodeId}`);
+      if (!targetElement) return;
+      
+      targetElement.focus();
+      
+      // Entry point logic: nodes define where cursor should land when entered
+      const content = targetElement.textContent || '';
+      const lines = content.split('\n');
+      let targetPosition: number;
+      
+      if (direction === 'up') {
+        // Entering from bottom: convert visual columnHint to logical position
+        const lastLine = lines[lines.length - 1] || '';
+        const lastLineStart = content.length - lastLine.length;
+        
+        // Apply same fixed assumptions as MinimalBaseNode
+        // Get hierarchy level for target node
+        let hierarchyLevel = 0;
+        let element = targetElement.closest('.node-container');
+        while (element && element.parentElement) {
+          if (element.parentElement.classList.contains('node-children')) {
+            hierarchyLevel++;
+          }
+          element = element.parentElement.closest('.node-container');
+        }
+        
+        // Get font scaling for target node
+        let fontScaling = 1.0;
+        const nsContainer = targetElement.closest('.ns-node-container');
+        if (nsContainer) {
+          if (nsContainer.classList.contains('text-node--h1')) fontScaling = 2.0;
+          else if (nsContainer.classList.contains('text-node--h2')) fontScaling = 1.5;
+          else if (nsContainer.classList.contains('text-node--h3')) fontScaling = 1.25;
+          else if (nsContainer.classList.contains('text-node--h4')) fontScaling = 1.125;
+        }
+        
+        // Convert visual columnHint back to logical position
+        const indentationOffset = hierarchyLevel * 4;
+        let logicalColumn = Math.max(0, columnHint - indentationOffset);
+        
+        // Adjust for font scaling (reverse the scaling)
+        if (fontScaling !== 1.0) {
+          logicalColumn = Math.round(logicalColumn / fontScaling);
+        }
+        
+        targetPosition = lastLineStart + Math.min(logicalColumn, lastLine.length);
+      } else {
+        // Entering from top: convert visual columnHint to logical position
+        const firstLine = lines[0] || '';
+        
+        // Apply same fixed assumptions as MinimalBaseNode
+        // Get hierarchy level for target node
+        let hierarchyLevel = 0;
+        let element = targetElement.closest('.node-container');
+        while (element && element.parentElement) {
+          if (element.parentElement.classList.contains('node-children')) {
+            hierarchyLevel++;
+          }
+          element = element.parentElement.closest('.node-container');
+        }
+        
+        // Get font scaling for target node
+        let fontScaling = 1.0;
+        const nsContainer = targetElement.closest('.ns-node-container');
+        if (nsContainer) {
+          if (nsContainer.classList.contains('text-node--h1')) fontScaling = 2.0;
+          else if (nsContainer.classList.contains('text-node--h2')) fontScaling = 1.5;
+          else if (nsContainer.classList.contains('text-node--h3')) fontScaling = 1.25;
+          else if (nsContainer.classList.contains('text-node--h4')) fontScaling = 1.125;
+        }
+        
+        // Convert visual columnHint back to logical position
+        const indentationOffset = hierarchyLevel * 4;
+        let logicalColumn = Math.max(0, columnHint - indentationOffset);
+        
+        // Adjust for font scaling (reverse the scaling)
+        if (fontScaling !== 1.0) {
+          logicalColumn = Math.round(logicalColumn / fontScaling);
+        }
+        
+        targetPosition = Math.min(logicalColumn, firstLine.length);
+      }
+      
+      // Set cursor at entry point
+      setCursorAtPosition(targetElement, targetPosition);
+    }, 0);
+    
+    return true;
+  }
+  
+  // Utility to set cursor position in any contenteditable element
+  function setCursorAtPosition(element: HTMLElement, position: number): void {
+    const selection = window.getSelection();
+    if (!selection) return;
+    
+    try {
+      const range = document.createRange();
+      const textNodes = getTextNodes(element);
+      
+      let currentOffset = 0;
+      for (const textNode of textNodes) {
+        const nodeLength = textNode.textContent?.length || 0;
+        if (currentOffset + nodeLength >= position) {
+          range.setStart(textNode, Math.max(0, position - currentOffset));
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          return;
+        }
+        currentOffset += nodeLength;
+      }
+      
+      // Position beyond content - place at end
+      if (textNodes.length > 0) {
+        const lastNode = textNodes[textNodes.length - 1];
+        range.setStart(lastNode, lastNode.textContent?.length || 0);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    } catch {
+      // Cursor positioning failed silently
+    }
+  }
 </script>
 
 <div class="node-viewer">
@@ -471,6 +638,7 @@
               on:createNewNode={handleCreateNewNode}
               on:indentNode={handleIndentNode}
               on:outdentNode={handleOutdentNode}
+              on:navigateArrow={handleArrowNavigation}
               on:contentChanged={(e) => {
                 // Find node recursively and update content
                 function updateNodeContent(nodesList, targetId, newContent) {

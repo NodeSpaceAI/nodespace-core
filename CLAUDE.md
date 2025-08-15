@@ -92,6 +92,30 @@ bun run gh:view <issue-number>
 
 Use the most appropriate specialized sub-agent available for complex tasks. Claude Code will automatically select the best agent based on task context and complexity.
 
+**CRITICAL: Sub-Agent Commissioning Instructions**
+
+When commissioning a specialized sub-agent, you MUST include these specific instructions in your prompt:
+
+```
+IMPORTANT SUB-AGENT INSTRUCTIONS:
+- DO NOT repeat the startup sequence (git status, branch creation, issue assignment, etc.) - the main agent has already completed this
+- You are working on an EXISTING feature branch with the issue already assigned and in progress
+- Focus ONLY on the specific technical implementation task assigned to you
+- DO NOT commit changes or create pull requests - the main agent will handle all git operations and PR creation
+- DO NOT run project management commands (bun run gh:status, bun run gh:pr, etc.) - main agent manages project status
+- Follow all project standards (no lint suppression, use Bun only, etc.) but skip the administrative steps
+- Continue with the existing implementation approach and maintain consistency with established patterns
+- Return control to main agent when your technical work is complete
+```
+
+**Why This Matters:**
+- Prevents redundant administrative work that wastes time
+- Ensures sub-agents focus on their specialized expertise (not project management)
+- Maintains single point of control for git operations and project status
+- Avoids conflicts with already-completed setup and branch state
+- Allows for seamless handoff between main agent and specialist
+- Main agent maintains full context of implementation progress and can handle commits/PRs appropriately
+
 ### 5. Implementation Workflow
 
 **CRITICAL**: Follow the complete development process in the [development documentation](docs/architecture/development/overview.md)

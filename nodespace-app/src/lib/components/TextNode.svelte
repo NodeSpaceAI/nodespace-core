@@ -5,6 +5,7 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import MinimalBaseNode from '$lib/design/components/MinimalBaseNode.svelte';
+  import type { NodeNavigationMethods } from '$lib/types/navigation.js';
 
   // Minimal props
   export let nodeId: string;
@@ -37,6 +38,16 @@
   let displayContent: string = content;
   let baseNodeRef: any;
 
+  // Expose navigation methods from MinimalBaseNode
+  export const navigationMethods: NodeNavigationMethods = {
+    canAcceptNavigation: () => baseNodeRef?.navigationMethods?.canAcceptNavigation() ?? true,
+    enterFromTop: (columnHint?: number) => baseNodeRef?.navigationMethods?.enterFromTop(columnHint) ?? false,
+    enterFromBottom: (columnHint?: number) => baseNodeRef?.navigationMethods?.enterFromBottom(columnHint) ?? false,
+    exitToTop: () => baseNodeRef?.navigationMethods?.exitToTop() ?? { canExit: false, columnPosition: 0 },
+    exitToBottom: () => baseNodeRef?.navigationMethods?.exitToBottom() ?? { canExit: false, columnPosition: 0 },
+    getCurrentColumn: () => baseNodeRef?.navigationMethods?.getCurrentColumn() ?? 0
+  };
+
   const dispatch = createEventDispatcher<{
     createNewNode: { 
       afterNodeId: string; 
@@ -48,6 +59,11 @@
     contentChanged: { nodeId: string; content: string };
     indentNode: { nodeId: string };
     outdentNode: { nodeId: string };
+    navigateArrow: { 
+      nodeId: string; 
+      direction: 'up' | 'down'; 
+      columnHint: number;
+    };
   }>();
 
   // Forward the createNewNode event from BaseNode with header inheritance
@@ -86,6 +102,15 @@
 
   // Reactive className computation
   $: nodeClassName = `text-node ${headerLevel ? `text-node--h${headerLevel}` : ''}`.trim();
+
+  // TextNode-specific combination logic - determine if this node can be combined with others
+  function canBeCombined(): boolean {
+    if (content.startsWith('#')) {
+      const headerMatch = content.match(/^#{1,6}\s/);
+      if (headerMatch) return false;
+    }
+    return true;
+  }
 
   // TextNode-specific header functionality with CSS approach
   function handleTextNodeKeyDown(event: KeyboardEvent) {
@@ -160,28 +185,6 @@
     }
   }
 
-  // HTML to Markdown conversion for TextNode (includes headers)
-  function htmlToMarkdown(htmlContent: string): string {
-    let markdown = htmlContent;
-    
-    // Convert header tags to markdown syntax
-    markdown = markdown.replace(/<h1[^>]*>(.*?)<\/h1>/g, '# $1');
-    markdown = markdown.replace(/<h2[^>]*>(.*?)<\/h2>/g, '## $1');
-    markdown = markdown.replace(/<h3[^>]*>(.*?)<\/h3>/g, '### $1');
-    markdown = markdown.replace(/<h4[^>]*>(.*?)<\/h4>/g, '#### $1');
-    markdown = markdown.replace(/<h5[^>]*>(.*?)<\/h5>/g, '##### $1');
-    markdown = markdown.replace(/<h6[^>]*>(.*?)<\/h6>/g, '###### $1');
-    
-    // Convert HTML spans to markdown syntax
-    markdown = markdown.replace(/<span class="markdown-bold">(.*?)<\/span>/g, '**$1**');
-    markdown = markdown.replace(/<span class="markdown-italic">(.*?)<\/span>/g, '*$1*');
-    markdown = markdown.replace(/<span class="markdown-underline">(.*?)<\/span>/g, '__$1__');
-    
-    // Clean up any remaining HTML tags
-    markdown = markdown.replace(/<[^>]*>/g, '');
-    
-    return markdown;
-  }
 </script>
 
 <div class="text-node-container" role="textbox" tabindex="0" on:keydown={handleTextNodeKeyDown}>
@@ -196,10 +199,12 @@
     splitContentOnEnter={true}
     multiline={true}
     className={nodeClassName}
+    {canBeCombined}
     on:createNewNode={handleCreateNewNode}
     on:contentChanged={(e) => handleContentChange(e.detail.content)}
     on:indentNode={(e) => dispatch('indentNode', e.detail)}
     on:outdentNode={(e) => dispatch('outdentNode', e.detail)}
+    on:navigateArrow={(e) => dispatch('navigateArrow', e.detail)}
   />
 </div>
 
