@@ -39,7 +39,13 @@ export default [
         Event: 'readonly',
         InputEvent: 'readonly',
         HTMLSpanElement: 'readonly',
-        NodeJS: 'readonly'
+        NodeJS: 'readonly',
+        Element: 'readonly',
+        Text: 'readonly',
+        Node: 'readonly',
+        Selection: 'readonly',
+        Range: 'readonly',
+        NodeFilter: 'readonly'
       }
     },
     plugins: {
@@ -86,7 +92,13 @@ export default [
         Event: 'readonly',
         InputEvent: 'readonly',
         HTMLSpanElement: 'readonly',
-        NodeJS: 'readonly'
+        NodeJS: 'readonly',
+        Element: 'readonly',
+        Text: 'readonly',
+        Node: 'readonly',
+        Selection: 'readonly',
+        Range: 'readonly',
+        NodeFilter: 'readonly'
       }
     },
     plugins: {

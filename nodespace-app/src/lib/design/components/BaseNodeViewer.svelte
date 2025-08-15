@@ -330,9 +330,10 @@
       null
     );
     
-    let node;
-    while (node = walker.nextNode()) {
+    let node = walker.nextNode();
+    while (node) {
       textNodes.push(node as Text);
+      node = walker.nextNode();
     }
     
     return textNodes;

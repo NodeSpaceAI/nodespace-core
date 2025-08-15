@@ -5,7 +5,7 @@
  * to ContentEditable elements in real-time.
  */
 
-import type { MarkdownPattern, PatternDetectionResult } from '$lib/types/markdownPatterns';
+import type { MarkdownPattern, WYSIWYGTransformation } from '$lib/types/markdownPatterns';
 import { WYSIWYG_TRANSFORMATIONS } from '$lib/types/markdownPatterns';
 
 export interface WYSIWYGProcessedResult {
@@ -115,7 +115,7 @@ export class WYSIWYGProcessor {
   /**
    * Create styled content without syntax markers
    */
-  private createStyledContent(pattern: MarkdownPattern, transformation: any): string {
+  private createStyledContent(pattern: MarkdownPattern, transformation: WYSIWYGTransformation): string {
     const escapedContent = this.escapeHtml(pattern.content);
     
     if (transformation.htmlTag) {

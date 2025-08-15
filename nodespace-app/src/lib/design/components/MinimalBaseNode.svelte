@@ -175,9 +175,10 @@
       null
     );
     
-    let node;
-    while (node = walker.nextNode()) {
+    let node = walker.nextNode();
+    while (node) {
       textNodes.push(node as Text);
+      node = walker.nextNode();
     }
     
     return textNodes;
@@ -193,8 +194,6 @@
     if (!selection || selection.rangeCount === 0) {
       return { currentNodeHtml: '', newNodeHtml: '' };
     }
-
-    const range = selection.getRangeAt(0);
     
     // Create a temporary container to work with ranges
     const tempDiv = document.createElement('div');
@@ -214,8 +213,8 @@
       null
     );
     
-    let textNode;
-    while (textNode = walker.nextNode()) {
+    let textNode = walker.nextNode();
+    while (textNode) {
       const nodeLength = textNode.textContent?.length || 0;
       if (currentOffset + nodeLength >= cursorOffset) {
         splitNode = textNode;
@@ -223,6 +222,7 @@
         break;
       }
       currentOffset += nodeLength;
+      textNode = walker.nextNode();
     }
     
     if (!splitNode) {
@@ -240,7 +240,7 @@
     afterDiv.appendChild(afterContent);
     
     // The remaining content is the "before"
-    let beforeHtml = tempDiv.innerHTML;
+    const beforeHtml = tempDiv.innerHTML;
     let afterHtml = afterDiv.innerHTML;
     
     // Special handling for headers - if splitting within a header, remove header from new node
@@ -550,7 +550,6 @@
   function handleInput(event: Event & { currentTarget: HTMLDivElement }) {
     // Regular content update
     const htmlContent = event.currentTarget.innerHTML || '';
-    const textContent = event.currentTarget.textContent || '';
     const markdownContent = htmlToMarkdown(htmlContent);
     
     // Only update if content actually changed to avoid reactive loops
