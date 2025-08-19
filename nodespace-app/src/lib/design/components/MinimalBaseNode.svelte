@@ -756,6 +756,15 @@
       // If not allowed, Enter key is consumed but nothing happens
     }
   }
+
+  // Handle focus/blur events for dual-representation
+  function handleFocus() {
+    dispatch('focus');
+  }
+
+  function handleBlur() {
+    dispatch('blur');
+  }
 </script>
 
 <div class="ns-node-container {className}">
@@ -773,6 +782,8 @@
     tabindex="0"
     on:input={handleInput}
     on:keydown={handleKeyDown}
+    on:focus={handleFocus}
+    on:blur={handleBlur}
     class="ns-node-content markdown-editor text-foreground {multiline
       ? 'ns-node-content--multiline markdown-editor--multiline'
       : 'ns-node-content--singleline markdown-editor--singleline'}"
