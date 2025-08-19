@@ -16,10 +16,14 @@
 
   function getThemeIcon(theme: string): string {
     switch (theme) {
-      case 'light': return '☀️';
-      case 'dark': return '🌙';
-      case 'system': return '🖥️';
-      default: return '🖥️';
+      case 'light':
+        return '☀️';
+      case 'dark':
+        return '🌙';
+      case 'system':
+        return '🖥️';
+      default:
+        return '🖥️';
     }
   }
 </script>
@@ -28,12 +32,9 @@
   <main class="minimal-app">
     <header class="app-header">
       <h1>NodeSpace Demo</h1>
-      <button
-        class="theme-toggle"
-        onclick={toggleTheme}
-        title="Toggle theme ({$themePreference})"
-      >
-        {getThemeIcon($themePreference)} {$themePreference}
+      <button class="theme-toggle" onclick={toggleTheme} title="Toggle theme ({$themePreference})">
+        {getThemeIcon($themePreference)}
+        {$themePreference}
       </button>
     </header>
 

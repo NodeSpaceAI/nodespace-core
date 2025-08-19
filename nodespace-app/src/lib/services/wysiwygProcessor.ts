@@ -1,6 +1,6 @@
 /**
  * WYSIWYG Processing Service
- * 
+ *
  * Handles hiding markdown syntax and applying visual formatting
  * to ContentEditable elements in real-time.
  */
@@ -38,7 +38,7 @@ export class WYSIWYGProcessor {
 
     // Sort patterns by start position (reverse order for proper replacement)
     const sortedPatterns = [...patterns].sort((a, b) => b.start - a.start);
-    
+
     let processedContent = content;
     const appliedTransformations: string[] = [];
 
@@ -48,11 +48,11 @@ export class WYSIWYGProcessor {
       if (transformation && transformation.hideMarkup) {
         const before = processedContent.substring(0, pattern.start);
         const after = processedContent.substring(pattern.end);
-        
+
         // Create styled content without syntax markers
         const styledContent = this.createStyledContent(pattern, transformation);
         processedContent = before + styledContent + after;
-        
+
         appliedTransformations.push(`${pattern.type}${pattern.level ? `-${pattern.level}` : ''}`);
       }
     }
@@ -67,18 +67,24 @@ export class WYSIWYGProcessor {
   /**
    * Apply WYSIWYG styling to ContentEditable element
    */
-  public applyToContentEditable(element: HTMLElement, content: string, patterns: MarkdownPattern[]): void {
+  public applyToContentEditable(
+    element: HTMLElement,
+    content: string,
+    patterns: MarkdownPattern[]
+  ): void {
     const result = this.processForDisplay(content, patterns);
-    
+
     // Store raw content for later retrieval
     element.dataset.rawContent = result.rawContent;
     element.innerHTML = result.htmlContent;
-    
+
     // Add CSS classes for styling
     element.classList.remove(...this.getAllTransformationClasses());
-    
+
     if (patterns.length > 0) {
-      const blockPattern = patterns.find(p => ['header', 'blockquote', 'codeblock'].includes(p.type));
+      const blockPattern = patterns.find((p) =>
+        ['header', 'blockquote', 'codeblock'].includes(p.type)
+      );
       if (blockPattern) {
         const transformation = this.getTransformationForPattern(blockPattern);
         if (transformation) {
@@ -97,7 +103,7 @@ export class WYSIWYGProcessor {
     if (storedRaw) {
       return storedRaw;
     }
-    
+
     // Fallback: extract from current content (less reliable)
     return element.textContent || '';
   }
@@ -115,9 +121,12 @@ export class WYSIWYGProcessor {
   /**
    * Create styled content without syntax markers
    */
-  private createStyledContent(pattern: MarkdownPattern, transformation: WYSIWYGTransformation): string {
+  private createStyledContent(
+    pattern: MarkdownPattern,
+    transformation: WYSIWYGTransformation
+  ): string {
     const escapedContent = this.escapeHtml(pattern.content);
-    
+
     if (transformation.htmlTag) {
       return `<${transformation.htmlTag} class="${transformation.cssClass}">${escapedContent}</${transformation.htmlTag}>`;
     } else {
@@ -129,7 +138,7 @@ export class WYSIWYGProcessor {
    * Get all CSS classes used by transformations
    */
   private getAllTransformationClasses(): string[] {
-    return Object.values(WYSIWYG_TRANSFORMATIONS).map(t => t.cssClass);
+    return Object.values(WYSIWYG_TRANSFORMATIONS).map((t) => t.cssClass);
   }
 
   /**
@@ -145,7 +154,7 @@ export class WYSIWYGProcessor {
    * Check if element currently has WYSIWYG formatting applied
    */
   public hasWYSIWYGFormatting(element: HTMLElement): boolean {
-    return this.getAllTransformationClasses().some(className => 
+    return this.getAllTransformationClasses().some((className) =>
       element.classList.contains(className)
     );
   }

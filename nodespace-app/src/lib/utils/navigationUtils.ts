@@ -20,18 +20,18 @@ export interface NavigationState {
  */
 export function getVisibleNodes(nodes: NavigableNode[]): NavigableNode[] {
   const visible: NavigableNode[] = [];
-  
+
   function visitRecursive(nodeList: NavigableNode[]) {
     for (const node of nodeList) {
       visible.push(node);
-      
+
       // Only recurse into children if node is expanded (or expanded is undefined)
       if (node.children.length > 0 && (node.expanded === undefined || node.expanded === true)) {
         visitRecursive(node.children);
       }
     }
   }
-  
+
   visitRecursive(nodes);
   return visible;
 }
@@ -44,13 +44,13 @@ export function findNodeById(nodes: NavigableNode[], nodeId: string): NavigableN
     if (node.id === nodeId) {
       return node;
     }
-    
+
     if (node.children.length > 0) {
       const found = findNodeById(node.children, nodeId);
       if (found) return found;
     }
   }
-  
+
   return null;
 }
 
@@ -63,7 +63,7 @@ export function getNodeDepth(nodes: NavigableNode[], nodeId: string): number {
       if (node.id === nodeId) {
         return currentDepth;
       }
-      
+
       if (node.children.length > 0) {
         const foundDepth = searchWithDepth(node.children, currentDepth + 1);
         if (foundDepth !== null) return foundDepth;
@@ -71,7 +71,7 @@ export function getNodeDepth(nodes: NavigableNode[], nodeId: string): number {
     }
     return null;
   }
-  
+
   return searchWithDepth(nodes, 0) || 0;
 }
 
@@ -86,11 +86,11 @@ export function calculateVisualCursorPosition(
   targetDepth: number
 ): number {
   const lines = content.split('\n');
-  
+
   // Simple adjustment: each depth level = 2 spaces visual difference
   const depthDiff = targetDepth - currentDepth;
-  let adjustedColumn = Math.max(0, columnInCurrentLine - (depthDiff * 2));
-  
+  let adjustedColumn = Math.max(0, columnInCurrentLine - depthDiff * 2);
+
   if (isUpArrow) {
     // Up: position in last line
     const lastLine = lines[lines.length - 1];
@@ -136,9 +136,9 @@ export function isAtNodeBoundary(
   const currentLineIndex = textBeforeCursor.split('\n').length - 1;
   const currentLineStartIndex = textBeforeCursor.lastIndexOf('\n') + 1;
   const columnInCurrentLine = cursorPosition - currentLineStartIndex;
-  
+
   let isAtBoundary = false;
-  
+
   if (isUpArrow) {
     // For up arrow: at boundary if cursor is in first line
     isAtBoundary = currentLineIndex === 0;
@@ -146,7 +146,7 @@ export function isAtNodeBoundary(
     // For down arrow: at boundary if cursor is in last line
     isAtBoundary = currentLineIndex === lines.length - 1;
   }
-  
+
   return {
     isAtBoundary,
     currentLineIndex,
@@ -163,16 +163,16 @@ export function getTargetNode(
   direction: 'up' | 'down'
 ): NavigableNode | null {
   const visibleNodes = getVisibleNodes(nodes);
-  const currentIndex = visibleNodes.findIndex(n => n.id === currentNodeId);
-  
+  const currentIndex = visibleNodes.findIndex((n) => n.id === currentNodeId);
+
   if (currentIndex === -1) return null;
-  
+
   const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
-  
+
   if (targetIndex >= 0 && targetIndex < visibleNodes.length) {
     return visibleNodes[targetIndex];
   }
-  
+
   return null;
 }
 
@@ -192,13 +192,13 @@ export function getNavigationContext(
   prevSibling: NavigableNode | null;
 } {
   function searchWithContext(
-    nodeList: NavigableNode[], 
-    parent: NavigableNode | null = null, 
+    nodeList: NavigableNode[],
+    parent: NavigableNode | null = null,
     depth: number = 0
   ): typeof result | null {
     for (let i = 0; i < nodeList.length; i++) {
       const node = nodeList[i];
-      
+
       if (node.id === currentNodeId) {
         return {
           currentNode: node,
@@ -210,7 +210,7 @@ export function getNavigationContext(
           prevSibling: i > 0 ? nodeList[i - 1] : null
         };
       }
-      
+
       if (node.children.length > 0) {
         const found = searchWithContext(node.children, node, depth + 1);
         if (found) return found;
@@ -218,7 +218,7 @@ export function getNavigationContext(
     }
     return null;
   }
-  
+
   const result = {
     currentNode: null as NavigableNode | null,
     parent: null as NavigableNode | null,
@@ -228,7 +228,7 @@ export function getNavigationContext(
     nextSibling: null as NavigableNode | null,
     prevSibling: null as NavigableNode | null
   };
-  
+
   return searchWithContext(nodes) || result;
 }
 

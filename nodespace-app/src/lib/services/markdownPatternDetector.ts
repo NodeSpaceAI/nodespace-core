@@ -1,11 +1,15 @@
 /**
  * Markdown Pattern Detection Service
- * 
+ *
  * Detects markdown patterns in real-time as users type in ContentEditable elements.
  * Supports 4 block types and 3 inline types as defined in the architecture.
  */
 
-import type { MarkdownPattern, PatternDetectionResult, MarkdownPatternType } from '$lib/types/markdownPatterns';
+import type {
+  MarkdownPattern,
+  PatternDetectionResult,
+  MarkdownPatternType
+} from '$lib/types/markdownPatterns';
 
 export class MarkdownPatternDetector {
   private static instance: MarkdownPatternDetector;
@@ -123,7 +127,7 @@ export class MarkdownPatternDetector {
 
       while ((match = regex.exec(content)) !== null) {
         const processed = pattern.processor(match);
-        
+
         patterns.push({
           type: pattern.type,
           level: processed.level,
@@ -142,7 +146,10 @@ export class MarkdownPatternDetector {
   /**
    * Detect inline patterns (bold, italic, code)
    */
-  private detectInlinePatterns(content: string, blockPatterns: MarkdownPattern[]): MarkdownPattern[] {
+  private detectInlinePatterns(
+    content: string,
+    blockPatterns: MarkdownPattern[]
+  ): MarkdownPattern[] {
     const patterns: MarkdownPattern[] = [];
 
     for (const pattern of this.inlinePatterns) {
@@ -151,12 +158,14 @@ export class MarkdownPatternDetector {
 
       while ((match = regex.exec(content)) !== null) {
         // Skip if this area is already covered by a block pattern
-        if (this.isOverlappingWithBlocks(match.index, match.index + match[0].length, blockPatterns)) {
+        if (
+          this.isOverlappingWithBlocks(match.index, match.index + match[0].length, blockPatterns)
+        ) {
           continue;
         }
 
         const processed = pattern.processor(match);
-        
+
         patterns.push({
           type: pattern.type,
           start: match.index,
@@ -174,8 +183,12 @@ export class MarkdownPatternDetector {
   /**
    * Check if inline pattern overlaps with existing block patterns
    */
-  private isOverlappingWithBlocks(start: number, end: number, blockPatterns: MarkdownPattern[]): boolean {
-    return blockPatterns.some(block => {
+  private isOverlappingWithBlocks(
+    start: number,
+    end: number,
+    blockPatterns: MarkdownPattern[]
+  ): boolean {
+    return blockPatterns.some((block) => {
       // Check for any overlap
       return start < block.end && end > block.start;
     });
@@ -186,17 +199,20 @@ export class MarkdownPatternDetector {
    */
   public getPatternsAtPosition(content: string, position: number): MarkdownPattern[] {
     const result = this.detectPatterns(content);
-    return result.patterns.filter(pattern => 
-      position >= pattern.start && position <= pattern.end
+    return result.patterns.filter(
+      (pattern) => position >= pattern.start && position <= pattern.end
     );
   }
 
   /**
    * Check if content starts with a specific pattern type
    */
-  public startsWithPattern(content: string, patternType: MarkdownPatternType): MarkdownPattern | null {
+  public startsWithPattern(
+    content: string,
+    patternType: MarkdownPatternType
+  ): MarkdownPattern | null {
     const result = this.detectPatterns(content);
-    const firstPattern = result.patterns.find(p => p.start === 0 && p.type === patternType);
+    const firstPattern = result.patterns.find((p) => p.start === 0 && p.type === patternType);
     return firstPattern || null;
   }
 }

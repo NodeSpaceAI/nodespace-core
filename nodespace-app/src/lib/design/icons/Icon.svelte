@@ -26,7 +26,6 @@
   // Get the SVG path for the specified icon
   $: iconPath = iconRegistry[name];
 
-
   // Validate that the icon exists
   $: if (!iconPath) {
     console.warn(`Icon "${name}" not found in registry`);
@@ -43,7 +42,9 @@
 <svg
   width={size}
   height={size}
-  viewBox="{name === 'circle' || name === 'circle-ring' || name === 'chevron-right' ? '0 0 16 16' : '0 -960 960 960'}"
+  viewBox={name === 'circle' || name === 'circle-ring' || name === 'chevron-right'
+    ? '0 0 16 16'
+    : '0 -960 960 960'}
   fill={color}
   class={`ns-icon ns-icon--${name} ${className}`}
   role="img"
