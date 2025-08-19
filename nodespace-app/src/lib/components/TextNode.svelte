@@ -20,6 +20,9 @@
 
   // Header state for CSS styling - initialize with inherited level
   let headerLevel: number = inheritHeaderLevel;
+  
+  // Logseq-style editing state - track if this node is focused for dual-representation
+  let isEditing: boolean = autoFocus;
 
   // Sync internalContent when content prop changes (reactive to parent updates)
   $: internalContent = content;
@@ -29,15 +32,13 @@
     const detectedHeaderLevel = contentProcessor.parseHeaderLevel(internalContent);
     if (detectedHeaderLevel > 0) {
       headerLevel = detectedHeaderLevel;
-      displayContent = contentProcessor.stripHeaderSyntax(internalContent);
     } else {
       headerLevel = inheritHeaderLevel;
-      displayContent = internalContent;
     }
   }
 
-  // Content to display (without markdown header syntax)
-  let displayContent: string = internalContent;
+  // Logseq-style dual-representation: show raw markdown when editing, clean text when not
+  $: contentToShow = isEditing ? internalContent : (headerLevel > 0 ? contentProcessor.stripHeaderSyntax(internalContent) : internalContent);
   let baseNodeRef: any;
 
   // Expose navigation methods from MinimalBaseNode
@@ -130,11 +131,9 @@
     }
 
     // If we have a header level, store with markdown header syntax
-    // But also update displayContent for immediate UI feedback
     const finalContent =
       headerLevel > 0 ? `${'#'.repeat(headerLevel)} ${sanitizedContent}` : sanitizedContent;
     internalContent = finalContent;
-    displayContent = sanitizedContent; // Update display without # symbols
     dispatch('contentChanged', { nodeId, content: finalContent });
   }
 
@@ -239,6 +238,15 @@
       }
     }
   }
+
+  // Handle focus events for Logseq-style dual-representation
+  function handleFocus() {
+    isEditing = true;
+  }
+
+  function handleBlur() {
+    isEditing = false;
+  }
 </script>
 
 <div class="text-node-container" role="textbox" tabindex="0">
@@ -247,7 +255,7 @@
     {nodeId}
     nodeType="text"
     {autoFocus}
-    content={displayContent}
+    content={contentToShow}
     {children}
     allowNewNodeOnEnter={true}
     splitContentOnEnter={true}
@@ -263,6 +271,8 @@
     on:combineWithPrevious={(e) => dispatch('combineWithPrevious', e.detail)}
     on:deleteNode={(e) => dispatch('deleteNode', e.detail)}
     on:keydown={handleTextNodeKeyDown}
+    on:focus={handleFocus}
+    on:blur={handleBlur}
   />
 </div>
 
