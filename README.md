@@ -141,7 +141,8 @@ Comprehensive architecture documentation is organized in the `docs/architecture/
 - [Data Flow](docs/architecture/core/data-flow.md) - Information flow through the system
 
 ### 🔧 **Components**
-- [ContentEditable Implementation](docs/architecture/components/contenteditable-implementation.md) - ✅ **Current implementation** of MinimalBaseNode, TextNode, and markdown support
+- [Enhanced ContentEditable Architecture](docs/architecture/components/contenteditable-implementation.md) - 🔄 **In Progress** - Logseq-inspired dual-representation with preserved hierarchical indicators
+- [Text Editor Architecture Refactor](docs/architecture/decisions/2025-01-text-editor-architecture-refactor.md) - ✅ **Current Plan** - Complete enhanced contenteditable architecture with backlinking
 - [Entity Management](docs/architecture/components/entity-management.md) - Structured data with calculated fields
 - [AI Integration](docs/architecture/components/ai-integration.md) - Natural language processing and RAG
 - [Validation System](docs/architecture/components/validation-system.md) - Business rules and validation
@@ -155,11 +156,13 @@ Comprehensive architecture documentation is organized in the `docs/architecture/
 ### 🚀 **Deployment**
 - [Development Setup](docs/architecture/deployment/development-setup.md) - Local development environment
 - [Testing Strategies](docs/architecture/deployment/testing-strategies.md) - Comprehensive testing approach
-- [Production Deployment](docs/architecture/deployment/production-deployment.md) - Production considerations
+
+### 📋 **Architecture Decisions**
+- [Enhanced ContentEditable Pivot](docs/architecture/decisions/2025-01-contenteditable-pivot.md) - Research findings and architecture pivot decision
+- [Text Editor Architecture Refactor](docs/architecture/decisions/2025-01-text-editor-architecture-refactor.md) - Complete implementation plan with Logseq patterns
 
 ### 💡 **Design Decisions**
 - [Why Rust + Svelte](docs/architecture/design-decisions/why-rust-svelte.md) - Technology choice rationale
-- [Build-Time Plugins](docs/architecture/design-decisions/why-build-time-plugins.md) - Plugin architecture decisions
 - [AI Architecture](docs/architecture/design-decisions/ai-architecture-choices.md) - AI backend strategy
 - [Post-MVP Roadmap](docs/architecture/design-decisions/post-mvp-roadmap.md) - Future enhancement plans
 
@@ -296,16 +299,14 @@ When creating new node types:
 
 ## Roadmap
 
-### Current Phase: MVP Development
-- ✅ **ContentEditable Foundation**: MinimalBaseNode architecture with TextNode specialization
-- ✅ **Markdown Support**: Headers (H1-H6), bold, italic, underline with multiline support
-- ✅ **Header Features**: CSS-based styling, inheritance, content preservation, single-line enforcement
-- ✅ **Node Management**: Creation, focus handling, reactive state management
-- 🚧 **Parent/Child Relationships**: Hierarchical node structure (next priority)
-- 🚧 **Additional Markdown**: Lists, blockquotes, code spans, links
-- 🚧 **AI Integration**: Natural language processing integration
-- 🚧 **Entity Management**: Structured data with calculated fields
-- 🚧 **Plugin Architecture**: Build-time extensibility system
+### Current Phase: Enhanced ContentEditable Architecture
+- ✅ **Architecture Research**: Comprehensive Logseq analysis and ProseMirror evaluation completed
+- ✅ **Architecture Decision**: Enhanced contenteditable approach with dual-representation patterns
+- ✅ **GitHub Issues Updated**: 4-phase implementation roadmap with 10 issues created/updated
+- 🚧 **Phase 1**: Enhanced Service Layer (ContentProcessor, NodeManager, Core Logic Migration, BacklinkService, EventBus)
+- 🚧 **Phase 2**: Backlinking Foundation (Link graph, real-time detection, decorations, navigation)
+- 🚧 **Phase 3**: Rich Decorations & Context (Node type decorations, multi-level embeddings, performance optimization)
+- 🚧 **Phase 4**: AI Integration Preparation (Extension points, smart suggestions, collaboration readiness)
 
 ### Post-MVP: Enterprise Features
 See [Post-MVP Roadmap](docs/architecture/design-decisions/post-mvp-roadmap.md) for detailed plans including:
