@@ -3,6 +3,7 @@ import ts from '@typescript-eslint/eslint-plugin';
 import tsParser from '@typescript-eslint/parser';
 import svelte from 'eslint-plugin-svelte';
 import svelteParser from 'svelte-eslint-parser';
+import oxlint from 'eslint-plugin-oxlint';
 
 export default [
   js.configs.recommended,
@@ -17,6 +18,7 @@ export default [
       globals: {
         console: 'readonly',
         window: 'readonly',
+        Window: 'readonly',
         document: 'readonly',
         localStorage: 'readonly',
         MediaQueryListEvent: 'readonly',
@@ -49,11 +51,47 @@ export default [
       }
     },
     plugins: {
-      '@typescript-eslint': ts
+      '@typescript-eslint': ts,
+      oxlint
     },
     rules: {
+      ...oxlint.configs.recommended.rules,
       ...ts.configs.recommended.rules,
       // Customize rules as needed
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-explicit-any': 'warn',
+      'no-console': process.env.NODE_ENV === 'production' ? 'error' : 'off'
+    }
+  },
+  {
+    files: ['**/*.svelte.ts'],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        ecmaVersion: 2022,
+        sourceType: 'module'
+      },
+      globals: {
+        console: 'readonly',
+        window: 'readonly',
+        Window: 'readonly',
+        document: 'readonly',
+        localStorage: 'readonly',
+        $state: 'readonly',
+        $derived: 'readonly',
+        $effect: 'readonly',
+        $props: 'readonly',
+        $bindable: 'readonly',
+        $inspect: 'readonly'
+      }
+    },
+    plugins: {
+      '@typescript-eslint': ts,
+      oxlint
+    },
+    rules: {
+      ...oxlint.configs.recommended.rules,
+      ...ts.configs.recommended.rules,
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
       'no-console': process.env.NODE_ENV === 'production' ? 'error' : 'off'
@@ -70,6 +108,7 @@ export default [
       globals: {
         console: 'readonly',
         window: 'readonly',
+        Window: 'readonly',
         document: 'readonly',
         localStorage: 'readonly',
         MediaQueryListEvent: 'readonly',

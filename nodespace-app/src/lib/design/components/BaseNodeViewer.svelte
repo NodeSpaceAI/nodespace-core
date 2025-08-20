@@ -7,300 +7,38 @@
   import TextNode from '$lib/components/TextNode.svelte';
   import Icon from '$lib/design/icons';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
-  import { v4 as uuidv4 } from 'uuid';
+  import { ReactiveNodeManager } from '$lib/services/ReactiveNodeManager.svelte';
+  import { type NodeManagerEvents } from '$lib/services/NodeManager';
+  import { demoNodes } from './DemoData';
 
-  // Comprehensive test data for collapse/expand with formatting and deep nesting
-  let nodes = $state([
-    {
-      id: uuidv4(),
-      type: 'text',
-      autoFocus: false,
-      content: '# Main Project Overview',
-      inheritHeaderLevel: 1,
-      children: [
-        {
-          id: uuidv4(),
-          type: 'text',
-          autoFocus: false,
-          content: '## Features with **bold** and *italic* text',
-          inheritHeaderLevel: 2,
-          children: [
-            {
-              id: uuidv4(),
-              type: 'text',
-              autoFocus: false,
-              content: 'User authentication with __underlined__ security',
-              inheritHeaderLevel: 0,
-              children: [],
-              expanded: true
-            },
-            {
-              id: uuidv4(),
-              type: 'text',
-              autoFocus: false,
-              content: 'Database operations',
-              inheritHeaderLevel: 0,
-              children: [
-                {
-                  id: uuidv4(),
-                  type: 'text',
-                  autoFocus: false,
-                  content: 'CRUD operations with **optimized** queries',
-                  inheritHeaderLevel: 0,
-                  children: [],
-                  expanded: true
-                },
-                {
-                  id: uuidv4(),
-                  type: 'text',
-                  autoFocus: false,
-                  content: 'Data validation and *error handling*',
-                  inheritHeaderLevel: 0,
-                  children: [],
-                  expanded: true
-                },
-                {
-                  id: uuidv4(),
-                  type: 'text',
-                  autoFocus: false,
-                  content: 'Advanced features',
-                  inheritHeaderLevel: 0,
-                  children: [
-                    {
-                      id: uuidv4(),
-                      type: 'text',
-                      autoFocus: false,
-                      content: 'Real-time updates via __WebSocket__',
-                      inheritHeaderLevel: 0,
-                      children: [],
-                      expanded: true
-                    },
-                    {
-                      id: uuidv4(),
-                      type: 'text',
-                      autoFocus: false,
-                      content: 'Caching with **Redis** integration',
-                      inheritHeaderLevel: 0,
-                      children: [],
-                      expanded: true
-                    }
-                  ],
-                  expanded: true
-                }
-              ],
-              expanded: true
-            },
-            {
-              id: uuidv4(),
-              type: 'text',
-              autoFocus: false,
-              content: 'API endpoints with *RESTful* design',
-              inheritHeaderLevel: 0,
-              children: [],
-              expanded: true
-            }
-          ],
-          expanded: true
-        },
-        {
-          id: uuidv4(),
-          type: 'text',
-          autoFocus: false,
-          content: '## Testing Strategy (collapsed)',
-          inheritHeaderLevel: 2,
-          children: [
-            {
-              id: uuidv4(),
-              type: 'text',
-              autoFocus: false,
-              content: 'Unit tests with **Jest** framework',
-              inheritHeaderLevel: 0,
-              children: [],
-              expanded: true
-            },
-            {
-              id: uuidv4(),
-              type: 'text',
-              autoFocus: false,
-              content: 'Integration tests for *API endpoints*',
-              inheritHeaderLevel: 0,
-              children: [],
-              expanded: true
-            },
-            {
-              id: uuidv4(),
-              type: 'text',
-              autoFocus: false,
-              content: 'E2E testing',
-              inheritHeaderLevel: 0,
-              children: [
-                {
-                  id: uuidv4(),
-                  type: 'text',
-                  autoFocus: false,
-                  content: 'Playwright for __browser automation__',
-                  inheritHeaderLevel: 0,
-                  children: [],
-                  expanded: true
-                },
-                {
-                  id: uuidv4(),
-                  type: 'text',
-                  autoFocus: false,
-                  content: 'Visual regression with **Chromatic**',
-                  inheritHeaderLevel: 0,
-                  children: [],
-                  expanded: true
-                }
-              ],
-              expanded: true
-            }
-          ],
-          expanded: false
+  // Demo data imported from external file
+
+  // NodeManager setup with event callbacks
+  const nodeManagerEvents: NodeManagerEvents = {
+    focusRequested: (nodeId: string, position?: number) => {
+      const element = document.getElementById(`contenteditable-${nodeId}`);
+      if (element) {
+        element.focus();
+        if (position !== undefined) {
+          setCursorAtPosition(element, position);
         }
-      ],
-      expanded: true
+      }
     },
-    {
-      id: uuidv4(),
-      type: 'text',
-      autoFocus: false,
-      content: '### Development Notes',
-      inheritHeaderLevel: 3,
-      children: [
-        {
-          id: uuidv4(),
-          type: 'text',
-          autoFocus: false,
-          content: 'Use **TypeScript** for type safety',
-          inheritHeaderLevel: 0,
-          children: [],
-          expanded: true
-        },
-        {
-          id: uuidv4(),
-          type: 'text',
-          autoFocus: false,
-          content: 'Follow *ESLint* and __Prettier__ conventions',
-          inheritHeaderLevel: 0,
-          children: [],
-          expanded: true
-        },
-        {
-          id: uuidv4(),
-          type: 'text',
-          autoFocus: false,
-          content: 'Git workflow',
-          inheritHeaderLevel: 0,
-          children: [
-            {
-              id: uuidv4(),
-              type: 'text',
-              autoFocus: false,
-              content: 'Feature branches with **descriptive** names',
-              inheritHeaderLevel: 0,
-              children: [],
-              expanded: true
-            },
-            {
-              id: uuidv4(),
-              type: 'text',
-              autoFocus: false,
-              content: 'Pull requests with *code review*',
-              inheritHeaderLevel: 0,
-              children: [],
-              expanded: true
-            },
-            {
-              id: uuidv4(),
-              type: 'text',
-              autoFocus: false,
-              content: 'Automated CI/CD with __GitHub Actions__',
-              inheritHeaderLevel: 0,
-              children: [],
-              expanded: true
-            }
-          ],
-          expanded: true
-        }
-      ],
-      expanded: true
+    hierarchyChanged: () => {
+      // Reactivity is handled automatically by Svelte 5 $state
     },
-    {
-      id: uuidv4(),
-      type: 'text',
-      autoFocus: false,
-      content: 'Deployment (collapsed branch)',
-      inheritHeaderLevel: 0,
-      children: [
-        {
-          id: uuidv4(),
-          type: 'text',
-          autoFocus: false,
-          content: '**Production** environment setup',
-          inheritHeaderLevel: 0,
-          children: [],
-          expanded: true
-        },
-        {
-          id: uuidv4(),
-          type: 'text',
-          autoFocus: false,
-          content: 'Staging environment',
-          inheritHeaderLevel: 0,
-          children: [
-            {
-              id: uuidv4(),
-              type: 'text',
-              autoFocus: false,
-              content: 'Mirror of *production* with test data',
-              inheritHeaderLevel: 0,
-              children: [],
-              expanded: true
-            },
-            {
-              id: uuidv4(),
-              type: 'text',
-              autoFocus: false,
-              content: 'Automated deployment from __main branch__',
-              inheritHeaderLevel: 0,
-              children: [],
-              expanded: true
-            }
-          ],
-          expanded: true
-        },
-        {
-          id: uuidv4(),
-          type: 'text',
-          autoFocus: false,
-          content: 'Monitoring and *alerting* systems',
-          inheritHeaderLevel: 0,
-          children: [],
-          expanded: true
-        }
-      ],
-      expanded: false
+    nodeCreated: () => {
+      // Additional logic for node creation if needed
     },
-    {
-      id: uuidv4(),
-      type: 'text',
-      autoFocus: false,
-      content: 'Simple leaf node with **formatting**',
-      inheritHeaderLevel: 0,
-      children: [],
-      expanded: true
-    },
-    {
-      id: uuidv4(),
-      type: 'text',
-      autoFocus: false,
-      content: 'Another leaf with *italics* and __underline__',
-      inheritHeaderLevel: 0,
-      children: [],
-      expanded: true
+    nodeDeleted: () => {
+      // Additional logic for node deletion if needed
     }
-  ]);
+  };
+
+  const nodeManager = new ReactiveNodeManager(nodeManagerEvents);
+
+  // Initialize NodeManager with demo data
+  nodeManager.initializeFromLegacyData(demoNodes);
 
   // Handle creating new nodes when Enter is pressed
   function handleCreateNewNode(
@@ -312,77 +50,22 @@
       inheritHeaderLevel?: number;
     }>
   ) {
-    const { afterNodeId, nodeType, currentContent, newContent, inheritHeaderLevel } = event.detail;
+    const { afterNodeId, nodeType, currentContent, newContent } = event.detail;
 
-    // Find the node and its parent recursively
-    function findNodeLocation(
-      nodesList: any[],
-      targetId: string,
-      parent: any = null,
-      parentChildren: any[] | null = null
-    ): { node: any; index: number; parent: any; parentChildren: any[] } | null {
-      for (let i = 0; i < nodesList.length; i++) {
-        const node = nodesList[i];
-        if (node.id === targetId) {
-          return { node, index: i, parent, parentChildren: parentChildren || nodesList };
-        }
-
-        if (node.children && node.children.length > 0) {
-          const result = findNodeLocation(node.children, targetId, node, node.children);
-          if (result) return result;
-        }
-      }
-      return null;
+    // Update current node content if provided
+    if (currentContent !== undefined) {
+      nodeManager.updateNodeContent(afterNodeId, currentContent);
     }
 
-    const nodeLocation = findNodeLocation(nodes, afterNodeId);
+    // Create new node using NodeManager
+    const newNodeId = nodeManager.createNode(afterNodeId, newContent || '', nodeType);
 
-    if (nodeLocation) {
-      const { node, index, parentChildren } = nodeLocation;
-
-      // First, set all existing nodes to not auto-focus recursively
-      function clearAutoFocus(nodesList: any[]) {
-        nodesList.forEach((n) => {
-          n.autoFocus = false;
-          if (n.children) clearAutoFocus(n.children);
-        });
-      }
-      clearAutoFocus(nodes);
-
-      // Update current node content if split content is provided
-      if (currentContent !== undefined) {
-        node.content = currentContent;
-      }
-
-      // Create new node with UUID, auto-focus, and header inheritance
-      const newNode = {
-        id: uuidv4(),
-        type: nodeType,
-        autoFocus: true,
-        content: newContent || '', // Use split content or empty string
-        inheritHeaderLevel: inheritHeaderLevel || 0, // Inherit header level from parent
-        children: [], // Initialize with empty children array
-        expanded: true // New nodes are expanded by default
-      };
-
-      // Insert new node after the current one in the appropriate array
-      parentChildren.splice(index + 1, 0, newNode);
-      nodes = [...nodes]; // Trigger reactivity
-
-      // If new content contains HTML formatting, convert to markdown after a tick
-      if (newContent && newContent.includes('<span class="markdown-')) {
-        setTimeout(() => {
-          // Convert HTML content to markdown for storage
-          const markdownContent = htmlToMarkdown(newContent);
-          const nodeIndex = nodes.findIndex((n) => n.id === newNode.id);
-          if (nodeIndex !== -1) {
-            nodes[nodeIndex].content = markdownContent;
-            nodes = [...nodes]; // Trigger reactivity
-          }
-        }, 100); // Small delay to let the node initialize with HTML first
-      }
-
-      // Node created successfully with header inheritance if applicable
+    // Handle HTML formatting conversion if needed
+    if (newContent && newContent.includes('<span class="markdown-')) {
+      setTimeout(() => {
+        const markdownContent = htmlToMarkdown(newContent);
+        nodeManager.updateNodeContent(newNodeId, markdownContent);
+      }, 100);
     }
   }
 
@@ -393,57 +76,10 @@
     // Store cursor position before DOM changes
     const cursorPosition = saveCursorPosition(nodeId);
 
-    // Find the node and its context recursively
-    function findNodeForIndent(
-      nodesList: any[],
-      targetId: string,
-      parent: any = null,
-      parentChildren: any[] | null = null
-    ): {
-      node: any;
-      index: number;
-      parent: any;
-      parentChildren: any[];
-      previousSibling: any;
-    } | null {
-      for (let i = 0; i < nodesList.length; i++) {
-        const node = nodesList[i];
-        if (node.id === targetId && i > 0) {
-          // Found the target node and it has a previous sibling
-          return {
-            node,
-            index: i,
-            parent,
-            parentChildren: parentChildren || nodesList,
-            previousSibling: nodesList[i - 1]
-          };
-        }
+    // Use NodeManager to handle indentation
+    const success = nodeManager.indentNode(nodeId);
 
-        if (node.children && node.children.length > 0) {
-          const result = findNodeForIndent(node.children, targetId, node, node.children);
-          if (result) return result;
-        }
-      }
-      return null;
-    }
-
-    const nodeInfo = findNodeForIndent(nodes, nodeId);
-
-    if (nodeInfo) {
-      const { node, index, parentChildren, previousSibling } = nodeInfo;
-
-      // Remove node from current position
-      parentChildren.splice(index, 1);
-
-      // Add node to previous sibling's children
-      if (!previousSibling.children) {
-        previousSibling.children = [];
-      }
-      previousSibling.children.push(node);
-
-      // Trigger reactivity
-      nodes = [...nodes];
-
+    if (success) {
       // Restore cursor position after DOM update
       setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
     }
@@ -524,52 +160,10 @@
     // Store cursor position before DOM changes
     const cursorPosition = saveCursorPosition(nodeId);
 
-    // Find the node and move it up one level recursively
-    function findAndOutdentNode(
-      nodesList: any[],
-      targetId: string,
-      grandparent: any = null,
-      grandparentChildren: any[] | null = null
-    ): boolean {
-      for (let i = 0; i < nodesList.length; i++) {
-        const parent = nodesList[i];
-        if (parent.children && parent.children.length > 0) {
-          const childIndex = parent.children.findIndex((child: any) => child.id === targetId);
-          if (childIndex !== -1) {
-            const node = parent.children[childIndex];
+    // Use NodeManager to handle outdentation
+    const success = nodeManager.outdentNode(nodeId);
 
-            // Remove from parent's children
-            parent.children.splice(childIndex, 1);
-
-            if (grandparent && grandparentChildren) {
-              // Move to grandparent's children (one level up)
-              const parentIndex = grandparentChildren.findIndex((n) => n.id === parent.id);
-              if (parentIndex !== -1) {
-                grandparentChildren.splice(parentIndex + 1, 0, node);
-                return true;
-              }
-            } else {
-              // Move to root level
-              const parentIndex = nodes.findIndex((n) => n.id === parent.id);
-              if (parentIndex !== -1) {
-                nodes.splice(parentIndex + 1, 0, node);
-                return true;
-              }
-            }
-          }
-
-          // Recurse into deeper levels
-          if (findAndOutdentNode(parent.children, targetId, parent, parent.children)) {
-            return true;
-          }
-        }
-      }
-      return false;
-    }
-
-    if (findAndOutdentNode(nodes, nodeId)) {
-      nodes = [...nodes];
-
+    if (success) {
       // Restore cursor position after DOM update
       setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
     }
@@ -577,25 +171,7 @@
 
   // Handle chevron click to toggle expand/collapse
   function handleToggleExpanded(nodeId: string) {
-    // Find node recursively and toggle its expanded state
-    function toggleNodeExpanded(nodesList: any[], targetId: string): boolean {
-      for (let i = 0; i < nodesList.length; i++) {
-        if (nodesList[i].id === targetId) {
-          nodesList[i].expanded = !nodesList[i].expanded;
-          return true;
-        }
-        if (nodesList[i].children && nodesList[i].children.length > 0) {
-          if (toggleNodeExpanded(nodesList[i].children, targetId)) {
-            return true;
-          }
-        }
-      }
-      return false;
-    }
-
-    if (toggleNodeExpanded(nodes, nodeId)) {
-      nodes = [...nodes]; // Trigger reactivity
-    }
+    nodeManager.toggleExpanded(nodeId);
   }
 
   // Get node type color from design system
@@ -613,33 +189,17 @@
   ) {
     const { nodeId, direction, columnHint } = event.detail;
 
-    // Find navigable nodes (respecting node autonomy)
-    function findNavigableNodes(): any[] {
-      const result: any[] = [];
-
-      function collectNodes(nodeList: any[]) {
-        for (const node of nodeList) {
-          result.push(node);
-          if (node.children && node.children.length > 0 && node.expanded) {
-            collectNodes(node.children);
-          }
-        }
-      }
-
-      collectNodes(nodes);
-      return result;
-    }
-
-    const navigableNodes = findNavigableNodes();
-    const currentIndex = navigableNodes.findIndex((n) => n.id === nodeId);
+    // Get visible nodes from NodeManager
+    const visibleNodes = nodeManager.getVisibleNodes();
+    const currentIndex = visibleNodes.findIndex((n) => n.id === nodeId);
 
     if (currentIndex === -1) return;
 
     // Find next navigable node that accepts navigation
     let targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
 
-    while (targetIndex >= 0 && targetIndex < navigableNodes.length) {
-      const candidateNode = navigableNodes[targetIndex];
+    while (targetIndex >= 0 && targetIndex < visibleNodes.length) {
+      const candidateNode = visibleNodes[targetIndex];
 
       // Check if this node accepts navigation (skip if it doesn't)
       // For now, assume all nodes accept navigation (will be refined per node type)
@@ -798,171 +358,48 @@
   }
 
   // Handle combining current node with previous node (Backspace at start of node)
+  // CLEAN DELEGATION: All logic handled by NodeManager
   function handleCombineWithPrevious(
     event: CustomEvent<{ nodeId: string; currentContent: string }>
   ) {
     const { nodeId, currentContent } = event.detail;
-
-    // Get all visible nodes in order (like nodespace-core-ui getVisibleNodes)
-    function getVisibleNodes(): any[] {
-      const result: any[] = [];
-
-      function collectNodes(nodeList: any[]) {
-        for (const node of nodeList) {
-          result.push(node);
-          if (node.children && node.children.length > 0 && node.expanded) {
-            collectNodes(node.children);
-          }
-        }
-      }
-
-      collectNodes(nodes);
-      return result;
-    }
-
-    const visibleNodes = getVisibleNodes();
+    const visibleNodes = nodeManager.getVisibleNodes();
     const currentIndex = visibleNodes.findIndex((n) => n.id === nodeId);
 
-    if (currentIndex <= 0) {
-      return; // No previous node to combine with
-    }
+    if (currentIndex <= 0) return; // No previous node to combine with
 
-    const currentNode = visibleNodes[currentIndex];
-    const prevNode = visibleNodes[currentIndex - 1];
-    const prevContent = prevNode.content;
+    const previousNode = visibleNodes[currentIndex - 1];
 
     if (currentContent.trim() === '') {
-      // Empty node - just remove it (similar to nodespace-core-ui empty removal logic)
-      removeNodeFromTree(currentNode);
-
-      // Focus previous node at end of content
-      setTimeout(() => {
-        const previousElement = document.getElementById(`contenteditable-${prevNode.id}`);
-        if (previousElement) {
-          previousElement.focus();
-          setCursorAtPosition(previousElement, prevContent.length);
-        }
-      }, 0);
+      // Empty node - delete and focus previous at end
+      nodeManager.deleteNode(nodeId);
+      nodeManagerEvents.focusRequested(previousNode.id, previousNode.content.length);
     } else {
-      // Simple direct approach: combine content and remove node using Svelte reactivity
-      const junctionPosition = prevContent.length;
-
-      // Directly update previous node content (Svelte $state will handle reactivity)
-      prevNode.content = prevNode.content + currentContent;
-
-      // Transfer children from current node to previous node
-      if (currentNode.children && currentNode.children.length > 0) {
-        if (!prevNode.children) prevNode.children = [];
-        prevNode.children.push(...currentNode.children);
-      }
-
-      // Remove current node using simple helper
-      removeNodeFromNodesArray(currentNode.id);
-
-      // Force Svelte reactivity by triggering state change
-      nodes = [...nodes];
-
-      // Focus previous node at junction point
-      setTimeout(() => {
-        const previousElement = document.getElementById(`contenteditable-${prevNode.id}`);
-        if (previousElement) {
-          previousElement.focus();
-          setCursorAtPosition(previousElement, junctionPosition);
-        }
-      }, 0);
+      // Combine nodes - NodeManager handles focus automatically
+      nodeManager.combineNodes(nodeId, previousNode.id);
     }
   }
 
   // Handle deleting empty node (Backspace at start of empty node)
   function handleDeleteNode(event: CustomEvent<{ nodeId: string }>) {
     const { nodeId } = event.detail;
-
-    // Get all visible nodes in order
-    function getVisibleNodes(): any[] {
-      const result: any[] = [];
-
-      function collectNodes(nodeList: any[]) {
-        for (const node of nodeList) {
-          result.push(node);
-          if (node.children && node.children.length > 0 && node.expanded) {
-            collectNodes(node.children);
-          }
-        }
-      }
-
-      collectNodes(nodes);
-      return result;
-    }
-
-    const visibleNodes = getVisibleNodes();
+    const visibleNodes = nodeManager.getVisibleNodes();
     const currentIndex = visibleNodes.findIndex((n) => n.id === nodeId);
 
-    if (currentIndex <= 0) {
-      return; // No previous node to focus
-    }
+    if (currentIndex <= 0) return; // No previous node to focus
 
-    const currentNode = visibleNodes[currentIndex];
     const previousNode = visibleNodes[currentIndex - 1];
 
-    // Remove the empty node from tree
-    removeNodeFromTree(currentNode);
-
-    // Trigger reactivity
-    nodes = [...nodes];
-
-    // Focus previous node at end of content
-    setTimeout(() => {
-      const previousElement = document.getElementById(`contenteditable-${previousNode.id}`);
-      if (previousElement) {
-        previousElement.focus();
-        const content = previousElement.textContent || '';
-        setCursorAtPosition(previousElement, content.length);
-      }
-    }, 0);
+    // Delete node and focus previous at end
+    nodeManager.deleteNode(nodeId);
+    nodeManagerEvents.focusRequested(previousNode.id, previousNode.content.length);
   }
 
-  // Helper function to remove a node from the tree structure (like nodespace-core-ui removeNodeFromTree)
-  function removeNodeFromTree(nodeToRemove: any): void {
-    function removeNode(nodesList: any[]): boolean {
-      for (let i = 0; i < nodesList.length; i++) {
-        if (nodesList[i].id === nodeToRemove.id) {
-          // Remove from current level
-          nodesList.splice(i, 1);
-          return true;
-        }
-        if (nodesList[i].children && nodesList[i].children.length > 0) {
-          if (removeNode(nodesList[i].children)) {
-            return true;
-          }
-        }
-      }
-      return false;
-    }
-
-    removeNode(nodes);
-  }
-
-  // Simple helper to remove node from reactive nodes array
-  function removeNodeFromNodesArray(nodeIdToRemove: string): void {
-    function removeFromArray(nodesList: any[]): boolean {
-      for (let i = 0; i < nodesList.length; i++) {
-        if (nodesList[i].id === nodeIdToRemove) {
-          nodesList.splice(i, 1);
-          return true;
-        }
-        if (nodesList[i].children && removeFromArray(nodesList[i].children)) {
-          return true;
-        }
-      }
-      return false;
-    }
-
-    removeFromArray(nodes);
-  }
+  // Helper functions removed - NodeManager handles all node operations
 </script>
 
 <div class="node-viewer">
-  {#each nodes as node (node.id)}
+  {#each nodeManager.visibleNodes as node (node.id)}
     {#snippet renderNode(node: any)}
       <div class="node-container" data-has-children={node.children?.length > 0}>
         <div class="node-content-wrapper">
@@ -974,14 +411,14 @@
               onclick={() => handleToggleExpanded(node.id)}
               aria-label={node.expanded ? 'Collapse' : 'Expand'}
             >
-              <Icon name="chevron-right" size={16} color={getNodeColor(node.type)} />
+              <Icon name="chevron-right" size={16} color={getNodeColor(node.nodeType)} />
             </button>
           {:else}
             <!-- Spacer for nodes without children to maintain alignment -->
             <div class="node-chevron-spacer"></div>
           {/if}
 
-          {#if node.type === 'text'}
+          {#if node.nodeType === 'text'}
             <TextNode
               nodeId={node.id}
               autoFocus={node.autoFocus}
@@ -993,24 +430,8 @@
               on:outdentNode={handleOutdentNode}
               on:navigateArrow={handleArrowNavigation}
               on:contentChanged={(e) => {
-                // Find node recursively and update content
-                function updateNodeContent(nodesList: any[], targetId: string, newContent: string) {
-                  for (let i = 0; i < nodesList.length; i++) {
-                    if (nodesList[i].id === targetId) {
-                      nodesList[i].content = newContent;
-                      return true;
-                    }
-                    if (nodesList[i].children.length > 0) {
-                      if (updateNodeContent(nodesList[i].children, targetId, newContent)) {
-                        return true;
-                      }
-                    }
-                  }
-                  return false;
-                }
-
-                updateNodeContent(nodes, node.id, e.detail.content);
-                nodes = [...nodes]; // Trigger reactivity
+                // Use NodeManager to update content
+                nodeManager.updateNodeContent(node.id, e.detail.content);
               }}
               on:combineWithPrevious={handleCombineWithPrevious}
               on:deleteNode={handleDeleteNode}

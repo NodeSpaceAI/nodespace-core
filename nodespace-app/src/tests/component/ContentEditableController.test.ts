@@ -4,10 +4,24 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { JSDOM } from 'jsdom';
 import {
   ContentEditableController,
   type ContentEditableEvents
 } from '$lib/design/components/ContentEditableController.js';
+
+// Setup DOM environment for this test file
+const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>');
+globalThis.document = dom.window.document;
+globalThis.window = dom.window as unknown as Window & typeof globalThis;
+globalThis.HTMLElement = dom.window.HTMLElement;
+globalThis.Element = dom.window.Element;
+globalThis.Node = dom.window.Node;
+globalThis.Event = dom.window.Event;
+globalThis.FocusEvent = dom.window.FocusEvent;
+globalThis.KeyboardEvent = dom.window.KeyboardEvent;
+globalThis.InputEvent = dom.window.InputEvent;
+globalThis.NodeFilter = dom.window.NodeFilter;
 
 describe('ContentEditableController', () => {
   let element: HTMLDivElement;
@@ -222,10 +236,28 @@ describe('ContentEditableController', () => {
       controller.updateContent('**new**');
       expect(element.innerHTML).toContain('<span class="markdown-bold">new</span>');
 
-      // Test in editing mode (raw)
-      controller.initialize('**old**', true);
-      controller.updateContent('**new**');
-      expect(element.textContent).toBe('**new**');
+      // Test in editing mode (live formatting with syntax preserved)
+      // Create fresh element and controller for editing mode test
+      const editingElement = document.createElement('div');
+      editingElement.contentEditable = 'true';
+      document.body.appendChild(editingElement);
+
+      const editingController = new ContentEditableController(editingElement, mockEvents);
+      editingController.initialize('**old**', true);
+
+      // Verify initial state has live formatting
+      expect(editingElement.innerHTML).toContain(
+        '<span class="markdown-syntax">**<span class="markdown-bold">old</span>**</span>'
+      );
+
+      editingController.updateContent('**new**');
+      // In editing mode, should show live formatting while preserving syntax
+      expect(editingElement.innerHTML).toContain(
+        '<span class="markdown-syntax">**<span class="markdown-bold">new</span>**</span>'
+      );
+
+      // Cleanup
+      editingController.destroy();
     });
   });
 

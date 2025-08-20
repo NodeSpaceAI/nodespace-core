@@ -100,7 +100,7 @@
     activeTests = testScenarios.map((scenario, index) => ({
       id: `test-${index}`,
       scenario,
-      nodeRef: null as any
+      nodeRef: null as unknown
     }));
   });
 

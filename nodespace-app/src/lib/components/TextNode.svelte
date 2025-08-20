@@ -12,12 +12,12 @@
   export let autoFocus: boolean = false;
   export let content: string = '';
   export let inheritHeaderLevel: number = 0; // Header level inherited from parent node
-  export let children: any[] = []; // Passthrough for BaseNode
+  export let children: unknown[] = []; // Passthrough for BaseNode
 
   // Internal reactive state
   let internalContent: string = content;
   let headerLevel: number = contentProcessor.parseHeaderLevel(content) || inheritHeaderLevel;
-  let baseNodeRef: any;
+  let baseNodeRef: unknown;
 
   // Event dispatcher
   const dispatch = createEventDispatcher<{

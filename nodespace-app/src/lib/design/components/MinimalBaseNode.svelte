@@ -16,7 +16,7 @@
   export let multiline: boolean = false; // Allow multiline content (Shift+Enter for line breaks)
   export let content: string = ''; // Content of the node
   export let className: string = ''; // Additional CSS classes for the container
-  export let children: any[] = []; // Child nodes for parent indicator
+  export let children: unknown[] = []; // Child nodes for parent indicator
   export let iconName: IconName | undefined = undefined; // Custom icon override
   export let headerLevel: number = 0; // Header level for context-aware behavior
   export const canBeCombined: (() => boolean) | undefined = undefined; // Function to check if node can be combined

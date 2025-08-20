@@ -19,7 +19,7 @@
   export let autoFocus: boolean = false;
   export let content: string = '';
   export let headerLevel: number = 0;
-  export let children: any[] = [];
+  export let children: unknown[] = [];
 
   // DOM element and controller
   let contentEditableElement: HTMLDivElement;

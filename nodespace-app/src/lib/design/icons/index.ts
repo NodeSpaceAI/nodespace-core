@@ -15,7 +15,7 @@
  */
 
 // Export the main Icon component
-export { default as default } from './Icon.svelte';
+export { default } from './Icon.svelte';
 export { default as Icon } from './Icon.svelte';
 
 // Export icon types for TypeScript autocomplete
