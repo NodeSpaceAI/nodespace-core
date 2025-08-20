@@ -15,7 +15,7 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 > 3. **Create/switch to branch**: Based on strategy - either `git checkout -b feature/issue-<number>-brief-description` OR switch to existing parent issue branch
 > 4. **Assign issue**: `bun run gh:assign <number> "@me"`  
 > 5. **Update project status**: `bun run gh:status <number> "In Progress"`
-> 6. **Select subagent**: Use decision tree below to choose specialized agent
+> 6. **Select subagent**: Choose appropriate specialized agent based on task complexity and type
 > 7. **Read issue requirements**: Understand all acceptance criteria
 > 8. **Plan implementation**: Self-contained approach with appropriate subagent
 > 
@@ -43,7 +43,7 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 > - ✅ **Early-Phase Mock Development**: Use mock data/services temporarily for parallel development (transitioning to real services soon)
 > - ✅ **Vertical Slicing**: Complete features end-to-end, not horizontal layers
 > - ✅ **GitHub Status Updates**: Use CLI commands to update project status at each transition (Todo → In Progress → Ready for Review)
-> - ✅ **Use Appropriate Subagents**: Select specialized agents based on task type (see Subagent Selection Guide below)
+> - ✅ **Use Appropriate Subagents**: Use specialized agents when task complexity warrants expert assistance
 
 ### 1. Understanding the Project
 - **Read the README.md** for high-level project overview and architecture
@@ -170,7 +170,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 **Before Starting Any Task:**
 1. **COMPLETE THE MANDATORY STARTUP SEQUENCE** (steps 1-8 above)
 2. **READ THE DEVELOPMENT PROCESS DOCUMENTATION** - Start with the [overview](docs/architecture/development/overview.md) and [startup sequence](docs/architecture/development/process/startup-sequence.md)
-3. **Verify subagent selection** using the decision tree above
+3. **Select appropriate subagent** based on task complexity and type
 4. Check issue acceptance criteria and requirements
 5. Plan self-contained implementation with mock dependencies
 
@@ -215,7 +215,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 - [ ] Created/switched to appropriate branch based on strategy
 - [ ] Assigned issue to self (`bun run gh:assign <number> "@me"`)
 - [ ] Updated GitHub project status using CLI: Todo → In Progress
-- [ ] Selected appropriate subagent using the decision tree
+- [ ] Selected appropriate subagent based on task complexity
 - [ ] Read issue requirements and acceptance criteria
 - [ ] Read development process documentation (start with [overview](docs/architecture/development/overview.md))
 - [ ] Planned self-contained implementation with mock dependencies
