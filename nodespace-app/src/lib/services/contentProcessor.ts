@@ -385,12 +385,12 @@ export class ContentProcessor {
    * Enhanced version of TextNode's header detection
    */
   public parseHeaderLevel(content: string): number {
-    const trimmed = content.trim();
-    if (!trimmed.startsWith('#')) {
+    // Don't trim - we need to preserve trailing spaces for detection
+    if (!content.startsWith('#')) {
       return 0;
     }
 
-    const match = trimmed.match(/^(#{1,6})\s/);
+    const match = content.match(/^(#{1,6})\s/);
     return match ? match[1].length : 0;
   }
 
