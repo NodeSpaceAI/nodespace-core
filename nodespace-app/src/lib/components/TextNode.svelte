@@ -47,7 +47,6 @@
     blur: void;
   }>();
 
-  
   // Handle focus/blur for TextNode-specific behavior
   function handleFocus() {
     dispatch('focus');
@@ -63,13 +62,12 @@
     internalContent = newContent;
     dispatch('contentChanged', { content: newContent });
   }
-  
+
   // Handle header level changes from controller
   function handleHeaderLevelChange(event: CustomEvent<{ level: number }>) {
     const newLevel = event.detail.level !== undefined ? event.detail.level : inheritHeaderLevel;
     headerLevel = newLevel;
   }
-
 </script>
 
 <BaseNode
@@ -80,7 +78,8 @@
   content={internalContent}
   {headerLevel}
   {children}
-  on:createNewNode={(e) => dispatch('createNewNode', { ...e.detail, inheritHeaderLevel: headerLevel })}
+  on:createNewNode={(e) =>
+    dispatch('createNewNode', { ...e.detail, inheritHeaderLevel: headerLevel })}
   on:contentChanged={handleContentChange}
   on:headerLevelChanged={handleHeaderLevelChange}
   on:indentNode={(e) => dispatch('indentNode', e.detail)}
@@ -91,4 +90,3 @@
   on:focus={handleFocus}
   on:blur={handleBlur}
 />
-

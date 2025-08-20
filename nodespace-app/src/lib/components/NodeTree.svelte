@@ -88,7 +88,6 @@
 
   // Reactive statement to get visible nodes
   $: visibleNodes = getVisibleNodes(nodes);
-
 </script>
 
 <div class="ns-node-tree" role="tree" aria-label="Node hierarchy">
@@ -155,13 +154,14 @@
     transition: margin-left var(--ns-duration-normal) var(--ns-easing-easeInOut);
   }
 
-
   .ns-node-tree__expand-btn {
     flex-shrink: 0;
     width: 20px;
     height: 20px;
     /* Perfect alignment: empirical correction to match BaseNode circles exactly */
-    margin-top: calc(0.25rem + var(--text-visual-center, calc(0.816em + var(--baseline-correction))) + 32px);
+    margin-top: calc(
+      0.25rem + var(--text-visual-center, calc(0.816em + var(--baseline-correction))) + 32px
+    );
     padding: 0;
     border: none;
     background: var(--ns-color-surface-panel);
@@ -174,7 +174,6 @@
     transition: all var(--ns-duration-fast) var(--ns-easing-easeInOut);
     font-size: var(--ns-font-size-xs);
   }
-
 
   .ns-node-tree__expand-btn:hover {
     background: var(--ns-color-surface-hover);
@@ -192,9 +191,10 @@
     width: 20px;
     height: 20px;
     /* Match expand button positioning: anchor to circle indicators for consistent alignment */
-    margin-top: calc(0.25rem + var(--text-visual-center, calc(0.816em + var(--baseline-correction))) + 32px);
+    margin-top: calc(
+      0.25rem + var(--text-visual-center, calc(0.816em + var(--baseline-correction))) + 32px
+    );
   }
-
 
   .ns-node-tree__expand-icon {
     display: block;

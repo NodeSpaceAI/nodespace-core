@@ -8,7 +8,10 @@
 <script lang="ts">
   import { createEventDispatcher, onDestroy } from 'svelte';
   import Icon from '$lib/design/icons';
-  import { ContentEditableController, type ContentEditableEvents } from './ContentEditableController.js';
+  import {
+    ContentEditableController,
+    type ContentEditableEvents
+  } from './ContentEditableController.js';
 
   // Props
   export let nodeId: string;
@@ -28,10 +31,10 @@
     headerLevelChanged: { level: number };
     focus: void;
     blur: void;
-    createNewNode: { 
-      afterNodeId: string; 
-      nodeType: string; 
-      currentContent?: string; 
+    createNewNode: {
+      afterNodeId: string;
+      nodeType: string;
+      currentContent?: string;
       newContent?: string;
     };
     indentNode: { nodeId: string };
@@ -57,11 +60,7 @@
 
   // Initialize controller when element is available
   $: if (contentEditableElement && !controller) {
-    controller = new ContentEditableController(
-      contentEditableElement,
-      nodeId,
-      controllerEvents
-    );
+    controller = new ContentEditableController(contentEditableElement, nodeId, controllerEvents);
     controller.initialize(content, autoFocus);
   }
 
@@ -87,7 +86,9 @@
     `node--${nodeType}`,
     headerLevel > 0 && `node--h${headerLevel}`,
     children.length > 0 && 'node--has-children'
-  ].filter(Boolean).join(' ');
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   // Icon for node type
   $: icon = children.length > 0 ? 'circle-ring' : 'circle';
@@ -103,7 +104,7 @@
   <!-- Content area -->
   <div
     bind:this={contentEditableElement}
-    contenteditable="true" 
+    contenteditable="true"
     class="node__content"
     id="contenteditable-{nodeId}"
     role="textbox"
@@ -123,7 +124,9 @@
     position: absolute;
     left: 8px; /* Center X coordinate (half of 16px icon width) */
     /* Precise vertical centering: container padding + empirically corrected visual text center */
-    top: calc(0.25rem + var(--text-visual-center, calc(0.816em + var(--baseline-correction, -0.15em))));
+    top: calc(
+      0.25rem + var(--text-visual-center, calc(0.816em + var(--baseline-correction, -0.15em)))
+    );
     transform: translate(-50%, -50%); /* Center icon on coordinates */
     width: 16px;
     height: 16px;
@@ -166,7 +169,7 @@
     /* 2rem * 1.2 * 0.5 + baseline correction = true visual center for H1 (corrected to move circles UP by measured 1.7px) */
     --text-visual-center: calc(1.2em + var(--baseline-correction) + 0.053125em);
   }
-  
+
   .node--h1 .node__content {
     font-size: 2rem;
     font-weight: bold;
@@ -177,7 +180,7 @@
     /* 1.5rem * 1.3 * 0.5 + baseline correction = true visual center for H2 (corrected to move circles UP by measured 1.3px) */
     --text-visual-center: calc(0.975em + var(--baseline-correction) + 0.0542em);
   }
-  
+
   .node--h2 .node__content {
     font-size: 1.5rem;
     font-weight: bold;
@@ -188,7 +191,7 @@
     /* 1.25rem * 1.4 * 0.5 + baseline correction = true visual center for H3 (fine-tuned for perfect alignment - additional 0.03em correction) */
     --text-visual-center: calc(0.875em + var(--baseline-correction) + 0.1em);
   }
-  
+
   .node--h3 .node__content {
     font-size: 1.25rem;
     font-weight: bold;
@@ -199,7 +202,7 @@
     /* 1.125rem * 1.4 * 0.5 + baseline correction = true visual center for H4 */
     --text-visual-center: calc(0.7875em + var(--baseline-correction));
   }
-  
+
   .node--h4 .node__content {
     font-size: 1.125rem;
     font-weight: bold;
@@ -210,7 +213,7 @@
     /* 1rem * 1.4 * 0.5 + baseline correction = true visual center for H5 */
     --text-visual-center: calc(0.7em + var(--baseline-correction));
   }
-  
+
   .node--h5 .node__content {
     font-size: 1rem;
     font-weight: bold;
@@ -221,7 +224,7 @@
     /* 0.875rem * 1.4 * 0.5 + baseline correction = true visual center for H6 */
     --text-visual-center: calc(0.6125em + var(--baseline-correction));
   }
-  
+
   .node--h6 .node__content {
     font-size: 0.875rem;
     font-weight: bold;

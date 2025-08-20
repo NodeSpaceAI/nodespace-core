@@ -1,6 +1,6 @@
 /**
  * ContentEditableController
- * 
+ *
  * Pure TypeScript controller for managing dual-representation text editor
  * Separates DOM manipulation from Svelte reactive logic to eliminate race conditions
  */
@@ -12,10 +12,10 @@ export interface ContentEditableEvents {
   headerLevelChanged: (level: number) => void;
   focus: () => void;
   blur: () => void;
-  createNewNode: (data: { 
-    afterNodeId: string; 
-    nodeType: string; 
-    currentContent?: string; 
+  createNewNode: (data: {
+    afterNodeId: string;
+    nodeType: string;
+    currentContent?: string;
     newContent?: string;
   }) => void;
   indentNode: (data: { nodeId: string }) => void;
@@ -41,11 +41,7 @@ export class ContentEditableController {
   private boundHandleInput = this.handleInput.bind(this);
   private boundHandleKeyDown = this.handleKeyDown.bind(this);
 
-  constructor(
-    element: HTMLDivElement,
-    nodeId: string,
-    events: ContentEditableEvents
-  ) {
+  constructor(element: HTMLDivElement, nodeId: string, events: ContentEditableEvents) {
     this.element = element;
     this.nodeId = nodeId;
     this.events = events;
@@ -60,7 +56,7 @@ export class ContentEditableController {
 
     // Store original markdown content
     this.originalContent = content;
-    
+
     // Initialize header level tracking
     this.currentHeaderLevel = contentProcessor.parseHeaderLevel(content);
 
@@ -85,21 +81,21 @@ export class ContentEditableController {
     if (this.isUpdatingFromInput) {
       return;
     }
-    
+
     // Prevent reactive loops - don't update if content hasn't changed
     if (this.originalContent === content) {
       return;
     }
-    
+
     // Also prevent update if the element already has this content
     if (this.isEditing && this.element.textContent === content) {
       this.originalContent = content; // Update stored content but don't touch DOM
       return;
     }
-    
+
     // Update stored original content
     this.originalContent = content;
-    
+
     if (this.isEditing) {
       this.setRawMarkdown(content);
     } else {
@@ -162,13 +158,22 @@ export class ContentEditableController {
   private setLiveFormattedContent(content: string): void {
     // Apply live formatting while preserving markdown syntax for editing
     let html = this.escapeHtml(content);
-    
+
     // Apply live formatting with consistent structure to fix double-click selection
     // Wrap entire formatted text (including syntax) in spans for consistent selection behavior
-    html = html.replace(/\*\*([^*]+)\*\*/g, '<span class="markdown-syntax">**<span class="markdown-bold">$1</span>**</span>');
-    html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<span class="markdown-syntax">*<span class="markdown-italic">$1</span>*</span>');
-    html = html.replace(/__([^_]+)__/g, '<span class="markdown-syntax">__<span class="markdown-underline">$1</span>__</span>');
-    
+    html = html.replace(
+      /\*\*([^*]+)\*\*/g,
+      '<span class="markdown-syntax">**<span class="markdown-bold">$1</span>**</span>'
+    );
+    html = html.replace(
+      /(?<!\*)\*([^*]+)\*(?!\*)/g,
+      '<span class="markdown-syntax">*<span class="markdown-italic">$1</span>*</span>'
+    );
+    html = html.replace(
+      /__([^_]+)__/g,
+      '<span class="markdown-syntax">__<span class="markdown-underline">$1</span>__</span>'
+    );
+
     this.element.innerHTML = html;
   }
 
@@ -180,7 +185,7 @@ export class ContentEditableController {
 
   private setFormattedContent(content: string): void {
     const headerLevel = contentProcessor.parseHeaderLevel(content);
-    
+
     if (headerLevel > 0) {
       // For headers: strip # symbols but preserve inline formatting
       const cleanText = contentProcessor.stripHeaderSyntax(content);
@@ -199,12 +204,12 @@ export class ContentEditableController {
 
   private markdownToHtml(markdownContent: string): string {
     let html = markdownContent;
-    
+
     // Convert inline formatting only
     html = html.replace(/\*\*(.*?)\*\*/g, '<span class="markdown-bold">$1</span>');
     html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<span class="markdown-italic">$1</span>');
     html = html.replace(/__(.*?)__/g, '<span class="markdown-underline">$1</span>');
-    
+
     return html;
   }
 
@@ -228,28 +233,28 @@ export class ContentEditableController {
 
   private handleFocus(): void {
     this.isEditing = true;
-    
+
     // On focus: show raw markdown for editing (use stored original content)
     this.setRawMarkdown(this.originalContent);
-    
+
     this.events.focus();
   }
 
   private handleBlur(): void {
     this.isEditing = false;
-    
+
     // On blur: update original content and show formatted display
     const currentText = this.element.textContent || '';
     this.originalContent = currentText; // Store the edited content
     this.setFormattedContent(currentText);
-    
+
     this.events.blur();
   }
 
   private handleInput(): void {
     // Set flag to prevent reactive updates during input processing
     this.isUpdatingFromInput = true;
-    
+
     if (this.isEditing) {
       // Store cursor position before content changes
       const selection = window.getSelection();
@@ -258,22 +263,22 @@ export class ContentEditableController {
         const range = selection.getRangeAt(0);
         cursorOffset = this.getTextOffsetFromElement(range.startContainer, range.startOffset);
       }
-      
+
       // When editing (focused), content is plain text - use it directly
       const textContent = this.element.textContent || '';
       this.originalContent = textContent; // Update stored content immediately
-      
+
       // Check for header level changes
       const newHeaderLevel = contentProcessor.parseHeaderLevel(textContent);
       if (newHeaderLevel !== this.currentHeaderLevel) {
         this.currentHeaderLevel = newHeaderLevel;
         this.events.headerLevelChanged(newHeaderLevel);
       }
-      
+
       // Apply live formatting while preserving cursor
       this.setLiveFormattedContent(textContent);
       this.restoreCursorPosition(cursorOffset);
-      
+
       this.events.contentChanged(textContent);
     } else {
       // When not editing (blurred), convert HTML back to markdown
@@ -282,7 +287,7 @@ export class ContentEditableController {
       this.originalContent = markdownContent; // Update stored content immediately
       this.events.contentChanged(markdownContent);
     }
-    
+
     // Clear flag after a microtask to allow Svelte to process
     Promise.resolve().then(() => {
       this.isUpdatingFromInput = false;
@@ -308,13 +313,13 @@ export class ContentEditableController {
         return;
       }
     }
-    
+
     // Check for immediate header detection when space is typed
     if (event.key === ' ' && this.isEditing) {
       // Get content that will exist after this space is added
       const currentText = this.element.textContent || '';
       const futureText = currentText + ' ';
-      
+
       // Check if this completes a header pattern (e.g., "#" becomes "# ")
       const newHeaderLevel = contentProcessor.parseHeaderLevel(futureText);
       if (newHeaderLevel !== this.currentHeaderLevel) {
@@ -325,11 +330,11 @@ export class ContentEditableController {
         }, 0);
       }
     }
-    
+
     // Enter key creates new node
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
-      
+
       const currentContent = this.element.textContent || '';
       this.events.createNewNode({
         afterNodeId: this.nodeId,
@@ -340,7 +345,7 @@ export class ContentEditableController {
       return;
     }
 
-    // Tab key indents node  
+    // Tab key indents node
     if (event.key === 'Tab' && !event.shiftKey) {
       event.preventDefault();
       this.events.indentNode({ nodeId: this.nodeId });
@@ -358,10 +363,10 @@ export class ContentEditableController {
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
       const direction = event.key === 'ArrowUp' ? 'up' : 'down';
       const columnHint = this.getCurrentColumn();
-      this.events.navigateArrow({ 
-        nodeId: this.nodeId, 
-        direction, 
-        columnHint 
+      this.events.navigateArrow({
+        nodeId: this.nodeId,
+        direction,
+        columnHint
       });
       return;
     }
@@ -370,13 +375,13 @@ export class ContentEditableController {
     if (event.key === 'Backspace' && this.isAtStart()) {
       event.preventDefault();
       const currentContent = this.element.textContent || '';
-      
+
       if (currentContent.trim() === '') {
         this.events.deleteNode({ nodeId: this.nodeId });
       } else {
-        this.events.combineWithPrevious({ 
-          nodeId: this.nodeId, 
-          currentContent 
+        this.events.combineWithPrevious({
+          nodeId: this.nodeId,
+          currentContent
         });
       }
       return;
@@ -390,7 +395,7 @@ export class ContentEditableController {
   private isAtStart(): boolean {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return false;
-    
+
     const range = selection.getRangeAt(0);
     return range.startOffset === 0 && range.collapsed;
   }
@@ -398,33 +403,29 @@ export class ContentEditableController {
   private getCurrentColumn(): number {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return 0;
-    
+
     const range = selection.getRangeAt(0);
     const preCaretRange = range.cloneRange();
     preCaretRange.selectNodeContents(this.element);
     preCaretRange.setEnd(range.startContainer, range.startOffset);
-    
+
     return preCaretRange.toString().length;
   }
 
   private getTextOffsetFromElement(node: Node, offset: number): number {
     // Calculate text offset within the contenteditable element
-    const walker = document.createTreeWalker(
-      this.element,
-      NodeFilter.SHOW_TEXT,
-      null
-    );
-    
+    const walker = document.createTreeWalker(this.element, NodeFilter.SHOW_TEXT, null);
+
     let textOffset = 0;
     let currentNode;
-    
+
     while ((currentNode = walker.nextNode())) {
       if (currentNode === node) {
         return textOffset + offset;
       }
       textOffset += currentNode.textContent?.length || 0;
     }
-    
+
     return textOffset;
   }
 
@@ -432,32 +433,28 @@ export class ContentEditableController {
     const selection = window.getSelection();
     if (!selection) return;
 
-    const walker = document.createTreeWalker(
-      this.element,
-      NodeFilter.SHOW_TEXT,
-      null
-    );
-    
+    const walker = document.createTreeWalker(this.element, NodeFilter.SHOW_TEXT, null);
+
     let currentOffset = 0;
     let currentNode;
-    
+
     while ((currentNode = walker.nextNode())) {
       const nodeLength = currentNode.textContent?.length || 0;
-      
+
       if (currentOffset + nodeLength >= textOffset) {
         const range = document.createRange();
         const offsetInNode = textOffset - currentOffset;
         range.setStart(currentNode, Math.min(offsetInNode, nodeLength));
         range.setEnd(currentNode, Math.min(offsetInNode, nodeLength));
-        
+
         selection.removeAllRanges();
         selection.addRange(range);
         return;
       }
-      
+
       currentOffset += nodeLength;
     }
-    
+
     // Fallback: place cursor at end
     const range = document.createRange();
     range.selectNodeContents(this.element);
@@ -470,43 +467,39 @@ export class ContentEditableController {
     const selection = window.getSelection();
     if (!selection) return;
 
-    const walker = document.createTreeWalker(
-      this.element,
-      NodeFilter.SHOW_TEXT,
-      null
-    );
-    
+    const walker = document.createTreeWalker(this.element, NodeFilter.SHOW_TEXT, null);
+
     let currentOffset = 0;
     let startNode: Node | null = null;
     let startNodeOffset = 0;
     let endNode: Node | null = null;
     let endNodeOffset = 0;
     let currentNode;
-    
+
     while ((currentNode = walker.nextNode())) {
       const nodeLength = currentNode.textContent?.length || 0;
-      
+
       // Find start position
       if (!startNode && currentOffset + nodeLength >= startOffset) {
         startNode = currentNode;
         startNodeOffset = startOffset - currentOffset;
       }
-      
+
       // Find end position
       if (!endNode && currentOffset + nodeLength >= endOffset) {
         endNode = currentNode;
         endNodeOffset = endOffset - currentOffset;
         break;
       }
-      
+
       currentOffset += nodeLength;
     }
-    
+
     if (startNode && endNode) {
       const range = document.createRange();
       range.setStart(startNode, Math.min(startNodeOffset, startNode.textContent?.length || 0));
       range.setEnd(endNode, Math.min(endNodeOffset, endNode.textContent?.length || 0));
-      
+
       selection.removeAllRanges();
       selection.addRange(range);
     }
@@ -519,28 +512,35 @@ export class ContentEditableController {
     const range = selection.getRangeAt(0);
     const selectedText = range.toString();
     const textContent = this.element.textContent || '';
-    
+
     // Simple approach: work with the markdown text content directly
     if (selectedText) {
       // Handle case where selection includes the formatting markers (like double-clicking "__word__")
       let adjustedSelectedText = selectedText;
       let markerIncludedInSelection = false;
-      
-      if (selectedText.startsWith(marker) && selectedText.endsWith(marker) && selectedText.length > marker.length * 2) {
+
+      if (
+        selectedText.startsWith(marker) &&
+        selectedText.endsWith(marker) &&
+        selectedText.length > marker.length * 2
+      ) {
         // Selection includes the markers - extract just the content
-        adjustedSelectedText = selectedText.substring(marker.length, selectedText.length - marker.length);
+        adjustedSelectedText = selectedText.substring(
+          marker.length,
+          selectedText.length - marker.length
+        );
         markerIncludedInSelection = true;
       }
-      
+
       // Find the selected text in the markdown content
       const searchText = markerIncludedInSelection ? selectedText : adjustedSelectedText;
       const selectionStart = textContent.indexOf(searchText);
       if (selectionStart === -1) return; // Selection not found in text content
-      
+
       let actualStart: number;
       let actualEnd: number;
       let workingSelectedText: string;
-      
+
       if (markerIncludedInSelection) {
         // Selection includes markers - we want to work with just the content inside
         actualStart = selectionStart + marker.length;
@@ -552,23 +552,26 @@ export class ContentEditableController {
         actualEnd = selectionStart + adjustedSelectedText.length;
         workingSelectedText = adjustedSelectedText;
       }
-      
+
       const beforeSelection = textContent.substring(0, actualStart);
       const afterSelection = textContent.substring(actualEnd);
-      
+
       // Check if already formatted by looking at surrounding text
-      const isAlreadyFormatted = beforeSelection.endsWith(marker) && afterSelection.startsWith(marker);
-      
+      const isAlreadyFormatted =
+        beforeSelection.endsWith(marker) && afterSelection.startsWith(marker);
+
       let newContent: string;
       let newSelectionStart: number;
       let newSelectionEnd: number;
-      
+
       if (isAlreadyFormatted || markerIncludedInSelection) {
         // Remove formatting
-        const beforeMarker = beforeSelection.endsWith(marker) ? 
-          beforeSelection.substring(0, beforeSelection.length - marker.length) : beforeSelection;
-        const afterMarker = afterSelection.startsWith(marker) ? 
-          afterSelection.substring(marker.length) : afterSelection;
+        const beforeMarker = beforeSelection.endsWith(marker)
+          ? beforeSelection.substring(0, beforeSelection.length - marker.length)
+          : beforeSelection;
+        const afterMarker = afterSelection.startsWith(marker)
+          ? afterSelection.substring(marker.length)
+          : afterSelection;
         newContent = beforeMarker + workingSelectedText + afterMarker;
         newSelectionStart = beforeMarker.length;
         newSelectionEnd = newSelectionStart + workingSelectedText.length;
@@ -578,29 +581,28 @@ export class ContentEditableController {
         newSelectionStart = beforeSelection.length + marker.length;
         newSelectionEnd = newSelectionStart + workingSelectedText.length;
       }
-      
+
       // Update content and maintain selection
       this.originalContent = newContent;
       this.setLiveFormattedContent(newContent);
       this.events.contentChanged(newContent);
-      
+
       // Restore selection on the text (not the markers)
       setTimeout(() => {
         this.setSelection(newSelectionStart, newSelectionEnd);
       }, 0);
-      
     } else {
       // No selection - insert markers at cursor position
       const cursorPos = this.getTextOffsetFromElement(range.startContainer, range.startOffset);
       const beforeCursor = textContent.substring(0, cursorPos);
       const afterCursor = textContent.substring(cursorPos);
-      
+
       // Check if cursor is inside existing formatting
       const surroundingMarkers = this.findSurroundingFormatting(textContent, cursorPos, marker);
-      
+
       let newContent: string;
       let newCursorPos: number;
-      
+
       if (surroundingMarkers) {
         // Remove surrounding formatting
         const beforeFormatting = textContent.substring(0, surroundingMarkers.startPos);
@@ -609,7 +611,7 @@ export class ContentEditableController {
           surroundingMarkers.endPos
         );
         const afterFormatting = textContent.substring(surroundingMarkers.endPos + marker.length);
-        
+
         newContent = beforeFormatting + insideFormatting + afterFormatting;
         newCursorPos = cursorPos - marker.length;
       } else {
@@ -617,7 +619,7 @@ export class ContentEditableController {
         newContent = beforeCursor + marker + marker + afterCursor;
         newCursorPos = cursorPos + marker.length;
       }
-      
+
       // Update content and restore cursor
       this.originalContent = newContent;
       this.setLiveFormattedContent(newContent);
@@ -626,7 +628,11 @@ export class ContentEditableController {
     }
   }
 
-  private findSurroundingFormatting(text: string, cursorPos: number, marker: string): { startPos: number; endPos: number } | null {
+  private findSurroundingFormatting(
+    text: string,
+    cursorPos: number,
+    marker: string
+  ): { startPos: number; endPos: number } | null {
     // Look backwards for opening marker
     let startPos = -1;
     for (let i = cursorPos - marker.length; i >= 0; i--) {
@@ -635,9 +641,9 @@ export class ContentEditableController {
         break;
       }
     }
-    
+
     if (startPos === -1) return null;
-    
+
     // Look forwards for closing marker
     let endPos = -1;
     for (let i = cursorPos; i <= text.length - marker.length; i++) {
@@ -646,9 +652,9 @@ export class ContentEditableController {
         break;
       }
     }
-    
+
     if (endPos === -1) return null;
-    
+
     return { startPos, endPos };
   }
 }

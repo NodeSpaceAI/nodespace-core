@@ -319,7 +319,7 @@
       nodesList: any[],
       targetId: string,
       parent: any = null,
-      parentChildren: any[] = null
+      parentChildren: any[] | null = null
     ): { node: any; index: number; parent: any; parentChildren: any[] } | null {
       for (let i = 0; i < nodesList.length; i++) {
         const node = nodesList[i];
@@ -398,7 +398,7 @@
       nodesList: any[],
       targetId: string,
       parent: any = null,
-      parentChildren: any[] = null
+      parentChildren: any[] | null = null
     ): {
       node: any;
       index: number;
@@ -529,7 +529,7 @@
       nodesList: any[],
       targetId: string,
       grandparent: any = null,
-      grandparentChildren: any[] = null
+      grandparentChildren: any[] | null = null
     ): boolean {
       for (let i = 0; i < nodesList.length; i++) {
         const parent = nodesList[i];
@@ -597,8 +597,6 @@
       nodes = [...nodes]; // Trigger reactivity
     }
   }
-
-
 
   // Get node type color from design system
   function getNodeColor(nodeType: string): string {
@@ -965,7 +963,7 @@
 
 <div class="node-viewer">
   {#each nodes as node (node.id)}
-    {#snippet renderNode(node)}
+    {#snippet renderNode(node: any)}
       <div class="node-container" data-has-children={node.children?.length > 0}>
         <div class="node-content-wrapper">
           <!-- Chevron for parent nodes (only visible on hover) -->
@@ -996,7 +994,7 @@
               on:navigateArrow={handleArrowNavigation}
               on:contentChanged={(e) => {
                 // Find node recursively and update content
-                function updateNodeContent(nodesList, targetId, newContent) {
+                function updateNodeContent(nodesList: any[], targetId: string, newContent: string) {
                   for (let i = 0; i < nodesList.length; i++) {
                     if (nodesList[i].id === targetId) {
                       nodesList[i].content = newContent;
@@ -1043,6 +1041,9 @@
     gap: 0; /* 0px gap - all spacing from node padding for 8px total */
     padding-left: 2rem; /* Add left padding to accommodate chevrons positioned at negative left */
 
+    /* Node indentation system - defines consistent spacing */
+    --node-indent: 2.5rem; /* 40px indentation between parent and child circles */
+
     /* NodeSpace Extension Colors - Node type colors per design system */
     --node-text: 142 71% 45%; /* Green for text nodes */
     --node-task: 25 95% 53%; /* Orange for task nodes */
@@ -1082,11 +1083,15 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    /* Position chevron directly aligned with the corresponding circle */
+    /* Position chevron exactly halfway between parent and child circles */
     position: absolute;
-    left: -1.25rem; /* Position to the left of the circle */
+    left: calc(
+      -1 * var(--node-indent) / 2
+    ); /* Exactly half the indentation distance back from current node */
     top: 50%; /* Center vertically relative to the text content area */
-    transform: translate(-50%, -50%); /* Center chevron on coordinates */
+    transform: translateY(
+      -50%
+    ); /* Center vertically only - horizontal positioning is mathematically exact */
     z-index: 999; /* Very high z-index to ensure clickability over all other elements */
   }
 
@@ -1103,7 +1108,7 @@
 
   /* Expanded state: rotate 90 degrees to point down */
   .node-chevron.expanded {
-    transform: translate(-50%, -50%) rotate(90deg);
+    transform: translateY(-50%) rotate(90deg);
   }
 
   /* Spacer for alignment when no chevron - no longer needed since chevron is absolutely positioned */
@@ -1145,8 +1150,8 @@
   }
 
   .node-children {
-    /* Indent child nodes visually - increased to account for chevron space */
-    margin-left: 2.5rem; /* 40px indentation: 16px circle + 24px gap (matches parent spacing) */
+    /* Indent child nodes visually - uses consistent indentation variable */
+    margin-left: var(--node-indent); /* Dynamic indentation using CSS variable */
     transition:
       height 150ms ease-in-out,
       opacity 150ms ease-in-out;
