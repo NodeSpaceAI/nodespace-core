@@ -1041,6 +1041,7 @@
     display: flex;
     flex-direction: column;
     gap: 0; /* 0px gap - all spacing from node padding for 8px total */
+    padding-left: 2rem; /* Add left padding to accommodate chevrons positioned at negative left */
 
     /* NodeSpace Extension Colors - Node type colors per design system */
     --node-text: 142 71% 45%; /* Green for text nodes */
@@ -1052,6 +1053,8 @@
 
   .node-container {
     /* Individual node wrapper - no additional spacing */
+    /* Allow chevrons to extend outside container bounds */
+    overflow: visible;
   }
 
   .node-content-wrapper {
@@ -1059,50 +1062,86 @@
     display: flex;
     align-items: flex-start;
     gap: 0.25rem; /* 4px gap between chevron/spacer and text content */
+    position: relative; /* Enable absolute positioning for chevrons */
   }
 
-  /* Chevron styling following design system */
+  /* Chevron styling - anchored to circle position */
   .node-chevron {
-    opacity: 0;
+    opacity: 0; /* Hidden by default - shows on hover */
     background: none;
     border: none;
     padding: 0.125rem; /* 2px padding for clickable area */
-    margin-top: 0.4rem; /* Align with text like circle indicators - adjusted positioning */
     cursor: pointer;
     border-radius: 0.125rem; /* 2px border radius */
-    /* No transition - instant appearance/rotation */
+    transition: opacity 0.15s ease-in-out; /* Smooth fade in/out */
     transform-origin: center;
+    pointer-events: auto; /* Ensure chevron always receives pointer events */
     flex-shrink: 0;
-    width: 20px; /* Explicit width: 16px icon + 4px padding */
-    height: 20px; /* Match height for consistent alignment */
+    width: 1.25em; /* Responsive width: scales with text size (20px at 16px base) */
+    height: 1.25em; /* Responsive height: scales with text size */
     display: flex;
     align-items: center;
     justify-content: center;
-    position: relative;
-    right: -0.35rem; /* 5.6px - move chevron right to center it between parent and child circle lines */
+    /* Position chevron directly aligned with the corresponding circle */
+    position: absolute;
+    left: -1.25rem; /* Position to the left of the circle */
+    top: 50%; /* Center vertically relative to the text content area */
+    transform: translate(-50%, -50%); /* Center chevron on coordinates */
+    z-index: 999; /* Very high z-index to ensure clickability over all other elements */
   }
 
   .node-chevron:focus {
     outline: 2px solid hsl(var(--ring));
     outline-offset: 2px;
+    opacity: 1; /* Always visible when focused */
   }
 
-  /* Show chevron only when hovering over the circle indicator itself */
-  .node-content-wrapper:hover .node-chevron {
+  /* Show chevron only when hovering directly over this node's content wrapper (not child nodes) */
+  .node-content-wrapper:hover > .node-chevron {
     opacity: 1;
   }
 
   /* Expanded state: rotate 90 degrees to point down */
   .node-chevron.expanded {
-    transform: rotate(90deg);
+    transform: translate(-50%, -50%) rotate(90deg);
   }
 
-  /* Spacer for alignment when no chevron */
+  /* Spacer for alignment when no chevron - no longer needed since chevron is absolutely positioned */
   .node-chevron-spacer {
-    width: 20px; /* Match chevron button width: 16px icon + 4px padding */
-    height: 20px; /* Match chevron button height */
-    margin-top: 0.28rem; /* Match chevron margin-top for perfect alignment */
-    flex-shrink: 0;
+    display: none; /* Hide spacer since chevron doesn't affect layout flow */
+  }
+
+  /* Header-level text-visual-center definitions - exactly matches BaseNode.svelte for perfect chevron alignment */
+  .node-content-wrapper {
+    /* Base correction factor - matches BaseNode.svelte exactly */
+    --baseline-correction: -0.06375em;
+    /* Default text visual center for normal text (not headers) */
+    --text-visual-center: calc(0.816em + var(--baseline-correction));
+  }
+
+  /* Set CSS variables directly on node-content-wrapper based on TextNode header levels */
+  .node-content-wrapper:has(:global(.node--h1)) {
+    --text-visual-center: calc(1.2em + var(--baseline-correction) + 0.053125em);
+  }
+
+  .node-content-wrapper:has(:global(.node--h2)) {
+    --text-visual-center: calc(0.975em + var(--baseline-correction) + 0.0542em);
+  }
+
+  .node-content-wrapper:has(:global(.node--h3)) {
+    --text-visual-center: calc(0.875em + var(--baseline-correction) + 0.1em);
+  }
+
+  .node-content-wrapper:has(:global(.node--h4)) {
+    --text-visual-center: calc(0.7875em + var(--baseline-correction));
+  }
+
+  .node-content-wrapper:has(:global(.node--h5)) {
+    --text-visual-center: calc(0.7em + var(--baseline-correction));
+  }
+
+  .node-content-wrapper:has(:global(.node--h6)) {
+    --text-visual-center: calc(0.6125em + var(--baseline-correction));
   }
 
   .node-children {
@@ -1111,10 +1150,7 @@
     transition:
       height 150ms ease-in-out,
       opacity 150ms ease-in-out;
-  }
-
-  /* Smooth transitions for collapse/expand */
-  .node-children {
-    overflow: hidden;
+    /* Allow chevrons to extend outside container bounds */
+    overflow: visible;
   }
 </style>
