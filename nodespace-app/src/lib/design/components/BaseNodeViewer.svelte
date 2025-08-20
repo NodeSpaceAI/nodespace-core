@@ -60,6 +60,11 @@
     // Create new node using NodeManager
     const newNodeId = nodeManager.createNode(afterNodeId, newContent || '', nodeType);
 
+    // CRITICAL: Request focus for new node after DOM update
+    setTimeout(() => {
+      nodeManagerEvents.focusRequested(newNodeId, 0);
+    }, 50);
+
     // Handle HTML formatting conversion if needed
     if (newContent && newContent.includes('<span class="markdown-')) {
       setTimeout(() => {
