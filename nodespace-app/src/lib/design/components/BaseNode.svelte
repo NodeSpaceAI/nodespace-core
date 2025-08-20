@@ -6,8 +6,8 @@
 -->
 
 <script lang="ts">
-  import { createEventDispatcher, onDestroy } from 'svelte';
-  import Icon from '$lib/design/icons';
+  import { createEventDispatcher, onDestroy, onMount } from 'svelte';
+  import Icon, { type IconName } from '$lib/design/icons';
   import {
     ContentEditableController,
     type ContentEditableEvents
@@ -59,10 +59,12 @@
   };
 
   // Initialize controller when element is available
-  $: if (contentEditableElement && !controller) {
-    controller = new ContentEditableController(contentEditableElement, nodeId, controllerEvents);
-    controller.initialize(content, autoFocus);
-  }
+  onMount(() => {
+    if (contentEditableElement && !controller) {
+      controller = new ContentEditableController(contentEditableElement, nodeId, controllerEvents);
+      controller.initialize(content, autoFocus);
+    }
+  });
 
   // Update content when prop changes
   $: if (controller && content !== undefined) {
@@ -91,7 +93,7 @@
     .join(' ');
 
   // Icon for node type
-  $: icon = children.length > 0 ? 'circle-ring' : 'circle';
+  $: icon: IconName = children.length > 0 ? 'circle-ring' : 'circle';
   $: nodeColor = `hsl(var(--node-${nodeType}, var(--node-text)))`;
 </script>
 

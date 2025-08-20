@@ -46,11 +46,37 @@ export class ReactiveNodeManager extends NodeManager {
    */
   createNode(afterNodeId: string, content: string = '', nodeType: string = 'text'): string {
     const result = super.createNode(afterNodeId, content, nodeType);
-    // Incremental update: add new node to reactive state
+    
+    // CRITICAL FIX: Comprehensive reactive state synchronization
+    // The base class modifies multiple parts of the state during createNode:
+    // 1. Creates new node in _nodes map
+    // 2. Updates parent's children array OR root nodes array
+    // 3. Clears autoFocus on all nodes and sets it on new node
+    // We must sync ALL these changes to reactive state:
+    
     const newNode = super.nodes.get(result);
-    if (newNode) {
-      this._reactiveNodes.set(result, newNode);
+    if (!newNode) return result;
+    
+    // Add the new node to reactive state
+    this._reactiveNodes.set(result, newNode);
+    
+    // Update the parent node's children array in reactive state
+    if (newNode.parentId) {
+      const parentNode = super.nodes.get(newNode.parentId);
+      if (parentNode) {
+        this._reactiveNodes.set(newNode.parentId, parentNode);
+      }
+    } else {
+      // Update root nodes list for root-level insertions
+      const baseRootIds = super.rootNodeIds;
+      this._reactiveRootNodeIds.length = 0;
+      this._reactiveRootNodeIds.push(...baseRootIds);
     }
+    
+    // Sync autoFocus changes - base class clears all and sets new node
+    // Rather than iterate all nodes, sync efficiently:
+    this.updateAutoFocusState();
+    
     return result;
   }
 
@@ -171,5 +197,19 @@ export class ReactiveNodeManager extends NodeManager {
     }
 
     this._reactiveRootNodeIds.push(...baseRootIds);
+  }
+
+  /**
+   * Update autoFocus state efficiently - only update nodes that changed
+   */
+  private updateAutoFocusState(): void {
+    // Base class sets autoFocus on exactly one node and clears all others
+    // Find the node with autoFocus=true and sync efficiently
+    for (const [id, baseNode] of super.nodes) {
+      const reactiveNode = this._reactiveNodes.get(id);
+      if (reactiveNode && reactiveNode.autoFocus !== baseNode.autoFocus) {
+        this._reactiveNodes.set(id, baseNode);
+      }
+    }
   }
 }

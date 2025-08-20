@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>BaseNode Controller Debug Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .test-result { margin: 10px 0; padding: 10px; border: 1px solid #ccc; }
+        .pass { background-color: #e8f5e9; border-color: #4caf50; }
+        .fail { background-color: #ffebee; border-color: #f44336; }
+        .contenteditable { border: 1px solid #333; padding: 10px; margin: 10px 0; min-height: 40px; }
+    </style>
+</head>
+<body>
+    <h1>BaseNode Controller Debug Test</h1>
+    
+    <div class="test-result" id="element-binding-test">
+        <h3>Test 1: Element Binding</h3>
+        <div class="contenteditable" 
+             contenteditable="true" 
+             id="test-element"
+             data-test="element-binding">
+            Type here to test...
+        </div>
+        <div id="binding-result">Status: Checking...</div>
+    </div>
+    
+    <div class="test-result" id="manual-controller-test">
+        <h3>Test 2: Manual Controller Creation</h3>
+        <div class="contenteditable" 
+             contenteditable="true" 
+             id="manual-test-element"
+             data-test="manual-controller">
+            Manual controller test...
+        </div>
+        <div id="manual-result">Status: Checking...</div>
+    </div>
+    
+    <div class="test-result" id="svelte5-reactivity-test">
+        <h3>Test 3: Svelte 5 Reactivity Pattern</h3>
+        <div class="contenteditable" 
+             contenteditable="true" 
+             id="svelte5-test-element"
+             data-test="svelte5-reactivity">
+            Svelte 5 test...
+        </div>
+        <div id="svelte5-result">Status: Checking...</div>
+    </div>
+
+    <script type="module">
+        // Mock ContentEditableController for testing
+        class MockContentEditableController {
+            constructor(element, nodeId, events) {
+                this.element = element;
+                this.nodeId = nodeId;
+                this.events = events;
+                this.isInitialized = false;
+                console.log('MockContentEditableController created', { element, nodeId, events });
+                this.setupEventListeners();
+            }
+
+            setupEventListeners() {
+                console.log('Setting up event listeners for', this.nodeId);
+                this.element.addEventListener('keydown', this.handleKeyDown.bind(this));
+                this.element.addEventListener('input', this.handleInput.bind(this));
+                console.log('Event listeners attached to', this.element.id);
+                
+                // Verify listeners are attached
+                const listenerCount = this.getEventListenerCount();
+                console.log('Event listener count:', listenerCount);
+            }
+
+            getEventListenerCount() {
+                // This is a hack to check if listeners are attached
+                const events = ['keydown', 'input', 'focus', 'blur'];
+                let count = 0;
+                events.forEach(eventType => {
+                    try {
+                        // Try to see if we can detect listeners (limited browser support)
+                        const listeners = this.element['_events'] || {};
+                        if (listeners[eventType]) count++;
+                    } catch (e) {
+                        // Browser doesn't expose listener info
+                    }
+                });
+                return count;
+            }
+
+            initialize(content, autoFocus = false) {
+                console.log('Initializing controller with content:', content);
+                this.element.textContent = content;
+                if (autoFocus) {
+                    this.element.focus();
+                }
+                this.isInitialized = true;
+            }
+
+            handleKeyDown(event) {
+                console.log('KeyDown event received:', event.key);
+                if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    console.log('Enter key pressed - should create new node');
+                    this.events.createNewNode({
+                        afterNodeId: this.nodeId,
+                        nodeType: 'text',
+                        currentContent: this.element.textContent || '',
+                        newContent: ''
+                    });
+                }
+            }
+
+            handleInput(event) {
+                console.log('Input event received');
+                this.events.contentChanged(this.element.textContent || '');
+            }
+
+            destroy() {
+                console.log('Controller destroyed');
+            }
+        }
+
+        // Test 1: Element Binding Test
+        function testElementBinding() {
+            console.log('=== Test 1: Element Binding ===');
+            const element = document.getElementById('test-element');
+            const result = document.getElementById('binding-result');
+            
+            if (!element) {
+                result.innerHTML = 'Status: FAIL - Element not found';
+                result.parentElement.className = 'test-result fail';
+                return false;
+            }
+
+            // Check if element is accessible
+            const hasId = !!element.id;
+            const isContentEditable = element.contentEditable === 'true';
+            const hasParent = !!element.parentElement;
+            
+            console.log('Element binding check:', { hasId, isContentEditable, hasParent });
+            
+            if (hasId && isContentEditable && hasParent) {
+                result.innerHTML = `Status: PASS - Element bound successfully (ID: ${element.id})`;
+                result.parentElement.className = 'test-result pass';
+                return true;
+            } else {
+                result.innerHTML = `Status: FAIL - Element binding issues (hasId: ${hasId}, contentEditable: ${isContentEditable}, hasParent: ${hasParent})`;
+                result.parentElement.className = 'test-result fail';
+                return false;
+            }
+        }
+
+        // Test 2: Manual Controller Creation
+        function testManualController() {
+            console.log('=== Test 2: Manual Controller Creation ===');
+            const element = document.getElementById('manual-test-element');
+            const result = document.getElementById('manual-result');
+            
+            if (!element) {
+                result.innerHTML = 'Status: FAIL - Element not found';
+                result.parentElement.className = 'test-result fail';
+                return false;
+            }
+
+            try {
+                const mockEvents = {
+                    contentChanged: (content) => console.log('Content changed:', content),
+                    headerLevelChanged: (level) => console.log('Header level changed:', level),
+                    focus: () => console.log('Focus event'),
+                    blur: () => console.log('Blur event'),
+                    createNewNode: (data) => {
+                        console.log('Create new node event:', data);
+                        result.innerHTML += '<br>✅ Enter key functionality working!';
+                    },
+                    indentNode: (data) => console.log('Indent node:', data),
+                    outdentNode: (data) => console.log('Outdent node:', data),
+                    navigateArrow: (data) => console.log('Navigate arrow:', data),
+                    combineWithPrevious: (data) => console.log('Combine with previous:', data),
+                    deleteNode: (data) => console.log('Delete node:', data)
+                };
+
+                const controller = new MockContentEditableController(element, 'manual-test-node', mockEvents);
+                controller.initialize('Test content', false);
+
+                // Test Enter key functionality
+                element.focus();
+                
+                result.innerHTML = 'Status: PASS - Controller created successfully. Try pressing Enter!';
+                result.parentElement.className = 'test-result pass';
+                return true;
+            } catch (error) {
+                console.error('Manual controller creation failed:', error);
+                result.innerHTML = `Status: FAIL - Controller creation error: ${error.message}`;
+                result.parentElement.className = 'test-result fail';
+                return false;
+            }
+        }
+
+        // Test 3: Svelte 5 Reactivity Pattern Test
+        function testSvelte5Reactivity() {
+            console.log('=== Test 3: Svelte 5 Reactivity Pattern ===');
+            const element = document.getElementById('svelte5-test-element');
+            const result = document.getElementById('svelte5-result');
+            
+            if (!element) {
+                result.innerHTML = 'Status: FAIL - Element not found';
+                result.parentElement.className = 'test-result fail';
+                return false;
+            }
+
+            // Simulate Svelte 5 reactivity issue
+            let contentEditableElement = null;
+            let controller = null;
+
+            // This simulates the bind:this={contentEditableElement} binding
+            setTimeout(() => {
+                contentEditableElement = element;
+                console.log('Element binding simulated');
+                
+                // This simulates the reactive statement: $: if (contentEditableElement && !controller)
+                setTimeout(() => {
+                    if (contentEditableElement && !controller) {
+                        console.log('Reactive statement triggered - creating controller');
+                        try {
+                            const mockEvents = {
+                                contentChanged: (content) => console.log('Content changed:', content),
+                                headerLevelChanged: (level) => console.log('Header level changed:', level),
+                                focus: () => console.log('Focus event'),
+                                blur: () => console.log('Blur event'),
+                                createNewNode: (data) => {
+                                    console.log('Create new node event:', data);
+                                    result.innerHTML += '<br>✅ Svelte 5 reactivity working with Enter key!';
+                                },
+                                indentNode: (data) => console.log('Indent node:', data),
+                                outdentNode: (data) => console.log('Outdent node:', data),
+                                navigateArrow: (data) => console.log('Navigate arrow:', data),
+                                combineWithPrevious: (data) => console.log('Combine with previous:', data),
+                                deleteNode: (data) => console.log('Delete node:', data)
+                            };
+
+                            controller = new MockContentEditableController(contentEditableElement, 'svelte5-test-node', mockEvents);
+                            controller.initialize('Svelte 5 test content', false);
+                            
+                            result.innerHTML = 'Status: PASS - Svelte 5 reactivity pattern working. Try pressing Enter!';
+                            result.parentElement.className = 'test-result pass';
+                        } catch (error) {
+                            console.error('Svelte 5 reactivity test failed:', error);
+                            result.innerHTML = `Status: FAIL - Svelte 5 reactivity error: ${error.message}`;
+                            result.parentElement.className = 'test-result fail';
+                        }
+                    }
+                }, 100); // Simulate Svelte reactivity delay
+            }, 50); // Simulate bind:this delay
+        }
+
+        // Run all tests
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('Running BaseNode Controller Debug Tests');
+            
+            setTimeout(() => {
+                testElementBinding();
+                testManualController();
+                testSvelte5Reactivity();
+            }, 100);
+        });
+
+        // Add Enter key test for verification
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && event.target.contentEditable === 'true') {
+                console.log('Global Enter key detected on contenteditable element:', event.target.id);
+            }
+        });
+    </script>
+</body>
+</html>
