@@ -113,21 +113,23 @@
 
 <style>
   .node {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.25rem;
+    position: relative;
     padding: 0.25rem;
+    padding-left: calc(0.25rem + 20px); /* Original padding + space for indicator */
     width: 100%;
   }
 
   .node__indicator {
-    flex-shrink: 0;
-    margin-top: 0.28rem;
+    position: absolute;
+    left: 8px; /* Center X coordinate (half of 16px icon width) */
+    /* Precise vertical centering: container padding + empirically corrected visual text center */
+    top: calc(0.25rem + var(--text-visual-center, calc(0.816em + var(--baseline-correction, -0.15em))));
+    transform: translate(-50%, -50%); /* Center icon on coordinates */
+    width: 16px;
+    height: 16px;
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
   }
 
   .node__content {
@@ -154,37 +156,72 @@
     cursor: text;
   }
 
-  /* Header styling */
+  /* Header styling with empirically corrected visual text center for pixel-perfect circle alignment */
+  .node {
+    /* Base correction factor adjusted based on precise Playwright measurements - circles positioned exactly at text visual center */
+    --baseline-correction: -0.06375em; /* Refined: original -0.12em + 0.05625em to move circles UP by measured 0.9px on 16px text */
+  }
+
+  .node--h1 {
+    /* 2rem * 1.2 * 0.5 + baseline correction = true visual center for H1 (corrected to move circles UP by measured 1.7px) */
+    --text-visual-center: calc(1.2em + var(--baseline-correction) + 0.053125em);
+  }
+  
   .node--h1 .node__content {
     font-size: 2rem;
     font-weight: bold;
     line-height: 1.2;
   }
 
+  .node--h2 {
+    /* 1.5rem * 1.3 * 0.5 + baseline correction = true visual center for H2 (corrected to move circles UP by measured 1.3px) */
+    --text-visual-center: calc(0.975em + var(--baseline-correction) + 0.0542em);
+  }
+  
   .node--h2 .node__content {
     font-size: 1.5rem;
     font-weight: bold;
     line-height: 1.3;
   }
 
+  .node--h3 {
+    /* 1.25rem * 1.4 * 0.5 + baseline correction = true visual center for H3 (fine-tuned for perfect alignment - additional 0.03em correction) */
+    --text-visual-center: calc(0.875em + var(--baseline-correction) + 0.1em);
+  }
+  
   .node--h3 .node__content {
     font-size: 1.25rem;
     font-weight: bold;
     line-height: 1.4;
   }
 
+  .node--h4 {
+    /* 1.125rem * 1.4 * 0.5 + baseline correction = true visual center for H4 */
+    --text-visual-center: calc(0.7875em + var(--baseline-correction));
+  }
+  
   .node--h4 .node__content {
     font-size: 1.125rem;
     font-weight: bold;
     line-height: 1.4;
   }
 
+  .node--h5 {
+    /* 1rem * 1.4 * 0.5 + baseline correction = true visual center for H5 */
+    --text-visual-center: calc(0.7em + var(--baseline-correction));
+  }
+  
   .node--h5 .node__content {
     font-size: 1rem;
     font-weight: bold;
     line-height: 1.4;
   }
 
+  .node--h6 {
+    /* 0.875rem * 1.4 * 0.5 + baseline correction = true visual center for H6 */
+    --text-visual-center: calc(0.6125em + var(--baseline-correction));
+  }
+  
   .node--h6 .node__content {
     font-size: 0.875rem;
     font-weight: bold;

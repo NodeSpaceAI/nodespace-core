@@ -10,7 +10,7 @@ describe('ContentEditableController', () => {
   let element: HTMLDivElement;
   let controller: ContentEditableController;
   let mockEvents: ContentEditableEvents;
-  let eventCalls: Record<string, any[]>;
+  let eventCalls: Record<string, unknown[]>;
 
   beforeEach(() => {
     // Create mock element

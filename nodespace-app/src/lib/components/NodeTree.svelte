@@ -88,6 +88,7 @@
 
   // Reactive statement to get visible nodes
   $: visibleNodes = getVisibleNodes(nodes);
+
 </script>
 
 <div class="ns-node-tree" role="tree" aria-label="Node hierarchy">
@@ -142,6 +143,8 @@
   .ns-node-tree {
     width: 100%;
     min-height: 200px;
+    /* Base correction factor - exactly matches BaseNode.svelte for consistent circle/chevron alignment */
+    --baseline-correction: -0.06375em;
   }
 
   .ns-node-tree__item {
@@ -152,11 +155,13 @@
     transition: margin-left var(--ns-duration-normal) var(--ns-easing-easeInOut);
   }
 
+
   .ns-node-tree__expand-btn {
     flex-shrink: 0;
     width: 20px;
     height: 20px;
-    margin-top: var(--ns-spacing-2);
+    /* Perfect alignment: empirical correction to match BaseNode circles exactly */
+    margin-top: calc(0.25rem + var(--text-visual-center, calc(0.816em + var(--baseline-correction))) + 32px);
     padding: 0;
     border: none;
     background: var(--ns-color-surface-panel);
@@ -169,6 +174,7 @@
     transition: all var(--ns-duration-fast) var(--ns-easing-easeInOut);
     font-size: var(--ns-font-size-xs);
   }
+
 
   .ns-node-tree__expand-btn:hover {
     background: var(--ns-color-surface-hover);
@@ -185,8 +191,10 @@
     flex-shrink: 0;
     width: 20px;
     height: 20px;
-    margin-top: var(--ns-spacing-2);
+    /* Match expand button positioning: anchor to circle indicators for consistent alignment */
+    margin-top: calc(0.25rem + var(--text-visual-center, calc(0.816em + var(--baseline-correction))) + 32px);
   }
+
 
   .ns-node-tree__expand-icon {
     display: block;
@@ -244,6 +252,31 @@
     .ns-node-tree__expand-icon {
       transition: none;
     }
+  }
+
+  /* Header-level text-visual-center definitions - exactly matches BaseNode.svelte for perfect chevron alignment */
+  .ns-node-tree :global(.node--h1) {
+    --text-visual-center: calc(1.2em + var(--baseline-correction) + 0.053125em);
+  }
+
+  .ns-node-tree :global(.node--h2) {
+    --text-visual-center: calc(0.975em + var(--baseline-correction) + 0.0542em);
+  }
+
+  .ns-node-tree :global(.node--h3) {
+    --text-visual-center: calc(0.875em + var(--baseline-correction) + 0.1em);
+  }
+
+  .ns-node-tree :global(.node--h4) {
+    --text-visual-center: calc(0.7875em + var(--baseline-correction));
+  }
+
+  .ns-node-tree :global(.node--h5) {
+    --text-visual-center: calc(0.7em + var(--baseline-correction));
+  }
+
+  .ns-node-tree :global(.node--h6) {
+    --text-visual-center: calc(0.6125em + var(--baseline-correction));
   }
 
   /* High contrast mode support */

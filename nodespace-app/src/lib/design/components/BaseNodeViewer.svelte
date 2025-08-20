@@ -598,6 +598,8 @@
     }
   }
 
+
+
   // Get node type color from design system
   function getNodeColor(nodeType: string): string {
     return `hsl(var(--node-${nodeType}, var(--node-text)))`;
