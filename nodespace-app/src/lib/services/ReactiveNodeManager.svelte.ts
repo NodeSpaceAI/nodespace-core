@@ -46,11 +46,13 @@ export class ReactiveNodeManager extends NodeManager {
    */
   createNode(afterNodeId: string, content: string = '', nodeType: string = 'text'): string {
     const result = super.createNode(afterNodeId, content, nodeType);
-    // Incremental update: add new node to reactive state
-    const newNode = super.nodes.get(result);
-    if (newNode) {
-      this._reactiveNodes.set(result, newNode);
-    }
+    
+    // Critical: Need full sync because createNode updates:
+    // 1. New node in _nodes
+    // 2. Parent's children array (or _rootNodeIds)
+    // 3. AutoFocus states on multiple nodes
+    this.syncReactiveState();
+    
     return result;
   }
 
