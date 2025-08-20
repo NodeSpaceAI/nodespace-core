@@ -116,6 +116,7 @@ junit.xml
 *.xml
 *.html.meta.json.gz
 results.json
+.playwright-mcp/
 
 # Temporary files
 *.tmp
