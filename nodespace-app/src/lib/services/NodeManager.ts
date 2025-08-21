@@ -14,6 +14,8 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { ContentProcessor } from './ContentProcessor';
+import { eventBus } from './EventBus';
+import type { NodeStatus } from './EventTypes';
 
 export interface Node {
   id: string;
@@ -51,6 +53,8 @@ export class NodeManager {
   private _collapsedNodes: Set<string>;
   private events: NodeManagerEvents;
   protected contentProcessor: ContentProcessor;
+  private activeNodeId?: string;
+  private readonly serviceName = 'NodeManager';
 
   constructor(events: NodeManagerEvents) {
     this._nodes = new Map<string, Node>();
@@ -58,6 +62,33 @@ export class NodeManager {
     this._collapsedNodes = new Set<string>();
     this.events = events;
     this.contentProcessor = ContentProcessor.getInstance();
+
+    // Set up EventBus subscriptions for coordination
+    this.setupEventBusIntegration();
+  }
+
+  /**
+   * Set up EventBus integration for dynamic coordination
+   */
+  private setupEventBusIntegration(): void {
+    // Listen for cache invalidation events that might affect nodes
+    eventBus.subscribe('cache:invalidate', (event) => {
+      if (event.scope === 'node' && event.nodeId) {
+        // Node-specific cache invalidation - might need to refresh decorations
+        this.emitNodeStatusChanged(event.nodeId, 'processing', 'cache invalidation');
+      } else if (event.scope === 'global') {
+        // Global cache invalidation - emit events for all nodes
+        for (const nodeId of this._nodes.keys()) {
+          this.emitDecorationUpdateNeeded(nodeId, 'cache-invalidated');
+        }
+      }
+    });
+
+    // Listen for reference resolution events
+    eventBus.subscribe('reference:resolved', (event) => {
+      // When a reference is resolved, update any decorations that might be affected
+      this.emitDecorationUpdateNeeded(event.nodeId, 'reference-updated');
+    });
   }
 
   /**
@@ -392,8 +423,31 @@ export class NodeManager {
       }
     }
 
+    // Emit EventBus events for dynamic coordination
+    eventBus.emit({
+      type: 'node:created',
+      namespace: 'lifecycle',
+      source: this.serviceName,
+      nodeId: newId,
+      parentId: afterNode.parentId,
+      nodeType,
+      metadata: { inheritHeaderLevel: finalHeaderLevel, cursorAtBeginning }
+    });
+
+    eventBus.emit({
+      type: 'hierarchy:changed',
+      namespace: 'lifecycle',
+      source: this.serviceName,
+      affectedNodes: [newId, afterNodeId],
+      changeType: 'move'
+    });
+
+    // Legacy callback events (maintain compatibility)
     this.events.nodeCreated(newId);
     this.events.hierarchyChanged();
+
+    // Emit cache invalidation for any references to the parent node
+    this.emitCacheInvalidate('node', afterNode.parentId || afterNodeId, 'node created');
 
     // Request focus with cursor positioned after inherited syntax for new nodes
     if (finalContent.length > 0) {
@@ -402,6 +456,7 @@ export class NodeManager {
         // Use setTimeout to ensure DOM has been updated before focusing
         setTimeout(() => {
           this.events.focusRequested(newId, cursorPosition);
+          this.emitFocusRequested(newId, cursorPosition, 'node creation');
         }, 0);
       }
     }
@@ -415,7 +470,28 @@ export class NodeManager {
   updateNodeContent(nodeId: string, content: string): void {
     const node = this.findNode(nodeId);
     if (node) {
+      const previousContent = node.content;
       node.content = content;
+
+      // Emit EventBus events for dynamic coordination
+      eventBus.emit({
+        type: 'node:updated',
+        namespace: 'lifecycle',
+        source: this.serviceName,
+        nodeId,
+        updateType: 'content',
+        previousValue: previousContent,
+        newValue: content
+      });
+
+      // Emit decoration update needed for references
+      this.emitDecorationUpdateNeeded(nodeId, 'content-changed');
+
+      // Emit references update needed for any nodes that reference this one
+      this.emitReferencesUpdateNeeded(nodeId, 'content');
+
+      // Invalidate cache for this specific node
+      this.emitCacheInvalidate('node', nodeId, 'content updated');
     }
   }
 
@@ -451,10 +527,41 @@ export class NodeManager {
       }
     };
 
+    // Collect children before deletion for event emission
+    const childrenTransferred: string[] = [];
+    if (node.children.length > 0) {
+      childrenTransferred.push(...node.children);
+    }
+
     deleteRecursive(nodeId);
 
+    // Emit EventBus events for dynamic coordination
+    eventBus.emit({
+      type: 'node:deleted',
+      namespace: 'lifecycle',
+      source: this.serviceName,
+      nodeId,
+      parentId: node.parentId,
+      childrenTransferred
+    });
+
+    eventBus.emit({
+      type: 'hierarchy:changed',
+      namespace: 'lifecycle',
+      source: this.serviceName,
+      affectedNodes: [nodeId, ...(node.parentId ? [node.parentId] : [])],
+      changeType: 'move'
+    });
+
+    // Legacy callback events (maintain compatibility)
     this.events.nodeDeleted(nodeId);
     this.events.hierarchyChanged();
+
+    // Emit references update needed for deletion
+    this.emitReferencesUpdateNeeded(nodeId, 'deletion');
+
+    // Invalidate cache globally as references may be broken
+    this.emitCacheInvalidate('global', undefined, 'node deleted');
   }
 
   /**
@@ -493,7 +600,21 @@ export class NodeManager {
     // Update depth of all descendants
     this.updateDescendantDepths(nodeId);
 
+    // Emit EventBus events for dynamic coordination
+    eventBus.emit({
+      type: 'hierarchy:changed',
+      namespace: 'lifecycle',
+      source: this.serviceName,
+      affectedNodes: [nodeId, previousSiblingId],
+      changeType: 'indent'
+    });
+
+    // Legacy callback events (maintain compatibility)
     this.events.hierarchyChanged();
+
+    // Emit references update needed for hierarchy change
+    this.emitReferencesUpdateNeeded(nodeId, 'hierarchy');
+
     return true;
   }
 
@@ -530,7 +651,21 @@ export class NodeManager {
     // Update depth of all descendants
     this.updateDescendantDepths(nodeId);
 
+    // Emit EventBus events for dynamic coordination
+    eventBus.emit({
+      type: 'hierarchy:changed',
+      namespace: 'lifecycle',
+      source: this.serviceName,
+      affectedNodes: [nodeId, parent.id],
+      changeType: 'outdent'
+    });
+
+    // Legacy callback events (maintain compatibility)
     this.events.hierarchyChanged();
+
+    // Emit references update needed for hierarchy change
+    this.emitReferencesUpdateNeeded(nodeId, 'hierarchy');
+
     return true;
   }
 
@@ -551,6 +686,18 @@ export class NodeManager {
       this._collapsedNodes.add(nodeId); // Collapsed = in collapsed set
     }
 
+    // Emit EventBus events for dynamic coordination
+    this.emitNodeStatusChanged(nodeId, node.expanded ? 'expanded' : 'collapsed', 'toggle expanded');
+
+    eventBus.emit({
+      type: 'hierarchy:changed',
+      namespace: 'lifecycle',
+      source: this.serviceName,
+      affectedNodes: [nodeId],
+      changeType: node.expanded ? 'expand' : 'collapse'
+    });
+
+    // Legacy callback events (maintain compatibility)
     this.events.hierarchyChanged();
     return true;
   }
@@ -807,5 +954,107 @@ export class NodeManager {
    */
   isNodeCollapsed(nodeId: string): boolean {
     return this._collapsedNodes.has(nodeId);
+  }
+
+  // ============================================================================
+  // EventBus Integration Methods
+  // ============================================================================
+
+  /**
+   * Set the active node and emit status change event
+   */
+  public setActiveNode(nodeId: string): void {
+    const previousNodeId = this.activeNodeId;
+
+    if (previousNodeId) {
+      this.emitNodeStatusChanged(previousNodeId, 'active', 'deactivated');
+    }
+
+    this.activeNodeId = nodeId;
+    this.emitNodeStatusChanged(nodeId, 'focused', 'activated');
+  }
+
+  /**
+   * Emit node status changed event
+   */
+  private emitNodeStatusChanged(nodeId: string, status: NodeStatus, reason: string): void {
+    eventBus.emit({
+      type: 'node:status-changed',
+      namespace: 'coordination',
+      source: this.serviceName,
+      nodeId,
+      status,
+      metadata: { reason }
+    });
+  }
+
+  /**
+   * Emit decoration update needed event
+   */
+  private emitDecorationUpdateNeeded(
+    nodeId: string,
+    reason: 'content-changed' | 'status-changed' | 'reference-updated' | 'cache-invalidated'
+  ): void {
+    eventBus.emit({
+      type: 'decoration:update-needed',
+      namespace: 'interaction',
+      source: this.serviceName,
+      nodeId,
+      decorationType: 'nodespace-reference',
+      reason
+    });
+  }
+
+  /**
+   * Emit references update needed event
+   */
+  private emitReferencesUpdateNeeded(
+    nodeId: string,
+    updateType: 'content' | 'status' | 'hierarchy' | 'deletion'
+  ): void {
+    eventBus.emit({
+      type: 'references:update-needed',
+      namespace: 'coordination',
+      source: this.serviceName,
+      nodeId,
+      updateType
+    });
+  }
+
+  /**
+   * Emit cache invalidation event
+   */
+  private emitCacheInvalidate(
+    scope: 'single' | 'node' | 'global',
+    nodeId?: string,
+    reason?: string
+  ): void {
+    eventBus.emit({
+      type: 'cache:invalidate',
+      namespace: 'coordination',
+      source: this.serviceName,
+      cacheKey: nodeId ? `node:${nodeId}` : 'global',
+      scope,
+      nodeId,
+      reason: reason || 'node operation'
+    });
+  }
+
+  /**
+   * Emit focus requested event through EventBus
+   */
+  private emitFocusRequested(
+    nodeId: string,
+    position?: number,
+    reason: string = 'programmatic'
+  ): void {
+    eventBus.emit({
+      type: 'focus:requested',
+      namespace: 'navigation',
+      source: this.serviceName,
+      nodeId,
+      position,
+      reason
+    });
   }
 }

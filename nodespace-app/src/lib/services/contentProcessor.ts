@@ -13,6 +13,7 @@
  */
 
 import { stripMarkdown, validateMarkdown } from './markdownUtils.js';
+import { eventBus } from './EventBus';
 
 // ============================================================================
 // Core AST Types for Dual-Representation
@@ -117,6 +118,7 @@ export interface PreparedContent {
 
 export class ContentProcessor {
   private static instance: ContentProcessor;
+  private readonly serviceName = 'ContentProcessor';
 
   // Performance optimization: Cache frequently accessed patterns
   private readonly HEADER_REGEX = /^(#{1,6})\s+(.*)$/gm;
@@ -130,6 +132,24 @@ export class ContentProcessor {
       ContentProcessor.instance = new ContentProcessor();
     }
     return ContentProcessor.instance;
+  }
+
+  private constructor() {
+    // Set up EventBus integration for reference coordination
+    this.setupEventBusIntegration();
+  }
+
+  /**
+   * Set up EventBus integration for reference coordination
+   */
+  private setupEventBusIntegration(): void {
+    // Listen for references update needed events
+    eventBus.subscribe('references:update-needed', (event) => {
+      if (event.updateType === 'content' || event.updateType === 'deletion') {
+        // When content changes or nodes are deleted, we might need to update references
+        this.emitCacheInvalidate('node', event.nodeId, 'reference content changed');
+      }
+    });
   }
 
   // ========================================================================
@@ -753,6 +773,56 @@ export class ContentProcessor {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
     }
+  }
+
+  // ============================================================================
+  // EventBus Integration Methods
+  // ============================================================================
+
+  /**
+   * Emit cache invalidation event
+   */
+  private emitCacheInvalidate(
+    scope: 'single' | 'node' | 'global',
+    nodeId?: string,
+    reason?: string
+  ): void {
+    eventBus.emit({
+      type: 'cache:invalidate',
+      namespace: 'coordination',
+      source: this.serviceName,
+      cacheKey: nodeId ? `contentProcessor:${nodeId}` : 'contentProcessor:global',
+      scope,
+      nodeId,
+      reason: reason || 'content processing'
+    });
+  }
+
+  /**
+   * Process content and emit wikilink detection events
+   */
+  public processContentWithEventEmission(content: string, nodeId: string): PreparedContent {
+    const prepared = this.prepareBacklinkSyntax(content);
+
+    // Emit events for detected wikilinks (Phase 2+ preparation)
+    for (const wikiLink of prepared.wikiLinks) {
+      eventBus.emit({
+        type: 'backlink:detected',
+        namespace: 'phase2',
+        source: this.serviceName,
+        sourceNodeId: nodeId,
+        targetNodeId: wikiLink.target, // In Phase 2, this will be resolved to actual node ID
+        linkType: 'wikilink',
+        linkText: wikiLink.displayText,
+        metadata: {
+          startPos: wikiLink.startPos,
+          endPos: wikiLink.endPos,
+          target: wikiLink.target
+        }
+      });
+    }
+
+    return prepared;
   }
 }
 

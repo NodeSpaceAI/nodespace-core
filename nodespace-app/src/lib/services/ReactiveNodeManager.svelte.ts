@@ -6,6 +6,7 @@
  */
 
 import { NodeManager, type NodeManagerEvents, type Node } from './NodeManager';
+import { eventBus } from './EventBus';
 
 export class ReactiveNodeManager extends NodeManager {
   private _reactiveNodes = $state(new Map<string, Node>());
@@ -17,6 +18,42 @@ export class ReactiveNodeManager extends NodeManager {
 
     // Sync reactive state with base class state
     this.syncReactiveState();
+
+    // Set up EventBus subscriptions for reactive updates
+    this.setupReactiveEventBusIntegration();
+  }
+
+  /**
+   * Set up EventBus subscriptions for reactive UI updates
+   */
+  private setupReactiveEventBusIntegration(): void {
+    // Listen for node status changes to trigger reactivity
+    eventBus.subscribe('node:status-changed', (_event) => {
+      // Force reactivity update when node status changes
+      this.forceUIUpdate();
+    });
+
+    // Listen for decoration updates to trigger re-rendering
+    eventBus.subscribe('decoration:update-needed', (event) => {
+      // Update the specific node to trigger reactivity
+      const node = super.nodes.get(event.nodeId);
+      if (node) {
+        this._reactiveNodes.set(event.nodeId, { ...node });
+        this.forceUIUpdate();
+      }
+    });
+
+    // Listen for hierarchy changes from EventBus
+    eventBus.subscribe('hierarchy:changed', () => {
+      this.forceUIUpdate();
+    });
+
+    // Listen for focus requests
+    eventBus.subscribe('focus:requested', (_event) => {
+      // The focus handling is still delegated to the legacy callback system
+      // but we can add reactive state updates here if needed
+      this.forceUIUpdate();
+    });
   }
 
   /**
