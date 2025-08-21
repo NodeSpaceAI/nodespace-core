@@ -544,6 +544,144 @@ export class EnhancedNodeManager extends NodeManager {
   }
 
   // ========================================================================
+  // Bulk Operations for Client-Side Structure Building
+  // ========================================================================
+
+  /**
+   * Fetch all nodes in a root hierarchy for client-side structure building
+   * This method enables efficient bulk fetching that clients can then organize
+   * based on parent_id and sibling ordering relationships
+   */
+  public getAllNodesInRoot(rootId: string): {
+    nodes: Map<string, Node>;
+    rootNode: Node | null;
+    totalCount: number;
+    maxDepth: number;
+    structure: Array<{
+      id: string;
+      node: Node;
+      parent_id: string | null;
+      before_sibling_id: string | null;
+      depth: number;
+      children_count: number;
+      mentions_count: number;
+      backlinks_count: number;
+    }>;
+  } {
+    // Use HierarchyService for efficient bulk fetching
+    const hierarchyResult = this.hierarchyService.getAllNodesInRoot(rootId);
+    
+    // Convert to Node objects and add enhanced metadata
+    const nodeMap = new Map<string, Node>();
+    const structure: Array<{
+      id: string;
+      node: Node;
+      parent_id: string | null;
+      before_sibling_id: string | null;
+      depth: number;
+      children_count: number;
+      mentions_count: number;
+      backlinks_count: number;
+    }> = [];
+
+    for (const [nodeId, nodeData] of hierarchyResult.nodes.entries()) {
+      const node = nodeData as Node;
+      nodeMap.set(nodeId, node);
+
+      // Build structure information for client-side organization
+      const children = this.hierarchyService.getChildren(nodeId);
+      const backlinks = this.getNodeBacklinks(nodeId);
+
+      structure.push({
+        id: nodeId,
+        node: node,
+        parent_id: node.parentId || null,
+        before_sibling_id: (node as any).before_sibling_id || null,
+        depth: this.hierarchyService.getNodeDepth(nodeId),
+        children_count: children.length,
+        mentions_count: node.mentions?.length || 0,
+        backlinks_count: backlinks.length
+      });
+    }
+
+    return {
+      nodes: nodeMap,
+      rootNode: hierarchyResult.rootNode as Node | null,
+      totalCount: hierarchyResult.totalCount,
+      maxDepth: hierarchyResult.maxDepth,
+      structure
+    };
+  }
+
+  /**
+   * Get optimized hierarchy data for client rendering
+   * Includes all necessary information for efficient client-side tree building
+   */
+  public getHierarchyForClient(rootId: string): {
+    success: boolean;
+    data?: {
+      nodes: Node[];
+      relationships: Array<{
+        nodeId: string;
+        parentId: string | null;
+        beforeSiblingId: string | null;
+        depth: number;
+        hasChildren: boolean;
+      }>;
+      metadata: {
+        totalNodes: number;
+        maxDepth: number;
+        rootId: string;
+        fetchTime: number;
+      };
+    };
+    error?: string;
+  } {
+    try {
+      const startTime = performance.now();
+      const bulkResult = this.getAllNodesInRoot(rootId);
+      
+      if (!bulkResult.rootNode) {
+        return {
+          success: false,
+          error: `Root node ${rootId} not found`
+        };
+      }
+
+      // Convert to client-friendly format
+      const nodes = Array.from(bulkResult.nodes.values());
+      const relationships = bulkResult.structure.map(item => ({
+        nodeId: item.id,
+        parentId: item.parent_id,
+        beforeSiblingId: item.before_sibling_id,
+        depth: item.depth,
+        hasChildren: item.children_count > 0
+      }));
+
+      const fetchTime = performance.now() - startTime;
+
+      return {
+        success: true,
+        data: {
+          nodes,
+          relationships,
+          metadata: {
+            totalNodes: bulkResult.totalCount,
+            maxDepth: bulkResult.maxDepth,
+            rootId,
+            fetchTime
+          }
+        }
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
+    }
+  }
+
+  // ========================================================================
   // Backward Compatibility Maintenance
   // ========================================================================
 
