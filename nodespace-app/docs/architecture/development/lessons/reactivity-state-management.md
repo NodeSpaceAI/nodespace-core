@@ -9,12 +9,14 @@ This document captures lessons learned from implementing complex reactivity patt
 ### 1. **Svelte 5 Runes Compatibility Issues**
 
 **Problem**: Legacy Svelte 4 syntax caused compilation failures and broken reactivity
-**Root Cause**: 
+**Root Cause**:
+
 - `export let` syntax incompatible with runes mode
-- Reactive statements using legacy `$:` syntax 
+- Reactive statements using legacy `$:` syntax
 - $effect dependency tracking more explicit than Svelte 4 reactive statements
 
 **Solution Applied**:
+
 - Migrated all prop declarations to `$props()` syntax
 - Replaced reactive statements with `$effect()` and proper dependency tracking
 - Used explicit element references in $effect for reliable DOM element detection
@@ -24,12 +26,14 @@ This document captures lessons learned from implementing complex reactivity patt
 ### 2. **Map-Based State Reactivity Challenges**
 
 **Problem**: UI not updating when Map-based state changed
-**Root Cause**: 
+**Root Cause**:
+
 - Svelte 5 doesn't automatically detect Map mutations
 - Complex state synchronization between base class and reactive wrapper
 - Manual reactivity triggers needed for nested object updates
 
 **Solution Applied**:
+
 - Implemented manual reactivity trigger system using counter increment
 - Used `void this._reactivityTrigger;` pattern for lint-compliant expression statements
 - Applied full state synchronization for complex operations, incremental for simple ones
@@ -39,12 +43,14 @@ This document captures lessons learned from implementing complex reactivity patt
 ### 3. **Architectural Mismatch: Flat Data vs Hierarchical UI**
 
 **Problem**: Visual hierarchy broken when moving from nested DOM to flat data structure
-**Root Cause**: 
+**Root Cause**:
+
 - NodeManager uses flat Map storage for efficiency
 - UI originally rendered nested DOM hierarchy
 - CSS indentation incompatible with deeply nested components
 
 **Solution Applied**:
+
 - Implemented hybrid approach: flat data with `hierarchyDepth` metadata
 - Used CSS-based indentation instead of DOM nesting
 - Maintained component simplicity while supporting visual hierarchy
@@ -54,12 +60,14 @@ This document captures lessons learned from implementing complex reactivity patt
 ### 4. **Incremental vs Full State Synchronization**
 
 **Problem**: Partial state updates caused data corruption and duplicate keys
-**Root Cause**: 
+**Root Cause**:
+
 - Complex operations (indent/outdent) modify multiple parent-child relationships
 - Incremental updates missed state dependencies
 - Race conditions in reactive state synchronization
 
 **Solution Applied**:
+
 - Used full state synchronization for complex operations (indent/outdent)
 - Maintained incremental updates for simple operations (content changes)
 - Implemented comprehensive state validation patterns
@@ -69,12 +77,14 @@ This document captures lessons learned from implementing complex reactivity patt
 ### 5. **Event Handling Chain Integrity**
 
 **Problem**: User interactions not propagating through event system
-**Root Cause**: 
+**Root Cause**:
+
 - Component initialization timing issues
 - Missing event listeners due to DOM element lifecycle
 - Broken event delegation patterns
 
 **Solution Applied**:
+
 - Used $effect with proper dependency tracking for initialization
 - Implemented asynchronous focus management for DOM updates
 - Added setTimeout guards for DOM readiness
@@ -84,6 +94,7 @@ This document captures lessons learned from implementing complex reactivity patt
 ## Architectural Patterns That Worked
 
 ### 1. **Dual State System Pattern**
+
 ```typescript
 // Base class with core logic
 class NodeManager {
@@ -95,12 +106,13 @@ class NodeManager {
 class ReactiveNodeManager extends NodeManager {
   private _reactiveNodes = $state(new Map<string, Node>());
   private _reactivityTrigger = $state(0);
-  
+
   // Sync reactive state after operations
 }
 ```
 
 ### 2. **Manual Reactivity Trigger Pattern**
+
 ```typescript
 get visibleNodes(): Node[] {
   void this._reactivityTrigger; // Force reactivity dependency
@@ -113,6 +125,7 @@ private forceUIUpdate(): void {
 ```
 
 ### 3. **Flat Rendering with Metadata Pattern**
+
 ```svelte
 {#each nodeManager.visibleNodes as node (node.id)}
   <div style="margin-left: {(node.hierarchyDepth || 0) * 2.5}rem">
@@ -122,6 +135,7 @@ private forceUIUpdate(): void {
 ```
 
 ### 4. **Smart Synchronization Strategy**
+
 ```typescript
 // Simple operations: incremental sync
 updateContent(id: string, content: string) {
@@ -166,24 +180,28 @@ indentNode(id: string) {
 ## Future Development Guidelines
 
 ### 1. **Svelte 5 Best Practices**
+
 - Always use `$props()` for component props
 - Prefer `$effect()` over legacy reactive statements
 - Use explicit dependency tracking in $effect
 - Implement manual reactivity for Map-based state
 
 ### 2. **Architecture Decision Framework**
+
 - **Data Structure**: Choose between flat (performance) vs hierarchical (simplicity)
 - **State Sync**: Use incremental for simple ops, full sync for complex ops
 - **Reactivity**: Manual triggers for Map changes, automatic for primitives
 - **Component Lifecycle**: Plan initialization timing with $effect dependencies
 
 ### 3. **Quality Assurance Process**
+
 - **Manual Testing**: Test all user interactions after architectural changes
 - **Edge Case Coverage**: Empty states, deep hierarchies, format inheritance
 - **Demo Data Validation**: Ensure test data covers real usage patterns
 - **Regression Prevention**: Document breaking change patterns
 
 ### 4. **Migration Strategy Template**
+
 1. **Assessment Phase**: Identify all affected components and interactions
 2. **Incremental Migration**: Migrate one component at a time with compatibility
 3. **State Strategy**: Plan reactivity patterns before implementation
@@ -193,11 +211,13 @@ indentNode(id: string) {
 ## Performance Considerations
 
 ### Positive Changes
+
 - Map-based storage: O(1) node lookups vs O(n) array searches
 - Centralized logic: Reduced code duplication and memory usage
 - Event-driven architecture: Better separation of concerns
 
 ### Trade-offs
+
 - Full state sync: Higher memory churn for complex operations
 - Manual reactivity: Slight overhead for trigger management
 - Dual state: Increased memory usage (acceptable for UI responsiveness)
@@ -205,16 +225,19 @@ indentNode(id: string) {
 ## Recommended Patterns for Similar Projects
 
 ### 1. **State Management Architecture**
+
 - Use base class for pure business logic
 - Create reactive wrapper for UI integration
 - Implement clear synchronization boundaries
 
 ### 2. **Svelte 5 Reactivity Patterns**
+
 - Manual triggers for Map/Set changes
 - Explicit dependency tracking in $effect
 - Void expressions for lint compliance
 
 ### 3. **Migration Approach**
+
 - Incremental component migration
 - Comprehensive test coverage
 - Realistic test data scenarios

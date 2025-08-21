@@ -339,7 +339,7 @@ export class ContentEditableController {
       const currentContent = this.element.textContent || '';
       const cursorPosition = this.getCurrentColumn();
       const cursorAtBeginning = cursorPosition === 0;
-      
+
       if (cursorAtBeginning) {
         // SOPHISTICATED LOGIC: Cursor at beginning - create node above
         this.events.createNewNode({
@@ -352,7 +352,7 @@ export class ContentEditableController {
       } else {
         // SOPHISTICATED LOGIC: Normal split with formatting preservation
         const splitResult = this.smartTextSplit(currentContent, cursorPosition);
-        
+
         this.events.createNewNode({
           afterNodeId: this.nodeId,
           nodeType: 'text',
@@ -686,14 +686,17 @@ export class ContentEditableController {
    * 2. Inline formatting preservation (**bold**, *italic*, __underline__)
    * 3. Proper cursor positioning in new node
    */
-  private smartTextSplit(content: string, cursorPosition: number): {
+  private smartTextSplit(
+    content: string,
+    cursorPosition: number
+  ): {
     beforeCursor: string;
     afterCursor: string;
   } {
     // Check if we're in a header node
     const headerLevel = contentProcessor.parseHeaderLevel(content);
     let inheritedSyntax = '';
-    
+
     if (headerLevel > 0) {
       // Add header syntax to new node
       inheritedSyntax = '#'.repeat(headerLevel) + ' ';
@@ -712,9 +715,12 @@ export class ContentEditableController {
    * Preserve inline formatting when splitting text
    * If cursor is inside **bold text|more bold**, should produce:
    * - beforeCursor: "**bold text**"
-   * - afterCursor: "**more bold**" 
+   * - afterCursor: "**more bold**"
    */
-  private preserveInlineFormatting(content: string, cursorPosition: number): {
+  private preserveInlineFormatting(
+    content: string,
+    cursorPosition: number
+  ): {
     beforeCursor: string;
     afterCursor: string;
   } {
@@ -743,22 +749,28 @@ export class ContentEditableController {
    * Get active formatting markers at a specific position
    * Returns formatting that is "open" at the cursor position
    */
-  private getActiveFormattingAtPosition(content: string, position: number): Array<{
+  private getActiveFormattingAtPosition(
+    content: string,
+    position: number
+  ): Array<{
     marker: string;
     type: 'bold' | 'italic' | 'underline';
   }> {
     const activeFormatting: Array<{ marker: string; type: 'bold' | 'italic' | 'underline' }> = [];
-    
+
     // Check for bold (**text**)
     if (this.isInsideFormatting(content, position, '**')) {
       activeFormatting.push({ marker: '**', type: 'bold' });
     }
-    
+
     // Check for italic (*text*) - but not if already inside bold
-    if (!this.isInsideFormatting(content, position, '**') && this.isInsideFormatting(content, position, '*')) {
+    if (
+      !this.isInsideFormatting(content, position, '**') &&
+      this.isInsideFormatting(content, position, '*')
+    ) {
       activeFormatting.push({ marker: '*', type: 'italic' });
     }
-    
+
     // Check for underline (__text__)
     if (this.isInsideFormatting(content, position, '__')) {
       activeFormatting.push({ marker: '__', type: 'underline' });
@@ -775,7 +787,8 @@ export class ContentEditableController {
     const afterCursor = content.substring(position);
 
     // Count occurrences of marker before and after cursor
-    const beforeCount = (beforeCursor.match(new RegExp(this.escapeRegex(marker), 'g')) || []).length;
+    const beforeCount = (beforeCursor.match(new RegExp(this.escapeRegex(marker), 'g')) || [])
+      .length;
     const afterCount = (afterCursor.match(new RegExp(this.escapeRegex(marker), 'g')) || []).length;
 
     // If we have an odd number before cursor and at least one after, we're inside

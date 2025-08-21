@@ -142,7 +142,13 @@ export class ReactiveNodeManager extends NodeManager {
     inheritHeaderLevel?: number,
     cursorAtBeginning: boolean = false
   ): string {
-    const result = super.createNode(afterNodeId, content, nodeType, inheritHeaderLevel, cursorAtBeginning);
+    const result = super.createNode(
+      afterNodeId,
+      content,
+      nodeType,
+      inheritHeaderLevel,
+      cursorAtBeginning
+    );
 
     // CRITICAL FIX: Comprehensive reactive state synchronization
     // The base class modifies multiple parts of the state during createNode:

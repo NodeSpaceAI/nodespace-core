@@ -18,7 +18,7 @@
   let internalContent: string = content;
   let headerLevel: number = contentProcessor.parseHeaderLevel(content) || inheritHeaderLevel;
 
-  // CRITICAL FIX: Sync internalContent when content prop changes externally 
+  // CRITICAL FIX: Sync internalContent when content prop changes externally
   // (e.g., from node combination operations)
   $: internalContent = content;
   let baseNodeRef: unknown;

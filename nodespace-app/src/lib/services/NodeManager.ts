@@ -176,7 +176,7 @@ export class NodeManager {
       // EMPTY NODE REMOVAL LOGIC
       this.handleEmptyNodeRemoval(currentNode, previousNode);
     } else {
-      // CONTENT MERGE LOGIC  
+      // CONTENT MERGE LOGIC
       this.handleContentMerge(currentNode, previousNode);
     }
   }
@@ -211,18 +211,18 @@ export class NodeManager {
     // SMART FORMAT INHERITANCE LOGIC
     const receiverHeaderLevel = this.contentProcessor.parseHeaderLevel(previousContent);
     const sourceHeaderLevel = this.contentProcessor.parseHeaderLevel(currentContent);
-    
+
     let processedCurrentContent = currentContent;
-    
+
     if (sourceHeaderLevel > 0) {
       // Strip header syntax from source node being merged
       processedCurrentContent = this.contentProcessor.stripHeaderSyntax(currentContent);
     }
-    
+
     // Merge content with processed source content
     const mergedContent = previousContent + processedCurrentContent;
     previousNode.content = mergedContent;
-    
+
     // Update the receiver node's header level (in case it changed)
     if (receiverHeaderLevel > 0) {
       previousNode.inheritHeaderLevel = receiverHeaderLevel;
@@ -281,12 +281,12 @@ export class NodeManager {
 
       // Store in nodes map
       this._nodes.set(nodeId, node);
-      
+
       // CRITICAL SYNC: Initialize collapsed state based on node.expanded
       if (!node.expanded) {
         this._collapsedNodes.add(nodeId);
       }
-      
+
       return nodeId;
     };
 
@@ -350,15 +350,15 @@ export class NodeManager {
     // SOPHISTICATED LOGIC: Handle children transfer based on collapsed state
     if (afterNode.children.length > 0) {
       const isCollapsed = this._collapsedNodes.has(afterNodeId);
-      
+
       if (isCollapsed) {
         // CRITICAL FIX: When parent is collapsed, children ALWAYS stay with original node
         // regardless of cursor position or content splitting
         // No children transfer needed - they stay put
       } else if (!cursorAtBeginning) {
-        // When expanded AND not at beginning, children go to the right (new) node  
+        // When expanded AND not at beginning, children go to the right (new) node
         newNode.children = [...afterNode.children];
-        newNode.children.forEach(childId => {
+        newNode.children.forEach((childId) => {
           const child = this.findNode(childId);
           if (child) child.parentId = newId;
         });
@@ -543,14 +543,14 @@ export class NodeManager {
     if (!node) return false;
 
     node.expanded = !node.expanded;
-    
+
     // CRITICAL SYNC: Keep _collapsedNodes in sync with node.expanded
     if (node.expanded) {
       this._collapsedNodes.delete(nodeId); // Expanded = not in collapsed set
     } else {
-      this._collapsedNodes.add(nodeId); // Collapsed = in collapsed set  
+      this._collapsedNodes.add(nodeId); // Collapsed = in collapsed set
     }
-    
+
     this.events.hierarchyChanged();
     return true;
   }
@@ -647,15 +647,15 @@ export class NodeManager {
     // Step 2: Skip all consecutive opening inline formatting markers
     // This handles cases where multiple formatting markers appear in sequence
     // e.g., "# **__*text*__**" should position after all opening markers
-    
+
     // Check for formatting markers in order of precedence (longest first to avoid conflicts)
     const formattingMarkers = ['**', '__', '*']; // Bold, underline, italic
-    
+
     let foundMarker = true;
     while (foundMarker) {
       foundMarker = false;
       const currentRemaining = content.substring(position);
-      
+
       for (const marker of formattingMarkers) {
         if (currentRemaining.startsWith(marker)) {
           // Check if this marker has a closing counterpart later in the content
@@ -718,7 +718,7 @@ export class NodeManager {
     }
 
     // Update parent references for all transferred children
-    sourceNode.children.forEach(childId => {
+    sourceNode.children.forEach((childId) => {
       const child = this.findNode(childId);
       if (child) child.parentId = newParent.id;
     });
@@ -730,7 +730,7 @@ export class NodeManager {
     sourceNode.children = [];
 
     // Auto-expand nodes that received new children
-    nodesGettingNewChildren.forEach(node => {
+    nodesGettingNewChildren.forEach((node) => {
       if (this._collapsedNodes.has(node.id)) {
         this._collapsedNodes.delete(node.id);
       }
@@ -790,7 +790,7 @@ export class NodeManager {
   toggleCollapsed(nodeId: string): boolean {
     const node = this.findNode(nodeId);
     if (!node) return false;
-    
+
     if (this._collapsedNodes.has(nodeId)) {
       this._collapsedNodes.delete(nodeId);
       node.expanded = true; // Sync with node property

@@ -54,7 +54,14 @@
       cursorAtBeginning?: boolean;
     }>
   ) {
-    const { afterNodeId, nodeType, currentContent, newContent, inheritHeaderLevel, cursorAtBeginning } = event.detail;
+    const {
+      afterNodeId,
+      nodeType,
+      currentContent,
+      newContent,
+      inheritHeaderLevel,
+      cursorAtBeginning
+    } = event.detail;
 
     // Update current node content if provided
     if (currentContent !== undefined) {
@@ -385,7 +392,12 @@
     }
 
     const previousNode = visibleNodes[currentIndex - 1];
-    console.log('DEBUG: previousNode:', previousNode.id, 'content:', JSON.stringify(previousNode.content));
+    console.log(
+      'DEBUG: previousNode:',
+      previousNode.id,
+      'content:',
+      JSON.stringify(previousNode.content)
+    );
 
     if (currentContent.trim() === '') {
       console.log('DEBUG: Empty content - deleting node and focusing previous');
