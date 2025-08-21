@@ -1,6 +1,6 @@
 /**
  * ReactiveNodeManager Test Suite
- * 
+ *
  * Critical tests for the reactive state synchronization fix
  * Specifically tests Issue #71 where createNode breaks UI updates
  */
@@ -65,15 +65,15 @@ describe('ReactiveNodeManager - Reactive State Synchronization', () => {
       // Simulate Enter key - create new node after root1
       const newNodeId = nodeManager.createNode('root1', 'New node content', 'text');
 
-      // AFTER FIX: visibleNodes should have 2 nodes  
+      // AFTER FIX: visibleNodes should have 2 nodes
       expect(nodeManager.visibleNodes).toHaveLength(2);
       expect(nodeManager.rootNodeIds).toHaveLength(2);
-      
+
       // Verify the new node is in the visible nodes
       const visibleNodes = nodeManager.visibleNodes;
-      expect(visibleNodes.some(n => n.id === newNodeId)).toBe(true);
-      expect(visibleNodes.some(n => n.content === 'New node content')).toBe(true);
-      
+      expect(visibleNodes.some((n) => n.id === newNodeId)).toBe(true);
+      expect(visibleNodes.some((n) => n.content === 'New node content')).toBe(true);
+
       // Verify ordering - new node should come after root1
       expect(visibleNodes[0].id).toBe('root1');
       expect(visibleNodes[1].id).toBe(newNodeId);
@@ -84,7 +84,7 @@ describe('ReactiveNodeManager - Reactive State Synchronization', () => {
       const legacyNodes = [
         {
           id: 'parent1',
-          type: 'text', 
+          type: 'text',
           content: 'Parent node',
           autoFocus: false,
           inheritHeaderLevel: 0,
@@ -106,22 +106,22 @@ describe('ReactiveNodeManager - Reactive State Synchronization', () => {
       nodeManager.initializeFromLegacyData(legacyNodes);
 
       expect(nodeManager.visibleNodes).toHaveLength(2); // parent + child
-      
+
       // Create new node after child1 (should become child of parent1)
       const newNodeId = nodeManager.createNode('child1', 'New child content', 'text');
 
       // Should now have 3 visible nodes: parent1, child1, newChild
       expect(nodeManager.visibleNodes).toHaveLength(3);
-      
+
       const visibleNodes = nodeManager.visibleNodes;
       expect(visibleNodes[0].id).toBe('parent1');
-      expect(visibleNodes[1].id).toBe('child1'); 
+      expect(visibleNodes[1].id).toBe('child1');
       expect(visibleNodes[2].id).toBe(newNodeId);
-      
+
       // Verify the new node has correct parent
       const newNode = nodeManager.findNode(newNodeId);
       expect(newNode?.parentId).toBe('parent1');
-      
+
       // Verify parent's children array is updated in reactive state
       const parent = nodeManager.findNode('parent1');
       expect(parent?.children).toContain(newNodeId);
@@ -141,22 +141,22 @@ describe('ReactiveNodeManager - Reactive State Synchronization', () => {
       ];
 
       nodeManager.initializeFromLegacyData(legacyNodes);
-      
+
       // Verify initial autoFocus
       expect(nodeManager.findNode('node1')?.autoFocus).toBe(true);
-      
+
       // Create new node - should clear old focus and set new focus
       const newNodeId = nodeManager.createNode('node1', 'New focused node', 'text');
-      
+
       // Check autoFocus is transferred correctly in reactive state
       expect(nodeManager.findNode('node1')?.autoFocus).toBe(false);
       expect(nodeManager.findNode(newNodeId)?.autoFocus).toBe(true);
-      
+
       // Verify this is reflected in visibleNodes (the actual UI data source)
       const visibleNodes = nodeManager.visibleNodes;
-      const oldNode = visibleNodes.find(n => n.id === 'node1');
-      const newNode = visibleNodes.find(n => n.id === newNodeId);
-      
+      const oldNode = visibleNodes.find((n) => n.id === 'node1');
+      const newNode = visibleNodes.find((n) => n.id === newNodeId);
+
       expect(oldNode?.autoFocus).toBe(false);
       expect(newNode?.autoFocus).toBe(true);
     });
@@ -175,22 +175,22 @@ describe('ReactiveNodeManager - Reactive State Synchronization', () => {
       ];
 
       nodeManager.initializeFromLegacyData(legacyNodes);
-      
+
       nodeManager.createNode('test1', 'New test node', 'text');
-      
+
       // Critical check: reactive state should exactly match base class state
       const baseNodes = Array.from(nodeManager.nodes.values());
       const baseRootIds = nodeManager.rootNodeIds;
-      
+
       // Check all nodes exist in reactive state
       for (const baseNode of baseNodes) {
         const reactiveNode = nodeManager.findNode(baseNode.id);
         expect(reactiveNode).toEqual(baseNode);
       }
-      
+
       // Check root IDs match
       expect(nodeManager.rootNodeIds).toEqual(baseRootIds);
-      
+
       // Check visibleNodes contains all expected nodes
       expect(nodeManager.visibleNodes).toHaveLength(baseNodes.length);
     });
@@ -199,13 +199,29 @@ describe('ReactiveNodeManager - Reactive State Synchronization', () => {
   describe('Other Operations - Regression Tests', () => {
     test('deleteNode still works correctly', () => {
       const legacyNodes = [
-        { id: 'node1', type: 'text', content: 'First', autoFocus: false, inheritHeaderLevel: 0, children: [], expanded: true },
-        { id: 'node2', type: 'text', content: 'Second', autoFocus: false, inheritHeaderLevel: 0, children: [], expanded: true }
+        {
+          id: 'node1',
+          type: 'text',
+          content: 'First',
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          children: [],
+          expanded: true
+        },
+        {
+          id: 'node2',
+          type: 'text',
+          content: 'Second',
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          children: [],
+          expanded: true
+        }
       ];
 
       nodeManager.initializeFromLegacyData(legacyNodes);
       expect(nodeManager.visibleNodes).toHaveLength(2);
-      
+
       nodeManager.deleteNode('node1');
       expect(nodeManager.visibleNodes).toHaveLength(1);
       expect(nodeManager.visibleNodes[0].id).toBe('node2');
@@ -213,19 +229,35 @@ describe('ReactiveNodeManager - Reactive State Synchronization', () => {
 
     test('indentNode still works correctly', () => {
       const legacyNodes = [
-        { id: 'node1', type: 'text', content: 'First', autoFocus: false, inheritHeaderLevel: 0, children: [], expanded: true },
-        { id: 'node2', type: 'text', content: 'Second', autoFocus: false, inheritHeaderLevel: 0, children: [], expanded: true }
+        {
+          id: 'node1',
+          type: 'text',
+          content: 'First',
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          children: [],
+          expanded: true
+        },
+        {
+          id: 'node2',
+          type: 'text',
+          content: 'Second',
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          children: [],
+          expanded: true
+        }
       ];
 
       nodeManager.initializeFromLegacyData(legacyNodes);
-      
+
       const success = nodeManager.indentNode('node2');
       expect(success).toBe(true);
-      
+
       // node2 should now be child of node1
       const node2 = nodeManager.findNode('node2');
       expect(node2?.parentId).toBe('node1');
-      
+
       // Check visible nodes reflect the change
       expect(nodeManager.visibleNodes).toHaveLength(2);
       expect(nodeManager.rootNodeIds).toHaveLength(1);

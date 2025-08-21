@@ -50,15 +50,20 @@
       inheritHeaderLevel?: number;
     }>
   ) {
-    const { afterNodeId, nodeType, currentContent, newContent } = event.detail;
+    const { afterNodeId, nodeType, currentContent, newContent, inheritHeaderLevel } = event.detail;
 
     // Update current node content if provided
     if (currentContent !== undefined) {
       nodeManager.updateNodeContent(afterNodeId, currentContent);
     }
 
-    // Create new node using NodeManager
-    const newNodeId = nodeManager.createNode(afterNodeId, newContent || '', nodeType);
+    // Create new node using NodeManager with header inheritance
+    const newNodeId = nodeManager.createNode(
+      afterNodeId,
+      newContent || '',
+      nodeType,
+      inheritHeaderLevel
+    );
 
     // Handle HTML formatting conversion if needed
     if (newContent && newContent.includes('<span class="markdown-')) {
@@ -400,57 +405,48 @@
 
 <div class="node-viewer">
   {#each nodeManager.visibleNodes as node (node.id)}
-    {#snippet renderNode(node: any)}
-      <div class="node-container" data-has-children={node.children?.length > 0}>
-        <div class="node-content-wrapper">
-          <!-- Chevron for parent nodes (only visible on hover) -->
-          {#if node.children && node.children.length > 0}
-            <button
-              class="node-chevron"
-              class:expanded={node.expanded}
-              onclick={() => handleToggleExpanded(node.id)}
-              aria-label={node.expanded ? 'Collapse' : 'Expand'}
-            >
-              <Icon name="chevron-right" size={16} color={getNodeColor(node.nodeType)} />
-            </button>
-          {:else}
-            <!-- Spacer for nodes without children to maintain alignment -->
-            <div class="node-chevron-spacer"></div>
-          {/if}
+    <div
+      class="node-container"
+      data-has-children={node.children?.length > 0}
+      style="margin-left: {(node.hierarchyDepth || 0) * 2.5}rem"
+    >
+      <div class="node-content-wrapper">
+        <!-- Chevron for parent nodes (only visible on hover) -->
+        {#if node.children && node.children.length > 0}
+          <button
+            class="node-chevron"
+            class:expanded={node.expanded}
+            onclick={() => handleToggleExpanded(node.id)}
+            aria-label={node.expanded ? 'Collapse' : 'Expand'}
+          >
+            <Icon name="chevron-right" size={16} color={getNodeColor(node.nodeType)} />
+          </button>
+        {:else}
+          <!-- Spacer for nodes without children to maintain alignment -->
+          <div class="node-chevron-spacer"></div>
+        {/if}
 
-          {#if node.nodeType === 'text'}
-            <TextNode
-              nodeId={node.id}
-              autoFocus={node.autoFocus}
-              content={node.content}
-              inheritHeaderLevel={node.inheritHeaderLevel}
-              children={node.children}
-              on:createNewNode={handleCreateNewNode}
-              on:indentNode={handleIndentNode}
-              on:outdentNode={handleOutdentNode}
-              on:navigateArrow={handleArrowNavigation}
-              on:contentChanged={(e) => {
-                // Use NodeManager to update content
-                nodeManager.updateNodeContent(node.id, e.detail.content);
-              }}
-              on:combineWithPrevious={handleCombineWithPrevious}
-              on:deleteNode={handleDeleteNode}
-            />
-          {/if}
-        </div>
-
-        <!-- Render children with indentation (only if expanded) -->
-        {#if node.children && node.children.length > 0 && node.expanded}
-          <div class="node-children">
-            {#each node.children as childNode (childNode.id)}
-              {@render renderNode(childNode)}
-            {/each}
-          </div>
+        {#if node.nodeType === 'text'}
+          <TextNode
+            nodeId={node.id}
+            autoFocus={node.autoFocus}
+            content={node.content}
+            inheritHeaderLevel={node.inheritHeaderLevel}
+            children={node.children}
+            on:createNewNode={handleCreateNewNode}
+            on:indentNode={handleIndentNode}
+            on:outdentNode={handleOutdentNode}
+            on:navigateArrow={handleArrowNavigation}
+            on:contentChanged={(e) => {
+              // Use NodeManager to update content
+              nodeManager.updateNodeContent(node.id, e.detail.content);
+            }}
+            on:combineWithPrevious={handleCombineWithPrevious}
+            on:deleteNode={handleDeleteNode}
+          />
         {/if}
       </div>
-    {/snippet}
-
-    {@render renderNode(node)}
+    </div>
   {/each}
 </div>
 
@@ -568,15 +564,5 @@
 
   .node-content-wrapper:has(:global(.node--h6)) {
     --text-visual-center: calc(0.6125em + var(--baseline-correction));
-  }
-
-  .node-children {
-    /* Indent child nodes visually - uses consistent indentation variable */
-    margin-left: var(--node-indent); /* Dynamic indentation using CSS variable */
-    transition:
-      height 150ms ease-in-out,
-      opacity 150ms ease-in-out;
-    /* Allow chevrons to extend outside container bounds */
-    overflow: visible;
   }
 </style>

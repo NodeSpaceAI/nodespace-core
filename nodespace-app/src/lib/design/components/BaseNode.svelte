@@ -6,20 +6,29 @@
 -->
 
 <script lang="ts">
-  import { createEventDispatcher, onDestroy, onMount } from 'svelte';
+  import { createEventDispatcher, onDestroy } from 'svelte';
   import Icon, { type IconName } from '$lib/design/icons';
   import {
     ContentEditableController,
     type ContentEditableEvents
   } from './ContentEditableController.js';
 
-  // Props
-  export let nodeId: string;
-  export let nodeType: string = 'text';
-  export let autoFocus: boolean = false;
-  export let content: string = '';
-  export let headerLevel: number = 0;
-  export let children: unknown[] = [];
+  // Props (Svelte 5 runes syntax)
+  let {
+    nodeId,
+    nodeType = 'text',
+    autoFocus = false,
+    content = '',
+    headerLevel = 0,
+    children = []
+  }: {
+    nodeId: string;
+    nodeType?: string;
+    autoFocus?: boolean;
+    content?: string;
+    headerLevel?: number;
+    children?: unknown[];
+  } = $props();
 
   // DOM element and controller
   let contentEditableElement: HTMLDivElement;
@@ -58,23 +67,29 @@
     deleteNode: (data) => dispatch('deleteNode', data)
   };
 
-  // Initialize controller when element is available
-  onMount(() => {
-    if (contentEditableElement && !controller) {
-      controller = new ContentEditableController(contentEditableElement, nodeId, controllerEvents);
+  // Initialize controller when element is available (Svelte 5 $effect)
+  // Note: Must explicitly access contentEditableElement to track dependency
+  $effect(() => {
+    const element = contentEditableElement; // Force dependency tracking
+    if (element && !controller) {
+      controller = new ContentEditableController(element, nodeId, controllerEvents);
       controller.initialize(content, autoFocus);
     }
   });
 
   // Update content when prop changes
-  $: if (controller && content !== undefined) {
-    controller.updateContent(content);
-  }
+  $effect(() => {
+    if (controller && content !== undefined) {
+      controller.updateContent(content);
+    }
+  });
 
   // Focus programmatically when autoFocus changes
-  $: if (controller && autoFocus) {
-    controller.focus();
-  }
+  $effect(() => {
+    if (controller && autoFocus) {
+      controller.focus();
+    }
+  });
 
   onDestroy(() => {
     if (controller) {
@@ -83,18 +98,20 @@
   });
 
   // Compute CSS classes
-  $: containerClasses = [
-    'node',
-    `node--${nodeType}`,
-    headerLevel > 0 && `node--h${headerLevel}`,
-    children.length > 0 && 'node--has-children'
-  ]
-    .filter(Boolean)
-    .join(' ');
+  const containerClasses = $derived(
+    [
+      'node',
+      `node--${nodeType}`,
+      headerLevel > 0 && `node--h${headerLevel}`,
+      children.length > 0 && 'node--has-children'
+    ]
+      .filter(Boolean)
+      .join(' ')
+  );
 
   // Icon for node type
-  $: icon: IconName = children.length > 0 ? 'circle-ring' : 'circle';
-  $: nodeColor = `hsl(var(--node-${nodeType}, var(--node-text)))`;
+  const icon = $derived((children.length > 0 ? 'circle-ring' : 'circle') as IconName);
+  const nodeColor = $derived(`hsl(var(--node-${nodeType}, var(--node-text)))`);
 </script>
 
 <div class={containerClasses} data-node-id={nodeId}>
@@ -152,12 +169,9 @@
     word-wrap: break-word;
   }
 
-  .node__content:empty::before {
-    content: '';
-    display: inline-block;
-    width: 1px;
-    height: 1em;
-    background-color: hsl(var(--muted-foreground) / 0.3);
+  .node__content:empty {
+    /* Ensure empty nodes maintain their height and are clickable */
+    min-height: 1.25rem;
     cursor: text;
   }
 
@@ -233,15 +247,14 @@
     line-height: 1.4;
   }
 
-  /* Header empty state cursor fix */
-  .node--h1 .node__content:empty::before,
-  .node--h2 .node__content:empty::before,
-  .node--h3 .node__content:empty::before,
-  .node--h4 .node__content:empty::before,
-  .node--h5 .node__content:empty::before,
-  .node--h6 .node__content:empty::before {
-    height: 1.25rem !important;
-    background-color: hsl(var(--muted-foreground) / 0.2) !important;
+  /* Header empty state - ensure proper height */
+  .node--h1 .node__content:empty,
+  .node--h2 .node__content:empty,
+  .node--h3 .node__content:empty,
+  .node--h4 .node__content:empty,
+  .node--h5 .node__content:empty,
+  .node--h6 .node__content:empty {
+    min-height: 1.5rem;
   }
 
   /* Markdown formatting styles */

@@ -125,10 +125,10 @@ export class NodeManager {
 
     // Use ContentProcessor to validate and analyze content
     this.contentProcessor.parseMarkdown(content);
-    
+
     // Update the node content
     node.content = content;
-    
+
     // Update header level if it's a header node
     const headerLevel = this.contentProcessor.parseHeaderLevel(content);
     if (headerLevel > 0) {
@@ -229,21 +229,37 @@ export class NodeManager {
   /**
    * Create new node after specified node
    */
-  createNode(afterNodeId: string, content: string = '', nodeType: string = 'text'): string {
+  createNode(
+    afterNodeId: string,
+    content: string = '',
+    nodeType: string = 'text',
+    inheritHeaderLevel?: number
+  ): string {
     const afterNode = this.findNode(afterNodeId);
     if (!afterNode) return '';
+
+    // Determine the header level for the new node
+    const finalHeaderLevel =
+      inheritHeaderLevel !== undefined ? inheritHeaderLevel : afterNode.inheritHeaderLevel;
+
+    // Add header syntax if creating a header node with empty content
+    let finalContent = content;
+    if (finalContent === '' && finalHeaderLevel > 0) {
+      const headerPrefix = '#'.repeat(finalHeaderLevel) + ' ';
+      finalContent = headerPrefix;
+    }
 
     const newId = uuidv4();
     const newNode: Node = {
       id: newId,
-      content: content,
+      content: finalContent,
       nodeType: nodeType,
       depth: afterNode.depth,
       parentId: afterNode.parentId,
       children: [],
       expanded: true,
       autoFocus: true,
-      inheritHeaderLevel: 0,
+      inheritHeaderLevel: finalHeaderLevel,
       metadata: {}
     };
 
@@ -268,6 +284,16 @@ export class NodeManager {
 
     this.events.nodeCreated(newId);
     this.events.hierarchyChanged();
+
+    // Request focus with cursor positioned after header syntax for header nodes
+    if (finalHeaderLevel > 0 && finalContent.length > 0) {
+      // Position cursor after the header syntax (e.g., after "# " for H1)
+      const headerSyntaxLength = finalHeaderLevel + 1; // "#" count + space
+      // Use setTimeout to ensure DOM has been updated before focusing
+      setTimeout(() => {
+        this.events.focusRequested(newId, headerSyntaxLength);
+      }, 0);
+    }
 
     return newId;
   }

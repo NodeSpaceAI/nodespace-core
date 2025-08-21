@@ -23,19 +23,21 @@ describe('NodeManager + ContentProcessor Integration', () => {
   describe('Dual-Representation Methods', () => {
     test('parseNodeContent should parse markdown content to AST', () => {
       // Initialize with test data including our target node
-      nodeManager.initializeFromLegacyData([{
-        id: 'test-node',
-        type: 'text',
-        content: '# Test Header\n\nSome **bold** text',
-        inheritHeaderLevel: 0,
-        children: [],
-        expanded: true,
-        autoFocus: false
-      }]);
-      
+      nodeManager.initializeFromLegacyData([
+        {
+          id: 'test-node',
+          type: 'text',
+          content: '# Test Header\n\nSome **bold** text',
+          inheritHeaderLevel: 0,
+          children: [],
+          expanded: true,
+          autoFocus: false
+        }
+      ]);
+
       // Parse the content
       const ast = nodeManager.parseNodeContent('test-node');
-      
+
       expect(ast).toBeDefined();
       expect(ast?.type).toBe('document');
       expect(ast?.children).toHaveLength(2); // Header + paragraph
@@ -43,19 +45,21 @@ describe('NodeManager + ContentProcessor Integration', () => {
 
     test('renderNodeAsHTML should convert markdown to HTML', () => {
       // Initialize with test data
-      nodeManager.initializeFromLegacyData([{
-        id: 'html-test-node',
-        type: 'text',
-        content: '**Bold text** with *italics*',
-        inheritHeaderLevel: 0,
-        children: [],
-        expanded: true,
-        autoFocus: false
-      }]);
-      
+      nodeManager.initializeFromLegacyData([
+        {
+          id: 'html-test-node',
+          type: 'text',
+          content: '**Bold text** with *italics*',
+          inheritHeaderLevel: 0,
+          children: [],
+          expanded: true,
+          autoFocus: false
+        }
+      ]);
+
       // Render as HTML
       const html = nodeManager.renderNodeAsHTML('html-test-node');
-      
+
       expect(html).toContain('<strong class="ns-markdown-bold">Bold text</strong>');
       expect(html).toContain('<em class="ns-markdown-italic">italics</em>');
     });
@@ -90,42 +94,49 @@ describe('NodeManager + ContentProcessor Integration', () => {
           autoFocus: false
         }
       ]);
-      
+
       expect(nodeManager.getNodeHeaderLevel('h1-node')).toBe(1);
       expect(nodeManager.getNodeHeaderLevel('h2-node')).toBe(2);
       expect(nodeManager.getNodeHeaderLevel('text-node')).toBe(0);
     });
 
     test('getNodeDisplayText should strip markdown syntax', () => {
-      nodeManager.initializeFromLegacyData([{
-        id: 'header-node',
-        type: 'text',
-        content: '## This is a header',
-        inheritHeaderLevel: 0,
-        children: [],
-        expanded: true,
-        autoFocus: false
-      }]);
-      
+      nodeManager.initializeFromLegacyData([
+        {
+          id: 'header-node',
+          type: 'text',
+          content: '## This is a header',
+          inheritHeaderLevel: 0,
+          children: [],
+          expanded: true,
+          autoFocus: false
+        }
+      ]);
+
       const displayText = nodeManager.getNodeDisplayText('header-node');
-      
+
       expect(displayText).toBe('This is a header');
     });
 
     test('updateNodeContentWithProcessing should update content and header level', () => {
-      nodeManager.initializeFromLegacyData([{
-        id: 'update-test-node',
-        type: 'text',
-        content: 'Regular text',
-        inheritHeaderLevel: 0,
-        children: [],
-        expanded: true,
-        autoFocus: false
-      }]);
-      
+      nodeManager.initializeFromLegacyData([
+        {
+          id: 'update-test-node',
+          type: 'text',
+          content: 'Regular text',
+          inheritHeaderLevel: 0,
+          children: [],
+          expanded: true,
+          autoFocus: false
+        }
+      ]);
+
       // Update to header content
-      const success = nodeManager.updateNodeContentWithProcessing('update-test-node', '### New Header');
-      
+      const success = nodeManager.updateNodeContentWithProcessing(
+        'update-test-node',
+        '### New Header'
+      );
+
       expect(success).toBe(true);
       expect(nodeManager.getNodeHeaderLevel('update-test-node')).toBe(3);
       expect(nodeManager.getNodeDisplayText('update-test-node')).toBe('New Header');
@@ -144,21 +155,23 @@ This is a paragraph with **bold** and *italic* text.
 - List item 2
 
 \`code block\``;
-      
-      nodeManager.initializeFromLegacyData([{
-        id: 'complex-node',
-        type: 'text',
-        content: complexContent,
-        inheritHeaderLevel: 0,
-        children: [],
-        expanded: true,
-        autoFocus: false
-      }]);
-      
+
+      nodeManager.initializeFromLegacyData([
+        {
+          id: 'complex-node',
+          type: 'text',
+          content: complexContent,
+          inheritHeaderLevel: 0,
+          children: [],
+          expanded: true,
+          autoFocus: false
+        }
+      ]);
+
       // Test parsing
       const ast = nodeManager.parseNodeContent('complex-node');
       expect(ast?.children?.length).toBeGreaterThan(1);
-      
+
       // Test HTML rendering
       const html = nodeManager.renderNodeAsHTML('complex-node');
       expect(html).toContain('<h1 class="ns-markdown-heading ns-markdown-h1">');
@@ -169,7 +182,7 @@ This is a paragraph with **bold** and *italic* text.
 
     test('should handle empty and invalid content gracefully', () => {
       const emptyNodeId = nodeManager.createNode('', '');
-      
+
       expect(nodeManager.parseNodeContent(emptyNodeId)).toBeDefined();
       expect(nodeManager.renderNodeAsHTML(emptyNodeId)).toBe('');
       expect(nodeManager.getNodeHeaderLevel(emptyNodeId)).toBe(0);
@@ -178,7 +191,7 @@ This is a paragraph with **bold** and *italic* text.
 
     test('should handle non-existent nodes gracefully', () => {
       const nonExistentId = 'does-not-exist';
-      
+
       expect(nodeManager.parseNodeContent(nonExistentId)).toBeNull();
       expect(nodeManager.renderNodeAsHTML(nonExistentId)).toBe('');
       expect(nodeManager.getNodeHeaderLevel(nonExistentId)).toBe(0);
@@ -192,12 +205,13 @@ This is a paragraph with **bold** and *italic* text.
       // Create multiple nodes with different content types
       const testNodes = [];
       for (let i = 0; i < 100; i++) {
-        const content = i % 3 === 0 
-          ? `# Header ${i}` 
-          : i % 3 === 1
-          ? `**Bold text ${i}** with *italic*`
-          : `Regular paragraph text for node ${i}`;
-        
+        const content =
+          i % 3 === 0
+            ? `# Header ${i}`
+            : i % 3 === 1
+              ? `**Bold text ${i}** with *italic*`
+              : `Regular paragraph text for node ${i}`;
+
         testNodes.push({
           id: `perf-node-${i}`,
           type: 'text',
@@ -208,12 +222,12 @@ This is a paragraph with **bold** and *italic* text.
           autoFocus: false
         });
       }
-      
+
       nodeManager.initializeFromLegacyData(testNodes);
-      const nodes = testNodes.map(n => n.id);
-      
+      const nodes = testNodes.map((n) => n.id);
+
       const startTime = performance.now();
-      
+
       // Process all nodes
       for (const nodeId of nodes) {
         nodeManager.parseNodeContent(nodeId);
@@ -221,10 +235,10 @@ This is a paragraph with **bold** and *italic* text.
         nodeManager.getNodeHeaderLevel(nodeId);
         nodeManager.getNodeDisplayText(nodeId);
       }
-      
+
       const endTime = performance.now();
       const duration = endTime - startTime;
-      
+
       expect(duration).toBeLessThan(100); // Should be very fast
     });
   });
