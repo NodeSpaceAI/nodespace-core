@@ -16,13 +16,16 @@
   // NodeManager setup with event callbacks
   const nodeManagerEvents: NodeManagerEvents = {
     focusRequested: (nodeId: string, position?: number) => {
-      const element = document.getElementById(`contenteditable-${nodeId}`);
-      if (element) {
-        element.focus();
-        if (position !== undefined) {
-          setCursorAtPosition(element, position);
+      // Use setTimeout to ensure DOM content has been updated before cursor positioning
+      setTimeout(() => {
+        const element = document.getElementById(`contenteditable-${nodeId}`);
+        if (element) {
+          element.focus();
+          if (position !== undefined) {
+            setCursorAtPosition(element, position);
+          }
         }
-      }
+      }, 0);
     },
     hierarchyChanged: () => {
       // Reactivity is handled automatically by Svelte 5 $state
@@ -367,19 +370,28 @@
   function handleCombineWithPrevious(
     event: CustomEvent<{ nodeId: string; currentContent: string }>
   ) {
+    console.log('DEBUG: handleCombineWithPrevious called with:', event.detail);
     const { nodeId, currentContent } = event.detail;
     const visibleNodes = nodeManager.getVisibleNodes();
+    console.log('DEBUG: visibleNodes count:', visibleNodes.length);
     const currentIndex = visibleNodes.findIndex((n) => n.id === nodeId);
+    console.log('DEBUG: currentIndex:', currentIndex);
 
-    if (currentIndex <= 0) return; // No previous node to combine with
+    if (currentIndex <= 0) {
+      console.log('DEBUG: No previous node to combine with, exiting');
+      return; // No previous node to combine with
+    }
 
     const previousNode = visibleNodes[currentIndex - 1];
+    console.log('DEBUG: previousNode:', previousNode.id, 'content:', JSON.stringify(previousNode.content));
 
     if (currentContent.trim() === '') {
+      console.log('DEBUG: Empty content - deleting node and focusing previous');
       // Empty node - delete and focus previous at end
       nodeManager.deleteNode(nodeId);
       nodeManagerEvents.focusRequested(previousNode.id, previousNode.content.length);
     } else {
+      console.log('DEBUG: Combining nodes - calling nodeManager.combineNodes');
       // Combine nodes - NodeManager handles focus automatically
       nodeManager.combineNodes(nodeId, previousNode.id);
     }

@@ -331,16 +331,21 @@ export class ContentEditableController {
       }
     }
 
-    // Enter key creates new node
+    // Enter key creates new node with smart text splitting
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
 
       const currentContent = this.element.textContent || '';
+      const cursorPosition = this.getCurrentColumn();
+      
+      // Perform smart split that preserves formatting
+      const splitResult = this.smartTextSplit(currentContent, cursorPosition);
+
       this.events.createNewNode({
         afterNodeId: this.nodeId,
         nodeType: 'text',
-        currentContent,
-        newContent: ''
+        currentContent: splitResult.beforeCursor,
+        newContent: splitResult.afterCursor
       });
       return;
     }
@@ -394,7 +399,9 @@ export class ContentEditableController {
 
   private isAtStart(): boolean {
     const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) return false;
+    if (!selection || selection.rangeCount === 0) {
+      return false;
+    }
 
     const range = selection.getRangeAt(0);
     return range.startOffset === 0 && range.collapsed;
@@ -656,5 +663,115 @@ export class ContentEditableController {
     if (endPos === -1) return null;
 
     return { startPos, endPos };
+  }
+
+  /**
+   * Smart text splitting that preserves formatting and header syntax
+   * Handles:
+   * 1. Header syntax inheritance (# , ## , etc.)
+   * 2. Inline formatting preservation (**bold**, *italic*, __underline__)
+   * 3. Proper cursor positioning in new node
+   */
+  private smartTextSplit(content: string, cursorPosition: number): {
+    beforeCursor: string;
+    afterCursor: string;
+  } {
+    // Check if we're in a header node
+    const headerLevel = contentProcessor.parseHeaderLevel(content);
+    let inheritedSyntax = '';
+    
+    if (headerLevel > 0) {
+      // Add header syntax to new node
+      inheritedSyntax = '#'.repeat(headerLevel) + ' ';
+    }
+
+    // Check for inline formatting that needs to be preserved
+    const formattingResult = this.preserveInlineFormatting(content, cursorPosition);
+
+    return {
+      beforeCursor: formattingResult.beforeCursor,
+      afterCursor: inheritedSyntax + formattingResult.afterCursor
+    };
+  }
+
+  /**
+   * Preserve inline formatting when splitting text
+   * If cursor is inside **bold text|more bold**, should produce:
+   * - beforeCursor: "**bold text**"
+   * - afterCursor: "**more bold**" 
+   */
+  private preserveInlineFormatting(content: string, cursorPosition: number): {
+    beforeCursor: string;
+    afterCursor: string;
+  } {
+    const beforeCursor = content.substring(0, cursorPosition);
+    const afterCursor = content.substring(cursorPosition);
+
+    // Track active formatting at cursor position
+    const activeFormatting = this.getActiveFormattingAtPosition(content, cursorPosition);
+
+    let processedBefore = beforeCursor;
+    let processedAfter = afterCursor;
+
+    // For each active formatting, close in before and reopen in after
+    for (const formatting of activeFormatting) {
+      processedBefore += formatting.marker;
+      processedAfter = formatting.marker + processedAfter;
+    }
+
+    return {
+      beforeCursor: processedBefore,
+      afterCursor: processedAfter
+    };
+  }
+
+  /**
+   * Get active formatting markers at a specific position
+   * Returns formatting that is "open" at the cursor position
+   */
+  private getActiveFormattingAtPosition(content: string, position: number): Array<{
+    marker: string;
+    type: 'bold' | 'italic' | 'underline';
+  }> {
+    const activeFormatting: Array<{ marker: string; type: 'bold' | 'italic' | 'underline' }> = [];
+    
+    // Check for bold (**text**)
+    if (this.isInsideFormatting(content, position, '**')) {
+      activeFormatting.push({ marker: '**', type: 'bold' });
+    }
+    
+    // Check for italic (*text*) - but not if already inside bold
+    if (!this.isInsideFormatting(content, position, '**') && this.isInsideFormatting(content, position, '*')) {
+      activeFormatting.push({ marker: '*', type: 'italic' });
+    }
+    
+    // Check for underline (__text__)
+    if (this.isInsideFormatting(content, position, '__')) {
+      activeFormatting.push({ marker: '__', type: 'underline' });
+    }
+
+    return activeFormatting;
+  }
+
+  /**
+   * Check if position is inside a specific formatting marker
+   */
+  private isInsideFormatting(content: string, position: number, marker: string): boolean {
+    const beforeCursor = content.substring(0, position);
+    const afterCursor = content.substring(position);
+
+    // Count occurrences of marker before and after cursor
+    const beforeCount = (beforeCursor.match(new RegExp(this.escapeRegex(marker), 'g')) || []).length;
+    const afterCount = (afterCursor.match(new RegExp(this.escapeRegex(marker), 'g')) || []).length;
+
+    // If we have an odd number before cursor and at least one after, we're inside
+    return beforeCount % 2 === 1 && afterCount > 0;
+  }
+
+  /**
+   * Escape special regex characters
+   */
+  private escapeRegex(string: string): string {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 }

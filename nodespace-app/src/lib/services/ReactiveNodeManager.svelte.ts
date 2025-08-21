@@ -238,17 +238,11 @@ export class ReactiveNodeManager extends NodeManager {
    */
   combineNodes(currentNodeId: string, previousNodeId: string): void {
     super.combineNodes(currentNodeId, previousNodeId);
-    // Incremental update: update combined node and remove deleted node
-    const updatedNode = super.nodes.get(previousNodeId);
-    if (updatedNode) {
-      this._reactiveNodes.set(previousNodeId, updatedNode);
-    }
-    // Remove the deleted node
-    this._reactiveNodes.delete(currentNodeId);
-    const rootIndex = this._reactiveRootNodeIds.indexOf(currentNodeId);
-    if (rootIndex !== -1) {
-      this._reactiveRootNodeIds.splice(rootIndex, 1);
-    }
+    // CRITICAL FIX: Use full synchronization for complex node operations
+    // combineNodes modifies content, deletes nodes, and potentially affects hierarchy
+    // which requires comprehensive state sync to ensure UI reactivity
+    this.syncReactiveState();
+    this.forceUIUpdate();
   }
 
   /**

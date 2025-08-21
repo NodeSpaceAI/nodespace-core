@@ -146,7 +146,9 @@ export class NodeManager {
     const currentNode = this.findNode(currentNodeId);
     const previousNode = this.findNode(previousNodeId);
 
-    if (!currentNode || !previousNode) return;
+    if (!currentNode || !previousNode) {
+      return;
+    }
 
     const junctionPosition = previousNode.content.length;
 
@@ -285,14 +287,15 @@ export class NodeManager {
     this.events.nodeCreated(newId);
     this.events.hierarchyChanged();
 
-    // Request focus with cursor positioned after header syntax for header nodes
-    if (finalHeaderLevel > 0 && finalContent.length > 0) {
-      // Position cursor after the header syntax (e.g., after "# " for H1)
-      const headerSyntaxLength = finalHeaderLevel + 1; // "#" count + space
-      // Use setTimeout to ensure DOM has been updated before focusing
-      setTimeout(() => {
-        this.events.focusRequested(newId, headerSyntaxLength);
-      }, 0);
+    // Request focus with cursor positioned after inherited syntax for new nodes
+    if (finalContent.length > 0) {
+      const cursorPosition = this.calculateOptimalCursorPosition(finalContent, finalHeaderLevel);
+      if (cursorPosition > 0) {
+        // Use setTimeout to ensure DOM has been updated before focusing
+        setTimeout(() => {
+          this.events.focusRequested(newId, cursorPosition);
+        }, 0);
+      }
     }
 
     return newId;
@@ -506,5 +509,51 @@ export class NodeManager {
     } else {
       return this._rootNodeIds;
     }
+  }
+
+  /**
+   * Calculate optimal cursor position for new nodes with inherited syntax
+   * Positions cursor after both header syntax and inline formatting syntax
+   * Handles complex cases like "# *Wel|come*" → "# *|come*"
+   */
+  private calculateOptimalCursorPosition(content: string, headerLevel: number): number {
+    let position = 0;
+
+    // Step 1: Skip header syntax if present
+    if (headerLevel > 0) {
+      const headerPrefix = '#'.repeat(headerLevel) + ' ';
+      if (content.startsWith(headerPrefix)) {
+        position = headerPrefix.length;
+      }
+    }
+
+    // Step 2: Skip all consecutive opening inline formatting markers
+    // This handles cases where multiple formatting markers appear in sequence
+    // e.g., "# **__*text*__**" should position after all opening markers
+    const remainingContent = content.substring(position);
+    
+    // Check for formatting markers in order of precedence (longest first to avoid conflicts)
+    const formattingMarkers = ['**', '__', '*']; // Bold, underline, italic
+    
+    let foundMarker = true;
+    while (foundMarker) {
+      foundMarker = false;
+      const currentRemaining = content.substring(position);
+      
+      for (const marker of formattingMarkers) {
+        if (currentRemaining.startsWith(marker)) {
+          // Check if this marker has a closing counterpart later in the content
+          const closingIndex = currentRemaining.indexOf(marker, marker.length);
+          if (closingIndex !== -1) {
+            // Valid formatting pair found, skip the opening marker
+            position += marker.length;
+            foundMarker = true;
+            break; // Found a marker, restart the search from new position
+          }
+        }
+      }
+    }
+
+    return position;
   }
 }
