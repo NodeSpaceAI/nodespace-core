@@ -51,21 +51,23 @@
       currentContent?: string;
       newContent?: string;
       inheritHeaderLevel?: number;
+      cursorAtBeginning?: boolean;
     }>
   ) {
-    const { afterNodeId, nodeType, currentContent, newContent, inheritHeaderLevel } = event.detail;
+    const { afterNodeId, nodeType, currentContent, newContent, inheritHeaderLevel, cursorAtBeginning } = event.detail;
 
     // Update current node content if provided
     if (currentContent !== undefined) {
       nodeManager.updateNodeContent(afterNodeId, currentContent);
     }
 
-    // Create new node using NodeManager with header inheritance
+    // Create new node using NodeManager with sophisticated logic
     const newNodeId = nodeManager.createNode(
       afterNodeId,
       newContent || '',
       nodeType,
-      inheritHeaderLevel
+      inheritHeaderLevel,
+      cursorAtBeginning || false
     );
 
     // Handle HTML formatting conversion if needed

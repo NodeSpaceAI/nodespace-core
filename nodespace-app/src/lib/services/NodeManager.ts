@@ -35,15 +35,27 @@ export interface NodeManagerEvents {
   nodeDeleted: (nodeId: string) => void;
 }
 
+export interface DeletionContext {
+  type: 'content_merge' | 'empty_removal';
+  parentId?: string;
+  childrenIds: string[];
+  childrenTransferredTo?: string;
+  contentLost: string;
+  siblingPosition: number;
+  mergedIntoNode?: string;
+}
+
 export class NodeManager {
   private _nodes: Map<string, Node>;
   private _rootNodeIds: string[];
+  private _collapsedNodes: Set<string>;
   private events: NodeManagerEvents;
   protected contentProcessor: ContentProcessor;
 
   constructor(events: NodeManagerEvents) {
     this._nodes = new Map<string, Node>();
     this._rootNodeIds = [];
+    this._collapsedNodes = new Set<string>();
     this.events = events;
     this.contentProcessor = ContentProcessor.getInstance();
   }
@@ -68,6 +80,13 @@ export class NodeManager {
    */
   get rootNodeIds(): string[] {
     return this._rootNodeIds;
+  }
+
+  /**
+   * Get collapsed nodes set
+   */
+  get collapsedNodes(): Set<string> {
+    return this._collapsedNodes;
   }
 
   // ========================================================================
@@ -139,8 +158,8 @@ export class NodeManager {
   }
 
   /**
-   * CRITICAL METHOD - Fixes backspace combination bug
-   * Combines currentNode with previousNode, preserving content and hierarchy
+   * SOPHISTICATED BACKSPACE - Handle empty node removal or content merging
+   * Implements advanced children transfer with depth preservation
    */
   combineNodes(currentNodeId: string, previousNodeId: string): void {
     const currentNode = this.findNode(currentNodeId);
@@ -150,25 +169,74 @@ export class NodeManager {
       return;
     }
 
-    const junctionPosition = previousNode.content.length;
+    const currentContent = currentNode.content;
+    const isEmpty = currentContent.trim() === '';
 
-    // Combine content
-    previousNode.content = previousNode.content + currentNode.content;
+    if (isEmpty) {
+      // EMPTY NODE REMOVAL LOGIC
+      this.handleEmptyNodeRemoval(currentNode, previousNode);
+    } else {
+      // CONTENT MERGE LOGIC  
+      this.handleContentMerge(currentNode, previousNode);
+    }
+  }
 
-    // Transfer children if any
+  /**
+   * Handle removal of empty nodes (backspace on empty content)
+   */
+  private handleEmptyNodeRemoval(currentNode: Node, previousNode: Node): void {
+    const previousContent = previousNode.content;
+
+    // Transfer children using sophisticated depth preservation
     if (currentNode.children.length > 0) {
-      previousNode.children.push(...currentNode.children);
-      // Update parent references
-      currentNode.children.forEach((childId) => {
-        const child = this.findNode(childId);
-        if (child) child.parentId = previousNode.id;
-      });
+      this.transferChildrenWithDepthPreservation(currentNode, previousNode);
     }
 
     // Remove current node from tree
-    this.deleteNode(currentNodeId);
+    this.deleteNode(currentNode.id);
 
-    // Notify UI for cursor positioning
+    // Focus previous node at end
+    this.events.focusRequested(previousNode.id, previousContent.length);
+  }
+
+  /**
+   * Handle merging of node content (backspace with actual content)
+   * SMART FORMAT INHERITANCE: Receiver format takes precedence, strip source format
+   */
+  private handleContentMerge(currentNode: Node, previousNode: Node): void {
+    const previousContent = previousNode.content;
+    const currentContent = currentNode.content;
+    const junctionPosition = previousContent.length;
+
+    // SMART FORMAT INHERITANCE LOGIC
+    const receiverHeaderLevel = this.contentProcessor.parseHeaderLevel(previousContent);
+    const sourceHeaderLevel = this.contentProcessor.parseHeaderLevel(currentContent);
+    
+    let processedCurrentContent = currentContent;
+    
+    if (sourceHeaderLevel > 0) {
+      // Strip header syntax from source node being merged
+      processedCurrentContent = this.contentProcessor.stripHeaderSyntax(currentContent);
+    }
+    
+    // Merge content with processed source content
+    const mergedContent = previousContent + processedCurrentContent;
+    previousNode.content = mergedContent;
+    
+    // Update the receiver node's header level (in case it changed)
+    if (receiverHeaderLevel > 0) {
+      previousNode.inheritHeaderLevel = receiverHeaderLevel;
+    }
+
+    // Transfer children using sophisticated depth preservation BEFORE removing node
+    if (currentNode.children.length > 0) {
+      this.transferChildrenWithDepthPreservation(currentNode, previousNode);
+    }
+
+    // Remove current node from tree
+    this.deleteNode(currentNode.id);
+
+    // Focus at junction point (after original content, before merged content)
     this.events.focusRequested(previousNode.id, junctionPosition);
   }
 
@@ -213,6 +281,12 @@ export class NodeManager {
 
       // Store in nodes map
       this._nodes.set(nodeId, node);
+      
+      // CRITICAL SYNC: Initialize collapsed state based on node.expanded
+      if (!node.expanded) {
+        this._collapsedNodes.add(nodeId);
+      }
+      
       return nodeId;
     };
 
@@ -229,13 +303,15 @@ export class NodeManager {
   }
 
   /**
-   * Create new node after specified node
+   * Create new node with sophisticated Enter key logic
+   * Supports cursor-at-beginning insertion and collapsed state handling
    */
   createNode(
     afterNodeId: string,
     content: string = '',
     nodeType: string = 'text',
-    inheritHeaderLevel?: number
+    inheritHeaderLevel?: number,
+    cursorAtBeginning: boolean = false
   ): string {
     const afterNode = this.findNode(afterNodeId);
     if (!afterNode) return '';
@@ -271,17 +347,49 @@ export class NodeManager {
     this.clearAllAutoFocus();
     newNode.autoFocus = true;
 
+    // SOPHISTICATED LOGIC: Handle children transfer based on collapsed state
+    if (afterNode.children.length > 0) {
+      const isCollapsed = this._collapsedNodes.has(afterNodeId);
+      
+      if (isCollapsed) {
+        // CRITICAL FIX: When parent is collapsed, children ALWAYS stay with original node
+        // regardless of cursor position or content splitting
+        // No children transfer needed - they stay put
+      } else if (!cursorAtBeginning) {
+        // When expanded AND not at beginning, children go to the right (new) node  
+        newNode.children = [...afterNode.children];
+        newNode.children.forEach(childId => {
+          const child = this.findNode(childId);
+          if (child) child.parentId = newId;
+        });
+        afterNode.children = [];
+      }
+      // Note: When expanded AND at beginning, children stay with original node too
+    }
+
     // Insert into appropriate location
     if (afterNode.parentId) {
       const parent = this.findNode(afterNode.parentId);
       if (parent) {
         const afterIndex = parent.children.indexOf(afterNodeId);
-        parent.children.splice(afterIndex + 1, 0, newId);
+        if (cursorAtBeginning) {
+          // Special case: cursor at beginning - insert BEFORE current node
+          parent.children.splice(afterIndex, 0, newId);
+        } else {
+          // Normal case: insert AFTER current node
+          parent.children.splice(afterIndex + 1, 0, newId);
+        }
       }
     } else {
       // Insert at root level
       const afterIndex = this._rootNodeIds.indexOf(afterNodeId);
-      this._rootNodeIds.splice(afterIndex + 1, 0, newId);
+      if (cursorAtBeginning) {
+        // Special case: cursor at beginning - insert BEFORE current node
+        this._rootNodeIds.splice(afterIndex, 0, newId);
+      } else {
+        // Normal case: insert AFTER current node
+        this._rootNodeIds.splice(afterIndex + 1, 0, newId);
+      }
     }
 
     this.events.nodeCreated(newId);
@@ -428,12 +536,21 @@ export class NodeManager {
 
   /**
    * Toggle node expanded state
+   * CRITICAL FIX: Synchronize with collapsed nodes set
    */
   toggleExpanded(nodeId: string): boolean {
     const node = this.findNode(nodeId);
     if (!node) return false;
 
     node.expanded = !node.expanded;
+    
+    // CRITICAL SYNC: Keep _collapsedNodes in sync with node.expanded
+    if (node.expanded) {
+      this._collapsedNodes.delete(nodeId); // Expanded = not in collapsed set
+    } else {
+      this._collapsedNodes.add(nodeId); // Collapsed = in collapsed set  
+    }
+    
     this.events.hierarchyChanged();
     return true;
   }
@@ -530,7 +647,6 @@ export class NodeManager {
     // Step 2: Skip all consecutive opening inline formatting markers
     // This handles cases where multiple formatting markers appear in sequence
     // e.g., "# **__*text*__**" should position after all opening markers
-    const remainingContent = content.substring(position);
     
     // Check for formatting markers in order of precedence (longest first to avoid conflicts)
     const formattingMarkers = ['**', '__', '*']; // Bold, underline, italic
@@ -555,5 +671,141 @@ export class NodeManager {
     }
 
     return position;
+  }
+
+  // ============================================================================
+  // Sophisticated Children Transfer Logic (from nodespace-core-ui)
+  // ============================================================================
+
+  /**
+   * Transfer children from source node with sophisticated depth preservation
+   * Handles collapsed state and auto-expansion logic
+   */
+  private transferChildrenWithDepthPreservation(sourceNode: Node, targetNode: Node): void {
+    if (sourceNode.children.length === 0) return;
+
+    // Track which nodes get new children for auto-expansion
+    const nodesGettingNewChildren = new Set<Node>();
+
+    const sourceDepth = this.getNodeDepth(sourceNode);
+
+    // Determine the appropriate parent for the transferred children
+    let newParent: Node;
+    let insertAtBeginning = false;
+
+    if (sourceDepth === 0) {
+      // Source is a root node - children should find appropriate level in target hierarchy
+      // Use root ancestor approach for root sources
+      const targetRootAncestor = this.findRootAncestor(targetNode);
+      if (!targetRootAncestor) return;
+      newParent = targetRootAncestor;
+      insertAtBeginning = this._collapsedNodes.has(targetRootAncestor.id);
+    } else {
+      // Source is not a root - children should go directly to target
+      // Use direct target approach for non-root sources
+      newParent = targetNode;
+      insertAtBeginning = this._collapsedNodes.has(targetNode.id);
+    }
+
+    // Move all direct children of the source to the determined parent
+    if (insertAtBeginning) {
+      // Target was collapsed - insert new children at the BEGINNING
+      const existingChildren = [...newParent.children];
+      newParent.children = [...sourceNode.children, ...existingChildren];
+    } else {
+      // Target was expanded - insert new children at the END
+      newParent.children.push(...sourceNode.children);
+    }
+
+    // Update parent references for all transferred children
+    sourceNode.children.forEach(childId => {
+      const child = this.findNode(childId);
+      if (child) child.parentId = newParent.id;
+    });
+
+    // Mark parent as getting new children
+    nodesGettingNewChildren.add(newParent);
+
+    // Clear the source node's children since they've been moved
+    sourceNode.children = [];
+
+    // Auto-expand nodes that received new children
+    nodesGettingNewChildren.forEach(node => {
+      if (this._collapsedNodes.has(node.id)) {
+        this._collapsedNodes.delete(node.id);
+      }
+    });
+  }
+
+  /**
+   * Find the root ancestor (depth 0) of a given node
+   */
+  private findRootAncestor(node: Node): Node | null {
+    let current: Node | null = node;
+
+    // Walk up to find the root
+    while (current && current.parentId) {
+      current = this.findNode(current.parentId);
+    }
+
+    return current;
+  }
+
+  /**
+   * Get the depth of a node in the hierarchy
+   */
+  private getNodeDepth(node: Node): number {
+    let depth = 0;
+    let current = this.findNode(node.parentId || '');
+    while (current) {
+      depth++;
+      current = this.findNode(current.parentId || '');
+    }
+    return depth;
+  }
+
+  /**
+   * Find the appropriate parent node at the specified depth
+   */
+  private findParentAtDepth(startNode: Node, targetDepth: number): Node | null {
+    let current: Node | null = startNode;
+
+    // Walk up the tree to find a node at the target depth
+    while (current && this.getNodeDepth(current) > targetDepth) {
+      current = this.findNode(current.parentId || '');
+    }
+
+    // If we found a node at exactly the target depth, return it
+    if (current && this.getNodeDepth(current) === targetDepth) {
+      return current;
+    }
+
+    return null;
+  }
+
+  /**
+   * Toggle collapsed state of a node
+   * CRITICAL FIX: Synchronize with node.expanded property
+   */
+  toggleCollapsed(nodeId: string): boolean {
+    const node = this.findNode(nodeId);
+    if (!node) return false;
+    
+    if (this._collapsedNodes.has(nodeId)) {
+      this._collapsedNodes.delete(nodeId);
+      node.expanded = true; // Sync with node property
+      return false; // Now expanded
+    } else {
+      this._collapsedNodes.add(nodeId);
+      node.expanded = false; // Sync with node property
+      return true; // Now collapsed
+    }
+  }
+
+  /**
+   * Check if a node is collapsed
+   */
+  isNodeCollapsed(nodeId: string): boolean {
+    return this._collapsedNodes.has(nodeId);
   }
 }

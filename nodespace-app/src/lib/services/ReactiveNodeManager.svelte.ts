@@ -34,6 +34,13 @@ export class ReactiveNodeManager extends NodeManager {
   }
 
   /**
+   * Override to use reactive collapsed nodes
+   */
+  get collapsedNodes(): Set<string> {
+    return super.collapsedNodes;
+  }
+
+  /**
    * Override to use reactive state for UI updates
    * Note: Manual implementation instead of $derived due to Svelte 5 reactivity issues
    * Returns flat list with hierarchy depth for CSS-based indentation
@@ -132,9 +139,10 @@ export class ReactiveNodeManager extends NodeManager {
     afterNodeId: string,
     content: string = '',
     nodeType: string = 'text',
-    inheritHeaderLevel?: number
+    inheritHeaderLevel?: number,
+    cursorAtBeginning: boolean = false
   ): string {
-    const result = super.createNode(afterNodeId, content, nodeType, inheritHeaderLevel);
+    const result = super.createNode(afterNodeId, content, nodeType, inheritHeaderLevel, cursorAtBeginning);
 
     // CRITICAL FIX: Comprehensive reactive state synchronization
     // The base class modifies multiple parts of the state during createNode:
@@ -296,5 +304,22 @@ export class ReactiveNodeManager extends NodeManager {
         this._reactiveNodes.set(id, baseNode);
       }
     }
+  }
+
+  /**
+   * Override to trigger UI updates for collapsed state changes
+   */
+  toggleCollapsed(nodeId: string): boolean {
+    const result = super.toggleCollapsed(nodeId);
+    // Force UI update when collapsed state changes
+    this.forceUIUpdate();
+    return result;
+  }
+
+  /**
+   * Override to use reactive state
+   */
+  isNodeCollapsed(nodeId: string): boolean {
+    return super.isNodeCollapsed(nodeId);
   }
 }

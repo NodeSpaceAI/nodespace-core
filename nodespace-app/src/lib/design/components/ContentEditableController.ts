@@ -17,6 +17,7 @@ export interface ContentEditableEvents {
     nodeType: string;
     currentContent?: string;
     newContent?: string;
+    cursorAtBeginning?: boolean;
   }) => void;
   indentNode: (data: { nodeId: string }) => void;
   outdentNode: (data: { nodeId: string }) => void;
@@ -337,16 +338,29 @@ export class ContentEditableController {
 
       const currentContent = this.element.textContent || '';
       const cursorPosition = this.getCurrentColumn();
+      const cursorAtBeginning = cursorPosition === 0;
       
-      // Perform smart split that preserves formatting
-      const splitResult = this.smartTextSplit(currentContent, cursorPosition);
-
-      this.events.createNewNode({
-        afterNodeId: this.nodeId,
-        nodeType: 'text',
-        currentContent: splitResult.beforeCursor,
-        newContent: splitResult.afterCursor
-      });
+      if (cursorAtBeginning) {
+        // SOPHISTICATED LOGIC: Cursor at beginning - create node above
+        this.events.createNewNode({
+          afterNodeId: this.nodeId,
+          nodeType: 'text',
+          currentContent: currentContent, // Keep all content in original node
+          newContent: '', // Empty new node above
+          cursorAtBeginning: true
+        });
+      } else {
+        // SOPHISTICATED LOGIC: Normal split with formatting preservation
+        const splitResult = this.smartTextSplit(currentContent, cursorPosition);
+        
+        this.events.createNewNode({
+          afterNodeId: this.nodeId,
+          nodeType: 'text',
+          currentContent: splitResult.beforeCursor,
+          newContent: splitResult.afterCursor,
+          cursorAtBeginning: false
+        });
+      }
       return;
     }
 
