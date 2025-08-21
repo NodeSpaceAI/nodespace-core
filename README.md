@@ -96,6 +96,8 @@ bun run gh:pr <number>
 
 **❌ Don't use:** `gh issue view`, `gh issue list` - these bypass project tooling and automation.
 
+⚠️ **IMPORTANT: All `bun run gh:*` commands must be run from the repository root directory (`/Users/malibio/nodespace/nodespace-core/`), NOT from subdirectories like `nodespace-app/`.**
+
 ### Development Setup
 
 ```bash

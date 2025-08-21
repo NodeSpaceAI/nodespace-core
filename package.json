@@ -24,7 +24,8 @@
     "gh:startup": "bun run scripts/gh-utils.ts issues:startup",
     "gh:view": "bun run scripts/gh-utils.ts issues:view",
     "gh:pr": "bun run scripts/gh-utils.ts pr:create",
-    "gh:help": "bun run scripts/gh-utils.ts"
+    "gh:help": "bun run scripts/gh-utils.ts",
+    "quality:fix": "bun run --cwd nodespace-app quality:fix"
   },
   "devDependencies": {
     "bun-types": "latest"

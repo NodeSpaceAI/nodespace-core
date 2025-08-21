@@ -56,7 +56,18 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 ### 2. Finding Tasks to Work On
 
 **Primary Task Source: GitHub Issues**
+
+⚠️ **IMPORTANT: All `bun run gh:*` commands must be run from the repository root directory (`/Users/malibio/nodespace/nodespace-core/`), NOT from subdirectories like `nodespace-app/`.**
+
 ```bash
+# CORRECT - from repository root
+cd /Users/malibio/nodespace/nodespace-core
+bun run gh:list
+
+# WRONG - from subdirectory  
+cd /Users/malibio/nodespace/nodespace-core/nodespace-app
+bun run gh:list  # ❌ Will fail
+
 # List all open issues
 bun run gh:list
 
@@ -124,6 +135,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 
 1. **Pick an Issue & Assign Yourself**
    ```bash
+   # ⚠️ MUST be run from repository root: /Users/malibio/nodespace/nodespace-core/
    bun run gh:list
    bun run gh:view <number>
    bun run gh:assign <number> "@me"
@@ -152,6 +164,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    git add .
    git commit -m "Implement feature (addresses #<number>)"
    git push -u origin feature/issue-<number>-brief-description
+   # ⚠️ MUST be run from repository root
    bun run gh:pr <number>
    ```
    Automatically updates project status to "Ready for Review"

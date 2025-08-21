@@ -11,6 +11,7 @@ import { Octokit } from "@octokit/rest";
 import { readFileSync, existsSync } from "fs";
 import { homedir } from "os";
 import path from "path";
+import { $ } from "bun";
 
 interface ProjectItem {
   id: string;
@@ -70,7 +71,7 @@ export class GitHubClient {
   }
 
   /**
-   * Get GitHub token from environment or gh CLI config
+   * Get GitHub token from environment or gh CLI
    */
   private getGitHubToken(): string {
     // Try environment variable first
@@ -78,7 +79,24 @@ export class GitHubClient {
       return process.env.GITHUB_TOKEN;
     }
 
-    // Try gh CLI config file (both possible locations)
+    // Try gh CLI token command (modern keyring authentication)
+    try {
+      const result = Bun.spawnSync(["gh", "auth", "token"], {
+        stdout: "pipe",
+        stderr: "pipe"
+      });
+      
+      if (result.exitCode === 0) {
+        const token = result.stdout.toString().trim();
+        if (token && token.startsWith("gh")) {
+          return token;
+        }
+      }
+    } catch (error) {
+      // Continue trying other methods
+    }
+
+    // Try gh CLI config file (legacy token storage)
     const possibleConfigPaths = [
       path.join(homedir(), ".config", "gh", "hosts.yml"),
       path.join(homedir(), ".config", "gh", "config.yml")
