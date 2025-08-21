@@ -148,6 +148,28 @@ class NodeSpaceGitHubManager {
     }
   }
 
+  async editIssue(issueNumber: number, options: {
+    title?: string;
+    body?: string;
+    labels?: string[];
+    state?: "open" | "closed";
+  }) {
+    try {
+      await this.client.updateIssue(issueNumber, options);
+      
+      console.log(`✅ Issue #${issueNumber} updated:`);
+      if (options.title) console.log(`  Title: ${options.title}`);
+      if (options.body) console.log(`  Body updated`);
+      if (options.labels) console.log(`  Labels: ${options.labels.join(", ")}`);
+      if (options.state) console.log(`  State: ${options.state}`);
+      
+      return true;
+    } catch (error) {
+      console.error(`❌ Failed to edit issue #${issueNumber}: ${error.message}`);
+      throw error;
+    }
+  }
+
   async createPR(title: string, body: string, draft: boolean = false) {
     try {
       const currentBranch = this.client.getCurrentBranch();
@@ -330,6 +352,51 @@ async function main() {
         await manager.createIssue(title, body, labels, assignees);
         break;
       }
+
+      case "issues:edit": {
+        const issueNumber = parseInt(args[1]);
+        if (!issueNumber) {
+          console.error('Usage: bun run gh:edit 45 --title "New Title" --body "New body" --labels "label1,label2" --state "open|closed"');
+          process.exit(1);
+        }
+
+        const options: any = {};
+        
+        const titleIndex = args.indexOf("--title");
+        const bodyIndex = args.indexOf("--body");
+        const labelsIndex = args.indexOf("--labels");
+        const stateIndex = args.indexOf("--state");
+        
+        if (titleIndex !== -1 && args[titleIndex + 1]) {
+          options.title = args[titleIndex + 1];
+        }
+        
+        if (bodyIndex !== -1 && args[bodyIndex + 1]) {
+          options.body = args[bodyIndex + 1];
+        }
+        
+        if (labelsIndex !== -1 && args[labelsIndex + 1]) {
+          options.labels = args[labelsIndex + 1].split(",").map(l => l.trim());
+        }
+        
+        if (stateIndex !== -1 && args[stateIndex + 1]) {
+          const state = args[stateIndex + 1];
+          if (state === "open" || state === "closed") {
+            options.state = state;
+          } else {
+            console.error('State must be "open" or "closed"');
+            process.exit(1);
+          }
+        }
+
+        if (Object.keys(options).length === 0) {
+          console.error('At least one option must be provided: --title, --body, --labels, or --state');
+          process.exit(1);
+        }
+
+        await manager.editIssue(issueNumber, options);
+        break;
+      }
       
       case "issues:list": {
         const options: any = {};
@@ -392,12 +459,16 @@ async function main() {
 
 📋 Issue Management:
   bun run gh:create "Title" "Body" "labels" "assignees"  # Create issue
-  bun run gh:status 57,58,59 "In Progress"     # Update status
-  bun run gh:assign 60,61,62 "@me"             # Assign issues
-  bun run gh:unassign 60,61,62 "@me"           # Unassign issues
-  bun run gh:list --status open                # List issues
-  bun run gh:list --label foundation           # Filter by label
-  bun run gh:list --assignee "@me"             # Your issues
+  bun run gh:edit 45 --title "New Title"      # Edit issue title
+  bun run gh:edit 45 --body "New body"        # Edit issue body
+  bun run gh:edit 45 --labels "tag1,tag2"     # Update labels
+  bun run gh:edit 45 --state "closed"         # Close/reopen issue
+  bun run gh:status 57,58,59 "In Progress"    # Update status
+  bun run gh:assign 60,61,62 "@me"            # Assign issues
+  bun run gh:unassign 60,61,62 "@me"          # Unassign issues
+  bun run gh:list --status open               # List issues
+  bun run gh:list --label foundation          # Filter by label
+  bun run gh:list --assignee "@me"            # Your issues
   
 🎯 Issue Workflow:
   bun run gh:startup 45 "Brief description"    # Complete startup sequence

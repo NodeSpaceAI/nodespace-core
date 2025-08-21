@@ -399,6 +399,32 @@ export class GitHubClient {
   }
 
   /**
+   * Update issue (no shell commands)
+   */
+  async updateIssue(
+    issueNumber: number,
+    updates: {
+      title?: string;
+      body?: string;
+      labels?: string[];
+      state?: "open" | "closed";
+    }
+  ): Promise<void> {
+    const params: any = {
+      owner: this.owner,
+      repo: this.repo,
+      issue_number: issueNumber
+    };
+
+    if (updates.title !== undefined) params.title = updates.title;
+    if (updates.body !== undefined) params.body = updates.body;
+    if (updates.labels !== undefined) params.labels = updates.labels;
+    if (updates.state !== undefined) params.state = updates.state;
+
+    await this.octokit.rest.issues.update(params);
+  }
+
+  /**
    * Create pull request (no shell commands)
    */
   async createPullRequest(

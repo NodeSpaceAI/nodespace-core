@@ -74,6 +74,12 @@ bun run gh:list
 # View specific issue details
 bun run gh:view <issue-number>
 
+# Edit issue properties
+bun run gh:edit <issue-number> --title "New Title"
+bun run gh:edit <issue-number> --body "Updated description"
+bun run gh:edit <issue-number> --labels "foundation,ui"
+bun run gh:edit <issue-number> --state "closed"
+
 # Check issue status and acceptance criteria
 bun run gh:view <issue-number>
 ```
