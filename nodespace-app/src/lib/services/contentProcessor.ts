@@ -145,9 +145,11 @@ export class ContentProcessor {
   private setupEventBusIntegration(): void {
     // Listen for references update needed events
     eventBus.subscribe('references:update-needed', (event) => {
-      if (event.updateType === 'content' || event.updateType === 'deletion') {
+      // Type assertion for specific event type
+      const refEvent = event as import('./EventTypes').ReferencesUpdateNeededEvent;
+      if (refEvent.updateType === 'content' || refEvent.updateType === 'deletion') {
         // When content changes or nodes are deleted, we might need to update references
-        this.emitCacheInvalidate('node', event.nodeId, 'reference content changed');
+        this.emitCacheInvalidate('node', refEvent.nodeId, 'reference content changed');
       }
     });
   }
@@ -516,12 +518,13 @@ export class ContentProcessor {
 
     if (inlinePatterns.length === 0) {
       // Plain text
-      children.push({
+      const textNode: TextNode = {
         type: 'text',
         content: text,
         start: start,
         end: start + text.length
-      });
+      };
+      children.push(textNode);
     } else {
       // Mixed content with inline formatting
       let lastEnd = 0;
@@ -529,12 +532,13 @@ export class ContentProcessor {
       for (const pattern of inlinePatterns) {
         // Add text before pattern
         if (pattern.start > lastEnd) {
-          children.push({
+          const textNode: TextNode = {
             type: 'text',
             content: text.substring(lastEnd, pattern.start),
             start: start + lastEnd,
             end: start + pattern.start
-          });
+          };
+          children.push(textNode);
         }
 
         // Add the pattern node
@@ -549,12 +553,13 @@ export class ContentProcessor {
 
       // Add remaining text
       if (lastEnd < text.length) {
-        children.push({
+        const textNode: TextNode = {
           type: 'text',
           content: text.substring(lastEnd),
           start: start + lastEnd,
           end: start + text.length
-        });
+        };
+        children.push(textNode);
       }
     }
 
@@ -787,15 +792,17 @@ export class ContentProcessor {
     nodeId?: string,
     reason?: string
   ): void {
-    eventBus.emit({
+    const cacheEvent: import('./EventTypes').CacheInvalidateEvent = {
       type: 'cache:invalidate',
       namespace: 'coordination',
       source: this.serviceName,
+      timestamp: Date.now(),
       cacheKey: nodeId ? `contentProcessor:${nodeId}` : 'contentProcessor:global',
       scope,
       nodeId,
       reason: reason || 'content processing'
-    });
+    };
+    eventBus.emit(cacheEvent);
   }
 
   /**
@@ -806,10 +813,11 @@ export class ContentProcessor {
 
     // Emit events for detected wikilinks (Phase 2+ preparation)
     for (const wikiLink of prepared.wikiLinks) {
-      eventBus.emit({
+      const backlinkEvent: import('./EventTypes').BacklinkDetectedEvent = {
         type: 'backlink:detected',
         namespace: 'phase2',
         source: this.serviceName,
+        timestamp: Date.now(),
         sourceNodeId: nodeId,
         targetNodeId: wikiLink.target, // In Phase 2, this will be resolved to actual node ID
         linkType: 'wikilink',
@@ -819,7 +827,8 @@ export class ContentProcessor {
           endPos: wikiLink.endPos,
           target: wikiLink.target
         }
-      });
+      };
+      eventBus.emit(backlinkEvent);
     }
 
     return prepared;

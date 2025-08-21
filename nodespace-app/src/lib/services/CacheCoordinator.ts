@@ -104,36 +104,38 @@ export class CacheCoordinator {
   private setupEventBusIntegration(): void {
     // Listen for cache invalidation events
     eventBus.subscribe('cache:invalidate', (event) => {
-      this.handleCacheInvalidation(event);
+      this.handleCacheInvalidation(event as import('./EventTypes').CacheInvalidateEvent);
     });
 
     // Listen for node lifecycle events
     eventBus.subscribe('node:created', (event) => {
-      this.handleNodeLifecycleEvent(event);
+      this.handleNodeLifecycleEvent(event as import('./EventTypes').NodeCreatedEvent);
     });
 
     eventBus.subscribe('node:updated', (event) => {
-      this.handleNodeLifecycleEvent(event);
+      this.handleNodeLifecycleEvent(event as import('./EventTypes').NodeUpdatedEvent);
     });
 
     eventBus.subscribe('node:deleted', (event) => {
-      this.handleNodeLifecycleEvent(event);
+      this.handleNodeLifecycleEvent(event as import('./EventTypes').NodeDeletedEvent);
     });
 
     eventBus.subscribe('hierarchy:changed', (event) => {
-      this.handleHierarchyChanged(event);
+      this.handleHierarchyChanged(event as import('./EventTypes').HierarchyChangedEvent);
     });
 
     // Listen for reference events that might affect cache
     eventBus.subscribe('references:update-needed', (event) => {
-      this.invalidateCacheForNode(event.nodeId, 'reference update');
+      const refEvent = event as import('./EventTypes').ReferencesUpdateNeededEvent;
+      this.invalidateCacheForNode(refEvent.nodeId, 'reference update');
     });
 
     // Listen for backlink detection (Phase 2+ preparation)
     eventBus.subscribe('backlink:detected', (event) => {
+      const backlinkEvent = event as import('./EventTypes').BacklinkDetectedEvent;
       // Invalidate cache for both source and target nodes
-      this.invalidateCacheForNode(event.sourceNodeId, 'backlink detected');
-      this.invalidateCacheForNode(event.targetNodeId, 'backlink target');
+      this.invalidateCacheForNode(backlinkEvent.sourceNodeId, 'backlink detected');
+      this.invalidateCacheForNode(backlinkEvent.targetNodeId, 'backlink target');
     });
   }
 
@@ -329,14 +331,16 @@ export class CacheCoordinator {
     }
 
     // Emit batch invalidation complete event
-    eventBus.emit({
+    const debugEvent: import('./EventTypes').DebugEvent = {
       type: 'debug:log',
       namespace: 'debug',
       source: this.serviceName,
+      timestamp: Date.now(),
       level: 'debug',
       message: `Batch invalidated ${keysToInvalidate.length} cache entries`,
       metadata: { keys: keysToInvalidate }
-    });
+    };
+    eventBus.emit(debugEvent);
   }
 
   private executeInvalidation(key: string, reason: string): void {
@@ -348,16 +352,18 @@ export class CacheCoordinator {
     this.metrics.invalidationCount++;
 
     // Emit cache invalidation event for dependent services
-    eventBus.emit({
+    const cacheEvent: import('./EventTypes').CacheInvalidateEvent = {
       type: 'cache:invalidate',
       namespace: 'coordination',
       source: this.serviceName,
+      timestamp: Date.now(),
       cacheKey: key,
       scope: 'single',
       nodeId: entry.nodeId,
       reason,
       metadata: { originalEntry: entry }
-    });
+    };
+    eventBus.emit(cacheEvent);
 
     // Handle cascading invalidations
     this.handleCascadingInvalidation(key, reason);
@@ -386,10 +392,11 @@ export class CacheCoordinator {
     this.addInvalidationStrategy({
       name: 'content-change',
       condition: (event, cache) => {
+        const typedEvent = event as any;
         return (
-          event.type === 'node:updated' &&
-          event.updateType === 'content' &&
-          cache.nodeId === event.nodeId
+          typedEvent.type === 'node:updated' &&
+          typedEvent.updateType === 'content' &&
+          cache.nodeId === typedEvent.nodeId
         );
       },
       priority: 100,
@@ -400,10 +407,11 @@ export class CacheCoordinator {
     this.addInvalidationStrategy({
       name: 'hierarchy-change',
       condition: (event, cache) => {
+        const typedEvent = event as any;
         return (
-          event.type === 'hierarchy:changed' &&
+          typedEvent.type === 'hierarchy:changed' &&
           cache.nodeId &&
-          event.affectedNodes.includes(cache.nodeId)
+          typedEvent.affectedNodes?.includes(cache.nodeId)
         );
       },
       priority: 90,
@@ -414,9 +422,10 @@ export class CacheCoordinator {
     this.addInvalidationStrategy({
       name: 'node-deletion',
       condition: (event, cache) => {
+        const typedEvent = event as any;
         return (
-          event.type === 'node:deleted' &&
-          (cache.nodeId === event.nodeId || cache.dependencies.has(event.nodeId))
+          typedEvent.type === 'node:deleted' &&
+          (cache.nodeId === typedEvent.nodeId || cache.dependencies.has(typedEvent.nodeId))
         );
       },
       priority: 95,
@@ -427,7 +436,8 @@ export class CacheCoordinator {
     this.addInvalidationStrategy({
       name: 'reference-update',
       condition: (event, cache) => {
-        return event.type === 'references:update-needed' && cache.nodeId === event.nodeId;
+        const typedEvent = event as any;
+        return typedEvent.type === 'references:update-needed' && cache.nodeId === typedEvent.nodeId;
       },
       priority: 80,
       batchable: true
@@ -463,14 +473,16 @@ export class CacheCoordinator {
     this.metrics.lastCleanup = now;
 
     if (keysToRemove.length > 0) {
-      eventBus.emit({
+      const debugEvent: import('./EventTypes').DebugEvent = {
         type: 'debug:log',
         namespace: 'debug',
         source: this.serviceName,
+        timestamp: Date.now(),
         level: 'debug',
         message: `Cache cleanup removed ${keysToRemove.length} stale entries`,
         metadata: { removedKeys: keysToRemove }
-      });
+      };
+      eventBus.emit(debugEvent);
     }
   }
 

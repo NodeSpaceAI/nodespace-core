@@ -495,14 +495,16 @@ export class EventBus {
     }
 
     // Emit batch completed event for subscribers who care about batching
-    this.emit({
+    const debugEvent: import('./EventTypes').DebugEvent = {
       type: 'debug:log',
       namespace: 'debug',
       source: 'EventBus',
+      timestamp: Date.now(),
       level: 'debug',
       message: `Processed batch ${batchKey} with ${events.length} events`,
       metadata: { batchedEvent }
-    });
+    };
+    this.emit(debugEvent);
   }
 
   private handleDebouncedEvent(event: NodeSpaceEvent, subscription: EventSubscription): void {

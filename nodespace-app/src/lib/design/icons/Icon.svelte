@@ -4,10 +4,10 @@
 </script>
 
 <script lang="ts">
-  import { textIcon } from './ui/text.ts';
-  import { circleIcon } from './ui/circle.ts';
-  import { circleRingIcon } from './ui/circle-ring.ts';
-  import { chevronRightIcon } from './ui/chevron-right.ts';
+  import { textIcon } from './ui/text';
+  import { circleIcon } from './ui/circle';
+  import { circleRingIcon } from './ui/circle-ring';
+  import { chevronRightIcon } from './ui/chevron-right';
 
   // Icon registry mapping names to SVG paths
   const iconRegistry: Record<IconName, string> = {
