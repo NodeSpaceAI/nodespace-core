@@ -1,12 +1,14 @@
 /**
- * Simplified test setup for NodeSpace
- * Provides basic testing utilities without over-complexity
+ * NodeSpace Test Setup - Bun + Happy DOM
+ * 
+ * Optimized for Bun runtime with happy-dom for fast, reliable DOM testing.
+ * No Node.js or jsdom dependencies required.
  */
 import { vi } from 'vitest';
 import '@testing-library/jest-dom';
 
 // Ensure global object is available for legacy test compatibility
-// In Vitest/Node.js environment, global should already be available, but provide fallback
+// In Vitest/Bun environment, global should already be available, but provide fallback
 if (typeof global === 'undefined') {
   (globalThis as unknown as { global: typeof globalThis }).global = globalThis;
 } else {
@@ -16,50 +18,8 @@ if (typeof global === 'undefined') {
   }
 }
 
-// Ensure DOM globals are available
-import { JSDOM } from 'jsdom';
-
-const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', {
-  url: 'http://localhost:3000',
-  pretendToBeVisual: true,
-  resources: 'usable'
-});
-
-// Set up global DOM
-Object.defineProperty(globalThis, 'window', {
-  value: dom.window,
-  writable: true
-});
-
-Object.defineProperty(globalThis, 'document', {
-  value: dom.window.document,
-  writable: true
-});
-
-Object.defineProperty(globalThis, 'navigator', {
-  value: dom.window.navigator,
-  writable: true
-});
-
-Object.defineProperty(globalThis, 'HTMLElement', {
-  value: dom.window.HTMLElement,
-  writable: true
-});
-
-Object.defineProperty(globalThis, 'Element', {
-  value: dom.window.Element,
-  writable: true
-});
-
-Object.defineProperty(globalThis, 'Node', {
-  value: dom.window.Node,
-  writable: true
-});
-
-Object.defineProperty(globalThis, 'NodeFilter', {
-  value: dom.window.NodeFilter,
-  writable: true
-});
+// Happy DOM is configured via vitest.config.ts environment: 'happy-dom'
+// No manual DOM setup required - Vitest handles it automatically
 
 // Mock MutationObserver for testing
 interface MockMutationRecord {
