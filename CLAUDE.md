@@ -207,12 +207,14 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 - Use proper TypeScript types instead of `any`
 - Follow Svelte best practices and avoid unsafe patterns like `{@html}`
 
-**Package Manager Enforcement:**
-- **MANDATORY: Use Bun only** - npm, yarn, and pnpm are blocked
-- Project includes automatic enforcement via preinstall hooks
+**Runtime and Package Manager:**
+- **MANDATORY: Bun-only development** - Node.js not required
+- All scripts use `bunx` for consistent Bun runtime execution
+- Project includes automatic npm/yarn/pnpm blocking via preinstall hooks
 - Install Bun: `curl -fsSL https://bun.sh/install | bash`
-- Install packages: `bun install` (not npm install)
-- Run commands: `bun run dev`, `bun run build`, etc.
+- Install packages: `bun install` 
+- Run commands: `bun run dev`, `bun run test`, `bun run build`, etc.
+- Testing: Vitest + Happy DOM (faster than jsdom, Bun-optimized)
 
 **Git Workflow:**
 - Create feature branches: `feature/issue-<number>-brief-description`
