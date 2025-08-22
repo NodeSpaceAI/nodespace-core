@@ -1,6 +1,6 @@
 /**
  * HierarchyService Test Suite
- * 
+ *
  * Comprehensive tests for HierarchyService focusing on:
  * - Hierarchy computation and caching performance
  * - Cache invalidation strategies
@@ -14,6 +14,14 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 import { NodeManager, type NodeManagerEvents } from '$lib/services/NodeManager';
 import { HierarchyService } from '$lib/services/HierarchyService';
 import { eventBus } from '$lib/services/EventBus';
+
+// Test helper interface for hierarchical structures
+interface TestHierarchyNode {
+  id: string;
+  type: string;
+  content: string;
+  children: TestHierarchyNode[];
+}
 
 describe('HierarchyService', () => {
   let nodeManager: NodeManager;
@@ -398,7 +406,7 @@ describe('HierarchyService', () => {
       ]);
 
       const path = hierarchyService.getNodePath('level3');
-      
+
       expect(path.nodeIds).toEqual(['root', 'level1', 'level2', 'level3']);
       expect(path.depths).toEqual([0, 1, 2, 3]);
       expect(path.totalDepth).toBe(3);
@@ -415,7 +423,7 @@ describe('HierarchyService', () => {
       ]);
 
       const path = hierarchyService.getNodePath('root-only');
-      
+
       expect(path.nodeIds).toEqual(['root-only']);
       expect(path.depths).toEqual([0]);
       expect(path.totalDepth).toBe(0);
@@ -484,7 +492,9 @@ describe('HierarchyService', () => {
       hierarchyService.getSiblings('node2');
 
       let stats = hierarchyService.getCacheStats();
-      expect(stats.depthCacheSize + stats.childrenCacheSize + stats.siblingsCacheSize).toBeGreaterThan(0);
+      expect(
+        stats.depthCacheSize + stats.childrenCacheSize + stats.siblingsCacheSize
+      ).toBeGreaterThan(0);
 
       // Clear all caches
       hierarchyService.invalidateAllCaches();
@@ -511,10 +521,10 @@ describe('HierarchyService', () => {
       // Make some calls to populate cache and miss stats
       hierarchyService.getNodeDepth('child1'); // Cache miss
       hierarchyService.getNodeDepth('child1'); // Cache hit
-      hierarchyService.getChildren('parent');  // Cache miss
-      
+      hierarchyService.getChildren('parent'); // Cache miss
+
       const stats = hierarchyService.getCacheStats();
-      
+
       expect(stats.hitRatio).toBeGreaterThan(0);
       expect(stats.hitRatio).toBeLessThanOrEqual(1);
       expect(stats.performance.cacheHits).toBeGreaterThan(0);
@@ -539,9 +549,8 @@ describe('HierarchyService', () => {
 
       // Populate cache
       hierarchyService.getNodeDepth('test-node');
-      
-      let stats = hierarchyService.getCacheStats();
-      const initialCacheSize = stats.depthCacheSize;
+
+      hierarchyService.getCacheStats();
 
       // Emit hierarchy update event
       eventBus.emit({
@@ -554,11 +563,11 @@ describe('HierarchyService', () => {
       });
 
       // Allow event processing
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 10));
 
       // Cache should be invalidated
-      stats = hierarchyService.getCacheStats();
-      // Note: Cache invalidation might not immediately reduce size due to 
+      hierarchyService.getCacheStats();
+      // Note: Cache invalidation might not immediately reduce size due to
       // how the implementation works, but cache hits should reset
     });
 
@@ -568,9 +577,7 @@ describe('HierarchyService', () => {
           id: 'node1',
           type: 'text',
           content: 'Node 1',
-          children: [
-            { id: 'node2', type: 'text', content: 'Node 2', children: [] }
-          ]
+          children: [{ id: 'node2', type: 'text', content: 'Node 2', children: [] }]
         }
       ]);
 
@@ -589,7 +596,7 @@ describe('HierarchyService', () => {
       });
 
       // Allow event processing
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 10));
 
       // Caches for affected nodes should be invalidated
       // This is verified by the service responding to the event
@@ -607,7 +614,7 @@ describe('HierarchyService', () => {
       nodeManager.initializeFromLegacyData([largeHierarchy]);
 
       const startTime = performance.now();
-      
+
       // Test various operations on a large hierarchy
       for (let i = 0; i < 100; i++) {
         const nodeId = `node-${i * 10}`;
@@ -627,7 +634,7 @@ describe('HierarchyService', () => {
       nodeManager.initializeFromLegacyData([veryLargeHierarchy]);
 
       const startTime = performance.now();
-      
+
       // Test critical operations
       hierarchyService.getNodeDepth('node-9999'); // Deepest node
       hierarchyService.getChildren('node-5000'); // Middle node
@@ -642,8 +649,8 @@ describe('HierarchyService', () => {
   // Helper Functions
   // ========================================================================
 
-  function createDeepHierarchy(depth: number): any {
-    let current: any = {
+  function createDeepHierarchy(depth: number): TestHierarchyNode {
+    let current: TestHierarchyNode = {
       id: `level-${depth - 1}`,
       type: 'text',
       content: `Level ${depth - 1}`,
@@ -662,12 +669,12 @@ describe('HierarchyService', () => {
     return current;
   }
 
-  function createLargeHierarchy(nodeCount: number): any {
+  function createLargeHierarchy(nodeCount: number): TestHierarchyNode {
     const root = {
       id: 'root',
       type: 'text',
       content: 'Root',
-      children: [] as any[]
+      children: [] as TestHierarchyNode[]
     };
 
     // Create a balanced tree structure
@@ -675,14 +682,12 @@ describe('HierarchyService', () => {
     let nodeIdCounter = 0;
     const maxChildrenPerNode = 10;
 
-    while (nodeIdCounter < nodeCount - 1) { // -1 because root is already counted
-      const nextLevel: any[] = [];
+    while (nodeIdCounter < nodeCount - 1) {
+      // -1 because root is already counted
+      const nextLevel: TestHierarchyNode[] = [];
 
       for (const parent of currentLevel) {
-        const childrenCount = Math.min(
-          maxChildrenPerNode,
-          nodeCount - 1 - nodeIdCounter
-        );
+        const childrenCount = Math.min(maxChildrenPerNode, nodeCount - 1 - nodeIdCounter);
 
         for (let i = 0; i < childrenCount && nodeIdCounter < nodeCount - 1; i++) {
           const child = {

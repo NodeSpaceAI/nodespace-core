@@ -392,7 +392,7 @@ export class CacheCoordinator {
     this.addInvalidationStrategy({
       name: 'content-change',
       condition: (event, cache) => {
-        const typedEvent = event as any;
+        const typedEvent = event as import('./EventTypes').NodeUpdatedEvent;
         return (
           typedEvent.type === 'node:updated' &&
           typedEvent.updateType === 'content' &&
@@ -407,7 +407,7 @@ export class CacheCoordinator {
     this.addInvalidationStrategy({
       name: 'hierarchy-change',
       condition: (event, cache) => {
-        const typedEvent = event as any;
+        const typedEvent = event as import('./EventTypes').HierarchyChangedEvent;
         return (
           typedEvent.type === 'hierarchy:changed' &&
           cache.nodeId &&
@@ -422,7 +422,7 @@ export class CacheCoordinator {
     this.addInvalidationStrategy({
       name: 'node-deletion',
       condition: (event, cache) => {
-        const typedEvent = event as any;
+        const typedEvent = event as import('./EventTypes').NodeDeletedEvent;
         return (
           typedEvent.type === 'node:deleted' &&
           (cache.nodeId === typedEvent.nodeId || cache.dependencies.has(typedEvent.nodeId))
@@ -436,7 +436,7 @@ export class CacheCoordinator {
     this.addInvalidationStrategy({
       name: 'reference-update',
       condition: (event, cache) => {
-        const typedEvent = event as any;
+        const typedEvent = event as import('./EventTypes').ReferencesUpdateNeededEvent;
         return typedEvent.type === 'references:update-needed' && cache.nodeId === typedEvent.nodeId;
       },
       priority: 80,

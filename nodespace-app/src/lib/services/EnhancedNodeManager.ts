@@ -1,10 +1,10 @@
 /**
  * EnhancedNodeManager - Enhanced Node Management with Service Composition
- * 
+ *
  * Extends the existing NodeManager using composition to add enhanced methods
  * that leverage HierarchyService and NodeOperationsService while maintaining
  * full backward compatibility with existing EventBus integrations.
- * 
+ *
  * Key Features:
  * - Full backward compatibility with existing NodeManager
  * - Enhanced hierarchy operations via HierarchyService
@@ -17,7 +17,7 @@
 import { NodeManager, type NodeManagerEvents, type Node } from './NodeManager';
 import { HierarchyService } from './HierarchyService';
 import { NodeOperationsService } from './NodeOperationsService';
-import { ContentProcessor } from './ContentProcessor';
+import { ContentProcessor } from './contentProcessor';
 import { eventBus } from './EventBus';
 // import type { NodeSpaceNode } from './MockDatabaseService';
 
@@ -73,7 +73,7 @@ export class EnhancedNodeManager extends NodeManager {
 
   constructor(events: NodeManagerEvents) {
     super(events);
-    
+
     // Initialize enhanced services
     this.hierarchyService = new HierarchyService(this);
     this.contentProcessor = ContentProcessor.getInstance();
@@ -103,7 +103,7 @@ export class EnhancedNodeManager extends NodeManager {
    */
   public getEnhancedChildren(nodeId: string): Node[] {
     const childIds = this.hierarchyService.getChildren(nodeId);
-    return childIds.map(id => this.findNode(id)).filter(node => node !== null) as Node[];
+    return childIds.map((id) => this.findNode(id)).filter((node) => node !== null) as Node[];
   }
 
   /**
@@ -111,7 +111,7 @@ export class EnhancedNodeManager extends NodeManager {
    */
   public getEnhancedDescendants(nodeId: string): Node[] {
     const descendantIds = this.hierarchyService.getDescendants(nodeId);
-    return descendantIds.map(id => this.findNode(id)).filter(node => node !== null) as Node[];
+    return descendantIds.map((id) => this.findNode(id)).filter((node) => node !== null) as Node[];
   }
 
   /**
@@ -119,8 +119,10 @@ export class EnhancedNodeManager extends NodeManager {
    */
   public getNodePath(nodeId: string): { nodes: Node[]; depths: number[] } {
     const path = this.hierarchyService.getNodePath(nodeId);
-    const nodes = path.nodeIds.map(id => this.findNode(id)).filter(node => node !== null) as Node[];
-    
+    const nodes = path.nodeIds
+      .map((id) => this.findNode(id))
+      .filter((node) => node !== null) as Node[];
+
     return {
       nodes,
       depths: path.depths
@@ -137,12 +139,14 @@ export class EnhancedNodeManager extends NodeManager {
     previousSibling: Node | null;
   } {
     const siblingIds = this.hierarchyService.getSiblings(nodeId);
-    const siblings = siblingIds.map(id => this.findNode(id)).filter(node => node !== null) as Node[];
+    const siblings = siblingIds
+      .map((id) => this.findNode(id))
+      .filter((node) => node !== null) as Node[];
     const currentPosition = this.hierarchyService.getSiblingPosition(nodeId);
-    
+
     const nextSiblingId = this.hierarchyService.getNextSibling(nodeId);
     const previousSiblingId = this.hierarchyService.getPreviousSibling(nodeId);
-    
+
     return {
       siblings,
       currentPosition,
@@ -252,12 +256,11 @@ export class EnhancedNodeManager extends NodeManager {
     node.mentions = [...mentions];
 
     // Use NodeOperationsService for bidirectional consistency
-    this.nodeOperationsService.updateNodeMentions(nodeId, mentions)
-      .catch(error => {
-        console.error('Failed to update node mentions:', error);
-        // Rollback on failure
-        node.mentions = oldMentions;
-      });
+    this.nodeOperationsService.updateNodeMentions(nodeId, mentions).catch((error) => {
+      console.error('Failed to update node mentions:', error);
+      // Rollback on failure
+      node.mentions = oldMentions;
+    });
 
     // Emit events
     eventBus.emit({
@@ -310,10 +313,11 @@ export class EnhancedNodeManager extends NodeManager {
       contentType: contentResult.ast.metadata.hasWikiLinks ? 'linked' : node.nodeType,
       wordCount: contentResult.wordCount,
       hasWikiLinks: contentResult.wikiLinks.length > 0,
-      wikiLinks: contentResult.wikiLinks.map(link => link.target),
+      wikiLinks: contentResult.wikiLinks.map((link) => link.target),
       headerLevel: contentResult.headerLevel,
-      formattingComplexity: contentResult.hasFormatting ? 
-        contentResult.ast.metadata.inlineFormatCount : 0,
+      formattingComplexity: contentResult.hasFormatting
+        ? contentResult.ast.metadata.inlineFormatCount
+        : 0,
       mentionsCount: node.mentions?.length || 0,
       backlinksCount: this.getNodeBacklinks(nodeId).length,
       hierarchyDepth: depth,
@@ -340,8 +344,8 @@ export class EnhancedNodeManager extends NodeManager {
     mostLinkedNodes: { nodeId: string; links: number }[];
   } {
     const analyses = Array.from(this.nodes.keys())
-      .map(id => this.analyzeNode(id))
-      .filter(analysis => analysis !== null) as NodeAnalysis[];
+      .map((id) => this.analyzeNode(id))
+      .filter((analysis) => analysis !== null) as NodeAnalysis[];
 
     const byType: Record<string, number> = {};
     let totalDepth = 0;
@@ -415,7 +419,7 @@ export class EnhancedNodeManager extends NodeManager {
     }
 
     result.operationTime = performance.now() - startTime;
-    
+
     // Emit bulk operation event
     eventBus.emit({
       type: 'debug:log',
@@ -481,7 +485,7 @@ export class EnhancedNodeManager extends NodeManager {
 
       // Word count filter
       if (criteria.minWordCount !== undefined) {
-        const wordCount = node.content.split(/\s+/).filter(w => w.length > 0).length;
+        const wordCount = node.content.split(/\s+/).filter((w) => w.length > 0).length;
         if (wordCount < criteria.minWordCount) {
           matches = false;
         }
@@ -516,17 +520,32 @@ export class EnhancedNodeManager extends NodeManager {
    * Get enhanced performance statistics
    */
   public getEnhancedStats(): {
-    nodeManager: any;
-    hierarchyService: any;
+    nodeManager: {
+      totalNodes: number;
+      rootNodes: number;
+      highestDepth: number;
+      hierarchyUpdates: number;
+    };
+    hierarchyService: {
+      depthCacheSize: number;
+      childrenCacheSize: number;
+      siblingsCacheSize: number;
+      hitRatio: number;
+      performance: Record<string, unknown>;
+    };
     analysisCache: {
       size: number;
       hitRatio: number;
       oldestEntry: number;
     };
-    contentAnalysis: any;
+    contentAnalysis: {
+      totalProcessed: number;
+      averageComplexity: number;
+      cacheHitRatio: number;
+    };
   } {
     const hierarchyStats = this.hierarchyService.getCacheStats();
-    
+
     return {
       nodeManager: {
         totalNodes: this.nodes.size,
@@ -570,7 +589,7 @@ export class EnhancedNodeManager extends NodeManager {
   } {
     // Use HierarchyService for efficient bulk fetching
     const hierarchyResult = this.hierarchyService.getAllNodesInRoot(rootId);
-    
+
     // Convert to Node objects and add enhanced metadata
     const nodeMap = new Map<string, Node>();
     const structure: Array<{
@@ -596,7 +615,7 @@ export class EnhancedNodeManager extends NodeManager {
         id: nodeId,
         node: node,
         parent_id: node.parentId || null,
-        before_sibling_id: (node as any).before_sibling_id || null,
+        before_sibling_id: null, // Would be calculated from hierarchy ordering
         depth: this.hierarchyService.getNodeDepth(nodeId),
         children_count: children.length,
         mentions_count: node.mentions?.length || 0,
@@ -640,7 +659,7 @@ export class EnhancedNodeManager extends NodeManager {
     try {
       const startTime = performance.now();
       const bulkResult = this.getAllNodesInRoot(rootId);
-      
+
       if (!bulkResult.rootNode) {
         return {
           success: false,
@@ -650,7 +669,7 @@ export class EnhancedNodeManager extends NodeManager {
 
       // Convert to client-friendly format
       const nodes = Array.from(bulkResult.nodes.values());
-      const relationships = bulkResult.structure.map(item => ({
+      const relationships = bulkResult.structure.map((item) => ({
         nodeId: item.id,
         parentId: item.parent_id,
         beforeSiblingId: item.before_sibling_id,
@@ -690,7 +709,7 @@ export class EnhancedNodeManager extends NodeManager {
    */
   public getNodeBacklinks(nodeId: string): Node[] {
     const backlinks: Node[] = [];
-    
+
     for (const node of this.nodes.values()) {
       if (node.mentions && node.mentions.includes(nodeId)) {
         backlinks.push(node);
@@ -716,7 +735,7 @@ export class EnhancedNodeManager extends NodeManager {
 
     eventBus.subscribe('hierarchy:changed', (event) => {
       const hierarchyEvent = event as import('./EventTypes').HierarchyChangedEvent;
-      
+
       // Invalidate analysis cache for affected nodes
       for (const nodeId of hierarchyEvent.affectedNodes) {
         this.invalidateAnalysisCache(nodeId);
@@ -734,7 +753,7 @@ export class EnhancedNodeManager extends NodeManager {
    */
   private invalidateAnalysisCache(nodeId: string): void {
     this.analysisCache.delete(nodeId);
-    
+
     // Also invalidate cache for nodes that might be affected
     const node = this.findNode(nodeId);
     if (node?.mentions) {
@@ -749,7 +768,7 @@ export class EnhancedNodeManager extends NodeManager {
    */
   private getOldestAnalysisCacheEntry(): number {
     let oldest = Date.now();
-    
+
     for (const analysis of this.analysisCache.values()) {
       if (analysis.lastAnalyzed && analysis.lastAnalyzed < oldest) {
         oldest = analysis.lastAnalyzed;

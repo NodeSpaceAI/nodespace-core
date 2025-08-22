@@ -1,4 +1,5 @@
 /// <reference types="vitest" />
+/// <reference types="./src/tests/types/globals.d.ts" />
 import { defineConfig } from 'vitest/config';
 import { sveltekit } from '@sveltejs/kit/vite';
 
@@ -10,6 +11,15 @@ export default defineConfig({
     environment: 'node',
     globals: true,
     setupFiles: ['src/tests/setup.ts'],
+
+    // Ensure proper global environment
+    globalSetup: undefined,
+    environmentOptions: {
+      node: {
+        // Ensure global object is available
+        global: true
+      }
+    },
 
     // Simple coverage configuration
     coverage: {

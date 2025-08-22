@@ -40,14 +40,46 @@
 
     <div class="content">
       <div class="instructions">
-        <h2>NodeSpace Editor</h2>
-        <p>Interactive text editor with markdown formatting and hierarchical nodes:</p>
-        <ol>
-          <li>Type text in the editor below</li>
-          <li>Use Cmd+B, Cmd+I, Cmd+U to format text</li>
-          <li>Use Tab/Shift+Tab to indent/outdent nodes</li>
-          <li>Press Enter to create new nodes</li>
-        </ol>
+        <h2>NodeSpace Demos</h2>
+        <p>Explore the NodeSpace features and components:</p>
+
+        <div class="demo-links">
+          <a href="/noderef-demo" class="demo-link">
+            <span class="demo-icon">🎨</span>
+            <div>
+              <h3>BaseNode Decoration System</h3>
+              <p>
+                Interactive demonstration of rich node reference decorations with all node types
+              </p>
+            </div>
+          </a>
+
+          <a href="/autocomplete-demo" class="demo-link">
+            <span class="demo-icon">@</span>
+            <div>
+              <h3>@ Trigger Autocomplete</h3>
+              <p>Universal node reference system with real-time autocomplete</p>
+            </div>
+          </a>
+
+          <a href="/basenode-autocomplete-demo" class="demo-link">
+            <span class="demo-icon">📝</span>
+            <div>
+              <h3>BaseNode Editor</h3>
+              <p>Advanced text editor with @ triggers and node references</p>
+            </div>
+          </a>
+        </div>
+
+        <div class="editor-instructions">
+          <h3>Interactive Editor Features:</h3>
+          <ol>
+            <li>Type text in the editor below</li>
+            <li>Use Cmd+B, Cmd+I, Cmd+U to format text</li>
+            <li>Use Tab/Shift+Tab to indent/outdent nodes</li>
+            <li>Press Enter to create new nodes</li>
+          </ol>
+        </div>
       </div>
 
       <div class="editor-container">
@@ -139,6 +171,62 @@
 
   .instructions li {
     margin-bottom: 0.5rem;
+  }
+
+  .demo-links {
+    display: grid;
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+
+  .demo-link {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+    background: hsl(var(--muted) / 0.5);
+    border: 1px solid hsl(var(--border));
+    border-radius: 0.375rem;
+    text-decoration: none;
+    color: hsl(var(--foreground));
+    transition: all 150ms ease-out;
+  }
+
+  .demo-link:hover {
+    background: hsl(var(--accent));
+    border-color: hsl(var(--primary));
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px hsl(var(--border) / 0.2);
+  }
+
+  .demo-icon {
+    font-size: 1.5rem;
+    flex-shrink: 0;
+  }
+
+  .demo-link h3 {
+    margin: 0 0 0.25rem 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: hsl(var(--foreground));
+  }
+
+  .demo-link p {
+    margin: 0;
+    font-size: 0.875rem;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .editor-instructions {
+    margin-top: 2rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid hsl(var(--border));
+  }
+
+  .editor-instructions h3 {
+    margin: 0 0 1rem 0;
+    font-size: 1rem;
+    color: hsl(var(--foreground));
   }
 
   .editor-container {

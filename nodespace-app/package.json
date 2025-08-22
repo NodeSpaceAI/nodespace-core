@@ -19,6 +19,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "analyze": "vite-bundle-analyzer dist",
+    "build:analyze": "bun run build && bun run analyze",
     "tauri": "bunx tauri",
     "tauri:dev": "bunx tauri dev",
     "tauri:build": "bunx tauri build"
@@ -63,6 +65,7 @@
     "tailwindcss": "^4.1.11",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
+    "vite-bundle-analyzer": "^0.18.0",
     "vitest": "^2.1.8"
   },
   "engines": {

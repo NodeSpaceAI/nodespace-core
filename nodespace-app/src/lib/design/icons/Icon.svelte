@@ -18,7 +18,7 @@
   };
 
   // Component props
-  export let name: IconName;
+  export let name: IconName = 'text';
   export let size: number = 20;
   export let className: string = '';
   export let color: string = 'currentColor';

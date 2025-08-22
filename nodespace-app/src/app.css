@@ -97,5 +97,11 @@
   --node-ai-chat: 221 83% 53%;
   --node-entity: 271 81% 56%;
   --node-query: 330 81% 60%;
+  --node-user: 200 100% 45%;
+  --node-date: 45 100% 45%;
+  --node-document: 270 75% 50%;
   --processing-opacity: 0.7;
 }
+
+/* Import NodeSpace Reference Decoration CSS Framework */
+@import './lib/styles/noderef.css';

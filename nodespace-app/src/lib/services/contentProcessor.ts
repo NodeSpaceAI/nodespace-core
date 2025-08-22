@@ -14,6 +14,7 @@
 
 import { stripMarkdown, validateMarkdown } from './markdownUtils.js';
 import { eventBus } from './EventBus';
+import type { NodeReferenceService, NodeReference, NodespaceLink } from './NodeReferenceService';
 
 // ============================================================================
 // Core AST Types for Dual-Representation
@@ -52,6 +53,17 @@ export interface WikiLinkNode extends ASTNode {
   rawSyntax: string;
 }
 
+export interface NodespaceRefNode extends ASTNode {
+  type: 'nodespace-ref';
+  nodeId: string;
+  uri: string;
+  displayText: string;
+  rawSyntax: string;
+  isValid: boolean;
+  reference?: NodeReference;
+  metadata?: Record<string, unknown>;
+}
+
 export interface InlineNode extends ASTNode {
   type: 'bold' | 'italic' | 'code';
   content: string;
@@ -73,8 +85,10 @@ export interface ContentMetadata {
   totalCharacters: number;
   wordCount: number;
   hasWikiLinks: boolean;
+  hasNodespaceRefs: boolean;
   headerCount: number;
   inlineFormatCount: number;
+  nodeRefCount: number;
   lastModified: number;
 }
 
@@ -119,13 +133,23 @@ export interface PreparedContent {
 export class ContentProcessor {
   private static instance: ContentProcessor;
   private readonly serviceName = 'ContentProcessor';
+  private nodeReferenceService?: NodeReferenceService;
 
   // Performance optimization: Cache frequently accessed patterns
   private readonly HEADER_REGEX = /^(#{1,6})\s+(.*)$/gm;
   private readonly WIKILINK_REGEX = /\[\[([^[\]]+(?:\[[^[\]]*\][^[\]]*)*)\]\]/g;
+  private readonly NODESPACE_REF_REGEX =
+    /\[([^\]]+)\]\(nodespace:\/\/node\/([a-zA-Z0-9_-]+)(?:\?[^)]*)?\)/g;
   private readonly BOLD_REGEX = /\*\*(.*?)\*\*/g;
   private readonly ITALIC_REGEX = /(?<!\*)\*(?!\*)([^*]+)\*(?!\*)/g;
   private readonly CODE_REGEX = /`([^`]+)`/g;
+
+  // Caching for nodespace references
+  private readonly referenceCache = new Map<
+    string,
+    { reference: NodeReference | null; timestamp: number }
+  >();
+  private readonly cacheTimeout = 30000; // 30 seconds
 
   public static getInstance(): ContentProcessor {
     if (!ContentProcessor.instance) {
@@ -140,6 +164,13 @@ export class ContentProcessor {
   }
 
   /**
+   * Set the NodeReferenceService for URI resolution
+   */
+  public setNodeReferenceService(service: NodeReferenceService): void {
+    this.nodeReferenceService = service;
+  }
+
+  /**
    * Set up EventBus integration for reference coordination
    */
   private setupEventBusIntegration(): void {
@@ -150,8 +181,42 @@ export class ContentProcessor {
       if (refEvent.updateType === 'content' || refEvent.updateType === 'deletion') {
         // When content changes or nodes are deleted, we might need to update references
         this.emitCacheInvalidate('node', refEvent.nodeId, 'reference content changed');
+
+        // Clear reference cache for affected nodes
+        this.invalidateReferenceCache(refEvent.nodeId);
       }
     });
+
+    // Listen for node updates to invalidate reference cache
+    eventBus.subscribe('node:updated', (event) => {
+      const nodeEvent = event as import('./EventTypes').NodeUpdatedEvent;
+      if (nodeEvent.updateType === 'content') {
+        this.invalidateReferenceCache(nodeEvent.nodeId);
+      }
+    });
+
+    // Listen for node deletion to clean up references
+    eventBus.subscribe('node:deleted', (event) => {
+      const nodeEvent = event as import('./EventTypes').NodeDeletedEvent;
+      this.invalidateReferenceCache(nodeEvent.nodeId);
+    });
+  }
+
+  /**
+   * Invalidate cached references for a specific node
+   */
+  private invalidateReferenceCache(nodeId: string): void {
+    const urisToRemove: string[] = [];
+
+    for (const [uri, cached] of this.referenceCache) {
+      if (cached.reference?.nodeId === nodeId) {
+        urisToRemove.push(uri);
+      }
+    }
+
+    for (const uri of urisToRemove) {
+      this.referenceCache.delete(uri);
+    }
   }
 
   // ========================================================================
@@ -171,10 +236,15 @@ export class ContentProcessor {
       totalCharacters: source.length,
       wordCount: this.getWordCount(source),
       hasWikiLinks: this.WIKILINK_REGEX.test(source),
+      hasNodespaceRefs: this.NODESPACE_REF_REGEX.test(source),
       headerCount: 0,
       inlineFormatCount: 0,
+      nodeRefCount: 0,
       lastModified: Date.now()
     };
+
+    // Reset regex state
+    this.NODESPACE_REF_REGEX.lastIndex = 0;
 
     const children: ASTNode[] = [];
     let position = 0;
@@ -243,6 +313,9 @@ export class ContentProcessor {
       metadata.inlineFormatCount += this.countInlineFormats(currentBlock);
     }
 
+    // Count nodespace references
+    metadata.nodeRefCount = this.countNodespaceRefs(source);
+
     return {
       type: 'document',
       start: 0,
@@ -283,9 +356,28 @@ export class ContentProcessor {
   /**
    * Legacy compatibility: markdown to display HTML
    * Bridges old markdownUtils.ts with new AST system
+   * Enhanced with nodespace:// URI processing
    */
   public markdownToDisplay(markdown: string): string {
     const ast = this.parseMarkdown(markdown);
+    return this.renderAST(ast);
+  }
+
+  /**
+   * Enhanced markdown to display with nodespace URI resolution
+   * Resolves nodespace:// URIs and caches references for performance
+   */
+  public async markdownToDisplayWithReferences(
+    markdown: string,
+    sourceNodeId?: string
+  ): Promise<string> {
+    const ast = this.parseMarkdown(markdown);
+
+    // Resolve any nodespace references if service is available
+    if (this.nodeReferenceService) {
+      await this.resolveNodespaceReferences(ast, sourceNodeId);
+    }
+
     return this.renderAST(ast);
   }
 
@@ -502,8 +594,10 @@ export class ContentProcessor {
         totalCharacters: 0,
         wordCount: 0,
         hasWikiLinks: false,
+        hasNodespaceRefs: false,
         headerCount: 0,
         inlineFormatCount: 0,
+        nodeRefCount: 0,
         lastModified: Date.now()
       }
     };
@@ -593,6 +687,25 @@ export class ContentProcessor {
       } as WikiLinkNode);
     }
 
+    // Find nodespace:// references
+    this.NODESPACE_REF_REGEX.lastIndex = 0;
+    while ((match = this.NODESPACE_REF_REGEX.exec(text)) !== null) {
+      const displayText = match[1];
+      const nodeId = match[2];
+      const uri = match[0].substring(match[0].indexOf('nodespace://'), match[0].lastIndexOf(')'));
+
+      patterns.push({
+        type: 'nodespace-ref',
+        nodeId,
+        uri,
+        displayText,
+        rawSyntax: match[0],
+        isValid: false, // Will be resolved later
+        start: match.index,
+        end: match.index + match[0].length
+      } as NodespaceRefNode);
+    }
+
     // Find bold text
     this.BOLD_REGEX.lastIndex = 0;
     while ((match = this.BOLD_REGEX.exec(text)) !== null) {
@@ -657,6 +770,21 @@ export class ContentProcessor {
         return `<span class="ns-wikilink" data-target="${this.escapeHtml(wikiNode.target)}">${this.escapeHtml(wikiNode.displayText)}</span>`;
       }
 
+      case 'nodespace-ref': {
+        const refNode = node as NodespaceRefNode;
+        const statusClass = refNode.isValid ? 'ns-noderef-valid' : 'ns-noderef-invalid';
+        const title = refNode.reference?.title || refNode.displayText;
+        const tooltip = refNode.isValid
+          ? `Navigate to: ${title}`
+          : `Broken reference: ${refNode.nodeId}`;
+
+        return `<a class="ns-noderef ${statusClass}" 
+                   href="${this.escapeHtml(refNode.uri)}" 
+                   data-node-id="${this.escapeHtml(refNode.nodeId)}" 
+                   data-uri="${this.escapeHtml(refNode.uri)}" 
+                   title="${this.escapeHtml(tooltip)}">${this.escapeHtml(refNode.displayText)}</a>`;
+      }
+
       case 'bold': {
         const boldNode = node as InlineNode;
         return `<strong class="ns-markdown-bold">${this.escapeHtml(boldNode.content)}</strong>`;
@@ -697,6 +825,11 @@ export class ContentProcessor {
       case 'wikilink': {
         const wikiNode = node as WikiLinkNode;
         return wikiNode.rawSyntax;
+      }
+
+      case 'nodespace-ref': {
+        const refNode = node as NodespaceRefNode;
+        return refNode.rawSyntax;
       }
 
       case 'bold':
@@ -754,6 +887,11 @@ export class ContentProcessor {
     // Count wikilinks
     count += (content.match(/\[\[([^\]]+)\]\]/g) || []).length;
 
+    // Count nodespace references
+    count += (
+      content.match(/\[([^\]]+)\]\(nodespace:\/\/node\/[a-zA-Z0-9_-]+(?:\?[^)]*)?\)/g) || []
+    ).length;
+
     return count;
   }
 
@@ -778,6 +916,193 @@ export class ContentProcessor {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
     }
+  }
+
+  // ============================================================================
+  // Nodespace URI Processing Methods
+  // ============================================================================
+
+  /**
+   * Detect nodespace:// URIs in content
+   * Enhanced version of NodeReferenceService.detectNodespaceLinks for ContentProcessor
+   */
+  public detectNodespaceURIs(content: string): NodespaceLink[] {
+    const links: NodespaceLink[] = [];
+    const regex = /\[([^\]]+)\]\(nodespace:\/\/node\/([a-zA-Z0-9_-]+)(?:\?[^)]*)?\)/g;
+
+    let match;
+    while ((match = regex.exec(content)) !== null) {
+      const displayText = match[1];
+      const nodeId = match[2];
+      const fullMatch = match[0];
+      const uriMatch = fullMatch.match(/nodespace:\/\/node\/[a-zA-Z0-9_-]+(?:\?[^)]*)?/);
+      const uri = uriMatch ? uriMatch[0] : `nodespace://node/${nodeId}`;
+
+      // Check if reference is valid using cache or NodeReferenceService
+      let isValid = false;
+      if (this.nodeReferenceService) {
+        const resolved = this.nodeReferenceService.resolveNodespaceURI(uri);
+        isValid = !!resolved;
+      }
+
+      links.push({
+        uri,
+        startPos: match.index,
+        endPos: match.index + fullMatch.length,
+        nodeId,
+        displayText,
+        isValid,
+        metadata: {
+          fullMatch,
+          contentBefore: content.substring(Math.max(0, match.index - 10), match.index),
+          contentAfter: content.substring(
+            match.index + fullMatch.length,
+            Math.min(content.length, match.index + fullMatch.length + 10)
+          )
+        }
+      });
+    }
+
+    return links;
+  }
+
+  /**
+   * Resolve nodespace references in AST
+   * Updates NodespaceRefNode objects with resolved references
+   */
+  private async resolveNodespaceReferences(ast: MarkdownAST, sourceNodeId?: string): Promise<void> {
+    if (!this.nodeReferenceService) {
+      return;
+    }
+
+    const resolveNodeReferences = async (nodes: ASTNode[]): Promise<void> => {
+      for (const node of nodes) {
+        if (node.type === 'nodespace-ref') {
+          const refNode = node as NodespaceRefNode;
+          await this.resolveNodeReference(refNode, sourceNodeId);
+        } else if (node.children) {
+          await resolveNodeReferences(node.children);
+        }
+      }
+    };
+
+    await resolveNodeReferences(ast.children);
+  }
+
+  /**
+   * Resolve a single nodespace reference with caching
+   */
+  private async resolveNodeReference(
+    refNode: NodespaceRefNode,
+    sourceNodeId?: string
+  ): Promise<void> {
+    if (!this.nodeReferenceService) {
+      return;
+    }
+
+    // Check cache first
+    const cached = this.referenceCache.get(refNode.uri);
+    if (cached && Date.now() - cached.timestamp < this.cacheTimeout) {
+      refNode.reference = cached.reference;
+      refNode.isValid = !!cached.reference;
+      return;
+    }
+
+    try {
+      // Parse and resolve URI
+      const reference = this.nodeReferenceService.parseNodespaceURI(refNode.uri);
+
+      // Cache the result
+      this.referenceCache.set(refNode.uri, {
+        reference,
+        timestamp: Date.now()
+      });
+
+      // Update reference node
+      refNode.reference = reference;
+      refNode.isValid = !!reference?.isValid;
+
+      // Emit reference resolution event
+      if (sourceNodeId) {
+        eventBus.emit({
+          type: 'reference:resolved',
+          namespace: 'coordination',
+          source: this.serviceName,
+          timestamp: Date.now(),
+          referenceId: refNode.uri,
+          target: refNode.nodeId,
+          nodeId: sourceNodeId,
+          resolutionResult: refNode.isValid ? 'found' : 'not-found',
+          metadata: {
+            displayText: refNode.displayText,
+            cached: false
+          }
+        });
+      }
+
+      // Add bidirectional reference if valid and sourceNodeId provided
+      if (refNode.isValid && sourceNodeId && reference) {
+        try {
+          await this.nodeReferenceService.addReference(sourceNodeId, refNode.nodeId);
+        } catch (error) {
+          console.warn('ContentProcessor: Failed to add bidirectional reference', {
+            error,
+            sourceNodeId,
+            targetNodeId: refNode.nodeId
+          });
+        }
+      }
+    } catch (error) {
+      console.error('ContentProcessor: Error resolving nodespace reference', {
+        error,
+        uri: refNode.uri
+      });
+
+      // Cache null result to avoid repeated failed lookups
+      this.referenceCache.set(refNode.uri, {
+        reference: null,
+        timestamp: Date.now()
+      });
+
+      refNode.isValid = false;
+    }
+  }
+
+  /**
+   * Count nodespace references in content
+   */
+  private countNodespaceRefs(content: string): number {
+    const matches = content.match(
+      /\[([^\]]+)\]\(nodespace:\/\/node\/[a-zA-Z0-9_-]+(?:\?[^)]*)?\)/g
+    );
+    return matches ? matches.length : 0;
+  }
+
+  /**
+   * Clear reference cache
+   */
+  public clearReferenceCache(): void {
+    this.referenceCache.clear();
+  }
+
+  /**
+   * Get cache statistics for debugging
+   */
+  public getReferencesCacheStats(): { size: number; hitRate: number; oldestEntry: number } {
+    const now = Date.now();
+    let oldestTimestamp = now;
+
+    for (const [, cached] of this.referenceCache) {
+      if (cached.timestamp < oldestTimestamp) {
+        oldestTimestamp = cached.timestamp;
+      }
+    }
+
+    return {
+      size: this.referenceCache.size,
+      hitRate: 0, // Would need tracking to calculate
+      oldestEntry: now - oldestTimestamp
+    };
   }
 
   // ============================================================================
@@ -807,6 +1132,7 @@ export class ContentProcessor {
 
   /**
    * Process content and emit wikilink detection events
+   * Enhanced with nodespace:// URI detection
    */
   public processContentWithEventEmission(content: string, nodeId: string): PreparedContent {
     const prepared = this.prepareBacklinkSyntax(content);
@@ -831,7 +1157,93 @@ export class ContentProcessor {
       eventBus.emit(backlinkEvent);
     }
 
+    // Detect and emit events for nodespace:// references
+    const nodespaceLinks = this.detectNodespaceURIs(content);
+    for (const nodeLink of nodespaceLinks) {
+      // Emit backlink detected event
+      const backlinkEvent: import('./EventTypes').BacklinkDetectedEvent = {
+        type: 'backlink:detected',
+        namespace: 'phase2',
+        source: this.serviceName,
+        timestamp: Date.now(),
+        sourceNodeId: nodeId,
+        targetNodeId: nodeLink.nodeId,
+        linkType: 'nodespace-ref',
+        linkText: nodeLink.displayText,
+        metadata: {
+          startPos: nodeLink.startPos,
+          endPos: nodeLink.endPos,
+          uri: nodeLink.uri,
+          isValid: nodeLink.isValid
+        }
+      };
+      eventBus.emit(backlinkEvent);
+
+      // Emit reference resolution event
+      const resolutionEvent: import('./EventTypes').ReferenceResolutionEvent = {
+        type: 'reference:resolved',
+        namespace: 'coordination',
+        source: this.serviceName,
+        timestamp: Date.now(),
+        referenceId: nodeLink.uri,
+        target: nodeLink.nodeId,
+        nodeId: nodeId,
+        resolutionResult: nodeLink.isValid ? 'found' : 'not-found',
+        metadata: {
+          displayText: nodeLink.displayText,
+          startPos: nodeLink.startPos,
+          endPos: nodeLink.endPos
+        }
+      };
+      eventBus.emit(resolutionEvent);
+    }
+
     return prepared;
+  }
+
+  /**
+   * Enhanced content processing with full nodespace:// support
+   * Processes both wikilinks and nodespace references
+   */
+  public async processContentWithReferences(
+    content: string,
+    nodeId: string
+  ): Promise<{
+    prepared: PreparedContent;
+    nodespaceLinks: NodespaceLink[];
+    resolved: boolean;
+  }> {
+    // Process traditional wikilinks
+    const prepared = this.prepareBacklinkSyntax(content);
+
+    // Process nodespace references
+    const nodespaceLinks = this.detectNodespaceURIs(content);
+
+    // Resolve references if service is available
+    let resolved = false;
+    if (this.nodeReferenceService) {
+      for (const link of nodespaceLinks) {
+        try {
+          const reference = this.nodeReferenceService.parseNodespaceURI(link.uri);
+          if (reference?.isValid) {
+            // Add bidirectional reference
+            await this.nodeReferenceService.addReference(nodeId, link.nodeId);
+            resolved = true;
+          }
+        } catch (error) {
+          console.warn('ContentProcessor: Failed to resolve reference', { error, uri: link.uri });
+        }
+      }
+    }
+
+    // Emit events
+    this.processContentWithEventEmission(content, nodeId);
+
+    return {
+      prepared,
+      nodespaceLinks,
+      resolved
+    };
   }
 }
 

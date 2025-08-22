@@ -13,7 +13,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { ContentProcessor } from './ContentProcessor';
+import { ContentProcessor } from './contentProcessor';
 import { eventBus } from './EventBus';
 import type { NodeStatus } from './EventTypes';
 

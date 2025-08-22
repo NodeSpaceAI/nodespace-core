@@ -171,9 +171,14 @@ describe('ContentEditableController', () => {
     it('should dispatch content changed events', () => {
       controller.initialize('test', true);
 
-      // Simulate input
+      // Simulate input with proper event target
       element.textContent = 'updated test';
-      element.dispatchEvent(new Event('input'));
+      const inputEvent = new Event('input', { bubbles: true });
+      Object.defineProperty(inputEvent, 'target', {
+        value: element,
+        writable: false
+      });
+      element.dispatchEvent(inputEvent);
 
       expect(eventCalls.contentChanged).toHaveLength(1);
       expect(eventCalls.contentChanged[0]).toBe('updated test');

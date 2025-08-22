@@ -1,0 +1,663 @@
+/**
+ * NodeSpace Reference Decoration CSS Framework
+ * 
+ * Comprehensive styling system for rich node reference decorations.
+ * Supports all node types with consistent design patterns, accessibility,
+ * and responsive behavior.
+ * 
+ * Design Principles:
+ * - Consistent visual hierarchy
+ * - Accessible color contrast and focus states
+ * - Responsive and context-aware sizing
+ * - Smooth interactions and animations
+ * - Dark/light theme support
+ */
+
+/* ============================================================================
+   CSS Custom Properties - Node Reference Colors
+   ============================================================================ */
+
+:root {
+  /* Node type colors - extend existing NodeSpace palette */
+  --node-user: 200 100% 45%;
+  --node-date: 45 100% 45%;
+  --node-document: 270 75% 50%;
+
+  /* Status colors */
+  --status-online: 120 100% 35%;
+  --status-offline: 0 0% 60%;
+  --status-pending: 45 100% 50%;
+  --status-completed: 120 100% 35%;
+  --status-overdue: 0 80% 50%;
+
+  /* Priority colors */
+  --priority-high: 0 80% 50%;
+  --priority-normal: 210 15% 65%;
+  --priority-low: 200 100% 45%;
+
+  /* Animation timing */
+  --transition-fast: 150ms ease-out;
+  --transition-medium: 250ms ease-out;
+  --transition-slow: 350ms ease-out;
+
+  /* Spacing scale */
+  --space-xs: 0.125rem;
+  --space-sm: 0.25rem;
+  --space-md: 0.5rem;
+  --space-lg: 0.75rem;
+  --space-xl: 1rem;
+}
+
+.dark {
+  /* Dark theme adjustments for better contrast */
+  --status-online: 120 80% 40%;
+  --status-offline: 0 0% 50%;
+  --priority-high: 0 70% 55%;
+  --priority-normal: 210 15% 55%;
+}
+
+/* ============================================================================
+   Base Node Reference Styles
+   ============================================================================ */
+
+.ns-noderef {
+  /* Base layout and positioning */
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: calc(var(--radius) * 0.5);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+  text-decoration: none;
+  vertical-align: baseline;
+
+  /* Colors and theming */
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+  border: 1px solid hsl(var(--border));
+
+  /* Transitions and interactions */
+  transition: all var(--transition-fast);
+  cursor: pointer;
+  user-select: none;
+
+  /* Accessibility */
+  outline: none;
+  position: relative;
+}
+
+/* Hover and focus states */
+.ns-noderef:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+  border-color: hsl(var(--border));
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px hsl(var(--border) / 0.2);
+}
+
+.ns-noderef:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}
+
+.ns-noderef:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px hsl(var(--border) / 0.1);
+}
+
+/* Icon styling */
+.ns-noderef__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+/* Title text */
+.ns-noderef__title {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+/* ============================================================================
+   Task Node Decorations
+   ============================================================================ */
+
+.ns-noderef--task {
+  background: hsl(var(--node-task) / 0.1);
+  border-color: hsl(var(--node-task) / 0.3);
+  color: hsl(var(--node-task));
+}
+
+.ns-noderef--task:hover {
+  background: hsl(var(--node-task) / 0.15);
+  border-color: hsl(var(--node-task) / 0.5);
+}
+
+.ns-noderef__checkbox {
+  font-size: 1.1rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.ns-noderef__title--completed {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.ns-noderef__priority {
+  font-size: 0.75rem;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.ns-noderef__date {
+  font-size: 0.75rem;
+  opacity: 0.8;
+  background: hsl(var(--muted));
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: calc(var(--radius) * 0.25);
+  margin-left: var(--space-sm);
+}
+
+/* Task status variations */
+.ns-noderef--task-completed {
+  background: hsl(var(--status-completed) / 0.1);
+  border-color: hsl(var(--status-completed) / 0.3);
+  color: hsl(var(--status-completed));
+}
+
+.ns-noderef--task-pending {
+  background: hsl(var(--status-pending) / 0.1);
+  border-color: hsl(var(--status-pending) / 0.3);
+  color: hsl(var(--status-pending));
+}
+
+.ns-noderef--task-overdue {
+  background: hsl(var(--status-overdue) / 0.1);
+  border-color: hsl(var(--status-overdue) / 0.3);
+  color: hsl(var(--status-overdue));
+}
+
+/* Priority variations */
+.ns-noderef--priority-high {
+  border-left: 3px solid hsl(var(--priority-high));
+}
+
+.ns-noderef--priority-low {
+  opacity: 0.8;
+}
+
+/* ============================================================================
+   User Node Decorations
+   ============================================================================ */
+
+.ns-noderef--user {
+  background: hsl(var(--node-user) / 0.1);
+  border-color: hsl(var(--node-user) / 0.3);
+  color: hsl(var(--node-user));
+}
+
+.ns-noderef--user:hover {
+  background: hsl(var(--node-user) / 0.15);
+  border-color: hsl(var(--node-user) / 0.5);
+}
+
+.ns-noderef__avatar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: hsl(var(--node-user) / 0.2);
+  font-size: 0.75rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.ns-noderef__avatar-initial {
+  line-height: 1;
+}
+
+.ns-noderef__status-indicator {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid hsl(var(--background));
+}
+
+.ns-noderef__status--online {
+  background: hsl(var(--status-online));
+}
+
+.ns-noderef__status--offline {
+  background: hsl(var(--status-offline));
+}
+
+.ns-noderef__name {
+  font-weight: 500;
+}
+
+.ns-noderef__role {
+  font-size: 0.75rem;
+  opacity: 0.8;
+  background: hsl(var(--muted));
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: calc(var(--radius) * 0.25);
+  margin-left: var(--space-sm);
+}
+
+/* User status variations */
+.ns-noderef--user-online .ns-noderef__avatar {
+  box-shadow: 0 0 0 2px hsl(var(--status-online) / 0.3);
+}
+
+.ns-noderef--user-offline .ns-noderef__avatar {
+  opacity: 0.7;
+}
+
+/* Role variations */
+.ns-noderef--role-admin .ns-noderef__role {
+  background: hsl(var(--priority-high) / 0.1);
+  color: hsl(var(--priority-high));
+}
+
+.ns-noderef--role-moderator .ns-noderef__role {
+  background: hsl(var(--status-pending) / 0.1);
+  color: hsl(var(--status-pending));
+}
+
+/* ============================================================================
+   Date Node Decorations
+   ============================================================================ */
+
+.ns-noderef--date {
+  background: hsl(var(--node-date) / 0.1);
+  border-color: hsl(var(--node-date) / 0.3);
+  color: hsl(var(--node-date));
+}
+
+.ns-noderef--date:hover {
+  background: hsl(var(--node-date) / 0.15);
+  border-color: hsl(var(--node-date) / 0.5);
+}
+
+.ns-noderef__date-text {
+  font-weight: 500;
+}
+
+.ns-noderef__relative-time {
+  font-size: 0.75rem;
+  opacity: 0.8;
+  margin-left: var(--space-sm);
+}
+
+.ns-noderef__today-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: calc(var(--radius) * 0.25);
+  margin-left: var(--space-sm);
+}
+
+/* Date status variations */
+.ns-noderef--date-today {
+  background: hsl(var(--primary) / 0.1);
+  border-color: hsl(var(--primary) / 0.3);
+  color: hsl(var(--primary));
+}
+
+.ns-noderef--date-past {
+  opacity: 0.8;
+}
+
+.ns-noderef--date-future {
+  border-left: 3px solid hsl(var(--node-date));
+}
+
+/* ============================================================================
+   Document Node Decorations
+   ============================================================================ */
+
+.ns-noderef--document {
+  background: hsl(var(--node-document) / 0.1);
+  border-color: hsl(var(--node-document) / 0.3);
+  color: hsl(var(--node-document));
+  max-width: 300px;
+}
+
+.ns-noderef--document:hover {
+  background: hsl(var(--node-document) / 0.15);
+  border-color: hsl(var(--node-document) / 0.5);
+}
+
+.ns-noderef__file-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.ns-noderef__document-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+  flex: 1;
+}
+
+.ns-noderef__preview {
+  font-size: 0.75rem;
+  opacity: 0.8;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ns-noderef__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: 0.75rem;
+  opacity: 0.8;
+}
+
+.ns-noderef__file-type {
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.ns-noderef__file-size {
+  color: hsl(var(--muted-foreground));
+}
+
+/* Document type variations */
+.ns-noderef--document-pdf {
+  border-left: 3px solid #dc2626;
+}
+
+.ns-noderef--document-image {
+  border-left: 3px solid #7c3aed;
+}
+
+.ns-noderef--document-video {
+  border-left: 3px solid #ea580c;
+}
+
+.ns-noderef--document-audio {
+  border-left: 3px solid #0891b2;
+}
+
+/* ============================================================================
+   AI Chat Node Decorations
+   ============================================================================ */
+
+.ns-noderef--ai-chat {
+  background: hsl(var(--node-ai-chat) / 0.1);
+  border-color: hsl(var(--node-ai-chat) / 0.3);
+  color: hsl(var(--node-ai-chat));
+  max-width: 280px;
+}
+
+.ns-noderef--ai-chat:hover {
+  background: hsl(var(--node-ai-chat) / 0.15);
+  border-color: hsl(var(--node-ai-chat) / 0.5);
+}
+
+.ns-noderef__ai-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.ns-noderef__ai-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+  flex: 1;
+}
+
+.ns-noderef__ai-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: 0.75rem;
+  opacity: 0.8;
+  flex-wrap: wrap;
+}
+
+.ns-noderef__model {
+  background: hsl(var(--muted));
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: calc(var(--radius) * 0.25);
+  font-weight: 500;
+}
+
+.ns-noderef__message-count {
+  color: hsl(var(--muted-foreground));
+}
+
+.ns-noderef__last-activity {
+  color: hsl(var(--muted-foreground));
+}
+
+.ns-noderef__ai-status {
+  font-size: 0.875rem;
+  opacity: 0.8;
+  animation: pulse 2s infinite;
+  flex-shrink: 0;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.8;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* ============================================================================
+   Context-Specific Variations
+   ============================================================================ */
+
+/* Inline context (default) - compact styling */
+.ns-noderef[data-context='inline'] {
+  padding: var(--space-xs) var(--space-sm);
+  font-size: 0.875rem;
+}
+
+/* Popup context - enhanced styling */
+.ns-noderef[data-context='popup'] {
+  padding: var(--space-sm) var(--space-md);
+  font-size: 0.9rem;
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px hsl(var(--border) / 0.15);
+}
+
+/* Preview context - full information display */
+.ns-noderef[data-context='preview'] {
+  padding: var(--space-md) var(--space-lg);
+  font-size: 1rem;
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px hsl(var(--border) / 0.2);
+  max-width: none;
+}
+
+.ns-noderef[data-context='preview'] .ns-noderef__title {
+  max-width: none;
+  white-space: normal;
+}
+
+/* ============================================================================
+   Accessibility Enhancements
+   ============================================================================ */
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .ns-noderef {
+    border-width: 2px;
+    font-weight: 600;
+  }
+
+  .ns-noderef:focus-visible {
+    outline-width: 3px;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .ns-noderef {
+    transition: none;
+  }
+
+  .ns-noderef__ai-status {
+    animation: none;
+  }
+
+  .ns-noderef:hover {
+    transform: none;
+  }
+}
+
+/* Screen reader only content */
+.ns-noderef__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ============================================================================
+   Responsive Design
+   ============================================================================ */
+
+/* Mobile optimizations */
+@media (max-width: 768px) {
+  .ns-noderef {
+    font-size: 0.875rem;
+    padding: var(--space-sm) var(--space-md);
+  }
+
+  .ns-noderef__title {
+    max-width: 150px;
+  }
+
+  .ns-noderef--document,
+  .ns-noderef--ai-chat {
+    max-width: 250px;
+  }
+
+  /* Stack metadata on mobile for complex nodes */
+  .ns-noderef__ai-meta,
+  .ns-noderef__meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-xs);
+  }
+}
+
+/* Large screen optimizations */
+@media (min-width: 1200px) {
+  .ns-noderef__title {
+    max-width: 300px;
+  }
+
+  .ns-noderef--document,
+  .ns-noderef--ai-chat {
+    max-width: 400px;
+  }
+}
+
+/* ============================================================================
+   Interactive States and Animations
+   ============================================================================ */
+
+/* Loading state */
+.ns-noderef--loading {
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.ns-noderef--loading::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, transparent, hsl(var(--muted) / 0.5), transparent);
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* Error state */
+.ns-noderef--error {
+  background: hsl(var(--destructive) / 0.1);
+  border-color: hsl(var(--destructive) / 0.3);
+  color: hsl(var(--destructive));
+}
+
+.ns-noderef--error:hover {
+  background: hsl(var(--destructive) / 0.15);
+}
+
+/* Active/selected state */
+.ns-noderef--active {
+  background: hsl(var(--primary) / 0.1);
+  border-color: hsl(var(--primary));
+  color: hsl(var(--primary));
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.2);
+}
+
+/* ============================================================================
+   Print Styles
+   ============================================================================ */
+
+@media print {
+  .ns-noderef {
+    background: transparent !important;
+    border: 1px solid #000 !important;
+    color: #000 !important;
+    box-shadow: none !important;
+  }
+
+  .ns-noderef__icon {
+    display: none;
+  }
+
+  .ns-noderef::after {
+    content: ' [' attr(data-uri) ']';
+    font-size: 0.75em;
+    opacity: 0.7;
+  }
+}

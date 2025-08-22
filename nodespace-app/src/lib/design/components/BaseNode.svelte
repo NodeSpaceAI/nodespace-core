@@ -12,6 +12,10 @@
     ContentEditableController,
     type ContentEditableEvents
   } from './ContentEditableController.js';
+  import AutocompleteModal from '$lib/components/AutocompleteModal.svelte';
+  import type { NodeReferenceService, TriggerContext } from '$lib/services/NodeReferenceService';
+  import type { NodeSpaceNode } from '$lib/services/MockDatabaseService';
+  import type { NewNodeRequest } from '$lib/components/AutocompleteModal.svelte';
 
   // Props (Svelte 5 runes syntax)
   let {
@@ -20,7 +24,8 @@
     autoFocus = false,
     content = '',
     headerLevel = 0,
-    children = []
+    children = [],
+    nodeReferenceService = null
   }: {
     nodeId: string;
     nodeType?: string;
@@ -28,11 +33,19 @@
     content?: string;
     headerLevel?: number;
     children?: unknown[];
+    nodeReferenceService?: NodeReferenceService | null;
   } = $props();
 
-  // DOM element and controller
-  let contentEditableElement: HTMLDivElement;
+  // DOM element and controller - Svelte bind:this assignment
+  let contentEditableElement: HTMLDivElement | undefined = undefined;
   let controller: ContentEditableController | null = null;
+
+  // Autocomplete modal state
+  let showAutocomplete = $state(false);
+  let autocompletePosition = $state({ x: 0, y: 0 });
+  let currentQuery = $state('');
+  // eslint-disable-next-line no-unused-vars
+  let currentTriggerContext = $state<TriggerContext | null>(null); // Used in trigger event handlers
 
   // Event dispatcher
   const dispatch = createEventDispatcher<{
@@ -51,6 +64,7 @@
     navigateArrow: { nodeId: string; direction: 'up' | 'down'; columnHint: number };
     combineWithPrevious: { nodeId: string; currentContent: string };
     deleteNode: { nodeId: string };
+    nodeReferenceSelected: { nodeId: string; nodeTitle: string };
   }>();
 
   // Controller event handlers
@@ -58,13 +72,38 @@
     contentChanged: (content: string) => dispatch('contentChanged', { content }),
     headerLevelChanged: (level: number) => dispatch('headerLevelChanged', { level }),
     focus: () => dispatch('focus'),
-    blur: () => dispatch('blur'),
+    blur: () => {
+      // Hide autocomplete modal when losing focus
+      showAutocomplete = false;
+      dispatch('blur');
+    },
     createNewNode: (data) => dispatch('createNewNode', data),
     indentNode: (data) => dispatch('indentNode', data),
     outdentNode: (data) => dispatch('outdentNode', data),
     navigateArrow: (data) => dispatch('navigateArrow', data),
     combineWithPrevious: (data) => dispatch('combineWithPrevious', data),
-    deleteNode: (data) => dispatch('deleteNode', data)
+    deleteNode: (data) => dispatch('deleteNode', data),
+    // @ Trigger System Events
+    triggerDetected: (data: {
+      triggerContext: TriggerContext;
+      cursorPosition: { x: number; y: number };
+    }) => {
+      if (nodeReferenceService) {
+        currentTriggerContext = data.triggerContext;
+        currentQuery = data.triggerContext.query;
+        autocompletePosition = data.cursorPosition;
+        showAutocomplete = true;
+      }
+    },
+    triggerHidden: () => {
+      showAutocomplete = false;
+      currentQuery = '';
+      currentTriggerContext = null;
+    },
+    nodeReferenceSelected: (data: { nodeId: string; nodeTitle: string }) => {
+      // Forward the event for potential parent component handling
+      dispatch('nodeReferenceSelected', data);
+    }
   };
 
   // Initialize controller when element is available (Svelte 5 $effect)
@@ -96,6 +135,64 @@
       controller.destroy();
     }
   });
+
+  // ============================================================================
+  // Autocomplete Modal Event Handlers
+  // ============================================================================
+
+  function handleNodeSelect(event: CustomEvent<{ node: NodeSpaceNode | NewNodeRequest }>): void {
+    const { node } = event.detail;
+
+    if (!controller) return;
+
+    if (node.type === 'create') {
+      // Handle new node creation
+      // For now, just insert a placeholder reference
+      const newNodeRequest = node as NewNodeRequest;
+      controller.insertNodeReference('new-node-' + Date.now(), newNodeRequest.content);
+    } else {
+      // Handle existing node selection
+      const existingNode = node as NodeSpaceNode;
+      const nodeTitle = extractNodeTitle(existingNode.content);
+      controller.insertNodeReference(existingNode.id, nodeTitle);
+    }
+
+    // Hide the modal
+    showAutocomplete = false;
+    currentQuery = '';
+    currentTriggerContext = null;
+  }
+
+  function handleAutocompleteClose(): void {
+    showAutocomplete = false;
+    currentQuery = '';
+    currentTriggerContext = null;
+
+    // Return focus to the content editable element
+    if (controller) {
+      controller.focus();
+    }
+  }
+
+  // ============================================================================
+  // Utility Functions
+  // ============================================================================
+
+  function extractNodeTitle(content: string): string {
+    if (!content) return 'Untitled';
+
+    const lines = content.split('\n');
+    const firstLine = lines[0].trim();
+
+    // Remove markdown header syntax
+    const headerMatch = firstLine.match(/^#{1,6}\s*(.*)$/);
+    if (headerMatch) {
+      return headerMatch[1].trim() || 'Untitled';
+    }
+
+    // Return first non-empty line, truncated
+    return firstLine.substring(0, 50) || 'Untitled';
+  }
 
   // Compute CSS classes
   const containerClasses = $derived(
@@ -130,6 +227,18 @@
     tabindex="0"
   ></div>
 </div>
+
+<!-- Autocomplete Modal -->
+{#if nodeReferenceService && showAutocomplete}
+  <AutocompleteModal
+    visible={showAutocomplete}
+    position={autocompletePosition}
+    query={currentQuery}
+    {nodeReferenceService}
+    on:nodeSelect={handleNodeSelect}
+    on:close={handleAutocompleteClose}
+  />
+{/if}
 
 <style>
   .node {
