@@ -379,7 +379,6 @@
   function handleCombineWithPrevious(
     event: CustomEvent<{ nodeId: string; currentContent: string }>
   ) {
-    console.log('DEBUG: handleCombineWithPrevious called with:', event.detail);
     const { nodeId, currentContent } = event.detail;
     const visibleNodes = nodeManager.getVisibleNodes();
     console.log('DEBUG: visibleNodes count:', visibleNodes.length);

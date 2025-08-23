@@ -582,9 +582,17 @@ export class NodeReferenceRenderer {
   private setupKeyboardHandlers(element: HTMLElement, context: DecorationContext): void {
     const keydownHandler = (event: KeyboardEvent) => {
       if (event.key === 'Enter' || event.key === ' ') {
+        // Check if we're inside a contentEditable area - if so, don't interfere with text editing
+        const isInContentEditable = element.closest('[contenteditable="true"]');
+        if (isInContentEditable) {
+          // Let the ContentEditableController handle this - don't prevent default
+          return;
+        }
+
+        // Only prevent default if NOT in an editable context
         event.preventDefault();
 
-        // Emit click event
+        // Emit click event for reference interaction
         eventBus.emit<import('./EventTypes').DecorationClickedEvent>({
           type: 'decoration:clicked',
           namespace: 'interaction',
