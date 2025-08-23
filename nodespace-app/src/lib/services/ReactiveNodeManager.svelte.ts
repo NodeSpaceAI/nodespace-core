@@ -87,27 +87,57 @@ export class ReactiveNodeManager extends NodeManager {
     void this._reactivityTrigger;
 
     // Recursive helper function to get visible nodes with depth
-    const getVisibleNodesRecursive = (nodeIds: string[], depth: number = 0): Node[] => {
+    const getVisibleNodesRecursive = (nodeIds: string[], depth: number = 0, visited = new Set<string>()): Node[] => {
       const result: Node[] = [];
       for (const nodeId of nodeIds) {
+        // Prevent infinite recursion from circular references
+        if (visited.has(nodeId)) {
+          console.warn(`Circular reference detected for node ${nodeId}, skipping to prevent duplicate keys`);
+          continue;
+        }
+        
         const node = this._reactiveNodes.get(nodeId);
         if (node) {
+          visited.add(nodeId);
+          
           // Add hierarchy depth to node for CSS indentation
           const nodeWithDepth = {
             ...node,
             hierarchyDepth: depth
           };
           result.push(nodeWithDepth);
+          
           // Include children if node is expanded
           if (node.expanded && node.children.length > 0) {
-            result.push(...getVisibleNodesRecursive(node.children, depth + 1));
+            result.push(...getVisibleNodesRecursive(node.children, depth + 1, visited));
           }
+          
+          visited.delete(nodeId); // Allow node to appear in different branches
         }
       }
       return result;
     };
 
-    return getVisibleNodesRecursive(this._reactiveRootNodeIds);
+    const nodes = getVisibleNodesRecursive(this._reactiveRootNodeIds);
+    
+    // DEFENSIVE: Validate no duplicate IDs before returning to UI
+    const seenIds = new Set<string>();
+    const validatedNodes = nodes.filter(node => {
+      if (seenIds.has(node.id)) {
+        console.error(`DUPLICATE NODE ID FILTERED OUT: ${node.id}`, node);
+        return false; // Filter out duplicate
+      }
+      seenIds.add(node.id);
+      return true;
+    });
+
+    if (validatedNodes.length !== nodes.length) {
+      console.error(`Filtered out ${nodes.length - validatedNodes.length} duplicate nodes from visibleNodes`);
+      // Force a full sync to recover from inconsistent state
+      setTimeout(() => this.syncReactiveState(), 0);
+    }
+
+    return validatedNodes;
   }
 
   /**
@@ -187,38 +217,11 @@ export class ReactiveNodeManager extends NodeManager {
       cursorAtBeginning
     );
 
-    // CRITICAL FIX: Comprehensive reactive state synchronization
-    // The base class modifies multiple parts of the state during createNode:
-    // 1. Creates new node in _nodes map
-    // 2. Updates parent's children array OR root nodes array
-    // 3. Clears autoFocus on all nodes and sets it on new node
-    // We must sync ALL these changes to reactive state:
-
-    const newNode = super.nodes.get(result);
-    if (!newNode) return result;
-
-    // Add the new node to reactive state
-    this._reactiveNodes.set(result, newNode);
-
-    // Update the parent node's children array in reactive state
-    if (newNode.parentId) {
-      const parentNode = super.nodes.get(newNode.parentId);
-      if (parentNode) {
-        // Create a new object reference to trigger Svelte reactivity
-        this._reactiveNodes.set(newNode.parentId, { ...parentNode });
-        // Force UI update
-        this.forceUIUpdate();
-      }
-    } else {
-      // Update root nodes list for root-level insertions
-      const baseRootIds = super.rootNodeIds;
-      this._reactiveRootNodeIds.length = 0;
-      this._reactiveRootNodeIds.push(...baseRootIds);
-    }
-
-    // Sync autoFocus changes - base class clears all and sets new node
-    // Rather than iterate all nodes, sync efficiently:
-    this.updateAutoFocusState();
+    // CRITICAL FIX: Use full synchronization for node creation to prevent race conditions
+    // Incremental updates can cause temporary inconsistencies that lead to duplicate keys
+    // during rapid operations like multiple Enter key presses
+    this.syncReactiveState();
+    this.forceUIUpdate();
 
     return result;
   }
