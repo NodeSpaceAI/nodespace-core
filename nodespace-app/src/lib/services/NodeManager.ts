@@ -28,6 +28,8 @@ export interface Node {
   autoFocus: boolean;
   inheritHeaderLevel: number;
   metadata: Record<string, unknown>;
+  mentions?: string[];
+  before_sibling_id?: string;
 }
 
 export interface NodeManagerEvents {
@@ -54,7 +56,7 @@ export class NodeManager {
   private events: NodeManagerEvents;
   protected contentProcessor: ContentProcessor;
   private activeNodeId?: string;
-  private readonly serviceName = 'NodeManager';
+  protected readonly serviceName = 'NodeManager';
 
   constructor(events: NodeManagerEvents) {
     this._nodes = new Map<string, Node>();
@@ -73,12 +75,13 @@ export class NodeManager {
   private setupEventBusIntegration(): void {
     // Listen for cache invalidation events that might affect nodes
     eventBus.subscribe('cache:invalidate', (event) => {
-      if (event.scope === 'node' && event.nodeId) {
+      const cacheEvent = event as import('./EventTypes').CacheInvalidateEvent;
+      if (cacheEvent.scope === 'node' && cacheEvent.nodeId) {
         // Node-specific cache invalidation - might need to refresh decorations
-        this.emitNodeStatusChanged(event.nodeId, 'processing', 'cache invalidation');
-      } else if (event.scope === 'global') {
+        this.emitNodeStatusChanged(cacheEvent.nodeId, 'processing', 'cache invalidation');
+      } else if (cacheEvent.scope === 'global') {
         // Global cache invalidation - emit events for all nodes
-        for (const nodeId of this._nodes.keys()) {
+        for (const nodeId of Array.from(this._nodes.keys())) {
           this.emitDecorationUpdateNeeded(nodeId, 'cache-invalidated');
         }
       }
@@ -86,8 +89,9 @@ export class NodeManager {
 
     // Listen for reference resolution events
     eventBus.subscribe('reference:resolved', (event) => {
+      const refEvent = event as import('./EventTypes').ReferenceResolutionEvent;
       // When a reference is resolved, update any decorations that might be affected
-      this.emitDecorationUpdateNeeded(event.nodeId, 'reference-updated');
+      this.emitDecorationUpdateNeeded(refEvent.nodeId, 'reference-updated');
     });
   }
 
@@ -282,7 +286,7 @@ export class NodeManager {
     // Convert legacy nodes recursively
     const convertNode = (legacyNode: unknown, depth: number = 0, parentId?: string): string => {
       // Handle malformed data
-      if (!legacyNode || typeof legacyNode !== 'object' || !legacyNode.id) {
+      if (!legacyNode || typeof legacyNode !== 'object' || !(legacyNode as Record<string, unknown>).id) {
         return '';
       }
 
@@ -424,7 +428,7 @@ export class NodeManager {
     }
 
     // Emit EventBus events for dynamic coordination
-    eventBus.emit({
+    const nodeCreatedEvent: Omit<import('./EventTypes').NodeCreatedEvent, 'timestamp'> = {
       type: 'node:created',
       namespace: 'lifecycle',
       source: this.serviceName,
@@ -432,15 +436,17 @@ export class NodeManager {
       parentId: afterNode.parentId,
       nodeType,
       metadata: { inheritHeaderLevel: finalHeaderLevel, cursorAtBeginning }
-    });
+    };
+    eventBus.emit(nodeCreatedEvent);
 
-    eventBus.emit({
+    const hierarchyChangedEvent: Omit<import('./EventTypes').HierarchyChangedEvent, 'timestamp'> = {
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: this.serviceName,
       affectedNodes: [newId, afterNodeId],
       changeType: 'move'
-    });
+    };
+    eventBus.emit(hierarchyChangedEvent);
 
     // Legacy callback events (maintain compatibility)
     this.events.nodeCreated(newId);
@@ -474,7 +480,7 @@ export class NodeManager {
       node.content = content;
 
       // Emit EventBus events for dynamic coordination
-      eventBus.emit({
+      const nodeUpdatedEvent: Omit<import('./EventTypes').NodeUpdatedEvent, 'timestamp'> = {
         type: 'node:updated',
         namespace: 'lifecycle',
         source: this.serviceName,
@@ -482,7 +488,8 @@ export class NodeManager {
         updateType: 'content',
         previousValue: previousContent,
         newValue: content
-      });
+      };
+      eventBus.emit(nodeUpdatedEvent);
 
       // Emit decoration update needed for references
       this.emitDecorationUpdateNeeded(nodeId, 'content-changed');
@@ -536,22 +543,24 @@ export class NodeManager {
     deleteRecursive(nodeId);
 
     // Emit EventBus events for dynamic coordination
-    eventBus.emit({
+    const nodeDeletedEvent: Omit<import('./EventTypes').NodeDeletedEvent, 'timestamp'> = {
       type: 'node:deleted',
       namespace: 'lifecycle',
       source: this.serviceName,
       nodeId,
       parentId: node.parentId,
       childrenTransferred
-    });
+    };
+    eventBus.emit(nodeDeletedEvent);
 
-    eventBus.emit({
+    const hierarchyDeletedEvent: Omit<import('./EventTypes').HierarchyChangedEvent, 'timestamp'> = {
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: this.serviceName,
       affectedNodes: [nodeId, ...(node.parentId ? [node.parentId] : [])],
       changeType: 'move'
-    });
+    };
+    eventBus.emit(hierarchyDeletedEvent);
 
     // Legacy callback events (maintain compatibility)
     this.events.nodeDeleted(nodeId);
@@ -601,13 +610,14 @@ export class NodeManager {
     this.updateDescendantDepths(nodeId);
 
     // Emit EventBus events for dynamic coordination
-    eventBus.emit({
+    const indentEvent: Omit<import('./EventTypes').HierarchyChangedEvent, 'timestamp'> = {
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: this.serviceName,
       affectedNodes: [nodeId, previousSiblingId],
       changeType: 'indent'
-    });
+    };
+    eventBus.emit(indentEvent);
 
     // Legacy callback events (maintain compatibility)
     this.events.hierarchyChanged();
@@ -652,13 +662,14 @@ export class NodeManager {
     this.updateDescendantDepths(nodeId);
 
     // Emit EventBus events for dynamic coordination
-    eventBus.emit({
+    const outdentEvent: Omit<import('./EventTypes').HierarchyChangedEvent, 'timestamp'> = {
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: this.serviceName,
       affectedNodes: [nodeId, parent.id],
       changeType: 'outdent'
-    });
+    };
+    eventBus.emit(outdentEvent);
 
     // Legacy callback events (maintain compatibility)
     this.events.hierarchyChanged();
@@ -689,13 +700,14 @@ export class NodeManager {
     // Emit EventBus events for dynamic coordination
     this.emitNodeStatusChanged(nodeId, node.expanded ? 'expanded' : 'collapsed', 'toggle expanded');
 
-    eventBus.emit({
+    const expandCollapseEvent: Omit<import('./EventTypes').HierarchyChangedEvent, 'timestamp'> = {
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: this.serviceName,
       affectedNodes: [nodeId],
       changeType: node.expanded ? 'expand' : 'collapse'
-    });
+    };
+    eventBus.emit(expandCollapseEvent);
 
     // Legacy callback events (maintain compatibility)
     this.events.hierarchyChanged();
@@ -738,7 +750,7 @@ export class NodeManager {
    * Clear autoFocus from all nodes
    */
   private clearAllAutoFocus(): void {
-    for (const node of this._nodes.values()) {
+    for (const node of Array.from(this._nodes.values())) {
       node.autoFocus = false;
     }
   }
@@ -978,14 +990,15 @@ export class NodeManager {
    * Emit node status changed event
    */
   private emitNodeStatusChanged(nodeId: string, status: NodeStatus, reason: string): void {
-    eventBus.emit({
+    const statusEvent: Omit<import('./EventTypes').NodeStatusChangedEvent, 'timestamp'> = {
       type: 'node:status-changed',
       namespace: 'coordination',
       source: this.serviceName,
       nodeId,
       status,
       metadata: { reason }
-    });
+    };
+    eventBus.emit(statusEvent);
   }
 
   /**
@@ -995,14 +1008,15 @@ export class NodeManager {
     nodeId: string,
     reason: 'content-changed' | 'status-changed' | 'reference-updated' | 'cache-invalidated'
   ): void {
-    eventBus.emit({
+    const decorationUpdateEvent: Omit<import('./EventTypes').DecorationUpdateNeededEvent, 'timestamp'> = {
       type: 'decoration:update-needed',
       namespace: 'interaction',
       source: this.serviceName,
       nodeId,
       decorationType: 'nodespace-reference',
       reason
-    });
+    };
+    eventBus.emit(decorationUpdateEvent);
   }
 
   /**
@@ -1012,13 +1026,14 @@ export class NodeManager {
     nodeId: string,
     updateType: 'content' | 'status' | 'hierarchy' | 'deletion'
   ): void {
-    eventBus.emit({
+    const referencesUpdateEvent: Omit<import('./EventTypes').ReferencesUpdateNeededEvent, 'timestamp'> = {
       type: 'references:update-needed',
       namespace: 'coordination',
       source: this.serviceName,
       nodeId,
       updateType
-    });
+    };
+    eventBus.emit(referencesUpdateEvent);
   }
 
   /**
@@ -1029,7 +1044,7 @@ export class NodeManager {
     nodeId?: string,
     reason?: string
   ): void {
-    eventBus.emit({
+    const cacheEvent: Omit<import('./EventTypes').CacheInvalidateEvent, 'timestamp'> = {
       type: 'cache:invalidate',
       namespace: 'coordination',
       source: this.serviceName,
@@ -1037,7 +1052,8 @@ export class NodeManager {
       scope,
       nodeId,
       reason: reason || 'node operation'
-    });
+    };
+    eventBus.emit(cacheEvent);
   }
 
   /**
@@ -1048,13 +1064,14 @@ export class NodeManager {
     position?: number,
     reason: string = 'programmatic'
   ): void {
-    eventBus.emit({
+    const focusEvent: Omit<import('./EventTypes').FocusRequestedEvent, 'timestamp'> = {
       type: 'focus:requested',
       namespace: 'navigation',
       source: this.serviceName,
       nodeId,
       position,
       reason
-    });
+    };
+    eventBus.emit(focusEvent);
   }
 }

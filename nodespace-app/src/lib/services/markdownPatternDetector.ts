@@ -130,7 +130,7 @@ export class MarkdownPatternDetector {
 
         patterns.push({
           type: pattern.type,
-          level: processed.level,
+          level: (processed as { level?: number }).level,
           start: match.index,
           end: match.index + match[0].length,
           syntax: processed.syntax,

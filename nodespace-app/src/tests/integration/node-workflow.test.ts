@@ -67,7 +67,7 @@ class MockNodeManager {
     private dataStore: SimpleMockStore
   ) {}
 
-  async createAndSaveNode(content: string, type = 'text') {
+  async createAndSaveNode(content: string, type: 'text' | 'task' | 'ai-chat' = 'text') {
     // Validate input
     if (!content.trim()) {
       throw new Error('Content cannot be empty');

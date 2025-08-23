@@ -33,7 +33,6 @@
   let mounted = false;
   let nodeReferenceService: NodeReferenceService;
   let nodeReferenceRenderer: NodeReferenceRenderer;
-  // Svelte bind:this assignment - populated by framework at runtime
   let demoContainer: HTMLDivElement | undefined = undefined;
   let status = writable('Initializing...');
   let selectedContext = writable<'inline' | 'popup' | 'preview'>('inline');

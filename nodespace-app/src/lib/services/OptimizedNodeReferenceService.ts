@@ -13,8 +13,6 @@
  * - Performance monitoring integration
  */
 
-// Browser API compatibility handled via conditional instantiation
-
 import { NodeReferenceService } from './NodeReferenceService';
 import type {
   TriggerContext,
@@ -119,7 +117,7 @@ class LRUCache<T> {
     let lruKey: string | null = null;
     let lruTime = Infinity;
 
-    for (const [key, entry] of this.cache) {
+    for (const [key, entry] of Array.from(this.cache.entries())) {
       if (entry.lastAccessed < lruTime) {
         lruTime = entry.lastAccessed;
         lruKey = key;
@@ -191,7 +189,7 @@ class DebouncedProcessor<T, R> {
         }
       }, this.delay);
 
-      this.timers.set(key, timer);
+      this.timers.set(key, timer as unknown as number);
     });
   }
 
@@ -205,7 +203,7 @@ class DebouncedProcessor<T, R> {
   }
 
   clear(): void {
-    for (const timer of this.timers.values()) {
+    for (const timer of Array.from(this.timers.values())) {
       (typeof window !== 'undefined' ? window.clearTimeout : clearTimeout)(timer);
     }
     this.timers.clear();
@@ -219,7 +217,6 @@ class DebouncedProcessor<T, R> {
 
 class ViewportProcessor {
   private visibleElements = new Set<string>();
-  // eslint-disable-next-line no-undef
   private observer: IntersectionObserver | null = null;
   private processingQueue = new Set<string>();
 
@@ -232,8 +229,7 @@ class ViewportProcessor {
       return;
     }
 
-    // eslint-disable-next-line no-undef
-    this.observer = new IntersectionObserver(
+    this.observer = new window.IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
           const elementId = (entry.target as HTMLElement).dataset?.nodeId;
@@ -256,8 +252,16 @@ class ViewportProcessor {
 
   observeElement(element: HTMLElement, nodeId: string): void {
     if (this.observer && element) {
+      // Ensure dataset exists - in some environments it may not be initialized
       if (!element.dataset) {
-        (element as HTMLElement & { dataset: Record<string, string> }).dataset = {};
+        // Create a minimal dataset implementation
+        const dataset: DOMStringMap = {} as DOMStringMap;
+        Object.defineProperty(element, 'dataset', {
+          value: dataset,
+          writable: true,
+          enumerable: true,
+          configurable: true
+        });
       }
       element.dataset.nodeId = nodeId;
       this.observer.observe(element);
@@ -314,10 +318,10 @@ class ViewportProcessor {
 export class OptimizedNodeReferenceService extends NodeReferenceService {
   private performanceMonitor: PerformanceMonitor;
 
-  // Advanced caching system
-  private suggestionCache: LRUCache<AutocompleteResult>;
-  private uriCache: LRUCache<NodeReference>;
-  private searchCache: LRUCache<NodeSpaceNode[]>;
+  // Advanced caching system (separate from base class Map-based caches)
+  private suggestionLRUCache: LRUCache<AutocompleteResult>;
+  private uriLRUCache: LRUCache<NodeReference>;
+  private searchLRUCache: LRUCache<NodeSpaceNode[]>;
   private decorationCache: LRUCache<NodespaceLink[]>;
 
   // Debouncing and throttling
@@ -353,12 +357,12 @@ export class OptimizedNodeReferenceService extends NodeReferenceService {
     this.performanceMonitor = PerformanceMonitor.getInstance();
 
     // Initialize advanced caching
-    this.suggestionCache = new LRUCache<AutocompleteResult>(
+    this.suggestionLRUCache = new LRUCache<AutocompleteResult>(
       500,
       this.performanceConfig.maxCacheMemoryMB / 4
     );
-    this.uriCache = new LRUCache<NodeReference>(1000, this.performanceConfig.maxCacheMemoryMB / 4);
-    this.searchCache = new LRUCache<NodeSpaceNode[]>(
+    this.uriLRUCache = new LRUCache<NodeReference>(1000, this.performanceConfig.maxCacheMemoryMB / 4);
+    this.searchLRUCache = new LRUCache<NodeSpaceNode[]>(
       200,
       this.performanceConfig.maxCacheMemoryMB / 4
     );
@@ -488,10 +492,10 @@ export class OptimizedNodeReferenceService extends NodeReferenceService {
 
     try {
       const { query } = triggerContext;
-      const cacheKey = `autocomplete:${query}:${JSON.stringify(this.autocompleteConfig)}`;
+      const cacheKey = `autocomplete:${query}:${JSON.stringify((this as unknown as { autocompleteConfig: { minQueryLength: number } }).autocompleteConfig)}`;
 
       // Check advanced cache first
-      const cached = this.suggestionCache.get(cacheKey);
+      const cached = this.suggestionLRUCache.get(cacheKey);
       if (cached) {
         this.performanceMonitor.recordMetric('cache-hit', 1);
         measurement.finish();
@@ -505,7 +509,7 @@ export class OptimizedNodeReferenceService extends NodeReferenceService {
 
       // Cache with size estimation
       const estimatedSize = this.estimateAutocompleteSize(result);
-      this.suggestionCache.set(cacheKey, result, estimatedSize);
+      this.suggestionLRUCache.set(cacheKey, result, estimatedSize);
 
       measurement.finish();
       return result;
@@ -529,14 +533,14 @@ export class OptimizedNodeReferenceService extends NodeReferenceService {
    * Optimized node search with caching and debouncing
    */
   public async searchNodes(query: string, nodeType?: string): Promise<NodeSpaceNode[]> {
-    if (!query || query.length < this.autocompleteConfig.minQueryLength) {
+    if (!query || query.length < (this as unknown as { autocompleteConfig: { minQueryLength: number } }).autocompleteConfig.minQueryLength) {
       return [];
     }
 
     const cacheKey = `search:${query}:${nodeType || 'all'}`;
 
     // Check cache first
-    const cached = this.searchCache.get(cacheKey);
+    const cached = this.searchLRUCache.get(cacheKey);
     if (cached) {
       this.performanceMonitor.recordMetric('cache-hit', 1);
       return cached;
@@ -549,7 +553,7 @@ export class OptimizedNodeReferenceService extends NodeReferenceService {
 
     // Cache with size estimation
     const estimatedSize = result.reduce((sum, node) => sum + node.content.length + 300, 0);
-    this.searchCache.set(cacheKey, result, estimatedSize);
+    this.searchLRUCache.set(cacheKey, result, estimatedSize);
 
     return result;
   }
@@ -663,9 +667,9 @@ export class OptimizedNodeReferenceService extends NodeReferenceService {
 
       // Log cache statistics
       const stats = {
-        suggestions: this.suggestionCache.getStats(),
-        uri: this.uriCache.getStats(),
-        search: this.searchCache.getStats(),
+        suggestions: this.suggestionLRUCache.getStats(),
+        uri: this.uriLRUCache.getStats(),
+        search: this.searchLRUCache.getStats(),
         decoration: this.decorationCache.getStats()
       };
 
@@ -726,13 +730,13 @@ export class OptimizedNodeReferenceService extends NodeReferenceService {
    * Get detailed performance metrics
    */
   public getDetailedPerformanceMetrics(): {
-    basic: ReturnType<typeof this.getPerformanceMetrics>;
-    advanced: ReturnType<typeof this.performanceMonitor.getComprehensiveMetrics>;
+    basic: ReturnType<NodeReferenceService['getPerformanceMetrics']>;
+    advanced: ReturnType<PerformanceMonitor['getComprehensiveMetrics']>;
     caches: {
-      suggestions: ReturnType<typeof this.suggestionCache.getStats>;
-      uri: ReturnType<typeof this.uriCache.getStats>;
-      search: ReturnType<typeof this.searchCache.getStats>;
-      decoration: ReturnType<typeof this.decorationCache.getStats>;
+      suggestions: { size: number; memoryUsage: number; hitRatio: number };
+      uri: { size: number; memoryUsage: number; hitRatio: number };
+      search: { size: number; memoryUsage: number; hitRatio: number };
+      decoration: { size: number; memoryUsage: number; hitRatio: number };
     };
     viewport: {
       visibleElements: number;
@@ -743,9 +747,9 @@ export class OptimizedNodeReferenceService extends NodeReferenceService {
       basic: this.getPerformanceMetrics(),
       advanced: this.performanceMonitor.getComprehensiveMetrics(),
       caches: {
-        suggestions: this.suggestionCache.getStats(),
-        uri: this.uriCache.getStats(),
-        search: this.searchCache.getStats(),
+        suggestions: this.suggestionLRUCache.getStats(),
+        uri: this.uriLRUCache.getStats(),
+        search: this.searchLRUCache.getStats(),
         decoration: this.decorationCache.getStats()
       },
       viewport: {
@@ -767,9 +771,9 @@ export class OptimizedNodeReferenceService extends NodeReferenceService {
     }
 
     // Clear all caches
-    this.suggestionCache.clear();
-    this.uriCache.clear();
-    this.searchCache.clear();
+    this.suggestionLRUCache.clear();
+    this.uriLRUCache.clear();
+    this.searchLRUCache.clear();
     this.decorationCache.clear();
 
     // Clear debounced processors

@@ -12,8 +12,19 @@ export { default as AutocompleteModal } from './AutocompleteModal.svelte';
 export { default as AutocompleteModalDemo } from './AutocompleteModalDemo.svelte';
 export type { TreeNodeData } from '$lib/types/tree';
 
-// AutocompleteModal types
-export type { AutocompleteModalProps, NewNodeRequest } from './AutocompleteModal.svelte';
+// Export AutocompleteModal types - defined inline since they're UI-specific
+export interface AutocompleteModalProps {
+  visible: boolean;
+  position: { x: number; y: number };
+  query: string;
+  nodeReferenceService: import('$lib/services/NodeReferenceService').NodeReferenceService;
+}
+
+export interface NewNodeRequest {
+  type: 'create';
+  content: string;
+  nodeType: string;
+}
 
 // Re-export types from services
 export type {

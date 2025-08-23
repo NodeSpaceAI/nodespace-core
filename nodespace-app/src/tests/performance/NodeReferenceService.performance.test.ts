@@ -1,6 +1,3 @@
-/* eslint-env node, browser */
-/* global process */
-
 /**
  * NodeReferenceService Performance Tests - Comprehensive Benchmarking Suite
  *
@@ -13,19 +10,18 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { NodeReferenceService } from '$lib/services/NodeReferenceService';
-import { OptimizedNodeReferenceService } from '$lib/services/OptimizedNodeReferenceService';
-import { PerformanceMonitor } from '$lib/services/PerformanceMonitor';
-import { NodeManager, type Node } from '$lib/services/NodeManager';
-import { HierarchyService } from '$lib/services/HierarchyService';
-import { NodeOperationsService } from '$lib/services/NodeOperationsService';
-import { MockDatabaseService } from '$lib/services/MockDatabaseService';
-import type { NodeSpaceNode } from '$lib/services/MockDatabaseService';
+import { NodeReferenceService } from '../../lib/services/NodeReferenceService.js';
+import { OptimizedNodeReferenceService } from '../../lib/services/OptimizedNodeReferenceService.js';
+import { PerformanceMonitor } from '../../lib/services/PerformanceMonitor.js';
+import { NodeManager, type Node } from '../../lib/services/NodeManager.js';
+import { HierarchyService } from '../../lib/services/HierarchyService.js';
+import { NodeOperationsService } from '../../lib/services/NodeOperationsService.js';
+import { MockDatabaseService, type NodeSpaceNode } from '../../lib/services/MockDatabaseService.js';
+import { ContentProcessor } from '../../lib/services/contentProcessor.js';
+import { eventBus } from '../../lib/services/EventBus.js';
 
 // Union type for service operations
 type ReferenceService = NodeReferenceService | OptimizedNodeReferenceService;
-import { ContentProcessor } from '$lib/services/contentProcessor';
-import { eventBus } from '$lib/services/EventBus';
 
 // Performance test configuration
 const PERFORMANCE_TARGETS = {
@@ -168,7 +164,8 @@ describe('NodeReferenceService Performance Tests', () => {
 
       for (const content of testCases) {
         const start = performance.now();
-        nodeReferenceService.detectTrigger(content, content.length);
+        const result = nodeReferenceService.detectTrigger(content, content.length);
+        expect(result).toBeDefined(); // Ensure the call completes successfully
         const duration = performance.now() - start;
 
         totalTime += duration;
@@ -331,8 +328,15 @@ describe('NodeReferenceService Performance Tests', () => {
     beforeEach(async () => {
       // Create nodes for URI resolution testing
       for (let i = 0; i < 100; i++) {
-        const node = nodeManager.createNode(`URI Test Node ${i}`, null, 'text');
-        await databaseService.upsertNode(convertToNodeSpaceNode(node, i));
+        const nodeId = nodeManager.createNode(
+          i === 0 ? 'root' : `test-node-${i - 1}`, // afterNodeId
+          `URI Test Node ${i}`, // content
+          'text' // nodeType
+        );
+        const node = nodeManager.findNode(nodeId);
+        if (node) {
+          await databaseService.upsertNode(convertToNodeSpaceNode(node));
+        }
       }
     });
 
@@ -343,7 +347,8 @@ describe('NodeReferenceService Performance Tests', () => {
         const uri = `nodespace://node/${nodeId}`;
 
         const start = performance.now();
-        nodeReferenceService.resolveNodespaceURI(uri);
+        const result = nodeReferenceService.resolveNodespaceURI(uri);
+        expect(result).toBeDefined(); // Ensure the call completes successfully
         const duration = performance.now() - start;
 
         expect(duration).toBeLessThan(PERFORMANCE_TARGETS.URI_RESOLUTION_MS);
@@ -371,8 +376,10 @@ describe('NodeReferenceService Performance Tests', () => {
 
   describe('Memory Performance and Leak Prevention', () => {
     it('should maintain memory usage within limits during heavy operations', async () => {
-      const initialMemory =
-        typeof process !== 'undefined' && process.memoryUsage ? process.memoryUsage().heapUsed : 0;
+      const nodeProcess = (globalThis as Record<string, unknown>).process as
+        | { memoryUsage?: () => { heapUsed: number } }
+        | undefined;
+      const initialMemory = nodeProcess?.memoryUsage ? nodeProcess.memoryUsage().heapUsed : 0;
 
       // Perform memory-intensive operations
       for (let i = 0; i < 1000; i++) {
@@ -397,13 +404,12 @@ describe('NodeReferenceService Performance Tests', () => {
         }
       }
 
-      const finalMemory =
-        typeof process !== 'undefined' && process.memoryUsage ? process.memoryUsage().heapUsed : 0;
+      const finalMemory = nodeProcess?.memoryUsage ? nodeProcess.memoryUsage().heapUsed : 0;
       const memoryGrowthMB = (finalMemory - initialMemory) / 1024 / 1024;
 
       console.log(`Memory growth: ${memoryGrowthMB.toFixed(2)}MB`);
 
-      if (typeof process !== 'undefined' && process.memoryUsage) {
+      if (nodeProcess?.memoryUsage) {
         expect(memoryGrowthMB).toBeLessThan(PERFORMANCE_TARGETS.MEMORY_THRESHOLD_MB);
       }
     });

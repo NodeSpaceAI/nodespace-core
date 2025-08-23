@@ -11,7 +11,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { EventBus } from '../../lib/services/EventBus';
-// Type imports for documentation only
+import type { NodeStatusChangedEvent, DecorationClickedEvent, NodeUpdatedEvent, CacheInvalidateEvent } from '../../lib/services/EventTypes';
 
 describe('EventBus Performance', () => {
   let eventBus: EventBus;
@@ -37,7 +37,7 @@ describe('EventBus Performance', () => {
 
       // Emit 1000 events
       for (let i = 0; i < 1000; i++) {
-        eventBus.emit({
+        eventBus.emit<NodeStatusChangedEvent>({
           type: 'node:status-changed',
           namespace: 'coordination',
           source: 'test',
@@ -69,7 +69,7 @@ describe('EventBus Performance', () => {
 
       // Emit events that will match different filters
       for (let i = 0; i < 500; i++) {
-        eventBus.emit({
+        eventBus.emit<NodeStatusChangedEvent>({
           type: 'node:status-changed',
           namespace: 'coordination',
           source: 'test',
@@ -127,7 +127,7 @@ describe('EventBus Performance', () => {
 
       // Emit single event to all handlers
       const startEmitTime = performance.now();
-      eventBus.emit({
+      eventBus.emit<NodeStatusChangedEvent>({
         type: 'node:status-changed',
         namespace: 'coordination',
         source: 'test',
@@ -145,7 +145,7 @@ describe('EventBus Performance', () => {
     it('should maintain performance with large event history', () => {
       // Fill event history to near capacity
       for (let i = 0; i < 950; i++) {
-        eventBus.emit({
+        eventBus.emit<NodeStatusChangedEvent>({
           type: 'node:status-changed',
           namespace: 'coordination',
           source: 'test',
@@ -157,7 +157,7 @@ describe('EventBus Performance', () => {
       // Performance should not degrade significantly
       const startTime = performance.now();
       for (let i = 0; i < 100; i++) {
-        eventBus.emit({
+        eventBus.emit<NodeStatusChangedEvent>({
           type: 'node:status-changed',
           namespace: 'coordination',
           source: 'test',
@@ -202,7 +202,7 @@ describe('EventBus Performance', () => {
       // Emit many events quickly
       const startTime = performance.now();
       for (let i = 0; i < 200; i++) {
-        eventBus.emit({
+        eventBus.emit<NodeStatusChangedEvent>({
           type: 'node:status-changed',
           namespace: 'coordination',
           source: 'test',
@@ -226,15 +226,15 @@ describe('EventBus Performance', () => {
       let statusChangeCount = 0;
       let decorationClickCount = 0;
 
-      eventBus.subscribe('node:status-changed', () => statusChangeCount++);
-      eventBus.subscribe('decoration:clicked', () => decorationClickCount++);
+      eventBus.subscribe('node:status-changed', () => { statusChangeCount++; });
+      eventBus.subscribe('decoration:clicked', () => { decorationClickCount++; });
 
       const startTime = performance.now();
 
       // Mix batched and non-batched events
       for (let i = 0; i < 100; i++) {
         // Batched event
-        eventBus.emit({
+        eventBus.emit<NodeStatusChangedEvent>({
           type: 'node:status-changed',
           namespace: 'coordination',
           source: 'test',
@@ -243,7 +243,7 @@ describe('EventBus Performance', () => {
         });
 
         // Non-batched event
-        eventBus.emit({
+        eventBus.emit<DecorationClickedEvent>({
           type: 'decoration:clicked',
           namespace: 'interaction',
           source: 'test',
@@ -261,6 +261,9 @@ describe('EventBus Performance', () => {
 
       // Non-batched events should be processed immediately
       expect(decorationClickCount).toBe(100);
+      
+      // Batched events should also be processed
+      expect(statusChangeCount).toBe(100);
     });
   });
 
@@ -282,7 +285,7 @@ describe('EventBus Performance', () => {
       // Rapidly emit events
       const startTime = performance.now();
       for (let i = 0; i < 100; i++) {
-        eventBus.emit({
+        eventBus.emit<NodeStatusChangedEvent>({
           type: 'node:status-changed',
           namespace: 'coordination',
           source: 'test',
@@ -333,7 +336,7 @@ describe('EventBus Performance', () => {
     it('should limit event history size', () => {
       // Emit more events than history limit
       for (let i = 0; i < 2000; i++) {
-        eventBus.emit({
+        eventBus.emit<NodeStatusChangedEvent>({
           type: 'node:status-changed',
           namespace: 'coordination',
           source: 'test',
@@ -347,7 +350,7 @@ describe('EventBus Performance', () => {
       expect(history.length).toBeLessThanOrEqual(1000);
 
       // Most recent events should be preserved
-      const lastEvent = history[0];
+      const lastEvent = history[0] as NodeStatusChangedEvent;
       expect(lastEvent.nodeId).toBe('node1999');
     });
 
@@ -359,7 +362,7 @@ describe('EventBus Performance', () => {
 
       // Emit events to create timeouts
       for (let i = 0; i < 100; i++) {
-        eventBus.emit({
+        eventBus.emit<NodeStatusChangedEvent>({
           type: 'node:status-changed',
           namespace: 'coordination',
           source: 'test',
@@ -404,7 +407,7 @@ describe('EventBus Performance', () => {
       // Simulate typical usage pattern
       for (let i = 0; i < 100; i++) {
         // Status changes (frequent)
-        eventBus.emit({
+        eventBus.emit<NodeStatusChangedEvent>({
           type: 'node:status-changed',
           namespace: 'coordination',
           source: 'test',
@@ -414,7 +417,7 @@ describe('EventBus Performance', () => {
 
         // Occasional content updates
         if (i % 5 === 0) {
-          eventBus.emit({
+          eventBus.emit<NodeUpdatedEvent>({
             type: 'node:updated',
             namespace: 'lifecycle',
             source: 'test',
@@ -426,7 +429,7 @@ describe('EventBus Performance', () => {
 
         // Occasional interactions
         if (i % 10 === 0) {
-          eventBus.emit({
+          eventBus.emit<DecorationClickedEvent>({
             type: 'decoration:clicked',
             namespace: 'interaction',
             source: 'test',
@@ -439,7 +442,7 @@ describe('EventBus Performance', () => {
 
         // Cache invalidations
         if (i % 7 === 0) {
-          eventBus.emit({
+          eventBus.emit<CacheInvalidateEvent>({
             type: 'cache:invalidate',
             namespace: 'coordination',
             source: 'test',
@@ -477,7 +480,7 @@ describe('EventBus Performance', () => {
         const startTime = performance.now();
 
         for (let i = 0; i < eventsPerIteration; i++) {
-          eventBus.emit({
+          eventBus.emit<NodeStatusChangedEvent>({
             type: 'node:status-changed',
             namespace: 'coordination',
             source: 'test',

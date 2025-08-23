@@ -11,12 +11,18 @@
  */
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { NodeManager, type NodeManagerEvents } from '$lib/services/NodeManager';
-import { HierarchyService } from '$lib/services/HierarchyService';
-import { NodeOperationsService } from '$lib/services/NodeOperationsService';
-import { ContentProcessor } from '$lib/services/ContentProcessor';
-import { eventBus } from '$lib/services/EventBus';
-import type { NodeSpaceNode } from '$lib/services/MockDatabaseService';
+import { NodeManager, type NodeManagerEvents } from '../../lib/services/NodeManager.js';
+import { HierarchyService } from '../../lib/services/HierarchyService.js';
+import { NodeOperationsService } from '../../lib/services/NodeOperationsService.js';
+import { ContentProcessor } from '../../lib/services/contentProcessor.js';
+import { eventBus } from '../../lib/services/EventBus.js';
+import type { NodeSpaceNode } from '../../lib/services/MockDatabaseService.js';
+
+// Wiki link interface for content analysis
+interface WikiLink {
+  target: string;
+  displayText?: string;
+}
 
 describe('NodeOperationsService', () => {
   let nodeManager: NodeManager;
@@ -128,7 +134,7 @@ describe('NodeOperationsService', () => {
       expect(result.content).toBe('# Header with [[link]] and **bold** text');
       expect(result.headerLevel).toBe(1);
       expect(result.wikiLinks).toHaveLength(1);
-      expect(result.wikiLinks[0].target).toBe('link');
+      expect((result.wikiLinks[0] as WikiLink).target).toBe('link');
       expect(result.hasFormatting).toBe(true);
       expect(result.wordCount).toBe(7); // "Header", "with", "link", "and", "bold", "text" = 6 words + "link" in wikilink = 7
       expect(result.ast).toBeDefined();
@@ -156,9 +162,9 @@ const x = 42;
       });
 
       expect(result.wikiLinks).toHaveLength(2);
-      expect(result.wikiLinks[0].target).toBe('first-link');
-      expect(result.wikiLinks[1].target).toBe('second-link');
-      expect(result.wikiLinks[1].displayText).toBe('Display Text');
+      expect((result.wikiLinks[0] as WikiLink).target).toBe('first-link');
+      expect((result.wikiLinks[1] as WikiLink).target).toBe('second-link');
+      expect((result.wikiLinks[1] as WikiLink).displayText).toBe('Display Text');
       expect(result.headerLevel).toBe(1); // First header level
       expect(result.hasFormatting).toBe(true);
       expect(result.wordCount).toBeGreaterThan(10);
@@ -517,16 +523,16 @@ const x = 42;
       }
 
       // Simulate content update that should trigger mention processing
-      eventBus.emit({
-        type: 'node:updated',
-        namespace: 'lifecycle',
+      const nodeUpdatedEvent = {
+        type: 'node:updated' as const,
+        namespace: 'lifecycle' as const,
         source: 'test',
-        timestamp: Date.now(),
         nodeId: nodeId,
-        updateType: 'content',
+        updateType: 'content' as const,
         previousValue: 'old content',
         newValue: 'Test [[link]] content'
-      });
+      };
+      eventBus.emit(nodeUpdatedEvent);
 
       // Allow event processing
       await new Promise((resolve) => setTimeout(resolve, 10));

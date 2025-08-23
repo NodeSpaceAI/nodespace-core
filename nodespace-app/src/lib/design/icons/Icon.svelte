@@ -1,6 +1,6 @@
 <script context="module" lang="ts">
-  // Icon name type (expandable for future icons)
-  export type IconName = 'text' | 'circle' | 'circle-ring' | 'chevron-right';
+  // Re-export types from separate file for better TypeScript support
+  export type { IconName } from './types.js';
 </script>
 
 <script lang="ts">
@@ -8,6 +8,7 @@
   import { circleIcon } from './ui/circle';
   import { circleRingIcon } from './ui/circle-ring';
   import { chevronRightIcon } from './ui/chevron-right';
+  import type { IconName } from './types.js';
 
   // Icon registry mapping names to SVG paths
   const iconRegistry: Record<IconName, string> = {

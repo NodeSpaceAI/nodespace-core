@@ -6,7 +6,8 @@
  */
 
 import { writable, derived, get } from 'svelte/store';
-import { browser } from '$app/environment';
+// import { browser } from '$app/environment';
+const browser = typeof window !== 'undefined';
 import type { Theme } from './tokens.js';
 import { getResolvedTheme } from './tokens.js';
 
