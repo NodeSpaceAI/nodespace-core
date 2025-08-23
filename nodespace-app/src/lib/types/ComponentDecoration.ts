@@ -1,7 +1,7 @@
 /**
  * Component-based Node Decoration Types
- * 
- * Defines the structure for component-based node decorations in the 
+ *
+ * Defines the structure for component-based node decorations in the
  * universal node reference system (Phase 2.2).
  */
 
@@ -71,6 +71,6 @@ export interface BaseNodeReferenceProps {
   [key: string]: unknown;
 }
 
-// Note: Specific node reference prop interfaces (TaskNodeReferenceProps, UserNodeReferenceProps, etc.) 
+// Note: Specific node reference prop interfaces (TaskNodeReferenceProps, UserNodeReferenceProps, etc.)
 // will be added when those node types are properly specified and implemented.
 // For now, all node types use BaseNodeReferenceProps.

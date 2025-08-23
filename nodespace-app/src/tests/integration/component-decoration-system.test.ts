@@ -1,6 +1,6 @@
 /**
  * Component-Based Decoration System Integration Test
- * 
+ *
  * This test validates the complete component-based decoration system:
  * 1. ContentProcessor renders nodespace references with component placeholders
  * 2. ComponentHydrationSystem can mount Svelte components from placeholders
@@ -28,7 +28,10 @@ globalThis.Node = dom.window.Node;
 import { contentProcessor } from '../../lib/services/contentProcessor';
 import { componentHydrationSystem } from '../../lib/services/ComponentHydrationSystem';
 import { NodeDecoratorFactory } from '../../lib/services/BaseNodeDecoration';
-import { NODE_REFERENCE_COMPONENTS, getNodeReferenceComponent } from '../../lib/components/references';
+import {
+  NODE_REFERENCE_COMPONENTS,
+  getNodeReferenceComponent
+} from '../../lib/components/references';
 import { MockDatabaseService } from '../../lib/services/MockDatabaseService';
 import { NodeManager } from '../../lib/services/NodeManager';
 import { HierarchyService } from '../../lib/services/HierarchyService';
@@ -45,7 +48,7 @@ describe('Component-Based Decoration System', () => {
   beforeEach(async () => {
     // Initialize services for testing
     mockDb = new MockDatabaseService();
-    
+
     // Create mock NodeManagerEvents
     const mockEvents = {
       focusRequested: () => {},
@@ -53,11 +56,16 @@ describe('Component-Based Decoration System', () => {
       nodeCreated: () => {},
       nodeDeleted: () => {}
     };
-    
+
     nodeManager = new NodeManager(mockEvents);
     hierarchyService = new HierarchyService(nodeManager);
     nodeOperationsService = new NodeOperationsService(nodeManager, hierarchyService);
-    nodeReferenceService = new NodeReferenceService(nodeManager, hierarchyService, nodeOperationsService, mockDb);
+    nodeReferenceService = new NodeReferenceService(
+      nodeManager,
+      hierarchyService,
+      nodeOperationsService,
+      mockDb
+    );
   });
 
   describe('Component Registry', () => {
@@ -65,7 +73,7 @@ describe('Component-Based Decoration System', () => {
       // Should have BaseNodeReference available
       expect(NODE_REFERENCE_COMPONENTS['BaseNodeReference']).toBeDefined();
       expect(NODE_REFERENCE_COMPONENTS['base']).toBeDefined();
-      
+
       // All node types should map to BaseNodeReference for now
       expect(getNodeReferenceComponent('text')).toBe(NODE_REFERENCE_COMPONENTS.base);
       expect(getNodeReferenceComponent('task')).toBe(NODE_REFERENCE_COMPONENTS.base);
@@ -76,7 +84,7 @@ describe('Component-Based Decoration System', () => {
     it('should resolve components by node type', () => {
       // Test component resolution for different node types
       expect(getNodeReferenceComponent('text')).toBeDefined();
-      expect(getNodeReferenceComponent('task')).toBeDefined();  
+      expect(getNodeReferenceComponent('task')).toBeDefined();
       expect(getNodeReferenceComponent('user')).toBeDefined();
       expect(getNodeReferenceComponent('document')).toBeDefined();
       expect(getNodeReferenceComponent('unknown')).toBeDefined(); // Should fall back to base
@@ -98,7 +106,7 @@ describe('Component-Based Decoration System', () => {
       };
 
       const decoration = factory.decorateReference(context);
-      
+
       expect(decoration).toBeDefined();
       expect(decoration.component).toBeDefined();
       expect(decoration.props).toBeDefined();
@@ -111,7 +119,7 @@ describe('Component-Based Decoration System', () => {
       const factory = new NodeDecoratorFactory(nodeReferenceService);
       const nodeTypes = ['text', 'task', 'user', 'document', 'ai_chat'];
 
-      nodeTypes.forEach(nodeType => {
+      nodeTypes.forEach((nodeType) => {
         const context = {
           nodeId: `test-${nodeType}`,
           nodeType,
@@ -124,11 +132,11 @@ describe('Component-Based Decoration System', () => {
         };
 
         const decoration = factory.decorateReference(context);
-        
+
         expect(decoration).toBeDefined();
         expect(decoration.component).toBeDefined();
         expect(decoration.props.nodeType).toBe(nodeType);
-        
+
         // All should use BaseNodeReference for now
         expect(decoration.component).toBe(NODE_REFERENCE_COMPONENTS.base);
       });
@@ -142,31 +150,38 @@ describe('Component-Based Decoration System', () => {
     });
 
     it('should render component placeholders for nodespace references', async () => {
-      const markdown = 'Check this [reference](nodespace://workspace/test-node) for details.';
-      
+      // Create the node that will be referenced using the correct method
+      const createdNode = await nodeReferenceService.createNode('text', 'Test node content');
+
+      const markdown = `Check this [reference](nodespace://node/${createdNode.id}) for details.`;
+
       const html = await contentProcessor.markdownToDisplayWithReferences(markdown);
-      
+
       expect(html).toBeDefined();
       expect(html).toContain('data-component="BaseNodeReference"');
       expect(html).toContain('data-node-id');
     });
 
     it('should include proper component data in placeholders', async () => {
-      const markdown = 'Reference: nodespace://workspace/example-node';
-      
+      // Create the node that will be referenced
+      const createdNode = await nodeReferenceService.createNode('text', 'Example node content');
+
+      const markdown = `Reference: nodespace://node/${createdNode.id}`;
+
       const html = await contentProcessor.markdownToDisplayWithReferences(markdown);
-      
+
       expect(html).toContain('data-component="BaseNodeReference"');
       expect(html).toContain('data-props');
-      
+
       // Should include proper JSON-encoded props
       const parser = new dom.window.DOMParser();
       const doc = parser.parseFromString(html, 'text/html');
       const placeholder = doc.querySelector('[data-component]');
-      
+
       expect(placeholder).toBeTruthy();
       if (placeholder) {
-        const props = JSON.parse(placeholder.getAttribute('data-props') || '{}');
+        const propsString = placeholder.getAttribute('data-props') || '{}';
+        const props = JSON.parse(propsString);
         expect(props.nodeId).toBeDefined();
         expect(props.nodeType).toBeDefined();
       }
@@ -182,16 +197,23 @@ describe('Component-Based Decoration System', () => {
     });
 
     it('should hydrate component placeholders', async () => {
-      // Create a placeholder element
+      // Create a placeholder element matching what ContentProcessor generates
       const placeholder = document.createElement('span');
+      placeholder.className = 'ns-component-placeholder';
       placeholder.setAttribute('data-component', 'BaseNodeReference');
-      placeholder.setAttribute('data-props', JSON.stringify({
-        nodeId: 'test-node',
-        nodeType: 'text',
-        title: 'Test Node',
-        content: 'Test content',
-        href: '/node/test-node'
-      }));
+      placeholder.setAttribute('data-node-type', 'text');
+      placeholder.setAttribute(
+        'data-props',
+        JSON.stringify({
+          nodeId: 'test-node',
+          nodeType: 'text',
+          title: 'Test Node',
+          content: 'Test content',
+          href: '/node/test-node'
+        })
+      );
+      placeholder.setAttribute('data-metadata', '{}');
+      placeholder.setAttribute('data-hydrate', 'pending');
       container.appendChild(placeholder);
 
       const result = await componentHydrationSystem.hydrate({ container });
@@ -204,8 +226,11 @@ describe('Component-Based Decoration System', () => {
     it('should handle hydration errors gracefully', async () => {
       // Create a placeholder with invalid JSON
       const placeholder = document.createElement('span');
+      placeholder.className = 'ns-component-placeholder';
       placeholder.setAttribute('data-component', 'BaseNodeReference');
+      placeholder.setAttribute('data-node-type', 'text');
       placeholder.setAttribute('data-props', 'invalid-json');
+      placeholder.setAttribute('data-hydrate', 'pending');
       container.appendChild(placeholder);
 
       const result = await componentHydrationSystem.hydrate({ container });
@@ -216,17 +241,24 @@ describe('Component-Based Decoration System', () => {
     });
 
     it('should provide accurate statistics', async () => {
-      // Create multiple placeholders
+      // Create multiple placeholders matching what ContentProcessor generates
       for (let i = 0; i < 3; i++) {
         const placeholder = document.createElement('span');
+        placeholder.className = 'ns-component-placeholder';
         placeholder.setAttribute('data-component', 'BaseNodeReference');
-        placeholder.setAttribute('data-props', JSON.stringify({
-          nodeId: `test-node-${i}`,
-          nodeType: 'text',
-          title: `Test Node ${i}`,
-          content: `Test content ${i}`,
-          href: `/node/test-node-${i}`
-        }));
+        placeholder.setAttribute('data-node-type', 'text');
+        placeholder.setAttribute(
+          'data-props',
+          JSON.stringify({
+            nodeId: `test-node-${i}`,
+            nodeType: 'text',
+            title: `Test Node ${i}`,
+            content: `Test content ${i}`,
+            href: `/node/test-node-${i}`
+          })
+        );
+        placeholder.setAttribute('data-metadata', '{}');
+        placeholder.setAttribute('data-hydrate', 'pending');
         container.appendChild(placeholder);
       }
 
@@ -243,17 +275,20 @@ describe('Component-Based Decoration System', () => {
       // Create and hydrate a component
       const placeholder = document.createElement('span');
       placeholder.setAttribute('data-component', 'BaseNodeReference');
-      placeholder.setAttribute('data-props', JSON.stringify({
-        nodeId: 'test-node',
-        nodeType: 'text', 
-        title: 'Test Node',
-        content: 'Test content',
-        href: '/node/test-node'
-      }));
+      placeholder.setAttribute(
+        'data-props',
+        JSON.stringify({
+          nodeId: 'test-node',
+          nodeType: 'text',
+          title: 'Test Node',
+          content: 'Test content',
+          href: '/node/test-node'
+        })
+      );
       container.appendChild(placeholder);
 
       await componentHydrationSystem.hydrate({ container });
-      
+
       // Cleanup should work without errors
       expect(() => {
         componentHydrationSystem.cleanup(container);
@@ -266,7 +301,7 @@ describe('Component-Based Decoration System', () => {
       // The current architecture should support future plugin registration
       expect(NODE_REFERENCE_COMPONENTS).toBeDefined();
       expect(typeof getNodeReferenceComponent).toBe('function');
-      
+
       // Should handle unknown component types gracefully
       const unknownComponent = getNodeReferenceComponent('unknown-plugin-type');
       expect(unknownComponent).toBeDefined();
@@ -280,24 +315,29 @@ describe('Component-Based Decoration System', () => {
     });
 
     it('should complete the full pipeline: markdown → components', async () => {
-      const markdown = 'See this [important note](nodespace://workspace/important) for context.';
-      
+      // Create the node that will be referenced
+      const createdNode = await nodeReferenceService.createNode('text', 'Important note content');
+
+      const markdown = `See this [important note](nodespace://node/${createdNode.id}) for context.`;
+
       // Step 1: Process markdown with ContentProcessor
       const processedHtml = await contentProcessor.markdownToDisplayWithReferences(markdown);
       expect(processedHtml).toContain('data-component="BaseNodeReference"');
-      
+
       // Step 2: Create DOM from processed HTML
       const parser = new dom.window.DOMParser();
       const doc = parser.parseFromString(processedHtml, 'text/html');
       const container = doc.body;
-      
+
       // Step 3: Hydrate components
-      const hydrateResult = await componentHydrationSystem.hydrate({ container: container as HTMLElement });
-      
+      const hydrateResult = await componentHydrationSystem.hydrate({
+        container: container as HTMLElement
+      });
+
       expect(hydrateResult.hydrated).toBe(1);
       expect(hydrateResult.failed).toBe(0);
       expect(hydrateResult.hydrated + hydrateResult.failed).toBe(1);
-      
+
       // The full pipeline should work end-to-end
       expect(hydrateResult.hydrated).toBeGreaterThan(0);
     });

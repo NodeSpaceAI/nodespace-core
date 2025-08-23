@@ -103,7 +103,9 @@ const mockIntersectionObserver = vi.fn(() => ({
 }));
 
 // Type assertion for IntersectionObserver mock
-(globalThis as typeof globalThis & { IntersectionObserver: typeof mockIntersectionObserver }).IntersectionObserver = mockIntersectionObserver;
+(
+  globalThis as typeof globalThis & { IntersectionObserver: typeof mockIntersectionObserver }
+).IntersectionObserver = mockIntersectionObserver;
 
 // Basic global test setup
 interface MockResizeObserver {

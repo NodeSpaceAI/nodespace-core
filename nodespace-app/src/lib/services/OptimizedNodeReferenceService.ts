@@ -361,7 +361,10 @@ export class OptimizedNodeReferenceService extends NodeReferenceService {
       500,
       this.performanceConfig.maxCacheMemoryMB / 4
     );
-    this.uriLRUCache = new LRUCache<NodeReference>(1000, this.performanceConfig.maxCacheMemoryMB / 4);
+    this.uriLRUCache = new LRUCache<NodeReference>(
+      1000,
+      this.performanceConfig.maxCacheMemoryMB / 4
+    );
     this.searchLRUCache = new LRUCache<NodeSpaceNode[]>(
       200,
       this.performanceConfig.maxCacheMemoryMB / 4
@@ -533,7 +536,12 @@ export class OptimizedNodeReferenceService extends NodeReferenceService {
    * Optimized node search with caching and debouncing
    */
   public async searchNodes(query: string, nodeType?: string): Promise<NodeSpaceNode[]> {
-    if (!query || query.length < (this as unknown as { autocompleteConfig: { minQueryLength: number } }).autocompleteConfig.minQueryLength) {
+    if (
+      !query ||
+      query.length <
+        (this as unknown as { autocompleteConfig: { minQueryLength: number } }).autocompleteConfig
+          .minQueryLength
+    ) {
       return [];
     }
 

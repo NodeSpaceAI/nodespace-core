@@ -11,7 +11,12 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { EventBus } from '../../lib/services/EventBus';
-import type { NodeStatusChangedEvent, DecorationClickedEvent, NodeUpdatedEvent, CacheInvalidateEvent } from '../../lib/services/EventTypes';
+import type {
+  NodeStatusChangedEvent,
+  DecorationClickedEvent,
+  NodeUpdatedEvent,
+  CacheInvalidateEvent
+} from '../../lib/services/EventTypes';
 
 describe('EventBus Performance', () => {
   let eventBus: EventBus;
@@ -226,8 +231,12 @@ describe('EventBus Performance', () => {
       let statusChangeCount = 0;
       let decorationClickCount = 0;
 
-      eventBus.subscribe('node:status-changed', () => { statusChangeCount++; });
-      eventBus.subscribe('decoration:clicked', () => { decorationClickCount++; });
+      eventBus.subscribe('node:status-changed', () => {
+        statusChangeCount++;
+      });
+      eventBus.subscribe('decoration:clicked', () => {
+        decorationClickCount++;
+      });
 
       const startTime = performance.now();
 
@@ -261,7 +270,7 @@ describe('EventBus Performance', () => {
 
       // Non-batched events should be processed immediately
       expect(decorationClickCount).toBe(100);
-      
+
       // Batched events should also be processed
       expect(statusChangeCount).toBe(100);
     });

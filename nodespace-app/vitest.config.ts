@@ -11,10 +11,16 @@ export default defineConfig({
     include: ['src/tests/**/*.{test,spec}.{js,ts}'],
     environment: 'happy-dom', // Fast, modern DOM for Bun compatibility
     globals: true,
-    setupFiles: ['src/tests/setup.ts'],
+    setupFiles: ['src/tests/setup-svelte-mocks.ts', 'src/tests/setup.ts'],
 
-    // Optimized for Bun runtime performance
+    // Ensure proper global environment
     globalSetup: undefined,
+    environmentOptions: {
+      node: {
+        // Ensure global object is available
+        global: true
+      }
+    },
 
     // Simple coverage configuration
     coverage: {

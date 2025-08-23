@@ -87,7 +87,7 @@ describe('ContentProcessor - Nodespace URI Integration', () => {
 
       const refNode = paragraph.children[1];
       expect(refNode.type).toBe('nodespace-ref');
-      
+
       // Type assertion for nodespace reference node properties
       interface NodespaceRefNode {
         nodeId: string;
@@ -95,7 +95,7 @@ describe('ContentProcessor - Nodespace URI Integration', () => {
         displayText: string;
         isValid: boolean;
       }
-      
+
       const typedRefNode = refNode as unknown as NodespaceRefNode;
       expect(typedRefNode.nodeId).toBe('related-123');
       expect(typedRefNode.uri).toBe('nodespace://node/related-123');
@@ -120,19 +120,8 @@ describe('ContentProcessor - Nodespace URI Integration', () => {
     });
   });
 
-  describe('HTML Rendering with Nodespace References', () => {
-    it('should render nodespace references as anchor tags', () => {
-      const markdown = 'Check [My Node](nodespace://node/test-123) here.';
-      const html = contentProcessor.markdownToDisplay(markdown);
-
-      expect(html).toContain('class="ns-noderef ns-noderef-invalid"');
-      expect(html).toContain('href="nodespace://node/test-123"');
-      expect(html).toContain('data-node-id="test-123"');
-      expect(html).toContain('data-uri="nodespace://node/test-123"');
-      expect(html).toContain('>My Node</a>');
-    });
-
-    it('should render valid references with valid status class', async () => {
+  describe('Component-Based Reference Rendering', () => {
+    it('should process nodespace references for component decoration', async () => {
       // Mock a valid reference
       const mockReference: NodeReference = {
         nodeId: 'test-123',
@@ -151,10 +140,13 @@ describe('ContentProcessor - Nodespace URI Integration', () => {
       ).mockReturnValue(mockReference);
 
       const markdown = 'Check [My Node](nodespace://node/test-123) here.';
-      const html = await contentProcessor.markdownToDisplayWithReferences(markdown, 'source-node');
+      const result = await contentProcessor.processContentWithReferences(markdown, 'source-node');
 
-      expect(html).toContain('class="ns-noderef ns-noderef-valid"');
-      expect(html).toContain('title="Navigate to: My Node"');
+      // Test component-based approach: should have nodespace links for decoration
+      expect(result.nodespaceLinks).toHaveLength(1);
+      expect(result.nodespaceLinks[0].nodeId).toBe('test-123');
+      expect(result.nodespaceLinks[0].displayText).toBe('My Node');
+      expect(result.resolved).toBe(true);
     });
   });
 
@@ -255,10 +247,12 @@ describe('ContentProcessor - Nodespace URI Integration', () => {
       ).mockReturnValue(null);
 
       const markdown = 'Broken [Reference](nodespace://node/nonexistent)';
-      const html = await contentProcessor.markdownToDisplayWithReferences(markdown, 'source-node');
+      const result = await contentProcessor.processContentWithReferences(markdown, 'source-node');
 
-      expect(html).toContain('class="ns-noderef ns-noderef-invalid"');
-      expect(html).toContain('title="Broken reference: nonexistent"');
+      // Test component-based approach: should still detect the reference but mark as invalid
+      expect(result.nodespaceLinks).toHaveLength(1);
+      expect(result.nodespaceLinks[0].nodeId).toBe('nonexistent');
+      expect(result.nodespaceLinks[0].isValid).toBe(false);
     });
 
     it('should handle service errors gracefully', async () => {

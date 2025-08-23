@@ -56,13 +56,13 @@ with another reference nodespace://user/457/jane-smith in the middle.
     try {
       processingStatus = 'Processing content...';
 
-      // Step 1: Process markdown content with nodespace references
-      const processed = await contentProcessor.processContent(sampleContent);
+      // Step 1: Parse markdown content with nodespace references
+      const processed = contentProcessor.parseMarkdown(sampleContent);
 
       processingStatus = 'Rendering HTML...';
 
-      // Step 2: Render to HTML (this creates component placeholders)
-      const html = contentProcessor.renderToHTML(processed);
+      // Step 2: Render AST to HTML (this creates component placeholders)
+      const html = await contentProcessor.renderAST(processed);
 
       // Step 3: Insert HTML into container
       contentContainer.innerHTML = html;

@@ -11,10 +11,16 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventBus } from '../../lib/services/EventBus';
-import type { NodeStatusChangedEvent, EventFilter, DecorationClickedEvent } from '../../lib/services/EventTypes';
+import type {
+  NodeStatusChangedEvent,
+  EventFilter,
+  DecorationClickedEvent
+} from '../../lib/services/EventTypes';
 
 // Helper functions for creating typed test events
-const createNodeStatusEvent = (overrides: Partial<Omit<NodeStatusChangedEvent, 'timestamp'>> = {}): Omit<NodeStatusChangedEvent, 'timestamp'> => ({
+const createNodeStatusEvent = (
+  overrides: Partial<Omit<NodeStatusChangedEvent, 'timestamp'>> = {}
+): Omit<NodeStatusChangedEvent, 'timestamp'> => ({
   type: 'node:status-changed',
   namespace: 'coordination',
   source: 'test',
@@ -23,7 +29,9 @@ const createNodeStatusEvent = (overrides: Partial<Omit<NodeStatusChangedEvent, '
   ...overrides
 });
 
-const createDecorationClickEvent = (overrides: Partial<Omit<DecorationClickedEvent, 'timestamp'>> = {}): Omit<DecorationClickedEvent, 'timestamp'> => ({
+const createDecorationClickEvent = (
+  overrides: Partial<Omit<DecorationClickedEvent, 'timestamp'>> = {}
+): Omit<DecorationClickedEvent, 'timestamp'> => ({
   type: 'decoration:clicked',
   namespace: 'interaction',
   source: 'test',
@@ -469,9 +477,27 @@ describe('EventBus', () => {
     it('should handle priority-based handler execution', () => {
       const calls: string[] = [];
 
-      eventBus.subscribe('node:status-changed', () => { calls.push('handler1'); }, { priority: 1 });
-      eventBus.subscribe('node:status-changed', () => { calls.push('handler2'); }, { priority: 3 });
-      eventBus.subscribe('node:status-changed', () => { calls.push('handler3'); }, { priority: 2 });
+      eventBus.subscribe(
+        'node:status-changed',
+        () => {
+          calls.push('handler1');
+        },
+        { priority: 1 }
+      );
+      eventBus.subscribe(
+        'node:status-changed',
+        () => {
+          calls.push('handler2');
+        },
+        { priority: 3 }
+      );
+      eventBus.subscribe(
+        'node:status-changed',
+        () => {
+          calls.push('handler3');
+        },
+        { priority: 2 }
+      );
 
       eventBus.emit(createNodeStatusEvent());
 

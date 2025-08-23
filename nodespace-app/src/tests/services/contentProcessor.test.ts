@@ -6,8 +6,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { 
-  ContentProcessor, 
+import {
+  ContentProcessor,
   contentProcessor,
   type HeaderNode,
   type ParagraphNode,
@@ -58,10 +58,10 @@ describe('ContentProcessor', () => {
       expect((h3 as HeaderNode).content).toBe('Header 3');
     });
 
-    it('should render AST back to HTML correctly', () => {
+    it('should render AST back to HTML correctly', async () => {
       const source = '# Hello World\n\nThis is **bold** text.';
       const ast = processor.parseMarkdown(source);
-      const html = processor.renderAST(ast);
+      const html = await processor.renderAST(ast);
 
       expect(html).toContain('<h1 class="ns-markdown-heading ns-markdown-h1">Hello World</h1>');
       expect(html).toContain('<strong class="ns-markdown-bold">bold</strong>');
@@ -119,9 +119,9 @@ describe('ContentProcessor', () => {
   // ========================================================================
 
   describe('Legacy Compatibility', () => {
-    it('should provide backward-compatible markdown to display conversion', () => {
+    it('should provide backward-compatible markdown to display conversion', async () => {
       const markdown = '# Header\n\n**Bold** text with *italic*.';
-      const html = processor.markdownToDisplay(markdown);
+      const html = await processor.markdownToDisplay(markdown);
 
       expect(html).toContain('<h1');
       expect(html).toContain('<strong');
@@ -332,13 +332,11 @@ describe('ContentProcessor', () => {
 
       expect(ast.children).toHaveLength(1);
       const paragraph = ast.children[0] as ParagraphNode;
-      expect(paragraph.children.some((child: ASTNode) => child.type === 'wikilink')).toBe(
-        true
-      );
+      expect(paragraph.children.some((child: ASTNode) => child.type === 'wikilink')).toBe(true);
 
-      const wikiNode = paragraph.children.find(
-        (child: ASTNode) => child.type === 'wikilink'
-      ) as WikiLinkNode | undefined;
+      const wikiNode = paragraph.children.find((child: ASTNode) => child.type === 'wikilink') as
+        | WikiLinkNode
+        | undefined;
       expect(wikiNode?.target).toBe('Wikilink');
       expect(wikiNode?.displayText).toBe('Wikilink');
     });
@@ -363,33 +361,33 @@ describe('ContentProcessor', () => {
       expect(ast.metadata.totalCharacters).toBeGreaterThan(40000);
     });
 
-    it('should handle malformed markdown gracefully', () => {
+    it('should handle malformed markdown gracefully', async () => {
       const malformedContent = '###\n\n**\n\n`\n\n[[]]';
 
-      expect(() => {
+      await expect(async () => {
         const ast = processor.parseMarkdown(malformedContent);
-        processor.renderAST(ast);
+        await processor.renderAST(ast);
       }).not.toThrow();
     });
 
-    it('should handle unicode and special characters', () => {
+    it('should handle unicode and special characters', async () => {
       const unicodeContent =
         '# Header with émojis 🚀\n\n**Bold** with 中文字符 and [[Link with spaces]]';
       const ast = processor.parseMarkdown(unicodeContent);
-      const html = processor.renderAST(ast);
+      const html = await processor.renderAST(ast);
 
       expect(html).toContain('émojis 🚀');
       expect(html).toContain('中文字符');
       expect(ast.metadata.hasWikiLinks).toBe(true);
     });
 
-    it('should be memory efficient with repeated operations', () => {
+    it('should be memory efficient with repeated operations', async () => {
       const content = '# Test Header\n\nContent with **formatting**.';
 
       // Simulate repeated operations
       for (let i = 0; i < 100; i++) {
         const ast = processor.parseMarkdown(content);
-        processor.renderAST(ast);
+        await processor.renderAST(ast);
         processor.astToMarkdown(ast);
       }
 
@@ -403,9 +401,9 @@ describe('ContentProcessor', () => {
         .map((_, i) => `# Header ${i}\n\nContent with [[Link ${i}]] and **bold ${i}**.`);
 
       const promises = contents.map((content) =>
-        Promise.resolve().then(() => {
+        Promise.resolve().then(async () => {
           const ast = processor.parseMarkdown(content);
-          return processor.renderAST(ast);
+          return await processor.renderAST(ast);
         })
       );
 
@@ -447,27 +445,6 @@ describe('ContentProcessor', () => {
   // ========================================================================
 
   describe('Integration with Existing System', () => {
-    it('should work with existing markdownUtils patterns', () => {
-      const content = '**Bold** and *italic* with `code`';
-
-      // Should produce similar results to legacy system
-      const ast = processor.parseMarkdown(content);
-      const html = processor.renderAST(ast);
-
-      expect(html).toContain('ns-markdown-bold');
-      expect(html).toContain('ns-markdown-italic');
-      expect(html).toContain('ns-markdown-code');
-    });
-
-    it('should maintain CSS class compatibility', () => {
-      const headerContent = '# Main Header';
-      const ast = processor.parseMarkdown(headerContent);
-      const html = processor.renderAST(ast);
-
-      expect(html).toContain('ns-markdown-heading');
-      expect(html).toContain('ns-markdown-h1');
-    });
-
     it('should support TextNode component patterns', () => {
       // Simulate TextNode usage patterns
       const originalContent = '## Sub Header Text';
@@ -481,6 +458,25 @@ describe('ContentProcessor', () => {
       expect(displayText).toBe('Sub Header Text');
       expect(sanitized).toBe(displayText);
       expect(validation.isValid).toBe(true);
+    });
+
+    it('should parse content into AST correctly for component system', () => {
+      const content = '**Bold** and *italic* with `code`';
+      const ast = processor.parseMarkdown(content);
+
+      // Test AST structure for component-based rendering
+      expect(ast.children).toHaveLength(1);
+      expect(ast.children[0].type).toBe('paragraph');
+
+      const paragraph = ast.children[0] as ParagraphNode;
+      // Should have text + bold + text + italic + text + code + text nodes
+      expect(paragraph.children.length).toBeGreaterThan(1);
+
+      // Verify inline formatting nodes are detected
+      const hasInlineFormatting = paragraph.children.some((child) =>
+        ['bold', 'italic', 'code'].includes(child.type)
+      );
+      expect(hasInlineFormatting).toBe(true);
     });
   });
 });

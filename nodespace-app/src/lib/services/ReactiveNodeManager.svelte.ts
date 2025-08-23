@@ -13,12 +13,30 @@ export interface HierarchicalNode extends Omit<Node, 'children'> {
 }
 
 export class ReactiveNodeManager extends NodeManager {
-  private _reactiveNodes = $state(new Map<string, Node>());
-  private _reactiveRootNodeIds = $state<string[]>([]);
-  private _reactivityTrigger = $state(0); // Counter to force UI updates
+  private _reactiveNodes: Map<string, Node>;
+  private _reactiveRootNodeIds: string[];
+  private _reactivityTrigger: number;
 
   constructor(events: NodeManagerEvents) {
     super(events);
+
+    // Initialize reactive state in constructor to allow for test mocking
+    try {
+      // Try to use $state if available (Svelte 5 environment)
+      this._reactiveNodes =
+        (globalThis as unknown as { $state?: <T>(value: T) => T }).$state?.(
+          new Map<string, Node>()
+        ) ?? new Map<string, Node>();
+      this._reactiveRootNodeIds =
+        (globalThis as unknown as { $state?: <T>(value: T) => T }).$state?.<string[]>([]) ?? [];
+      this._reactivityTrigger =
+        (globalThis as unknown as { $state?: <T>(value: T) => T }).$state?.(0) ?? 0;
+    } catch {
+      // Fallback for test environment
+      this._reactiveNodes = new Map<string, Node>();
+      this._reactiveRootNodeIds = [];
+      this._reactivityTrigger = 0;
+    }
 
     // Sync reactive state with base class state
     this.syncReactiveState();

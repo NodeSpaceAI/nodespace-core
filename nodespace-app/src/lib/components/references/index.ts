@@ -1,71 +1,76 @@
 /**
- * Node Reference Components - Core Component System
- * 
- * Exports the base node reference component and component registry
- * for the component-based node decoration system.
+ * Node Reference Components Registry
+ *
+ * Central registry for all node reference components used in the universal
+ * reference system. Supports both core components and plugin components.
  */
 
-// Core component imports
-import BaseNodeReference from './BaseNodeReference.svelte';
-import type { ComponentDecoration } from '../../types/ComponentDecoration';
-import type { ComponentType } from 'svelte';
+import BaseNodeReference from '../BaseNodeReference.svelte';
+import type { SvelteComponent } from 'svelte';
 
-// Component constructor type for Node Reference components
-type NodeReferenceComponent = ComponentType;
+// Component type for Svelte components
+export type NodeReferenceComponent = new (...args: unknown[]) => SvelteComponent;
 
-// Export components
-export { BaseNodeReference };
-
-// Core node reference components registry
-// Plugin node types can extend this registry at build time
+/**
+ * Registry of available node reference components
+ * Core components are always available, plugin components are added at build time
+ */
 export const NODE_REFERENCE_COMPONENTS: Record<string, NodeReferenceComponent> = {
-  // Core node types (built-in)
-  BaseNodeReference: BaseNodeReference,
-  
-  // All node types use BaseNodeReference for now
-  // Specific implementations will be added when properly specified
-  base: BaseNodeReference,
-  text: BaseNodeReference,
-  task: BaseNodeReference,
-  user: BaseNodeReference,
-  date: BaseNodeReference,
-  document: BaseNodeReference,
-  ai_chat: BaseNodeReference
+  // Core component (used as base/fallback for all node types)
+  BaseNodeReference: BaseNodeReference as NodeReferenceComponent,
+  base: BaseNodeReference as NodeReferenceComponent,
+
+  // Node type specific mappings (all use BaseNodeReference for now)
+  text: BaseNodeReference as NodeReferenceComponent,
+  task: BaseNodeReference as NodeReferenceComponent,
+  user: BaseNodeReference as NodeReferenceComponent,
+  date: BaseNodeReference as NodeReferenceComponent,
+  document: BaseNodeReference as NodeReferenceComponent,
+  ai_chat: BaseNodeReference as NodeReferenceComponent
+
+  // Future plugin components will be registered here at build time
+  // pdf: PdfNodeReference (example)
+  // image: ImageNodeReference (example)
+  // code: CodeNodeReference (example)
 };
 
 /**
- * Get component constructor by node type
+ * Get the appropriate component for a node type
+ * Falls back to BaseNodeReference for unknown types
  */
 export function getNodeReferenceComponent(nodeType: string): NodeReferenceComponent {
   return NODE_REFERENCE_COMPONENTS[nodeType] || NODE_REFERENCE_COMPONENTS.base;
 }
 
 /**
- * Get component name for debugging/inspection
+ * Register a new node reference component (for plugins)
+ * Used at build time to add plugin components
  */
-export function getComponentName(component: NodeReferenceComponent): string {
-  if (component === BaseNodeReference) return 'BaseNodeReference';
-  return 'BaseNodeReference'; // All components are BaseNodeReference for now
+export function registerNodeReferenceComponent(
+  nodeType: string,
+  component: NodeReferenceComponent
+): void {
+  NODE_REFERENCE_COMPONENTS[nodeType] = component;
 }
 
 /**
- * Get component constructor by name (for hydration)
+ * Get all registered component types
  */
-export function getComponentByName(componentName: string): NodeReferenceComponent {
-  switch (componentName) {
-    case 'BaseNodeReference':
-      return BaseNodeReference;
-    default:
-      return BaseNodeReference; // Default fallback
-  }
+export function getRegisteredNodeTypes(): string[] {
+  return Object.keys(NODE_REFERENCE_COMPONENTS).filter(
+    (key) => key !== 'base' && key !== 'BaseNodeReference'
+  );
 }
 
 /**
- * Creates a basic component decoration using BaseNodeReference
+ * Check if a component is registered for a node type
  */
-export function createNodeReferenceDecoration(nodeType: string, props: Record<string, unknown>): ComponentDecoration {
-  return {
-    component: getNodeReferenceComponent(nodeType) as ComponentDecoration['component'],
-    props,
-  };
+export function hasComponentForNodeType(nodeType: string): boolean {
+  return nodeType in NODE_REFERENCE_COMPONENTS;
 }
+
+// Export the BaseNodeReference as default
+export default BaseNodeReference;
+
+// Re-export BaseNodeReference for direct imports
+export { BaseNodeReference };

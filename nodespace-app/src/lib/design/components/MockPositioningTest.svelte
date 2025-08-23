@@ -92,7 +92,7 @@
   let activeTests: Array<{
     id: string;
     scenario: (typeof testScenarios)[0];
-    nodeRef: BaseNode;
+    nodeRef: BaseNode | null;
   }> = [];
 
   onMount(() => {
@@ -100,7 +100,7 @@
     activeTests = testScenarios.map((scenario, index) => ({
       id: `test-${index}`,
       scenario,
-      nodeRef: null as unknown
+      nodeRef: null
     }));
   });
 
@@ -197,11 +197,7 @@
             bind:this={test.nodeRef}
             nodeId={test.id}
             nodeType="text"
-            bind:content={test.scenario.content}
-            editable={true}
-            contentEditable={true}
-            multiline={test.scenario.multiline}
-            placeholder="Click to test positioning..."
+            content={test.scenario.content}
             on:click={(e) => handleNodeClick(e, test.scenario.name)}
           />
         </div>

@@ -289,7 +289,11 @@ describe('ContentEditableController', () => {
       editingElement.contentEditable = 'true';
       document.body.appendChild(editingElement);
 
-      const editingController = new ContentEditableController(editingElement, 'editing-test-node', mockEvents);
+      const editingController = new ContentEditableController(
+        editingElement,
+        'editing-test-node',
+        mockEvents
+      );
       editingController.initialize('**old**', true);
 
       // Verify initial state has live formatting

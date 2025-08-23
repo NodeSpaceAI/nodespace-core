@@ -339,12 +339,14 @@ export class ContentProcessor {
    * Render AST back to HTML for display
    * Maintains lossless conversion capability
    */
-  public renderAST(ast: MarkdownAST): string {
+  public async renderAST(ast: MarkdownAST): Promise<string> {
     if (!ast.children || ast.children.length === 0) {
       return '';
     }
 
-    return ast.children.map((node) => this.renderNode(node)).join('');
+    const nodePromises = ast.children.map((node) => this.renderNode(node));
+    const renderedNodes = await Promise.all(nodePromises);
+    return renderedNodes.join('');
   }
 
   /**
@@ -368,9 +370,9 @@ export class ContentProcessor {
    * Bridges old markdownUtils.ts with new AST system
    * Enhanced with nodespace:// URI processing
    */
-  public markdownToDisplay(markdown: string): string {
+  public async markdownToDisplay(markdown: string): Promise<string> {
     const ast = this.parseMarkdown(markdown);
-    return this.renderAST(ast);
+    return await this.renderAST(ast);
   }
 
   /**
@@ -388,7 +390,7 @@ export class ContentProcessor {
       await this.resolveNodespaceReferences(ast, sourceNodeId);
     }
 
-    return this.renderAST(ast);
+    return await this.renderAST(ast);
   }
 
   /**
@@ -772,11 +774,54 @@ export class ContentProcessor {
       } as InlineNode);
     }
 
-    // Sort by start position
-    return patterns.sort((a, b) => a.start - b.start);
+    // Sort by start position and remove overlapping patterns
+    const sortedPatterns = patterns.sort((a, b) => a.start - b.start);
+
+    // Filter out overlapping patterns, prioritizing by type:
+    // 1. Markdown link-style nodespace references ([text](nodespace://...))
+    // 2. Plain nodespace URIs (nodespace://...)
+    const filteredPatterns: ASTNode[] = [];
+
+    for (const pattern of sortedPatterns) {
+      const isOverlapping = filteredPatterns.some((existing) => {
+        return (
+          (pattern.start >= existing.start && pattern.start < existing.end) ||
+          (existing.start >= pattern.start && existing.start < pattern.end)
+        );
+      });
+
+      if (!isOverlapping) {
+        filteredPatterns.push(pattern);
+      } else {
+        // If overlapping, prioritize markdown link format over plain URI
+        const overlappingIndex = filteredPatterns.findIndex((existing) => {
+          return (
+            (pattern.start >= existing.start && pattern.start < existing.end) ||
+            (existing.start >= pattern.start && existing.start < pattern.end)
+          );
+        });
+
+        if (overlappingIndex >= 0) {
+          const existing = filteredPatterns[overlappingIndex];
+
+          // If current pattern is a markdown-style nodespace-ref and existing is plain URI
+          if (pattern.type === 'nodespace-ref' && existing.type === 'nodespace-ref') {
+            const currentIsMarkdown = (pattern as NodespaceRefNode).rawSyntax?.startsWith('[');
+            const existingIsMarkdown = (existing as NodespaceRefNode).rawSyntax?.startsWith('[');
+
+            if (currentIsMarkdown && !existingIsMarkdown) {
+              filteredPatterns[overlappingIndex] = pattern;
+            }
+            // If existing is markdown and current is plain URI, keep existing (do nothing)
+          }
+        }
+      }
+    }
+
+    return filteredPatterns;
   }
 
-  private renderNode(node: ASTNode): string {
+  private async renderNode(node: ASTNode): Promise<string> {
     switch (node.type) {
       case 'header': {
         const headerNode = node as HeaderNode;
@@ -785,7 +830,9 @@ export class ContentProcessor {
 
       case 'paragraph': {
         const paragraphNode = node as ParagraphNode;
-        const content = paragraphNode.children.map((child) => this.renderNode(child)).join('');
+        const childPromises = paragraphNode.children.map((child) => this.renderNode(child));
+        const childContents = await Promise.all(childPromises);
+        const content = childContents.join('');
         return `<p class="ns-markdown-paragraph">${content}</p>`;
       }
 
@@ -807,7 +854,7 @@ export class ContentProcessor {
         if (refNode.isValid && refNode.reference && this.nodeReferenceService) {
           try {
             // Get the actual node to determine its type
-            const referencedNode = this.nodeReferenceService.resolveNodespaceURI(refNode.uri);
+            const referencedNode = await this.nodeReferenceService.resolveNodespaceURI(refNode.uri);
 
             if (referencedNode) {
               // Create decoration context
@@ -1091,19 +1138,20 @@ export class ContentProcessor {
 
       // Emit reference resolution event
       if (sourceNodeId) {
-        const resolutionEvent: Omit<import('./EventTypes').ReferenceResolutionEvent, 'timestamp'> = {
-          type: 'reference:resolved',
-          namespace: 'coordination',
-          source: this.serviceName,
-          referenceId: refNode.uri,
-          target: refNode.nodeId,
-          nodeId: sourceNodeId,
-          resolutionResult: refNode.isValid ? 'found' : 'not-found',
-          metadata: {
-            displayText: refNode.displayText,
-            cached: false
-          }
-        };
+        const resolutionEvent: Omit<import('./EventTypes').ReferenceResolutionEvent, 'timestamp'> =
+          {
+            type: 'reference:resolved',
+            namespace: 'coordination',
+            source: this.serviceName,
+            referenceId: refNode.uri,
+            target: refNode.nodeId,
+            nodeId: sourceNodeId,
+            resolutionResult: refNode.isValid ? 'found' : 'not-found',
+            metadata: {
+              displayText: refNode.displayText,
+              cached: false
+            }
+          };
         eventBus.emit(resolutionEvent);
       }
 
@@ -1328,7 +1376,8 @@ export class ContentProcessor {
     const { props, metadata } = decoration;
 
     // Extract component information for plugin system
-    const componentName = decoration.component.name || 'BaseNodeReference';
+    // For Svelte components, use a consistent naming scheme
+    const componentName = 'BaseNodeReference'; // All components use BaseNodeReference for now
     const nodeType = props.nodeType || context.nodeType;
 
     // Safely serialize props and metadata for hydration

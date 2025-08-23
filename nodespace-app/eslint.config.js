@@ -174,6 +174,56 @@ export default [
     }
   },
   {
+    files: ['src/tests/**/*.{js,ts}'],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        ecmaVersion: 2022,
+        sourceType: 'module'
+      },
+      globals: {
+        console: 'readonly',
+        window: 'readonly',
+        Window: 'readonly',
+        document: 'readonly',
+        localStorage: 'readonly',
+        global: 'readonly', // Node.js global for tests
+        globalThis: 'readonly',
+        process: 'readonly',
+        vi: 'readonly', // Vitest
+        describe: 'readonly', // Vitest
+        it: 'readonly', // Vitest
+        expect: 'readonly', // Vitest
+        beforeEach: 'readonly', // Vitest
+        afterEach: 'readonly', // Vitest
+        beforeAll: 'readonly', // Vitest
+        afterAll: 'readonly', // Vitest
+        test: 'readonly', // Vitest
+        // DOM types for tests
+        HTMLElement: 'readonly',
+        Element: 'readonly',
+        Node: 'readonly',
+        Text: 'readonly',
+        MouseEvent: 'readonly',
+        FocusEvent: 'readonly',
+        KeyboardEvent: 'readonly',
+        Event: 'readonly',
+        InputEvent: 'readonly'
+      }
+    },
+    plugins: {
+      '@typescript-eslint': ts,
+      oxlint
+    },
+    rules: {
+      ...oxlint.configs.recommended.rules,
+      ...ts.configs.recommended.rules,
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-explicit-any': 'warn',
+      'no-console': 'off' // Allow console in tests
+    }
+  },
+  {
     // Global ignores
     ignores: [
       'build/',

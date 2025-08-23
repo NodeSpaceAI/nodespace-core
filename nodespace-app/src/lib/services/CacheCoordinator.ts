@@ -408,7 +408,7 @@ export class CacheCoordinator {
       name: 'hierarchy-change',
       condition: (event, cache) => {
         const typedEvent = event as import('./EventTypes').HierarchyChangedEvent;
-        return (
+        return !!(
           typedEvent.type === 'hierarchy:changed' &&
           cache.nodeId &&
           typedEvent.affectedNodes?.includes(cache.nodeId)

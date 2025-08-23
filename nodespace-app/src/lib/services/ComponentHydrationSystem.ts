@@ -213,7 +213,7 @@ export class ComponentHydrationSystem {
 
       // Try mounting BaseNodeReference as fallback
       const fallbackDecoration: ComponentDecoration = {
-        component: getNodeReferenceComponent('base') as ComponentDecoration['component'],
+        component: getNodeReferenceComponent('base'),
         props: {
           ...decoration.props,
           className: `${decoration.props.className || ''} ns-fallback-component`.trim()
@@ -268,7 +268,10 @@ export class ComponentHydrationSystem {
       // Set up event forwarding if needed
       if (decoration.events) {
         for (const [eventName, handler] of Object.entries(decoration.events)) {
-          (component as SvelteComponent & { $on: (event: string, handler: unknown) => void }).$on(eventName, handler);
+          (component as SvelteComponent & { $on: (event: string, handler: unknown) => void }).$on(
+            eventName,
+            handler
+          );
         }
       }
 

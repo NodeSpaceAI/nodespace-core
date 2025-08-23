@@ -17,7 +17,7 @@
 import { eventBus } from './EventBus';
 import { decorationCoordinator } from './DecorationCoordinator';
 import { NodeDecoratorFactory } from './BaseNodeDecoration';
-import type { DecorationContext, DecorationResult } from './BaseNodeDecoration';
+import type { DecorationContext } from './BaseNodeDecoration';
 import type { ComponentDecoration } from '../types/ComponentDecoration';
 import type { NodeReferenceService } from './NodeReferenceService';
 import type { NodeSpaceNode } from './MockDatabaseService';
@@ -69,7 +69,7 @@ export class NodeReferenceRenderer {
   private decoratorFactory: NodeDecoratorFactory;
   private renderCache = new Map<
     string,
-    { result: ComponentDecoration | DecorationResult; timestamp: number; element?: HTMLElement }
+    { result: ComponentDecoration; timestamp: number; element?: HTMLElement }
   >();
   private intersectionObserver: IntersectionObserver | null = null;
   private mutationObserver: MutationObserver | null = null;
@@ -186,7 +186,7 @@ export class NodeReferenceRenderer {
       const node = await this.resolveNode(nodeId);
       if (!node) {
         this.renderErrorReference(element, nodeId, 'Node not found');
-        return;
+        return Promise.resolve(); // Explicit promise resolution
       }
 
       // Create decoration context
@@ -206,12 +206,22 @@ export class NodeReferenceRenderer {
         const cached = this.getCachedDecoration(nodeId, displayContext);
         if (cached) {
           this.applyDecoration(element, cached.result, decorationContext);
-          return;
+          return Promise.resolve(); // Explicit promise resolution
         }
+      } else if (options.force) {
+        // Forcing refresh counts as a cache miss
+        this.metrics.cacheMisses++;
       }
 
-      // Generate decoration
-      const decoration = this.decoratorFactory.decorateReference(decorationContext);
+      // Generate decoration safely
+      let decoration: ComponentDecoration;
+      try {
+        decoration = this.decoratorFactory.decorateReference(decorationContext);
+      } catch (error) {
+        console.warn('NodeReferenceRenderer: Failed to generate decoration, using fallback', error);
+        this.renderErrorReference(element, nodeId, 'Decoration generation error');
+        return Promise.resolve();
+      }
 
       // Cache the result
       this.cacheDecoration(nodeId, displayContext, decoration, element);
@@ -219,18 +229,26 @@ export class NodeReferenceRenderer {
       // Apply decoration to element
       this.applyDecoration(element, decoration, decorationContext);
 
-      // Register with decoration coordinator
-      decorationCoordinator.registerDecoration({
-        nodeId,
-        decorationType: node.type,
-        target: nodeId,
-        element,
-        isActive: false,
-        lastUpdate: Date.now(),
-        metadata: decorationContext.metadata
-      });
+      // Register with decoration coordinator safely
+      try {
+        decorationCoordinator.registerDecoration({
+          nodeId,
+          decorationType: node.type,
+          target: nodeId,
+          element,
+          isActive: false,
+          lastUpdate: Date.now(),
+          metadata: decorationContext.metadata
+        });
+      } catch (error) {
+        console.warn(
+          'NodeReferenceRenderer: Failed to register decoration with coordinator',
+          error
+        );
+      }
 
       this.metrics.renderedReferences++;
+      return Promise.resolve(); // Explicit promise resolution
     } catch (error) {
       console.error('NodeReferenceRenderer: Error rendering reference', {
         error,
@@ -239,6 +257,7 @@ export class NodeReferenceRenderer {
         displayContext
       });
       this.renderErrorReference(element, nodeId, 'Rendering error');
+      return Promise.resolve(); // Explicit promise resolution even in error case
     }
   }
 
@@ -290,7 +309,8 @@ export class NodeReferenceRenderer {
    */
   public clearCache(): void {
     this.renderCache.clear();
-    this.metrics.cacheMisses = 0;
+    // Don't reset cacheMisses counter, just clear the cache
+    // Cache misses is a cumulative metric that tracks total misses over time
   }
 
   // ========================================================================
@@ -497,55 +517,78 @@ export class NodeReferenceRenderer {
 
   private applyDecoration(
     element: HTMLElement,
-    decoration: ComponentDecoration | DecorationResult,
+    decoration: ComponentDecoration,
     context: DecorationContext
   ): void {
     try {
-      // Handle ComponentDecoration vs DecorationResult
-      if ('component' in decoration) {
-        // This is a ComponentDecoration - create component placeholder for hydration
-        const componentName = decoration.component.name;
-        const propsJSON = JSON.stringify(decoration.props).replace(/"/g, '&quot;');
-        const metadataJSON = decoration.metadata ? JSON.stringify(decoration.metadata).replace(/"/g, '&quot;') : '';
-        
-        element.innerHTML = `<div class="ns-component-placeholder" 
-          data-hydrate="pending" 
-          data-component="${componentName}" 
-          data-node-type="${context.nodeType}" 
-          data-props="${propsJSON}" 
-          data-metadata="${metadataJSON}"></div>`;
-      } else {
-        // This is a legacy DecorationResult - set HTML content (already sanitized by decorator)
-        element.innerHTML = decoration.html;
-      }
+      // Create component placeholder for hydration
+      const componentName = decoration.component.name;
+      const propsJSON = JSON.stringify(decoration.props).replace(/"/g, '&quot;');
+      const metadataJSON = decoration.metadata
+        ? JSON.stringify(decoration.metadata).replace(/"/g, '&quot;')
+        : '';
 
-      // Apply CSS classes and accessibility attributes
-      if ('component' in decoration) {
-        // ComponentDecoration - use default classes
-        const nodeType = context.nodeType;
+      element.innerHTML = `<div class="ns-component-placeholder" 
+        data-hydrate="pending" 
+        data-component="${componentName}" 
+        data-node-type="${context.nodeType}" 
+        data-props="${propsJSON}" 
+        data-metadata="${metadataJSON}"></div>`;
+
+      // Apply CSS classes and accessibility attributes with individual error handling
+      const nodeType = context.nodeType;
+
+      // Safely set className
+      try {
         element.className = `ns-noderef ns-noderef--${nodeType}`;
-        element.setAttribute('aria-label', decoration.props.ariaLabel as string || `Reference to ${nodeType}`);
-        element.setAttribute('role', 'button'); // Component decorations are interactive
-      } else {
-        // DecorationResult - use provided classes and labels
-        element.className = decoration.cssClasses.join(' ');
-        element.setAttribute('aria-label', decoration.ariaLabel);
-        element.setAttribute('role', 'text'); // DecorationResult doesn't have interactive property
+      } catch (error) {
+        console.warn('NodeReferenceRenderer: Failed to set className', error);
       }
 
-      // Set data attributes
-      element.dataset.nodeId = context.nodeId;
-      element.dataset.uri = context.uri;
-      element.dataset.context = context.displayContext;
+      // Safely set aria-label
+      try {
+        element.setAttribute(
+          'aria-label',
+          (decoration.props.ariaLabel as string) || `Reference to ${nodeType}`
+        );
+      } catch (error) {
+        console.warn('NodeReferenceRenderer: Failed to set aria-label', error);
+      }
 
-      // Mark as rendered
-      element.classList.add('ns-noderef--rendered');
+      // Safely set role
+      try {
+        element.setAttribute('role', 'button'); // Component decorations are interactive
+      } catch (error) {
+        console.warn('NodeReferenceRenderer: Failed to set role', error);
+      }
 
-      // Set up keyboard accessibility if interactive
-      const isInteractive = 'component' in decoration ? true : false; // DecorationResult doesn't have interactive property
-      if (isInteractive) {
+      // Set data attributes safely
+      try {
+        element.dataset.nodeId = context.nodeId;
+        element.dataset.uri = context.uri;
+        element.dataset.context = context.displayContext;
+      } catch (error) {
+        console.warn('NodeReferenceRenderer: Failed to set data attributes', error);
+      }
+
+      // Mark as rendered safely
+      try {
+        element.classList.add('ns-noderef--rendered');
+      } catch (error) {
+        console.warn('NodeReferenceRenderer: Failed to add rendered class', error);
+      }
+
+      // Set up keyboard accessibility (component decorations are interactive)
+      try {
         element.setAttribute('tabindex', '0');
+      } catch (error) {
+        console.warn('NodeReferenceRenderer: Failed to set tabindex', error);
+      }
+
+      try {
         this.setupKeyboardHandlers(element, context);
+      } catch (error) {
+        console.warn('NodeReferenceRenderer: Failed to setup keyboard handlers', error);
       }
     } catch (error) {
       console.error('NodeReferenceRenderer: Error applying decoration', {
@@ -555,6 +598,7 @@ export class NodeReferenceRenderer {
         context
       });
       this.renderErrorReference(element, context.nodeId, 'Application error');
+      return; // Prevent error from propagating
     }
   }
 
@@ -580,13 +624,15 @@ export class NodeReferenceRenderer {
     element.addEventListener('keydown', keydownHandler);
 
     // Store handler for cleanup
-    (element as HTMLElement & { _keydownHandler?: (event: KeyboardEvent) => void })._keydownHandler = keydownHandler;
+    (
+      element as HTMLElement & { _keydownHandler?: (event: KeyboardEvent) => void }
+    )._keydownHandler = keydownHandler;
   }
 
   private getCachedDecoration(
     nodeId: string,
     displayContext: string
-  ): { result: ComponentDecoration | DecorationResult; element?: HTMLElement } | null {
+  ): { result: ComponentDecoration; element?: HTMLElement } | null {
     const key = `${nodeId}:${displayContext}`;
     const cached = this.renderCache.get(key);
 
@@ -598,6 +644,7 @@ export class NodeReferenceRenderer {
       this.renderCache.delete(key);
     }
 
+    // Always increment cache misses when we don't have a valid cache entry
     this.metrics.cacheMisses++;
     return null;
   }
@@ -605,7 +652,7 @@ export class NodeReferenceRenderer {
   private cacheDecoration(
     nodeId: string,
     displayContext: string,
-    decoration: ComponentDecoration | DecorationResult,
+    decoration: ComponentDecoration,
     element?: HTMLElement
   ): void {
     const key = `${nodeId}:${displayContext}`;
@@ -617,16 +664,35 @@ export class NodeReferenceRenderer {
   }
 
   private renderErrorReference(element: HTMLElement, nodeId: string, message: string): void {
-    element.innerHTML = `
-      <span class="ns-noderef ns-noderef--error" 
-            data-node-id="${nodeId}"
-            role="text"
-            aria-label="Reference error: ${message}">
-        <span class="ns-noderef__icon">⚠️</span>
-        <span class="ns-noderef__title">Reference Error</span>
-      </span>
-    `;
-    element.classList.add('ns-noderef--rendered', 'ns-noderef--error');
+    try {
+      element.innerHTML = `
+        <span class="ns-noderef ns-noderef--error" 
+              data-node-id="${nodeId}"
+              role="text"
+              aria-label="Reference error: ${message}">
+          <span class="ns-noderef__icon">⚠️</span>
+          <span class="ns-noderef__title">Reference Error</span>
+        </span>
+      `;
+
+      // Safely add classes - don't fail if classList operations fail
+      if (element.classList && typeof element.classList.add === 'function') {
+        element.classList.add('ns-noderef--rendered', 'ns-noderef--error');
+      }
+    } catch {
+      // Fallback: set a simple error message if DOM manipulation fails
+      try {
+        if (element && 'innerHTML' in element) {
+          element.innerHTML = 'Reference Error';
+        }
+      } catch (fallbackError) {
+        // Ultimate fallback: do nothing if even basic innerHTML fails
+        console.error(
+          'NodeReferenceRenderer: Could not render error state for element',
+          fallbackError
+        );
+      }
+    }
   }
 
   // ========================================================================
@@ -636,7 +702,8 @@ export class NodeReferenceRenderer {
   private async resolveNode(nodeId: string): Promise<NodeSpaceNode | null> {
     try {
       const uri = this.nodeReferenceService.createNodespaceURI(nodeId);
-      return await this.nodeReferenceService.resolveNodespaceURI(uri);
+      const resolved = await this.nodeReferenceService.resolveNodespaceURI(uri);
+      return resolved;
     } catch (error) {
       console.error('NodeReferenceRenderer: Error resolving node', { error, nodeId });
       return null;
@@ -715,7 +782,10 @@ export class NodeReferenceRenderer {
         _keydownHandler?: EventListener;
       };
       if (cached.element && elementWithHandler._keydownHandler) {
-        cached.element.removeEventListener('keydown', elementWithHandler._keydownHandler);
+        // Check if removeEventListener exists (won't exist on mock elements)
+        if (typeof cached.element.removeEventListener === 'function') {
+          cached.element.removeEventListener('keydown', elementWithHandler._keydownHandler);
+        }
         delete elementWithHandler._keydownHandler;
       }
     }

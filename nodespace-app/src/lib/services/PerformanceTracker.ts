@@ -104,7 +104,7 @@ export class PerformanceTracker {
         failureRate: number;
       }
     > = {};
-    
+
     // Temporary storage for calculations
     const tempBreakdown: Record<
       string,
@@ -114,7 +114,7 @@ export class PerformanceTracker {
         failures: number;
       }
     > = {};
-    
+
     for (const metric of this.metrics) {
       if (!tempBreakdown[metric.componentType]) {
         tempBreakdown[metric.componentType] = {

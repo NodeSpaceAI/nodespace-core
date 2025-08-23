@@ -162,11 +162,11 @@ describe('TextNode + ContentProcessor Integration', () => {
       expect(prepared.originalContent).toBe(contentWithLinks);
     });
 
-    it('should parse wikilinks in AST for future processing', () => {
+    it('should parse wikilinks in AST for future processing', async () => {
       const content = 'Text with [[Linked Content]] here.';
 
       const ast = contentProcessor.parseMarkdown(content);
-      const html = contentProcessor.renderAST(ast);
+      const html = await contentProcessor.renderAST(ast);
 
       expect(ast.metadata.hasWikiLinks).toBe(true);
       expect(html).toContain('ns-wikilink');
@@ -193,11 +193,11 @@ describe('TextNode + ContentProcessor Integration', () => {
       }
     });
 
-    it('should provide consistent HTML output for display', () => {
+    it('should provide consistent HTML output for display', async () => {
       const content = '# Test Header\n\nContent with **bold** text and [[Link]].';
 
       const ast = contentProcessor.parseMarkdown(content);
-      const html = contentProcessor.renderAST(ast);
+      const html = await contentProcessor.renderAST(ast);
 
       // Should produce valid HTML with proper CSS classes
       expect(html).toContain('<h1 class="ns-markdown-heading ns-markdown-h1">Test Header</h1>');

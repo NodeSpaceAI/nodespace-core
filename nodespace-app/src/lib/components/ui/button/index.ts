@@ -1,12 +1,7 @@
 import Root from './button.svelte';
 
 // Import types and variants from separate types file for better TypeScript support
-import {
-  buttonVariants,
-  type ButtonProps,
-  type ButtonSize,
-  type ButtonVariant
-} from './types';
+import { buttonVariants, type ButtonProps, type ButtonSize, type ButtonVariant } from './types';
 
 export {
   Root,

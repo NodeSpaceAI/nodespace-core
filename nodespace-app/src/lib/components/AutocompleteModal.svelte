@@ -15,24 +15,8 @@
   - Accessibility support
 -->
 
-<script lang="ts">
-  import { createEventDispatcher, onMount, onDestroy } from 'svelte';
-  import { cn } from '$lib/utils.js';
-  import Card from '$lib/components/ui/card/card.svelte';
-  import CardContent from '$lib/components/ui/card/card-content.svelte';
-  import CardHeader from '$lib/components/ui/card/card-header.svelte';
-  import CardTitle from '$lib/components/ui/card/card-title.svelte';
-  import Button from '$lib/components/ui/button/button.svelte';
-  import type {
-    NodeReferenceService,
-    AutocompleteResult,
-    NodeSuggestion
-  } from '$lib/services/NodeReferenceService';
-  import type { NodeSpaceNode } from '$lib/services/MockDatabaseService';
-
-  // ============================================================================
-  // Component Props & Types
-  // ============================================================================
+<script context="module" lang="ts">
+  import type { NodeReferenceService } from '$lib/services/NodeReferenceService';
 
   export interface AutocompleteModalProps {
     visible: boolean;
@@ -46,6 +30,22 @@
     content: string;
     nodeType: string;
   }
+</script>
+
+<script lang="ts">
+  import { createEventDispatcher, onMount, onDestroy } from 'svelte';
+  import { cn } from '$lib/utils.js';
+  import Card from '$lib/components/ui/card/card.svelte';
+  import CardContent from '$lib/components/ui/card/card-content.svelte';
+  import CardHeader from '$lib/components/ui/card/card-header.svelte';
+  import CardTitle from '$lib/components/ui/card/card-title.svelte';
+  import Button from '$lib/components/ui/button/button.svelte';
+  import type { AutocompleteResult, NodeSuggestion } from '$lib/services/NodeReferenceService';
+  import type { NodeSpaceNode } from '$lib/services/MockDatabaseService';
+
+  // ============================================================================
+  // Component Props & Types
+  // ============================================================================
 
   // Props
   export let visible: boolean = false;
@@ -364,31 +364,43 @@
     return NODE_TYPE_CONFIG[nodeType as keyof typeof NODE_TYPE_CONFIG] || DEFAULT_NODE_TYPE;
   }
 
-  function highlightMatches(text: string, positions: number[]): string {
-    if (!positions.length) return escapeHtml(text);
+  // ============================================================================
+  // Safe Highlighting System (No XSS Risk)
+  // ============================================================================
 
-    let highlighted = '';
+  interface HighlightSegment {
+    text: string;
+    highlighted: boolean;
+  }
+
+  function parseHighlights(text: string, positions: number[]): HighlightSegment[] {
+    if (!positions.length) {
+      return [{ text, highlighted: false }];
+    }
+
+    const segments: HighlightSegment[] = [];
     let lastIndex = 0;
 
     for (const pos of positions) {
-      highlighted += escapeHtml(text.substring(lastIndex, pos));
-      highlighted += `<mark class="bg-yellow-200 dark:bg-yellow-800 px-0.5 rounded">`;
-      highlighted += escapeHtml(text[pos]);
-      highlighted += '</mark>';
+      // Add non-highlighted text before this position
+      if (pos > lastIndex) {
+        segments.push({ text: text.substring(lastIndex, pos), highlighted: false });
+      }
+
+      // Add highlighted character at this position
+      if (pos < text.length) {
+        segments.push({ text: text[pos], highlighted: true });
+      }
+
       lastIndex = pos + 1;
     }
 
-    highlighted += escapeHtml(text.substring(lastIndex));
-    return highlighted;
-  }
+    // Add remaining non-highlighted text
+    if (lastIndex < text.length) {
+      segments.push({ text: text.substring(lastIndex), highlighted: false });
+    }
 
-  function escapeHtml(text: string): string {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+    return segments;
   }
 
   // ============================================================================
@@ -505,7 +517,16 @@
                     <!-- Node content -->
                     <div class="flex-1 min-w-0">
                       <div class="font-medium text-sm truncate">
-                        {@html highlightMatches(suggestion.title, suggestion.matchPositions)}
+                        <!-- Safe highlighting without XSS risk -->
+                        {#each parseHighlights(suggestion.title, suggestion.matchPositions) as segment}
+                          {#if segment.highlighted}
+                            <mark class="bg-yellow-200 dark:bg-yellow-800 px-0.5 rounded"
+                              >{segment.text}</mark
+                            >
+                          {:else}
+                            {segment.text}
+                          {/if}
+                        {/each}
                       </div>
 
                       {#if suggestion.content && suggestion.content !== suggestion.title}

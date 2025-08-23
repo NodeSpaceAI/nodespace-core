@@ -53,7 +53,7 @@ export async function demonstrateNodespaceIntegration() {
 
   // 3. Render to HTML
   console.log('\n🎨 3. HTML Rendering:');
-  const html = contentProcessor.markdownToDisplay(sampleContent);
+  const html = await contentProcessor.markdownToDisplay(sampleContent);
   console.log('Generated HTML length:', html.length);
 
   // Show a snippet of the nodespace reference rendering
@@ -88,7 +88,9 @@ export async function demonstrateNodespaceIntegration() {
     console.log(`  ${index + 1}. ${event.type} (${event.namespace})`);
     if (event.type === 'backlink:detected') {
       const backlinkEvent = event as BacklinkDetectedEvent;
-      console.log(`     Source: ${backlinkEvent.sourceNodeId} → Target: ${backlinkEvent.targetNodeId}`);
+      console.log(
+        `     Source: ${backlinkEvent.sourceNodeId} → Target: ${backlinkEvent.targetNodeId}`
+      );
       console.log(`     Link Type: ${backlinkEvent.linkType}, Text: "${backlinkEvent.linkText}"`);
     }
   });

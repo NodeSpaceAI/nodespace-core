@@ -6,6 +6,22 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
   plugins: [sveltekit()],
+  
+  // Fix esbuild CSS processing issues
+  esbuild: {
+    keepNames: true,
+    // Use a safer target that doesn't trigger esbuild service crashes
+    target: 'es2020',
+    // Prevent esbuild service crashes during style processing
+    loader: { '.css': 'css' }
+  },
+
+  // CSS configuration for stable processing
+  css: {
+    postcss: './postcss.config.js',
+    // Prevent transformer errors
+    transformer: 'postcss'
+  },
 
   // Common Tauri/Svelte optimization settings
   optimizeDeps: {

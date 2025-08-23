@@ -27,6 +27,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@tailwindcss/postcss": "^4.1.12",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "clsx": "^2.1.1",

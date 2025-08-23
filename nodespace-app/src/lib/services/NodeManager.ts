@@ -142,11 +142,11 @@ export class NodeManager {
    * Render node content as HTML for display
    * Supports formatted content presentation
    */
-  renderNodeAsHTML(nodeId: string): string {
+  async renderNodeAsHTML(nodeId: string): Promise<string> {
     const node = this.findNode(nodeId);
     if (!node) return '';
     const ast = this.contentProcessor.parseMarkdown(node.content);
-    return this.contentProcessor.renderAST(ast);
+    return await this.contentProcessor.renderAST(ast);
   }
 
   /**
@@ -286,7 +286,11 @@ export class NodeManager {
     // Convert legacy nodes recursively
     const convertNode = (legacyNode: unknown, depth: number = 0, parentId?: string): string => {
       // Handle malformed data
-      if (!legacyNode || typeof legacyNode !== 'object' || !(legacyNode as Record<string, unknown>).id) {
+      if (
+        !legacyNode ||
+        typeof legacyNode !== 'object' ||
+        !(legacyNode as Record<string, unknown>).id
+      ) {
         return '';
       }
 
@@ -1008,7 +1012,10 @@ export class NodeManager {
     nodeId: string,
     reason: 'content-changed' | 'status-changed' | 'reference-updated' | 'cache-invalidated'
   ): void {
-    const decorationUpdateEvent: Omit<import('./EventTypes').DecorationUpdateNeededEvent, 'timestamp'> = {
+    const decorationUpdateEvent: Omit<
+      import('./EventTypes').DecorationUpdateNeededEvent,
+      'timestamp'
+    > = {
       type: 'decoration:update-needed',
       namespace: 'interaction',
       source: this.serviceName,
@@ -1026,7 +1033,10 @@ export class NodeManager {
     nodeId: string,
     updateType: 'content' | 'status' | 'hierarchy' | 'deletion'
   ): void {
-    const referencesUpdateEvent: Omit<import('./EventTypes').ReferencesUpdateNeededEvent, 'timestamp'> = {
+    const referencesUpdateEvent: Omit<
+      import('./EventTypes').ReferencesUpdateNeededEvent,
+      'timestamp'
+    > = {
       type: 'references:update-needed',
       namespace: 'coordination',
       source: this.serviceName,
@@ -1073,5 +1083,41 @@ export class NodeManager {
       reason
     };
     eventBus.emit(focusEvent);
+  }
+
+  /**
+   * Add a node to NodeManager from external sources (like NodeReferenceService)
+   * This allows other services to register nodes with NodeManager
+   */
+  public addExternalNode(node: {
+    id: string;
+    content: string;
+    nodeType: string;
+    parentId?: string;
+    metadata?: Record<string, unknown>;
+  }): void {
+    const managerNode: Node = {
+      id: node.id,
+      content: node.content,
+      nodeType: node.nodeType,
+      depth: 0, // Default depth, can be calculated if needed
+      parentId: node.parentId || 'root',
+      children: [],
+      expanded: true,
+      autoFocus: false,
+      inheritHeaderLevel: 0,
+      metadata: node.metadata || {}
+    };
+
+    this._nodes.set(node.id, managerNode);
+
+    // If it's a root node, add to root nodes list
+    if (!node.parentId || node.parentId === 'root') {
+      this._rootNodeIds.push(node.id);
+    }
+
+    // Emit events
+    this.emitNodeStatusChanged(node.id, 'active', 'added by external service');
+    this.events.nodeCreated(node.id);
   }
 }

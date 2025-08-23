@@ -13,10 +13,16 @@
  */
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import type { HierarchicalTextNode } from '$lib/services/mockTextService';
-import { EnhancedNodeManager } from '$lib/services/EnhancedNodeManager';
-import type { NodeManagerEvents } from '$lib/services/NodeManager';
-import { eventBus } from '$lib/services/EventBus';
+import type { HierarchicalTextNode } from '../../lib/services/mockTextService.js';
+import { EnhancedNodeManager } from '../../lib/services/EnhancedNodeManager.js';
+import type { NodeManagerEvents } from '../../lib/services/NodeManager.js';
+import { eventBus } from '../../lib/services/EventBus.js';
+
+// Debug event interface for typed access to event data
+interface DebugEvent {
+  type: string;
+  message?: string;
+}
 
 describe('EnhancedNodeManager', () => {
   let enhancedNodeManager: EnhancedNodeManager;
@@ -187,22 +193,47 @@ describe('EnhancedNodeManager', () => {
 
     test('enhanced operations are faster than manual traversal', () => {
       // Create deeper hierarchy for performance testing
-      const deepHierarchy = {
+      const deepHierarchy: HierarchicalTextNode = {
         id: 'deep-root',
-        type: 'text',
+        title: 'Deep Root',
         content: 'Deep root',
-        children: [] as HierarchicalTextNode[]
+        nodeType: 'text',
+        depth: 0,
+        parentId: null,
+        children: [] as HierarchicalTextNode[],
+        expanded: true,
+        hasChildren: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        metadata: {
+          wordCount: 2,
+          lastEditedBy: 'test',
+          version: 1
+        }
       };
 
       let current = deepHierarchy;
       for (let i = 0; i < 20; i++) {
-        const child = {
+        const child: HierarchicalTextNode = {
           id: `level-${i}`,
-          type: 'text',
+          title: `Level ${i}`,
           content: `Level ${i}`,
-          children: [] as HierarchicalTextNode[]
+          nodeType: 'text',
+          depth: i + 1,
+          parentId: current.id,
+          children: [] as HierarchicalTextNode[],
+          expanded: true,
+          hasChildren: false,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          metadata: {
+            wordCount: 2,
+            lastEditedBy: 'test',
+            version: 1
+          }
         };
         current.children.push(child);
+        current.hasChildren = true;
         current = child;
       }
 
@@ -378,17 +409,17 @@ describe('EnhancedNodeManager', () => {
       const analysis2 = enhancedNodeManager.analyzeNode('document', true); // Use cache
       const secondTime = performance.now() - secondCallTime;
 
-      // Compare analysis content without timestamp
-      const { lastAnalyzed: _lastAnalyzed1, ...analysis1Clean } = analysis1 as Record<
+      // Compare analysis content without timestamp (lastAnalyzed fields are intentionally discarded)
+      const { lastAnalyzed: _lastAnalyzed1, ...analysis1Clean } = analysis1 as unknown as Record<
         string,
         unknown
       >;
-      const { lastAnalyzed: _lastAnalyzed2, ...analysis2Clean } = analysis2 as Record<
+      const { lastAnalyzed: _lastAnalyzed2, ...analysis2Clean } = analysis2 as unknown as Record<
         string,
         unknown
       >;
 
-      // Variables needed for analysis comparison but not directly used
+      // Suppress unused variable warnings - these are intentionally extracted and discarded
       void _lastAnalyzed1;
       void _lastAnalyzed2;
 
@@ -474,11 +505,11 @@ describe('EnhancedNodeManager', () => {
 
       const recentEvents = eventBus.getRecentEvents();
       const debugEvents = recentEvents.filter(
-        (e) => e.type === 'debug:log' && e.message?.includes('Bulk operation')
+        (e) => e.type === 'debug:log' && (e as DebugEvent).message?.includes('Bulk operation')
       );
 
       expect(debugEvents.length).toBeGreaterThan(0);
-      expect(debugEvents[0].message).toContain('2 success');
+      expect((debugEvents[0] as DebugEvent).message).toContain('2 success');
     });
   });
 
@@ -720,16 +751,16 @@ describe('EnhancedNodeManager', () => {
       expect(analysis1).toBeTruthy();
 
       // Emit node updated event
-      eventBus.emit({
-        type: 'node:updated',
-        namespace: 'lifecycle',
+      const nodeUpdatedEvent = {
+        type: 'node:updated' as const,
+        namespace: 'lifecycle' as const,
         source: 'test',
-        timestamp: Date.now(),
         nodeId: 'test-node',
-        updateType: 'content',
+        updateType: 'content' as const,
         previousValue: 'old',
         newValue: 'new'
-      });
+      };
+      eventBus.emit(nodeUpdatedEvent);
 
       // Allow event processing
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -754,14 +785,14 @@ describe('EnhancedNodeManager', () => {
       enhancedNodeManager.analyzeNode('parent');
 
       // Emit hierarchy change event
-      eventBus.emit({
-        type: 'hierarchy:changed',
-        namespace: 'lifecycle',
+      const hierarchyChangedEvent = {
+        type: 'hierarchy:changed' as const,
+        namespace: 'lifecycle' as const,
         source: 'test',
-        timestamp: Date.now(),
         affectedNodes: ['parent', 'child'],
-        changeType: 'move'
-      });
+        changeType: 'move' as const
+      };
+      eventBus.emit(hierarchyChangedEvent);
 
       // Allow event processing
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -779,13 +810,13 @@ describe('EnhancedNodeManager', () => {
       enhancedNodeManager.analyzeNode('to-delete');
 
       // Emit node deleted event
-      eventBus.emit({
-        type: 'node:deleted',
-        namespace: 'lifecycle',
+      const nodeDeletedEvent = {
+        type: 'node:deleted' as const,
+        namespace: 'lifecycle' as const,
         source: 'test',
-        timestamp: Date.now(),
         nodeId: 'to-delete'
-      });
+      };
+      eventBus.emit(nodeDeletedEvent);
 
       // Allow event processing
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -907,7 +938,7 @@ describe('EnhancedNodeManager', () => {
       // Perform various operations
       const globalAnalysis = enhancedNodeManager.analyzeAllNodes();
       const conceptNodes = enhancedNodeManager.searchNodes({ nodeType: 'concept' });
-      enhancedNodeManager.searchNodes({ minWordCount: 5 });
+      enhancedNodeManager.searchNodes({ minWordCount: 5 }); // Search for nodes with many references
 
       for (let i = 0; i < 10; i++) {
         enhancedNodeManager.getEnhancedNodeDepth(`kb-node-${i * 10}`);

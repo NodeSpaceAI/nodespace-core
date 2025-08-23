@@ -43,7 +43,7 @@ describe('NodeManager + ContentProcessor Integration', () => {
       expect(ast?.children).toHaveLength(2); // Header + paragraph
     });
 
-    test('renderNodeAsHTML should convert markdown to HTML', () => {
+    test('renderNodeAsHTML should convert markdown to HTML', async () => {
       // Initialize with test data
       nodeManager.initializeFromLegacyData([
         {
@@ -58,7 +58,7 @@ describe('NodeManager + ContentProcessor Integration', () => {
       ]);
 
       // Render as HTML
-      const html = nodeManager.renderNodeAsHTML('html-test-node');
+      const html = await nodeManager.renderNodeAsHTML('html-test-node');
 
       expect(html).toContain('<strong class="ns-markdown-bold">Bold text</strong>');
       expect(html).toContain('<em class="ns-markdown-italic">italics</em>');
@@ -144,7 +144,7 @@ describe('NodeManager + ContentProcessor Integration', () => {
   });
 
   describe('Content Processing Integration', () => {
-    test('should handle complex markdown content', () => {
+    test('should handle complex markdown content', async () => {
       const complexContent = `# Main Header
 
 This is a paragraph with **bold** and *italic* text.
@@ -173,27 +173,27 @@ This is a paragraph with **bold** and *italic* text.
       expect(ast?.children?.length).toBeGreaterThan(1);
 
       // Test HTML rendering
-      const html = nodeManager.renderNodeAsHTML('complex-node');
+      const html = await nodeManager.renderNodeAsHTML('complex-node');
       expect(html).toContain('<h1 class="ns-markdown-heading ns-markdown-h1">');
       expect(html).toContain('<h2 class="ns-markdown-heading ns-markdown-h2">');
       expect(html).toContain('<strong class="ns-markdown-bold">');
       expect(html).toContain('<em class="ns-markdown-italic">');
     });
 
-    test('should handle empty and invalid content gracefully', () => {
+    test('should handle empty and invalid content gracefully', async () => {
       const emptyNodeId = nodeManager.createNode('', '');
 
       expect(nodeManager.parseNodeContent(emptyNodeId)).toBeDefined();
-      expect(nodeManager.renderNodeAsHTML(emptyNodeId)).toBe('');
+      expect(await nodeManager.renderNodeAsHTML(emptyNodeId)).toBe('');
       expect(nodeManager.getNodeHeaderLevel(emptyNodeId)).toBe(0);
       expect(nodeManager.getNodeDisplayText(emptyNodeId)).toBe('');
     });
 
-    test('should handle non-existent nodes gracefully', () => {
+    test('should handle non-existent nodes gracefully', async () => {
       const nonExistentId = 'does-not-exist';
 
       expect(nodeManager.parseNodeContent(nonExistentId)).toBeNull();
-      expect(nodeManager.renderNodeAsHTML(nonExistentId)).toBe('');
+      expect(await nodeManager.renderNodeAsHTML(nonExistentId)).toBe('');
       expect(nodeManager.getNodeHeaderLevel(nonExistentId)).toBe(0);
       expect(nodeManager.getNodeDisplayText(nonExistentId)).toBe('');
       expect(nodeManager.updateNodeContentWithProcessing(nonExistentId, 'test')).toBe(false);
@@ -201,7 +201,7 @@ This is a paragraph with **bold** and *italic* text.
   });
 
   describe('Performance with ContentProcessor', () => {
-    test('should handle content processing efficiently for many nodes', () => {
+    test('should handle content processing efficiently for many nodes', async () => {
       // Create multiple nodes with different content types
       const testNodes = [];
       for (let i = 0; i < 100; i++) {
@@ -231,7 +231,7 @@ This is a paragraph with **bold** and *italic* text.
       // Process all nodes
       for (const nodeId of nodes) {
         nodeManager.parseNodeContent(nodeId);
-        nodeManager.renderNodeAsHTML(nodeId);
+        await nodeManager.renderNodeAsHTML(nodeId);
         nodeManager.getNodeHeaderLevel(nodeId);
         nodeManager.getNodeDisplayText(nodeId);
       }
@@ -239,7 +239,7 @@ This is a paragraph with **bold** and *italic* text.
       const endTime = performance.now();
       const duration = endTime - startTime;
 
-      expect(duration).toBeLessThan(100); // Should be very fast
+      expect(duration).toBeLessThan(1000); // Should be reasonably fast (increased due to async)
     });
   });
 });

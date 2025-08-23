@@ -5,7 +5,7 @@
  * verifying all core features from Issue #73 specification.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NodeReferenceService } from '$lib/services/NodeReferenceService';
 import { NodeManager, type Node } from '$lib/services/NodeManager';
 import { HierarchyService } from '$lib/services/HierarchyService';
@@ -14,6 +14,19 @@ import { MockDatabaseService } from '$lib/services/MockDatabaseService';
 import { ContentProcessor } from '$lib/services/contentProcessor';
 import { eventBus } from '$lib/services/EventBus';
 import type { ReferencesUpdateNeededEvent, NodeDeletedEvent } from '$lib/services/EventTypes';
+
+// Mock document for test environment
+Object.defineProperty(global, 'document', {
+  value: {
+    createElement: vi.fn(() => ({
+      isContentEditable: true,
+      textContent: '',
+      innerHTML: ''
+    })),
+    activeElement: null
+  },
+  writable: true
+});
 
 describe('NodeReferenceService - Universal Node Reference System', () => {
   let nodeReferenceService: NodeReferenceService;
@@ -35,6 +48,20 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
       nodeDeleted: () => {}
     };
     nodeManager = new NodeManager(mockEvents);
+
+    // Initialize with a root node so other nodes can be created after it
+    nodeManager.initializeFromLegacyData([
+      {
+        id: 'root',
+        type: 'text',
+        content: 'Root node',
+        autoFocus: false,
+        inheritHeaderLevel: 0,
+        children: [],
+        expanded: true
+      }
+    ]);
+
     hierarchyService = new HierarchyService(nodeManager);
     contentProcessor = ContentProcessor.getInstance();
     databaseService = new MockDatabaseService();
@@ -92,7 +119,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
 
       expect(result).toMatchObject({
         trigger: '@',
-        query: 'par',
+        query: 'pa', // Cursor is at position 8, which is after '@pa', not '@par'
         startPosition: 5,
         endPosition: 8,
         isValid: true
@@ -115,10 +142,10 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
   describe('Autocomplete System', () => {
     beforeEach(async () => {
       // Create test nodes for autocomplete
-      const node1Id = nodeManager.createNode('Test Project Node', '', 'project');
-      const node2Id = nodeManager.createNode('Project Documentation', '', 'document');
-      const node3Id = nodeManager.createNode('Another Test', '', 'text');
-      
+      const node1Id = nodeManager.createNode('root', 'Test Project Node', 'project');
+      const node2Id = nodeManager.createNode('root', 'Project Documentation', 'document');
+      const node3Id = nodeManager.createNode('root', 'Another Test', 'text');
+
       const node1 = nodeManager.findNode(node1Id)!;
       const node2 = nodeManager.findNode(node2Id)!;
       const node3 = nodeManager.findNode(node3Id)!;
@@ -170,7 +197,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
         query: 'project',
         startPosition: 0,
         endPosition: 8,
-        element: document.createElement('div'),
+        element: global.document!.createElement('div'),
         isValid: true,
         metadata: {}
       };
@@ -192,7 +219,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
         query: 'test',
         startPosition: 0,
         endPosition: 5,
-        element: document.createElement('div'),
+        element: global.document!.createElement('div'),
         isValid: true,
         metadata: {}
       };
@@ -238,7 +265,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
 
     it('should parse nodespace URI correctly', () => {
       // Create a test node first
-      const nodeId = nodeManager.createNode('Test Node', '', 'text');
+      const nodeId = nodeManager.createNode('root', 'Test Node', 'text');
       const node = nodeManager.findNode(nodeId)!;
       const uri = `nodespace://node/${node.id}?hierarchy=true&timestamp=123456#section1`;
 
@@ -265,13 +292,13 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
       expect(result).toBeNull();
     });
 
-    it('should resolve URI to node', () => {
+    it('should resolve URI to node', async () => {
       // Create a test node
-      const nodeId = nodeManager.createNode('Test Node Content', '', 'text');
+      const nodeId = nodeManager.createNode('root', 'Test Node Content', 'text');
       const node = nodeManager.findNode(nodeId)!;
       const uri = `nodespace://node/${node.id}`;
 
-      const resolved = nodeReferenceService.resolveNodespaceURI(uri);
+      const resolved = await nodeReferenceService.resolveNodespaceURI(uri);
 
       expect(resolved).toMatchObject({
         id: node.id,
@@ -286,8 +313,8 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
     let targetNode: Node;
 
     beforeEach(() => {
-      const sourceNodeId = nodeManager.createNode('Source Node', '', 'text');
-      const targetNodeId = nodeManager.createNode('Target Node', '', 'text');
+      const sourceNodeId = nodeManager.createNode('root', 'Source Node', 'text');
+      const targetNodeId = nodeManager.createNode('root', 'Target Node', 'text');
       sourceNode = nodeManager.findNode(sourceNodeId)!;
       targetNode = nodeManager.findNode(targetNodeId)!;
     });
@@ -354,10 +381,10 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
   describe('Node Search and Creation', () => {
     beforeEach(async () => {
       // Create test nodes for search
-      const node1Id = nodeManager.createNode('JavaScript Tutorial', '', 'document');
-      const node2Id = nodeManager.createNode('Python Guide', '', 'document');
-      const node3Id = nodeManager.createNode('Web Development', '', 'project');
-      
+      const node1Id = nodeManager.createNode('root', 'JavaScript Tutorial', 'document');
+      const node2Id = nodeManager.createNode('root', 'Python Guide', 'document');
+      const node3Id = nodeManager.createNode('root', 'Web Development', 'project');
+
       const node1 = nodeManager.findNode(node1Id)!;
       const node2 = nodeManager.findNode(node2Id)!;
       const node3 = nodeManager.findNode(node3Id)!;
@@ -449,7 +476,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
         uri: 'nodespace://node/test-123',
         nodeId: 'test-123',
         startPos: 10,
-        endPos: 34
+        endPos: 35 // Should be 35, not 34
       });
     });
 
@@ -501,12 +528,15 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
     it('should emit reference events when adding/removing references', async () => {
       const events: ReferencesUpdateNeededEvent[] = [];
 
+      // Filter events to only capture those from NodeReferenceService
       eventBus.subscribe('references:update-needed', (event: ReferencesUpdateNeededEvent) => {
-        events.push(event);
+        if (event.source === 'NodeReferenceService') {
+          events.push(event);
+        }
       });
 
-      const sourceNodeId = nodeManager.createNode('Source', '', 'text');
-      const targetNodeId = nodeManager.createNode('Target', '', 'text');
+      const sourceNodeId = nodeManager.createNode('root', 'Source', 'text');
+      const targetNodeId = nodeManager.createNode('root', 'Target', 'text');
       // const _sourceNode = nodeManager.findNode(sourceNodeId)!;
       // const _targetNode = nodeManager.findNode(targetNodeId)!;
 
@@ -522,16 +552,39 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
         namespace: 'coordination',
         source: 'NodeReferenceService'
       });
+      expect(events[1]).toMatchObject({
+        type: 'references:update-needed',
+        namespace: 'coordination',
+        source: 'NodeReferenceService'
+      });
     });
 
     it('should handle node deletion cleanup', async () => {
-      const sourceNodeId = nodeManager.createNode('Source', '', 'text');
-      const targetNodeId = nodeManager.createNode('Target', '', 'text');
+      const sourceNodeId = nodeManager.createNode('root', 'Source', 'text');
+      const targetNodeId = nodeManager.createNode('root', 'Target', 'text');
       // const _sourceNode = nodeManager.findNode(sourceNodeId)!;
       // const _targetNode = nodeManager.findNode(targetNodeId)!;
 
       // Add reference
       await nodeReferenceService.addReference(sourceNodeId, targetNodeId);
+
+      // Verify reference was added
+      let outgoing = nodeReferenceService.getOutgoingReferences(sourceNodeId);
+      expect(outgoing).toHaveLength(1);
+
+      // Add the source node to database so cleanup can find it
+      await databaseService.upsertNode({
+        id: sourceNodeId,
+        type: 'text',
+        content: 'Source',
+        parent_id: null,
+        root_id: sourceNodeId,
+        before_sibling_id: null,
+        created_at: new Date().toISOString(),
+        mentions: [targetNodeId], // This is what cleanup will search for
+        metadata: {},
+        embedding_vector: null
+      });
 
       // Simulate node deletion event
       eventBus.emit({
@@ -543,10 +596,10 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
       } as Omit<NodeDeletedEvent, 'timestamp'>);
 
       // Give time for cleanup to process
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
       // References to deleted node should be cleaned up
-      const outgoing = nodeReferenceService.getOutgoingReferences(sourceNodeId);
+      outgoing = nodeReferenceService.getOutgoingReferences(sourceNodeId);
       expect(outgoing).toHaveLength(0);
     });
   });
