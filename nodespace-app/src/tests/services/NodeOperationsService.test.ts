@@ -1,6 +1,6 @@
 /**
  * NodeOperationsService Test Suite
- *
+ * 
  * Comprehensive tests for NodeOperationsService focusing on:
  * - Upsert operations with type-segmented metadata preservation
  * - Mentions bidirectionality and consistency
@@ -11,18 +11,12 @@
  */
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { NodeManager, type NodeManagerEvents } from '../../lib/services/NodeManager.js';
-import { HierarchyService } from '../../lib/services/HierarchyService.js';
-import { NodeOperationsService } from '../../lib/services/NodeOperationsService.js';
-import { ContentProcessor } from '../../lib/services/contentProcessor.js';
-import { eventBus } from '../../lib/services/EventBus.js';
-import type { NodeSpaceNode } from '../../lib/services/MockDatabaseService.js';
-
-// Wiki link interface for content analysis
-interface WikiLink {
-  target: string;
-  displayText?: string;
-}
+import { NodeManager, type NodeManagerEvents } from '$lib/services/NodeManager';
+import { HierarchyService } from '$lib/services/HierarchyService';
+import { NodeOperationsService } from '$lib/services/NodeOperationsService';
+import { ContentProcessor } from '$lib/services/ContentProcessor';
+import { eventBus } from '$lib/services/EventBus';
+import type { NodeSpaceNode } from '$lib/services/MockDatabaseService';
 
 describe('NodeOperationsService', () => {
   let nodeManager: NodeManager;
@@ -134,7 +128,7 @@ describe('NodeOperationsService', () => {
       expect(result.content).toBe('# Header with [[link]] and **bold** text');
       expect(result.headerLevel).toBe(1);
       expect(result.wikiLinks).toHaveLength(1);
-      expect((result.wikiLinks[0] as WikiLink).target).toBe('link');
+      expect(result.wikiLinks[0].target).toBe('link');
       expect(result.hasFormatting).toBe(true);
       expect(result.wordCount).toBe(7); // "Header", "with", "link", "and", "bold", "text" = 6 words + "link" in wikilink = 7
       expect(result.ast).toBeDefined();
@@ -162,9 +156,9 @@ const x = 42;
       });
 
       expect(result.wikiLinks).toHaveLength(2);
-      expect((result.wikiLinks[0] as WikiLink).target).toBe('first-link');
-      expect((result.wikiLinks[1] as WikiLink).target).toBe('second-link');
-      expect((result.wikiLinks[1] as WikiLink).displayText).toBe('Display Text');
+      expect(result.wikiLinks[0].target).toBe('first-link');
+      expect(result.wikiLinks[1].target).toBe('second-link');
+      expect(result.wikiLinks[1].displayText).toBe('Display Text');
       expect(result.headerLevel).toBe(1); // First header level
       expect(result.hasFormatting).toBe(true);
       expect(result.wordCount).toBeGreaterThan(10);
@@ -260,10 +254,8 @@ const x = 42;
     test('handleSiblingPositioning handles empty parent', async () => {
       // Create a node with no children
       nodeManager.createNode('root2', 'Empty parent');
-      const emptyParent = nodeManager.findNode(
-        nodeManager.rootNodeIds[nodeManager.rootNodeIds.length - 1]
-      );
-
+      const emptyParent = nodeManager.findNode(nodeManager.rootNodeIds[nodeManager.rootNodeIds.length - 1]);
+      
       const result = await nodeOperationsService.handleSiblingPositioning(
         undefined,
         emptyParent?.id,
@@ -306,8 +298,8 @@ const x = 42;
 
       // Verify bidirectional consistency through events
       const emittedEvents = eventBus.getRecentEvents();
-      const backlinkEvents = emittedEvents.filter((e) => e.type === 'backlink:detected');
-
+      const backlinkEvents = emittedEvents.filter(e => e.type === 'backlink:detected');
+      
       expect(backlinkEvents).toHaveLength(1);
       expect(backlinkEvents[0]).toMatchObject({
         sourceNodeId: 'child1',
@@ -319,7 +311,7 @@ const x = 42;
     test('updateNodeMentions handles mention removal', async () => {
       // First, add mentions
       await nodeOperationsService.updateNodeMentions('child1', ['root2', 'root1']);
-
+      
       // Then remove one
       await nodeOperationsService.updateNodeMentions('child1', ['root2']);
 
@@ -328,14 +320,14 @@ const x = 42;
 
       // Should emit references update event for removed mention
       const recentEvents = eventBus.getRecentEvents();
-      const updateEvents = recentEvents.filter((e) => e.type === 'references:update-needed');
+      const updateEvents = recentEvents.filter(e => e.type === 'references:update-needed');
       expect(updateEvents.length).toBeGreaterThan(0);
     });
 
     test('updateNodeMentions handles empty mentions', async () => {
       // Set initial mentions
       await nodeOperationsService.updateNodeMentions('child1', ['root2']);
-
+      
       // Clear all mentions
       await nodeOperationsService.updateNodeMentions('child1', []);
 
@@ -402,8 +394,8 @@ const x = 42;
       expect(result.content).toBe('Updated content');
       expect(result.metadata).toMatchObject({
         originalProp: 'original', // Preserved
-        newProp: 'new', // Added
-        shared: 'updated' // Updated
+        newProp: 'new',          // Added
+        shared: 'updated'        // Updated
       });
     });
 
@@ -425,17 +417,13 @@ const x = 42;
     test('upsertNode preserves hierarchy when requested', async () => {
       // Create initial node
       const nodeId = nodeManager.createNode('child1', 'Test content');
-
+      
       // Update with hierarchy preservation
-      const result = await nodeOperationsService.upsertNode(
-        nodeId,
-        {
-          content: 'Updated content'
-        },
-        {
-          preserveHierarchy: true
-        }
-      );
+      const result = await nodeOperationsService.upsertNode(nodeId, {
+        content: 'Updated content'
+      }, {
+        preserveHierarchy: true
+      });
 
       expect(result.parent_id).toBe('root1');
     });
@@ -488,14 +476,13 @@ const x = 42;
       });
 
       const events = eventBus.getRecentEvents();
-      const debugEvents = events.filter((e) => e.type === 'debug:log');
-
+      const debugEvents = events.filter(e => e.type === 'debug:log');
+      
       expect(debugEvents.length).toBeGreaterThan(0);
-      expect(
-        debugEvents.some(
-          (e) => e.message?.includes('Node operation') && e.message?.includes('upsert')
-        )
-      ).toBe(true);
+      expect(debugEvents.some(e => 
+        e.message?.includes('Node operation') && 
+        e.message?.includes('upsert')
+      )).toBe(true);
     });
 
     test('emits events during mentions update', async () => {
@@ -508,9 +495,9 @@ const x = 42;
       await nodeOperationsService.updateNodeMentions('child1', ['root2']);
 
       const events = eventBus.getRecentEvents();
-      const referencesEvents = events.filter((e) => e.type === 'references:update-needed');
-      const backlinkEvents = events.filter((e) => e.type === 'backlink:detected');
-
+      const referencesEvents = events.filter(e => e.type === 'references:update-needed');
+      const backlinkEvents = events.filter(e => e.type === 'backlink:detected');
+      
       expect(referencesEvents.length + backlinkEvents.length).toBeGreaterThan(0);
     });
 
@@ -523,19 +510,19 @@ const x = 42;
       }
 
       // Simulate content update that should trigger mention processing
-      const nodeUpdatedEvent = {
-        type: 'node:updated' as const,
-        namespace: 'lifecycle' as const,
+      eventBus.emit({
+        type: 'node:updated',
+        namespace: 'lifecycle',
         source: 'test',
+        timestamp: Date.now(),
         nodeId: nodeId,
-        updateType: 'content' as const,
+        updateType: 'content',
         previousValue: 'old content',
         newValue: 'Test [[link]] content'
-      };
-      eventBus.emit(nodeUpdatedEvent);
+      });
 
       // Allow event processing
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise(resolve => setTimeout(resolve, 10));
 
       // The service should have processed the content for mentions
       // This is verified by the service not throwing errors during processing
@@ -550,10 +537,7 @@ const x = 42;
   describe('Integration Tests', () => {
     test('handles complex workflow with existing nodes', async () => {
       // Step 1: Create nodes in NodeManager first
-      const docId = nodeManager.createNode(
-        'root1',
-        '# My Document\n\nThis references [[note1]] and [[note2]].'
-      );
+      const docId = nodeManager.createNode('root1', '# My Document\n\nThis references [[note1]] and [[note2]].');
       const note1Id = nodeManager.createNode('root1', 'First note content');
       const note2Id = nodeManager.createNode('root1', 'Second note content');
 
@@ -589,7 +573,7 @@ const x = 42;
       // Add mentions properties
       const node1 = nodeManager.findNode(node1Id);
       const node2 = nodeManager.findNode(node2Id);
-
+      
       if (node1) node1.mentions = [];
       if (node2) node2.mentions = [];
 
@@ -597,14 +581,14 @@ const x = 42;
       await nodeOperationsService.updateNodeMentions(node1Id, [node2Id]);
       await nodeOperationsService.updateNodeMentions(node2Id, [node1Id]);
 
-      // Test upsert functionality
+      // Test upsert functionality  
       const result = await nodeOperationsService.upsertNode(node1Id, {
         metadata: { enhanced: true, processed: Date.now() }
       });
 
       expect(result.content).toBe('First node'); // Content preserved
       expect(result.metadata).toHaveProperty('enhanced');
-
+      
       // Check that mentions were processed correctly
       expect(node1?.mentions || []).toEqual([node2Id]);
       expect(node2?.mentions || []).toEqual([node1Id]);

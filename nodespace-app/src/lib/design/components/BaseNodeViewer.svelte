@@ -427,6 +427,18 @@
   }
 
   // Helper functions removed - NodeManager handles all node operations
+
+  // Debug visible nodes to identify duplicate key issue
+  $: {
+    const visibleNodes = nodeManager.visibleNodes;
+    const nodeIds = visibleNodes.map(n => n.id);
+    const duplicates = nodeIds.filter((id, index) => nodeIds.indexOf(id) !== index);
+    if (duplicates.length > 0) {
+      console.error('DUPLICATE NODE IDS DETECTED:', duplicates);
+      console.error('ALL NODE IDS:', nodeIds);
+      console.error('VISIBLE NODES:', visibleNodes);
+    }
+  }
 </script>
 
 <div class="node-viewer">

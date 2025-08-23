@@ -8,6 +8,7 @@
 <script lang="ts">
   import { createEventDispatcher, onDestroy } from 'svelte';
   import Icon, { type IconName } from '$lib/design/icons';
+  
   import {
     ContentEditableController,
     type ContentEditableEvents
@@ -16,6 +17,8 @@
   import type { NodeReferenceService, TriggerContext } from '$lib/services/NodeReferenceService';
   import type { NodeSpaceNode } from '$lib/services/MockDatabaseService';
   import type { NewNodeRequest } from '$lib/components/AutocompleteModal.svelte';
+  import MockTextElement from './MockTextElement.svelte';
+  import { findCharacterFromClickFast, isClickWithinTextBounds } from './CursorPositioning.js';
 
   // Props (Svelte 5 runes syntax)
   let {
@@ -46,6 +49,9 @@
   let currentQuery = $state('');
   // eslint-disable-next-line no-unused-vars
   let currentTriggerContext = $state<TriggerContext | null>(null); // Used in trigger event handlers
+
+  // Mock text element for cursor positioning
+  let mockTextElement: MockTextElement;
 
   // Event dispatcher
   const dispatch = createEventDispatcher<{
@@ -113,6 +119,9 @@
     if (element && !controller) {
       controller = new ContentEditableController(element, nodeId, controllerEvents);
       controller.initialize(content, autoFocus);
+      
+      // Add click event listener for cursor positioning
+      element.addEventListener('click', handleClick);
     }
   });
 
@@ -130,9 +139,36 @@
     }
   });
 
+  // Update mock element width when content element dimensions change
+  let mockElementWidth = $state(0);
+  $effect(() => {
+    if (contentEditableElement) {
+      const updateWidth = () => {
+        mockElementWidth = contentEditableElement.offsetWidth;
+      };
+      
+      // Update immediately
+      updateWidth();
+      
+      // Set up resize observer for dynamic updates (check if supported)
+      if (typeof (globalThis as any).ResizeObserver !== 'undefined') {
+        const ResizeObserverClass = (globalThis as any).ResizeObserver;
+        const resizeObserver = new ResizeObserverClass(updateWidth);
+        resizeObserver.observe(contentEditableElement);
+        
+        return () => {
+          resizeObserver.disconnect();
+        };
+      }
+    }
+  });
+
   onDestroy(() => {
     if (controller) {
       controller.destroy();
+    }
+    if (contentEditableElement) {
+      contentEditableElement.removeEventListener('click', handleClick);
     }
   });
 
@@ -194,6 +230,46 @@
     return firstLine.substring(0, 50) || 'Untitled';
   }
 
+  // Click handler for cursor positioning
+  function handleClick(event: MouseEvent) {
+    if (!contentEditableElement || !controller || !mockTextElement) {
+      return;
+    }
+
+    // Get the mock element
+    const mockElement = mockTextElement.getElement();
+    if (!mockElement) {
+      return;
+    }
+
+    // Get click coordinates
+    const clickX = event.clientX;
+    const clickY = event.clientY;
+
+    // Get editable element bounds
+    const editableRect = contentEditableElement.getBoundingClientRect();
+
+    // Check if click is within reasonable bounds
+    if (!isClickWithinTextBounds(clickX, clickY, editableRect)) {
+      return;
+    }
+
+    // Find character position using the cursor positioning utility
+    const positionResult = findCharacterFromClickFast(mockElement, clickX, clickY, editableRect);
+
+    // Set cursor position using the controller
+    if (controller && positionResult.index >= 0) {
+      // Focus the element first
+      controller.focus();
+      
+      // Use a timeout to ensure the element is focused before setting cursor
+      setTimeout(() => {
+        if (controller) {
+          controller.setCursorPosition(positionResult.index);
+        }
+      }, 0);
+    }
+  }
   // Compute CSS classes
   const containerClasses = $derived(
     [
@@ -226,6 +302,18 @@
     role="textbox"
     tabindex="0"
   ></div>
+
+  <!-- Hidden mock text element for cursor positioning -->
+  <MockTextElement
+    bind:this={mockTextElement}
+    content={content}
+    fontFamily="inherit"
+    fontSize={headerLevel > 0 ? `${headerLevel === 1 ? '2' : headerLevel === 2 ? '1.5' : headerLevel === 3 ? '1.25' : headerLevel === 4 ? '1.125' : '1'}rem` : '1rem'}
+    fontWeight={headerLevel > 0 ? 'bold' : 'normal'}
+    lineHeight={headerLevel > 0 ? (headerLevel === 1 ? '1.2' : headerLevel === 2 ? '1.3' : '1.4') : '1.6'}
+    width={mockElementWidth}
+    multiline={true}
+  />
 </div>
 
 <!-- Autocomplete Modal -->

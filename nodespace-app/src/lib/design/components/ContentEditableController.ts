@@ -139,6 +139,13 @@ export class ContentEditableController {
   }
 
   /**
+   * Set cursor position to a specific character index
+   */
+  public setCursorPosition(characterIndex: number): void {
+    this.restoreCursorPosition(characterIndex);
+  }
+
+  /**
    * Cleanup controller when component is destroyed
    */
   public destroy(): void {

@@ -1,13 +1,13 @@
 /**
  * MockDatabaseService - Database Schema Implementation for Parallel Development
- *
+ * 
  * Mock database implementation for parallel development that implements the exact
  * NodeSpaceNode schema. Provides in-memory storage with Map-based collections
  * and supports mentions array and sibling ordering queries.
- *
+ * 
  * This service mirrors the future LanceDB interface to enable independent development
  * while the database integration is being implemented.
- *
+ * 
  * Key Features:
  * - Exact NodeSpaceNode schema implementation
  * - In-memory storage with Map-based collections
@@ -27,9 +27,9 @@ export interface NodeSpaceNode {
   content: string;
   parent_id: string | null;
   root_id: string;
-  before_sibling_id: string | null; // Single-pointer sibling ordering
+  before_sibling_id: string | null;  // Single-pointer sibling ordering
   created_at: string;
-  mentions: string[]; // Array of node IDs this node references (BACKLINK SYSTEM)
+  mentions: string[];  // Array of node IDs this node references (BACKLINK SYSTEM)
   metadata: Record<string, unknown>; // JSON for type-specific properties
   embedding_vector: Float32Array | null; // For Phase 3
 }
@@ -85,7 +85,7 @@ export class MockDatabaseService {
 
     // Store the node
     this.nodes.set(node.id, { ...node });
-
+    
     // Update indexes
     this.updateIndexesOnInsert(node);
   }
@@ -118,28 +118,6 @@ export class MockDatabaseService {
     this.updateIndexesOnInsert(updatedNode);
 
     return { ...updatedNode };
-  }
-
-  /**
-   * Upsert node (insert or update)
-   */
-  async upsertNode(node: NodeSpaceNode): Promise<NodeSpaceNode> {
-    // Validate node schema
-    this.validateNode(node);
-
-    const existingNode = this.nodes.get(node.id);
-    if (existingNode) {
-      // Remove old indexes
-      this.updateIndexesOnDelete(existingNode);
-    }
-
-    // Insert/update the node
-    this.nodes.set(node.id, { ...node });
-
-    // Add new indexes
-    this.updateIndexesOnInsert(node);
-
-    return { ...node };
   }
 
   /**
@@ -188,25 +166,29 @@ export class MockDatabaseService {
 
       // Apply filters
       if (query.type) {
-        results = results.filter((node) => node.type === query.type);
+        results = results.filter(node => node.type === query.type);
       }
 
       if (query.parent_id !== undefined) {
-        results = results.filter((node) => node.parent_id === query.parent_id);
+        results = results.filter(node => node.parent_id === query.parent_id);
       }
 
       if (query.root_id) {
-        results = results.filter((node) => node.root_id === query.root_id);
+        results = results.filter(node => node.root_id === query.root_id);
       }
 
       if (query.content_contains) {
         const searchTerm = query.content_contains.toLowerCase();
-        results = results.filter((node) => node.content.toLowerCase().includes(searchTerm));
+        results = results.filter(node => 
+          node.content.toLowerCase().includes(searchTerm)
+        );
       }
 
       if (query.mentioned_by) {
         // Find nodes that mention the specified node
-        results = results.filter((node) => node.mentions.includes(query.mentioned_by!));
+        results = results.filter(node => 
+          node.mentions.includes(query.mentioned_by!)
+        );
       }
 
       if (query.mentions) {
@@ -214,7 +196,7 @@ export class MockDatabaseService {
         const sourceNode = this.nodes.get(query.mentions);
         if (sourceNode) {
           const mentionedIds = new Set(sourceNode.mentions);
-          results = results.filter((node) => mentionedIds.has(node.id));
+          results = results.filter(node => mentionedIds.has(node.id));
         } else {
           results = [];
         }
@@ -225,13 +207,13 @@ export class MockDatabaseService {
     if (query.offset) {
       results = results.slice(query.offset);
     }
-
+    
     if (query.limit) {
       results = results.slice(0, query.limit);
     }
 
     // Return deep copies to prevent external mutation
-    return results.map((node) => ({ ...node }));
+    return results.map(node => ({ ...node }));
   }
 
   // ========================================================================
@@ -283,7 +265,7 @@ export class MockDatabaseService {
     while (toProcess.length > 0) {
       const currentId = toProcess.shift()!;
       const children = await this.getChildren(currentId);
-
+      
       for (const child of children) {
         descendants.push(child);
         toProcess.push(child.id);
@@ -340,7 +322,7 @@ export class MockDatabaseService {
       throw new Error(`Node ${nodeId} not found`);
     }
 
-    // The old mentions will be cleaned up automatically by updateNode
+    // Update node mentions (no cleanup needed for mock implementation)
 
     // Update the node
     await this.updateNode(nodeId, { mentions: [...newMentions] });
@@ -394,7 +376,7 @@ export class MockDatabaseService {
    * Export all data (for debugging/backup)
    */
   exportData(): NodeSpaceNode[] {
-    return Array.from(this.nodes.values()).map((node) => ({ ...node }));
+    return Array.from(this.nodes.values()).map(node => ({ ...node }));
   }
 
   /**
@@ -402,7 +384,7 @@ export class MockDatabaseService {
    */
   async importData(nodes: NodeSpaceNode[]): Promise<void> {
     await this.clear();
-
+    
     for (const node of nodes) {
       await this.insertNode(node);
     }
@@ -419,35 +401,35 @@ export class MockDatabaseService {
     if (!node.id || typeof node.id !== 'string') {
       throw new Error('Node ID must be a non-empty string');
     }
-
+    
     if (!node.type || typeof node.type !== 'string') {
       throw new Error('Node type must be a non-empty string');
     }
-
+    
     if (typeof node.content !== 'string') {
       throw new Error('Node content must be a string');
     }
-
+    
     if (node.parent_id !== null && typeof node.parent_id !== 'string') {
       throw new Error('Node parent_id must be string or null');
     }
-
+    
     if (!node.root_id || typeof node.root_id !== 'string') {
       throw new Error('Node root_id must be a non-empty string');
     }
-
+    
     if (node.before_sibling_id !== null && typeof node.before_sibling_id !== 'string') {
       throw new Error('Node before_sibling_id must be string or null');
     }
-
+    
     if (!Array.isArray(node.mentions)) {
       throw new Error('Node mentions must be an array');
     }
-
+    
     if (typeof node.metadata !== 'object' || node.metadata === null) {
       throw new Error('Node metadata must be an object');
     }
-
+    
     if (!node.created_at || typeof node.created_at !== 'string') {
       throw new Error('Node created_at must be a non-empty string');
     }
@@ -533,7 +515,7 @@ export class MockDatabaseService {
     for (const backlinkNodeId of backlinks) {
       const backlinkNode = this.nodes.get(backlinkNodeId);
       if (backlinkNode) {
-        const updatedMentions = backlinkNode.mentions.filter((id) => id !== node.id);
+        const updatedMentions = backlinkNode.mentions.filter(id => id !== node.id);
         // Note: This creates a recursive update, but it's necessary for consistency
         this.updateNode(backlinkNodeId, { mentions: updatedMentions });
       }
@@ -551,7 +533,7 @@ export class MockDatabaseService {
     // Create a map for quick lookup
     const siblingMap = new Map<string, NodeSpaceNode>();
     const hasNext = new Set<string>(); // Nodes that have a node after them
-
+    
     for (const sibling of siblings) {
       siblingMap.set(sibling.id, sibling);
       if (sibling.before_sibling_id && siblingMap.has(sibling.before_sibling_id)) {
@@ -560,10 +542,8 @@ export class MockDatabaseService {
     }
 
     // Find the first node (one that is not after any other node)
-    const firstNodes = siblings.filter(
-      (s) => !s.before_sibling_id || !siblingMap.has(s.before_sibling_id)
-    );
-
+    const firstNodes = siblings.filter(s => !s.before_sibling_id || !siblingMap.has(s.before_sibling_id));
+    
     if (firstNodes.length === 0) {
       // Circular reference or broken chain, return original order
       return siblings;
@@ -573,17 +553,17 @@ export class MockDatabaseService {
     const ordered: NodeSpaceNode[] = [];
     const processed = new Set<string>();
     let current: NodeSpaceNode | null = firstNodes[0]; // Take first valid starting point
-
+    
     while (current && !processed.has(current.id)) {
       ordered.push(current);
       processed.add(current.id);
-
+      
       // Find next node (one that comes after current)
-      const next = siblings.find(
-        (s) => s.before_sibling_id === current!.id && !processed.has(s.id)
+      const next = siblings.find(s => 
+        s.before_sibling_id === current!.id && !processed.has(s.id)
       );
       current = next || null;
-
+      
       // Prevent infinite loops
       if (ordered.length >= siblings.length) {
         break;
@@ -611,9 +591,7 @@ export class MockDatabaseService {
     for (const mentionedId of node.mentions) {
       const backlinks = this.mentionsIndex.get(mentionedId) || new Set();
       if (!backlinks.has(nodeId)) {
-        console.error(
-          `Mentions inconsistency: ${nodeId} mentions ${mentionedId} but backlink missing`
-        );
+        console.error(`Mentions inconsistency: ${nodeId} mentions ${mentionedId} but backlink missing`);
         return false;
       }
     }
