@@ -113,14 +113,13 @@ export function calculateCursorPosition(
   currentDepth: number,
   targetDepth: number
 ): number {
-  const result = calculateVisualCursorPosition(
+  return calculateVisualCursorPosition(
     content,
     isUpArrow,
     columnInCurrentLine,
     currentDepth,
     targetDepth
   );
-  return result.position;
 }
 
 /**

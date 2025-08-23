@@ -1,2 +1,4 @@
 export { default as Badge } from './badge.svelte';
-export { badgeVariants, type BadgeVariant } from './badge.svelte';
+
+// Re-export types and variants from separate types file for better TypeScript support
+export { badgeVariants, type BadgeVariant } from './types';

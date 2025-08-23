@@ -12,12 +12,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NodeManager } from '../../lib/services/NodeManager';
 import { eventBus } from '../../lib/services/EventBus';
 import type { NodeManagerEvents } from '../../lib/services/NodeManager';
-// Types are only needed for documentation, not actual usage
+import type { NodeSpaceEvent } from '../../lib/services/EventTypes';
 
 describe('EventBus-NodeManager Integration', () => {
   let nodeManager: NodeManager;
   let mockEvents: NodeManagerEvents;
-  let eventLog: unknown[] = [];
+  let eventLog: NodeSpaceEvent[] = [];
 
   beforeEach(() => {
     eventLog = [];

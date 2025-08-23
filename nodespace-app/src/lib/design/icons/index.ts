@@ -18,8 +18,8 @@
 export { default } from './Icon.svelte';
 export { default as Icon } from './Icon.svelte';
 
-// Export icon types for TypeScript autocomplete
-export type { IconName } from './Icon.svelte';
+// Export icon types for TypeScript autocomplete - import from types file for better support
+export type { IconName } from './types';
 
 // Export individual icon paths for direct usage if needed
 export { textIcon } from './ui/text';

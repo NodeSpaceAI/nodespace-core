@@ -341,7 +341,7 @@ export class HierarchyService {
     const computeTime = performance.now() - startTime;
 
     // Emit performance event
-    eventBus.emit({
+    const debugEvent: import('./EventTypes').DebugEvent = {
       type: 'debug:log',
       namespace: 'debug',
       source: this.serviceName,
@@ -349,7 +349,8 @@ export class HierarchyService {
       level: 'info',
       message: `Bulk root fetch completed: ${allNodes.size} nodes in ${computeTime.toFixed(2)}ms`,
       metadata: { rootId, nodeCount: allNodes.size, maxDepth, computeTime }
-    });
+    };
+    eventBus.emit(debugEvent);
 
     return {
       nodes: allNodes,
@@ -451,7 +452,13 @@ export class HierarchyService {
     childrenCacheSize: number;
     siblingsCacheSize: number;
     hitRatio: number;
-    performance: typeof this.performanceMetrics;
+    performance: {
+      cacheHits: number;
+      cacheMisses: number;
+      avgDepthComputeTime: number;
+      avgChildrenComputeTime: number;
+      avgSiblingsComputeTime: number;
+    };
   } {
     const totalRequests = this.performanceMetrics.cacheHits + this.performanceMetrics.cacheMisses;
     const hitRatio = totalRequests > 0 ? this.performanceMetrics.cacheHits / totalRequests : 0;

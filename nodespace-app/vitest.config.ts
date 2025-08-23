@@ -1,5 +1,6 @@
 /// <reference types="vitest" />
 /// <reference types="./src/tests/types/globals.d.ts" />
+/// <reference types="./src/tests/types/vitest-env.d.ts" />
 import { defineConfig } from 'vitest/config';
 import { sveltekit } from '@sveltejs/kit/vite';
 

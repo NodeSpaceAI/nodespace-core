@@ -47,7 +47,18 @@ export default [
         Node: 'readonly',
         Selection: 'readonly',
         Range: 'readonly',
-        NodeFilter: 'readonly'
+        NodeFilter: 'readonly',
+        // Additional browser APIs needed
+        IntersectionObserver: 'readonly',
+        MutationObserver: 'readonly',
+        EventListener: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        DOMStringMap: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        process: 'readonly',
+        Performance: 'readonly'
       }
     },
     plugins: {
@@ -137,7 +148,18 @@ export default [
         Node: 'readonly',
         Selection: 'readonly',
         Range: 'readonly',
-        NodeFilter: 'readonly'
+        NodeFilter: 'readonly',
+        // Additional browser APIs needed
+        IntersectionObserver: 'readonly',
+        MutationObserver: 'readonly',
+        EventListener: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        DOMStringMap: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        process: 'readonly',
+        Performance: 'readonly'
       }
     },
     plugins: {

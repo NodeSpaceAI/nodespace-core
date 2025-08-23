@@ -251,12 +251,12 @@
 
       <!-- Interactive Text Editor -->
       <div class="space-y-2">
-        <label for="demo-editor" class="text-sm font-medium"
+        <label class="text-sm font-medium" for="interactive-editor"
           >Interactive Editor (Type @ to trigger autocomplete):</label
         >
         <div
-          id="demo-editor"
           bind:this={contentEditableElement}
+          id="interactive-editor"
           contenteditable="true"
           class="min-h-32 p-4 border border-border rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-ring"
           on:input={handleInput}

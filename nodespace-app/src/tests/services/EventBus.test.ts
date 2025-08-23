@@ -11,7 +11,28 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventBus } from '../../lib/services/EventBus';
-import type { NodeStatusChangedEvent, EventFilter } from '../../lib/services/EventTypes';
+import type { NodeStatusChangedEvent, EventFilter, DecorationClickedEvent } from '../../lib/services/EventTypes';
+
+// Helper functions for creating typed test events
+const createNodeStatusEvent = (overrides: Partial<Omit<NodeStatusChangedEvent, 'timestamp'>> = {}): Omit<NodeStatusChangedEvent, 'timestamp'> => ({
+  type: 'node:status-changed',
+  namespace: 'coordination',
+  source: 'test',
+  nodeId: 'node1',
+  status: 'focused',
+  ...overrides
+});
+
+const createDecorationClickEvent = (overrides: Partial<Omit<DecorationClickedEvent, 'timestamp'>> = {}): Omit<DecorationClickedEvent, 'timestamp'> => ({
+  type: 'decoration:clicked',
+  namespace: 'interaction',
+  source: 'test',
+  nodeId: 'node1',
+  decorationType: 'reference',
+  target: 'target1',
+  clickPosition: { x: 100, y: 200 },
+  ...overrides
+});
 
 describe('EventBus', () => {
   let eventBus: EventBus;
@@ -84,7 +105,7 @@ describe('EventBus', () => {
         source: 'test',
         nodeId: 'node1',
         status: 'focused'
-      });
+      } as Omit<NodeStatusChangedEvent, 'timestamp'>);
 
       eventBus.emit({
         type: 'decoration:clicked',
@@ -94,7 +115,7 @@ describe('EventBus', () => {
         decorationType: 'reference',
         target: 'target1',
         clickPosition: { x: 100, y: 200 }
-      });
+      } as Omit<DecorationClickedEvent, 'timestamp'>);
 
       expect(handler).toHaveBeenCalledTimes(2);
     });
@@ -104,25 +125,13 @@ describe('EventBus', () => {
 
       const unsubscribe = eventBus.subscribe('node:status-changed', handler);
 
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent());
 
       expect(handler).toHaveBeenCalledTimes(1);
 
       unsubscribe();
 
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'active'
-      });
+      eventBus.emit(createNodeStatusEvent({ status: 'active' }));
 
       expect(handler).toHaveBeenCalledTimes(1); // No additional calls
     });
@@ -132,21 +141,9 @@ describe('EventBus', () => {
 
       eventBus.once('node:status-changed', handler);
 
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent());
 
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'active'
-      });
+      eventBus.emit(createNodeStatusEvent({ status: 'active' }));
 
       expect(handler).toHaveBeenCalledTimes(1);
     });
@@ -164,24 +161,10 @@ describe('EventBus', () => {
       eventBus.subscribe('*', handler, { filter });
 
       // Should handle this event (coordination namespace)
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent());
 
       // Should ignore this event (interaction namespace)
-      eventBus.emit({
-        type: 'decoration:clicked',
-        namespace: 'interaction',
-        source: 'test',
-        nodeId: 'node1',
-        decorationType: 'reference',
-        target: 'target1',
-        clickPosition: { x: 100, y: 200 }
-      });
+      eventBus.emit(createDecorationClickEvent());
 
       expect(handler).toHaveBeenCalledTimes(1);
     });
@@ -193,22 +176,10 @@ describe('EventBus', () => {
       eventBus.subscribe('*', handler, { filter });
 
       // Should handle this event
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'NodeManager',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent({ source: 'NodeManager' }));
 
       // Should ignore this event
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'ContentProcessor',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent({ source: 'ContentProcessor' }));
 
       expect(handler).toHaveBeenCalledTimes(1);
     });
@@ -220,22 +191,10 @@ describe('EventBus', () => {
       eventBus.subscribe('*', handler, { filter });
 
       // Should handle this event
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent());
 
       // Should ignore this event
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node2',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent({ nodeId: 'node2' }));
 
       expect(handler).toHaveBeenCalledTimes(1);
     });
@@ -251,24 +210,10 @@ describe('EventBus', () => {
       eventBus.subscribe('*', handler, { filter });
 
       // Should handle this event (matches all criteria)
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'NodeManager',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent({ source: 'NodeManager' }));
 
       // Should ignore this event (wrong namespace)
-      eventBus.emit({
-        type: 'decoration:clicked',
-        namespace: 'interaction',
-        source: 'NodeManager',
-        nodeId: 'node1',
-        decorationType: 'reference',
-        target: 'target1',
-        clickPosition: { x: 100, y: 200 }
-      });
+      eventBus.emit(createDecorationClickEvent({ source: 'NodeManager' }));
 
       expect(handler).toHaveBeenCalledTimes(1);
     });
@@ -285,29 +230,11 @@ describe('EventBus', () => {
       eventBus.subscribe('node:status-changed', handler, { debounceMs: 50 });
 
       // Emit multiple events quickly
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent());
 
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'active'
-      });
+      eventBus.emit(createNodeStatusEvent({ status: 'active' }));
 
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'editing'
-      });
+      eventBus.emit(createNodeStatusEvent({ status: 'editing' }));
 
       // Should not be called immediately
       expect(handler).not.toHaveBeenCalled();
@@ -344,29 +271,11 @@ describe('EventBus', () => {
       eventBus.subscribe('node:status-changed', handler);
 
       // Emit multiple events of batchable type
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent());
 
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node2',
-        status: 'active'
-      });
+      eventBus.emit(createNodeStatusEvent({ nodeId: 'node2', status: 'active' }));
 
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node3',
-        status: 'editing'
-      });
+      eventBus.emit(createNodeStatusEvent({ nodeId: 'node3', status: 'editing' }));
 
       // Wait for batch processing
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -382,13 +291,7 @@ describe('EventBus', () => {
 
       // Emit exactly max batch size events
       for (let i = 0; i < 3; i++) {
-        eventBus.emit({
-          type: 'node:status-changed',
-          namespace: 'coordination',
-          source: 'test',
-          nodeId: `node${i}`,
-          status: 'focused'
-        });
+        eventBus.emit(createNodeStatusEvent({ nodeId: `node${i}` }));
       }
 
       // Should process immediately when batch is full
@@ -402,46 +305,18 @@ describe('EventBus', () => {
 
   describe('Event History', () => {
     it('should maintain event history', () => {
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent());
 
-      eventBus.emit({
-        type: 'decoration:clicked',
-        namespace: 'interaction',
-        source: 'test',
-        nodeId: 'node1',
-        decorationType: 'reference',
-        target: 'target1',
-        clickPosition: { x: 100, y: 200 }
-      });
+      eventBus.emit(createDecorationClickEvent());
 
       const recent = eventBus.getRecentEvents();
       expect(recent).toHaveLength(2);
     });
 
     it('should filter event history', () => {
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent());
 
-      eventBus.emit({
-        type: 'decoration:clicked',
-        namespace: 'interaction',
-        source: 'test',
-        nodeId: 'node1',
-        decorationType: 'reference',
-        target: 'target1',
-        clickPosition: { x: 100, y: 200 }
-      });
+      eventBus.emit(createDecorationClickEvent());
 
       const filter: EventFilter = { namespace: 'coordination' };
       const filtered = eventBus.getRecentEvents(filter);
@@ -454,13 +329,7 @@ describe('EventBus', () => {
       const promise = eventBus.waitFor('node:status-changed');
 
       setTimeout(() => {
-        eventBus.emit({
-          type: 'node:status-changed',
-          namespace: 'coordination',
-          source: 'test',
-          nodeId: 'node1',
-          status: 'focused'
-        });
+        eventBus.emit(createNodeStatusEvent());
       }, 50);
 
       const event = await promise;
@@ -477,13 +346,7 @@ describe('EventBus', () => {
       const handler = vi.fn();
       eventBus.subscribe('node:status-changed', handler);
 
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent());
 
       const metrics = eventBus.getMetrics();
       expect(metrics.totalEvents).toBe(1);
@@ -518,13 +381,7 @@ describe('EventBus', () => {
 
       // Should not throw even with error handler
       expect(() => {
-        eventBus.emit({
-          type: 'node:status-changed',
-          namespace: 'coordination',
-          source: 'test',
-          nodeId: 'node1',
-          status: 'focused'
-        });
+        eventBus.emit(createNodeStatusEvent());
       }).not.toThrow();
 
       // Normal handler should still be called
@@ -540,13 +397,7 @@ describe('EventBus', () => {
       eventBus.subscribe('node:status-changed', asyncErrorHandler);
       eventBus.subscribe('node:status-changed', normalHandler);
 
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent());
 
       // Wait for async processing
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -564,13 +415,7 @@ describe('EventBus', () => {
       const handler = vi.fn();
       eventBus.subscribe('node:status-changed', handler);
 
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent());
 
       expect(eventBus.getSubscriberCounts()['node:status-changed']).toBe(1);
       expect(eventBus.getRecentEvents()).toHaveLength(1);
@@ -608,35 +453,15 @@ describe('EventBus', () => {
         handler
       );
 
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent());
 
-      eventBus.emit({
-        type: 'decoration:clicked',
-        namespace: 'interaction',
-        source: 'test',
-        nodeId: 'node1',
-        decorationType: 'reference',
-        target: 'target1',
-        clickPosition: { x: 100, y: 200 }
-      });
+      eventBus.emit(createDecorationClickEvent());
 
       expect(handler).toHaveBeenCalledTimes(2);
 
       unsubscribe();
 
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'active'
-      });
+      eventBus.emit(createNodeStatusEvent({ status: 'active' }));
 
       expect(handler).toHaveBeenCalledTimes(2); // No additional calls
     });
@@ -644,17 +469,11 @@ describe('EventBus', () => {
     it('should handle priority-based handler execution', () => {
       const calls: string[] = [];
 
-      eventBus.subscribe('node:status-changed', () => calls.push('handler1'), { priority: 1 });
-      eventBus.subscribe('node:status-changed', () => calls.push('handler2'), { priority: 3 });
-      eventBus.subscribe('node:status-changed', () => calls.push('handler3'), { priority: 2 });
+      eventBus.subscribe('node:status-changed', () => { calls.push('handler1'); }, { priority: 1 });
+      eventBus.subscribe('node:status-changed', () => { calls.push('handler2'); }, { priority: 3 });
+      eventBus.subscribe('node:status-changed', () => { calls.push('handler3'); }, { priority: 2 });
 
-      eventBus.emit({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: 'test',
-        nodeId: 'node1',
-        status: 'focused'
-      });
+      eventBus.emit(createNodeStatusEvent());
 
       // Note: Current implementation doesn't support priority yet
       // This test documents expected future behavior
