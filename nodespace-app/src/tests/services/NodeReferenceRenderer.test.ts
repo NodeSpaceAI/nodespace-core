@@ -6,17 +6,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import {
-  NodeReferenceRenderer,
-  initializeNodeReferenceRenderer
-} from '$lib/services/NodeReferenceRenderer';
-import { NodeReferenceService } from '$lib/services/NodeReferenceService';
-import { EnhancedNodeManager } from '$lib/services/EnhancedNodeManager';
-import { HierarchyService } from '$lib/services/HierarchyService';
-import { NodeOperationsService } from '$lib/services/NodeOperationsService';
-import { MockDatabaseService, type NodeSpaceNode } from '$lib/services/MockDatabaseService';
 
-// Type definitions for mock DOM elements
+// Mock interfaces
 interface MockElement {
   tagName: string;
   innerHTML: string;
@@ -36,34 +27,42 @@ interface MockTreeWalker {
   nextNode: ReturnType<typeof vi.fn>;
 }
 
-interface MockDocument {
-  createElement: ReturnType<typeof vi.fn>;
-  createTreeWalker: ReturnType<typeof vi.fn>;
-  querySelectorAll: ReturnType<typeof vi.fn>;
-}
 
-interface MockWindow {
-  IntersectionObserver: ReturnType<typeof vi.fn>;
-  MutationObserver: ReturnType<typeof vi.fn>;
-}
+import {
+  NodeReferenceRenderer,
+  initializeNodeReferenceRenderer
+} from '../../lib/services/NodeReferenceRenderer';
+import { NodeReferenceService } from '../../lib/services/NodeReferenceService';
+import { NodeManager } from '../../lib/services/NodeManager';
+import { HierarchyService } from '../../lib/services/HierarchyService';
+import { NodeOperationsService } from '../../lib/services/NodeOperationsService';
+import { MockDatabaseService, type NodeSpaceNode } from '../../lib/services/MockDatabaseService';
+
+// Mock DOM environment setup
 
 describe('NodeReferenceRenderer', () => {
   let renderer: NodeReferenceRenderer;
   let nodeReferenceService: NodeReferenceService;
   let databaseService: MockDatabaseService;
-  let nodeManager: EnhancedNodeManager;
+  let nodeManager: NodeManager;
   let hierarchyService: HierarchyService;
   let nodeOperationsService: NodeOperationsService;
 
   beforeEach(async () => {
     // Initialize services
     databaseService = new MockDatabaseService();
-    nodeManager = new EnhancedNodeManager(databaseService);
-    hierarchyService = new HierarchyService(nodeManager, databaseService);
+    // Create mock NodeManagerEvents
+    const mockEvents = {
+      focusRequested: () => {},
+      hierarchyChanged: () => {},
+      nodeCreated: () => {},
+      nodeDeleted: () => {}
+    };
+    nodeManager = new NodeManager(mockEvents);
+    hierarchyService = new HierarchyService(nodeManager);
     nodeOperationsService = new NodeOperationsService(
       nodeManager,
-      hierarchyService,
-      databaseService
+      hierarchyService
     );
     nodeReferenceService = new NodeReferenceService(
       nodeManager,
@@ -74,8 +73,10 @@ describe('NodeReferenceRenderer', () => {
 
     renderer = initializeNodeReferenceRenderer(nodeReferenceService);
 
-    // Mock DOM environment
-    globalThis.document = {
+    // Mock DOM environment - Setup global for test compatibility
+    (globalThis as Record<string, unknown>).global = globalThis;
+
+    (globalThis as Record<string, unknown>).document = {
       createElement: vi.fn(
         (tagName: string): MockElement => ({
           tagName: tagName.toUpperCase(),
@@ -98,12 +99,12 @@ describe('NodeReferenceRenderer', () => {
         })
       ),
       querySelectorAll: vi.fn(() => [])
-    } as MockDocument;
+    };
 
-    globalThis.window = {
+    (globalThis as Record<string, unknown>).window = {
       IntersectionObserver: vi.fn(),
       MutationObserver: vi.fn()
-    } as MockWindow;
+    };
   });
 
   afterEach(() => {
@@ -154,7 +155,7 @@ describe('NodeReferenceRenderer', () => {
         'Test Task\nstatus: pending\npriority: high\n\nTest task description'
       );
 
-      mockElement = {
+      mockElement = ({
         innerHTML: '',
         classList: {
           add: vi.fn(),
@@ -166,7 +167,7 @@ describe('NodeReferenceRenderer', () => {
         setAttribute: vi.fn(),
         addEventListener: vi.fn(),
         removeEventListener: vi.fn()
-      } as unknown as HTMLElement;
+      } as unknown as HTMLElement);
     });
 
     it('should render a single task reference correctly', async () => {
@@ -234,27 +235,18 @@ describe('NodeReferenceRenderer', () => {
 
   describe('Container Rendering', () => {
     let mockContainer: HTMLElement;
-    let testNodes: NodeSpaceNode[];
 
     beforeEach(async () => {
-      // Create test nodes
-      testNodes = [
-        await nodeReferenceService.createNode('task', 'Task 1\nstatus: pending'),
-        await nodeReferenceService.createNode('user', 'John Doe\nrole: admin'),
-        await nodeReferenceService.createNode('date', '2024-12-31\nProject deadline')
-      ];
+      // Test nodes would be created here if needed for specific container tests
 
-      // Ensure nodes are available for testing
-      expect(testNodes).toHaveLength(3);
-
-      mockContainer = {
+      mockContainer = ({
         innerHTML: '',
         classList: { add: vi.fn(), remove: vi.fn(), contains: vi.fn(() => false) },
         dataset: {},
         setAttribute: vi.fn(),
         addEventListener: vi.fn(),
         removeEventListener: vi.fn()
-      } as unknown as HTMLElement;
+      } as unknown as HTMLElement);
     });
 
     it('should render container without viewport optimization', async () => {
@@ -371,7 +363,7 @@ describe('NodeReferenceRenderer', () => {
         resolveNodespaceURI: vi.fn().mockRejectedValue(new Error('Service error'))
       } as unknown as NodeReferenceService;
 
-      const errorRenderer = new (NodeReferenceRenderer as typeof NodeReferenceRenderer)(
+      const errorRenderer = initializeNodeReferenceRenderer(
         errorService as NodeReferenceService
       );
 

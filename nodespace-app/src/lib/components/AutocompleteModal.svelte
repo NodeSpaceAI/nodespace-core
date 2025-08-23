@@ -364,35 +364,31 @@
     return NODE_TYPE_CONFIG[nodeType as keyof typeof NODE_TYPE_CONFIG] || DEFAULT_NODE_TYPE;
   }
 
-  function getHighlightSegments(
-    text: string,
-    positions: number[]
-  ): Array<{ text: string; highlighted: boolean }> {
-    if (!positions.length) return [{ text, highlighted: false }];
+  function highlightMatches(text: string, positions: number[]): string {
+    if (!positions.length) return escapeHtml(text);
 
-    const segments: Array<{ text: string; highlighted: boolean }> = [];
+    let highlighted = '';
     let lastIndex = 0;
 
     for (const pos of positions) {
-      // Add text before highlight
-      if (pos > lastIndex) {
-        segments.push({ text: text.substring(lastIndex, pos), highlighted: false });
-      }
-
-      // Add highlighted character
-      if (pos < text.length) {
-        segments.push({ text: text[pos], highlighted: true });
-      }
-
+      highlighted += escapeHtml(text.substring(lastIndex, pos));
+      highlighted += `<mark class="bg-yellow-200 dark:bg-yellow-800 px-0.5 rounded">`;
+      highlighted += escapeHtml(text[pos]);
+      highlighted += '</mark>';
       lastIndex = pos + 1;
     }
 
-    // Add remaining text
-    if (lastIndex < text.length) {
-      segments.push({ text: text.substring(lastIndex), highlighted: false });
-    }
+    highlighted += escapeHtml(text.substring(lastIndex));
+    return highlighted;
+  }
 
-    return segments;
+  function escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   // ============================================================================
@@ -509,15 +505,7 @@
                     <!-- Node content -->
                     <div class="flex-1 min-w-0">
                       <div class="font-medium text-sm truncate">
-                        {#each getHighlightSegments(suggestion.title, suggestion.matchPositions) as segment}
-                          {#if segment.highlighted}
-                            <mark class="bg-yellow-200 dark:bg-yellow-800 px-0.5 rounded"
-                              >{segment.text}</mark
-                            >
-                          {:else}
-                            {segment.text}
-                          {/if}
-                        {/each}
+                        {@html highlightMatches(suggestion.title, suggestion.matchPositions)}
                       </div>
 
                       {#if suggestion.content && suggestion.content !== suggestion.title}

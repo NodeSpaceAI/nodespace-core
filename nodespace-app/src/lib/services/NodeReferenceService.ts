@@ -24,8 +24,6 @@
  * - ContentProcessor: Enhanced @ trigger content processing
  */
 
-// Browser and Node.js compatibility handled via conditional logic
-
 import { eventBus } from './EventBus';
 import { ContentProcessor } from './contentProcessor';
 import type { NodeManager, Node } from './NodeManager';
@@ -42,7 +40,7 @@ export interface TriggerContext {
   query: string; // Text after @
   startPosition: number; // Position in content where trigger starts
   endPosition: number; // Current cursor position
-  element: HTMLElement; // ContentEditable element
+  element: HTMLElement | null; // ContentEditable element (null in test scenarios)
   isValid: boolean; // Whether trigger context is valid
   metadata: Record<string, unknown>;
 }
@@ -309,7 +307,7 @@ export class NodeReferenceService {
         metadata: {
           cacheUsed: false,
           fuzzyEnabled: this.autocompleteConfig.enableFuzzySearch,
-          nodeTypes: [...new Set(finalSuggestions.map((s) => s.nodeType))]
+          nodeTypes: Array.from(new Set(finalSuggestions.map((s) => s.nodeType)))
         }
       };
 
@@ -344,9 +342,13 @@ export class NodeReferenceService {
    */
   public parseNodespaceURI(uri: string): NodeReference | null {
     try {
-      // Use globalThis to access URL constructor in both browser and Node.js
-      const URLConstructor = globalThis.URL;
-      const url = new URLConstructor(uri);
+      // Check if URL constructor is available
+      if (typeof URL === 'undefined') {
+        console.warn('NodeReferenceService: URL constructor not available in this environment');
+        return null;
+      }
+
+      const url = new URL(uri);
 
       if (url.protocol !== 'nodespace:') {
         return null;
@@ -397,9 +399,38 @@ export class NodeReferenceService {
   public createNodespaceURI(nodeId: string, options: URIOptions = {}): string {
     let uri = `nodespace://node/${nodeId}`;
 
-    // Use globalThis to access URLSearchParams constructor in both browser and Node.js
-    const URLSearchParamsConstructor = globalThis.URLSearchParams;
-    const params = new URLSearchParamsConstructor();
+    // Check if URLSearchParams is available
+    if (typeof URLSearchParams === 'undefined') {
+      console.warn('NodeReferenceService: URLSearchParams not available in this environment');
+      // Fallback to manual query string construction
+      const queryParts: string[] = [];
+
+      if (options.includeHierarchy) {
+        queryParts.push('hierarchy=true');
+      }
+
+      if (options.includeTimestamp) {
+        queryParts.push(`timestamp=${Date.now()}`);
+      }
+
+      if (options.queryParams) {
+        for (const [key, value] of Object.entries(options.queryParams)) {
+          queryParts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+        }
+      }
+
+      if (queryParts.length > 0) {
+        uri += `?${queryParts.join('&')}`;
+      }
+
+      if (options.fragment) {
+        uri += `#${encodeURIComponent(options.fragment)}`;
+      }
+
+      return uri;
+    }
+
+    const params = new URLSearchParams();
 
     if (options.includeHierarchy) {
       params.set('hierarchy', 'true');
@@ -589,8 +620,11 @@ export class NodeReferenceService {
         lastResolved: Date.now(),
         metadata: { type: 'incoming' }
       }));
-    } catch (error) {
-      console.error('NodeReferenceService: Error getting incoming references', { error, nodeId });
+    } catch (err) {
+      console.error('NodeReferenceService: Error getting incoming references', {
+        error: err,
+        nodeId
+      });
       return [];
     }
   }
@@ -659,7 +693,7 @@ export class NodeReferenceService {
       const createdNode = await this.nodeOperationsService.upsertNode(nodeId, nodeData);
 
       // Emit node creation event
-      eventBus.emit({
+      const nodeCreatedEvent: import('./EventTypes').NodeCreatedEvent = {
         type: 'node:created',
         namespace: 'lifecycle',
         source: this.serviceName,
@@ -667,7 +701,8 @@ export class NodeReferenceService {
         nodeId,
         nodeType,
         metadata: { createdViaReference: true }
-      });
+      };
+      eventBus.emit(nodeCreatedEvent);
 
       return createdNode;
     } catch (error) {
@@ -696,7 +731,7 @@ export class NodeReferenceService {
 
       // Emit events for detected @ references
       for (const link of atLinks) {
-        eventBus.emit({
+        const referenceResolvedEvent: import('./EventTypes').ReferenceResolutionEvent = {
           type: 'reference:resolved',
           namespace: 'coordination',
           source: this.serviceName,
@@ -710,7 +745,8 @@ export class NodeReferenceService {
             endPos: link.endPos,
             displayText: link.displayText
           }
-        });
+        };
+        eventBus.emit(referenceResolvedEvent);
       }
 
       return result;
@@ -825,7 +861,7 @@ export class NodeReferenceService {
     const textContent = element.textContent || '';
     let position = 0;
 
-    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
 
     let node;
     while ((node = walker.nextNode())) {
@@ -969,7 +1005,7 @@ export class NodeReferenceService {
     sourceId: string,
     targetId: string
   ): void {
-    eventBus.emit({
+    const referencesUpdateEvent: import('./EventTypes').ReferencesUpdateNeededEvent = {
       type: 'references:update-needed',
       namespace: 'coordination',
       source: this.serviceName,
@@ -978,12 +1014,13 @@ export class NodeReferenceService {
       updateType: 'content',
       affectedReferences: [targetId],
       metadata: { action, targetId }
-    });
+    };
+    eventBus.emit(referencesUpdateEvent);
   }
 
   private invalidateNodeCaches(nodeId: string): void {
     // Clear suggestion cache entries that might include this node
-    for (const [key] of this.suggestionCache) {
+    for (const key of Array.from(this.suggestionCache.keys())) {
       this.suggestionCache.delete(key);
     }
 
@@ -991,7 +1028,7 @@ export class NodeReferenceService {
     this.searchCache.clear();
 
     // Remove from URI cache
-    for (const [uri, reference] of this.uriCache) {
+    for (const [uri, reference] of Array.from(this.uriCache.entries())) {
       if (reference.nodeId === nodeId) {
         this.uriCache.delete(uri);
       }

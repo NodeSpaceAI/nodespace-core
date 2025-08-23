@@ -23,11 +23,37 @@ globalThis.KeyboardEvent = dom.window.KeyboardEvent;
 globalThis.InputEvent = dom.window.InputEvent;
 globalThis.NodeFilter = dom.window.NodeFilter;
 
+// Type for tracking event calls in tests
+interface EventCallRecord {
+  contentChanged?: string[];
+  headerLevelChanged?: number[];
+  focus?: boolean[];
+  blur?: boolean[];
+  createNewNode?: Array<{
+    afterNodeId: string;
+    nodeType: string;
+    currentContent?: string;
+    newContent?: string;
+    cursorAtBeginning?: boolean;
+  }>;
+  indentNode?: Array<{ nodeId: string }>;
+  outdentNode?: Array<{ nodeId: string }>;
+  navigateArrow?: Array<{ nodeId: string; direction: 'up' | 'down'; columnHint: number }>;
+  combineWithPrevious?: Array<{ nodeId: string; currentContent: string }>;
+  deleteNode?: Array<{ nodeId: string }>;
+  triggerDetected?: Array<{
+    triggerContext: unknown;
+    cursorPosition: { x: number; y: number };
+  }>;
+  triggerHidden?: boolean[];
+  nodeReferenceSelected?: Array<{ nodeId: string; nodeTitle: string }>;
+}
+
 describe('ContentEditableController', () => {
   let element: HTMLDivElement;
   let controller: ContentEditableController;
   let mockEvents: ContentEditableEvents;
-  let eventCalls: Record<string, unknown[]>;
+  let eventCalls: EventCallRecord;
 
   beforeEach(() => {
     // Create mock element
@@ -41,6 +67,10 @@ describe('ContentEditableController', () => {
       contentChanged: (content: string) => {
         eventCalls.contentChanged = eventCalls.contentChanged || [];
         eventCalls.contentChanged.push(content);
+      },
+      headerLevelChanged: (level: number) => {
+        eventCalls.headerLevelChanged = eventCalls.headerLevelChanged || [];
+        eventCalls.headerLevelChanged.push(level);
       },
       focus: () => {
         eventCalls.focus = eventCalls.focus || [];
@@ -73,6 +103,18 @@ describe('ContentEditableController', () => {
       deleteNode: (data) => {
         eventCalls.deleteNode = eventCalls.deleteNode || [];
         eventCalls.deleteNode.push(data);
+      },
+      triggerDetected: (data) => {
+        eventCalls.triggerDetected = eventCalls.triggerDetected || [];
+        eventCalls.triggerDetected.push(data);
+      },
+      triggerHidden: () => {
+        eventCalls.triggerHidden = eventCalls.triggerHidden || [];
+        eventCalls.triggerHidden.push(true);
+      },
+      nodeReferenceSelected: (data) => {
+        eventCalls.nodeReferenceSelected = eventCalls.nodeReferenceSelected || [];
+        eventCalls.nodeReferenceSelected.push(data);
       }
     };
 
@@ -181,7 +223,7 @@ describe('ContentEditableController', () => {
       element.dispatchEvent(inputEvent);
 
       expect(eventCalls.contentChanged).toHaveLength(1);
-      expect(eventCalls.contentChanged[0]).toBe('updated test');
+      expect(eventCalls.contentChanged?.[0]).toBe('updated test');
     });
 
     it('should handle Enter key for new node creation', () => {
@@ -192,7 +234,7 @@ describe('ContentEditableController', () => {
       element.dispatchEvent(enterEvent);
 
       expect(eventCalls.createNewNode).toHaveLength(1);
-      expect(eventCalls.createNewNode[0].afterNodeId).toBe('test-node');
+      expect(eventCalls.createNewNode?.[0]?.afterNodeId).toBe('test-node');
     });
 
     it('should handle Tab key for indentation', () => {
@@ -203,7 +245,7 @@ describe('ContentEditableController', () => {
       element.dispatchEvent(tabEvent);
 
       expect(eventCalls.indentNode).toHaveLength(1);
-      expect(eventCalls.indentNode[0].nodeId).toBe('test-node');
+      expect(eventCalls.indentNode?.[0]?.nodeId).toBe('test-node');
     });
 
     it('should handle Shift+Tab for outdentation', () => {
@@ -214,7 +256,7 @@ describe('ContentEditableController', () => {
       element.dispatchEvent(shiftTabEvent);
 
       expect(eventCalls.outdentNode).toHaveLength(1);
-      expect(eventCalls.outdentNode[0].nodeId).toBe('test-node');
+      expect(eventCalls.outdentNode?.[0]?.nodeId).toBe('test-node');
     });
   });
 
@@ -247,7 +289,7 @@ describe('ContentEditableController', () => {
       editingElement.contentEditable = 'true';
       document.body.appendChild(editingElement);
 
-      const editingController = new ContentEditableController(editingElement, mockEvents);
+      const editingController = new ContentEditableController(editingElement, 'editing-test-node', mockEvents);
       editingController.initialize('**old**', true);
 
       // Verify initial state has live formatting

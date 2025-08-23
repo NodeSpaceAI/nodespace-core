@@ -7,12 +7,15 @@ import '@testing-library/jest-dom';
 
 // Ensure global object is available for legacy test compatibility
 // In Vitest/Node.js environment, global should already be available, but provide fallback
-if (typeof global === 'undefined') {
-  (globalThis as unknown as { global: typeof globalThis }).global = globalThis;
+if (
+  typeof (globalThis as typeof globalThis & { global?: typeof globalThis }).global === 'undefined'
+) {
+  (globalThis as typeof globalThis & { global: typeof globalThis }).global = globalThis;
 } else {
+  const globalRef = (globalThis as typeof globalThis & { global: typeof globalThis }).global;
   // Ensure global and globalThis are properly linked
-  if (globalThis.global !== globalThis) {
-    Object.setPrototypeOf(globalThis.global, globalThis);
+  if (globalRef !== globalThis) {
+    Object.setPrototypeOf(globalRef, globalThis);
   }
 }
 
@@ -89,19 +92,18 @@ interface MockMutationObserver {
 }));
 
 // Mock IntersectionObserver for testing
-interface MockIntersectionObserver {
-  observe: () => void;
-  unobserve: () => void;
-  disconnect: () => void;
-}
-
-(
-  globalThis as typeof globalThis & { IntersectionObserver: new () => MockIntersectionObserver }
-).IntersectionObserver = vi.fn(() => ({
+const mockIntersectionObserver = vi.fn(() => ({
   observe: vi.fn(),
   unobserve: vi.fn(),
-  disconnect: vi.fn()
+  disconnect: vi.fn(),
+  root: null,
+  rootMargin: '',
+  thresholds: [],
+  takeRecords: vi.fn().mockReturnValue([])
 }));
+
+// Type assertion for IntersectionObserver mock
+(globalThis as typeof globalThis & { IntersectionObserver: typeof mockIntersectionObserver }).IntersectionObserver = mockIntersectionObserver;
 
 // Basic global test setup
 interface MockResizeObserver {
@@ -146,11 +148,13 @@ interface TestEventInit {
 const OriginalEvent = globalThis.Event;
 globalThis.Event = class extends OriginalEvent {
   constructor(type: string, eventInitDict?: TestEventInit) {
-    super(type, eventInitDict);
+    // Extract standard EventInit properties for parent constructor
+    const { target, ...standardEventInit } = eventInitDict || {};
+    super(type, standardEventInit);
     // Ensure target is properly set when event is created
-    if (!this.target && eventInitDict?.target) {
+    if (!this.target && target) {
       Object.defineProperty(this, 'target', {
-        value: eventInitDict.target,
+        value: target,
         writable: false,
         configurable: true
       });

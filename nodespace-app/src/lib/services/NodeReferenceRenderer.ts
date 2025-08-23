@@ -14,12 +14,11 @@
  * - Support for different display contexts (inline, popup, preview)
  */
 
-// Browser API compatibility handled via conditional instantiation
-
 import { eventBus } from './EventBus';
 import { decorationCoordinator } from './DecorationCoordinator';
 import { NodeDecoratorFactory } from './BaseNodeDecoration';
 import type { DecorationContext, DecorationResult } from './BaseNodeDecoration';
+import type { ComponentDecoration } from '../types/ComponentDecoration';
 import type { NodeReferenceService } from './NodeReferenceService';
 import type { NodeSpaceNode } from './MockDatabaseService';
 
@@ -70,11 +69,9 @@ export class NodeReferenceRenderer {
   private decoratorFactory: NodeDecoratorFactory;
   private renderCache = new Map<
     string,
-    { result: DecorationResult; timestamp: number; element?: HTMLElement }
+    { result: ComponentDecoration | DecorationResult; timestamp: number; element?: HTMLElement }
   >();
-  // eslint-disable-next-line no-undef
   private intersectionObserver: IntersectionObserver | null = null;
-  // eslint-disable-next-line no-undef
   private mutationObserver: MutationObserver | null = null;
 
   // Performance optimization
@@ -154,7 +151,7 @@ export class NodeReferenceRenderer {
       this.metrics.lastRender = Date.now();
 
       // Emit completion event
-      eventBus.emit({
+      (eventBus.emit as (event: unknown) => void)({
         type: 'references:rendered',
         namespace: 'coordination',
         source: this.serviceName,
@@ -266,7 +263,7 @@ export class NodeReferenceRenderer {
       }
 
       // Emit update event
-      eventBus.emit({
+      (eventBus.emit as (event: unknown) => void)({
         type: 'decoration:updated',
         namespace: 'coordination',
         source: this.serviceName,
@@ -335,12 +332,19 @@ export class NodeReferenceRenderer {
   // ========================================================================
 
   private setupViewportOptimization(): void {
-    if (typeof window === 'undefined' || !window.IntersectionObserver) {
+    // Check for IntersectionObserver support
+    if (
+      typeof window === 'undefined' ||
+      typeof window.IntersectionObserver === 'undefined' ||
+      !window.IntersectionObserver
+    ) {
+      console.debug(
+        'NodeReferenceRenderer: IntersectionObserver not available, viewport optimization disabled'
+      );
       return;
     }
 
-    // eslint-disable-next-line no-undef
-    this.intersectionObserver = new IntersectionObserver(
+    this.intersectionObserver = new window.IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
           const element = entry.target as HTMLElement;
@@ -366,16 +370,23 @@ export class NodeReferenceRenderer {
   }
 
   private setupMutationObserving(): void {
-    if (typeof window === 'undefined' || !window.MutationObserver) {
+    // Check for MutationObserver support
+    if (
+      typeof window === 'undefined' ||
+      typeof window.MutationObserver === 'undefined' ||
+      !window.MutationObserver
+    ) {
+      console.debug(
+        'NodeReferenceRenderer: MutationObserver not available, automatic DOM change detection disabled'
+      );
       return;
     }
 
-    // eslint-disable-next-line no-undef
-    this.mutationObserver = new MutationObserver((mutations) => {
+    this.mutationObserver = new window.MutationObserver((mutations) => {
       for (const mutation of mutations) {
         if (mutation.type === 'childList') {
           // Check for new node references added to the DOM
-          for (const node of mutation.addedNodes) {
+          for (const node of Array.from(mutation.addedNodes)) {
             if (node.nodeType === Node.ELEMENT_NODE) {
               const element = node as HTMLElement;
               this.scanForNewReferences(element);
@@ -396,7 +407,7 @@ export class NodeReferenceRenderer {
     const references: Array<{ element: HTMLElement; nodeId: string; uri: string }> = [];
 
     // Find elements with nodespace:// URIs
-    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
 
     let textNode;
     while ((textNode = walker.nextNode())) {
@@ -420,7 +431,7 @@ export class NodeReferenceRenderer {
 
     // Also find existing rendered references
     const existingRefs = container.querySelectorAll('[data-node-id]');
-    for (const element of existingRefs) {
+    for (const element of Array.from(existingRefs)) {
       const nodeId = (element as HTMLElement).dataset.nodeId;
       const uri = (element as HTMLElement).dataset.uri;
       if (nodeId && uri) {
@@ -486,19 +497,41 @@ export class NodeReferenceRenderer {
 
   private applyDecoration(
     element: HTMLElement,
-    decoration: DecorationResult,
+    decoration: ComponentDecoration | DecorationResult,
     context: DecorationContext
   ): void {
     try {
-      // Set HTML content (already sanitized by decorator)
-      element.innerHTML = decoration.html;
+      // Handle ComponentDecoration vs DecorationResult
+      if ('component' in decoration) {
+        // This is a ComponentDecoration - create component placeholder for hydration
+        const componentName = decoration.component.name;
+        const propsJSON = JSON.stringify(decoration.props).replace(/"/g, '&quot;');
+        const metadataJSON = decoration.metadata ? JSON.stringify(decoration.metadata).replace(/"/g, '&quot;') : '';
+        
+        element.innerHTML = `<div class="ns-component-placeholder" 
+          data-hydrate="pending" 
+          data-component="${componentName}" 
+          data-node-type="${context.nodeType}" 
+          data-props="${propsJSON}" 
+          data-metadata="${metadataJSON}"></div>`;
+      } else {
+        // This is a legacy DecorationResult - set HTML content (already sanitized by decorator)
+        element.innerHTML = decoration.html;
+      }
 
-      // Apply CSS classes
-      element.className = decoration.cssClasses.join(' ');
-
-      // Set accessibility attributes
-      element.setAttribute('aria-label', decoration.ariaLabel);
-      element.setAttribute('role', decoration.interactive ? 'button' : 'text');
+      // Apply CSS classes and accessibility attributes
+      if ('component' in decoration) {
+        // ComponentDecoration - use default classes
+        const nodeType = context.nodeType;
+        element.className = `ns-noderef ns-noderef--${nodeType}`;
+        element.setAttribute('aria-label', decoration.props.ariaLabel as string || `Reference to ${nodeType}`);
+        element.setAttribute('role', 'button'); // Component decorations are interactive
+      } else {
+        // DecorationResult - use provided classes and labels
+        element.className = decoration.cssClasses.join(' ');
+        element.setAttribute('aria-label', decoration.ariaLabel);
+        element.setAttribute('role', 'text'); // DecorationResult doesn't have interactive property
+      }
 
       // Set data attributes
       element.dataset.nodeId = context.nodeId;
@@ -509,7 +542,8 @@ export class NodeReferenceRenderer {
       element.classList.add('ns-noderef--rendered');
 
       // Set up keyboard accessibility if interactive
-      if (decoration.interactive) {
+      const isInteractive = 'component' in decoration ? true : false; // DecorationResult doesn't have interactive property
+      if (isInteractive) {
         element.setAttribute('tabindex', '0');
         this.setupKeyboardHandlers(element, context);
       }
@@ -530,7 +564,7 @@ export class NodeReferenceRenderer {
         event.preventDefault();
 
         // Emit click event
-        eventBus.emit({
+        eventBus.emit<import('./EventTypes').DecorationClickedEvent>({
           type: 'decoration:clicked',
           namespace: 'interaction',
           source: this.serviceName,
@@ -546,15 +580,13 @@ export class NodeReferenceRenderer {
     element.addEventListener('keydown', keydownHandler);
 
     // Store handler for cleanup
-    (
-      element as HTMLElement & { _keydownHandler?: (event: KeyboardEvent) => void }
-    )._keydownHandler = keydownHandler;
+    (element as HTMLElement & { _keydownHandler?: (event: KeyboardEvent) => void })._keydownHandler = keydownHandler;
   }
 
   private getCachedDecoration(
     nodeId: string,
     displayContext: string
-  ): { result: DecorationResult; element?: HTMLElement } | null {
+  ): { result: ComponentDecoration | DecorationResult; element?: HTMLElement } | null {
     const key = `${nodeId}:${displayContext}`;
     const cached = this.renderCache.get(key);
 
@@ -573,7 +605,7 @@ export class NodeReferenceRenderer {
   private cacheDecoration(
     nodeId: string,
     displayContext: string,
-    decoration: DecorationResult,
+    decoration: ComponentDecoration | DecorationResult,
     element?: HTMLElement
   ): void {
     const key = `${nodeId}:${displayContext}`;
@@ -627,7 +659,7 @@ export class NodeReferenceRenderer {
 
   private invalidateNodeCache(nodeId: string): void {
     const keysToDelete: string[] = [];
-    for (const key of this.renderCache.keys()) {
+    for (const key of Array.from(this.renderCache.keys())) {
       if (key.startsWith(`${nodeId}:`)) {
         keysToDelete.push(key);
       }
@@ -669,14 +701,18 @@ export class NodeReferenceRenderer {
     }
 
     if (this.renderTimeout) {
-      clearTimeout(this.renderTimeout);
+      if (typeof window !== 'undefined' && window.clearTimeout) {
+        window.clearTimeout(this.renderTimeout);
+      } else if (typeof clearTimeout !== 'undefined') {
+        clearTimeout(this.renderTimeout);
+      }
       this.renderTimeout = null;
     }
 
     // Clean up keyboard handlers
-    for (const cached of this.renderCache.values()) {
+    for (const cached of Array.from(this.renderCache.values())) {
       const elementWithHandler = cached.element as HTMLElement & {
-        _keydownHandler?: (event: KeyboardEvent) => void;
+        _keydownHandler?: EventListener;
       };
       if (cached.element && elementWithHandler._keydownHandler) {
         cached.element.removeEventListener('keydown', elementWithHandler._keydownHandler);

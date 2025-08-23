@@ -15,6 +15,9 @@
 import { stripMarkdown, validateMarkdown } from './markdownUtils.js';
 import { eventBus } from './EventBus';
 import type { NodeReferenceService, NodeReference, NodespaceLink } from './NodeReferenceService';
+import { NodeDecoratorFactory } from './BaseNodeDecoration';
+import type { DecorationContext } from './BaseNodeDecoration';
+import type { ComponentDecoration } from '../types/ComponentDecoration';
 
 // ============================================================================
 // Core AST Types for Dual-Representation
@@ -140,6 +143,8 @@ export class ContentProcessor {
   private readonly WIKILINK_REGEX = /\[\[([^[\]]+(?:\[[^[\]]*\][^[\]]*)*)\]\]/g;
   private readonly NODESPACE_REF_REGEX =
     /\[([^\]]+)\]\(nodespace:\/\/node\/([a-zA-Z0-9_-]+)(?:\?[^)]*)?\)/g;
+  private readonly NODESPACE_URI_REGEX =
+    /nodespace:\/\/([a-zA-Z0-9_-]+)\/([a-zA-Z0-9_-]+)(?:\/([a-zA-Z0-9_-]+))?/g;
   private readonly BOLD_REGEX = /\*\*(.*?)\*\*/g;
   private readonly ITALIC_REGEX = /(?<!\*)\*(?!\*)([^*]+)\*(?!\*)/g;
   private readonly CODE_REGEX = /`([^`]+)`/g;
@@ -236,7 +241,11 @@ export class ContentProcessor {
       totalCharacters: source.length,
       wordCount: this.getWordCount(source),
       hasWikiLinks: this.WIKILINK_REGEX.test(source),
-      hasNodespaceRefs: this.NODESPACE_REF_REGEX.test(source),
+      hasNodespaceRefs: (() => {
+        this.NODESPACE_REF_REGEX.lastIndex = 0;
+        this.NODESPACE_URI_REGEX.lastIndex = 0;
+        return this.NODESPACE_REF_REGEX.test(source) || this.NODESPACE_URI_REGEX.test(source);
+      })(),
       headerCount: 0,
       inlineFormatCount: 0,
       nodeRefCount: 0,
@@ -245,6 +254,7 @@ export class ContentProcessor {
 
     // Reset regex state
     this.NODESPACE_REF_REGEX.lastIndex = 0;
+    this.NODESPACE_URI_REGEX.lastIndex = 0;
 
     const children: ASTNode[] = [];
     let position = 0;
@@ -687,7 +697,7 @@ export class ContentProcessor {
       } as WikiLinkNode);
     }
 
-    // Find nodespace:// references
+    // Find nodespace:// references (markdown link format)
     this.NODESPACE_REF_REGEX.lastIndex = 0;
     while ((match = this.NODESPACE_REF_REGEX.exec(text)) !== null) {
       const displayText = match[1];
@@ -699,6 +709,26 @@ export class ContentProcessor {
         nodeId,
         uri,
         displayText,
+        rawSyntax: match[0],
+        isValid: false, // Will be resolved later
+        start: match.index,
+        end: match.index + match[0].length
+      } as NodespaceRefNode);
+    }
+
+    // Find plain nodespace:// URIs (not in markdown links)
+    this.NODESPACE_URI_REGEX.lastIndex = 0;
+    while ((match = this.NODESPACE_URI_REGEX.exec(text)) !== null) {
+      // const nodeType = match[1]; // Node type not used in pattern creation
+      const nodeId = match[2];
+      const nodeName = match[3] || nodeId;
+      const uri = match[0];
+
+      patterns.push({
+        type: 'nodespace-ref',
+        nodeId,
+        uri,
+        displayText: nodeName.replace(/-/g, ' '), // Convert kebab-case to readable text
         rawSyntax: match[0],
         isValid: false, // Will be resolved later
         start: match.index,
@@ -772,6 +802,43 @@ export class ContentProcessor {
 
       case 'nodespace-ref': {
         const refNode = node as NodespaceRefNode;
+
+        // Use the rich decoration system if the reference is valid
+        if (refNode.isValid && refNode.reference && this.nodeReferenceService) {
+          try {
+            // Get the actual node to determine its type
+            const referencedNode = this.nodeReferenceService.resolveNodespaceURI(refNode.uri);
+
+            if (referencedNode) {
+              // Create decoration context
+              const decorationContext: DecorationContext = {
+                nodeId: refNode.nodeId,
+                nodeType: referencedNode.type,
+                title: refNode.reference.title || refNode.displayText,
+                content: referencedNode.content,
+                uri: refNode.uri,
+                metadata: referencedNode.metadata || {},
+                targetElement: null!, // Will be set when DOM element is created
+                displayContext: 'inline'
+              };
+
+              // Use NodeDecoratorFactory for rich decoration
+              const decoratorFactory = new NodeDecoratorFactory(this.nodeReferenceService);
+              const decorationResult = decoratorFactory.decorateReference(decorationContext);
+
+              // Convert ComponentDecoration to HTML with hydration data
+              return this.renderComponentDecorationAsHTML(decorationResult, decorationContext);
+            }
+          } catch (error) {
+            console.warn(
+              'ContentProcessor: Error rendering rich decoration for nodespace reference',
+              { error, refNode }
+            );
+            // Fall through to basic rendering
+          }
+        }
+
+        // Fallback to basic rendering for invalid references or if decoration fails
         const statusClass = refNode.isValid ? 'ns-noderef-valid' : 'ns-noderef-invalid';
         const title = refNode.reference?.title || refNode.displayText;
         const tooltip = refNode.isValid
@@ -1003,7 +1070,7 @@ export class ContentProcessor {
     // Check cache first
     const cached = this.referenceCache.get(refNode.uri);
     if (cached && Date.now() - cached.timestamp < this.cacheTimeout) {
-      refNode.reference = cached.reference;
+      refNode.reference = cached.reference || undefined;
       refNode.isValid = !!cached.reference;
       return;
     }
@@ -1019,16 +1086,15 @@ export class ContentProcessor {
       });
 
       // Update reference node
-      refNode.reference = reference;
+      refNode.reference = reference || undefined;
       refNode.isValid = !!reference?.isValid;
 
       // Emit reference resolution event
       if (sourceNodeId) {
-        eventBus.emit({
+        const resolutionEvent: Omit<import('./EventTypes').ReferenceResolutionEvent, 'timestamp'> = {
           type: 'reference:resolved',
           namespace: 'coordination',
           source: this.serviceName,
-          timestamp: Date.now(),
           referenceId: refNode.uri,
           target: refNode.nodeId,
           nodeId: sourceNodeId,
@@ -1037,7 +1103,8 @@ export class ContentProcessor {
             displayText: refNode.displayText,
             cached: false
           }
-        });
+        };
+        eventBus.emit(resolutionEvent);
       }
 
       // Add bidirectional reference if valid and sourceNodeId provided
@@ -1147,7 +1214,7 @@ export class ContentProcessor {
         sourceNodeId: nodeId,
         targetNodeId: wikiLink.target, // In Phase 2, this will be resolved to actual node ID
         linkType: 'wikilink',
-        linkText: wikiLink.displayText,
+        linkText: wikiLink.displayText || '',
         metadata: {
           startPos: wikiLink.startPos,
           endPos: wikiLink.endPos,
@@ -1169,7 +1236,7 @@ export class ContentProcessor {
         sourceNodeId: nodeId,
         targetNodeId: nodeLink.nodeId,
         linkType: 'nodespace-ref',
-        linkText: nodeLink.displayText,
+        linkText: nodeLink.displayText || '',
         metadata: {
           startPos: nodeLink.startPos,
           endPos: nodeLink.endPos,
@@ -1180,11 +1247,10 @@ export class ContentProcessor {
       eventBus.emit(backlinkEvent);
 
       // Emit reference resolution event
-      const resolutionEvent: import('./EventTypes').ReferenceResolutionEvent = {
+      const resolutionEvent: Omit<import('./EventTypes').ReferenceResolutionEvent, 'timestamp'> = {
         type: 'reference:resolved',
         namespace: 'coordination',
         source: this.serviceName,
-        timestamp: Date.now(),
         referenceId: nodeLink.uri,
         target: nodeLink.nodeId,
         nodeId: nodeId,
@@ -1244,6 +1310,35 @@ export class ContentProcessor {
       nodespaceLinks,
       resolved
     };
+  }
+
+  /**
+   * Renders a ComponentDecoration as HTML with hydration data
+   * This creates placeholder HTML that can be hydrated with Svelte components later
+   *
+   * Design for plugin architecture:
+   * - Core node types (text, task, date, user) are built-in
+   * - Plugin node types (pdf, image, etc.) can register their own components
+   * - The hydration system will dynamically load the appropriate component
+   */
+  private renderComponentDecorationAsHTML(
+    decoration: ComponentDecoration,
+    context: DecorationContext
+  ): string {
+    const { props, metadata } = decoration;
+
+    // Extract component information for plugin system
+    const componentName = decoration.component.name || 'BaseNodeReference';
+    const nodeType = props.nodeType || context.nodeType;
+
+    // Safely serialize props and metadata for hydration
+    // Use HTML entity encoding for quotes to preserve JSON structure
+    const propsJSON = JSON.stringify(props).replace(/"/g, '&quot;');
+    const metadataJSON = JSON.stringify(metadata || {}).replace(/"/g, '&quot;');
+
+    // Create placeholder that the hydration system can find and replace
+    const displayText = (props.content as string) || context.title || context.content || '';
+    return `<span class="ns-component-placeholder" data-component="${componentName}" data-node-type="${nodeType}" data-props="${propsJSON}" data-metadata="${metadataJSON}" data-node-id="${props.nodeId || context.nodeId}" data-hydrate="pending">${this.escapeHtml(displayText)}</span>`;
   }
 }
 

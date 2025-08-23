@@ -6,7 +6,14 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { ContentProcessor, contentProcessor } from '$lib/services/contentProcessor.js';
+import { 
+  ContentProcessor, 
+  contentProcessor,
+  type HeaderNode,
+  type ParagraphNode,
+  type ASTNode,
+  type WikiLinkNode
+} from '$lib/services/contentProcessor.js';
 
 describe('ContentProcessor', () => {
   let processor: ContentProcessor;
@@ -39,16 +46,16 @@ describe('ContentProcessor', () => {
 
       const [h1, h2, h3] = ast.children;
       expect(h1.type).toBe('header');
-      expect((h1 as { level: number }).level).toBe(1);
-      expect((h1 as { content: string }).content).toBe('Header 1');
+      expect((h1 as HeaderNode).level).toBe(1);
+      expect((h1 as HeaderNode).content).toBe('Header 1');
 
       expect(h2.type).toBe('header');
-      expect((h2 as { level: number }).level).toBe(2);
-      expect((h2 as { content: string }).content).toBe('Header 2');
+      expect((h2 as HeaderNode).level).toBe(2);
+      expect((h2 as HeaderNode).content).toBe('Header 2');
 
       expect(h3.type).toBe('header');
-      expect((h3 as { level: number }).level).toBe(3);
-      expect((h3 as { content: string }).content).toBe('Header 3');
+      expect((h3 as HeaderNode).level).toBe(3);
+      expect((h3 as HeaderNode).content).toBe('Header 3');
     });
 
     it('should render AST back to HTML correctly', () => {
@@ -94,7 +101,7 @@ describe('ContentProcessor', () => {
       // Paragraph with inline elements
       const paragraph = ast.children[1];
       expect(paragraph.type).toBe('paragraph');
-      expect((paragraph as { children: unknown[] }).children).toHaveLength(9); // Mixed text and inline elements
+      expect((paragraph as ParagraphNode).children).toHaveLength(9); // Mixed text and inline elements
     });
 
     it('should handle empty content gracefully', () => {
@@ -324,14 +331,14 @@ describe('ContentProcessor', () => {
       const ast = processor.parseMarkdown(content);
 
       expect(ast.children).toHaveLength(1);
-      const paragraph = ast.children[0] as { children: { type: string }[] };
-      expect(paragraph.children.some((child: { type: string }) => child.type === 'wikilink')).toBe(
+      const paragraph = ast.children[0] as ParagraphNode;
+      expect(paragraph.children.some((child: ASTNode) => child.type === 'wikilink')).toBe(
         true
       );
 
       const wikiNode = paragraph.children.find(
-        (child: { type: string }) => child.type === 'wikilink'
-      ) as { target: string; displayText: string } | undefined;
+        (child: ASTNode) => child.type === 'wikilink'
+      ) as WikiLinkNode | undefined;
       expect(wikiNode?.target).toBe('Wikilink');
       expect(wikiNode?.displayText).toBe('Wikilink');
     });

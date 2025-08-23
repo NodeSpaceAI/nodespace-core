@@ -15,7 +15,7 @@
 
 import { eventBus } from './EventBus';
 import { ContentProcessor } from './contentProcessor';
-import type { NodeManager } from './NodeManager';
+import type { NodeManager, Node } from './NodeManager';
 import type { HierarchyService } from './HierarchyService';
 import type { NodeSpaceNode } from './MockDatabaseService';
 
@@ -117,7 +117,7 @@ export class NodeOperationsService {
       data.parent_id,
       data.root_id,
       nodeId,
-      opts.preserveHierarchy && existingNode
+      !!(opts.preserveHierarchy && existingNode)
     );
 
     // Handle sibling positioning
@@ -151,13 +151,13 @@ export class NodeOperationsService {
 
     if (isUpdate) {
       // Update existing node
-      this.nodeManager.updateNodeContent(nodeId, nodeManagerNode.content);
+      this.nodeManager.updateNodeContent(nodeId, nodeManagerNode.content || '');
 
       // Update other properties
       const node = this.nodeManager.findNode(nodeId);
       if (node) {
-        node.nodeType = nodeManagerNode.nodeType;
-        node.metadata = nodeManagerNode.metadata;
+        node.nodeType = nodeManagerNode.nodeType || 'text';
+        node.metadata = nodeManagerNode.metadata || {};
         // Update mentions after node exists
         if (opts.updateMentions && baseNodeData.mentions.length > 0) {
           node.mentions = baseNodeData.mentions;
@@ -215,11 +215,10 @@ export class NodeOperationsService {
     }
 
     // Emit events for coordination
-    eventBus.emit({
+    eventBus.emit<import('./EventTypes').ReferencesUpdateNeededEvent>({
       type: 'references:update-needed',
       namespace: 'coordination',
       source: this.serviceName,
-      timestamp: Date.now(),
       nodeId,
       updateType: 'content',
       affectedReferences: [...toAdd, ...toRemove]
@@ -453,7 +452,7 @@ export class NodeOperationsService {
    * Merge metadata with type-specific handling
    */
   private mergeMetadata(
-    existingNode: NodeSpaceNode | unknown,
+    existingNode: Node | null,
     newMetadata?: Record<string, unknown>,
     extractedMetadata?: Record<string, unknown>,
     preserve = true
@@ -481,7 +480,7 @@ export class NodeOperationsService {
   /**
    * Convert NodeSpaceNode format to NodeManager format
    */
-  private convertToNodeManagerFormat(node: NodeSpaceNode): unknown {
+  private convertToNodeManagerFormat(node: NodeSpaceNode): Partial<Node> {
     return {
       id: node.id,
       content: node.content,
@@ -596,11 +595,10 @@ export class NodeOperationsService {
   private async addBacklinkReference(targetNodeId: string, sourceNodeId: string): Promise<void> {
     // In the NodeManager system, this would update the target node's backlink list
     // For now, we emit an event for coordination
-    eventBus.emit({
+    eventBus.emit<import('./EventTypes').BacklinkDetectedEvent>({
       type: 'backlink:detected',
       namespace: 'phase2',
       source: this.serviceName,
-      timestamp: Date.now(),
       sourceNodeId,
       targetNodeId,
       linkType: 'mention',
@@ -614,11 +612,10 @@ export class NodeOperationsService {
    */
   private async removeBacklinkReference(targetNodeId: string, sourceNodeId: string): Promise<void> {
     // Emit event for backlink removal
-    eventBus.emit({
+    eventBus.emit<import('./EventTypes').ReferencesUpdateNeededEvent>({
       type: 'references:update-needed',
       namespace: 'coordination',
       source: this.serviceName,
-      timestamp: Date.now(),
       nodeId: targetNodeId,
       updateType: 'content',
       affectedReferences: [sourceNodeId]
@@ -662,7 +659,7 @@ export class NodeOperationsService {
   private getCreatedAtFromNode(node: { metadata?: Record<string, unknown> }): string {
     // NodeManager nodes don't have created_at, so we'll use current time
     // In full implementation, this would be stored in metadata or database
-    return node.metadata?.created_at || new Date().toISOString();
+    return (node.metadata?.created_at as string) || new Date().toISOString();
   }
 
   /**
@@ -698,11 +695,10 @@ export class NodeOperationsService {
     data: unknown,
     metadata?: Record<string, unknown>
   ): void {
-    eventBus.emit({
+    eventBus.emit<import('./EventTypes').DebugEvent>({
       type: 'debug:log',
       namespace: 'debug',
       source: this.serviceName,
-      timestamp: Date.now(),
       level: 'debug',
       message: `Node operation: ${operation} on ${nodeId}`,
       metadata: { operation, nodeId, data, ...metadata }

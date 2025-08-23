@@ -165,12 +165,19 @@ export class PerformanceMonitor {
   }
 
   /**
-   * Run comprehensive benchmarks
+   * Run comprehensive benchmarks (async)
    */
   public async runBenchmarks(): Promise<PerformanceBenchmark[]> {
+    return this.runBenchmarksSync();
+  }
+
+  /**
+   * Run comprehensive benchmarks synchronously
+   */
+  private runBenchmarksSync(): PerformanceBenchmark[] {
     const results: PerformanceBenchmark[] = [];
 
-    for (const [operation, target] of this.benchmarkTargets.entries()) {
+    for (const [operation, target] of Array.from(this.benchmarkTargets.entries())) {
       const stats = this.getOperationStats(operation);
 
       if (stats) {
@@ -198,7 +205,7 @@ export class PerformanceMonitor {
   public validatePerformanceTargets(): { passed: boolean; failures: string[] } {
     const failures: string[] = [];
 
-    for (const [operation, target] of this.benchmarkTargets.entries()) {
+    for (const [operation, target] of Array.from(this.benchmarkTargets.entries())) {
       const stats = this.getOperationStats(operation);
 
       if (stats && stats.avg > target) {
@@ -217,61 +224,23 @@ export class PerformanceMonitor {
   // ============================================================================
 
   private startMemoryMonitoring(): void {
-    if (
-      typeof window !== 'undefined' &&
-      'process' in window &&
-      (
-        window as Window & {
-          process?: {
-            memoryUsage: () => {
-              rss: number;
-              heapUsed: number;
-              heapTotal: number;
-              external: number;
-            };
-          };
-        }
-      ).process?.memoryUsage
-    ) {
+    if (typeof window !== 'undefined') {
       this.memoryTimer = window.setInterval(() => {
         this.captureMemorySnapshot();
       }, this.memoryCheckInterval);
+    } else if (typeof setInterval !== 'undefined') {
+      // Node.js environment
+      this.memoryTimer = setInterval(() => {
+        this.captureMemorySnapshot();
+      }, this.memoryCheckInterval) as unknown as number;
     }
   }
 
   private captureMemorySnapshot(): void {
     try {
       // Node.js environment
-      if (
-        typeof globalThis !== 'undefined' &&
-        'process' in globalThis &&
-        (
-          globalThis as typeof globalThis & {
-            process?: {
-              memoryUsage: () => {
-                rss: number;
-                heapUsed: number;
-                heapTotal: number;
-                external: number;
-                arrayBuffers: number;
-              };
-            };
-          }
-        ).process?.memoryUsage
-      ) {
-        const mem = (
-          globalThis as typeof globalThis & {
-            process: {
-              memoryUsage: () => {
-                rss: number;
-                heapUsed: number;
-                heapTotal: number;
-                external: number;
-                arrayBuffers: number;
-              };
-            };
-          }
-        ).process.memoryUsage();
+      if (typeof process !== 'undefined' && process?.memoryUsage) {
+        const mem = process.memoryUsage();
         const snapshot: MemorySnapshot = {
           heapUsed: mem.heapUsed,
           heapTotal: mem.heapTotal,
@@ -288,16 +257,17 @@ export class PerformanceMonitor {
         typeof performance !== 'undefined' &&
         'memory' in performance &&
         (
-          performance as typeof performance & {
+          performance as Performance & {
             memory?: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number };
           }
         ).memory
       ) {
-        const mem = (
-          performance as typeof performance & {
+        const perfMemory = (
+          performance as Performance & {
             memory: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number };
           }
         ).memory;
+        const mem = perfMemory;
         const snapshot: MemorySnapshot = {
           heapUsed: mem.usedJSHeapSize,
           heapTotal: mem.totalJSHeapSize,
@@ -501,11 +471,16 @@ export class PerformanceMonitor {
   public generatePerformanceReport(): {
     summary: PerformanceMetrics;
     benchmarks: PerformanceBenchmark[];
-    memoryAnalysis: ReturnType<typeof this.getMemoryStats>;
+    memoryAnalysis: {
+      current: MemorySnapshot | null;
+      trend: 'stable' | 'growing' | 'declining';
+      averageUsage: number;
+      peakUsage: number;
+    };
     recommendations: string[];
   } {
     const summary = this.getComprehensiveMetrics();
-    const benchmarks = this.runBenchmarks() as PerformanceBenchmark[]; // Sync version for reports
+    const benchmarks = this.runBenchmarksSync(); // Use sync version for reports
     const memoryAnalysis = this.getMemoryStats();
     const recommendations = this.generateRecommendations(summary, benchmarks, memoryAnalysis);
 
@@ -520,7 +495,12 @@ export class PerformanceMonitor {
   private generateRecommendations(
     summary: PerformanceMetrics,
     benchmarks: PerformanceBenchmark[],
-    memory: ReturnType<typeof this.getMemoryStats>
+    memory: {
+      current: MemorySnapshot | null;
+      trend: 'stable' | 'growing' | 'declining';
+      averageUsage: number;
+      peakUsage: number;
+    }
   ): string[] {
     const recommendations: string[] = [];
 
@@ -563,8 +543,12 @@ export class PerformanceMonitor {
   // ============================================================================
 
   public cleanup(): void {
-    if (this.memoryTimer && typeof window !== 'undefined') {
-      window.clearInterval(this.memoryTimer);
+    if (this.memoryTimer) {
+      if (typeof window !== 'undefined') {
+        window.clearInterval(this.memoryTimer);
+      } else if (typeof clearInterval !== 'undefined') {
+        clearInterval(this.memoryTimer);
+      }
       this.memoryTimer = null;
     }
 

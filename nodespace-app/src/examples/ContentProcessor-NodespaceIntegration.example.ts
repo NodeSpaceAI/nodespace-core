@@ -8,6 +8,7 @@
 import { contentProcessor } from '../lib/services/contentProcessor';
 // import NodeReferenceService from '../lib/services/NodeReferenceService';
 import { eventBus } from '../lib/services/EventBus';
+import type { NodeSpaceEvent, BacklinkDetectedEvent } from '../lib/services/EventTypes';
 
 // Example: Setting up ContentProcessor with NodeReferenceService integration
 export async function demonstrateNodespaceIntegration() {
@@ -67,10 +68,15 @@ export async function demonstrateNodespaceIntegration() {
   const sourceNodeId = 'demo-document-001';
 
   // Set up event listeners to capture emitted events
-  const capturedEvents: unknown[] = [];
+  const capturedEvents: NodeSpaceEvent[] = [];
   const originalEmit = eventBus.emit;
-  eventBus.emit = (event: unknown) => {
-    capturedEvents.push(event);
+  eventBus.emit = <T extends NodeSpaceEvent>(event: Omit<T, 'timestamp'>) => {
+    // Add timestamp to make it a complete NodeSpaceEvent
+    const completeEvent = {
+      ...event,
+      timestamp: Date.now()
+    } as T & { timestamp: number };
+    capturedEvents.push(completeEvent as NodeSpaceEvent);
     return originalEmit.call(eventBus, event);
   };
 
@@ -81,8 +87,9 @@ export async function demonstrateNodespaceIntegration() {
   capturedEvents.forEach((event, index) => {
     console.log(`  ${index + 1}. ${event.type} (${event.namespace})`);
     if (event.type === 'backlink:detected') {
-      console.log(`     Source: ${event.sourceNodeId} → Target: ${event.targetNodeId}`);
-      console.log(`     Link Type: ${event.linkType}, Text: "${event.linkText}"`);
+      const backlinkEvent = event as BacklinkDetectedEvent;
+      console.log(`     Source: ${backlinkEvent.sourceNodeId} → Target: ${backlinkEvent.targetNodeId}`);
+      console.log(`     Link Type: ${backlinkEvent.linkType}, Text: "${backlinkEvent.linkText}"`);
     }
   });
 
@@ -155,7 +162,9 @@ export function demonstrateRealTimeProcessing() {
 export { contentProcessor };
 
 // Example usage demonstration
-if (import.meta.main) {
-  demonstrateNodespaceIntegration();
-  demonstrateRealTimeProcessing();
+// Note: import.meta.main is not available in all environments
+// Use this block when running directly (e.g., via Bun or Deno)
+if (typeof window === 'undefined' && typeof global !== 'undefined') {
+  // demonstrateNodespaceIntegration();
+  // demonstrateRealTimeProcessing();
 }

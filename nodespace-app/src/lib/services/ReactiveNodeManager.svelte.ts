@@ -8,6 +8,10 @@
 import { NodeManager, type NodeManagerEvents, type Node } from './NodeManager';
 import { eventBus } from './EventBus';
 
+export interface HierarchicalNode extends Omit<Node, 'children'> {
+  children: HierarchicalNode[];
+}
+
 export class ReactiveNodeManager extends NodeManager {
   private _reactiveNodes = $state(new Map<string, Node>());
   private _reactiveRootNodeIds = $state<string[]>([]);
@@ -35,10 +39,11 @@ export class ReactiveNodeManager extends NodeManager {
 
     // Listen for decoration updates to trigger re-rendering
     eventBus.subscribe('decoration:update-needed', (event) => {
+      const decorationEvent = event as import('./EventTypes').DecorationUpdateNeededEvent;
       // Update the specific node to trigger reactivity
-      const node = super.nodes.get(event.nodeId);
+      const node = super.nodes.get(decorationEvent.nodeId);
       if (node) {
-        this._reactiveNodes.set(event.nodeId, { ...node });
+        this._reactiveNodes.set(decorationEvent.nodeId, { ...node });
         this.forceUIUpdate();
       }
     });
@@ -113,16 +118,16 @@ export class ReactiveNodeManager extends NodeManager {
   /**
    * Get root nodes with their children populated for hierarchical rendering
    */
-  get rootNodesWithChildren(): Node[] {
+  get rootNodesWithChildren(): HierarchicalNode[] {
     // Access reactivity trigger to ensure this getter re-runs when state changes
     void this._reactivityTrigger;
 
-    const result: Node[] = [];
+    const result: HierarchicalNode[] = [];
     for (const nodeId of this._reactiveRootNodeIds) {
       const node = this._reactiveNodes.get(nodeId);
       if (node) {
         // Create a copy with populated children
-        const nodeWithChildren = {
+        const nodeWithChildren: HierarchicalNode = {
           ...node,
           children: this.getChildrenNodes(nodeId)
         };
@@ -142,7 +147,7 @@ export class ReactiveNodeManager extends NodeManager {
   /**
    * Recursively get child nodes for a given parent
    */
-  private getChildrenNodes(parentId: string): Node[] {
+  private getChildrenNodes(parentId: string): HierarchicalNode[] {
     const parentNode = this._reactiveNodes.get(parentId);
     if (!parentNode || !parentNode.children.length) return [];
 
@@ -150,14 +155,15 @@ export class ReactiveNodeManager extends NodeManager {
       .map((childId) => {
         const childNode = this._reactiveNodes.get(childId);
         if (childNode) {
-          return {
+          const hierarchicalChild: HierarchicalNode = {
             ...childNode,
             children: this.getChildrenNodes(childId)
           };
+          return hierarchicalChild;
         }
         return null;
       })
-      .filter(Boolean) as Node[];
+      .filter((node): node is HierarchicalNode => node !== null);
   }
 
   /**

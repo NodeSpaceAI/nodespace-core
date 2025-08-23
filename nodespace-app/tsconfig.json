@@ -12,7 +12,7 @@
     "moduleResolution": "bundler",
     "types": ["vitest/globals", "@testing-library/jest-dom"]
   },
-  "include": ["src/**/*", "src/tests/types/globals.d.ts"]
+  "include": ["src/**/*", "src/tests/types/globals.d.ts", "src/tests/types/vitest-env.d.ts"]
   // Path aliases are handled by https://kit.svelte.dev/docs/configuration#alias
   // except $lib which is handled by https://kit.svelte.dev/docs/configuration#files
   //
