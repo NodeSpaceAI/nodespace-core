@@ -36,7 +36,7 @@
     nodeReferenceService?: NodeReferenceService | null;
   } = $props();
 
-  // DOM element and controller
+  // DOM element and controller - Svelte bind:this assignment
   let contentEditableElement: HTMLDivElement | undefined = undefined;
   let controller: ContentEditableController | null = null;
 
@@ -44,6 +44,8 @@
   let showAutocomplete = $state(false);
   let autocompletePosition = $state({ x: 0, y: 0 });
   let currentQuery = $state('');
+  // eslint-disable-next-line no-unused-vars
+  let currentTriggerContext = $state<TriggerContext | null>(null); // Used in trigger event handlers
 
   // Event dispatcher
   const dispatch = createEventDispatcher<{
@@ -87,6 +89,7 @@
       cursorPosition: { x: number; y: number };
     }) => {
       if (nodeReferenceService) {
+        currentTriggerContext = data.triggerContext;
         currentQuery = data.triggerContext.query;
         autocompletePosition = data.cursorPosition;
         showAutocomplete = true;
@@ -95,6 +98,7 @@
     triggerHidden: () => {
       showAutocomplete = false;
       currentQuery = '';
+      currentTriggerContext = null;
     },
     nodeReferenceSelected: (data: { nodeId: string; nodeTitle: string }) => {
       // Forward the event for potential parent component handling
@@ -156,11 +160,13 @@
     // Hide the modal
     showAutocomplete = false;
     currentQuery = '';
+    currentTriggerContext = null;
   }
 
   function handleAutocompleteClose(): void {
     showAutocomplete = false;
     currentQuery = '';
+    currentTriggerContext = null;
 
     // Return focus to the content editable element
     if (controller) {

@@ -340,8 +340,7 @@ export class MockDatabaseService {
       throw new Error(`Node ${nodeId} not found`);
     }
 
-    // Get old mentions for cleanup
-    // const oldMentions = node.mentions; // Currently unused but may be needed for future cleanup logic
+    // The old mentions will be cleaned up automatically by updateNode
 
     // Update the node
     await this.updateNode(nodeId, { mentions: [...newMentions] });
