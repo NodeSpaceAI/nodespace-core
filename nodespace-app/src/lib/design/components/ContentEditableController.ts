@@ -6,9 +6,7 @@
  */
 
 import ContentProcessor from '$lib/services/contentProcessor.js';
-import { type TriggerContext } from '$lib/services/NodeReferenceService.js';
-// Click positioning utilities available if needed
-// import { findCharacterFromClickFast } from './CursorPositioning.js';
+import type { TriggerContext } from '$lib/services/NodeReferenceService.js';
 
 export interface ContentEditableEvents {
   contentChanged: (content: string) => void;
@@ -43,20 +41,14 @@ export class ContentEditableController {
   private isInitialized: boolean = false;
   private events: ContentEditableEvents;
   private originalContent: string = ''; // Store original markdown content
-
-  // Click position tracking for precise cursor positioning
-  private pendingClickPosition: { x: number; y: number } | null = null;
   private isUpdatingFromInput: boolean = false; // Flag to prevent reactive loops
   private currentHeaderLevel: number = 0; // Track header level for CSS updates
-
-  // Note: MockElement approach removed - using browser APIs + character mapping instead
 
   // Bound event handlers for proper cleanup
   private boundHandleFocus = this.handleFocus.bind(this);
   private boundHandleBlur = this.handleBlur.bind(this);
   private boundHandleInput = this.handleInput.bind(this);
   private boundHandleKeyDown = this.handleKeyDown.bind(this);
-  private boundHandleMouseDown = this.handleMouseDown.bind(this);
 
   constructor(element: HTMLDivElement, nodeId: string, events: ContentEditableEvents) {
     this.element = element;
@@ -139,13 +131,6 @@ export class ContentEditableController {
   }
 
   /**
-   * Set cursor position to a specific character index
-   */
-  public setCursorPosition(characterIndex: number): void {
-    this.restoreCursorPosition(characterIndex);
-  }
-
-  /**
    * Cleanup controller when component is destroyed
    */
   public destroy(): void {
@@ -161,8 +146,6 @@ export class ContentEditableController {
     this.element.addEventListener('blur', this.boundHandleBlur);
     this.element.addEventListener('input', this.boundHandleInput);
     this.element.addEventListener('keydown', this.boundHandleKeyDown);
-    // Add mousedown listener - let it work alongside existing functionality
-    this.element.addEventListener('mousedown', this.boundHandleMouseDown);
   }
 
   private removeEventListeners(): void {
@@ -170,7 +153,6 @@ export class ContentEditableController {
     this.element.removeEventListener('blur', this.boundHandleBlur);
     this.element.removeEventListener('input', this.boundHandleInput);
     this.element.removeEventListener('keydown', this.boundHandleKeyDown);
-    this.element.removeEventListener('mousedown', this.boundHandleMouseDown);
   }
 
   private setRawMarkdown(content: string): void {
@@ -184,24 +166,97 @@ export class ContentEditableController {
 
   private setLiveFormattedContent(content: string): void {
     // Apply live formatting while preserving markdown syntax for editing
-    let html = this.escapeHtml(content);
-
-    // Apply live formatting with consistent structure to fix double-click selection
-    // Wrap entire formatted text (including syntax) in spans for consistent selection behavior
-    html = html.replace(
-      /\*\*([^*]+)\*\*/g,
-      '<span class="markdown-syntax">**<span class="markdown-bold">$1</span>**</span>'
-    );
-    html = html.replace(
-      /(?<!\*)\*([^*]+)\*(?!\*)/g,
-      '<span class="markdown-syntax">*<span class="markdown-italic">$1</span>*</span>'
-    );
-    html = html.replace(
-      /__([^_]+)__/g,
-      '<span class="markdown-syntax">__<span class="markdown-underline">$1</span>__</span>'
-    );
-
+    // Use sequential parser to handle nested patterns correctly
+    const escapedContent = this.escapeHtml(content);
+    const html = this.markdownToLiveHtml(escapedContent);
     this.element.innerHTML = html;
+  }
+
+  /**
+   * Convert markdown to HTML with syntax highlighting for editing mode
+   * Uses sequential parsing to handle nested patterns correctly
+   */
+  private markdownToLiveHtml(content: string): string {
+    let result = '';
+    let i = 0;
+
+    while (i < content.length) {
+      const remaining = content.substring(i);
+
+      // Check for nested underline patterns first (most specific)
+      if (remaining.startsWith('__***')) {
+        const match = remaining.match(/^__\*\*\*([^*_]+)\*\*\*__/);
+        if (match) {
+          result += `<span class="markdown-syntax">__***<span class="markdown-underline markdown-bold markdown-italic">${match[1]}</span>***__</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      if (remaining.startsWith('__**')) {
+        const match = remaining.match(/^__\*\*([^*_]+)\*\*__/);
+        if (match) {
+          result += `<span class="markdown-syntax">__**<span class="markdown-underline markdown-bold">${match[1]}</span>**__</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      if (remaining.startsWith('__*')) {
+        const match = remaining.match(/^__\*([^*_]+)\*__/);
+        if (match) {
+          result += `<span class="markdown-syntax">__*<span class="markdown-underline markdown-italic">${match[1]}</span>*__</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Check for triple stars (bold + italic)
+      if (remaining.startsWith('***')) {
+        const match = remaining.match(/^\*\*\*([^*]+)\*\*\*/);
+        if (match) {
+          result += `<span class="markdown-syntax">***<span class="markdown-bold markdown-italic">${match[1]}</span>***</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Check for double stars (bold)
+      if (remaining.startsWith('**')) {
+        const match = remaining.match(/^\*\*([^*]+)\*\*/);
+        if (match) {
+          result += `<span class="markdown-syntax">**<span class="markdown-bold">${match[1]}</span>**</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Check for single stars (italic) - make sure it's not part of ** or ***
+      if (remaining.startsWith('*') && !remaining.startsWith('**')) {
+        const match = remaining.match(/^\*([^*]+)\*/);
+        if (match) {
+          result += `<span class="markdown-syntax">*<span class="markdown-italic">${match[1]}</span>*</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Check for simple underlines
+      if (remaining.startsWith('__')) {
+        const match = remaining.match(/^__([^_]+)__/);
+        if (match) {
+          result += `<span class="markdown-syntax">__<span class="markdown-underline">${match[1]}</span>__</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // If no pattern matches, add the character as-is
+      result += content[i];
+      i++;
+    }
+
+    return result;
   }
 
   private escapeHtml(text: string): string {
@@ -230,20 +285,123 @@ export class ContentEditableController {
   // ============================================================================
 
   private markdownToHtml(markdownContent: string): string {
-    let html = markdownContent;
+    // Use a proper sequential parser instead of greedy regex replacements
+    let result = '';
+    let i = 0;
 
-    // Convert inline formatting only
-    html = html.replace(/\*\*(.*?)\*\*/g, '<span class="markdown-bold">$1</span>');
-    html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<span class="markdown-italic">$1</span>');
-    html = html.replace(/__(.*?)__/g, '<span class="markdown-underline">$1</span>');
+    while (i < markdownContent.length) {
+      // Check for each pattern at current position
+      const remaining = markdownContent.substring(i);
 
-    return html;
+      // Check for nested underline patterns first (most specific)
+      if (remaining.startsWith('__***')) {
+        const match = remaining.match(/^__\*\*\*([^*_]+)\*\*\*__/);
+        if (match) {
+          result += `<span class="markdown-underline markdown-bold markdown-italic">${match[1]}</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      if (remaining.startsWith('__**')) {
+        const match = remaining.match(/^__\*\*([^*_]+)\*\*__/);
+        if (match) {
+          result += `<span class="markdown-underline markdown-bold">${match[1]}</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      if (remaining.startsWith('__*')) {
+        const match = remaining.match(/^__\*([^*_]+)\*__/);
+        if (match) {
+          result += `<span class="markdown-underline markdown-italic">${match[1]}</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Check for triple stars (bold + italic)
+      if (remaining.startsWith('***')) {
+        const match = remaining.match(/^\*\*\*([^*]+)\*\*\*/);
+        if (match) {
+          result += `<span class="markdown-bold markdown-italic">${match[1]}</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Check for double stars (bold)
+      if (remaining.startsWith('**')) {
+        const match = remaining.match(/^\*\*([^*]+)\*\*/);
+        if (match) {
+          result += `<span class="markdown-bold">${match[1]}</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Check for single stars (italic) - make sure it's not part of ** or ***
+      if (remaining.startsWith('*') && !remaining.startsWith('**')) {
+        const match = remaining.match(/^\*([^*]+)\*/);
+        if (match) {
+          result += `<span class="markdown-italic">${match[1]}</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Check for simple underlines
+      if (remaining.startsWith('__')) {
+        const match = remaining.match(/^__([^_]+)__/);
+        if (match) {
+          result += `<span class="markdown-underline">${match[1]}</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // If no pattern matches, add the character as-is
+      result += markdownContent[i];
+      i++;
+    }
+
+    return result;
   }
 
   private htmlToMarkdown(htmlContent: string): string {
     let markdown = htmlContent;
 
     // Convert span classes to markdown syntax
+    // Handle most complex combinations first (underline + others)
+    markdown = markdown.replace(
+      /<span class="markdown-underline markdown-bold markdown-italic">(.*?)<\/span>/g,
+      '__***$1***__'
+    );
+    markdown = markdown.replace(
+      /<span class="markdown-underline markdown-italic markdown-bold">(.*?)<\/span>/g,
+      '__***$1***__'
+    );
+    markdown = markdown.replace(
+      /<span class="markdown-underline markdown-bold">(.*?)<\/span>/g,
+      '__**$1**__'
+    );
+    markdown = markdown.replace(
+      /<span class="markdown-underline markdown-italic">(.*?)<\/span>/g,
+      '__*$1*__'
+    );
+
+    // Handle remaining bold + italic combinations
+    markdown = markdown.replace(
+      /<span class="markdown-bold markdown-italic">(.*?)<\/span>/g,
+      '***$1***'
+    );
+    markdown = markdown.replace(
+      /<span class="markdown-italic markdown-bold">(.*?)<\/span>/g,
+      '***$1***'
+    );
+
+    // Handle individual formatting
     markdown = markdown.replace(/<span class="markdown-bold">(.*?)<\/span>/g, '**$1**');
     markdown = markdown.replace(/<span class="markdown-italic">(.*?)<\/span>/g, '*$1*');
     markdown = markdown.replace(/<span class="markdown-underline">(.*?)<\/span>/g, '__$1__');
@@ -254,39 +412,15 @@ export class ContentEditableController {
     return markdown;
   }
 
-  // Note: Removed MockElement management methods
-  // Browser APIs + character mapping approach is simpler and works better
-
   // ============================================================================
   // Private Methods - Event Handlers
   // ============================================================================
 
   private handleFocus(): void {
-    const wasEditing = this.isEditing;
     this.isEditing = true;
 
-    // Capture current formatted content for position mapping
-    const formattedContent = this.element.innerHTML;
-
-    // CRITICAL FIX: Calculate cursor position BEFORE showing syntax
-    let calculatedMarkdownPosition: number | null = null;
-    if (!wasEditing && this.pendingClickPosition) {
-      calculatedMarkdownPosition = this.calculateMarkdownPositionFromClick(
-        this.pendingClickPosition,
-        formattedContent
-      );
-    }
-
-    // NOW show raw markdown for editing (this adds the syntax)
+    // On focus: show raw markdown for editing (use stored original content)
     this.setRawMarkdown(this.originalContent);
-
-    // Apply the pre-calculated position AFTER syntax is shown
-    if (calculatedMarkdownPosition !== null) {
-      setTimeout(() => {
-        this.restoreCursorPosition(calculatedMarkdownPosition!);
-        this.pendingClickPosition = null; // Clear the pending position
-      }, 0); // Use setTimeout to ensure DOM has updated
-    }
 
     this.events.focus();
   }
@@ -300,45 +434,6 @@ export class ContentEditableController {
     this.setFormattedContent(currentText);
 
     this.events.blur();
-  }
-
-  private handleMouseDown(event: MouseEvent): void {
-    // CRITICAL: Don't interfere with double-click selection behavior
-    // Only capture position for single clicks (detail === 1)
-    if (event.detail !== 1) {
-      return;
-    }
-
-    // Don't prevent default or stop propagation - let other handlers work
-    // We just need to capture the position for our cursor positioning
-
-    // Only capture mouse position for single clicks for cursor positioning
-    this.pendingClickPosition = {
-      x: event.clientX,
-      y: event.clientY
-    };
-
-    // If already editing, immediately process the mousedown for repositioning
-    if (this.isEditing) {
-      const formattedContent = this.element.innerHTML;
-
-      // Use setTimeout to ensure mousedown handling is complete
-      setTimeout(() => {
-        if (this.pendingClickPosition) {
-          const markdownPosition = this.calculateMarkdownPositionFromClick(
-            this.pendingClickPosition,
-            formattedContent
-          );
-          if (markdownPosition !== null) {
-            this.restoreCursorPosition(markdownPosition);
-          }
-          this.pendingClickPosition = null;
-        }
-      }, 0);
-    }
-
-    // Let the event bubble up to parent handlers (like the test page click handler)
-    // We don't call event.stopPropagation() or event.preventDefault()
   }
 
   private handleInput(): void {
@@ -805,11 +900,8 @@ export class ContentEditableController {
 
   /**
    * Preserve inline formatting when splitting text
-   * If cursor is inside ***bold italic text|more bold italic***, should produce:
-   * - beforeCursor: "***bold italic text***"
-   * - afterCursor: "***more bold italic***"
-   *
-   * Handles nested formatting correctly by closing/opening in proper order
+   * Ensures all opening markers have matching closing markers
+   * For ***__text|more__***, produces: "***__text__***" and "***__more__***"
    */
   private preserveInlineFormatting(
     content: string,
@@ -821,26 +913,17 @@ export class ContentEditableController {
     const beforeCursor = content.substring(0, cursorPosition);
     const afterCursor = content.substring(cursorPosition);
 
-    // Track active formatting at cursor position
-    const activeFormatting = this.getActiveFormattingAtPosition(content, cursorPosition);
+    // Find all unmatched opening markers that need to be closed
+    const unmatchedOpening = this.findUnmatchedOpeningMarkers(beforeCursor);
 
-    let processedBefore = beforeCursor;
-    let processedAfter = afterCursor;
+    // Close the first part with all unmatched opening markers (in reverse order for proper nesting)
+    const closingForBefore = unmatchedOpening.slice().reverse().join('');
 
-    // For nested formatting, we need to close/open in the correct order
-    // Close markers in reverse order (innermost first), open in normal order
-    const closeOrder = [...activeFormatting].reverse();
-    const openOrder = activeFormatting;
+    // Open the second part with all unmatched opening markers (in original order)
+    const openingForAfter = unmatchedOpening.join('');
 
-    // Close active formatting in before text (reverse order)
-    for (const formatting of closeOrder) {
-      processedBefore += formatting.marker;
-    }
-
-    // Open active formatting in after text (normal order)
-    for (const formatting of openOrder) {
-      processedAfter = formatting.marker + processedAfter;
-    }
+    const processedBefore = beforeCursor + closingForBefore;
+    const processedAfter = openingForAfter + afterCursor;
 
     return {
       beforeCursor: processedBefore,
@@ -849,9 +932,71 @@ export class ContentEditableController {
   }
 
   /**
+   * Find all unmatched opening markers that need to be closed
+   * Scans the entire beforeCursor text to find all formatting markers that don't have matching closing markers
+   */
+  private findUnmatchedOpeningMarkers(beforeCursor: string): string[] {
+    const openMarkers: Array<{ marker: string; position: number }> = [];
+    const closeMarkers: Array<{ marker: string; position: number }> = [];
+
+    // Find all markers in order of appearance
+    const markers = ['***', '**', '__', '*'];
+
+    for (let i = 0; i < beforeCursor.length; i++) {
+      for (const marker of markers) {
+        if (beforeCursor.substring(i, i + marker.length) === marker) {
+          // Check if this is an opening or closing marker by counting previous occurrences
+          const before = beforeCursor.substring(0, i);
+          const count = (before.match(new RegExp(this.escapeRegex(marker), 'g')) || []).length;
+
+          if (count % 2 === 0) {
+            // Even count = opening marker
+            openMarkers.push({ marker, position: i });
+          } else {
+            // Odd count = closing marker
+            closeMarkers.push({ marker, position: i });
+          }
+
+          i += marker.length - 1; // Skip ahead
+          break;
+        }
+      }
+    }
+
+    // Find unmatched opening markers
+    const unmatchedOpening: string[] = [];
+    const usedClosing = new Set<number>();
+
+    // Match opening markers with closing markers (in reverse order for proper nesting)
+    for (let i = openMarkers.length - 1; i >= 0; i--) {
+      const openMarker = openMarkers[i];
+      let matched = false;
+
+      // Find the closest unused closing marker after this opening
+      for (let j = 0; j < closeMarkers.length; j++) {
+        const closeMarker = closeMarkers[j];
+        if (
+          !usedClosing.has(j) &&
+          closeMarker.marker === openMarker.marker &&
+          closeMarker.position > openMarker.position
+        ) {
+          usedClosing.add(j);
+          matched = true;
+          break;
+        }
+      }
+
+      if (!matched) {
+        unmatchedOpening.unshift(openMarker.marker); // Add to front to maintain order
+      }
+    }
+
+    return unmatchedOpening;
+  }
+
+  /**
    * Get active formatting markers at a specific position
    * Returns formatting that is "open" at the cursor position
-   * Handles nested formatting like ***bold+italic*** correctly
    */
   private getActiveFormattingAtPosition(
     content: string,
@@ -862,57 +1007,25 @@ export class ContentEditableController {
   }> {
     const activeFormatting: Array<{ marker: string; type: 'bold' | 'italic' | 'underline' }> = [];
 
-    // Check for nested formatting first (***text*** = bold + italic)
-    if (this.isInsideNestedFormatting(content, position)) {
-      // For nested formatting like ***text***, we need both bold and italic
+    // Check for bold (**text**)
+    if (this.isInsideFormatting(content, position, '**')) {
       activeFormatting.push({ marker: '**', type: 'bold' });
+    }
+
+    // Check for italic (*text*) - but not if already inside bold
+    if (
+      !this.isInsideFormatting(content, position, '**') &&
+      this.isInsideFormatting(content, position, '*')
+    ) {
       activeFormatting.push({ marker: '*', type: 'italic' });
-    } else {
-      // Check for individual formatting types
+    }
 
-      // Check for bold (**text**) only
-      if (this.isInsideFormatting(content, position, '**')) {
-        activeFormatting.push({ marker: '**', type: 'bold' });
-      }
-
-      // Check for italic (*text*) only (single asterisk, not nested)
-      if (
-        this.isInsideFormatting(content, position, '*') &&
-        !this.isInsideFormatting(content, position, '**')
-      ) {
-        activeFormatting.push({ marker: '*', type: 'italic' });
-      }
-
-      // Check for underline (__text__)
-      if (this.isInsideFormatting(content, position, '__')) {
-        activeFormatting.push({ marker: '__', type: 'underline' });
-      }
+    // Check for underline (__text__)
+    if (this.isInsideFormatting(content, position, '__')) {
+      activeFormatting.push({ marker: '__', type: 'underline' });
     }
 
     return activeFormatting;
-  }
-
-  /**
-   * Check if position is inside nested formatting like ***text***
-   * This represents both bold (**) and italic (*) combined
-   */
-  private isInsideNestedFormatting(content: string, position: number): boolean {
-    const beforeCursor = content.substring(0, position);
-    const afterCursor = content.substring(position);
-
-    // Look for pattern: ***...cursor...***
-    const beforeMatch = beforeCursor.match(/(\*{3,})(?!.*\*{3,})/); // Last occurrence of 3+ asterisks
-    const afterMatch = afterCursor.match(/(\*{3,})/);
-
-    if (beforeMatch && afterMatch) {
-      const beforeAsterisks = beforeMatch[1].length;
-      const afterAsterisks = afterMatch[1].length;
-
-      // For nested formatting, we need at least 3 asterisks on each side
-      return beforeAsterisks >= 3 && afterAsterisks >= 3;
-    }
-
-    return false;
   }
 
   /**
@@ -1062,229 +1175,5 @@ export class ContentEditableController {
     // Emit content change event
     this.events.contentChanged(newContent);
     this.events.nodeReferenceSelected({ nodeId, nodeTitle });
-  }
-
-  /**
-   * Position cursor based on click coordinates using browser's native caret positioning
-   * Much more reliable than coordinate-based measurements
-   */
-  private positionCursorFromClick(
-    clickCoords: { x: number; y: number },
-    formattedContent: string
-  ): void {
-    try {
-      // Use browser's native caret positioning to get character position
-      const htmlCharacterPosition = this.getCharacterPositionFromClick(
-        clickCoords.x,
-        clickCoords.y
-      );
-
-      if (htmlCharacterPosition === null) {
-        this.positionCursorAtEnd();
-        return;
-      }
-
-      // Map the HTML character position to markdown character position
-      const markdownPosition = this.mapHtmlPositionToMarkdown(
-        htmlCharacterPosition,
-        formattedContent,
-        this.originalContent
-      );
-
-      // Set the cursor position in the raw markdown content
-      this.restoreCursorPosition(markdownPosition);
-    } catch (error) {
-      console.error('Error in character-based cursor positioning:', error);
-      this.positionCursorAtEnd();
-    }
-  }
-
-  /**
-   * Get character position from click using browser's native APIs
-   * This is much more accurate than measuring character positions manually
-   */
-  private getCharacterPositionFromClick(x: number, y: number): number | null {
-    try {
-      // Try modern caretPositionFromPoint first (better accuracy)
-      if (document.caretPositionFromPoint) {
-        const caretPosition = document.caretPositionFromPoint(x, y);
-        if (caretPosition && caretPosition.offsetNode) {
-          const offset = this.getTextOffsetFromElement(
-            caretPosition.offsetNode,
-            caretPosition.offset
-          );
-          return offset;
-        }
-      }
-
-      // Fallback to caretRangeFromPoint (older but widely supported)
-      if (document.caretRangeFromPoint) {
-        const range = document.caretRangeFromPoint(x, y);
-        if (range && range.startContainer) {
-          const offset = this.getTextOffsetFromElement(range.startContainer, range.startOffset);
-          return offset;
-        }
-      }
-
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Calculate markdown position from click coordinates WITHOUT changing DOM
-   * This is the key fix: calculate position before syntax is shown
-   */
-  private calculateMarkdownPositionFromClick(
-    clickCoords: { x: number; y: number },
-    formattedContent: string
-  ): number | null {
-    try {
-      // Get character position in the current display content (without syntax)
-      const htmlCharacterPosition = this.getCharacterPositionFromClick(
-        clickCoords.x,
-        clickCoords.y
-      );
-
-      if (htmlCharacterPosition === null) {
-        return null;
-      }
-
-      // Map the HTML character position to markdown character position
-      const markdownPosition = this.mapHtmlPositionToMarkdown(
-        htmlCharacterPosition,
-        formattedContent,
-        this.originalContent
-      );
-
-      return markdownPosition;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Extract plain text content from HTML, preserving character positions
-   */
-  private extractTextFromHtml(htmlContent: string): string {
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = htmlContent;
-    return tempDiv.textContent || '';
-  }
-
-  /**
-   * Map HTML character position to equivalent markdown character position
-   * This accounts for the difference between formatted HTML and raw markdown syntax
-   *
-   * Improved algorithm:
-   * 1. Handles header syntax directly and simply
-   * 2. Uses segment-based mapping for inline formatting
-   * 3. Maintains position accuracy across all markdown syntax types
-   */
-  private mapHtmlPositionToMarkdown(
-    htmlPosition: number,
-    htmlContent: string,
-    markdownContent: string
-  ): number {
-    // Extract plain text from HTML for comparison
-    const htmlText = this.extractTextFromHtml(htmlContent);
-
-    // Simple case: content matches exactly (no markdown syntax)
-    if (htmlText === markdownContent) {
-      return Math.min(htmlPosition, markdownContent.length);
-    }
-
-    // Check for header syntax at the beginning of markdown content
-    const headerMatch = markdownContent.match(/^(#{1,6}\s+)/);
-    const headerSyntaxLength = headerMatch ? headerMatch[1].length : 0;
-
-    // Extract content after header syntax for comparison
-    const markdownContentWithoutHeader = headerMatch
-      ? markdownContent.substring(headerSyntaxLength)
-      : markdownContent;
-
-    // For headers, if HTML text matches content after header syntax, simple offset
-    if (htmlText === markdownContentWithoutHeader) {
-      // Direct mapping: add the header syntax offset to the HTML position
-      const mappedPosition = Math.min(htmlPosition + headerSyntaxLength, markdownContent.length);
-      return mappedPosition;
-    }
-
-    // For content with inline formatting, use segment-based mapping
-    return this.mapPositionWithInlineFormatting(
-      htmlPosition,
-      htmlText,
-      markdownContent,
-      headerSyntaxLength
-    );
-  }
-
-  /**
-   * Map position when inline formatting (bold, italic, etc.) is present
-   * Simple character-by-character approach that actually works
-   */
-  private mapPositionWithInlineFormatting(
-    htmlPosition: number,
-    htmlText: string,
-    markdownContent: string,
-    headerOffset: number
-  ): number {
-    // Simple approach: walk through both strings character by character
-    // and build a mapping
-    const mapping = this.buildCharacterMapping(htmlText, markdownContent.substring(headerOffset));
-
-    // Get the markdown position from our mapping
-    const markdownPosition =
-      mapping[htmlPosition] !== undefined
-        ? headerOffset + mapping[htmlPosition]
-        : markdownContent.length;
-
-    return Math.min(markdownPosition, markdownContent.length);
-  }
-
-  /**
-   * Build a character-by-character mapping between HTML text and markdown text
-   * This handles inline formatting by tracking which characters correspond
-   */
-  private buildCharacterMapping(htmlText: string, markdownText: string): number[] {
-    const mapping: number[] = [];
-    let htmlIndex = 0;
-    let markdownIndex = 0;
-
-    while (htmlIndex < htmlText.length && markdownIndex < markdownText.length) {
-      const htmlChar = htmlText[htmlIndex];
-      const markdownChar = markdownText[markdownIndex];
-
-      if (htmlChar === markdownChar) {
-        // Characters match - direct mapping
-        mapping[htmlIndex] = markdownIndex;
-        htmlIndex++;
-        markdownIndex++;
-      } else {
-        // Characters don't match - likely markdown syntax
-        // Skip the markdown syntax character(s)
-        markdownIndex++;
-      }
-    }
-
-    // Handle remaining HTML characters (map to end)
-    while (htmlIndex < htmlText.length) {
-      mapping[htmlIndex] = markdownText.length;
-      htmlIndex++;
-    }
-
-    return mapping;
-  }
-
-  // Removed complex createPositionSegments method
-  // Now using simpler character-by-character mapping approach
-
-  /**
-   * Position cursor at the end of content as fallback
-   */
-  private positionCursorAtEnd(): void {
-    const contentLength = (this.element.textContent || '').length;
-    this.restoreCursorPosition(contentLength);
   }
 }

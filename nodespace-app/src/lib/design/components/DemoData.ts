@@ -24,7 +24,7 @@ export const demoNodes = [
             id: uuidv4(),
             type: 'text',
             autoFocus: false,
-            content: 'This is a grandchild node',
+            content: 'This is a __***child***__ node with *inline* formatting',
             inheritHeaderLevel: 0,
             children: [],
             expanded: true
