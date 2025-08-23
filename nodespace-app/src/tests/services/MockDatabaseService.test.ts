@@ -907,8 +907,8 @@ describe('MockDatabaseService', () => {
       const queryStartTime = performance.now();
 
       const specialNodes = await db.queryNodes({ type: 'special' });
-      await db.queryNodes({ mentioned_by: 'node-0' }); // Query nodes with mentions
-      await db.queryNodes({ content_contains: '500' }); // Content search query
+      await db.queryNodes({ mentioned_by: 'node-0' });
+      await db.queryNodes({ content_contains: '500' });
 
       const queryTime = performance.now() - queryStartTime;
 

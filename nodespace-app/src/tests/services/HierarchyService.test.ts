@@ -550,24 +550,23 @@ describe('HierarchyService', () => {
       // Populate cache
       hierarchyService.getNodeDepth('test-node');
 
-      hierarchyService.getCacheStats(); // Get initial cache state
+      hierarchyService.getCacheStats();
 
       // Emit hierarchy update event
-      const nodeUpdatedEvent = {
-        type: 'node:updated' as const,
-        namespace: 'lifecycle' as const,
+      eventBus.emit({
+        type: 'node:updated',
+        namespace: 'lifecycle',
         source: 'test',
         timestamp: Date.now(),
         nodeId: 'test-node',
-        updateType: 'hierarchy' as const
-      };
-      eventBus.emit(nodeUpdatedEvent);
+        updateType: 'hierarchy'
+      });
 
       // Allow event processing
       await new Promise((resolve) => setTimeout(resolve, 10));
 
       // Cache should be invalidated
-      hierarchyService.getCacheStats(); // Verify cache state after invalidation
+      hierarchyService.getCacheStats();
       // Note: Cache invalidation might not immediately reduce size due to
       // how the implementation works, but cache hits should reset
     });
@@ -587,15 +586,14 @@ describe('HierarchyService', () => {
       hierarchyService.getNodeDepth('node2');
 
       // Emit hierarchy changed event
-      const hierarchyChangedEvent = {
-        type: 'hierarchy:changed' as const,
-        namespace: 'lifecycle' as const,
+      eventBus.emit({
+        type: 'hierarchy:changed',
+        namespace: 'lifecycle',
         source: 'test',
         timestamp: Date.now(),
         affectedNodes: ['node1', 'node2'],
-        changeType: 'move' as const
-      };
-      eventBus.emit(hierarchyChangedEvent);
+        changeType: 'move'
+      });
 
       // Allow event processing
       await new Promise((resolve) => setTimeout(resolve, 10));
