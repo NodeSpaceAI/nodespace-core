@@ -8,6 +8,7 @@
 <script lang="ts">
   import { createEventDispatcher, onDestroy } from 'svelte';
   import Icon, { type IconName } from '$lib/design/icons';
+  
   import {
     ContentEditableController,
     type ContentEditableEvents
@@ -110,13 +111,16 @@
       // Update immediately
       updateWidth();
       
-      // Set up resize observer for dynamic updates
-      const resizeObserver = new ResizeObserver(updateWidth);
-      resizeObserver.observe(contentEditableElement);
-      
-      return () => {
-        resizeObserver.disconnect();
-      };
+      // Set up resize observer for dynamic updates (check if supported)
+      if (typeof (globalThis as any).ResizeObserver !== 'undefined') {
+        const ResizeObserverClass = (globalThis as any).ResizeObserver;
+        const resizeObserver = new ResizeObserverClass(updateWidth);
+        resizeObserver.observe(contentEditableElement);
+        
+        return () => {
+          resizeObserver.disconnect();
+        };
+      }
     }
   });
 

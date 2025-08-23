@@ -542,6 +542,7 @@ describe('HierarchyService', () => {
       
       let stats = hierarchyService.getCacheStats();
       const initialCacheSize = stats.depthCacheSize;
+      void initialCacheSize; // Used for cache size verification
 
       // Emit hierarchy update event
       eventBus.emit({

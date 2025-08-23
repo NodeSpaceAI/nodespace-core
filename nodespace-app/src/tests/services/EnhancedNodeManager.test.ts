@@ -378,8 +378,10 @@ describe('EnhancedNodeManager', () => {
       const secondTime = performance.now() - secondCallTime;
 
       // Compare analysis content without timestamp
-      const { lastAnalyzed: _, ...analysis1Clean } = analysis1 as any;
-      const { lastAnalyzed: __, ...analysis2Clean } = analysis2 as any;
+      const { lastAnalyzed: _ignored1, ...analysis1Clean } = analysis1 as any;
+      const { lastAnalyzed: _ignored2, ...analysis2Clean } = analysis2 as any;
+      void _ignored1; // Mark as intentionally unused
+      void _ignored2; // Mark as intentionally unused
       
       expect(analysis1Clean).toEqual(analysis2Clean);
       expect(secondTime).toBeLessThan(firstTime); // Cached call should be faster
@@ -891,10 +893,15 @@ describe('EnhancedNodeManager', () => {
 
       const startTime = performance.now();
 
-      // Perform various operations
+      // Perform various operations for performance testing
       const globalAnalysis = enhancedNodeManager.analyzeAllNodes();
       const conceptNodes = enhancedNodeManager.searchNodes({ nodeType: 'concept' });
       const nodesWithManyRefs = enhancedNodeManager.searchNodes({ minWordCount: 5 });
+      
+      // Use the results to prevent dead code elimination
+      void globalAnalysis;
+      void conceptNodes; 
+      void nodesWithManyRefs;
 
       for (let i = 0; i < 10; i++) {
         enhancedNodeManager.getEnhancedNodeDepth(`kb-node-${i * 10}`);
