@@ -71,4 +71,3 @@ declare global {
  * Additional test environment type augmentations
  * Enable flexible global properties for testing scenarios
  */
-export {};

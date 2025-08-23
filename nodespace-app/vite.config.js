@@ -11,9 +11,7 @@ export default defineConfig(async () => ({
   esbuild: {
     keepNames: true,
     // Use a safer target that doesn't trigger esbuild service crashes
-    target: 'es2020',
-    // Prevent esbuild service crashes during style processing
-    loader: { '.css': 'css' }
+    target: 'es2020'
   },
 
   // CSS configuration for stable processing

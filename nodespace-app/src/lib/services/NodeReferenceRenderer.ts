@@ -535,32 +535,8 @@ export class NodeReferenceRenderer {
         data-props="${propsJSON}" 
         data-metadata="${metadataJSON}"></div>`;
 
-      // Apply CSS classes and accessibility attributes with individual error handling
+      // Apply common attributes for both decoration types
       const nodeType = context.nodeType;
-
-      // Safely set className
-      try {
-        element.className = `ns-noderef ns-noderef--${nodeType}`;
-      } catch (error) {
-        console.warn('NodeReferenceRenderer: Failed to set className', error);
-      }
-
-      // Safely set aria-label
-      try {
-        element.setAttribute(
-          'aria-label',
-          (decoration.props.ariaLabel as string) || `Reference to ${nodeType}`
-        );
-      } catch (error) {
-        console.warn('NodeReferenceRenderer: Failed to set aria-label', error);
-      }
-
-      // Safely set role
-      try {
-        element.setAttribute('role', 'button'); // Component decorations are interactive
-      } catch (error) {
-        console.warn('NodeReferenceRenderer: Failed to set role', error);
-      }
 
       // Set data attributes safely
       try {
@@ -571,18 +547,19 @@ export class NodeReferenceRenderer {
         console.warn('NodeReferenceRenderer: Failed to set data attributes', error);
       }
 
+      // Set accessibility attributes for component containers
+      try {
+        element.setAttribute('aria-label', decoration.props.ariaLabel as string || `Reference to ${nodeType}`);
+        element.setAttribute('role', 'button');
+      } catch (error) {
+        console.warn('NodeReferenceRenderer: Failed to set accessibility attributes', error);
+      }
+
       // Mark as rendered safely
       try {
         element.classList.add('ns-noderef--rendered');
       } catch (error) {
         console.warn('NodeReferenceRenderer: Failed to add rendered class', error);
-      }
-
-      // Set up keyboard accessibility (component decorations are interactive)
-      try {
-        element.setAttribute('tabindex', '0');
-      } catch (error) {
-        console.warn('NodeReferenceRenderer: Failed to set tabindex', error);
       }
 
       try {

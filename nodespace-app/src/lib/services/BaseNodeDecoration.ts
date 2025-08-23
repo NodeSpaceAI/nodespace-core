@@ -63,9 +63,9 @@ export abstract class BaseNodeDecorator {
 
   /**
    * Abstract method that must be implemented by each node type
-   * This is the core decorateReference() pattern (supports both HTML and Component decorations)
+   * This is the core decorateReference() pattern for component-based decorations
    */
-  public abstract decorateReference(context: DecorationContext): DecorationResult | ComponentDecoration;
+  public abstract decorateReference(context: DecorationContext): ComponentDecoration;
 
   /**
    * Base implementation with safe defaults (HTML-based decoration)
@@ -641,15 +641,13 @@ export class NodeDecoratorFactory {
     const defaultDecorator = new DefaultNodeDecorator(this.nodeReferenceService);
     this.decorators.set('default', defaultDecorator);
     this.decorators.set('text', defaultDecorator);
+    this.decorators.set('task', defaultDecorator);
+    this.decorators.set('user', defaultDecorator);
+    this.decorators.set('date', defaultDecorator);
+    this.decorators.set('document', defaultDecorator);
+    this.decorators.set('ai_chat', defaultDecorator);
     this.decorators.set('entity', defaultDecorator);
     this.decorators.set('query', defaultDecorator);
-
-    // Rich HTML-based decorators for specific node types (additional functionality)
-    this.decorators.set('task', new TaskNodeDecorator(this.nodeReferenceService));
-    this.decorators.set('user', new UserNodeDecorator(this.nodeReferenceService));
-    this.decorators.set('date', new DateNodeDecorator(this.nodeReferenceService));
-    this.decorators.set('document', new DocumentNodeDecorator(this.nodeReferenceService));
-    this.decorators.set('ai_chat', new AINodeDecorator(this.nodeReferenceService));
   }
 
   public getDecorator(nodeType: string): BaseNodeDecorator {
@@ -657,9 +655,9 @@ export class NodeDecoratorFactory {
   }
 
   /**
-   * Creates decoration for the specified node type (supports both HTML and Component returns)
+   * Creates component decoration for the specified node type
    */
-  public decorateReference(context: DecorationContext): DecorationResult | ComponentDecoration {
+  public decorateReference(context: DecorationContext): ComponentDecoration {
     const decorator = this.getDecorator(context.nodeType);
     return decorator.decorateReference(context);
   }

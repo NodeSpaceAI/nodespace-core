@@ -79,11 +79,12 @@
 
 @layer base {
   * {
-    @apply border-border;
+    border-color: hsl(var(--border));
   }
 
   body {
-    @apply bg-background text-foreground;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
     /* NodeSpace monospace font stack for precise editing */
     font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
   }
@@ -102,6 +103,3 @@
   --node-document: 270 75% 50%;
   --processing-opacity: 0.7;
 }
-
-/* Import NodeSpace Reference Decoration CSS Framework */
-@import './lib/styles/noderef.css';
