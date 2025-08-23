@@ -7,9 +7,10 @@
   import TextNode from '$lib/components/TextNode.svelte';
   import Icon from '$lib/design/icons';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
-  import { ReactiveNodeManager } from '$lib/services/ReactiveNodeManager.svelte';
+  import { ReactiveNodeManager } from '$lib/services/ReactiveNodeManager';
   import { type NodeManagerEvents } from '$lib/services/NodeManager';
   import { demoNodes } from './DemoData';
+  import { visibleNodes as storeVisibleNodes } from '$lib/services/nodeStore';
 
   // Demo data imported from external file
 
@@ -39,7 +40,7 @@
   };
 
   const nodeManager = new ReactiveNodeManager(nodeManagerEvents);
-
+  
   // Initialize NodeManager with demo data
   nodeManager.initializeFromLegacyData(demoNodes);
 
@@ -52,8 +53,10 @@
       newContent?: string;
       inheritHeaderLevel?: number;
       cursorAtBeginning?: boolean;
-    }>
+    }> 
   ) {
+    console.log('🚀 handleCreateNewNode called with event.detail:', event.detail);
+    
     const {
       afterNodeId,
       nodeType,
@@ -63,12 +66,41 @@
       cursorAtBeginning
     } = event.detail;
 
+    console.log('🔍 Extracted parameters:', { afterNodeId, nodeType, currentContent, newContent, inheritHeaderLevel, cursorAtBeginning });
+
+    // CRITICAL FIX: Add validation to prevent circular reference issues
+    if (!afterNodeId || !nodeType) {
+      console.error('❌ VALIDATION FAILED: Invalid node creation parameters:', { afterNodeId, nodeType });
+      return;
+    }
+    console.log('✅ Parameter validation passed');
+
+    // Verify the after node exists before creating
+    console.log('🔍 Checking if afterNode exists in nodeManager.nodes:', nodeManager.nodes.has(afterNodeId));
+    console.log('🔍 Total nodes in nodeManager:', nodeManager.nodes.size);
+    console.log('🔍 Available node IDs:', Array.from(nodeManager.nodes.keys()));
+    
+    if (!nodeManager.nodes.has(afterNodeId)) {
+      console.error('❌ VALIDATION FAILED: After node does not exist:', afterNodeId);
+      return;
+    }
+    console.log('✅ After node exists validation passed');
+
     // Update current node content if provided
     if (currentContent !== undefined) {
+      console.log('🔄 Updating current node content:', currentContent);
       nodeManager.updateNodeContent(afterNodeId, currentContent);
     }
 
     // Create new node using NodeManager with sophisticated logic
+    console.log('🏗️ Calling nodeManager.createNode with:', {
+      afterNodeId,
+      newContent: newContent || '',
+      nodeType,
+      inheritHeaderLevel,
+      cursorAtBeginning: cursorAtBeginning || false
+    });
+    
     const newNodeId = nodeManager.createNode(
       afterNodeId,
       newContent || '',
@@ -76,6 +108,17 @@
       inheritHeaderLevel,
       cursorAtBeginning || false
     );
+
+    console.log('🏗️ nodeManager.createNode returned:', newNodeId);
+
+    // CRITICAL FIX: Validate that node creation was successful
+    if (!newNodeId || !nodeManager.nodes.has(newNodeId)) {
+      console.error('❌ NODE CREATION FAILED: Node creation failed for afterNodeId:', afterNodeId);
+      console.error('❌ newNodeId:', newNodeId);
+      console.error('❌ nodeManager.nodes.has(newNodeId):', newNodeId ? nodeManager.nodes.has(newNodeId) : 'newNodeId is falsy');
+      return;
+    }
+    console.log('✅ Node creation successful, newNodeId:', newNodeId);
 
     // Handle HTML formatting conversion if needed
     if (newContent && newContent.includes('<span class="markdown-')) {
@@ -87,18 +130,34 @@
   }
 
   // Handle indenting nodes (Tab key)
-  function handleIndentNode(event: CustomEvent<{ nodeId: string }>) {
+  function handleIndentNode(event: CustomEvent<{ nodeId: string }> ) {
+    console.log('🔍 BaseNodeViewer handleIndentNode called with nodeId:', event.detail.nodeId);
     const { nodeId } = event.detail;
 
-    // Store cursor position before DOM changes
-    const cursorPosition = saveCursorPosition(nodeId);
+    try {
+      // CRITICAL FIX: Add error recovery for node operations
+      if (!nodeManager.nodes.has(nodeId)) {
+        console.error('Cannot indent non-existent node:', nodeId);
+        return;
+      }
 
-    // Use NodeManager to handle indentation
-    const success = nodeManager.indentNode(nodeId);
+      // Store cursor position before DOM changes
+      const cursorPosition = saveCursorPosition(nodeId);
 
-    if (success) {
-      // Restore cursor position after DOM update
-      setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
+      // Use NodeManager to handle indentation
+      console.log('🔍 Calling nodeManager.indentNode for:', nodeId);
+      const success = nodeManager.indentNode(nodeId);
+      console.log('🔍 indentNode result:', success);
+
+      if (success) {
+        console.log('🔍 Indentation successful, restoring cursor position');
+        // Restore cursor position after DOM update
+        setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
+      } else {
+        console.log('🔍 Indentation failed');
+      }
+    } catch (error) {
+      console.error('Error during node indentation:', error);
     }
   }
 
@@ -143,7 +202,7 @@
         currentOffset += nodeLength;
       }
 
-      // If we couldn't find the exact position, place cursor at end
+      // If we couldn\'t find the exact position, place cursor at end
       if (textNodes.length > 0) {
         const lastNode = textNodes[textNodes.length - 1];
         range.setStart(lastNode, lastNode.textContent?.length || 0);
@@ -171,18 +230,28 @@
   }
 
   // Handle outdenting nodes (Shift+Tab key)
-  function handleOutdentNode(event: CustomEvent<{ nodeId: string }>) {
+  function handleOutdentNode(event: CustomEvent<{ nodeId: string }> ) {
     const { nodeId } = event.detail;
 
-    // Store cursor position before DOM changes
-    const cursorPosition = saveCursorPosition(nodeId);
+    try {
+      // CRITICAL FIX: Add error recovery for node operations
+      if (!nodeManager.nodes.has(nodeId)) {
+        console.error('Cannot outdent non-existent node:', nodeId);
+        return;
+      }
 
-    // Use NodeManager to handle outdentation
-    const success = nodeManager.outdentNode(nodeId);
+      // Store cursor position before DOM changes
+      const cursorPosition = saveCursorPosition(nodeId);
 
-    if (success) {
-      // Restore cursor position after DOM update
-      setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
+      // Use NodeManager to handle outdentation
+      const success = nodeManager.outdentNode(nodeId);
+
+      if (success) {
+        // Restore cursor position after DOM update
+        setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
+      }
+    } catch (error) {
+      console.error('Error during node outdentation:', error);
     }
   }
 
@@ -202,7 +271,7 @@
       nodeId: string;
       direction: 'up' | 'down';
       columnHint: number;
-    }>
+    }> 
   ) {
     const { nodeId, direction, columnHint } = event.detail;
 
@@ -218,7 +287,7 @@
     while (targetIndex >= 0 && targetIndex < visibleNodes.length) {
       const candidateNode = visibleNodes[targetIndex];
 
-      // Check if this node accepts navigation (skip if it doesn't)
+      // Check if this node accepts navigation (skip if it doesn\'t)
       // For now, assume all nodes accept navigation (will be refined per node type)
       const acceptsNavigation = true; // candidateNode.navigationMethods?.canAcceptNavigation() ?? true;
 
@@ -228,7 +297,7 @@
         if (success) return;
       }
 
-      // This node doesn't accept navigation or entry failed - try next one
+      // This node doesn\'t accept navigation or entry failed - try next one
       targetIndex = direction === 'up' ? targetIndex - 1 : targetIndex + 1;
     }
   }
@@ -377,71 +446,87 @@
   // Handle combining current node with previous node (Backspace at start of node)
   // CLEAN DELEGATION: All logic handled by NodeManager
   function handleCombineWithPrevious(
-    event: CustomEvent<{ nodeId: string; currentContent: string }>
+    event: CustomEvent<{ nodeId: string; currentContent: string }> 
   ) {
-    const { nodeId, currentContent } = event.detail;
-    const visibleNodes = nodeManager.getVisibleNodes();
-    console.log('DEBUG: visibleNodes count:', visibleNodes.length);
-    const currentIndex = visibleNodes.findIndex((n) => n.id === nodeId);
-    console.log('DEBUG: currentIndex:', currentIndex);
+    console.log('🔍 BaseNodeViewer handleCombineWithPrevious called with:', event.detail);
+    try {
+      const { nodeId, currentContent } = event.detail;
+      
+      // CRITICAL FIX: Add error recovery for node operations
+      if (!nodeManager.nodes.has(nodeId)) {
+        console.error('Cannot combine non-existent node:', nodeId);
+        return;
+      }
 
-    if (currentIndex <= 0) {
-      console.log('DEBUG: No previous node to combine with, exiting');
-      return; // No previous node to combine with
-    }
+      const visibleNodes = nodeManager.getVisibleNodes();
+      const currentIndex = visibleNodes.findIndex((n) => n.id === nodeId);
 
-    const previousNode = visibleNodes[currentIndex - 1];
-    console.log(
-      'DEBUG: previousNode:',
-      previousNode.id,
-      'content:',
-      JSON.stringify(previousNode.content)
-    );
+      if (currentIndex <= 0) {
+        return; // No previous node to combine with
+      }
 
-    if (currentContent.trim() === '') {
-      console.log('DEBUG: Empty content - deleting node and focusing previous');
-      // Empty node - delete and focus previous at end
-      nodeManager.deleteNode(nodeId);
-      nodeManagerEvents.focusRequested(previousNode.id, previousNode.content.length);
-    } else {
-      console.log('DEBUG: Combining nodes - calling nodeManager.combineNodes');
-      // Combine nodes - NodeManager handles focus automatically
-      nodeManager.combineNodes(nodeId, previousNode.id);
+      const previousNode = visibleNodes[currentIndex - 1];
+      
+      if (!previousNode || !nodeManager.nodes.has(previousNode.id)) {
+        console.error('Previous node not found or invalid:', previousNode?.id);
+        return;
+      }
+
+      if (currentContent.trim() === '') {
+        // Empty node - delete and focus previous at end
+        nodeManager.deleteNode(nodeId);
+        nodeManagerEvents.focusRequested(previousNode.id, previousNode.content.length);
+      } else {
+        // Combine nodes - NodeManager handles focus automatically
+        nodeManager.combineNodes(nodeId, previousNode.id);
+      }
+    } catch (error) {
+      console.error('Error during node combination:', error);
     }
   }
 
   // Handle deleting empty node (Backspace at start of empty node)
-  function handleDeleteNode(event: CustomEvent<{ nodeId: string }>) {
-    const { nodeId } = event.detail;
-    const visibleNodes = nodeManager.getVisibleNodes();
-    const currentIndex = visibleNodes.findIndex((n) => n.id === nodeId);
+  function handleDeleteNode(event: CustomEvent<{ nodeId: string }> ) {
+    try {
+      const { nodeId } = event.detail;
+      
+      // CRITICAL FIX: Add error recovery for node operations
+      if (!nodeManager.nodes.has(nodeId)) {
+        console.error('Cannot delete non-existent node:', nodeId);
+        return;
+      }
 
-    if (currentIndex <= 0) return; // No previous node to focus
+      const visibleNodes = nodeManager.getVisibleNodes();
+      const currentIndex = visibleNodes.findIndex((n) => n.id === nodeId);
 
-    const previousNode = visibleNodes[currentIndex - 1];
+      if (currentIndex <= 0) return; // No previous node to focus
 
-    // Delete node and focus previous at end
-    nodeManager.deleteNode(nodeId);
-    nodeManagerEvents.focusRequested(previousNode.id, previousNode.content.length);
+      const previousNode = visibleNodes[currentIndex - 1];
+      
+      if (!previousNode || !nodeManager.nodes.has(previousNode.id)) {
+        console.error('Previous node not found for focus after deletion:', previousNode?.id);
+        // Still delete the node even if we can\'t focus the previous one
+        nodeManager.deleteNode(nodeId);
+        return;
+      }
+
+      // Delete node and focus previous at end
+      nodeManager.deleteNode(nodeId);
+      nodeManagerEvents.focusRequested(previousNode.id, previousNode.content.length);
+    } catch (error) {
+      console.error('Error during node deletion:', error);
+    }
   }
 
   // Helper functions removed - NodeManager handles all node operations
 
-  // Debug visible nodes to identify duplicate key issue
-  $: {
-    const visibleNodes = nodeManager.visibleNodes;
-    const nodeIds = visibleNodes.map(n => n.id);
-    const duplicates = nodeIds.filter((id, index) => nodeIds.indexOf(id) !== index);
-    if (duplicates.length > 0) {
-      console.error('DUPLICATE NODE IDS DETECTED:', duplicates);
-      console.error('ALL NODE IDS:', nodeIds);
-      console.error('VISIBLE NODES:', visibleNodes);
-    }
-  }
+  // Use Svelte stores for proper reactivity
+  const visibleNodes = $derived($storeVisibleNodes);
+
 </script>
 
 <div class="node-viewer">
-  {#each nodeManager.visibleNodes as node (node.id)}
+  {#each visibleNodes as node (node.id)}
     <div
       class="node-container"
       data-has-children={node.children?.length > 0}

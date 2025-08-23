@@ -45,8 +45,7 @@
   let showAutocomplete = $state(false);
   let autocompletePosition = $state({ x: 0, y: 0 });
   let currentQuery = $state('');
-  // eslint-disable-next-line no-unused-vars
-  let currentTriggerContext = $state<TriggerContext | null>(null); // Used in trigger event handlers
+  let currentTriggerContext = $state<TriggerContext | null>(null);
 
   // Event dispatcher
   const dispatch = createEventDispatcher<{
@@ -168,7 +167,6 @@
   function handleAutocompleteClose(): void {
     showAutocomplete = false;
     currentQuery = '';
-    currentTriggerContext = null;
 
     // Return focus to the content editable element
     if (controller) {

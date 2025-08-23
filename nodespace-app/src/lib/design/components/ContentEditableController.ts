@@ -54,6 +54,8 @@ export class ContentEditableController {
     this.element = element;
     this.nodeId = nodeId;
     this.events = events;
+    // Mark DOM element as having a controller attached
+    (this.element as any)._contentEditableController = this;
     this.setupEventListeners();
   }
 
@@ -135,6 +137,8 @@ export class ContentEditableController {
    */
   public destroy(): void {
     this.removeEventListeners();
+    // Clean up the controller reference from DOM element
+    delete (this.element as any)._contentEditableController;
   }
 
   // ============================================================================
@@ -483,6 +487,27 @@ export class ContentEditableController {
   }
 
   private handleKeyDown(event: KeyboardEvent): void {
+    // Debug logging for Tab and Backspace keys
+    if (event.key === 'Tab') {
+      console.log('🔍 ContentEditableController Tab event:', {
+        key: event.key,
+        shiftKey: event.shiftKey,
+        nodeId: this.nodeId,
+        isEditing: this.isEditing,
+        elementId: this.element.id
+      });
+    }
+    
+    if (event.key === 'Backspace') {
+      console.log('🔍 ContentEditableController Backspace event:', {
+        key: event.key,
+        nodeId: this.nodeId,
+        isEditing: this.isEditing,
+        isAtStart: this.isAtStart(),
+        currentContent: this.element.textContent || ''
+      });
+    }
+
     // Handle formatting shortcuts (Cmd+B, Cmd+I, Cmd+U)
     if ((event.metaKey || event.ctrlKey) && this.isEditing) {
       if (event.key === 'b' || event.key === 'B') {
@@ -554,6 +579,7 @@ export class ContentEditableController {
     // Tab key indents node
     if (event.key === 'Tab' && !event.shiftKey) {
       event.preventDefault();
+      console.log('🔍 Firing indentNode event for nodeId:', this.nodeId);
       this.events.indentNode({ nodeId: this.nodeId });
       return;
     }
@@ -581,10 +607,13 @@ export class ContentEditableController {
     if (event.key === 'Backspace' && this.isAtStart()) {
       event.preventDefault();
       const currentContent = this.element.textContent || '';
+      console.log('🔍 Backspace at start detected:', { nodeId: this.nodeId, currentContent, isEmpty: currentContent.trim() === '' });
 
       if (currentContent.trim() === '') {
+        console.log('🔍 Empty node - calling deleteNode');
         this.events.deleteNode({ nodeId: this.nodeId });
       } else {
+        console.log('🔍 Non-empty node - calling combineWithPrevious');
         this.events.combineWithPrevious({
           nodeId: this.nodeId,
           currentContent

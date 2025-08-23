@@ -352,8 +352,15 @@ export class NodeManager {
     inheritHeaderLevel?: number,
     cursorAtBeginning: boolean = false
   ): string {
+    console.log('⚙️ NodeManager.createNode called with:', { afterNodeId, content, nodeType, inheritHeaderLevel, cursorAtBeginning });
+    
     const afterNode = this.findNode(afterNodeId);
-    if (!afterNode) return '';
+    console.log('⚙️ afterNode found:', afterNode ? `exists (${afterNode.id})` : 'NOT FOUND');
+    
+    if (!afterNode) {
+      console.error('⚙️ ❌ CRITICAL: afterNode not found, returning empty string');
+      return '';
+    }
 
     // Determine the header level for the new node
     const finalHeaderLevel =
