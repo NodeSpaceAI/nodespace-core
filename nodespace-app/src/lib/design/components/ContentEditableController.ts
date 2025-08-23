@@ -1074,7 +1074,7 @@ export class ContentEditableController {
   ): void {
     try {
       // Use browser's native caret positioning to get character position
-      const htmlCharacterPosition = this.getCharacterPositionFromCoordinates(
+      const htmlCharacterPosition = this.getCharacterPositionFromClick(
         clickCoords.x,
         clickCoords.y
       );
@@ -1100,10 +1100,10 @@ export class ContentEditableController {
   }
 
   /**
-   * Get character position from click coordinates using browser's native APIs
+   * Get character position from click using browser's native APIs
    * This is much more accurate than measuring character positions manually
    */
-  private getCharacterPositionFromCoordinates(x: number, y: number): number | null {
+  private getCharacterPositionFromClick(x: number, y: number): number | null {
     try {
       // Try modern caretPositionFromPoint first (better accuracy)
       if (document.caretPositionFromPoint) {
@@ -1142,7 +1142,7 @@ export class ContentEditableController {
   ): number | null {
     try {
       // Get character position in the current display content (without syntax)
-      const htmlCharacterPosition = this.getCharacterPositionFromCoordinates(
+      const htmlCharacterPosition = this.getCharacterPositionFromClick(
         clickCoords.x,
         clickCoords.y
       );
