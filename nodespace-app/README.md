@@ -71,5 +71,6 @@ bun run tauri:build         # Production build
 - **Frontend**: SvelteKit + TypeScript + TailwindCSS
 - **Backend**: Rust with async/await patterns
 - **Desktop**: Tauri 2.0 for native integration
-- **Testing**: Vitest + Testing Library + Playwright (E2E)
+- **Testing**: Vitest + Happy DOM + Testing Library + Playwright (E2E)
+- **Runtime**: Bun only (Node.js not required)
 - **Package Manager**: Bun (required)

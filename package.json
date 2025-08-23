@@ -29,7 +29,9 @@
     "quality:fix": "bun run --cwd nodespace-app quality:fix"
   },
   "devDependencies": {
-    "bun-types": "latest"
+    "@types/jsdom": "^21.1.7",
+    "bun-types": "latest",
+    "jsdom": "^26.1.0"
   },
   "license": "MIT",
   "engines": {

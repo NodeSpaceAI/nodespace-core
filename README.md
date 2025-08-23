@@ -66,8 +66,8 @@ NodeSpace is a next-generation knowledge management system designed from the gro
 ## Quick Start
 
 ### Prerequisites
-- Rust 1.80+ with Cargo
-- Node.js 20 LTS for frontend development
+- **Frontend**: Bun 1.0+ (Node.js not required)
+- **Backend**: Rust 1.80+ with Cargo (for Tauri desktop app)
 - 8GB+ RAM recommended for AI model
 - macOS with Metal GPU support (optimal performance)
 
@@ -105,15 +105,14 @@ bun run gh:pr <number>
 git clone <repository-url>
 cd nodespace-core
 
-# Install dependencies
-cargo build
-npm install
+# Install frontend dependencies  
+bun install
 
 # Download AI model (Gemma 3n-E4B-it 8B UQFF)
 # Place in /Users/malibio/nodespace/models/gemma-3-4b-it-UQFF/
 
-# Run in development mode
-cargo run
+# Run in development mode (builds Rust backend + frontend)
+bun run tauri:dev
 ```
 
 ### Configuration
@@ -172,26 +171,27 @@ Comprehensive architecture documentation is organized in the `docs/architecture/
 
 ### Building
 ```bash
-# Development build
-cargo build
+# Development mode
+bun run tauri:dev
 
-# Release build
-cargo build --release
+# Production build
+bun run tauri:build
 
-# Frontend development
-npm run dev
+# Frontend development server
+bun run dev
 
 # Run tests
-cargo test
-npm test
+bun run test              # Frontend tests with Vitest + Happy DOM
+cd nodespace-app/src-tauri && cargo test  # Rust backend tests
 ```
 
 ### Testing Philosophy
-NodeSpace follows a "real services" testing approach:
-- Integration tests use actual PostgreSQL, LanceDB, and AI models
-- No mocking of external services
-- Comprehensive end-to-end workflow testing
-- Performance benchmarking with real data
+NodeSpace uses modern, fast testing with Bun runtime:
+- **Frontend**: Vitest + Happy DOM (faster, lighter than jsdom)
+- **Backend**: Rust integration tests with real services
+- **Runtime**: Bun-only (Node.js not required)
+- **Coverage**: 80% frontend, comprehensive integration testing
+- **Performance**: Bun's speed + Happy DOM = 10x faster test execution
 
 ### Plugin Development
 NodeSpace uses "NodeType Extensions" for internal parallel development:
