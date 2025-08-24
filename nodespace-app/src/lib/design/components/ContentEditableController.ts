@@ -328,72 +328,24 @@ export class ContentEditableController {
   // ============================================================================
 
   private markdownToHtml(markdownContent: string): string {
-    // Use a proper sequential parser instead of greedy regex replacements
+    // Standard Markdown formatting parser
     let result = '';
     let i = 0;
 
     while (i < markdownContent.length) {
-      // Check for each pattern at current position
       const remaining = markdownContent.substring(i);
 
-      // Check for nested underline patterns first (most specific)
-      // Single underscores with nested formatting
-      if (remaining.startsWith('_***')) {
-        const match = remaining.match(/^_\*\*\*([^*_]+)\*\*\*_/);
+      // Check for triple underscores (bold + italic) - ___text___
+      if (remaining.startsWith('___')) {
+        const match = remaining.match(/^___([^_]+)___/);
         if (match) {
-          result += `<span class="markdown-underline markdown-bold markdown-italic">${match[1]}</span>`;
+          result += `<span class="markdown-bold markdown-italic">${match[1]}</span>`;
           i += match[0].length;
           continue;
         }
       }
 
-      if (remaining.startsWith('_**')) {
-        const match = remaining.match(/^_\*\*([^*_]+)\*\*_/);
-        if (match) {
-          result += `<span class="markdown-underline markdown-bold">${match[1]}</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      if (remaining.startsWith('_*') && !remaining.startsWith('_**')) {
-        const match = remaining.match(/^_\*([^*_]+)\*_/);
-        if (match) {
-          result += `<span class="markdown-underline markdown-italic">${match[1]}</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Double underscores with nested formatting
-      if (remaining.startsWith('__***')) {
-        const match = remaining.match(/^__\*\*\*([^*_]+)\*\*\*__/);
-        if (match) {
-          result += `<span class="markdown-underline markdown-bold markdown-italic">${match[1]}</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      if (remaining.startsWith('__**')) {
-        const match = remaining.match(/^__\*\*([^*_]+)\*\*__/);
-        if (match) {
-          result += `<span class="markdown-underline markdown-bold">${match[1]}</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      if (remaining.startsWith('__*')) {
-        const match = remaining.match(/^__\*([^*_]+)\*__/);
-        if (match) {
-          result += `<span class="markdown-underline markdown-italic">${match[1]}</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for triple stars (bold + italic)
+      // Check for triple stars (bold + italic) - ***text***
       if (remaining.startsWith('***')) {
         const match = remaining.match(/^\*\*\*([^*]+)\*\*\*/);
         if (match) {
@@ -403,7 +355,17 @@ export class ContentEditableController {
         }
       }
 
-      // Check for double stars (bold)
+      // Check for double underscores (bold) - __text__
+      if (remaining.startsWith('__')) {
+        const match = remaining.match(/^__([^_]+)__/);
+        if (match) {
+          result += `<span class="markdown-bold">${match[1]}</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Check for double stars (bold) - **text**
       if (remaining.startsWith('**')) {
         const match = remaining.match(/^\*\*([^*]+)\*\*/);
         if (match) {
@@ -413,9 +375,9 @@ export class ContentEditableController {
         }
       }
 
-      // Check for single stars (italic) - make sure it's not part of ** or ***
-      if (remaining.startsWith('*') && !remaining.startsWith('**')) {
-        const match = remaining.match(/^\*([^*]+)\*/);
+      // Check for single underscores (italic) - _text_
+      if (remaining.startsWith('_') && !remaining.startsWith('__')) {
+        const match = remaining.match(/^_([^_]+)_/);
         if (match) {
           result += `<span class="markdown-italic">${match[1]}</span>`;
           i += match[0].length;
@@ -423,21 +385,11 @@ export class ContentEditableController {
         }
       }
 
-      // Check for simple underlines (double first, then single)
-      if (remaining.startsWith('__')) {
-        const match = remaining.match(/^__([^_]+)__/);
+      // Check for single stars (italic) - *text*
+      if (remaining.startsWith('*') && !remaining.startsWith('**')) {
+        const match = remaining.match(/^\*([^*]+)\*/);
         if (match) {
-          result += `<span class="markdown-underline">${match[1]}</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for single underlines - make sure it's not part of __
-      if (remaining.startsWith('_') && !remaining.startsWith('__')) {
-        const match = remaining.match(/^_([^_]+)_/);
-        if (match) {
-          result += `<span class="markdown-underline">${match[1]}</span>`;
+          result += `<span class="markdown-italic">${match[1]}</span>`;
           i += match[0].length;
           continue;
         }
@@ -455,22 +407,22 @@ export class ContentEditableController {
     let markdown = htmlContent;
 
     // Convert span classes to markdown syntax
-    // Handle most complex combinations first (underline + others)
+    // Handle most complex combinations first (underline + others) - use single underscores
     markdown = markdown.replace(
       /<span class="markdown-underline markdown-bold markdown-italic">(.*?)<\/span>/g,
-      '__***$1***__'
+      '_***$1***_'
     );
     markdown = markdown.replace(
       /<span class="markdown-underline markdown-italic markdown-bold">(.*?)<\/span>/g,
-      '__***$1***__'
+      '_***$1***_'
     );
     markdown = markdown.replace(
       /<span class="markdown-underline markdown-bold">(.*?)<\/span>/g,
-      '__**$1**__'
+      '_**$1**_'
     );
     markdown = markdown.replace(
       /<span class="markdown-underline markdown-italic">(.*?)<\/span>/g,
-      '__*$1*__'
+      '_*$1*_'
     );
 
     // Handle remaining bold + italic combinations
@@ -486,7 +438,7 @@ export class ContentEditableController {
     // Handle individual formatting
     markdown = markdown.replace(/<span class="markdown-bold">(.*?)<\/span>/g, '**$1**');
     markdown = markdown.replace(/<span class="markdown-italic">(.*?)<\/span>/g, '*$1*');
-    markdown = markdown.replace(/<span class="markdown-underline">(.*?)<\/span>/g, '__$1__');
+    markdown = markdown.replace(/<span class="markdown-underline">(.*?)<\/span>/g, '_$1_');
 
     // Clean up any remaining HTML tags
     markdown = markdown.replace(/<[^>]*>/g, '');
@@ -596,11 +548,6 @@ export class ContentEditableController {
       if (event.key === 'i' || event.key === 'I') {
         event.preventDefault();
         this.toggleFormatting('*');
-        return;
-      }
-      if (event.key === 'u' || event.key === 'U') {
-        event.preventDefault();
-        this.toggleFormatting('__');
         return;
       }
     }
@@ -871,9 +818,8 @@ export class ContentEditableController {
       const beforeSelection = textContent.substring(0, actualStart);
       const afterSelection = textContent.substring(actualEnd);
 
-      // Check if already formatted by looking at surrounding text
-      const isAlreadyFormatted =
-        beforeSelection.endsWith(marker) && afterSelection.startsWith(marker);
+      // Check if already formatted by looking for surrounding markers (handles nested formatting)
+      const isAlreadyFormatted = this.isSelectionAlreadyFormatted(textContent, actualStart, actualEnd, marker);
 
       let newContent: string;
       let newSelectionStart: number;
@@ -1156,6 +1102,33 @@ export class ContentEditableController {
    */
   private escapeRegex(string: string): string {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  /**
+   * Check if a selection is already formatted with the given marker
+   * Handles nested formatting like "_***child***_" correctly
+   */
+  private isSelectionAlreadyFormatted(text: string, start: number, end: number, marker: string): boolean {
+    // Look backwards from start position to find the nearest opening marker
+    let openingPos = -1;
+    for (let i = start - marker.length; i >= 0; i--) {
+      if (text.substring(i, i + marker.length) === marker) {
+        openingPos = i;
+        break;
+      }
+    }
+
+    // Look forwards from end position to find the nearest closing marker
+    let closingPos = -1;
+    for (let i = end; i <= text.length - marker.length; i++) {
+      if (text.substring(i, i + marker.length) === marker) {
+        closingPos = i;
+        break;
+      }
+    }
+
+    // If we found both markers, the selection is already formatted
+    return openingPos !== -1 && closingPos !== -1;
   }
 
 

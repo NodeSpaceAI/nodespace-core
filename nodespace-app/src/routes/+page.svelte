@@ -75,7 +75,7 @@
           <h3>Interactive Editor Features:</h3>
           <ol>
             <li>Type text in the editor below</li>
-            <li>Use Cmd+B, Cmd+I, Cmd+U to format text</li>
+            <li>Use Cmd+B, Cmd+I to format text (bold/italic toggle)</li>
             <li>Use Tab/Shift+Tab to indent/outdent nodes</li>
             <li>Press Enter to create new nodes</li>
           </ol>
