@@ -44,12 +44,17 @@ export class ContentEditableController {
   private originalContent: string = ''; // Store original markdown content
   private isUpdatingFromInput: boolean = false; // Flag to prevent reactive loops
   private currentHeaderLevel: number = 0; // Track header level for CSS updates
+  
+  // Cursor positioning state for precise click-to-edit
+  private pendingClickPosition: { x: number; y: number } | null = null;
+  private wasEditing: boolean = false;
 
   // Bound event handlers for proper cleanup
   private boundHandleFocus = this.handleFocus.bind(this);
   private boundHandleBlur = this.handleBlur.bind(this);
   private boundHandleInput = this.handleInput.bind(this);
   private boundHandleKeyDown = this.handleKeyDown.bind(this);
+  private boundHandleMouseDown = this.handleMouseDown.bind(this);
 
   constructor(element: HTMLDivElement, nodeId: string, events: ContentEditableEvents) {
     this.element = element;
@@ -151,6 +156,7 @@ export class ContentEditableController {
     this.element.addEventListener('blur', this.boundHandleBlur);
     this.element.addEventListener('input', this.boundHandleInput);
     this.element.addEventListener('keydown', this.boundHandleKeyDown);
+    this.element.addEventListener('mousedown', this.boundHandleMouseDown);
   }
 
   private removeEventListeners(): void {
@@ -158,6 +164,7 @@ export class ContentEditableController {
     this.element.removeEventListener('blur', this.boundHandleBlur);
     this.element.removeEventListener('input', this.boundHandleInput);
     this.element.removeEventListener('keydown', this.boundHandleKeyDown);
+    this.element.removeEventListener('mousedown', this.boundHandleMouseDown);
   }
 
   private setRawMarkdown(content: string): void {
@@ -343,16 +350,39 @@ export class ContentEditableController {
   // ============================================================================
 
   private handleFocus(): void {
+    // Get formatted content before showing raw markdown for position calculation
+    const formattedContent = this.element.innerHTML;
+    let calculatedMarkdownPosition: number | null = null;
+
+    // Pre-calculate position BEFORE showing syntax (if not already editing)
+    if (!this.wasEditing && this.pendingClickPosition) {
+      calculatedMarkdownPosition = this.calculateMarkdownPositionFromClick(
+        this.pendingClickPosition,
+        formattedContent
+      );
+    }
+
     this.isEditing = true;
 
-    // On focus: show raw markdown for editing (use stored original content)
+    // Show raw markdown for editing (this changes the DOM)
     this.setRawMarkdown(this.originalContent);
+
+    // Apply pre-calculated position
+    if (calculatedMarkdownPosition !== null) {
+      setTimeout(() => {
+        this.restoreCursorPosition(calculatedMarkdownPosition);
+      }, 0);
+    }
+
+    // Clear pending position
+    this.pendingClickPosition = null;
 
     this.events.focus();
   }
 
   private handleBlur(): void {
     this.isEditing = false;
+    this.wasEditing = false;
 
     // On blur: update original content and show formatted display
     const currentText = this.element.textContent || '';
@@ -1617,5 +1647,165 @@ export class ContentEditableController {
     // Emit content change event
     this.events.contentChanged(newContent);
     this.events.nodeReferenceSelected({ nodeId, nodeTitle });
+  }
+
+  // ============================================================================
+  // Cursor Positioning System - Pre-calculation Approach
+  // ============================================================================
+
+  /**
+   * Handle mouse down events to capture click coordinates for cursor positioning
+   * Only captures single clicks (preserves double-click selection behavior)
+   */
+  private handleMouseDown(event: MouseEvent): void {
+    // Only capture single clicks (preserve double-click selection)
+    if (event.detail !== 1) return;
+    
+    // Store current editing state
+    this.wasEditing = this.isEditing;
+    
+    // Capture click coordinates for later use during focus
+    this.pendingClickPosition = { x: event.clientX, y: event.clientY };
+    
+    // Let event bubble - don't interfere with other functionality
+  }
+
+
+  /**
+   * Calculate markdown cursor position from click coordinates using pre-calculation approach
+   */
+  private calculateMarkdownPositionFromClick(
+    clickCoords: { x: number; y: number },
+    formattedContent: string
+  ): number | null {
+    try {
+      // Get character position in display content (without syntax)
+      const htmlCharacterPosition = this.getCharacterPositionFromCoordinates(
+        clickCoords.x,
+        clickCoords.y
+      );
+
+      if (htmlCharacterPosition === null) {
+        return null;
+      }
+
+      // Extract plain text from HTML for mapping
+      const htmlText = this.extractTextFromHtml(formattedContent);
+
+      // Map the HTML character position to markdown character position
+      const markdownPosition = this.mapHtmlPositionToMarkdown(
+        htmlCharacterPosition,
+        htmlText,
+        this.originalContent
+      );
+
+      return markdownPosition;
+    } catch (error) {
+      console.warn('Error calculating markdown position from click:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get character position from click using browser's native APIs
+   */
+  private getCharacterPositionFromCoordinates(x: number, y: number): number | null {
+    try {
+      // Try modern caretPositionFromPoint first (better accuracy)
+      if ((document as any).caretPositionFromPoint) {
+        const caretPosition = (document as any).caretPositionFromPoint(x, y);
+        if (caretPosition && caretPosition.offsetNode) {
+          return this.getTextOffsetFromElement(
+            caretPosition.offsetNode,
+            caretPosition.offset
+          );
+        }
+      }
+
+      // Fallback to caretRangeFromPoint (older but widely supported)
+      if ((document as any).caretRangeFromPoint) {
+        const range = (document as any).caretRangeFromPoint(x, y);
+        if (range && range.startContainer) {
+          return this.getTextOffsetFromElement(range.startContainer, range.startOffset);
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.warn('Error getting character position from coordinates:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Map HTML display position to equivalent markdown position
+   */
+  private mapHtmlPositionToMarkdown(
+    htmlPosition: number,
+    htmlText: string,
+    markdownContent: string
+  ): number {
+    // Simple case: content matches exactly (no markdown syntax)
+    if (htmlText === markdownContent) {
+      return Math.min(htmlPosition, markdownContent.length);
+    }
+
+    // Build character mapping between HTML and markdown
+    const mapping = this.buildCharacterMapping(htmlText, markdownContent);
+    
+    // Get mapped position (with bounds checking)
+    if (htmlPosition < mapping.length && mapping[htmlPosition] !== undefined) {
+      return mapping[htmlPosition];
+    }
+    
+    // Fallback: proportional positioning
+    const ratio = htmlPosition / htmlText.length;
+    return Math.floor(ratio * markdownContent.length);
+  }
+
+  /**
+   * Build character-by-character mapping between HTML display and markdown source
+   */
+  private buildCharacterMapping(htmlText: string, markdownText: string): number[] {
+    const mapping: number[] = [];
+    let htmlIndex = 0;
+    let markdownIndex = 0;
+    
+    while (htmlIndex < htmlText.length && markdownIndex < markdownText.length) {
+      if (htmlText[htmlIndex] === markdownText[markdownIndex]) {
+        // Characters match - direct mapping
+        mapping[htmlIndex] = markdownIndex;
+        htmlIndex++;
+        markdownIndex++;
+      } else {
+        // Markdown has extra syntax characters - skip them
+        markdownIndex++;
+      }
+    }
+    
+    // Handle remaining HTML characters
+    while (htmlIndex < htmlText.length) {
+      mapping[htmlIndex] = markdownText.length;
+      htmlIndex++;
+    }
+    
+    return mapping;
+  }
+
+  /**
+   * Extract plain text from HTML content for position mapping
+   */
+  private extractTextFromHtml(html: string): string {
+    // Create a temporary element to extract text content
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = html;
+    return tempDiv.textContent || '';
+  }
+
+  /**
+   * Set cursor position to a specific character index
+   */
+  public setCursorPosition(characterIndex: number): void {
+    this.restoreCursorPosition(characterIndex);
   }
 }
