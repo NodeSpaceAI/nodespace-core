@@ -188,6 +188,35 @@ export class ContentEditableController {
       const remaining = content.substring(i);
 
       // Check for nested underline patterns first (most specific)
+      // Single underscores with nested formatting
+      if (remaining.startsWith('_***')) {
+        const match = remaining.match(/^_\*\*\*([^*_]+)\*\*\*_/);
+        if (match) {
+          result += `<span class="markdown-syntax">_***<span class="markdown-underline markdown-bold markdown-italic">${match[1]}</span>***_</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      if (remaining.startsWith('_**')) {
+        const match = remaining.match(/^_\*\*([^*_]+)\*\*_/);
+        if (match) {
+          result += `<span class="markdown-syntax">_**<span class="markdown-underline markdown-bold">${match[1]}</span>**_</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      if (remaining.startsWith('_*') && !remaining.startsWith('_**')) {
+        const match = remaining.match(/^_\*([^*_]+)\*_/);
+        if (match) {
+          result += `<span class="markdown-syntax">_*<span class="markdown-underline markdown-italic">${match[1]}</span>*_</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Double underscores with nested formatting
       if (remaining.startsWith('__***')) {
         const match = remaining.match(/^__\*\*\*([^*_]+)\*\*\*__/);
         if (match) {
@@ -245,11 +274,21 @@ export class ContentEditableController {
         }
       }
 
-      // Check for simple underlines
+      // Check for simple underlines (double first, then single)
       if (remaining.startsWith('__')) {
         const match = remaining.match(/^__([^_]+)__/);
         if (match) {
           result += `<span class="markdown-syntax">__<span class="markdown-underline">${match[1]}</span>__</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Check for single underlines - make sure it's not part of __
+      if (remaining.startsWith('_') && !remaining.startsWith('__')) {
+        const match = remaining.match(/^_([^_]+)_/);
+        if (match) {
+          result += `<span class="markdown-syntax">_<span class="markdown-underline">${match[1]}</span>_</span>`;
           i += match[0].length;
           continue;
         }
@@ -298,6 +337,35 @@ export class ContentEditableController {
       const remaining = markdownContent.substring(i);
 
       // Check for nested underline patterns first (most specific)
+      // Single underscores with nested formatting
+      if (remaining.startsWith('_***')) {
+        const match = remaining.match(/^_\*\*\*([^*_]+)\*\*\*_/);
+        if (match) {
+          result += `<span class="markdown-underline markdown-bold markdown-italic">${match[1]}</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      if (remaining.startsWith('_**')) {
+        const match = remaining.match(/^_\*\*([^*_]+)\*\*_/);
+        if (match) {
+          result += `<span class="markdown-underline markdown-bold">${match[1]}</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      if (remaining.startsWith('_*') && !remaining.startsWith('_**')) {
+        const match = remaining.match(/^_\*([^*_]+)\*_/);
+        if (match) {
+          result += `<span class="markdown-underline markdown-italic">${match[1]}</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Double underscores with nested formatting
       if (remaining.startsWith('__***')) {
         const match = remaining.match(/^__\*\*\*([^*_]+)\*\*\*__/);
         if (match) {
@@ -355,9 +423,19 @@ export class ContentEditableController {
         }
       }
 
-      // Check for simple underlines
+      // Check for simple underlines (double first, then single)
       if (remaining.startsWith('__')) {
         const match = remaining.match(/^__([^_]+)__/);
+        if (match) {
+          result += `<span class="markdown-underline">${match[1]}</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Check for single underlines - make sure it's not part of __
+      if (remaining.startsWith('_') && !remaining.startsWith('__')) {
+        const match = remaining.match(/^_([^_]+)_/);
         if (match) {
           result += `<span class="markdown-underline">${match[1]}</span>`;
           i += match[0].length;
@@ -1079,6 +1157,7 @@ export class ContentEditableController {
   private escapeRegex(string: string): string {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
+
 
   // ============================================================================
   // Private Methods - @ Trigger Detection
