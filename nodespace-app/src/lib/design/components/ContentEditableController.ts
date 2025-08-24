@@ -780,16 +780,27 @@ export class ContentEditableController {
       let newSelectionEnd: number;
 
       if (isAlreadyFormatted || markerIncludedInSelection) {
-        // Remove formatting
-        const beforeMarker = beforeSelection.endsWith(marker)
-          ? beforeSelection.substring(0, beforeSelection.length - marker.length)
-          : beforeSelection;
-        const afterMarker = afterSelection.startsWith(marker)
-          ? afterSelection.substring(marker.length)
-          : afterSelection;
-        newContent = beforeMarker + workingSelectedText + afterMarker;
-        newSelectionStart = beforeMarker.length;
-        newSelectionEnd = newSelectionStart + workingSelectedText.length;
+        // Remove formatting - find the actual markers present around the selection
+        const actualMarkers = this.findActualMarkersAroundSelection(textContent, actualStart, actualEnd, marker);
+        if (actualMarkers) {
+          // Remove the detected markers
+          const beforeMarker = textContent.substring(0, actualMarkers.startPos);
+          const afterMarker = textContent.substring(actualMarkers.endPos + actualMarkers.marker.length);
+          newContent = beforeMarker + workingSelectedText + afterMarker;
+          newSelectionStart = beforeMarker.length;
+          newSelectionEnd = newSelectionStart + workingSelectedText.length;
+        } else {
+          // Fallback to original logic
+          const beforeMarker = beforeSelection.endsWith(marker)
+            ? beforeSelection.substring(0, beforeSelection.length - marker.length)
+            : beforeSelection;
+          const afterMarker = afterSelection.startsWith(marker)
+            ? afterSelection.substring(marker.length)
+            : afterSelection;
+          newContent = beforeMarker + workingSelectedText + afterMarker;
+          newSelectionStart = beforeMarker.length;
+          newSelectionEnd = newSelectionStart + workingSelectedText.length;
+        }
       } else {
         // Add formatting
         newContent = beforeSelection + marker + workingSelectedText + marker + afterSelection;
@@ -1059,30 +1070,97 @@ export class ContentEditableController {
   }
 
   /**
+   * Find the actual markers around a selection for removal
+   */
+  private findActualMarkersAroundSelection(text: string, start: number, end: number, requestedMarker: string): { startPos: number; endPos: number; marker: string } | null {
+    // Determine all possible markers based on the requested format type
+    let possibleMarkers: string[] = [];
+    if (requestedMarker === '*') {
+      possibleMarkers = ['*', '_']; // For italic, check both asterisk and underscore
+    } else if (requestedMarker === '**') {
+      possibleMarkers = ['**', '__']; // For bold, check both
+    } else if (requestedMarker === '***') {
+      possibleMarkers = ['***', '___']; // For bold+italic, check both
+    } else {
+      possibleMarkers = [requestedMarker];
+    }
+
+    for (const marker of possibleMarkers) {
+      // Look backwards from start position to find the nearest opening marker
+      let openingPos = -1;
+      for (let i = start - marker.length; i >= 0; i--) {
+        if (text.substring(i, i + marker.length) === marker) {
+          openingPos = i;
+          break;
+        }
+      }
+
+      // Look forwards from end position to find the nearest closing marker
+      let closingPos = -1;
+      for (let i = end; i <= text.length - marker.length; i++) {
+        if (text.substring(i, i + marker.length) === marker) {
+          closingPos = i;
+          break;
+        }
+      }
+
+      // If we found both markers of this type, return their positions
+      if (openingPos !== -1 && closingPos !== -1) {
+        return {
+          startPos: openingPos,
+          endPos: closingPos,
+          marker: marker
+        };
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Check if a selection is already formatted with the given marker
    * Handles nested formatting like "_***child***_" correctly
    */
   private isSelectionAlreadyFormatted(text: string, start: number, end: number, marker: string): boolean {
-    // Look backwards from start position to find the nearest opening marker
-    let openingPos = -1;
-    for (let i = start - marker.length; i >= 0; i--) {
-      if (text.substring(i, i + marker.length) === marker) {
-        openingPos = i;
-        break;
+    // Determine alternative markers based on the requested format type
+    let alternativeMarkers: string[] = [];
+    if (marker === '*') {
+      alternativeMarkers = ['_']; // For italic, also check underscore
+    } else if (marker === '**') {
+      alternativeMarkers = ['__']; // For bold, also check double underscore
+    } else if (marker === '***') {
+      alternativeMarkers = ['___']; // For bold+italic, also check triple underscore
+    }
+
+    // Check for all possible markers (primary and alternatives)
+    const markersToCheck = [marker, ...alternativeMarkers];
+    
+    for (const currentMarker of markersToCheck) {
+      // Look backwards from start position to find the nearest opening marker
+      let openingPos = -1;
+      for (let i = start - currentMarker.length; i >= 0; i--) {
+        if (text.substring(i, i + currentMarker.length) === currentMarker) {
+          openingPos = i;
+          break;
+        }
+      }
+
+      // Look forwards from end position to find the nearest closing marker
+      let closingPos = -1;
+      for (let i = end; i <= text.length - currentMarker.length; i++) {
+        if (text.substring(i, i + currentMarker.length) === currentMarker) {
+          closingPos = i;
+          break;
+        }
+      }
+
+      // If we found both markers of this type, the selection is already formatted
+      if (openingPos !== -1 && closingPos !== -1) {
+        return true;
       }
     }
 
-    // Look forwards from end position to find the nearest closing marker
-    let closingPos = -1;
-    for (let i = end; i <= text.length - marker.length; i++) {
-      if (text.substring(i, i + marker.length) === marker) {
-        closingPos = i;
-        break;
-      }
-    }
-
-    // If we found both markers, the selection is already formatted
-    return openingPos !== -1 && closingPos !== -1;
+    return false;
   }
 
 
