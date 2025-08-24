@@ -121,6 +121,22 @@ export class MockDatabaseService {
   }
 
   /**
+   * Upsert (insert or update) a node
+   */
+  async upsertNode(node: NodeSpaceNode): Promise<NodeSpaceNode> {
+    if (this.nodes.has(node.id)) {
+      // Node exists - update it
+      const { id, ...updates } = node;
+      const updatedNode = await this.updateNode(id, updates);
+      return updatedNode!; // updateNode returns NodeSpaceNode | null, but we know it exists
+    } else {
+      // Node doesn't exist - insert it
+      await this.insertNode(node);
+      return { ...node }; // Return a copy of the inserted node
+    }
+  }
+
+  /**
    * Get node by ID
    */
   async getNode(nodeId: string): Promise<NodeSpaceNode | null> {

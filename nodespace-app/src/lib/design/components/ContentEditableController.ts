@@ -5,9 +5,9 @@
  * Separates DOM manipulation from Svelte reactive logic to eliminate race conditions
  */
 
-import ContentProcessor from '$lib/services/contentProcessor.js';
-import type { TriggerContext } from '$lib/services/NodeReferenceService.js';
-import { markdownToHtml, htmlToMarkdown } from '$lib/utils/markedConfig.js';
+import ContentProcessor from '$lib/services/contentProcessor';
+import type { TriggerContext } from '$lib/services/NodeReferenceService';
+import { markdownToHtml, htmlToMarkdown } from '$lib/utils/markedConfig';
 
 export interface ContentEditableEvents {
   contentChanged: (content: string) => void;
