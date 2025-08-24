@@ -462,6 +462,26 @@ export class ContentEditableController {
       }
     }
 
+    // Check for @ trigger when @ is typed or when typing after @
+    if (this.isEditing) {
+      if (event.key === '@') {
+        // Schedule trigger check for after the @ character is inserted
+        setTimeout(() => {
+          const textContent = this.element.textContent || '';
+          const cursorOffset = this.getCurrentColumn();
+          this.checkForTrigger(textContent, cursorOffset);
+        }, 0);
+      } else if (event.key.length === 1 || event.key === 'Backspace') {
+        // For any single character typed or backspace, check for @ trigger context
+        // This handles typing after @ or backspacing within a trigger
+        setTimeout(() => {
+          const textContent = this.element.textContent || '';
+          const cursorOffset = this.getCurrentColumn();
+          this.checkForTrigger(textContent, cursorOffset);
+        }, 0);
+      }
+    }
+
     // Check for immediate header detection when space is typed
     if (event.key === ' ' && this.isEditing) {
       // Get content that will exist after this space is added
