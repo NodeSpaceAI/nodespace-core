@@ -61,7 +61,7 @@ export class ContentEditableController {
     this.nodeId = nodeId;
     this.events = events;
     // Mark DOM element as having a controller attached
-    (this.element as any)._contentEditableController = this;
+    (this.element as unknown as { _contentEditableController: ContentEditableController })._contentEditableController = this;
     this.setupEventListeners();
   }
 
@@ -144,7 +144,7 @@ export class ContentEditableController {
   public destroy(): void {
     this.removeEventListeners();
     // Clean up the controller reference from DOM element
-    delete (this.element as any)._contentEditableController;
+    delete (this.element as unknown as { _contentEditableController?: ContentEditableController })._contentEditableController;
   }
 
   // ============================================================================
@@ -1712,8 +1712,8 @@ export class ContentEditableController {
   private getCharacterPositionFromCoordinates(x: number, y: number): number | null {
     try {
       // Try modern caretPositionFromPoint first (better accuracy)
-      if ((document as any).caretPositionFromPoint) {
-        const caretPosition = (document as any).caretPositionFromPoint(x, y);
+      if ((document as unknown as { caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null }).caretPositionFromPoint) {
+        const caretPosition = (document as unknown as { caretPositionFromPoint: (x: number, y: number) => { offsetNode: Node; offset: number } | null }).caretPositionFromPoint(x, y);
         if (caretPosition && caretPosition.offsetNode) {
           return this.getTextOffsetFromElement(
             caretPosition.offsetNode,
@@ -1723,8 +1723,8 @@ export class ContentEditableController {
       }
 
       // Fallback to caretRangeFromPoint (older but widely supported)
-      if ((document as any).caretRangeFromPoint) {
-        const range = (document as any).caretRangeFromPoint(x, y);
+      if ((document as unknown as { caretRangeFromPoint?: (x: number, y: number) => Range | null }).caretRangeFromPoint) {
+        const range = (document as unknown as { caretRangeFromPoint: (x: number, y: number) => Range | null }).caretRangeFromPoint(x, y);
         if (range && range.startContainer) {
           return this.getTextOffsetFromElement(range.startContainer, range.startOffset);
         }

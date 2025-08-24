@@ -155,7 +155,7 @@ describe('ContentEditableController Toggle Logic', () => {
       const text = '**_italic_**';
       const selectionStart = 2; // "_italic_"
       const selectionEnd = 10;
-      // const selectedText = text.substring(selectionStart, selectionEnd); // "_italic_"
+      const selectedText = text.substring(selectionStart, selectionEnd); // "_italic_"
       const marker = '**';
 
       // Test 1: Check if selected text ITSELF has the formatting
