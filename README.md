@@ -18,7 +18,12 @@ NodeSpace is a next-generation knowledge management system designed from the gro
 ## Key Features
 
 ### 🧠 **Intelligent Node Types**
-- **Text Nodes**: ✅ **Implemented** - Markdown support (headers, bold, italic, underline) with multiline editing and header inheritance
+- **Text Nodes**: ✅ **Implemented** - Advanced markdown support with revolutionary nested formatting system
+  - **Context-Aware Formatting**: Intelligent Cmd+B/Cmd+I shortcuts that handle complex nested scenarios
+  - **Cross-Marker Compatibility**: Both `**bold**`/`__bold__` and `*italic*`/`_italic_` syntaxes supported
+  - **Perfect Nested Handling**: Advanced scenarios like `*__bold__*` → select "bold" → Cmd+B → `*bold*`
+  - **marked.js Integration**: Battle-tested markdown parsing with NodeSpace-specific customizations
+  - **Headers & Multiline**: Full header inheritance and multiline editing support
 - **Task Nodes**: 🚧 **Planned** - Project management with natural language task creation  
 - **AI Chat Nodes**: 🚧 **Planned** - Conversational interfaces with context awareness
 - **Entity Nodes**: 🚧 **Planned** - Structured data with calculated fields and natural language operations
@@ -304,6 +309,11 @@ When creating new node types:
 ### Current Phase: Enhanced ContentEditable Architecture
 - ✅ **Architecture Research**: Comprehensive Logseq analysis and ProseMirror evaluation completed
 - ✅ **Architecture Decision**: Enhanced contenteditable approach with dual-representation patterns
+- ✅ **Advanced Formatting System**: Revolutionary context-aware nested formatting with keyboard shortcuts
+  - **Context-Aware Algorithm**: Intelligent detection of nested formatting contexts (`*__bold__*` scenarios)
+  - **Cross-Marker Compatibility**: Unified handling of equivalent markdown syntaxes
+  - **marked.js Integration**: Battle-tested library integration for consistent parsing
+  - **Comprehensive Testing**: 19+ test scenarios covering edge cases and performance
 - ✅ **GitHub Issues Updated**: 4-phase implementation roadmap with 10 issues created/updated
 - 🚧 **Phase 1**: Enhanced Service Layer (ContentProcessor, NodeManager, Core Logic Migration, BacklinkService, EventBus)
 - 🚧 **Phase 2**: Backlinking Foundation (Link graph, real-time detection, decorations, navigation)

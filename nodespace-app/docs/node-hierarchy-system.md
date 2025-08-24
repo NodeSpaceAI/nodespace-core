@@ -148,11 +148,21 @@ Some <span class="markdown-bold">bold</span> and <span class="markdown-italic">i
 ```
 
 ### Inline Formatting Support
-- **Bold**: `Cmd+B` / `Ctrl+B` → `**text**`
-- **Italic**: `Cmd+I` / `Ctrl+I` → `*text*`  
-- **Underline**: `Cmd+U` / `Ctrl+U` → `__text__`
+- **Bold**: `Cmd+B` / `Ctrl+B` → `**text**` or `__text__`
+- **Italic**: `Cmd+I` / `Ctrl+I` → `*text*` or `_text_`
+- **~~Underline~~**: `Cmd+U` / `Ctrl+U` → **REMOVED** (not CommonMark standard, simplified logic)
+- **Cross-Marker Compatibility**: Both syntax variants work seamlessly
+- **Advanced Nested Support**: Perfect handling of complex scenarios like `*__bold__*`
+- **Context-Aware Toggle**: Intelligent detection and removal of existing formatting
 - **Selection preservation**: Formatting maintains text selection
-- **Toggle support**: Repeated shortcuts toggle formatting on/off
+
+#### **Architectural Decision: Underline Removal**
+**Reasoning for discontinuing underline support:**
+- **Standards Compliance**: Underline formatting (`__text__`) is not part of the CommonMark specification
+- **Parser Conflicts**: The `__text__` syntax conflicts with bold formatting in many markdown parsers
+- **Simplified Implementation**: Focusing on standard markdown (bold/italic) reduces algorithm complexity
+- **User Experience**: Bold and italic provide sufficient semantic formatting options
+- **Future-Proofing**: Eliminates edge cases and parsing ambiguities for better reliability
 
 ### Header Management
 **Syntax detection**:
