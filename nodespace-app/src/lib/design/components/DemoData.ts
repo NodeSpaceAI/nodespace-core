@@ -24,7 +24,7 @@ export const demoNodes = [
             id: uuidv4(),
             type: 'text',
             autoFocus: false,
-            content: 'This is a ***child*** node with *inline* formatting',
+            content: 'Test *__bold__* and **_italic_** text, plus __bold__ and _italic_ for testing',
             inheritHeaderLevel: 0,
             children: [],
             expanded: true

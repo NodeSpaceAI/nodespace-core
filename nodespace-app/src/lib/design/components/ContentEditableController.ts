@@ -731,21 +731,39 @@ export class ContentEditableController {
 
     // Simple approach: work with the markdown text content directly
     if (selectedText) {
-      // Handle case where selection includes the formatting markers (like double-clicking "__word__")
+      // Handle case where selection includes formatting markers (like double-clicking "__word__")
       let adjustedSelectedText = selectedText;
       let markerIncludedInSelection = false;
+      let detectedMarker = marker; // Track which marker was actually detected
 
-      if (
-        selectedText.startsWith(marker) &&
-        selectedText.endsWith(marker) &&
-        selectedText.length > marker.length * 2
-      ) {
-        // Selection includes the markers - extract just the content
-        adjustedSelectedText = selectedText.substring(
-          marker.length,
-          selectedText.length - marker.length
-        );
-        markerIncludedInSelection = true;
+      // Check for all possible markers based on the requested format type
+      let possibleMarkers: string[] = [];
+      if (marker === '*') {
+        possibleMarkers = ['*', '_'];
+      } else if (marker === '**') {
+        possibleMarkers = ['**', '__'];
+      } else if (marker === '***') {
+        possibleMarkers = ['***', '___'];
+      } else {
+        possibleMarkers = [marker];
+      }
+
+      // Check if selection includes any of the possible markers
+      for (const possibleMarker of possibleMarkers) {
+        if (
+          selectedText.startsWith(possibleMarker) &&
+          selectedText.endsWith(possibleMarker) &&
+          selectedText.length > possibleMarker.length * 2
+        ) {
+          // Selection includes the markers - extract just the content
+          adjustedSelectedText = selectedText.substring(
+            possibleMarker.length,
+            selectedText.length - possibleMarker.length
+          );
+          markerIncludedInSelection = true;
+          detectedMarker = possibleMarker; // Remember which marker was found
+          break;
+        }
       }
 
       // Find the selected text in the markdown content
@@ -790,22 +808,45 @@ export class ContentEditableController {
           newSelectionStart = beforeMarker.length;
           newSelectionEnd = newSelectionStart + workingSelectedText.length;
         } else {
-          // Fallback to original logic
-          const beforeMarker = beforeSelection.endsWith(marker)
-            ? beforeSelection.substring(0, beforeSelection.length - marker.length)
+          // Fallback to original logic - use detected marker when available
+          const markerToRemove = markerIncludedInSelection ? detectedMarker : marker;
+          const beforeMarker = beforeSelection.endsWith(markerToRemove)
+            ? beforeSelection.substring(0, beforeSelection.length - markerToRemove.length)
             : beforeSelection;
-          const afterMarker = afterSelection.startsWith(marker)
-            ? afterSelection.substring(marker.length)
+          const afterMarker = afterSelection.startsWith(markerToRemove)
+            ? afterSelection.substring(markerToRemove.length)
             : afterSelection;
           newContent = beforeMarker + workingSelectedText + afterMarker;
           newSelectionStart = beforeMarker.length;
           newSelectionEnd = newSelectionStart + workingSelectedText.length;
         }
       } else {
-        // Add formatting
-        newContent = beforeSelection + marker + workingSelectedText + marker + afterSelection;
-        newSelectionStart = beforeSelection.length + marker.length;
-        newSelectionEnd = newSelectionStart + workingSelectedText.length;
+        // Add formatting - check for existing formatting layers to position markers correctly
+        const analysis = this.analyzeFormattingLayers(textContent, actualStart, actualEnd);
+        
+        if (analysis.layers.length > 0) {
+          // There's existing formatting - add new formatting outside the outermost layer
+          const outermostLayer = analysis.layers.reduce((outermost, current) => {
+            if (current.startPos <= outermost.startPos && current.endPos >= outermost.endPos) {
+              return current;
+            }
+            return outermost;
+          });
+          
+          // Place new markers outside the outermost existing formatting
+          const beforeOuterFormat = textContent.substring(0, outermostLayer.startPos);
+          const existingFormat = textContent.substring(outermostLayer.startPos, outermostLayer.endPos + outermostLayer.marker.length);
+          const afterOuterFormat = textContent.substring(outermostLayer.endPos + outermostLayer.marker.length);
+          
+          newContent = beforeOuterFormat + marker + existingFormat + marker + afterOuterFormat;
+          newSelectionStart = beforeOuterFormat.length + marker.length + (actualStart - outermostLayer.startPos);
+          newSelectionEnd = beforeOuterFormat.length + marker.length + (actualEnd - outermostLayer.startPos);
+        } else {
+          // No existing formatting - add markers normally
+          newContent = beforeSelection + marker + workingSelectedText + marker + afterSelection;
+          newSelectionStart = beforeSelection.length + marker.length;
+          newSelectionEnd = newSelectionStart + workingSelectedText.length;
+        }
       }
 
       // Update content and maintain selection
@@ -1070,23 +1111,62 @@ export class ContentEditableController {
   }
 
   /**
-   * Find the actual markers around a selection for removal
+   * Find the specific formatting layer to remove based on the requested marker type
+   * Uses the new formatting analysis to handle complex mixed scenarios
    */
   private findActualMarkersAroundSelection(text: string, start: number, end: number, requestedMarker: string): { startPos: number; endPos: number; marker: string } | null {
-    // Determine all possible markers based on the requested format type
-    let possibleMarkers: string[] = [];
-    if (requestedMarker === '*') {
-      possibleMarkers = ['*', '_']; // For italic, check both asterisk and underscore
-    } else if (requestedMarker === '**') {
-      possibleMarkers = ['**', '__']; // For bold, check both
-    } else if (requestedMarker === '***') {
-      possibleMarkers = ['***', '___']; // For bold+italic, check both
-    } else {
-      possibleMarkers = [requestedMarker];
+    const analysis = this.analyzeFormattingLayers(text, start, end);
+    
+    // Find the specific layer type to remove
+    let targetType: 'italic' | 'bold' | 'bold-italic';
+    if (requestedMarker === '*') targetType = 'italic';
+    else if (requestedMarker === '**') targetType = 'bold';  
+    else if (requestedMarker === '***') targetType = 'bold-italic';
+    else return null;
+
+    // Find the first layer of the target type
+    const layerToRemove = analysis.layers.find(layer => layer.type === targetType);
+    if (layerToRemove) {
+      return {
+        startPos: layerToRemove.startPos,
+        endPos: layerToRemove.endPos,
+        marker: layerToRemove.marker
+      };
     }
 
-    for (const marker of possibleMarkers) {
-      // Look backwards from start position to find the nearest opening marker
+    return null;
+  }
+
+  /**
+   * Analyze all formatting layers around a selection
+   * Returns information about existing formatting that can be used for smart toggle decisions
+   */
+  private analyzeFormattingLayers(text: string, start: number, end: number): {
+    hasItalic: boolean;
+    hasBold: boolean;
+    hasBoldItalic: boolean;
+    layers: { type: 'italic' | 'bold' | 'bold-italic'; startPos: number; endPos: number; marker: string }[];
+  } {
+    const layers: { type: 'italic' | 'bold' | 'bold-italic'; startPos: number; endPos: number; marker: string }[] = [];
+    let hasItalic = false;
+    let hasBold = false;
+    let hasBoldItalic = false;
+
+    // Define all possible markers and their types
+    const markerTypes: { marker: string; type: 'italic' | 'bold' | 'bold-italic'; priority: number }[] = [
+      { marker: '___', type: 'bold-italic', priority: 3 },
+      { marker: '***', type: 'bold-italic', priority: 3 },
+      { marker: '__', type: 'bold', priority: 2 },
+      { marker: '**', type: 'bold', priority: 2 },
+      { marker: '_', type: 'italic', priority: 1 },
+      { marker: '*', type: 'italic', priority: 1 },
+    ];
+
+    // Sort by priority (longest markers first to avoid conflicts)
+    markerTypes.sort((a, b) => b.priority - a.priority);
+
+    for (const { marker, type } of markerTypes) {
+      // Look backwards from start position to find opening marker
       let openingPos = -1;
       for (let i = start - marker.length; i >= 0; i--) {
         if (text.substring(i, i + marker.length) === marker) {
@@ -1095,7 +1175,7 @@ export class ContentEditableController {
         }
       }
 
-      // Look forwards from end position to find the nearest closing marker
+      // Look forwards from end position to find closing marker
       let closingPos = -1;
       for (let i = end; i <= text.length - marker.length; i++) {
         if (text.substring(i, i + marker.length) === marker) {
@@ -1104,62 +1184,31 @@ export class ContentEditableController {
         }
       }
 
-      // If we found both markers of this type, return their positions
+      // If we found both markers, record this layer
       if (openingPos !== -1 && closingPos !== -1) {
-        return {
-          startPos: openingPos,
-          endPos: closingPos,
-          marker: marker
-        };
+        layers.push({ type, startPos: openingPos, endPos: closingPos, marker });
+        
+        if (type === 'italic') hasItalic = true;
+        if (type === 'bold') hasBold = true;
+        if (type === 'bold-italic') hasBoldItalic = true;
       }
     }
 
-    return null;
+    return { hasItalic, hasBold, hasBoldItalic, layers };
   }
 
   /**
-   * Check if a selection is already formatted with the given marker
-   * Handles nested formatting like "_***child***_" correctly
+   * Check if a selection is already formatted with the given marker type
+   * Uses the new formatting layer analysis for better mixed-marker support
    */
   private isSelectionAlreadyFormatted(text: string, start: number, end: number, marker: string): boolean {
-    // Determine alternative markers based on the requested format type
-    let alternativeMarkers: string[] = [];
-    if (marker === '*') {
-      alternativeMarkers = ['_']; // For italic, also check underscore
-    } else if (marker === '**') {
-      alternativeMarkers = ['__']; // For bold, also check double underscore
-    } else if (marker === '***') {
-      alternativeMarkers = ['___']; // For bold+italic, also check triple underscore
-    }
-
-    // Check for all possible markers (primary and alternatives)
-    const markersToCheck = [marker, ...alternativeMarkers];
+    const analysis = this.analyzeFormattingLayers(text, start, end);
     
-    for (const currentMarker of markersToCheck) {
-      // Look backwards from start position to find the nearest opening marker
-      let openingPos = -1;
-      for (let i = start - currentMarker.length; i >= 0; i--) {
-        if (text.substring(i, i + currentMarker.length) === currentMarker) {
-          openingPos = i;
-          break;
-        }
-      }
-
-      // Look forwards from end position to find the nearest closing marker
-      let closingPos = -1;
-      for (let i = end; i <= text.length - currentMarker.length; i++) {
-        if (text.substring(i, i + currentMarker.length) === currentMarker) {
-          closingPos = i;
-          break;
-        }
-      }
-
-      // If we found both markers of this type, the selection is already formatted
-      if (openingPos !== -1 && closingPos !== -1) {
-        return true;
-      }
-    }
-
+    // Map marker to format type
+    if (marker === '*') return analysis.hasItalic;
+    if (marker === '**') return analysis.hasBold;
+    if (marker === '***') return analysis.hasBoldItalic;
+    
     return false;
   }
 
