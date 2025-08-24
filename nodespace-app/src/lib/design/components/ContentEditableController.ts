@@ -181,70 +181,24 @@ export class ContentEditableController {
    * Uses sequential parsing to handle nested patterns correctly
    */
   private markdownToLiveHtml(content: string): string {
+    // Standard Markdown formatting parser for editing mode with syntax highlighting
     let result = '';
     let i = 0;
 
     while (i < content.length) {
       const remaining = content.substring(i);
 
-      // Check for nested underline patterns first (most specific)
-      // Single underscores with nested formatting
-      if (remaining.startsWith('_***')) {
-        const match = remaining.match(/^_\*\*\*([^*_]+)\*\*\*_/);
+      // Check for triple underscores (bold + italic) - ___text___
+      if (remaining.startsWith('___')) {
+        const match = remaining.match(/^___([^_]+)___/);
         if (match) {
-          result += `<span class="markdown-syntax">_***<span class="markdown-underline markdown-bold markdown-italic">${match[1]}</span>***_</span>`;
+          result += `<span class="markdown-syntax">___<span class="markdown-bold markdown-italic">${match[1]}</span>___</span>`;
           i += match[0].length;
           continue;
         }
       }
 
-      if (remaining.startsWith('_**')) {
-        const match = remaining.match(/^_\*\*([^*_]+)\*\*_/);
-        if (match) {
-          result += `<span class="markdown-syntax">_**<span class="markdown-underline markdown-bold">${match[1]}</span>**_</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      if (remaining.startsWith('_*') && !remaining.startsWith('_**')) {
-        const match = remaining.match(/^_\*([^*_]+)\*_/);
-        if (match) {
-          result += `<span class="markdown-syntax">_*<span class="markdown-underline markdown-italic">${match[1]}</span>*_</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Double underscores with nested formatting
-      if (remaining.startsWith('__***')) {
-        const match = remaining.match(/^__\*\*\*([^*_]+)\*\*\*__/);
-        if (match) {
-          result += `<span class="markdown-syntax">__***<span class="markdown-underline markdown-bold markdown-italic">${match[1]}</span>***__</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      if (remaining.startsWith('__**')) {
-        const match = remaining.match(/^__\*\*([^*_]+)\*\*__/);
-        if (match) {
-          result += `<span class="markdown-syntax">__**<span class="markdown-underline markdown-bold">${match[1]}</span>**__</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      if (remaining.startsWith('__*')) {
-        const match = remaining.match(/^__\*([^*_]+)\*__/);
-        if (match) {
-          result += `<span class="markdown-syntax">__*<span class="markdown-underline markdown-italic">${match[1]}</span>*__</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for triple stars (bold + italic)
+      // Check for triple stars (bold + italic) - ***text***
       if (remaining.startsWith('***')) {
         const match = remaining.match(/^\*\*\*([^*]+)\*\*\*/);
         if (match) {
@@ -254,7 +208,17 @@ export class ContentEditableController {
         }
       }
 
-      // Check for double stars (bold)
+      // Check for double underscores (bold) - __text__
+      if (remaining.startsWith('__')) {
+        const match = remaining.match(/^__([^_]+)__/);
+        if (match) {
+          result += `<span class="markdown-syntax">__<span class="markdown-bold">${match[1]}</span>__</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Check for double stars (bold) - **text**
       if (remaining.startsWith('**')) {
         const match = remaining.match(/^\*\*([^*]+)\*\*/);
         if (match) {
@@ -264,31 +228,21 @@ export class ContentEditableController {
         }
       }
 
-      // Check for single stars (italic) - make sure it's not part of ** or ***
+      // Check for single underscores (italic) - _text_
+      if (remaining.startsWith('_') && !remaining.startsWith('__')) {
+        const match = remaining.match(/^_([^_]+)_/);
+        if (match) {
+          result += `<span class="markdown-syntax">_<span class="markdown-italic">${match[1]}</span>_</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      // Check for single stars (italic) - *text*
       if (remaining.startsWith('*') && !remaining.startsWith('**')) {
         const match = remaining.match(/^\*([^*]+)\*/);
         if (match) {
           result += `<span class="markdown-syntax">*<span class="markdown-italic">${match[1]}</span>*</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for simple underlines (double first, then single)
-      if (remaining.startsWith('__')) {
-        const match = remaining.match(/^__([^_]+)__/);
-        if (match) {
-          result += `<span class="markdown-syntax">__<span class="markdown-underline">${match[1]}</span>__</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for single underlines - make sure it's not part of __
-      if (remaining.startsWith('_') && !remaining.startsWith('__')) {
-        const match = remaining.match(/^_([^_]+)_/);
-        if (match) {
-          result += `<span class="markdown-syntax">_<span class="markdown-underline">${match[1]}</span>_</span>`;
           i += match[0].length;
           continue;
         }
