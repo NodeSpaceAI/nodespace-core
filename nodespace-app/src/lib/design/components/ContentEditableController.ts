@@ -7,6 +7,7 @@
 
 import ContentProcessor from '$lib/services/contentProcessor.js';
 import type { TriggerContext } from '$lib/services/NodeReferenceService.js';
+import { markdownToHtml, htmlToMarkdown } from '$lib/utils/markedConfig.js';
 
 export interface ContentEditableEvents {
   contentChanged: (content: string) => void;
@@ -178,82 +179,122 @@ export class ContentEditableController {
 
   /**
    * Convert markdown to HTML with syntax highlighting for editing mode
-   * Uses sequential parsing to handle nested patterns correctly
+   * Uses comprehensive parsing to handle all formatting patterns including mixed syntax
    */
   private markdownToLiveHtml(content: string): string {
-    // Standard Markdown formatting parser for editing mode with syntax highlighting
-    let result = '';
-    let i = 0;
-
-    while (i < content.length) {
-      const remaining = content.substring(i);
-
-      // Check for triple underscores (bold + italic) - ___text___
-      if (remaining.startsWith('___')) {
-        const match = remaining.match(/^___([^_]+)___/);
-        if (match) {
-          result += `<span class="markdown-syntax">___<span class="markdown-bold markdown-italic">${match[1]}</span>___</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for triple stars (bold + italic) - ***text***
-      if (remaining.startsWith('***')) {
-        const match = remaining.match(/^\*\*\*([^*]+)\*\*\*/);
-        if (match) {
-          result += `<span class="markdown-syntax">***<span class="markdown-bold markdown-italic">${match[1]}</span>***</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for double underscores (bold) - __text__
-      if (remaining.startsWith('__')) {
-        const match = remaining.match(/^__([^_]+)__/);
-        if (match) {
-          result += `<span class="markdown-syntax">__<span class="markdown-bold">${match[1]}</span>__</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for double stars (bold) - **text**
-      if (remaining.startsWith('**')) {
-        const match = remaining.match(/^\*\*([^*]+)\*\*/);
-        if (match) {
-          result += `<span class="markdown-syntax">**<span class="markdown-bold">${match[1]}</span>**</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for single underscores (italic) - _text_
-      if (remaining.startsWith('_') && !remaining.startsWith('__')) {
-        const match = remaining.match(/^_([^_]+)_/);
-        if (match) {
-          result += `<span class="markdown-syntax">_<span class="markdown-italic">${match[1]}</span>_</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for single stars (italic) - *text*
-      if (remaining.startsWith('*') && !remaining.startsWith('**')) {
-        const match = remaining.match(/^\*([^*]+)\*/);
-        if (match) {
-          result += `<span class="markdown-syntax">*<span class="markdown-italic">${match[1]}</span>*</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // If no pattern matches, add the character as-is
-      result += content[i];
-      i++;
+    // Find all formatting patterns including mixed syntax
+    const patterns = this.findAllFormattingPatterns(content);
+    
+    if (patterns.length === 0) {
+      return content; // No formatting patterns found
     }
-
+    
+    let result = '';
+    let lastIndex = 0;
+    
+    // Process each pattern in order
+    patterns.forEach(pattern => {
+      const { start, end, openMarker, closeMarker, content: innerContent, type } = pattern;
+      
+      // Add any text before this pattern
+      result += content.substring(lastIndex, start);
+      
+      // Build CSS class based on formatting type
+      let cssClass = '';
+      if (type === 'bold-italic') {
+        cssClass = 'markdown-bold markdown-italic';
+      } else if (type === 'bold') {
+        cssClass = 'markdown-bold';
+      } else if (type === 'italic') {
+        cssClass = 'markdown-italic';
+      }
+      
+      // Create the edit-mode format with visible syntax
+      result += `<span class="markdown-syntax">${openMarker}<span class="${cssClass}">${innerContent}</span>${closeMarker}</span>`;
+      
+      lastIndex = end;
+    });
+    
+    // Add any remaining text after the last pattern
+    result += content.substring(lastIndex);
+    
     return result;
+  }
+
+  /**
+   * Find all formatting patterns in markdown text including mixed syntax
+   * Returns patterns in order of appearance for proper replacement
+   */
+  private findAllFormattingPatterns(text: string): Array<{
+    start: number;
+    end: number;
+    openMarker: string;
+    closeMarker: string;
+    content: string;
+    type: 'bold-italic' | 'bold' | 'italic';
+  }> {
+    const patterns: Array<{
+      start: number;
+      end: number;
+      openMarker: string;
+      closeMarker: string;
+      content: string;
+      type: 'bold-italic' | 'bold' | 'italic';
+    }> = [];
+    
+    // Define all possible formatting patterns in order of precedence
+    // Mixed patterns first, then homogeneous patterns
+    const formatRules = [
+      // Mixed bold-italic patterns (highest precedence)
+      { regex: /\*__(.*?)__\*/g, type: 'bold-italic' as const, openMarker: '*__', closeMarker: '__*' },
+      { regex: /__\*(.*?)\*__/g, type: 'bold-italic' as const, openMarker: '__*', closeMarker: '*__' },
+      { regex: /\*\*_(.*?)_\*\*/g, type: 'bold-italic' as const, openMarker: '**_', closeMarker: '_**' },
+      { regex: /_\*\*(.*?)\*\*_/g, type: 'bold-italic' as const, openMarker: '_**', closeMarker: '**_' },
+      
+      // Homogeneous bold-italic patterns
+      { regex: /\*\*\*(.*?)\*\*\*/g, type: 'bold-italic' as const, openMarker: '***', closeMarker: '***' },
+      { regex: /___(.*?)___/g, type: 'bold-italic' as const, openMarker: '___', closeMarker: '___' },
+      
+      // Bold patterns (medium precedence)
+      { regex: /\*\*([^*]+?)\*\*/g, type: 'bold' as const, openMarker: '**', closeMarker: '**' },
+      { regex: /__([^_]+?)__/g, type: 'bold' as const, openMarker: '__', closeMarker: '__' },
+      
+      // Italic patterns (lowest precedence)
+      { regex: /(?<!\*)\*([^*\n]+?)\*(?!\*)/g, type: 'italic' as const, openMarker: '*', closeMarker: '*' },
+      { regex: /(?<!_)_([^_\n]+?)_(?!_)/g, type: 'italic' as const, openMarker: '_', closeMarker: '_' }
+    ];
+    
+    // Find all matches for each pattern type
+    formatRules.forEach(rule => {
+      let match;
+      while ((match = rule.regex.exec(text)) !== null) {
+        const start = match.index;
+        const end = match.index + match[0].length;
+        const content = match[1];
+        
+        // Check for overlaps with existing patterns (skip if overlapping)
+        const hasOverlap = patterns.some(existing => 
+          (start < existing.end && end > existing.start)
+        );
+        
+        if (!hasOverlap) {
+          patterns.push({
+            start,
+            end,
+            openMarker: rule.openMarker,
+            closeMarker: rule.closeMarker,
+            content,
+            type: rule.type
+          });
+        }
+      }
+      
+      // Reset regex lastIndex to ensure we find all matches
+      rule.regex.lastIndex = 0;
+    });
+    
+    // Sort patterns by start position for proper processing order
+    return patterns.sort((a, b) => a.start - b.start);
   }
 
   private escapeHtml(text: string): string {
@@ -281,123 +322,20 @@ export class ContentEditableController {
   // Private Methods - Content Conversion
   // ============================================================================
 
+  /**
+   * Convert markdown to HTML using marked.js library
+   * Replaces the previous regex-based parser that had edge case bugs
+   */
   private markdownToHtml(markdownContent: string): string {
-    // Standard Markdown formatting parser
-    let result = '';
-    let i = 0;
-
-    while (i < markdownContent.length) {
-      const remaining = markdownContent.substring(i);
-
-      // Check for triple underscores (bold + italic) - ___text___
-      if (remaining.startsWith('___')) {
-        const match = remaining.match(/^___([^_]+)___/);
-        if (match) {
-          result += `<span class="markdown-bold markdown-italic">${match[1]}</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for triple stars (bold + italic) - ***text***
-      if (remaining.startsWith('***')) {
-        const match = remaining.match(/^\*\*\*([^*]+)\*\*\*/);
-        if (match) {
-          result += `<span class="markdown-bold markdown-italic">${match[1]}</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for double underscores (bold) - __text__
-      if (remaining.startsWith('__')) {
-        const match = remaining.match(/^__([^_]+)__/);
-        if (match) {
-          result += `<span class="markdown-bold">${match[1]}</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for double stars (bold) - **text**
-      if (remaining.startsWith('**')) {
-        const match = remaining.match(/^\*\*([^*]+)\*\*/);
-        if (match) {
-          result += `<span class="markdown-bold">${match[1]}</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for single underscores (italic) - _text_
-      if (remaining.startsWith('_') && !remaining.startsWith('__')) {
-        const match = remaining.match(/^_([^_]+)_/);
-        if (match) {
-          result += `<span class="markdown-italic">${match[1]}</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // Check for single stars (italic) - *text*
-      if (remaining.startsWith('*') && !remaining.startsWith('**')) {
-        const match = remaining.match(/^\*([^*]+)\*/);
-        if (match) {
-          result += `<span class="markdown-italic">${match[1]}</span>`;
-          i += match[0].length;
-          continue;
-        }
-      }
-
-      // If no pattern matches, add the character as-is
-      result += markdownContent[i];
-      i++;
-    }
-
-    return result;
+    return markdownToHtml(markdownContent);
   }
 
+  /**
+   * Convert HTML back to markdown using marked.js utilities
+   * Replaces the previous regex-based converter
+   */
   private htmlToMarkdown(htmlContent: string): string {
-    let markdown = htmlContent;
-
-    // Convert span classes to markdown syntax
-    // Handle most complex combinations first (underline + others) - use single underscores
-    markdown = markdown.replace(
-      /<span class="markdown-underline markdown-bold markdown-italic">(.*?)<\/span>/g,
-      '_***$1***_'
-    );
-    markdown = markdown.replace(
-      /<span class="markdown-underline markdown-italic markdown-bold">(.*?)<\/span>/g,
-      '_***$1***_'
-    );
-    markdown = markdown.replace(
-      /<span class="markdown-underline markdown-bold">(.*?)<\/span>/g,
-      '_**$1**_'
-    );
-    markdown = markdown.replace(
-      /<span class="markdown-underline markdown-italic">(.*?)<\/span>/g,
-      '_*$1*_'
-    );
-
-    // Handle remaining bold + italic combinations
-    markdown = markdown.replace(
-      /<span class="markdown-bold markdown-italic">(.*?)<\/span>/g,
-      '***$1***'
-    );
-    markdown = markdown.replace(
-      /<span class="markdown-italic markdown-bold">(.*?)<\/span>/g,
-      '***$1***'
-    );
-
-    // Handle individual formatting
-    markdown = markdown.replace(/<span class="markdown-bold">(.*?)<\/span>/g, '**$1**');
-    markdown = markdown.replace(/<span class="markdown-italic">(.*?)<\/span>/g, '*$1*');
-    markdown = markdown.replace(/<span class="markdown-underline">(.*?)<\/span>/g, '_$1_');
-
-    // Clean up any remaining HTML tags
-    markdown = markdown.replace(/<[^>]*>/g, '');
-
-    return markdown;
+    return htmlToMarkdown(htmlContent);
   }
 
   // ============================================================================
@@ -473,26 +411,14 @@ export class ContentEditableController {
   private handleKeyDown(event: KeyboardEvent): void {
     // Debug logging for Tab and Backspace keys
     if (event.key === 'Tab') {
-      console.log('🔍 ContentEditableController Tab event:', {
-        key: event.key,
-        shiftKey: event.shiftKey,
-        nodeId: this.nodeId,
-        isEditing: this.isEditing,
-        elementId: this.element.id
-      });
+      // Tab handling logic will follow
     }
     
     if (event.key === 'Backspace') {
-      console.log('🔍 ContentEditableController Backspace event:', {
-        key: event.key,
-        nodeId: this.nodeId,
-        isEditing: this.isEditing,
-        isAtStart: this.isAtStart(),
-        currentContent: this.element.textContent || ''
-      });
+      // Backspace handling logic will follow
     }
 
-    // Handle formatting shortcuts (Cmd+B, Cmd+I, Cmd+U)
+    // Handle formatting shortcuts (Cmd+B, Cmd+I)
     if ((event.metaKey || event.ctrlKey) && this.isEditing) {
       if (event.key === 'b' || event.key === 'B') {
         event.preventDefault();
@@ -558,7 +484,6 @@ export class ContentEditableController {
     // Tab key indents node
     if (event.key === 'Tab' && !event.shiftKey) {
       event.preventDefault();
-      console.log('🔍 Firing indentNode event for nodeId:', this.nodeId);
       this.events.indentNode({ nodeId: this.nodeId });
       return;
     }
@@ -586,13 +511,10 @@ export class ContentEditableController {
     if (event.key === 'Backspace' && this.isAtStart()) {
       event.preventDefault();
       const currentContent = this.element.textContent || '';
-      console.log('🔍 Backspace at start detected:', { nodeId: this.nodeId, currentContent, isEmpty: currentContent.trim() === '' });
 
       if (currentContent.trim() === '') {
-        console.log('🔍 Empty node - calling deleteNode');
         this.events.deleteNode({ nodeId: this.nodeId });
       } else {
-        console.log('🔍 Non-empty node - calling combineWithPrevious');
         this.events.combineWithPrevious({
           nodeId: this.nodeId,
           currentContent
@@ -721,6 +643,39 @@ export class ContentEditableController {
     }
   }
 
+  /**
+   * Toggle markdown formatting for selected text or at cursor position
+   * 
+   * ADVANCED NESTED FORMATTING SOLUTION
+   * ===================================
+   * 
+   * This implementation solves complex nested markdown formatting scenarios that standard
+   * markdown editors struggle with. Key capabilities:
+   * 
+   * 1. **Cross-Marker Toggle**: Cmd+B toggles both ** and __ (bold formatting)
+   *    - `__bold__` + Cmd+B → `bold` (removes __ markers)  
+   *    - `**bold**` + Cmd+B → `bold` (removes ** markers)
+   * 
+   * 2. **Nested Formatting Support**: Handles mixed marker scenarios
+   *    - `*__bold__*` + select "bold" + Cmd+B → `*bold*` (removes inner __)
+   *    - `**_italic_**` + select "italic" + Cmd+I → `**italic**` (removes inner _)
+   * 
+   * 3. **Sequential Application**: Enables rich formatting combinations  
+   *    - `**text**` + Cmd+I → `***text***` (adds italic outside bold)
+   *    - `***text***` + Cmd+I → `**text**` (removes italic component)
+   * 
+   * 4. **Smart Context Detection**: Analyzes surrounding text to determine action
+   *    - Uses `shouldRemoveInnerFormatting()` for nested pattern detection
+   *    - Uses `isTextAlreadyFormatted()` for cross-marker compatibility
+   * 
+   * ALGORITHM DESIGN:
+   * - Inspired by analysis of Logseq's formatting approach (examined at /Users/malibio/Zed Projects/logseq)
+   * - Uses marked.js library for markdown parsing consistency  
+   * - Implements context-aware selection analysis instead of simple regex matching
+   * - Handles double-click selection behavior (includes underscores in word boundaries)
+   * 
+   * Supports: Bold (**,__), Italic (*,_), Sequential nesting, Mixed scenarios
+   */
   private toggleFormatting(marker: string): void {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return;
@@ -729,123 +684,104 @@ export class ContentEditableController {
     const selectedText = range.toString();
     const textContent = this.element.textContent || '';
 
-    // Simple approach: work with the markdown text content directly
     if (selectedText) {
-      // Handle case where selection includes formatting markers (like double-clicking "__word__")
-      let adjustedSelectedText = selectedText;
-      let markerIncludedInSelection = false;
-      let detectedMarker = marker; // Track which marker was actually detected
+      // Get the actual selection positions using DOM position calculation
+      const selectionStartOffset = this.getTextOffsetFromElement(range.startContainer, range.startOffset);
+      const selectionEndOffset = this.getTextOffsetFromElement(range.endContainer, range.endOffset);
 
-      // Check for all possible markers based on the requested format type
-      let possibleMarkers: string[] = [];
-      if (marker === '*') {
-        possibleMarkers = ['*', '_'];
-      } else if (marker === '**') {
-        possibleMarkers = ['**', '__'];
-      } else if (marker === '***') {
-        possibleMarkers = ['***', '___'];
-      } else {
-        possibleMarkers = [marker];
-      }
+      // FIXED LOGIC: Check for existing formatting with strict marker type detection
+      const formattingState = this.getFormattingState(textContent, selectionStartOffset, selectionEndOffset, marker);
+      
+      let newContent: string = textContent;
+      let newSelectionStart: number = selectionStartOffset;
+      let newSelectionEnd: number = selectionEndOffset;
 
-      // Check if selection includes any of the possible markers
-      for (const possibleMarker of possibleMarkers) {
-        if (
-          selectedText.startsWith(possibleMarker) &&
-          selectedText.endsWith(possibleMarker) &&
-          selectedText.length > possibleMarker.length * 2
-        ) {
-          // Selection includes the markers - extract just the content
-          adjustedSelectedText = selectedText.substring(
-            possibleMarker.length,
-            selectedText.length - possibleMarker.length
-          );
-          markerIncludedInSelection = true;
-          detectedMarker = possibleMarker; // Remember which marker was found
-          break;
-        }
-      }
-
-      // Find the selected text in the markdown content
-      const searchText = markerIncludedInSelection ? selectedText : adjustedSelectedText;
-      const selectionStart = textContent.indexOf(searchText);
-      if (selectionStart === -1) return; // Selection not found in text content
-
-      let actualStart: number;
-      let actualEnd: number;
-      let workingSelectedText: string;
-
-      if (markerIncludedInSelection) {
-        // Selection includes markers - we want to work with just the content inside
-        actualStart = selectionStart + marker.length;
-        actualEnd = actualStart + adjustedSelectedText.length;
-        workingSelectedText = adjustedSelectedText;
-      } else {
-        // Selection is just the content
-        actualStart = selectionStart;
-        actualEnd = selectionStart + adjustedSelectedText.length;
-        workingSelectedText = adjustedSelectedText;
-      }
-
-      const beforeSelection = textContent.substring(0, actualStart);
-      const afterSelection = textContent.substring(actualEnd);
-
-      // Check if already formatted by looking for surrounding markers (handles nested formatting)
-      const isAlreadyFormatted = this.isSelectionAlreadyFormatted(textContent, actualStart, actualEnd, marker);
-
-      let newContent: string;
-      let newSelectionStart: number;
-      let newSelectionEnd: number;
-
-      if (isAlreadyFormatted || markerIncludedInSelection) {
-        // Remove formatting - find the actual markers present around the selection
-        const actualMarkers = this.findActualMarkersAroundSelection(textContent, actualStart, actualEnd, marker);
-        if (actualMarkers) {
-          // Remove the detected markers
-          const beforeMarker = textContent.substring(0, actualMarkers.startPos);
-          const afterMarker = textContent.substring(actualMarkers.endPos + actualMarkers.marker.length);
-          newContent = beforeMarker + workingSelectedText + afterMarker;
-          newSelectionStart = beforeMarker.length;
-          newSelectionEnd = newSelectionStart + workingSelectedText.length;
-        } else {
-          // Fallback to original logic - use detected marker when available
-          const markerToRemove = markerIncludedInSelection ? detectedMarker : marker;
-          const beforeMarker = beforeSelection.endsWith(markerToRemove)
-            ? beforeSelection.substring(0, beforeSelection.length - markerToRemove.length)
-            : beforeSelection;
-          const afterMarker = afterSelection.startsWith(markerToRemove)
-            ? afterSelection.substring(markerToRemove.length)
-            : afterSelection;
-          newContent = beforeMarker + workingSelectedText + afterMarker;
-          newSelectionStart = beforeMarker.length;
-          newSelectionEnd = newSelectionStart + workingSelectedText.length;
-        }
-      } else {
-        // Add formatting - check for existing formatting layers to position markers correctly
-        const analysis = this.analyzeFormattingLayers(textContent, actualStart, actualEnd);
+      if (formattingState.hasFormatting && formattingState.actualMarker === marker) {
+        // TOGGLE OFF: Remove exact marker formatting only
         
-        if (analysis.layers.length > 0) {
-          // There's existing formatting - add new formatting outside the outermost layer
-          const outermostLayer = analysis.layers.reduce((outermost, current) => {
-            if (current.startPos <= outermost.startPos && current.endPos >= outermost.endPos) {
-              return current;
-            }
-            return outermost;
-          });
+        const beforeFormat = textContent.substring(0, formattingState.formatStart!);
+        const insideFormat = textContent.substring(
+          formattingState.formatStart! + formattingState.actualMarker.length,
+          formattingState.formatEnd!
+        );
+        const afterFormat = textContent.substring(formattingState.formatEnd! + formattingState.actualMarker.length);
+        
+        newContent = beforeFormat + insideFormat + afterFormat;
+        // Adjust selection position to account for removed opening marker
+        const markerLength = formattingState.actualMarker.length;
+        newSelectionStart = selectionStartOffset - markerLength;
+        newSelectionEnd = selectionEndOffset - markerLength;
+        
+      } else if (this.shouldRemoveInnerFormatting(selectedText, marker, textContent, selectionStartOffset, selectionEndOffset)) {
+        // TOGGLE OFF: Remove inner formatting markers from nested scenarios
+        // e.g., *__bold__* + Cmd+B should remove __ and leave *bold*
+        // e.g., **_italic_** + Cmd+I should remove _ and leave **italic**
+        
+        const cleanedText = this.removeInnerFormatting(selectedText, marker);
+        const beforeSelection = textContent.substring(0, selectionStartOffset);
+        const afterSelection = textContent.substring(selectionEndOffset);
+        
+        newContent = beforeSelection + cleanedText + afterSelection;
+        newSelectionStart = selectionStartOffset;
+        newSelectionEnd = selectionStartOffset + cleanedText.length;
+        
+      } else if (formattingState.hasFormatting && formattingState.actualMarker?.startsWith('***')) {
+        // TOGGLE OFF: Handle triple asterisk scenarios
+        
+        if (formattingState.actualMarker === '***-italic') {
+          // Remove italic component from ***text***, leaving **text**
+          const beforeFormat = textContent.substring(0, formattingState.formatStart!);
+          const insideFormat = textContent.substring(
+            formattingState.formatStart! + 3, // Skip ***
+            formattingState.formatEnd!
+          );
+          const afterFormat = textContent.substring(formattingState.formatEnd! + 3); // Skip ***
           
-          // Place new markers outside the outermost existing formatting
-          const beforeOuterFormat = textContent.substring(0, outermostLayer.startPos);
-          const existingFormat = textContent.substring(outermostLayer.startPos, outermostLayer.endPos + outermostLayer.marker.length);
-          const afterOuterFormat = textContent.substring(outermostLayer.endPos + outermostLayer.marker.length);
+          newContent = beforeFormat + '**' + insideFormat + '**' + afterFormat;
+          newSelectionStart = selectionStartOffset - 1; // One less asterisk
+          newSelectionEnd = selectionEndOffset - 1;
           
-          newContent = beforeOuterFormat + marker + existingFormat + marker + afterOuterFormat;
-          newSelectionStart = beforeOuterFormat.length + marker.length + (actualStart - outermostLayer.startPos);
-          newSelectionEnd = beforeOuterFormat.length + marker.length + (actualEnd - outermostLayer.startPos);
+        } else if (formattingState.actualMarker === '***-bold') {
+          // Remove bold component from ***text***, leaving *text*
+          const beforeFormat = textContent.substring(0, formattingState.formatStart!);
+          const insideFormat = textContent.substring(
+            formattingState.formatStart! + 3, // Skip ***
+            formattingState.formatEnd!
+          );
+          const afterFormat = textContent.substring(formattingState.formatEnd! + 3); // Skip ***
+          
+          newContent = beforeFormat + '*' + insideFormat + '*' + afterFormat;
+          newSelectionStart = selectionStartOffset - 2; // Two less asterisks
+          newSelectionEnd = selectionEndOffset - 2;
+        }
+        
+      } else {
+        // Check if the selected text itself contains the exact formatting markers
+        const isFormattedSelection = this.isTextAlreadyFormatted(selectedText, marker);
+        
+        
+        if (isFormattedSelection) {
+          // TOGGLE OFF: Remove exact formatting from the selected text itself
+          
+          const unformattedText = this.removeFormattingFromText(selectedText, marker);
+          const beforeSelection = textContent.substring(0, selectionStartOffset);
+          const afterSelection = textContent.substring(selectionEndOffset);
+          
+          newContent = beforeSelection + unformattedText + afterSelection;
+          newSelectionStart = selectionStartOffset;
+          newSelectionEnd = selectionStartOffset + unformattedText.length;
+          
         } else {
-          // No existing formatting - add markers normally
-          newContent = beforeSelection + marker + workingSelectedText + marker + afterSelection;
-          newSelectionStart = beforeSelection.length + marker.length;
-          newSelectionEnd = newSelectionStart + workingSelectedText.length;
+          // NEST ADD: Add formatting markers around selection (including mixed scenarios)
+          
+          // For nesting scenarios like **text** + Cmd+I, we want to create ***text***
+          // DO NOT clean conflicting markers - preserve them for nesting
+          const beforeSelection = textContent.substring(0, selectionStartOffset);
+          const afterSelection = textContent.substring(selectionEndOffset);
+          
+          newContent = beforeSelection + marker + selectedText + marker + afterSelection;
+          newSelectionStart = selectionStartOffset + marker.length;
+          newSelectionEnd = selectionStartOffset + marker.length + selectedText.length;
         }
       }
 
@@ -854,35 +790,35 @@ export class ContentEditableController {
       this.setLiveFormattedContent(newContent);
       this.events.contentChanged(newContent);
 
-      // Restore selection on the text (not the markers)
+      // Restore selection on the text content (not the markers)
       setTimeout(() => {
         this.setSelection(newSelectionStart, newSelectionEnd);
       }, 0);
+      
     } else {
-      // No selection - insert markers at cursor position
+      // No selection - check if cursor is inside existing formatting
       const cursorPos = this.getTextOffsetFromElement(range.startContainer, range.startOffset);
-      const beforeCursor = textContent.substring(0, cursorPos);
-      const afterCursor = textContent.substring(cursorPos);
-
-      // Check if cursor is inside existing formatting
-      const surroundingMarkers = this.findSurroundingFormatting(textContent, cursorPos, marker);
+      const surroundingFormat = this.findSurroundingFormatting(textContent, cursorPos, marker);
 
       let newContent: string;
       let newCursorPos: number;
 
-      if (surroundingMarkers) {
-        // Remove surrounding formatting
-        const beforeFormatting = textContent.substring(0, surroundingMarkers.startPos);
-        const insideFormatting = textContent.substring(
-          surroundingMarkers.startPos + marker.length,
-          surroundingMarkers.endPos
+      if (surroundingFormat) {
+        // Remove surrounding formatting markers
+        const beforeFormat = textContent.substring(0, surroundingFormat.startPos);
+        const insideFormat = textContent.substring(
+          surroundingFormat.startPos + marker.length,
+          surroundingFormat.endPos
         );
-        const afterFormatting = textContent.substring(surroundingMarkers.endPos + marker.length);
+        const afterFormat = textContent.substring(surroundingFormat.endPos + marker.length);
 
-        newContent = beforeFormatting + insideFormatting + afterFormatting;
+        newContent = beforeFormat + insideFormat + afterFormat;
         newCursorPos = cursorPos - marker.length;
       } else {
-        // Insert formatting markers
+        // Insert formatting markers at cursor
+        const beforeCursor = textContent.substring(0, cursorPos);
+        const afterCursor = textContent.substring(cursorPos);
+        
         newContent = beforeCursor + marker + marker + afterCursor;
         newCursorPos = cursorPos + marker.length;
       }
@@ -1053,54 +989,88 @@ export class ContentEditableController {
     return unmatchedOpening;
   }
 
-  /**
-   * Get active formatting markers at a specific position
-   * Returns formatting that is "open" at the cursor position
-   */
-  private getActiveFormattingAtPosition(
-    content: string,
-    position: number
-  ): Array<{
-    marker: string;
-    type: 'bold' | 'italic' | 'underline';
-  }> {
-    const activeFormatting: Array<{ marker: string; type: 'bold' | 'italic' | 'underline' }> = [];
-
-    // Check for bold (**text**)
-    if (this.isInsideFormatting(content, position, '**')) {
-      activeFormatting.push({ marker: '**', type: 'bold' });
-    }
-
-    // Check for italic (*text*) - but not if already inside bold
-    if (
-      !this.isInsideFormatting(content, position, '**') &&
-      this.isInsideFormatting(content, position, '*')
-    ) {
-      activeFormatting.push({ marker: '*', type: 'italic' });
-    }
-
-    // Check for underline (__text__)
-    if (this.isInsideFormatting(content, position, '__')) {
-      activeFormatting.push({ marker: '__', type: 'underline' });
-    }
-
-    return activeFormatting;
-  }
 
   /**
-   * Check if position is inside a specific formatting marker
+   * Detect triple asterisk formatting scenarios for proper toggle behavior
+   * ***text*** + Cmd+I should become **text** (remove italic component)
+   * ***text*** + Cmd+B should become *text* (remove bold component)
    */
-  private isInsideFormatting(content: string, position: number, marker: string): boolean {
-    const beforeCursor = content.substring(0, position);
-    const afterCursor = content.substring(position);
-
-    // Count occurrences of marker before and after cursor
-    const beforeCount = (beforeCursor.match(new RegExp(this.escapeRegex(marker), 'g')) || [])
-      .length;
-    const afterCount = (afterCursor.match(new RegExp(this.escapeRegex(marker), 'g')) || []).length;
-
-    // If we have an odd number before cursor and at least one after, we're inside
-    return beforeCount % 2 === 1 && afterCount > 0;
+  private detectTripleAsteriskFormatting(text: string, selectionStart: number, selectionEnd: number, marker: string): {
+    hasFormatting: boolean;
+    formatStart?: number;
+    formatEnd?: number;
+    actualMarker?: string;
+  } {
+    // CRITICAL FIX: Only apply to actual *** patterns, not nested ** + _ patterns
+    // First, check if the selection is actually within a *** pattern
+    
+    // Look for *** patterns around the selection
+    const beforeSelection = text.substring(0, selectionStart);
+    const afterSelection = text.substring(selectionEnd);
+    
+    // Find the closest *** before selection
+    let tripleStarStart = -1;
+    for (let i = beforeSelection.length - 3; i >= 0; i--) {
+      if (beforeSelection.substring(i, i + 3) === '***') {
+        // Verify this is likely an opening marker (even count of *** before it)
+        const beforeTriple = beforeSelection.substring(0, i);
+        const tripleCount = (beforeTriple.match(/\*\*\*/g) || []).length;
+        if (tripleCount % 2 === 0) {
+          tripleStarStart = i;
+          break;
+        }
+      }
+    }
+    
+    if (tripleStarStart === -1) {
+      return { hasFormatting: false };
+    }
+    
+    // Find the closest *** after selection
+    let tripleStarEnd = -1;
+    for (let i = 0; i <= afterSelection.length - 3; i++) {
+      if (afterSelection.substring(i, i + 3) === '***') {
+        tripleStarEnd = selectionEnd + i;
+        break;
+      }
+    }
+    
+    if (tripleStarEnd === -1) {
+      return { hasFormatting: false };
+    }
+    
+    // ADDITIONAL FIX: Verify this is actually a ***text*** pattern, not nested **_text_**
+    // Check that the content between markers doesn't have other nested patterns that would conflict
+    // Content between triple stars (not used in current logic)
+    // const contentBetween = text.substring(tripleStarStart + 3, tripleStarEnd);
+    const selectedText = text.substring(selectionStart, selectionEnd);
+    
+    // If the selected text contains mixed format markers (**_text_**), this is not a triple asterisk scenario
+    if (selectedText.includes('**') || selectedText.includes('__') || 
+        (selectedText.includes('_') && !selectedText.startsWith('_') && !selectedText.endsWith('_'))) {
+      return { hasFormatting: false };
+    }
+    
+    // We have a ***text*** pattern - determine which component to toggle off
+    if (marker === '*') {
+      // Cmd+I on ***text*** should remove italic, leaving **text**
+      return {
+        hasFormatting: true,
+        formatStart: tripleStarStart,
+        formatEnd: tripleStarEnd,
+        actualMarker: '***-italic' // Special marker to indicate triple asterisk italic removal
+      };
+    } else if (marker === '**') {
+      // Cmd+B on ***text*** should remove bold, leaving *text*
+      return {
+        hasFormatting: true,
+        formatStart: tripleStarStart,
+        formatEnd: tripleStarEnd,
+        actualMarker: '***-bold' // Special marker to indicate triple asterisk bold removal
+      };
+    }
+    
+    return { hasFormatting: false };
   }
 
   /**
@@ -1110,108 +1080,418 @@ export class ContentEditableController {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
-  /**
-   * Find the specific formatting layer to remove based on the requested marker type
-   * Uses the new formatting analysis to handle complex mixed scenarios
-   */
-  private findActualMarkersAroundSelection(text: string, start: number, end: number, requestedMarker: string): { startPos: number; endPos: number; marker: string } | null {
-    const analysis = this.analyzeFormattingLayers(text, start, end);
-    
-    // Find the specific layer type to remove
-    let targetType: 'italic' | 'bold' | 'bold-italic';
-    if (requestedMarker === '*') targetType = 'italic';
-    else if (requestedMarker === '**') targetType = 'bold';  
-    else if (requestedMarker === '***') targetType = 'bold-italic';
-    else return null;
 
-    // Find the first layer of the target type
-    const layerToRemove = analysis.layers.find(layer => layer.type === targetType);
-    if (layerToRemove) {
+  /**
+   * Get formatting state for a selection, similar to easy-markdown-editor's getState()
+   * Returns whether the selection is currently formatted and where the markers are
+   * FIXED: Handles nested formatting properly without interfering with normal operations
+   */
+  private getFormattingState(text: string, selectionStart: number, selectionEnd: number, marker: string): {
+    hasFormatting: boolean;
+    formatStart?: number;
+    formatEnd?: number;
+    actualMarker?: string;
+  } {
+    // Handle triple asterisk patterns ONLY when we actually have *** in the text
+    // AND the selection is for an exact *** pattern (not nested patterns like **_text_**)
+    if (text.includes('***')) {
+      const result = this.detectTripleAsteriskFormatting(text, selectionStart, selectionEnd, marker);
+      if (result.hasFormatting) {
+        return result;
+      }
+    }
+
+    // Define equivalent markers based on the requested marker
+    let equivalentMarkers: string[];
+    if (marker === '**') {
+      equivalentMarkers = ['**', '__']; // Only bold equivalents
+    } else if (marker === '*') {
+      equivalentMarkers = ['*', '_']; // Only italic equivalents, but exclude ** patterns
+    } else {
+      equivalentMarkers = [marker];
+    }
+
+    // Try each equivalent marker type with strict boundary detection
+    for (const testMarker of equivalentMarkers) {
+      const result = this.findFormattingBoundariesStrict(text, selectionStart, selectionEnd, testMarker);
+      if (result.hasFormatting) {
+        return {
+          hasFormatting: true,
+          formatStart: result.formatStart,
+          formatEnd: result.formatEnd,
+          actualMarker: testMarker
+        };
+      }
+    }
+
+    // No formatting detected
+    return { hasFormatting: false };
+  }
+
+  /**
+   * Find formatting boundaries with strict marker type checking
+   * FIXED: Prevents ** from being detected as * markers in sequential operations
+   */
+  private findFormattingBoundariesStrict(text: string, selectionStart: number, selectionEnd: number, marker: string): {
+    hasFormatting: boolean;
+    formatStart?: number;
+    formatEnd?: number;
+  } {
+    // For italic (*), we must exclude positions that are part of bold (**)
+    // For bold (**), we must check for exact ** patterns
+    
+    const allOpeningPositions: number[] = [];
+    const allClosingPositions: number[] = [];
+    
+    // Find all valid occurrences of the marker with strict type checking
+    for (let i = 0; i <= text.length - marker.length; i++) {
+      if (this.isValidMarkerAtPosition(text, i, marker)) {
+        // Determine if this is likely an opening or closing marker
+        // by checking if we're before or after the selection
+        if (i < selectionStart) {
+          allOpeningPositions.push(i);
+        } else if (i >= selectionEnd) {
+          allClosingPositions.push(i);
+        }
+      }
+    }
+    
+    // Find the closest opening marker before the selection
+    let bestOpeningPos = -1;
+    for (let i = allOpeningPositions.length - 1; i >= 0; i--) {
+      const pos = allOpeningPositions[i];
+      // Check if this could be a valid opening (even count of same markers before it)
+      const beforePos = text.substring(0, pos);
+      const markerCountBefore = this.countValidMarkersInText(beforePos, marker);
+      
+      if (markerCountBefore % 2 === 0) {
+        bestOpeningPos = pos;
+        break;
+      }
+    }
+    
+    if (bestOpeningPos === -1) {
+      return { hasFormatting: false };
+    }
+    
+    // Find the closest closing marker after the selection
+    let bestClosingPos = -1;
+    for (const pos of allClosingPositions) {
+      // Check if this could be a valid closing (odd total count up to this point)
+      const beforeAndAtPos = text.substring(0, pos + marker.length);
+      const markerCountTotal = this.countValidMarkersInText(beforeAndAtPos, marker);
+      
+      if (markerCountTotal % 2 === 0) { // After adding this marker, we have an even count = closing
+        bestClosingPos = pos;
+        break;
+      }
+    }
+    
+    if (bestClosingPos === -1) {
+      return { hasFormatting: false };
+    }
+    
+    // Verify we have a proper pairing
+    const insideText = text.substring(bestOpeningPos + marker.length, bestClosingPos);
+    const markerCountInside = this.countValidMarkersInText(insideText, marker);
+    
+    // Must have even number of markers inside for a valid pair
+    if (markerCountInside % 2 === 0) {
       return {
-        startPos: layerToRemove.startPos,
-        endPos: layerToRemove.endPos,
-        marker: layerToRemove.marker
+        hasFormatting: true,
+        formatStart: bestOpeningPos,
+        formatEnd: bestClosingPos
       };
     }
 
-    return null;
+    return { hasFormatting: false };
   }
 
   /**
-   * Analyze all formatting layers around a selection
-   * Returns information about existing formatting that can be used for smart toggle decisions
+   * Check if a marker at a specific position is valid for the given marker type
+   * CRITICAL: Prevents ** from being detected as * markers
    */
-  private analyzeFormattingLayers(text: string, start: number, end: number): {
-    hasItalic: boolean;
-    hasBold: boolean;
-    hasBoldItalic: boolean;
-    layers: { type: 'italic' | 'bold' | 'bold-italic'; startPos: number; endPos: number; marker: string }[];
-  } {
-    const layers: { type: 'italic' | 'bold' | 'bold-italic'; startPos: number; endPos: number; marker: string }[] = [];
-    let hasItalic = false;
-    let hasBold = false;
-    let hasBoldItalic = false;
+  private isValidMarkerAtPosition(text: string, position: number, marker: string): boolean {
+    // Check if the text at this position matches the marker
+    if (text.substring(position, position + marker.length) !== marker) {
+      return false;
+    }
 
-    // Define all possible markers and their types
-    const markerTypes: { marker: string; type: 'italic' | 'bold' | 'bold-italic'; priority: number }[] = [
-      { marker: '___', type: 'bold-italic', priority: 3 },
-      { marker: '***', type: 'bold-italic', priority: 3 },
-      { marker: '__', type: 'bold', priority: 2 },
-      { marker: '**', type: 'bold', priority: 2 },
-      { marker: '_', type: 'italic', priority: 1 },
-      { marker: '*', type: 'italic', priority: 1 },
-    ];
-
-    // Sort by priority (longest markers first to avoid conflicts)
-    markerTypes.sort((a, b) => b.priority - a.priority);
-
-    for (const { marker, type } of markerTypes) {
-      // Look backwards from start position to find opening marker
-      let openingPos = -1;
-      for (let i = start - marker.length; i >= 0; i--) {
-        if (text.substring(i, i + marker.length) === marker) {
-          openingPos = i;
-          break;
-        }
-      }
-
-      // Look forwards from end position to find closing marker
-      let closingPos = -1;
-      for (let i = end; i <= text.length - marker.length; i++) {
-        if (text.substring(i, i + marker.length) === marker) {
-          closingPos = i;
-          break;
-        }
-      }
-
-      // If we found both markers, record this layer
-      if (openingPos !== -1 && closingPos !== -1) {
-        layers.push({ type, startPos: openingPos, endPos: closingPos, marker });
-        
-        if (type === 'italic') hasItalic = true;
-        if (type === 'bold') hasBold = true;
-        if (type === 'bold-italic') hasBoldItalic = true;
+    // Special handling for single * to avoid confusion with **
+    if (marker === '*') {
+      // Make sure this * is not part of a ** pattern
+      const charBefore = position > 0 ? text[position - 1] : '';
+      const charAfter = position + 1 < text.length ? text[position + 1] : '';
+      
+      // Invalid if this * is part of **
+      if (charBefore === '*' || charAfter === '*') {
+        return false;
       }
     }
 
-    return { hasItalic, hasBold, hasBoldItalic, layers };
+    // Special handling for single _ to avoid confusion with __
+    if (marker === '_') {
+      // Make sure this _ is not part of a __ pattern
+      const charBefore = position > 0 ? text[position - 1] : '';
+      const charAfter = position + 1 < text.length ? text[position + 1] : '';
+      
+      // Invalid if this _ is part of __
+      if (charBefore === '_' || charAfter === '_') {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   /**
-   * Check if a selection is already formatted with the given marker type
-   * Uses the new formatting layer analysis for better mixed-marker support
+   * Count valid markers in text with strict type checking
    */
-  private isSelectionAlreadyFormatted(text: string, start: number, end: number, marker: string): boolean {
-    const analysis = this.analyzeFormattingLayers(text, start, end);
+  private countValidMarkersInText(text: string, marker: string): number {
+    let count = 0;
+    for (let i = 0; i <= text.length - marker.length; i++) {
+      if (this.isValidMarkerAtPosition(text, i, marker)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Find formatting boundaries for a specific marker type (DEPRECATED - using strict version)
+   */
+  private findFormattingBoundaries(text: string, selectionStart: number, selectionEnd: number, marker: string): {
+    hasFormatting: boolean;
+    formatStart?: number;
+    formatEnd?: number;
+  } {
+    // For nested formatting scenarios, we need to find the closest matching pair
+    // For example: **_italic_** - if "**" is requested and "_italic_" is selected,
+    // we should find the outer ** markers, not inner ones
     
-    // Map marker to format type
-    if (marker === '*') return analysis.hasItalic;
-    if (marker === '**') return analysis.hasBold;
-    if (marker === '***') return analysis.hasBoldItalic;
+    const allOpeningPositions: number[] = [];
+    const allClosingPositions: number[] = [];
+    
+    // Find all occurrences of the marker
+    for (let i = 0; i <= text.length - marker.length; i++) {
+      if (text.substring(i, i + marker.length) === marker) {
+        // Determine if this is likely an opening or closing marker
+        // by checking if we're before or after the selection
+        if (i < selectionStart) {
+          allOpeningPositions.push(i);
+        } else if (i >= selectionEnd) {
+          allClosingPositions.push(i);
+        }
+      }
+    }
+    
+    // Find the closest opening marker before the selection
+    let bestOpeningPos = -1;
+    for (let i = allOpeningPositions.length - 1; i >= 0; i--) {
+      const pos = allOpeningPositions[i];
+      // Check if this could be a valid opening (even count of same markers before it)
+      const beforePos = text.substring(0, pos);
+      const markerCountBefore = (beforePos.match(new RegExp(this.escapeRegex(marker), 'g')) || []).length;
+      
+      if (markerCountBefore % 2 === 0) {
+        bestOpeningPos = pos;
+        break;
+      }
+    }
+    
+    if (bestOpeningPos === -1) {
+      return { hasFormatting: false };
+    }
+    
+    // Find the closest closing marker after the selection
+    let bestClosingPos = -1;
+    for (const pos of allClosingPositions) {
+      // Check if this could be a valid closing (odd total count up to this point)
+      const beforeAndAtPos = text.substring(0, pos + marker.length);
+      const markerCountTotal = (beforeAndAtPos.match(new RegExp(this.escapeRegex(marker), 'g')) || []).length;
+      
+      if (markerCountTotal % 2 === 0) { // After adding this marker, we have an even count = closing
+        bestClosingPos = pos;
+        break;
+      }
+    }
+    
+    if (bestClosingPos === -1) {
+      return { hasFormatting: false };
+    }
+    
+    // Verify we have a proper pairing
+    const insideText = text.substring(bestOpeningPos + marker.length, bestClosingPos);
+    const markerCountInside = (insideText.match(new RegExp(this.escapeRegex(marker), 'g')) || []).length;
+    
+    // Must have even number of markers inside for a valid pair
+    if (markerCountInside % 2 === 0) {
+      return {
+        hasFormatting: true,
+        formatStart: bestOpeningPos,
+        formatEnd: bestClosingPos
+      };
+    }
+
+    return { hasFormatting: false };
+  }
+
+  /**
+   * Check if text is already formatted with the EXACT target marker (not equivalents)
+   * FIXED: Only checks for exact marker matches to enable proper nesting of different marker types
+   */
+  private isTextAlreadyFormatted(text: string, targetMarker: string): boolean {
+    // Check if text has formatting markers that correspond to the target format type
+    // For bold (targetMarker **): check for ** or __
+    // For italic (targetMarker *): check for * or _
+    
+    if (targetMarker === '**') {
+      // Bold formatting: check for ** or __
+      return (text.startsWith('**') && text.endsWith('**') && text.length > 4) ||
+             (text.startsWith('__') && text.endsWith('__') && text.length > 4);
+    } else if (targetMarker === '*') {
+      // Italic formatting: check for * or _ (but not ** or __)
+      const hasSingleStar = text.startsWith('*') && text.endsWith('*') && text.length > 2 &&
+                           !text.startsWith('**') && !text.endsWith('**');
+      const hasSingleUnderscore = text.startsWith('_') && text.endsWith('_') && text.length > 2 &&
+                                 !text.startsWith('__') && !text.endsWith('__');
+      return hasSingleStar || hasSingleUnderscore;
+    }
     
     return false;
   }
 
+  /**
+   * Remove formatting markers from text based on EXACT target marker type
+   * FIXED: Only removes exact marker matches, not equivalents, for proper nesting
+   */
+  private removeFormattingFromText(text: string, targetMarker: string): string {
+    // Remove formatting markers that correspond to the target format type
+    // For bold (targetMarker **): remove ** or __
+    // For italic (targetMarker *): remove * or _
+    
+    if (targetMarker === '**') {
+      // Bold: remove ** or __
+      if (text.startsWith('**') && text.endsWith('**') && text.length > 4) {
+        return text.substring(2, text.length - 2);
+      } else if (text.startsWith('__') && text.endsWith('__') && text.length > 4) {
+        return text.substring(2, text.length - 2);
+      }
+    } else if (targetMarker === '*') {
+      // Italic: remove * or _ (but not ** or __)
+      if (text.startsWith('*') && text.endsWith('*') && text.length > 2 &&
+          !text.startsWith('**') && !text.endsWith('**')) {
+        return text.substring(1, text.length - 1);
+      } else if (text.startsWith('_') && text.endsWith('_') && text.length > 2 &&
+                !text.startsWith('__') && !text.endsWith('__')) {
+        return text.substring(1, text.length - 1);
+      }
+    }
+    
+    return text; // Return original if no formatting found
+  }
+
+  /**
+   * Clean conflicting markers from text when adding new formatting
+   * Based on easy-markdown-editor's approach of removing conflicting markers
+   */
+  private cleanConflictingMarkers(text: string, targetMarker: string): string {
+    let cleanedText = text;
+
+    if (targetMarker === '**') {
+      // For bold, remove existing bold markers but keep italic
+      cleanedText = cleanedText.replace(/\*\*/g, '');
+      cleanedText = cleanedText.replace(/__/g, '');
+    } else if (targetMarker === '*') {
+      // For italic, remove existing italic markers but keep bold
+      // Be careful not to remove ** markers, only single *
+      cleanedText = cleanedText.replace(/(?<!\*)\*(?!\*)/g, '');
+      cleanedText = cleanedText.replace(/(?<!_)_(?!_)/g, '');
+    }
+
+    return cleanedText;
+  }
+
+  /**
+   * Check if we should remove inner formatting from nested patterns
+   * e.g., *__bold__* + Cmd+B should remove inner __ markers
+   * e.g., **_italic_** + Cmd+I should remove inner _ markers
+   */
+  private shouldRemoveInnerFormatting(selectedText: string, marker: string, textContent: string, selectionStartOffset: number, selectionEndOffset: number): boolean {
+
+    // Look for nested formatting patterns around the current selection
+    if (marker === '**') {
+      // Cmd+B: Check if selection is inside *__text__* pattern (bold inside italic)
+      const beforeSelection = textContent.substring(0, selectionStartOffset);
+      const afterSelection = textContent.substring(selectionEndOffset);
+      
+      // Check different scenarios:
+      // 1. Selection includes markers: "*__bold__*" where selectedText = "__bold__"
+      // 2. Selection is just text: "*__bold__*" where selectedText = "bold"
+      
+      let isInsideStarUnderscore = false;
+      
+      if (selectedText.startsWith('__') && selectedText.endsWith('__')) {
+        // Case 1: Selection includes the __ markers, look for * around
+        // IMPORTANT: Only consider this inner formatting if there are actually * markers around
+        isInsideStarUnderscore = beforeSelection.endsWith('*') && afterSelection.startsWith('*');
+      } else {
+        // Case 2: Selection is just text, look for *__ before and __* after
+        isInsideStarUnderscore = !!beforeSelection.match(/\*__[^_]*$/) && !!afterSelection.match(/^[^_]*__\*/);
+      }
+      
+      // Additional validation: only return true if we're actually in a nested scenario
+      // Don't interfere with normal __text__ toggle behavior
+      if (selectedText.startsWith('__') && selectedText.endsWith('__') && !isInsideStarUnderscore) {
+        // This is standalone __bold__, let normal toggle logic handle it
+        return false;
+      }
+      
+      return isInsideStarUnderscore;
+    } else if (marker === '*') {
+      // Cmd+I: Check if selection is inside **_text_** pattern (italic inside bold)
+      const beforeSelection = textContent.substring(0, selectionStartOffset);
+      const afterSelection = textContent.substring(selectionEndOffset);
+      
+      let isInsideDoubleStarUnderscore = false;
+      
+      if (selectedText.startsWith('_') && selectedText.endsWith('_') && !selectedText.startsWith('__')) {
+        // Case 1: Selection includes the _ markers (double-click behavior), look for ** around
+        isInsideDoubleStarUnderscore = beforeSelection.endsWith('**') && afterSelection.startsWith('**');
+      } else {
+        // Case 2: Selection is just text, look for **_ before and _** after  
+        isInsideDoubleStarUnderscore = !!beforeSelection.match(/\*\*_[^_]*$/) && !!afterSelection.match(/^[^_]*_\*\*/);
+      }
+      
+      // Additional validation: only return true if we're actually in a nested scenario
+      // Don't interfere with normal _text_ toggle behavior
+      if (selectedText.startsWith('_') && selectedText.endsWith('_') && !selectedText.startsWith('__') && !isInsideDoubleStarUnderscore) {
+        // This is standalone _italic_, let normal toggle logic handle it
+        return false;
+      }
+      
+      return isInsideDoubleStarUnderscore;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Remove inner formatting markers from nested patterns
+   * e.g., *__bold__* → *bold* (remove __)
+   * e.g., **_italic_** → **italic** (remove _)
+   */
+  private removeInnerFormatting(text: string, marker: string): string {
+    if (marker === '**') {
+      // Remove __ markers while preserving outer * or _
+      return text.replace(/__/g, '');
+    } else if (marker === '*') {
+      // Remove single _ markers while preserving outer **
+      // Use negative lookbehind/lookahead to avoid removing _ that are part of __
+      return text.replace(/(?<!_)_(?!_)/g, '');
+    }
+    return text;
+  }
 
   // ============================================================================
   // Private Methods - @ Trigger Detection

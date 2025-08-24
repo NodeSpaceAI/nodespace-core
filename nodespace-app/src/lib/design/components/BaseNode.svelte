@@ -45,7 +45,7 @@
   let showAutocomplete = $state(false);
   let autocompletePosition = $state({ x: 0, y: 0 });
   let currentQuery = $state('');
-  let currentTriggerContext = $state<TriggerContext | null>(null);
+  // let _currentTriggerContext = $state<TriggerContext | null>(null);
 
   // Event dispatcher
   const dispatch = createEventDispatcher<{
@@ -89,7 +89,7 @@
       cursorPosition: { x: number; y: number };
     }) => {
       if (nodeReferenceService) {
-        currentTriggerContext = data.triggerContext;
+        // _currentTriggerContext = data.triggerContext;
         currentQuery = data.triggerContext.query;
         autocompletePosition = data.cursorPosition;
         showAutocomplete = true;
@@ -98,7 +98,7 @@
     triggerHidden: () => {
       showAutocomplete = false;
       currentQuery = '';
-      currentTriggerContext = null;
+      // _currentTriggerContext = null;
     },
     nodeReferenceSelected: (data: { nodeId: string; nodeTitle: string }) => {
       // Forward the event for potential parent component handling
@@ -161,7 +161,7 @@
     // Hide the modal
     showAutocomplete = false;
     currentQuery = '';
-    currentTriggerContext = null;
+    // _currentTriggerContext = null;
   }
 
   function handleAutocompleteClose(): void {
