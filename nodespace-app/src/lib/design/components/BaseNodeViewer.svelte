@@ -1,9 +1,13 @@
 <!--
   BaseNodeViewer - Container that manages a collection of nodes
   Handles node creation, deletion, and organization
+  
+  Now uses NodeServiceContext to provide @ autocomplete functionality
+  to all TextNode components automatically via proper inheritance.
 -->
 
 <script lang="ts">
+  import { onMount } from 'svelte';
   import TextNode from '$lib/components/TextNode.svelte';
   import Icon from '$lib/design/icons';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
@@ -11,6 +15,7 @@
   import { type NodeManagerEvents } from '$lib/services/NodeManager';
   import { demoNodes } from './DemoData';
   import { visibleNodes as storeVisibleNodes } from '$lib/services/nodeStore';
+  import NodeServiceContext from '$lib/contexts/NodeServiceContext.svelte';
 
   // Demo data imported from external file
 
@@ -55,7 +60,6 @@
       cursorAtBeginning?: boolean;
     }> 
   ) {
-    console.log('🚀 handleCreateNewNode called with event.detail:', event.detail);
     
     const {
       afterNodeId,
@@ -66,40 +70,26 @@
       cursorAtBeginning
     } = event.detail;
 
-    console.log('🔍 Extracted parameters:', { afterNodeId, nodeType, currentContent, newContent, inheritHeaderLevel, cursorAtBeginning });
 
     // CRITICAL FIX: Add validation to prevent circular reference issues
     if (!afterNodeId || !nodeType) {
       console.error('❌ VALIDATION FAILED: Invalid node creation parameters:', { afterNodeId, nodeType });
       return;
     }
-    console.log('✅ Parameter validation passed');
 
     // Verify the after node exists before creating
-    console.log('🔍 Checking if afterNode exists in nodeManager.nodes:', nodeManager.nodes.has(afterNodeId));
-    console.log('🔍 Total nodes in nodeManager:', nodeManager.nodes.size);
-    console.log('🔍 Available node IDs:', Array.from(nodeManager.nodes.keys()));
     
     if (!nodeManager.nodes.has(afterNodeId)) {
       console.error('❌ VALIDATION FAILED: After node does not exist:', afterNodeId);
       return;
     }
-    console.log('✅ After node exists validation passed');
 
     // Update current node content if provided
     if (currentContent !== undefined) {
-      console.log('🔄 Updating current node content:', currentContent);
       nodeManager.updateNodeContent(afterNodeId, currentContent);
     }
 
     // Create new node using NodeManager with sophisticated logic
-    console.log('🏗️ Calling nodeManager.createNode with:', {
-      afterNodeId,
-      newContent: newContent || '',
-      nodeType,
-      inheritHeaderLevel,
-      cursorAtBeginning: cursorAtBeginning || false
-    });
     
     const newNodeId = nodeManager.createNode(
       afterNodeId,
@@ -109,7 +99,6 @@
       cursorAtBeginning || false
     );
 
-    console.log('🏗️ nodeManager.createNode returned:', newNodeId);
 
     // CRITICAL FIX: Validate that node creation was successful
     if (!newNodeId || !nodeManager.nodes.has(newNodeId)) {
@@ -118,7 +107,6 @@
       console.error('❌ nodeManager.nodes.has(newNodeId):', newNodeId ? nodeManager.nodes.has(newNodeId) : 'newNodeId is falsy');
       return;
     }
-    console.log('✅ Node creation successful, newNodeId:', newNodeId);
 
     // Handle HTML formatting conversion if needed
     if (newContent && newContent.includes('<span class="markdown-')) {
@@ -131,7 +119,6 @@
 
   // Handle indenting nodes (Tab key)
   function handleIndentNode(event: CustomEvent<{ nodeId: string }> ) {
-    console.log('🔍 BaseNodeViewer handleIndentNode called with nodeId:', event.detail.nodeId);
     const { nodeId } = event.detail;
 
     try {
@@ -145,16 +132,12 @@
       const cursorPosition = saveCursorPosition(nodeId);
 
       // Use NodeManager to handle indentation
-      console.log('🔍 Calling nodeManager.indentNode for:', nodeId);
       const success = nodeManager.indentNode(nodeId);
-      console.log('🔍 indentNode result:', success);
 
       if (success) {
-        console.log('🔍 Indentation successful, restoring cursor position');
         // Restore cursor position after DOM update
         setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
       } else {
-        console.log('🔍 Indentation failed');
       }
     } catch (error) {
       console.error('Error during node indentation:', error);
@@ -448,7 +431,6 @@
   function handleCombineWithPrevious(
     event: CustomEvent<{ nodeId: string; currentContent: string }> 
   ) {
-    console.log('🔍 BaseNodeViewer handleCombineWithPrevious called with:', event.detail);
     try {
       const { nodeId, currentContent } = event.detail;
       
@@ -525,52 +507,58 @@
 
 </script>
 
-<div class="node-viewer">
-  {#each visibleNodes as node (node.id)}
-    <div
-      class="node-container"
-      data-has-children={node.children?.length > 0}
-      style="margin-left: {(node.hierarchyDepth || 0) * 2.5}rem"
-    >
-      <div class="node-content-wrapper">
-        <!-- Chevron for parent nodes (only visible on hover) -->
-        {#if node.children && node.children.length > 0}
-          <button
-            class="node-chevron"
-            class:expanded={node.expanded}
-            onclick={() => handleToggleExpanded(node.id)}
-            aria-label={node.expanded ? 'Collapse' : 'Expand'}
-          >
-            <Icon name="chevron-right" size={16} color={getNodeColor(node.nodeType)} />
-          </button>
-        {:else}
-          <!-- Spacer for nodes without children to maintain alignment -->
-          <div class="node-chevron-spacer"></div>
-        {/if}
+<!-- Wrap all node content with NodeServiceContext to provide @ autocomplete functionality -->
+{#if typeof console !== 'undefined'}
+  {console.log('🔥 BaseNodeViewer rendering NodeServiceContext wrapper')}
+{/if}
+<NodeServiceContext>
+  <div class="node-viewer">
+    {#each visibleNodes as node (node.id)}
+      <div
+        class="node-container"
+        data-has-children={node.children?.length > 0}
+        style="margin-left: {(node.hierarchyDepth || 0) * 2.5}rem"
+      >
+        <div class="node-content-wrapper">
+          <!-- Chevron for parent nodes (only visible on hover) -->
+          {#if node.children && node.children.length > 0}
+            <button
+              class="node-chevron"
+              class:expanded={node.expanded}
+              onclick={() => handleToggleExpanded(node.id)}
+              aria-label={node.expanded ? 'Collapse' : 'Expand'}
+            >
+              <Icon name="chevron-right" size={16} color={getNodeColor(node.nodeType)} />
+            </button>
+          {:else}
+            <!-- Spacer for nodes without children to maintain alignment -->
+            <div class="node-chevron-spacer"></div>
+          {/if}
 
-        {#if node.nodeType === 'text'}
-          <TextNode
-            nodeId={node.id}
-            autoFocus={node.autoFocus}
-            content={node.content}
-            inheritHeaderLevel={node.inheritHeaderLevel}
-            children={node.children}
-            on:createNewNode={handleCreateNewNode}
-            on:indentNode={handleIndentNode}
-            on:outdentNode={handleOutdentNode}
-            on:navigateArrow={handleArrowNavigation}
-            on:contentChanged={(e) => {
-              // Use NodeManager to update content
-              nodeManager.updateNodeContent(node.id, e.detail.content);
-            }}
-            on:combineWithPrevious={handleCombineWithPrevious}
-            on:deleteNode={handleDeleteNode}
-          />
-        {/if}
+          {#if node.nodeType === 'text'}
+            <TextNode
+              nodeId={node.id}
+              autoFocus={node.autoFocus}
+              content={node.content}
+              inheritHeaderLevel={node.inheritHeaderLevel}
+              children={node.children}
+              on:createNewNode={handleCreateNewNode}
+              on:indentNode={handleIndentNode}
+              on:outdentNode={handleOutdentNode}
+              on:navigateArrow={handleArrowNavigation}
+              on:contentChanged={(e) => {
+                // Use NodeManager to update content
+                nodeManager.updateNodeContent(node.id, e.detail.content);
+              }}
+              on:combineWithPrevious={handleCombineWithPrevious}
+              on:deleteNode={handleDeleteNode}
+            />
+          {/if}
+        </div>
       </div>
-    </div>
-  {/each}
-</div>
+    {/each}
+  </div>
+</NodeServiceContext>
 
 <style>
   .node-viewer {

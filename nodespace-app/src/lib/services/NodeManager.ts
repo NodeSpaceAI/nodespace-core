@@ -352,10 +352,8 @@ export class NodeManager {
     inheritHeaderLevel?: number,
     cursorAtBeginning: boolean = false
   ): string {
-    console.log('⚙️ NodeManager.createNode called with:', { afterNodeId, content, nodeType, inheritHeaderLevel, cursorAtBeginning });
     
     const afterNode = this.findNode(afterNodeId);
-    console.log('⚙️ afterNode found:', afterNode ? `exists (${afterNode.id})` : 'NOT FOUND');
     
     if (!afterNode) {
       console.error('⚙️ ❌ CRITICAL: afterNode not found, returning empty string');

@@ -35,11 +35,9 @@
 <script lang="ts">
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import { cn } from '$lib/utils.js';
-  import Card from '$lib/components/ui/card/card.svelte';
-  import CardContent from '$lib/components/ui/card/card-content.svelte';
-  import CardHeader from '$lib/components/ui/card/card-header.svelte';
-  import CardTitle from '$lib/components/ui/card/card-title.svelte';
   import Button from '$lib/components/ui/button/button.svelte';
+  import Badge from '$lib/components/ui/badge/badge.svelte';
+  import Separator from '$lib/components/ui/separator/separator.svelte';
   import type { AutocompleteResult, NodeSuggestion } from '$lib/services/NodeReferenceService';
   import type { NodeSpaceNode } from '$lib/services/MockDatabaseService';
 
@@ -252,6 +250,7 @@
   }
 
   function closeModal(): void {
+    console.log('🚪 AutocompleteModal closeModal called!');
     dispatch('close');
   }
 
@@ -304,36 +303,49 @@
     y: number;
     placement: 'below' | 'above';
   } {
-    const modalWidth = 400;
-    const modalHeight = 300;
+    // More responsive width calculation
+    const modalWidth = Math.min(448, window.innerWidth - 32); // max-w-md with padding
+    const modalHeight = 320; // matches max-h-[320px]
     const padding = 16;
+    const offset = 8; // Small offset from cursor for better visual connection
 
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
 
     let x = pos.x;
-    let y = pos.y;
+    let y = pos.y + offset;
     let placement: 'below' | 'above' = 'below';
 
-    // Adjust horizontal position if too close to right edge
+    // Smart horizontal positioning
     if (x + modalWidth > viewportWidth - padding) {
+      // Align to right edge if overflowing
       x = viewportWidth - modalWidth - padding;
     }
 
-    // Adjust horizontal position if too close to left edge
+    // Ensure minimum left padding
     if (x < padding) {
       x = padding;
     }
 
-    // Adjust vertical position
+    // Smart vertical positioning with preference for below
     if (y + modalHeight > viewportHeight - padding) {
-      // Place above cursor if no room below
-      y = pos.y - modalHeight - 20;
+      // Try placing above with offset
+      y = pos.y - modalHeight - offset;
       placement = 'above';
 
-      // If still not enough room, place at top
+      // If still overflowing above, use best fit position
       if (y < padding) {
-        y = padding;
+        // Calculate best position that fits
+        const availableBelow = viewportHeight - pos.y - padding;
+        const availableAbove = pos.y - padding;
+        
+        if (availableBelow >= availableAbove) {
+          y = pos.y + offset;
+          placement = 'below';
+        } else {
+          y = padding;
+          placement = 'above';
+        }
       }
     }
 
@@ -427,193 +439,215 @@
   <!-- Modal overlay for click-outside handling -->
   <!-- svelte-ignore a11y-click-events-have-key-events -->
   <!-- svelte-ignore a11y-no-static-element-interactions -->
-  <div class="fixed inset-0 z-50 bg-black/20 backdrop-blur-sm" on:click={closeModal}>
-    <!-- Modal content -->
+  <div 
+    class="fixed inset-0 z-50 bg-red-500/50 backdrop-blur-[2px]" 
+    on:click={closeModal}
+    style="animation: overlayFadeIn 0.15s ease-out;"
+  >
+    <!-- Modal positioned using shadcn-svelte dropdown patterns -->
     <!-- svelte-ignore a11y-click-events-have-key-events -->
     <!-- svelte-ignore a11y-no-static-element-interactions -->
     <div
       bind:this={modalElement}
-      class="fixed z-50 w-96 max-h-80"
-      style="left: {adjustedPosition.x}px; top: {adjustedPosition.y}px;"
+      class="fixed z-50 min-w-80 max-w-md"
+      style="left: {adjustedPosition.x}px; top: {adjustedPosition.y}px; animation: modalSlideIn 0.2s ease-out;"
       on:click|stopPropagation
     >
-      <Card class="shadow-lg border-border/50 backdrop-blur-sm bg-popover/95">
-        <!-- Header -->
-        <CardHeader class="pb-2">
-          <CardTitle class="text-sm font-medium text-muted-foreground flex items-center gap-2">
-            <span class="text-lg">@</span>
-            {#if query}
-              Reference: "{query}"
-            {:else}
-              Recent Nodes
-            {/if}
-            {#if totalResults > 0}
-              <span class="text-xs bg-muted px-1.5 py-0.5 rounded">
+      <!-- Use shadcn-svelte dropdown content styling -->
+      <div class="bg-popover text-popover-foreground z-50 min-w-[8rem] overflow-y-auto overflow-x-hidden rounded-md border p-1 shadow-md outline-none max-h-[320px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+        
+        <!-- Header using dropdown menu patterns -->
+        <div class="flex items-center gap-2 px-2 py-1.5 text-sm">
+          <div class="flex items-center gap-1.5">
+            <span class="text-muted-foreground font-medium">@</span>
+            <span class="font-medium text-foreground">
+              {#if query}
+                {query}
+              {:else}
+                Recent nodes
+              {/if}
+            </span>
+          </div>
+          
+          <!-- Results count badge -->
+          {#if totalResults > 0 && !isLoading}
+            <div class="ml-auto">
+              <Badge variant="secondary" class="text-xs h-5">
                 {totalResults}{hasMore ? '+' : ''}
-              </span>
+              </Badge>
+            </div>
+          {/if}
+          
+          <!-- Keyboard shortcuts -->
+          {#if !totalResults || totalResults === 0}
+            <div class="flex items-center gap-1 ml-auto">
+              <Badge variant="outline" class="text-xs h-5 px-1">↑↓</Badge>
+              <Badge variant="outline" class="text-xs h-5 px-1">⏎</Badge>
+              <Badge variant="outline" class="text-xs h-5 px-1">esc</Badge>
+            </div>
+          {/if}
+        </div>
+
+        <!-- Separator after header -->
+        {#if searchResults.length > 0 || isLoading || searchError}
+          <Separator class="my-1" />
+        {/if}
+
+        <!-- Content area -->
+        {#if isLoading}
+          <!-- Loading state using dropdown item structure -->
+          <div class="relative flex cursor-default select-none items-center rounded-sm px-2 py-6 text-sm justify-center gap-3">
+            <div class="w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin"></div>
+            <span class="text-muted-foreground">Searching...</span>
+          </div>
+          
+        {:else if searchError}
+          <!-- Error state -->
+          <div class="px-2 py-4 text-center space-y-3">
+            <div class="text-sm text-destructive">{searchError}</div>
+            <Button
+              variant="ghost"
+              size="sm"
+              class="h-7 px-2 text-xs"
+              on:click={() => performSearch(query)}
+            >
+              Try again
+            </Button>
+          </div>
+          
+        {:else if searchResults.length === 0}
+          <!-- Empty state -->
+          <div class="px-2 py-4 text-center space-y-3">
+            <div class="text-sm text-muted-foreground">
+              {query ? 'No matching nodes found' : 'No recent nodes'}
+            </div>
+            {#if query}
+              <Button 
+                variant="outline" 
+                size="sm" 
+                class="h-7 px-2 text-xs gap-1"
+                on:click={createNewNode}
+              >
+                <span class="text-sm">✨</span>
+                Create "{query.length > 20 ? query.substring(0, 20) + '...' : query}"
+              </Button>
             {/if}
-          </CardTitle>
-        </CardHeader>
+          </div>
+          
+        {:else}
+          <!-- Results using proper dropdown menu items -->
+          {#each searchResults as suggestion, index (suggestion.nodeId)}
+            {@const isSelected = index === selectedIndex}
+            {@const nodeConfig = getNodeTypeConfig(suggestion.nodeType)}
 
-        <!-- Content -->
-        <CardContent class="p-0 pb-3">
-          <div class="max-h-64 overflow-y-auto">
-            {#if isLoading}
-              <!-- Loading state -->
-              <div class="flex items-center justify-center py-8">
-                <div
-                  class="animate-spin h-5 w-5 border-2 border-primary border-t-transparent rounded-full"
-                ></div>
-                <span class="ml-2 text-sm text-muted-foreground">Searching...</span>
+            <div 
+              class={cn(
+                'flex items-start gap-3 py-2 px-2 cursor-pointer rounded-sm transition-colors hover:bg-accent hover:text-accent-foreground',
+                isSelected && 'bg-accent text-accent-foreground'
+              )}
+              role="button"
+              tabindex="0"
+              on:click={() => selectNodeSuggestion(suggestion)}
+              on:keydown={(e) => e.key === 'Enter' && selectNodeSuggestion(suggestion)}
+            >
+              <!-- Node type icon -->
+              <div class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded bg-muted/50">
+                <span class="text-xs">{nodeConfig.icon}</span>
               </div>
-            {:else if searchError}
-              <!-- Error state -->
-              <div class="px-4 py-6 text-center">
-                <div class="text-destructive text-sm">{searchError}</div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  class="mt-2"
-                  on:click={() => performSearch(query)}
-                >
-                  Try Again
-                </Button>
-              </div>
-            {:else if searchResults.length === 0}
-              <!-- Empty state -->
-              <div class="px-4 py-6 text-center">
-                <div class="text-muted-foreground text-sm mb-2">
-                  {query ? 'No matching nodes found' : 'No recent nodes'}
+
+              <!-- Node content -->
+              <div class="flex-1 min-w-0 space-y-1">
+                <!-- Title with highlighting -->
+                <div class="font-medium text-sm leading-tight">
+                  {#each parseHighlights(suggestion.title, suggestion.matchPositions) as segment}
+                    {#if segment.highlighted}
+                      <mark class="bg-primary/20 text-primary px-0.5 rounded font-semibold">
+                        {segment.text}
+                      </mark>
+                    {:else}
+                      {segment.text}
+                    {/if}
+                  {/each}
                 </div>
-                {#if query}
-                  <!-- Create new node option when no results -->
-                  <Button variant="outline" size="sm" class="gap-2" on:click={createNewNode}>
-                    <span class="text-lg">✨</span>
-                    Create "{query}"
-                  </Button>
+
+                <!-- Content preview -->
+                {#if suggestion.content && suggestion.content !== suggestion.title}
+                  <div class="text-xs text-muted-foreground leading-relaxed line-clamp-2">
+                    {suggestion.content.substring(0, 100)}{suggestion.content.length > 100 ? '...' : ''}
+                  </div>
                 {/if}
-              </div>
-            {:else}
-              <!-- Results list -->
-              <div class="px-2">
-                {#each searchResults as suggestion, index (suggestion.nodeId)}
-                  {@const isSelected = index === selectedIndex}
-                  {@const nodeConfig = getNodeTypeConfig(suggestion.nodeType)}
 
-                  <button
-                    class={cn(
-                      'w-full flex items-start gap-3 p-2 rounded-md text-left transition-colors',
-                      'hover:bg-accent/50 focus:bg-accent/50 focus:outline-none',
-                      isSelected && 'bg-accent text-accent-foreground'
-                    )}
-                    on:click={() => selectNodeSuggestion(suggestion)}
-                    aria-label="Select {suggestion.title}"
-                  >
-                    <!-- Node type icon -->
-                    <div class="flex-shrink-0 w-5 h-5 flex items-center justify-center mt-0.5">
-                      <span class="text-sm">{nodeConfig.icon}</span>
-                    </div>
-
-                    <!-- Node content -->
-                    <div class="flex-1 min-w-0">
-                      <div class="font-medium text-sm truncate">
-                        <!-- Safe highlighting without XSS risk -->
-                        {#each parseHighlights(suggestion.title, suggestion.matchPositions) as segment}
-                          {#if segment.highlighted}
-                            <mark class="bg-yellow-200 dark:bg-yellow-800 px-0.5 rounded"
-                              >{segment.text}</mark
-                            >
-                          {:else}
-                            {segment.text}
-                          {/if}
-                        {/each}
-                      </div>
-
-                      {#if suggestion.content && suggestion.content !== suggestion.title}
-                        <div class="text-xs text-muted-foreground mt-1 line-clamp-2">
-                          {suggestion.content.substring(0, 100)}{suggestion.content.length > 100
-                            ? '...'
-                            : ''}
-                        </div>
-                      {/if}
-
-                      {#if suggestion.hierarchy.length > 1}
-                        <div class="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-                          <span>📁</span>
-                          <span class="truncate">
-                            {suggestion.hierarchy.slice(0, -1).join(' › ')}
-                          </span>
-                        </div>
-                      {/if}
-                    </div>
-
-                    <!-- Metadata -->
-                    <div class="flex-shrink-0 flex flex-col items-end gap-1">
-                      <span class="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-                        {nodeConfig.label}
-                      </span>
-
-                      {#if suggestion.relevanceScore > 0.8}
-                        <div class="w-2 h-2 bg-green-500 rounded-full" title="High relevance"></div>
-                      {:else if suggestion.relevanceScore > 0.6}
-                        <div
-                          class="w-2 h-2 bg-yellow-500 rounded-full"
-                          title="Medium relevance"
-                        ></div>
-                      {/if}
-                    </div>
-                  </button>
-                {/each}
-
-                <!-- Create new node option -->
-                {#if query}
-                  {@const isCreateSelected = selectedIndex === searchResults.length}
-
-                  <div class="border-t border-border mt-2 pt-2">
-                    <button
-                      class={cn(
-                        'w-full flex items-center gap-3 p-2 rounded-md text-left transition-colors',
-                        'hover:bg-accent/50 focus:bg-accent/50 focus:outline-none',
-                        isCreateSelected && 'bg-accent text-accent-foreground'
-                      )}
-                      on:click={createNewNode}
-                      aria-label="Create new node with content: {query}"
-                    >
-                      <div class="flex-shrink-0 w-5 h-5 flex items-center justify-center">
-                        <span class="text-sm">✨</span>
-                      </div>
-
-                      <div class="flex-1">
-                        <div class="font-medium text-sm">Create new node</div>
-                        <div class="text-xs text-muted-foreground">
-                          "{query}"
-                        </div>
-                      </div>
-
-                      <div class="flex-shrink-0">
-                        <span class="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-                          Text
-                        </span>
-                      </div>
-                    </button>
+                <!-- Hierarchy path -->
+                {#if suggestion.hierarchy.length > 1}
+                  <div class="flex items-center gap-1 text-xs text-muted-foreground">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2z"></path>
+                    </svg>
+                    <span class="truncate max-w-32">
+                      {suggestion.hierarchy.slice(0, -1).join(' › ')}
+                    </span>
                   </div>
                 {/if}
               </div>
-            {/if}
-          </div>
 
-          <!-- Footer with keyboard shortcuts -->
-          <div
-            class="px-4 pt-2 border-t border-border text-xs text-muted-foreground flex items-center justify-between"
-          >
-            <div class="flex items-center gap-3">
-              <span><kbd class="px-1 bg-muted rounded">↕</kbd> Navigate</span>
-              <span><kbd class="px-1 bg-muted rounded">⏎</kbd> Select</span>
+              <!-- Metadata -->
+              <div class="flex-shrink-0 flex flex-col items-end gap-1">
+                <!-- Node type badge -->
+                <Badge variant="secondary" class="text-xs h-5">
+                  {nodeConfig.label}
+                </Badge>
+
+                <!-- Relevance indicator -->
+                {#if suggestion.relevanceScore > 0.85}
+                  <Badge variant="outline" class="text-xs h-4 px-1 text-emerald-600">
+                    Excellent
+                  </Badge>
+                {:else if suggestion.relevanceScore > 0.7}
+                  <Badge variant="outline" class="text-xs h-4 px-1 text-blue-600">
+                    Good
+                  </Badge>
+                {/if}
+              </div>
             </div>
-            <span><kbd class="px-1 bg-muted rounded">Esc</kbd> Close</span>
-          </div>
-        </CardContent>
-      </Card>
+          {/each}
+
+          <!-- Create new node option -->
+          {#if query}
+            {@const isCreateSelected = selectedIndex === searchResults.length}
+
+            <Separator class="my-1" />
+            
+            <div 
+              class={cn(
+                'flex items-center gap-3 py-2 px-2 cursor-pointer rounded-sm transition-colors hover:bg-accent hover:text-accent-foreground',
+                isCreateSelected && 'bg-accent text-accent-foreground'
+              )}
+              role="button"
+              tabindex="0"
+              on:click={createNewNode}
+              on:keydown={(e) => e.key === 'Enter' && createNewNode()}
+            >
+              <!-- Create icon -->
+              <div class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded bg-primary/10">
+                <span class="text-xs">✨</span>
+              </div>
+
+              <!-- Content -->
+              <div class="flex-1 space-y-0.5">
+                <div class="font-medium text-sm">Create new node</div>
+                <div class="text-xs text-muted-foreground truncate">
+                  "{query.length > 30 ? query.substring(0, 30) + '...' : query}"
+                </div>
+              </div>
+
+              <!-- Node type badge -->
+              <Badge variant="secondary" class="text-xs h-5">
+                Text
+              </Badge>
+            </div>
+          {/if}
+        {/if}
+      </div>
     </div>
   </div>
 {/if}
@@ -628,5 +662,49 @@
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
+  }
+
+  /* Modern, smooth entry animations */
+  @keyframes overlayFadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes modalSlideIn {
+    from {
+      opacity: 0;
+      transform: translateY(-8px) scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  /* Enhanced scrollbar styling for better visual consistency */
+  .max-h-\[320px\]::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .max-h-\[320px\]::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .max-h-\[320px\]::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.2);
+    border-radius: 3px;
+  }
+
+  .max-h-\[320px\]::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.3);
+  }
+
+  /* Ensure smooth scrolling behavior */
+  .max-h-\[320px\] {
+    scroll-behavior: smooth;
   }
 </style>

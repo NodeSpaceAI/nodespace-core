@@ -128,6 +128,14 @@ export class ContentEditableController {
   }
 
   /**
+   * Check if controller is currently processing input
+   * Used to prevent autocomplete from being hidden during DOM manipulation
+   */
+  public isProcessingInput(): boolean {
+    return this.isUpdatingFromInput;
+  }
+
+  /**
    * Get current content in markdown format
    */
   public getMarkdownContent(): string {
@@ -462,25 +470,6 @@ export class ContentEditableController {
       }
     }
 
-    // Check for @ trigger when @ is typed or when typing after @
-    if (this.isEditing) {
-      if (event.key === '@') {
-        // Schedule trigger check for after the @ character is inserted
-        setTimeout(() => {
-          const textContent = this.element.textContent || '';
-          const cursorOffset = this.getCurrentColumn();
-          this.checkForTrigger(textContent, cursorOffset);
-        }, 0);
-      } else if (event.key.length === 1 || event.key === 'Backspace') {
-        // For any single character typed or backspace, check for @ trigger context
-        // This handles typing after @ or backspacing within a trigger
-        setTimeout(() => {
-          const textContent = this.element.textContent || '';
-          const cursorOffset = this.getCurrentColumn();
-          this.checkForTrigger(textContent, cursorOffset);
-        }, 0);
-      }
-    }
 
     // Check for immediate header detection when space is typed
     if (event.key === ' ' && this.isEditing) {
@@ -1630,8 +1619,13 @@ export class ContentEditableController {
    * Insert node reference at current cursor position
    */
   public insertNodeReference(nodeId: string, nodeTitle: string): void {
-    if (!this.isEditing) {
-      return;
+    
+    // Allow insertion even when not actively editing since this is programmatic
+    // Temporarily switch to editing mode for the insertion
+    const wasEditing = this.isEditing;
+    if (!wasEditing) {
+      this.isEditing = true;
+      this.setRawMarkdown(this.originalContent || this.element.textContent || '');
     }
 
     const selection = window.getSelection();
@@ -1644,6 +1638,7 @@ export class ContentEditableController {
 
     // Find the @ trigger that initiated this
     const triggerContext = this.detectTrigger(currentContent, cursorPosition);
+    
     if (!triggerContext) {
       return;
     }
@@ -1667,6 +1662,13 @@ export class ContentEditableController {
     // Emit content change event
     this.events.contentChanged(newContent);
     this.events.nodeReferenceSelected({ nodeId, nodeTitle });
+
+    // Restore original editing state
+    if (!wasEditing) {
+      this.isEditing = false;
+      // Switch back to formatted display mode
+      this.setFormattedContent(newContent);
+    }
   }
 
   // ============================================================================

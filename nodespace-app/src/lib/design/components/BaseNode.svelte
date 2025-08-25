@@ -13,20 +13,19 @@
     ContentEditableController,
     type ContentEditableEvents
   } from './ContentEditableController.js';
-  import AutocompleteModal from '$lib/components/AutocompleteModal.svelte';
+  import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
   import type { NodeReferenceService, TriggerContext } from '$lib/services/NodeReferenceService';
   import type { NodeSpaceNode } from '$lib/services/MockDatabaseService';
-  import type { NewNodeRequest } from '$lib/components/AutocompleteModal.svelte';
+  import { getNodeServices } from '$lib/contexts/NodeServiceContext.svelte';
 
-  // Props (Svelte 5 runes syntax)
+  // Props (Svelte 5 runes syntax) - nodeReferenceService removed
   let {
     nodeId,
     nodeType = 'text',
     autoFocus = false,
     content = $bindable(''),
     headerLevel = 0,
-    children = [],
-    nodeReferenceService = null
+    children = []
   }: {
     nodeId: string;
     nodeType?: string;
@@ -34,8 +33,11 @@
     content?: string;
     headerLevel?: number;
     children?: unknown[];
-    nodeReferenceService?: NodeReferenceService | null;
   } = $props();
+
+  // Get services from context
+  const services = getNodeServices();
+  const nodeReferenceService = services?.nodeReferenceService || null;
 
   // DOM element and controller - Svelte bind:this assignment
   let contentEditableElement: HTMLDivElement | undefined = undefined;
@@ -45,6 +47,104 @@
   let showAutocomplete = $state(false);
   let autocompletePosition = $state({ x: 0, y: 0 });
   let currentQuery = $state('');
+  let autocompleteResults = $state<NodeResult[]>([]);
+  let autocompleteLoading = $state(false);
+
+  // Generate mock autocomplete results based on query
+  function generateMockResults(query: string): NodeResult[] {
+    const mockNodes: NodeResult[] = [
+      {
+        id: 'mock-node-1',
+        title: 'Welcome to NodeSpace',
+        type: 'text',
+        subtitle: 'Getting started with your knowledge management system',
+        metadata: '2 days ago'
+      },
+      {
+        id: 'mock-node-2', 
+        title: 'Project Notes',
+        type: 'document',
+        subtitle: 'Comprehensive project documentation and meeting notes',
+        metadata: '1 week ago'
+      },
+      {
+        id: 'mock-node-3',
+        title: 'Task List',
+        type: 'task',
+        subtitle: 'Important tasks and action items for the current sprint',
+        metadata: '3 days ago'
+      },
+      {
+        id: 'mock-node-4',
+        title: 'AI Research Chat',
+        type: 'ai-chat',
+        subtitle: 'Conversation about machine learning and AI development',
+        metadata: '5 days ago'
+      },
+      {
+        id: 'mock-node-5',
+        title: 'User Research Findings',
+        type: 'user',
+        subtitle: 'Key insights from user interviews and usability testing',
+        metadata: '1 week ago'
+      },
+      {
+        id: 'mock-node-6',
+        title: 'Search Query Examples',
+        type: 'query',
+        subtitle: 'Commonly used search patterns and filters',
+        metadata: '4 days ago'
+      }
+    ];
+
+    if (!query.trim()) {
+      return mockNodes.slice(0, 4); // Show top 4 when no query
+    }
+
+    // Filter results based on query
+    return mockNodes.filter(node => 
+      node.title.toLowerCase().includes(query.toLowerCase()) ||
+      (node.subtitle && node.subtitle.toLowerCase().includes(query.toLowerCase()))
+    );
+  }
+
+  // Reactive effect to update autocomplete results when query changes
+  $effect(() => {
+    if (showAutocomplete && nodeReferenceService) {
+      autocompleteResults = generateMockResults(currentQuery);
+    }
+  });
+
+  // Autocomplete event handlers
+  function handleAutocompleteSelect(event: CustomEvent<NodeResult>) {
+    const result = event.detail;
+    
+    if (controller) {
+      // Insert node reference in markdown link format: [nodeTitle](nodespace://nodeId)
+      // This replaces the @ trigger text with the proper reference format
+      controller.insertNodeReference(result.id, result.title);
+    }
+    
+    // Hide autocomplete and clear state
+    showAutocomplete = false;
+    currentQuery = '';
+    autocompleteResults = [];
+    
+    // Emit event for parent components to handle if needed
+    dispatch('nodeReferenceSelected', { 
+      nodeId: result.id, 
+      nodeTitle: result.title 
+    });
+  }
+
+  
+  // Debug effect to track showAutocomplete changes (disabled for cleaner logs)
+  // $effect(() => {
+  //   console.log('🔄 showAutocomplete changed to:', showAutocomplete);
+  //   if (!showAutocomplete) {
+  //     console.trace('🔄 Stack trace for showAutocomplete = false');
+  //   }
+  // });
   // let _currentTriggerContext = $state<TriggerContext | null>(null);
 
   // Event dispatcher
@@ -74,7 +174,14 @@
     focus: () => dispatch('focus'),
     blur: () => {
       // Hide autocomplete modal when losing focus
-      showAutocomplete = false;
+      // Delay hiding autocomplete to prevent it from being hidden during DOM manipulation
+      // The DOM updates from setLiveFormattedContent can cause brief focus loss
+      setTimeout(() => {
+        // Only hide if autocomplete is still showing and we're not actively typing
+        if (showAutocomplete && controller && !controller.isProcessingInput()) {
+          showAutocomplete = false;
+        }
+      }, 50); // Small delay to let input processing complete
       dispatch('blur');
     },
     createNewNode: (data) => dispatch('createNewNode', data),
@@ -89,15 +196,16 @@
       cursorPosition: { x: number; y: number };
     }) => {
       if (nodeReferenceService) {
-        // _currentTriggerContext = data.triggerContext;
         currentQuery = data.triggerContext.query;
         autocompletePosition = data.cursorPosition;
+        autocompleteResults = generateMockResults(currentQuery);
         showAutocomplete = true;
       }
     },
     triggerHidden: () => {
       showAutocomplete = false;
       currentQuery = '';
+      autocompleteResults = [];
       // _currentTriggerContext = null;
     },
     nodeReferenceSelected: (data: { nodeId: string; nodeTitle: string }) => {
@@ -142,9 +250,12 @@
   // ============================================================================
 
   function handleNodeSelect(event: CustomEvent<{ node: NodeSpaceNode | NewNodeRequest }>): void {
+    
     const { node } = event.detail;
 
-    if (!controller) return;
+    if (!controller) {
+      return;
+    }
 
     if (node.type === 'create') {
       // Handle new node creation
@@ -229,14 +340,15 @@
 
 </div>
 
-<!-- Autocomplete Modal -->
-{#if nodeReferenceService && showAutocomplete}
-  <AutocompleteModal
-    visible={showAutocomplete}
+<!-- Professional Node Autocomplete Component -->
+{#if nodeReferenceService}
+  <NodeAutocomplete
     position={autocompletePosition}
     query={currentQuery}
-    {nodeReferenceService}
-    on:nodeSelect={handleNodeSelect}
+    results={autocompleteResults}
+    loading={autocompleteLoading}
+    visible={showAutocomplete}
+    on:select={handleAutocompleteSelect}
     on:close={handleAutocompleteClose}
   />
 {/if}

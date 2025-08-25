@@ -23,7 +23,7 @@
   $: internalContent = content;
   let baseNodeRef: unknown;
 
-  // Event dispatcher
+  // Event dispatcher - nodeReferenceSelected removed (handled automatically by BaseNode)
   const dispatch = createEventDispatcher<{
     createNewNode: {
       afterNodeId: string;
@@ -72,6 +72,8 @@
     const newLevel = event.detail.level !== undefined ? event.detail.level : inheritHeaderLevel;
     headerLevel = newLevel;
   }
+
+  // Node reference selection now handled automatically by BaseNode context
 </script>
 
 <BaseNode
