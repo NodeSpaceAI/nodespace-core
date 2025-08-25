@@ -1,0 +1,135 @@
+=== REFERENCE AUDIT Mon Aug 25 15:28:51 CEST 2025 ===
+./nodespace-app/docs/architecture/development/overview.md:🔗 **See**: [`features/sophisticated-keyboard-handling.md`](features/sophisticated-keyboard-handling.md) - Complete keyboard behavior documentation
+./nodespace-app/docs/architecture/development/overview.md:🔗 **See**: [`lessons/reactivity-state-management.md`](lessons/reactivity-state-management.md) - Reactivity patterns and lessons learned
+./nodespace-app/README.md:[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
+./nodespace-app/src/lib/services/ContentProcessor-Enhancement-Summary.md:- **Enhanced Regex Pattern**: Added `NODESPACE_REF_REGEX` for detecting `[text](nodespace://node/uuid)` patterns
+./nodespace-app/src/lib/services/ContentProcessor-Enhancement-Summary.md:  'See [Related Node](nodespace://node/abc-123)',
+./docs/architecture/core/system-overview.md:- **Data Architecture**: Local-first with embedded LanceDB + future sync protocol for collaboration ([ADR-015](../decisions/015-data-layer-architecture.md))
+./docs/architecture/core/system-overview.md:- **[LanceDB Embedded](../data/storage-architecture.md)**: Vector-native database perfect for AI workloads
+./docs/architecture/core/system-overview.md:- **[Sync Protocol](../data/sync-protocol.md)**: Database synchronization rather than shared cloud database
+./docs/architecture/core/system-overview.md:- **[Collaboration Strategy](../data/collaboration-strategy.md)**: Progressive enhancement from local to real-time
+./docs/architecture/core/system-overview.md:- **[Architecture Decision Record](../decisions/015-data-layer-architecture.md)**: Why local-first vs. cloud-first reactive
+./docs/architecture/development/overview.md:- **[Dual-Representation Completion](../decisions/2025-01-dual-representation-completion.md)** - Complete text editor implementation
+./docs/architecture/development/overview.md:- **[Perfect Node Alignment System](../decisions/2025-01-perfect-node-alignment-system.md)** - Mathematical positioning system
+./docs/architecture/development/overview.md:- **[ContentEditable Pivot](../decisions/2025-01-contenteditable-pivot.md)** - Strategic architecture decision
+./docs/architecture/development/overview.md:- **[Text Editor Architecture Refactor](../decisions/2025-01-text-editor-architecture-refactor.md)** - Clean architecture implementation
+./docs/architecture/development/overview.md:- **[Startup Sequence](process/startup-sequence.md)** - Mandatory steps before any implementation work
+./docs/architecture/development/overview.md:- **[Issue Workflow](process/issue-workflow.md)** - Complete workflow from issue creation to PR merge
+./docs/architecture/development/overview.md:- **[Quick Reference](guides/quick-reference.md)** - Checklists and common commands
+./docs/architecture/development/overview.md:- **[Startup Sequence](process/startup-sequence.md)** - Required pre-implementation steps
+./docs/architecture/development/overview.md:- **[Epic and Sub-Issue Workflow](process/epic-and-subissue-workflow.md)** - Working with parent issues and sub-issues
+./docs/architecture/development/overview.md:- **[Issue Workflow](process/issue-workflow.md)** - Issue creation through PR merge
+./docs/architecture/development/overview.md:- **[PR Review Guidelines](process/pr-review.md)** - Code review process and standards
+./docs/architecture/development/overview.md:- **[Self-Contained Features](patterns/self-contained-features.md)** - Independent feature implementation
+./docs/architecture/development/overview.md:- **[Mock-First Development](patterns/mock-first-development.md)** - Parallel development with mocks
+./docs/architecture/development/overview.md:- **[Vertical Slicing](patterns/vertical-slicing.md)** - Full-stack feature development
+./docs/architecture/development/overview.md:- **[Code Quality](standards/code-quality.md)** - Linting policy, quality gates, and enforcement
+./docs/architecture/development/overview.md:- **[Testing Guidelines](standards/testing.md)** - Testing requirements and strategies
+./docs/architecture/development/overview.md:- **[Package Management](standards/package-management.md)** - Bun enforcement and dependency management
+./docs/architecture/development/overview.md:- **[Technical Debt](technical-debt.md)** - Known limitations, workarounds, and future improvements
+./docs/architecture/development/overview.md:- **[Quick Reference](guides/quick-reference.md)** - Commands, checklists, and common operations
+./docs/architecture/development/overview.md:- **[Troubleshooting](guides/troubleshooting.md)** - Common issues and solutions
+./docs/architecture/development/overview.md:**Next Steps:** Choose the relevant documentation section above based on your current task, or start with the [Startup Sequence](process/startup-sequence.md) if beginning new work.
+./docs/architecture/development/development-process.md:- **[Development Overview](overview.md)** - Main hub with navigation to all development docs
+./docs/architecture/development/development-process.md:- **[Startup Sequence](process/startup-sequence.md)** - Mandatory pre-implementation steps
+./docs/architecture/development/development-process.md:- **[Issue Workflow](process/issue-workflow.md)** - Complete workflow from issue to PR merge
+./docs/architecture/development/development-process.md:- **[PR Review Guidelines](process/pr-review.md)** - Code review process and standards
+./docs/architecture/development/development-process.md:- **[Branching Strategy](process/branching-strategy.md)** - Git workflow patterns
+./docs/architecture/development/development-process.md:- **[Code Quality](standards/code-quality.md)** - Linting policy, quality gates, zero-tolerance standards
+./docs/architecture/development/development-process.md:- **[Testing Guidelines](standards/testing.md)** - Testing requirements and strategies  
+./docs/architecture/development/development-process.md:- **[Package Management](standards/package-management.md)** - Bun enforcement and dependencies
+./docs/architecture/development/development-process.md:- **[Self-Contained Features](patterns/self-contained-features.md)** - Independent feature implementation
+./docs/architecture/development/development-process.md:- **[Mock-First Development](patterns/mock-first-development.md)** - Parallel development strategies
+./docs/architecture/development/development-process.md:- **[Vertical Slicing](patterns/vertical-slicing.md)** - Full-stack feature development
+./docs/architecture/development/development-process.md:- **[Quick Reference](guides/quick-reference.md)** - Commands, checklists, common operations
+./docs/architecture/development/development-process.md:- **[Troubleshooting](guides/troubleshooting.md)** - Common issues and solutions
+./docs/architecture/development/development-process.md:- **Starting new work?** → [Startup Sequence](process/startup-sequence.md)
+./docs/architecture/development/development-process.md:- **Creating a PR?** → [Quick Reference](guides/quick-reference.md)  
+./docs/architecture/development/development-process.md:- **Reviewing code?** → [PR Review Guidelines](process/pr-review.md)
+./docs/architecture/development/development-process.md:- **Quality issues?** → [Code Quality Standards](standards/code-quality.md)
+./docs/architecture/development/process/startup-sequence.md:- **REQUIRED**: Read [Epic and Sub-Issue Workflow Guide](epic-and-subissue-workflow.md) for comprehensive guidance
+./docs/architecture/development/process/startup-sequence.md:**📖 See [Issue Workflow](issue-workflow.md) for complete CLI command reference**
+./docs/architecture/development/process/startup-sequence.md:- **CLI Commands**: See [Issue Workflow](issue-workflow.md) for complete GitHub CLI command reference
+./docs/architecture/development/process/startup-sequence.md:- **Process Overview**: See [Development Overview](../overview.md) for complete development process
+./docs/architecture/development/process/startup-sequence.md:- **Agent Guidelines**: See [CLAUDE.md](../../../CLAUDE.md) for detailed agent selection and usage
+./docs/architecture/development/process/startup-sequence.md:- **Code Review Process**: See [PR Review](pr-review.md) for review requirements
+./docs/architecture/development/process/startup-sequence.md:- **Quality Standards**: See [Code Quality](../standards/code-quality.md) for linting and formatting
+./docs/architecture/development/process/startup-sequence.md:- **For new features**: Follow [Issue Workflow](issue-workflow.md)
+./docs/architecture/development/process/startup-sequence.md:- **For questions**: Check [Troubleshooting](../guides/troubleshooting.md)
+./docs/architecture/development/process/epic-and-subissue-workflow.md:This workflow integrates with the existing [Startup Sequence](startup-sequence.md):
+./docs/architecture/development/process/epic-and-subissue-workflow.md:**Next Steps**: After reading this guide, continue with the standard [Startup Sequence](startup-sequence.md) and [Issue Workflow](issue-workflow.md) processes.
+./docs/architecture/design-decisions/ai-architecture-choices.md:**Selected Model**: [EricB/gemma-3n-E4B-it-UQFF](https://huggingface.co/EricB/gemma-3n-E4B-it-UQFF)
+./docs/architecture/decisions/2025-01-contenteditable-pivot.md:- [Complete Architecture Documentation](../development/contenteditable-text-editing.md)
+./docs/architecture/decisions/2025-01-contenteditable-pivot.md:- [Original Issue #26](https://github.com/malibio/nodespace-core/issues/26)
+./docs/architecture/decisions/2025-01-contenteditable-pivot.md:- [UX Research Analysis](../development/contenteditable-text-editing.md#research-findings)
+./docs/architecture/decisions/ADR-005-node-reference-decoration-system.md:- Store references as **standard markdown links**: `[display-text](nodespace://uuid)`
+./docs/architecture/decisions/ADR-005-node-reference-decoration-system.md:- Uses standard markdown link syntax: `[text](url)`
+./docs/architecture/decisions/ADR-005-node-reference-decoration-system.md:3. **Link Insertion**: Insert `[content](nodespace://uuid)` on selection
+./docs/architecture/decisions/ADR-005-node-reference-decoration-system.md:3. **Conversion Phase**: Convert to `[text](nodespace://uuid)` format
+./docs/architecture/decisions/015-data-layer-architecture.md:- [Convex Architecture Analysis](../data/storage-architecture.md#comparison-with-convex)
+./docs/architecture/decisions/015-data-layer-architecture.md:- [Collaboration Strategy](../data/collaboration-strategy.md)  
+./docs/architecture/decisions/015-data-layer-architecture.md:- [Sync Protocol Specification](../data/sync-protocol.md)
+./docs/architecture/decisions/015-data-layer-architecture.md:- [Local-First Software Principles](https://www.inkandswitch.com/local-first/)
+./docs/architecture/decisions/015-data-layer-architecture.md:- [LanceDB Documentation](https://lancedb.github.io/lancedb/)
+./docs/architecture/decisions/015-data-layer-architecture.md:- [Yjs CRDT Library](https://docs.yjs.dev/)
+./docs/architecture/components/validation-system.md:            pattern: r"if\s+(.+)\s+(?:is|equals?)\s+['\"](.+)['\"],?\s+then\s+(.+)\s+must\s+(?:be|equal)\s+(.+)".to_string(),
+./docs/architecture/components/node-reference-system.md:│             [display-text](nodespace://uuid)                   │
+./docs/architecture/components/node-reference-system.md:    const markdownLink = `[${linkText}](nodespace://${node.id})`;
+./docs/architecture/components/contenteditable-implementation.md:| **Links** | Medium | `[text](url)` |
+./docs/architecture/components/contenteditable-implementation.md:| **Images** | Medium | `![alt](url)` |
+./docs/architecture/components/contenteditable-implementation.md:2. **Link editing** - `[text](url)` with UI helpers
+./docs/architecture/components/contenteditable-implementation.md:3. **Image support** - `![alt](url)` with drag-drop
+./docs/architecture/components/node-types.md:Structured data management with calculated fields and natural language operations. (See [Entity Management](entity-management.md) for detailed documentation.)
+./docs/architecture/components/node-types.md:Live data queries with real-time updates and AI-enhanced result processing. (See [Real-Time Updates](real-time-updates.md) for detailed documentation.)
+./docs/architecture/components/node-types.md:**Storage Format**: Standard markdown links `[display-text](nodespace://uuid)`
+./docs/architecture/components/node-types.md:The node reference system integrates with the enhanced ContentProcessor to detect and render `nodespace://` URIs with appropriate decorations based on node type. See [Node Reference System](node-reference-system.md) for complete technical documentation.
+./docs/architecture/components/node-types.md:The design decisions and rationale for this system are documented in [ADR-005: Node Reference Decoration System](../decisions/ADR-005-node-reference-decoration-system.md).
+./docs/architecture/deployment/development-setup.md:4. **Create Your First Extension**: Follow the [Plugin Development Guide](../plugins/development-guide.md)
+./docs/architecture/deployment/development-setup.md:5. **Join Development**: Review [Testing Strategies](testing-strategies.md) for contribution guidelines
+./docs/architecture/data/storage-architecture.md:NodeSpace uses [LanceDB](https://lancedb.com/) as its primary embedded database for several key advantages:
+./docs/architecture/data/collaboration-strategy.md:[Yjs](https://github.com/yjs/yjs) provides conflict-free replicated data types for collaborative editing:
+./README.md:- [System Overview](docs/architecture/core/system-overview.md) - High-level design and components
+./README.md:- [Technology Stack](docs/architecture/core/technology-stack.md) - Detailed technology choices
+./README.md:- [Data Flow](docs/architecture/core/data-flow.md) - Information flow through the system
+./README.md:- [Enhanced ContentEditable Architecture](docs/architecture/components/contenteditable-implementation.md) - 🔄 **In Progress** - Logseq-inspired dual-representation with preserved hierarchical indicators
+./README.md:- [Text Editor Architecture Refactor](docs/architecture/decisions/2025-01-text-editor-architecture-refactor.md) - ✅ **Current Plan** - Complete enhanced contenteditable architecture with backlinking
+./README.md:- [Entity Management](docs/architecture/components/entity-management.md) - Structured data with calculated fields
+./README.md:- [AI Integration](docs/architecture/components/ai-integration.md) - Natural language processing and RAG
+./README.md:- [Validation System](docs/architecture/components/validation-system.md) - Business rules and validation
+./README.md:- [Real-Time Updates](docs/architecture/components/real-time-updates.md) - Live query and update system
+./README.md:- [Plugin Architecture](docs/architecture/plugins/plugin-architecture.md) - Build-time plugin system
+./README.md:- [Development Guide](docs/architecture/plugins/development-guide.md) - Creating custom node types
+./README.md:- [Examples](docs/architecture/plugins/examples/) - Sample plugin implementations
+./README.md:- [Development Setup](docs/architecture/deployment/development-setup.md) - Local development environment
+./README.md:- [Testing Strategies](docs/architecture/deployment/testing-strategies.md) - Comprehensive testing approach
+./README.md:- [Enhanced ContentEditable Pivot](docs/architecture/decisions/2025-01-contenteditable-pivot.md) - Research findings and architecture pivot decision
+./README.md:- [Text Editor Architecture Refactor](docs/architecture/decisions/2025-01-text-editor-architecture-refactor.md) - Complete implementation plan with Logseq patterns
+./README.md:- [Why Rust + Svelte](docs/architecture/design-decisions/why-rust-svelte.md) - Technology choice rationale
+./README.md:- [AI Architecture](docs/architecture/design-decisions/ai-architecture-choices.md) - AI backend strategy
+./README.md:- [Post-MVP Roadmap](docs/architecture/design-decisions/post-mvp-roadmap.md) - Future enhancement plans
+./README.md:See [Post-MVP Roadmap](docs/architecture/design-decisions/post-mvp-roadmap.md) for detailed plans including:
+./CLAUDE.md:> - [`/docs/architecture/development/overview.md`](docs/architecture/development/overview.md) - Complete development process overview
+./CLAUDE.md:> - [`/docs/architecture/development/process/startup-sequence.md`](docs/architecture/development/process/startup-sequence.md) - Mandatory pre-implementation steps
+./CLAUDE.md:**CRITICAL**: Follow the complete development process in the [development documentation](docs/architecture/development/overview.md)
+./CLAUDE.md:   - **FOLLOW UNIVERSAL PROCESS**: Use the code review guidelines in the [PR review documentation](docs/architecture/development/process/pr-review.md) 
+./CLAUDE.md:2. **READ THE DEVELOPMENT PROCESS DOCUMENTATION** - Start with the [overview](docs/architecture/development/overview.md) and [startup sequence](docs/architecture/development/process/startup-sequence.md)
+./CLAUDE.md:- [ ] Read development process documentation (start with [overview](docs/architecture/development/overview.md))
+./docs/architecture/core/system-overview.md:├── nodespace-app/                 # Tauri desktop application
+./docs/architecture/plugins/plugin-architecture.md:// nodespace-app/src-tauri/src/plugin_registry.rs
+./docs/architecture/plugins/plugin-architecture.md:// nodespace-app/src-tauri/src/commands.rs
+./docs/architecture/plugins/plugin-architecture.md:// nodespace-app/src/lib/ComponentRegistry.ts
+./docs/architecture/plugins/plugin-architecture.md:<!-- nodespace-app/src/components/NodeRenderer.svelte -->
+./docs/architecture/plugins/plugin-architecture.md:    "nodespace-app/src-tauri",
+./docs/architecture/deployment/testing-strategies.md:cd ../nodespace-app/src-tauri
+./README.md:⚠️ **IMPORTANT: All `bun run gh:*` commands must be run from the repository root directory (`/Users/malibio/nodespace/nodespace-core/`), NOT from subdirectories like `nodespace-app/`.**
+./README.md:cd nodespace-app/src-tauri && cargo test  # Rust backend tests
+./README.md:├── nodespace-app/             # Main Svelte frontend application
+./README.md:- `nodespace-app/src/lib/components/` - Main UI components (TextNode, NodeTree, etc.)
+./README.md:- `nodespace-app/src/lib/design/` - Design system and theming infrastructure
+./README.md:- `nodespace-app/src/lib/services/` - Business logic and data services
+./README.md:- `nodespace-app/src-tauri/src/` - Rust backend for desktop integration
+./README.md:- `nodespace-app/src/tests/` - All test suites organized by type (component, integration, unit)
+./README.md:- Component development: `nodespace-app/src/lib/components/`
+./README.md:- Design system updates: `nodespace-app/src/lib/design/`
+./README.md:- Backend logic: `nodespace-app/src-tauri/src/`
+./CLAUDE.md:⚠️ **IMPORTANT: All `bun run gh:*` commands must be run from the repository root directory (`/Users/malibio/nodespace/nodespace-core/`), NOT from subdirectories like `nodespace-app/`.**
