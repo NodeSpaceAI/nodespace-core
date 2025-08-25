@@ -57,7 +57,7 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 
 **Primary Task Source: GitHub Issues**
 
-⚠️ **IMPORTANT: All `bun run gh:*` commands must be run from the repository root directory (`/Users/malibio/nodespace/nodespace-core/`), NOT from subdirectories like `nodespace-app/`.**
+⚠️ **IMPORTANT: All `bun run gh:*` commands must be run from the repository root directory (`/Users/malibio/nodespace/nodespace-core/`), NOT from subdirectories like `packages/desktop-app/`.**
 
 ```bash
 # CORRECT - from repository root
@@ -65,7 +65,7 @@ cd /Users/malibio/nodespace/nodespace-core
 bun run gh:list
 
 # WRONG - from subdirectory  
-cd /Users/malibio/nodespace/nodespace-core/nodespace-app
+cd /Users/malibio/nodespace/nodespace-core/packages/desktop-app
 bun run gh:list  # ❌ Will fail
 
 # List all open issues

@@ -5,16 +5,16 @@
   "type": "module",
   "private": true,
   "workspaces": [
-    "nodespace-app"
+    "packages/*"
   ],
   "scripts": {
     "preinstall": "node enforce-bun.js",
-    "dev": "bun run --cwd nodespace-app dev",
-    "build": "bun run --cwd nodespace-app build",
-    "check": "bun run --cwd nodespace-app check",
-    "check:watch": "bun run --cwd nodespace-app check:watch",
-    "tauri:dev": "cd nodespace-app && bun run tauri:dev",
-    "tauri:build": "cd nodespace-app && bun run tauri:build",
+    "dev": "bun run --cwd packages/desktop-app dev",
+    "build": "bun run --cwd packages/desktop-app build",
+    "check": "bun run --cwd packages/desktop-app check",
+    "check:watch": "bun run --cwd packages/desktop-app check:watch",
+    "tauri:dev": "cd packages/desktop-app && bun run tauri:dev",
+    "tauri:build": "cd packages/desktop-app && bun run tauri:build",
     "install:all": "bun install",
     "gh:status": "bun run scripts/gh-utils.ts issues:status",
     "gh:assign": "bun run scripts/gh-utils.ts issues:assign",
@@ -26,7 +26,7 @@
     "gh:view": "bun run scripts/gh-utils.ts issues:view",
     "gh:pr": "bun run scripts/gh-utils.ts pr:create",
     "gh:help": "bun run scripts/gh-utils.ts",
-    "quality:fix": "bun run --cwd nodespace-app quality:fix"
+    "quality:fix": "bun run --cwd packages/desktop-app quality:fix"
   },
   "devDependencies": {
     "@types/jsdom": "^21.1.7",

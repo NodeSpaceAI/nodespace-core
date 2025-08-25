@@ -101,7 +101,7 @@ bun run gh:pr <number>
 
 **❌ Don't use:** `gh issue view`, `gh issue list` - these bypass project tooling and automation.
 
-⚠️ **IMPORTANT: All `bun run gh:*` commands must be run from the repository root directory (`/Users/malibio/nodespace/nodespace-core/`), NOT from subdirectories like `nodespace-app/`.**
+⚠️ **IMPORTANT: All `bun run gh:*` commands must be run from the repository root directory (`/Users/malibio/nodespace/nodespace-core/`), NOT from subdirectories like `packages/desktop-app/`.**
 
 ### Development Setup
 
@@ -187,7 +187,7 @@ bun run dev
 
 # Run tests
 bun run test              # Frontend tests with Vitest + Happy DOM
-cd nodespace-app/src-tauri && cargo test  # Rust backend tests
+cd packages/desktop-app/src-tauri && cargo test  # Rust backend tests
 ```
 
 ### Testing Philosophy
@@ -219,7 +219,7 @@ nodespace-core/
 │   │   ├── design-decisions/  # Strategic technology choices
 │   │   └── plugins/           # Plugin development guide
 │   └── design-system/         # UI design system with live examples
-├── nodespace-app/             # Main Svelte frontend application
+├── packages/desktop-app/      # Main Svelte frontend application
 │   ├── src/                   # Application source code
 │   │   ├── lib/               # Shared libraries and components
 │   │   │   ├── components/    # Reusable Svelte components (TextNode, UI)
@@ -249,10 +249,10 @@ nodespace-core/
 ### Key Directory Purposes
 
 **Core Application:**
-- `nodespace-app/src/lib/components/` - Main UI components (TextNode, NodeTree, etc.)
-- `nodespace-app/src/lib/design/` - Design system and theming infrastructure
-- `nodespace-app/src/lib/services/` - Business logic and data services
-- `nodespace-app/src-tauri/src/` - Rust backend for desktop integration
+- `packages/desktop-app/src/lib/components/` - Main UI components (TextNode, NodeTree, etc.)
+- `packages/desktop-app/src/lib/design/` - Design system and theming infrastructure
+- `packages/desktop-app/src/lib/services/` - Business logic and data services
+- `packages/desktop-app/src-tauri/src/` - Rust backend for desktop integration
 
 **Documentation:**
 - `docs/architecture/core/` - High-level system architecture and technology decisions
@@ -260,7 +260,7 @@ nodespace-core/
 - `docs/design-system/` - Live UI component documentation with interactive examples
 
 **Testing:**
-- `nodespace-app/src/tests/` - All test suites organized by type (component, integration, unit)
+- `packages/desktop-app/src/tests/` - All test suites organized by type (component, integration, unit)
 - `coverage/` - Test coverage reports (generated)
 
 **Automation:**
@@ -277,9 +277,9 @@ nodespace-core/
 5. Explore `docs/design-system/index.html` for UI component examples
 
 **For Implementation Work:**
-- Component development: `nodespace-app/src/lib/components/`
-- Design system updates: `nodespace-app/src/lib/design/`
-- Backend logic: `nodespace-app/src-tauri/src/`
+- Component development: `packages/desktop-app/src/lib/components/`
+- Design system updates: `packages/desktop-app/src/lib/design/`
+- Backend logic: `packages/desktop-app/src-tauri/src/`
 - Documentation: `docs/architecture/` (update when making architectural changes)
 
 ## Contributing

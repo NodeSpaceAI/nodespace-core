@@ -4,7 +4,7 @@
   "description": "NodeSpace AI-native knowledge management desktop application",
   "type": "module",
   "scripts": {
-    "preinstall": "node ../enforce-bun.js",
+    "preinstall": "node ../../enforce-bun.js",
     "dev": "bunx vite dev",
     "build": "bunx vite build",
     "preview": "bunx vite preview",
