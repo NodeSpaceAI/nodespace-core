@@ -536,69 +536,46 @@ export class ContentEditableController {
       }
     }
 
-    // Shift+Enter key inserts a newline character (no new node) - only for nodes that allow multiline
-    if (event.key === 'Enter' && event.shiftKey && this.config.allowMultiline) {
-      event.preventDefault();
-
-      // Get current cursor position before any DOM changes
-      const cursorOffset = this.getCurrentColumn();
+    // Enter key handling - distinguish between regular Enter and Shift+Enter
+    if (event.key === 'Enter') {
+      if (event.shiftKey && this.config.allowMultiline) {
+        // Shift+Enter for multiline nodes: allow default browser behavior (insert newline)
+        // Don't preventDefault() - let the browser handle newline insertion naturally
+        // The input event will trigger and handle content updates
+        return;
+      }
       
-      // Insert newline at current cursor position
-      const selection = window.getSelection();
-      if (selection && selection.rangeCount > 0) {
-        const range = selection.getRangeAt(0);
-        const textNode = document.createTextNode('\n');
-        
-        range.deleteContents();
-        range.insertNode(textNode);
-        
-        // Calculate new cursor position (after the newline we just inserted)
-        const newCursorOffset = cursorOffset + 1;
-        
-        // Update content and format, then restore cursor position
-        const newContent = this.element.textContent || '';
-        this.originalContent = newContent;
-        
-        // Apply live formatting while preserving cursor position
-        this.setLiveFormattedContent(newContent);
-        this.restoreCursorPosition(newCursorOffset);
-        
-        // Notify of content change
-        this.events.contentChanged(newContent);
+      if (!event.shiftKey) {
+        // Regular Enter: create new node with smart text splitting
+        event.preventDefault();
+
+        const currentContent = this.element.textContent || '';
+        const cursorPosition = this.getCurrentColumn();
+        const cursorAtBeginning = cursorPosition === 0;
+
+        if (cursorAtBeginning) {
+          // SOPHISTICATED LOGIC: Cursor at beginning - create node above
+          this.events.createNewNode({
+            afterNodeId: this.nodeId,
+            nodeType: 'text',
+            currentContent: currentContent, // Keep all content in original node
+            newContent: '', // Empty new node above
+            cursorAtBeginning: true
+          });
+        } else {
+          // SOPHISTICATED LOGIC: Normal split with formatting preservation
+          const splitResult = this.smartTextSplit(currentContent, cursorPosition);
+
+          this.events.createNewNode({
+            afterNodeId: this.nodeId,
+            nodeType: 'text',
+            currentContent: splitResult.beforeCursor,
+            newContent: splitResult.afterCursor,
+            cursorAtBeginning: false
+          });
+        }
+        return;
       }
-      return;
-    }
-
-    // Enter key creates new node with smart text splitting
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-
-      const currentContent = this.element.textContent || '';
-      const cursorPosition = this.getCurrentColumn();
-      const cursorAtBeginning = cursorPosition === 0;
-
-      if (cursorAtBeginning) {
-        // SOPHISTICATED LOGIC: Cursor at beginning - create node above
-        this.events.createNewNode({
-          afterNodeId: this.nodeId,
-          nodeType: 'text',
-          currentContent: currentContent, // Keep all content in original node
-          newContent: '', // Empty new node above
-          cursorAtBeginning: true
-        });
-      } else {
-        // SOPHISTICATED LOGIC: Normal split with formatting preservation
-        const splitResult = this.smartTextSplit(currentContent, cursorPosition);
-
-        this.events.createNewNode({
-          afterNodeId: this.nodeId,
-          nodeType: 'text',
-          currentContent: splitResult.beforeCursor,
-          newContent: splitResult.afterCursor,
-          cursorAtBeginning: false
-        });
-      }
-      return;
     }
 
     // Tab key indents node
