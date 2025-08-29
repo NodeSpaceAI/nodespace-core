@@ -96,7 +96,7 @@ bun run gh:view <issue-number>
 - **Backend**: Rust with async/await, trait-based architecture
 - **Frontend**: Svelte 4.x with reactive state management
 - **Desktop**: Tauri 2.0 for native integration
-- **Database**: LanceDB for unified storage (planned)
+- **Database**: Turso embedded for unified storage and sync
 - **AI**: mistral.rs with local models (planned)
 
 **Development Philosophy:**
@@ -275,16 +275,36 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 - Look at existing NodeSpace codebases for established patterns
 - Verify technology versions match current documentation
 
-## Repository Structure
+## Updated Repository Structure (Post-2024 Restructure)
 
 ```
 nodespace-core/
-├── docs/architecture/          # Complete technical specifications
-├── README.md                   # Project overview and quick start
-├── CLAUDE.md                   # This file - agent guidance
-├── .gitignore                  # Excludes build artifacts, models, databases
-└── [implementation files will be created by agents]
+├── docs/                          # UNIFIED documentation
+│   ├── architecture/             # System architecture
+│   │   ├── development/          # Development process & lessons learned
+│   │   │   └── lessons/          # Analysis files preserved as permanent reference
+│   │   ├── components/           # Component specifications
+│   │   ├── decisions/            # Architecture decision records
+│   │   └── data/                 # Data architecture and storage docs
+│   ├── troubleshooting/          # Issue resolution guides
+│   ├── performance/              # Performance analysis
+│   └── design-system/            # UI component documentation
+├── packages/
+│   └── desktop-app/              # Main Svelte + Tauri application
+│       ├── src/                  # Frontend source
+│       ├── src-tauri/            # Tauri backend
+│       └── [configs]             # App-specific configurations
+├── scripts/                      # Build and GitHub utilities
+├── package.json                  # Bun workspace root
+└── Cargo.toml                    # Rust workspace (if needed)
 ```
+
+### Key Improvements from Restructure:
+- **Single Documentation Source**: All docs consolidated under `docs/`
+- **Clear Package Structure**: Desktop app isolated in `packages/desktop-app/`
+- **Preserved History**: All file moves maintain git history
+- **Updated References**: All internal links and configurations updated
+- **Lessons Preserved**: Analysis files moved to permanent `docs/architecture/development/lessons/`
 
 ## Current Project Status
 

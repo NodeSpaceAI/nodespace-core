@@ -54,7 +54,7 @@ NodeSpace is a next-generation knowledge management system designed from the gro
 - **Frontend**: Svelte with reactive state management
 - **Desktop Framework**: Tauri for native desktop integration
 - **AI Engine**: mistral.rs with Gemma 3n-E4B-it 8B model
-- **Database**: LanceDB for both structured data and vector embeddings
+- **Database**: Turso (SQLite-compatible) with native vector search for unified data and embeddings
 
 ### AI Integration
 - **Model**: Gemma 3n-E4B-it 8B (4-6GB RAM, excellent capability/resource balance)
