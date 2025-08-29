@@ -43,8 +43,8 @@
   import { MockDatabaseService } from '$lib/services/MockDatabaseService';
   import { ContentProcessor } from '$lib/services/contentProcessor';
   
-  // Props
-  export let initializationMode: 'full' | 'mock' = 'mock';
+  // Props - external reference only for service configuration
+  export const initializationMode: 'full' | 'mock' = 'mock';
   
   // Services state
   let services: NodeServices | null = null;

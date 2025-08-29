@@ -7,7 +7,6 @@
 -->
 
 <script lang="ts">
-  import { onMount } from 'svelte';
   import TextNode from '$lib/components/TextNode.svelte';
   import Icon from '$lib/design/icons';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
@@ -137,7 +136,6 @@
       if (success) {
         // Restore cursor position after DOM update
         setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
-      } else {
       }
     } catch (error) {
       console.error('Error during node indentation:', error);

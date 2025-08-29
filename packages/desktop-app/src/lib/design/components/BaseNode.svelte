@@ -14,8 +14,14 @@
     type ContentEditableEvents
   } from './ContentEditableController.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
-  import type { NodeReferenceService, TriggerContext } from '$lib/services/NodeReferenceService';
+  import type { TriggerContext } from '$lib/services/NodeReferenceService';
   import type { NodeSpaceNode } from '$lib/services/MockDatabaseService';
+  
+  // Type for new node creation requests
+  interface NewNodeRequest {
+    type: 'create';
+    content: string;
+  }
   import { getNodeServices } from '$lib/contexts/NodeServiceContext.svelte';
 
   // Props (Svelte 5 runes syntax) - nodeReferenceService removed
@@ -248,32 +254,6 @@
   // ============================================================================
   // Autocomplete Modal Event Handlers
   // ============================================================================
-
-  function handleNodeSelect(event: CustomEvent<{ node: NodeSpaceNode | NewNodeRequest }>): void {
-    
-    const { node } = event.detail;
-
-    if (!controller) {
-      return;
-    }
-
-    if (node.type === 'create') {
-      // Handle new node creation
-      // For now, just insert a placeholder reference
-      const newNodeRequest = node as NewNodeRequest;
-      controller.insertNodeReference('new-node-' + Date.now(), newNodeRequest.content);
-    } else {
-      // Handle existing node selection
-      const existingNode = node as NodeSpaceNode;
-      const nodeTitle = extractNodeTitle(existingNode.content);
-      controller.insertNodeReference(existingNode.id, nodeTitle);
-    }
-
-    // Hide the modal
-    showAutocomplete = false;
-    currentQuery = '';
-    // _currentTriggerContext = null;
-  }
 
   function handleAutocompleteClose(): void {
     showAutocomplete = false;
