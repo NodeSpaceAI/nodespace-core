@@ -35,9 +35,14 @@ export interface ContentEditableEvents {
   nodeReferenceSelected: (data: { nodeId: string; nodeTitle: string }) => void;
 }
 
+export interface ContentEditableConfig {
+  allowMultiline?: boolean;
+}
+
 export class ContentEditableController {
   private element: HTMLDivElement;
   private nodeId: string;
+  private config: ContentEditableConfig;
   private isEditing: boolean = false;
   private isInitialized: boolean = false;
   private events: ContentEditableEvents;
@@ -49,6 +54,9 @@ export class ContentEditableController {
   private pendingClickPosition: { x: number; y: number } | null = null;
   private wasEditing: boolean = false;
 
+  // Track recent Shift+Enter to avoid interfering with newlines
+  private recentShiftEnter: boolean = false;
+
   // Bound event handlers for proper cleanup
   private boundHandleFocus = this.handleFocus.bind(this);
   private boundHandleBlur = this.handleBlur.bind(this);
@@ -56,9 +64,15 @@ export class ContentEditableController {
   private boundHandleKeyDown = this.handleKeyDown.bind(this);
   private boundHandleMouseDown = this.handleMouseDown.bind(this);
 
-  constructor(element: HTMLDivElement, nodeId: string, events: ContentEditableEvents) {
+  constructor(
+    element: HTMLDivElement,
+    nodeId: string,
+    events: ContentEditableEvents,
+    config: ContentEditableConfig = {}
+  ) {
     this.element = element;
     this.nodeId = nodeId;
+    this.config = { allowMultiline: false, ...config };
     this.events = events;
     // Mark DOM element as having a controller attached
     (
@@ -371,7 +385,14 @@ export class ContentEditableController {
       this.element.innerHTML = htmlContent;
     } else {
       // For non-headers: show formatted HTML (bold, italic, etc.)
-      const htmlContent = this.markdownToHtml(content);
+      let htmlContent = this.markdownToHtml(content);
+
+      // For multiline nodes: ensure newlines are preserved as <br> tags
+      if (this.config.allowMultiline) {
+        // Convert any remaining \n characters to <br> tags for display
+        htmlContent = htmlContent.replace(/\n/g, '<br>');
+      }
+
       this.element.innerHTML = htmlContent;
     }
   }
@@ -394,6 +415,37 @@ export class ContentEditableController {
    */
   private htmlToMarkdown(htmlContent: string): string {
     return htmlToMarkdown(htmlContent);
+  }
+
+  /**
+   * Convert HTML structure created by Shift+Enter to text with newlines
+   * Browser creates <div> elements for newlines in contenteditable
+   */
+  private convertHtmlToTextWithNewlines(html: string): string {
+    // Create a temporary element to parse the HTML
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = html;
+
+    let result = '';
+
+    // Walk through all child nodes
+    for (const node of tempDiv.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        // Text node: add the text content
+        result += node.textContent || '';
+      } else if (node.nodeType === Node.ELEMENT_NODE) {
+        const element = node as Element;
+        if (element.tagName === 'DIV') {
+          // Div element: represents a new line, add newline + content
+          result += '\n' + (element.textContent || '');
+        } else {
+          // Other elements: just add their text content
+          result += element.textContent || '';
+        }
+      }
+    }
+
+    return result;
   }
 
   // ============================================================================
@@ -436,7 +488,16 @@ export class ContentEditableController {
     this.wasEditing = false;
 
     // On blur: update original content and show formatted display
-    const currentText = this.element.textContent || '';
+    let currentText: string;
+
+    if (this.config.allowMultiline) {
+      // For multiline nodes: convert HTML structure (with <div> elements) to text with newlines
+      currentText = this.convertHtmlToTextWithNewlines(this.element.innerHTML);
+    } else {
+      // For single-line nodes: use textContent as before
+      currentText = this.element.textContent || '';
+    }
+
     this.originalContent = currentText; // Store the edited content
     this.setFormattedContent(currentText);
 
@@ -470,9 +531,11 @@ export class ContentEditableController {
         this.events.headerLevelChanged(newHeaderLevel);
       }
 
-      // Apply live formatting while preserving cursor
-      this.setLiveFormattedContent(textContent);
-      this.restoreCursorPosition(cursorOffset);
+      // Apply live formatting while preserving cursor, unless we just had a Shift+Enter
+      if (!this.recentShiftEnter) {
+        this.setLiveFormattedContent(textContent);
+        this.restoreCursorPosition(cursorOffset);
+      }
 
       this.events.contentChanged(textContent);
     } else {
@@ -530,36 +593,50 @@ export class ContentEditableController {
       }
     }
 
-    // Enter key creates new node with smart text splitting
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-
-      const currentContent = this.element.textContent || '';
-      const cursorPosition = this.getCurrentColumn();
-      const cursorAtBeginning = cursorPosition === 0;
-
-      if (cursorAtBeginning) {
-        // SOPHISTICATED LOGIC: Cursor at beginning - create node above
-        this.events.createNewNode({
-          afterNodeId: this.nodeId,
-          nodeType: 'text',
-          currentContent: currentContent, // Keep all content in original node
-          newContent: '', // Empty new node above
-          cursorAtBeginning: true
-        });
-      } else {
-        // SOPHISTICATED LOGIC: Normal split with formatting preservation
-        const splitResult = this.smartTextSplit(currentContent, cursorPosition);
-
-        this.events.createNewNode({
-          afterNodeId: this.nodeId,
-          nodeType: 'text',
-          currentContent: splitResult.beforeCursor,
-          newContent: splitResult.afterCursor,
-          cursorAtBeginning: false
-        });
+    // Enter key handling - distinguish between regular Enter and Shift+Enter
+    if (event.key === 'Enter') {
+      if (event.shiftKey && this.config.allowMultiline) {
+        // Shift+Enter for multiline nodes: allow default browser behavior (insert newline)
+        // Don't preventDefault() - let the browser handle newline insertion naturally
+        // Set flag to prevent live formatting from interfering with the newline
+        this.recentShiftEnter = true;
+        setTimeout(() => {
+          this.recentShiftEnter = false;
+        }, 100); // Clear flag after brief delay
+        return;
       }
-      return;
+
+      if (!event.shiftKey) {
+        // Regular Enter: create new node with smart text splitting
+        event.preventDefault();
+
+        const currentContent = this.element.textContent || '';
+        const cursorPosition = this.getCurrentColumn();
+        const cursorAtBeginning = cursorPosition === 0;
+
+        if (cursorAtBeginning) {
+          // SOPHISTICATED LOGIC: Cursor at beginning - create node above
+          this.events.createNewNode({
+            afterNodeId: this.nodeId,
+            nodeType: 'text',
+            currentContent: currentContent, // Keep all content in original node
+            newContent: '', // Empty new node above
+            cursorAtBeginning: true
+          });
+        } else {
+          // SOPHISTICATED LOGIC: Normal split with formatting preservation
+          const splitResult = this.smartTextSplit(currentContent, cursorPosition);
+
+          this.events.createNewNode({
+            afterNodeId: this.nodeId,
+            nodeType: 'text',
+            currentContent: splitResult.beforeCursor,
+            newContent: splitResult.afterCursor,
+            cursorAtBeginning: false
+          });
+        }
+        return;
+      }
     }
 
     // Tab key indents node
