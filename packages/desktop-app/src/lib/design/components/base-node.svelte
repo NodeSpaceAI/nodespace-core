@@ -13,10 +13,10 @@
     ContentEditableController,
     type ContentEditableEvents,
     type ContentEditableConfig
-  } from './ContentEditableController.js';
+  } from './contentEditableController.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
-  import type { TriggerContext } from '$lib/services/NodeReferenceService';
-  import { getNodeServices } from '$lib/contexts/NodeServiceContext.svelte';
+  import type { TriggerContext } from '$lib/services/nodeReferenceService';
+  import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
 
   // Props (Svelte 5 runes syntax) - nodeReferenceService removed
   let {

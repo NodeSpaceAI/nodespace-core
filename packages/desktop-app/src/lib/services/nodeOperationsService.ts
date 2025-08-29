@@ -13,11 +13,11 @@
  * - Type-specific metadata handling via JSON field
  */
 
-import { eventBus } from './EventBus';
+import { eventBus } from './eventBus';
 import { ContentProcessor } from './contentProcessor';
-import type { NodeManager, Node } from './NodeManager';
-import type { HierarchyService } from './HierarchyService';
-import type { NodeSpaceNode } from './MockDatabaseService';
+import type { NodeManager, Node } from './nodeManager';
+import type { HierarchyService } from './hierarchyService';
+import type { NodeSpaceNode } from './mockDatabaseService';
 
 // ============================================================================
 // Core Types
@@ -215,7 +215,7 @@ export class NodeOperationsService {
     }
 
     // Emit events for coordination
-    eventBus.emit<import('./EventTypes').ReferencesUpdateNeededEvent>({
+    eventBus.emit<import('./eventTypes').ReferencesUpdateNeededEvent>({
       type: 'references:update-needed',
       namespace: 'coordination',
       source: this.serviceName,
@@ -440,7 +440,7 @@ export class NodeOperationsService {
   private setupEventBusIntegration(): void {
     // Listen for node updates to maintain consistency
     eventBus.subscribe('node:updated', (event) => {
-      const nodeEvent = event as import('./EventTypes').NodeUpdatedEvent;
+      const nodeEvent = event as import('./eventTypes').NodeUpdatedEvent;
       if (nodeEvent.updateType === 'content') {
         // Content updates might affect mentions, reprocess if needed
         this.processContentMentions(nodeEvent.nodeId);
@@ -595,7 +595,7 @@ export class NodeOperationsService {
   private async addBacklinkReference(targetNodeId: string, sourceNodeId: string): Promise<void> {
     // In the NodeManager system, this would update the target node's backlink list
     // For now, we emit an event for coordination
-    eventBus.emit<import('./EventTypes').BacklinkDetectedEvent>({
+    eventBus.emit<import('./eventTypes').BacklinkDetectedEvent>({
       type: 'backlink:detected',
       namespace: 'phase2',
       source: this.serviceName,
@@ -612,7 +612,7 @@ export class NodeOperationsService {
    */
   private async removeBacklinkReference(targetNodeId: string, sourceNodeId: string): Promise<void> {
     // Emit event for backlink removal
-    eventBus.emit<import('./EventTypes').ReferencesUpdateNeededEvent>({
+    eventBus.emit<import('./eventTypes').ReferencesUpdateNeededEvent>({
       type: 'references:update-needed',
       namespace: 'coordination',
       source: this.serviceName,
@@ -695,7 +695,7 @@ export class NodeOperationsService {
     data: unknown,
     metadata?: Record<string, unknown>
   ): void {
-    eventBus.emit<import('./EventTypes').DebugEvent>({
+    eventBus.emit<import('./eventTypes').DebugEvent>({
       type: 'debug:log',
       namespace: 'debug',
       source: this.serviceName,

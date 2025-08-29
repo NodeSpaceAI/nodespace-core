@@ -13,14 +13,14 @@
  * - Foundation for distributed caching (Phase 2+)
  */
 
-import { eventBus } from './EventBus';
+import { eventBus } from './eventBus';
 import type {
   CacheInvalidateEvent,
   NodeCreatedEvent,
   NodeUpdatedEvent,
   NodeDeletedEvent,
   HierarchyChangedEvent
-} from './EventTypes';
+} from './eventTypes';
 
 // ============================================================================
 // Types and Interfaces
@@ -104,35 +104,35 @@ export class CacheCoordinator {
   private setupEventBusIntegration(): void {
     // Listen for cache invalidation events
     eventBus.subscribe('cache:invalidate', (event) => {
-      this.handleCacheInvalidation(event as import('./EventTypes').CacheInvalidateEvent);
+      this.handleCacheInvalidation(event as import('./eventTypes').CacheInvalidateEvent);
     });
 
     // Listen for node lifecycle events
     eventBus.subscribe('node:created', (event) => {
-      this.handleNodeLifecycleEvent(event as import('./EventTypes').NodeCreatedEvent);
+      this.handleNodeLifecycleEvent(event as import('./eventTypes').NodeCreatedEvent);
     });
 
     eventBus.subscribe('node:updated', (event) => {
-      this.handleNodeLifecycleEvent(event as import('./EventTypes').NodeUpdatedEvent);
+      this.handleNodeLifecycleEvent(event as import('./eventTypes').NodeUpdatedEvent);
     });
 
     eventBus.subscribe('node:deleted', (event) => {
-      this.handleNodeLifecycleEvent(event as import('./EventTypes').NodeDeletedEvent);
+      this.handleNodeLifecycleEvent(event as import('./eventTypes').NodeDeletedEvent);
     });
 
     eventBus.subscribe('hierarchy:changed', (event) => {
-      this.handleHierarchyChanged(event as import('./EventTypes').HierarchyChangedEvent);
+      this.handleHierarchyChanged(event as import('./eventTypes').HierarchyChangedEvent);
     });
 
     // Listen for reference events that might affect cache
     eventBus.subscribe('references:update-needed', (event) => {
-      const refEvent = event as import('./EventTypes').ReferencesUpdateNeededEvent;
+      const refEvent = event as import('./eventTypes').ReferencesUpdateNeededEvent;
       this.invalidateCacheForNode(refEvent.nodeId, 'reference update');
     });
 
     // Listen for backlink detection (Phase 2+ preparation)
     eventBus.subscribe('backlink:detected', (event) => {
-      const backlinkEvent = event as import('./EventTypes').BacklinkDetectedEvent;
+      const backlinkEvent = event as import('./eventTypes').BacklinkDetectedEvent;
       // Invalidate cache for both source and target nodes
       this.invalidateCacheForNode(backlinkEvent.sourceNodeId, 'backlink detected');
       this.invalidateCacheForNode(backlinkEvent.targetNodeId, 'backlink target');
@@ -331,7 +331,7 @@ export class CacheCoordinator {
     }
 
     // Emit batch invalidation complete event
-    const debugEvent: import('./EventTypes').DebugEvent = {
+    const debugEvent: import('./eventTypes').DebugEvent = {
       type: 'debug:log',
       namespace: 'debug',
       source: this.serviceName,
@@ -352,7 +352,7 @@ export class CacheCoordinator {
     this.metrics.invalidationCount++;
 
     // Emit cache invalidation event for dependent services
-    const cacheEvent: import('./EventTypes').CacheInvalidateEvent = {
+    const cacheEvent: import('./eventTypes').CacheInvalidateEvent = {
       type: 'cache:invalidate',
       namespace: 'coordination',
       source: this.serviceName,
@@ -392,7 +392,7 @@ export class CacheCoordinator {
     this.addInvalidationStrategy({
       name: 'content-change',
       condition: (event, cache) => {
-        const typedEvent = event as import('./EventTypes').NodeUpdatedEvent;
+        const typedEvent = event as import('./eventTypes').NodeUpdatedEvent;
         return (
           typedEvent.type === 'node:updated' &&
           typedEvent.updateType === 'content' &&
@@ -407,7 +407,7 @@ export class CacheCoordinator {
     this.addInvalidationStrategy({
       name: 'hierarchy-change',
       condition: (event, cache) => {
-        const typedEvent = event as import('./EventTypes').HierarchyChangedEvent;
+        const typedEvent = event as import('./eventTypes').HierarchyChangedEvent;
         return Boolean(
           typedEvent.type === 'hierarchy:changed' &&
             cache.nodeId &&
@@ -422,7 +422,7 @@ export class CacheCoordinator {
     this.addInvalidationStrategy({
       name: 'node-deletion',
       condition: (event, cache) => {
-        const typedEvent = event as import('./EventTypes').NodeDeletedEvent;
+        const typedEvent = event as import('./eventTypes').NodeDeletedEvent;
         return (
           typedEvent.type === 'node:deleted' &&
           (cache.nodeId === typedEvent.nodeId || cache.dependencies.has(typedEvent.nodeId))
@@ -436,7 +436,7 @@ export class CacheCoordinator {
     this.addInvalidationStrategy({
       name: 'reference-update',
       condition: (event, cache) => {
-        const typedEvent = event as import('./EventTypes').ReferencesUpdateNeededEvent;
+        const typedEvent = event as import('./eventTypes').ReferencesUpdateNeededEvent;
         return Boolean(
           typedEvent.type === 'references:update-needed' && cache.nodeId === typedEvent.nodeId
         );
@@ -475,7 +475,7 @@ export class CacheCoordinator {
     this.metrics.lastCleanup = now;
 
     if (keysToRemove.length > 0) {
-      const debugEvent: import('./EventTypes').DebugEvent = {
+      const debugEvent: import('./eventTypes').DebugEvent = {
         type: 'debug:log',
         namespace: 'debug',
         source: this.serviceName,

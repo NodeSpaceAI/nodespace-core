@@ -4,7 +4,7 @@
 
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import BaseNode from '$lib/design/components/BaseNode.svelte';
+  import BaseNode from '$lib/design/components/base-node.svelte';
   import { contentProcessor } from '$lib/services/contentProcessor.js';
 
   // Props

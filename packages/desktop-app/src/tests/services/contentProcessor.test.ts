@@ -137,7 +137,7 @@ describe('ContentProcessor', () => {
     });
 
     it('should be compatible with existing TextNode usage patterns', () => {
-      // Test the specific patterns used in TextNode.svelte
+      // Test the specific patterns used in text-node.svelte
       const headerContent = '## Sub Header';
       const level = processor.parseHeaderLevel(headerContent);
       const displayText = processor.stripHeaderSyntax(headerContent);

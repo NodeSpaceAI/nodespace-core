@@ -6,14 +6,14 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { NodeReferenceService } from '$lib/services/NodeReferenceService';
-import { NodeManager, type Node } from '$lib/services/NodeManager';
-import { HierarchyService } from '$lib/services/HierarchyService';
-import { NodeOperationsService } from '$lib/services/NodeOperationsService';
-import { MockDatabaseService } from '$lib/services/MockDatabaseService';
+import { NodeReferenceService } from '$lib/services/nodeReferenceService';
+import { NodeManager, type Node } from '$lib/services/nodeManager';
+import { HierarchyService } from '$lib/services/hierarchyService';
+import { NodeOperationsService } from '$lib/services/nodeOperationsService';
+import { MockDatabaseService } from '$lib/services/mockDatabaseService';
 import { ContentProcessor } from '$lib/services/contentProcessor';
-import { eventBus } from '$lib/services/EventBus';
-import type { ReferencesUpdateNeededEvent, NodeDeletedEvent } from '$lib/services/EventTypes';
+import { eventBus } from '$lib/services/eventBus';
+import type { ReferencesUpdateNeededEvent, NodeDeletedEvent } from '$lib/services/eventTypes';
 
 // Mock document for test environment
 Object.defineProperty(global, 'document', {

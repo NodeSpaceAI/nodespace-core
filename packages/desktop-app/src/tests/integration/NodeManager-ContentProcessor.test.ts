@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { NodeManager, type NodeManagerEvents } from '../../lib/services/NodeManager';
+import { NodeManager, type NodeManagerEvents } from '../../lib/services/nodeManager';
 
 describe('NodeManager + ContentProcessor Integration', () => {
   let nodeManager: NodeManager;

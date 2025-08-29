@@ -7,14 +7,14 @@
 -->
 
 <script lang="ts">
-  import TextNode from '$lib/components/TextNode.svelte';
+  import TextNode from '$lib/components/text-node.svelte';
   import Icon from '$lib/design/icons';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
-  import { ReactiveNodeManager } from '$lib/services/ReactiveNodeManager';
-  import { type NodeManagerEvents } from '$lib/services/NodeManager';
-  import { demoNodes } from './DemoData';
+  import { ReactiveNodeManager } from '$lib/services/reactiveNodeManager';
+  import { type NodeManagerEvents } from '$lib/services/nodeManager';
+  import { demoNodes } from './demoData';
   import { visibleNodes as storeVisibleNodes } from '$lib/services/nodeStore';
-  import NodeServiceContext from '$lib/contexts/NodeServiceContext.svelte';
+  import NodeServiceContext from '$lib/contexts/node-service-context.svelte';
 
   // Demo data imported from external file
 
@@ -663,9 +663,9 @@
     display: none; /* Hide spacer since chevron doesn't affect layout flow */
   }
 
-  /* UPDATED: CSS-first positioning to match BaseNode.svelte implementation */
+  /* UPDATED: CSS-first positioning to match base-node.svelte implementation */
   .node-content-wrapper {
-    /* Default values for normal text - matches BaseNode.svelte exactly */
+    /* Default values for normal text - matches base-node.svelte exactly */
     --line-height: 1.6;
     --font-size: 1rem;
     --line-height-px: calc(var(--font-size) * var(--line-height));

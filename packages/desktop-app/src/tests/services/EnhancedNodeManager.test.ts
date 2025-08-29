@@ -13,9 +13,9 @@
  */
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { EnhancedNodeManager } from '$lib/services/EnhancedNodeManager';
-import type { NodeManagerEvents } from '$lib/services/NodeManager';
-import { eventBus } from '$lib/services/EventBus';
+import { EnhancedNodeManager } from '$lib/services/enhancedNodeManager';
+import type { NodeManagerEvents } from '$lib/services/nodeManager';
+import { eventBus } from '$lib/services/eventBus';
 
 // Test helper interfaces
 interface TestHierarchyNode {
@@ -480,10 +480,10 @@ describe('EnhancedNodeManager', () => {
       const debugEvents = recentEvents.filter(
         (e) =>
           e.type === 'debug:log' &&
-          (e as import('../../lib/services/EventTypes').DebugEvent).message?.includes(
+          (e as import('../../lib/services/eventTypes').DebugEvent).message?.includes(
             'Bulk operation'
           )
-      ) as import('../../lib/services/EventTypes').DebugEvent[];
+      ) as import('../../lib/services/eventTypes').DebugEvent[];
 
       expect(debugEvents.length).toBeGreaterThan(0);
       expect(debugEvents[0].message).toContain('2 success');
@@ -728,7 +728,7 @@ describe('EnhancedNodeManager', () => {
       expect(analysis1).toBeTruthy();
 
       // Emit node updated event
-      eventBus.emit<import('../../lib/services/EventTypes').NodeUpdatedEvent>({
+      eventBus.emit<import('../../lib/services/eventTypes').NodeUpdatedEvent>({
         type: 'node:updated',
         namespace: 'lifecycle',
         source: 'test',
@@ -761,7 +761,7 @@ describe('EnhancedNodeManager', () => {
       enhancedNodeManager.analyzeNode('parent');
 
       // Emit hierarchy change event
-      eventBus.emit<import('../../lib/services/EventTypes').HierarchyChangedEvent>({
+      eventBus.emit<import('../../lib/services/eventTypes').HierarchyChangedEvent>({
         type: 'hierarchy:changed',
         namespace: 'lifecycle',
         source: 'test',
@@ -785,7 +785,7 @@ describe('EnhancedNodeManager', () => {
       enhancedNodeManager.analyzeNode('to-delete');
 
       // Emit node deleted event
-      eventBus.emit<import('../../lib/services/EventTypes').NodeDeletedEvent>({
+      eventBus.emit<import('../../lib/services/eventTypes').NodeDeletedEvent>({
         type: 'node:deleted',
         namespace: 'lifecycle',
         source: 'test',

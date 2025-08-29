@@ -5,8 +5,8 @@
  * Uses writable stores for proper reactivity outside of .svelte components.
  */
 
-import { NodeManager, type NodeManagerEvents, type Node } from './NodeManager';
-import { eventBus } from './EventBus';
+import { NodeManager, type NodeManagerEvents, type Node } from './nodeManager';
+import { eventBus } from './eventBus';
 import { nodes, rootNodeIds } from './nodeStore';
 
 export class ReactiveNodeManager extends NodeManager {
@@ -194,8 +194,8 @@ export class ReactiveNodeManager extends NodeManager {
    * Type guard to check if an event has a nodeId property
    */
   private hasNodeId(
-    event: import('./EventTypes').NodeSpaceEvent
-  ): event is import('./EventTypes').NodeSpaceEvent & { nodeId: string } {
+    event: import('./eventTypes').NodeSpaceEvent
+  ): event is import('./eventTypes').NodeSpaceEvent & { nodeId: string } {
     return (
       'nodeId' in event && typeof (event as unknown as { nodeId: unknown }).nodeId === 'string'
     );

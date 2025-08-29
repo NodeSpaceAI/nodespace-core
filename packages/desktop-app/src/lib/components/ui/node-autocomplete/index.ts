@@ -1,4 +1,4 @@
-export { default as NodeAutocomplete } from './NodeAutocomplete.svelte';
+export { default as NodeAutocomplete } from './node-autocomplete.svelte';
 
 export interface NodeResult {
   id: string;

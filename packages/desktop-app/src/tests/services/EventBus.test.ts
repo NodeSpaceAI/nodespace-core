@@ -10,12 +10,12 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { EventBus } from '../../lib/services/EventBus';
+import { EventBus } from '../../lib/services/eventBus';
 import type {
   NodeStatusChangedEvent,
   EventFilter,
   DecorationClickedEvent
-} from '../../lib/services/EventTypes';
+} from '../../lib/services/eventTypes';
 
 // Helper functions for creating typed test events
 const createNodeStatusEvent = (

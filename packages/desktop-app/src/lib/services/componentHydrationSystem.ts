@@ -7,9 +7,9 @@
  */
 
 import type { SvelteComponent } from 'svelte';
-import type { ComponentDecoration } from '../types/ComponentDecoration';
+import type { ComponentDecoration } from '../types/componentDecoration';
 import { NODE_REFERENCE_COMPONENTS, getNodeReferenceComponent } from '../components/references';
-import { performanceTracker } from './PerformanceTracker';
+import { performanceTracker } from './performanceTracker';
 
 export interface HydrationContext {
   /** Target container element containing placeholders */

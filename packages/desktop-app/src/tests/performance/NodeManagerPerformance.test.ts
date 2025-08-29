@@ -4,8 +4,8 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { NodeManager } from '../../lib/services/NodeManager';
-import type { NodeManagerEvents } from '../../lib/services/NodeManager';
+import { NodeManager } from '../../lib/services/nodeManager';
+import type { NodeManagerEvents } from '../../lib/services/nodeManager';
 
 describe('NodeManager Performance Tests', () => {
   let nodeManager: NodeManager;

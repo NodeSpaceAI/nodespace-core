@@ -11,12 +11,12 @@
  */
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { NodeManager, type NodeManagerEvents } from '$lib/services/NodeManager';
-import { HierarchyService } from '$lib/services/HierarchyService';
-import { NodeOperationsService } from '$lib/services/NodeOperationsService';
+import { NodeManager, type NodeManagerEvents } from '$lib/services/nodeManager';
+import { HierarchyService } from '$lib/services/hierarchyService';
+import { NodeOperationsService } from '$lib/services/nodeOperationsService';
 import { ContentProcessor } from '$lib/services/contentProcessor';
-import { eventBus } from '$lib/services/EventBus';
-import type { NodeSpaceNode } from '$lib/services/MockDatabaseService';
+import { eventBus } from '$lib/services/eventBus';
+import type { NodeSpaceNode } from '$lib/services/mockDatabaseService';
 
 describe('NodeOperationsService', () => {
   let nodeManager: NodeManager;
@@ -537,7 +537,7 @@ const x = 42;
       }
 
       // Simulate content update that should trigger mention processing
-      eventBus.emit<import('../../lib/services/EventTypes').NodeUpdatedEvent>({
+      eventBus.emit<import('../../lib/services/eventTypes').NodeUpdatedEvent>({
         type: 'node:updated',
         namespace: 'lifecycle',
         source: 'test',

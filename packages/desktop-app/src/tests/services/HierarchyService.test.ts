@@ -11,9 +11,9 @@
  */
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { NodeManager, type NodeManagerEvents } from '$lib/services/NodeManager';
-import { HierarchyService } from '$lib/services/HierarchyService';
-import { eventBus } from '$lib/services/EventBus';
+import { NodeManager, type NodeManagerEvents } from '$lib/services/nodeManager';
+import { HierarchyService } from '$lib/services/hierarchyService';
+import { eventBus } from '$lib/services/eventBus';
 
 // Test helper interfaces
 interface TestHierarchyNode {
@@ -555,7 +555,7 @@ describe('HierarchyService', () => {
       void initialCacheSize; // Used for cache size verification
 
       // Emit hierarchy update event
-      eventBus.emit<import('../../lib/services/EventTypes').NodeUpdatedEvent>({
+      eventBus.emit<import('../../lib/services/eventTypes').NodeUpdatedEvent>({
         type: 'node:updated',
         namespace: 'lifecycle',
         source: 'test',
@@ -587,7 +587,7 @@ describe('HierarchyService', () => {
       hierarchyService.getNodeDepth('node2');
 
       // Emit hierarchy changed event
-      eventBus.emit<import('../../lib/services/EventTypes').HierarchyChangedEvent>({
+      eventBus.emit<import('../../lib/services/eventTypes').HierarchyChangedEvent>({
         type: 'hierarchy:changed',
         namespace: 'lifecycle',
         source: 'test',

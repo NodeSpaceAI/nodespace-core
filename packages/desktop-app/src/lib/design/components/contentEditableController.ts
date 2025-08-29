@@ -6,7 +6,7 @@
  */
 
 import ContentProcessor from '$lib/services/contentProcessor';
-import type { TriggerContext } from '$lib/services/NodeReferenceService';
+import type { TriggerContext } from '$lib/services/nodeReferenceService';
 import { markdownToHtml, htmlToMarkdown } from '$lib/utils/markedConfig';
 
 export interface ContentEditableEvents {

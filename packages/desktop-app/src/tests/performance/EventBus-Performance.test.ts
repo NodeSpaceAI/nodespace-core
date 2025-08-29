@@ -10,13 +10,13 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { EventBus } from '../../lib/services/EventBus';
+import { EventBus } from '../../lib/services/eventBus';
 import type {
   NodeStatusChangedEvent,
   DecorationClickedEvent,
   NodeUpdatedEvent,
   CacheInvalidateEvent
-} from '../../lib/services/EventTypes';
+} from '../../lib/services/eventTypes';
 
 describe('EventBus Performance', () => {
   let eventBus: EventBus;

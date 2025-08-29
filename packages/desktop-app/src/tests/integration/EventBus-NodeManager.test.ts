@@ -9,10 +9,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { NodeManager } from '../../lib/services/NodeManager';
-import { eventBus } from '../../lib/services/EventBus';
-import type { NodeManagerEvents } from '../../lib/services/NodeManager';
-import type { NodeSpaceEvent } from '../../lib/services/EventTypes';
+import { NodeManager } from '../../lib/services/nodeManager';
+import { eventBus } from '../../lib/services/eventBus';
+import type { NodeManagerEvents } from '../../lib/services/nodeManager';
+import type { NodeSpaceEvent } from '../../lib/services/eventTypes';
 
 describe('EventBus-NodeManager Integration', () => {
   let nodeManager: NodeManager;

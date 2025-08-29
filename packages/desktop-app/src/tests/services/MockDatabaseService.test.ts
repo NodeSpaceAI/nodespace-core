@@ -13,7 +13,7 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { MockDatabaseService, type NodeSpaceNode } from '$lib/services/MockDatabaseService';
+import { MockDatabaseService, type NodeSpaceNode } from '$lib/services/mockDatabaseService';
 
 describe('MockDatabaseService', () => {
   let db: MockDatabaseService;

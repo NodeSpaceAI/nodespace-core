@@ -14,12 +14,12 @@
  * - Seamless integration with existing EventBus patterns
  */
 
-import { NodeManager, type NodeManagerEvents, type Node } from './NodeManager';
-import { HierarchyService } from './HierarchyService';
-import { NodeOperationsService } from './NodeOperationsService';
+import { NodeManager, type NodeManagerEvents, type Node } from './nodeManager';
+import { HierarchyService } from './hierarchyService';
+import { NodeOperationsService } from './nodeOperationsService';
 import { ContentProcessor } from './contentProcessor';
-import { eventBus } from './EventBus';
-// import type { NodeSpaceNode } from './MockDatabaseService';
+import { eventBus } from './eventBus';
+// import type { NodeSpaceNode } from './mockDatabaseService';
 
 // ============================================================================
 // Enhanced Types
@@ -263,7 +263,7 @@ export class EnhancedNodeManager extends NodeManager {
     });
 
     // Emit events
-    const nodeUpdatedEvent: Omit<import('./EventTypes').NodeUpdatedEvent, 'timestamp'> = {
+    const nodeUpdatedEvent: Omit<import('./eventTypes').NodeUpdatedEvent, 'timestamp'> = {
       type: 'node:updated',
       namespace: 'lifecycle',
       source: this.serviceName,
@@ -424,7 +424,7 @@ export class EnhancedNodeManager extends NodeManager {
     result.operationTime = performance.now() - startTime;
 
     // Emit bulk operation event
-    const debugEvent: Omit<import('./EventTypes').DebugEvent, 'timestamp'> = {
+    const debugEvent: Omit<import('./eventTypes').DebugEvent, 'timestamp'> = {
       type: 'debug:log',
       namespace: 'debug',
       source: this.serviceName,
@@ -729,12 +729,12 @@ export class EnhancedNodeManager extends NodeManager {
   private setupEnhancedEventBusIntegration(): void {
     // Listen for events that should invalidate analysis cache
     eventBus.subscribe('node:updated', (event) => {
-      const nodeEvent = event as import('./EventTypes').NodeUpdatedEvent;
+      const nodeEvent = event as import('./eventTypes').NodeUpdatedEvent;
       this.invalidateAnalysisCache(nodeEvent.nodeId);
     });
 
     eventBus.subscribe('hierarchy:changed', (event) => {
-      const hierarchyEvent = event as import('./EventTypes').HierarchyChangedEvent;
+      const hierarchyEvent = event as import('./eventTypes').HierarchyChangedEvent;
 
       // Invalidate analysis cache for affected nodes
       for (const nodeId of hierarchyEvent.affectedNodes) {
@@ -743,7 +743,7 @@ export class EnhancedNodeManager extends NodeManager {
     });
 
     eventBus.subscribe('node:deleted', (event) => {
-      const nodeEvent = event as import('./EventTypes').NodeDeletedEvent;
+      const nodeEvent = event as import('./eventTypes').NodeDeletedEvent;
       this.analysisCache.delete(nodeEvent.nodeId);
     });
   }

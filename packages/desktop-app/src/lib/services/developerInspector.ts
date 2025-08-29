@@ -7,7 +7,7 @@
 
 // ComponentDecoration import removed - not used
 // componentHydrationSystem import removed - not used
-import { performanceTracker } from './PerformanceTracker';
+import { performanceTracker } from './performanceTracker';
 
 export interface ComponentInspectionResult {
   placeholder: HTMLElement;

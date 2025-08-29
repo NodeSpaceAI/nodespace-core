@@ -6,8 +6,8 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { ReactiveNodeManager } from '$lib/services/ReactiveNodeManager';
-import type { NodeManagerEvents } from '$lib/services/NodeManager';
+import { ReactiveNodeManager } from '$lib/services/reactiveNodeManager';
+import type { NodeManagerEvents } from '$lib/services/nodeManager';
 
 describe('ReactiveNodeManager - Reactive State Synchronization', () => {
   let nodeManager: ReactiveNodeManager;

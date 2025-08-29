@@ -13,11 +13,11 @@
  */
 
 import { stripMarkdown, validateMarkdown } from './markdownUtils.js';
-import { eventBus } from './EventBus';
-import type { NodeReferenceService, NodeReference, NodespaceLink } from './NodeReferenceService';
-import { NodeDecoratorFactory } from './BaseNodeDecoration';
-import type { DecorationContext } from './BaseNodeDecoration';
-import type { ComponentDecoration } from '../types/ComponentDecoration';
+import { eventBus } from './eventBus';
+import type { NodeReferenceService, NodeReference, NodespaceLink } from './nodeReferenceService';
+import { NodeDecoratorFactory } from './baseNodeDecoration';
+import type { DecorationContext } from './baseNodeDecoration';
+import type { ComponentDecoration } from '../types/componentDecoration';
 
 // ============================================================================
 // Core AST Types for Dual-Representation
@@ -182,7 +182,7 @@ export class ContentProcessor {
     // Listen for references update needed events
     eventBus.subscribe('references:update-needed', (event) => {
       // Type assertion for specific event type
-      const refEvent = event as import('./EventTypes').ReferencesUpdateNeededEvent;
+      const refEvent = event as import('./eventTypes').ReferencesUpdateNeededEvent;
       if (refEvent.updateType === 'content' || refEvent.updateType === 'deletion') {
         // When content changes or nodes are deleted, we might need to update references
         this.emitCacheInvalidate('node', refEvent.nodeId, 'reference content changed');
@@ -194,7 +194,7 @@ export class ContentProcessor {
 
     // Listen for node updates to invalidate reference cache
     eventBus.subscribe('node:updated', (event) => {
-      const nodeEvent = event as import('./EventTypes').NodeUpdatedEvent;
+      const nodeEvent = event as import('./eventTypes').NodeUpdatedEvent;
       if (nodeEvent.updateType === 'content') {
         this.invalidateReferenceCache(nodeEvent.nodeId);
       }
@@ -202,7 +202,7 @@ export class ContentProcessor {
 
     // Listen for node deletion to clean up references
     eventBus.subscribe('node:deleted', (event) => {
-      const nodeEvent = event as import('./EventTypes').NodeDeletedEvent;
+      const nodeEvent = event as import('./eventTypes').NodeDeletedEvent;
       this.invalidateReferenceCache(nodeEvent.nodeId);
     });
   }
@@ -1138,7 +1138,7 @@ export class ContentProcessor {
 
       // Emit reference resolution event
       if (sourceNodeId) {
-        const resolutionEvent: Omit<import('./EventTypes').ReferenceResolutionEvent, 'timestamp'> =
+        const resolutionEvent: Omit<import('./eventTypes').ReferenceResolutionEvent, 'timestamp'> =
           {
             type: 'reference:resolved',
             namespace: 'coordination',
@@ -1232,7 +1232,7 @@ export class ContentProcessor {
     nodeId?: string,
     reason?: string
   ): void {
-    const cacheEvent: import('./EventTypes').CacheInvalidateEvent = {
+    const cacheEvent: import('./eventTypes').CacheInvalidateEvent = {
       type: 'cache:invalidate',
       namespace: 'coordination',
       source: this.serviceName,
@@ -1254,7 +1254,7 @@ export class ContentProcessor {
 
     // Emit events for detected wikilinks (Phase 2+ preparation)
     for (const wikiLink of prepared.wikiLinks) {
-      const backlinkEvent: import('./EventTypes').BacklinkDetectedEvent = {
+      const backlinkEvent: import('./eventTypes').BacklinkDetectedEvent = {
         type: 'backlink:detected',
         namespace: 'phase2',
         source: this.serviceName,
@@ -1276,7 +1276,7 @@ export class ContentProcessor {
     const nodespaceLinks = this.detectNodespaceURIs(content);
     for (const nodeLink of nodespaceLinks) {
       // Emit backlink detected event
-      const backlinkEvent: import('./EventTypes').BacklinkDetectedEvent = {
+      const backlinkEvent: import('./eventTypes').BacklinkDetectedEvent = {
         type: 'backlink:detected',
         namespace: 'phase2',
         source: this.serviceName,
@@ -1295,7 +1295,7 @@ export class ContentProcessor {
       eventBus.emit(backlinkEvent);
 
       // Emit reference resolution event
-      const resolutionEvent: Omit<import('./EventTypes').ReferenceResolutionEvent, 'timestamp'> = {
+      const resolutionEvent: Omit<import('./eventTypes').ReferenceResolutionEvent, 'timestamp'> = {
         type: 'reference:resolved',
         namespace: 'coordination',
         source: this.serviceName,

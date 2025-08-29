@@ -36,11 +36,11 @@
   import { onMount } from 'svelte';
 
   // Service imports
-  import NodeReferenceService from '$lib/services/NodeReferenceService';
-  import { EnhancedNodeManager } from '$lib/services/EnhancedNodeManager';
-  import { HierarchyService } from '$lib/services/HierarchyService';
-  import { NodeOperationsService } from '$lib/services/NodeOperationsService';
-  import { MockDatabaseService } from '$lib/services/MockDatabaseService';
+  import NodeReferenceService from '$lib/services/nodeReferenceService';
+  import { EnhancedNodeManager } from '$lib/services/enhancedNodeManager';
+  import { HierarchyService } from '$lib/services/hierarchyService';
+  import { NodeOperationsService } from '$lib/services/nodeOperationsService';
+  import { MockDatabaseService } from '$lib/services/mockDatabaseService';
   import { ContentProcessor } from '$lib/services/contentProcessor';
 
   // Props - external reference only for service configuration
@@ -75,17 +75,17 @@
 
       const nodeManager = new EnhancedNodeManager(nodeManagerEvents);
       const hierarchyService = new HierarchyService(
-        nodeManager as unknown as import('$lib/services/NodeManager').NodeManager
+        nodeManager as unknown as import('$lib/services/nodeManager').NodeManager
       );
       const contentProcessor = ContentProcessor.getInstance();
       const nodeOperationsService = new NodeOperationsService(
-        nodeManager as unknown as import('$lib/services/NodeManager').NodeManager,
+        nodeManager as unknown as import('$lib/services/nodeManager').NodeManager,
         hierarchyService,
         contentProcessor
       );
 
       const nodeReferenceService = new NodeReferenceService(
-        nodeManager as unknown as import('$lib/services/NodeManager').NodeManager,
+        nodeManager as unknown as import('$lib/services/nodeManager').NodeManager,
         hierarchyService,
         nodeOperationsService,
         databaseService,

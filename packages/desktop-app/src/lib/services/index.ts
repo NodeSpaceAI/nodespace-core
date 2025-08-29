@@ -8,29 +8,29 @@
 // ============================================================================
 // Core Database and Storage
 // ============================================================================
-export * from './MockDatabaseService';
+export * from './mockDatabaseService';
 
 // ============================================================================
 // Node Management
 // ============================================================================
-export * from './NodeManager';
-export * from './EnhancedNodeManager';
-export * from './NodeOperationsService';
-export * from './HierarchyService';
+export * from './nodeManager';
+export * from './enhancedNodeManager';
+export * from './nodeOperationsService';
+export * from './hierarchyService';
 
 // ============================================================================
 // Event System and Coordination
 // ============================================================================
-export * from './EventBus';
-export * from './EventTypes';
-export * from './CacheCoordinator';
-export * from './DecorationCoordinator';
+export * from './eventBus';
+export * from './eventTypes';
+export * from './cacheCoordinator';
+export * from './decorationCoordinator';
 
 // ============================================================================
 // Node Reference System - Phase 2.1 & 2.2
 // ============================================================================
-export * from './NodeReferenceService';
-export * from './BaseNodeDecoration';
+export * from './nodeReferenceService';
+export * from './baseNodeDecoration';
 
 // ============================================================================
 // Content Processing
@@ -43,7 +43,7 @@ export * from './wysiwygProcessor';
 // ============================================================================
 // Performance and Monitoring
 // ============================================================================
-export * from './PerformanceMonitor';
+export * from './performanceMonitor';
 
 // ============================================================================
 // Legacy and Utilities

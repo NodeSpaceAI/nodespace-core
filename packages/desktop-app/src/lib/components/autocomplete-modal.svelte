@@ -16,7 +16,7 @@
 -->
 
 <script context="module" lang="ts">
-  import type { NodeReferenceService } from '$lib/services/NodeReferenceService';
+  import type { NodeReferenceService } from '$lib/services/nodeReferenceService';
 
   export interface AutocompleteModalProps {
     visible: boolean;
@@ -38,8 +38,8 @@
   import Button from '$lib/components/ui/button/button.svelte';
   import Badge from '$lib/components/ui/badge/badge.svelte';
   import Separator from '$lib/components/ui/separator/separator.svelte';
-  import type { AutocompleteResult, NodeSuggestion } from '$lib/services/NodeReferenceService';
-  import type { NodeSpaceNode } from '$lib/services/MockDatabaseService';
+  import type { AutocompleteResult, NodeSuggestion } from '$lib/services/nodeReferenceService';
+  import type { NodeSpaceNode } from '$lib/services/mockDatabaseService';
 
   // ============================================================================
   // Component Props & Types

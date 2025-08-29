@@ -8,7 +8,7 @@ import { JSDOM } from 'jsdom';
 import {
   ContentEditableController,
   type ContentEditableEvents
-} from '$lib/design/components/ContentEditableController.js';
+} from '$lib/design/components/contentEditableController.js';
 
 // Setup DOM environment for this test file
 const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>');

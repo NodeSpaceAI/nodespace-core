@@ -357,7 +357,7 @@ console.log(`   ✅ BaseNode API compatibility: Integration maintains existing i
 
 console.log('\n🔧 Implementation Summary:');
 console.log('   • MockTextElement.svelte: Character-level span mapping ✅');
-console.log('   • CursorPositioning.ts: Coordinate-to-character utilities ✅');
+console.log('   • cursorPositioning.ts: Coordinate-to-character utilities ✅');
 console.log('   • BaseNode integration: Replaces binary search ✅');
 console.log('   • Performance optimized: < 50ms positioning ✅');
 console.log('   • Unicode compliant: Grapheme cluster support ✅');

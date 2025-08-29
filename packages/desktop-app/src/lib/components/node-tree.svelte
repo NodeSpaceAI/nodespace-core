@@ -7,7 +7,7 @@
 
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import TextNode from './TextNode.svelte';
+  import TextNode from './text-node.svelte';
   import type { TreeNodeData } from '$lib/types/tree';
 
   // Props
@@ -140,7 +140,7 @@
   .ns-node-tree {
     width: 100%;
     min-height: 200px;
-    /* Base correction factor - exactly matches BaseNode.svelte for consistent circle/chevron alignment */
+    /* Base correction factor - exactly matches base-node.svelte for consistent circle/chevron alignment */
     --baseline-correction: -0.06375em;
   }
 
@@ -252,7 +252,7 @@
     }
   }
 
-  /* Header-level text-visual-center definitions - exactly matches BaseNode.svelte for perfect chevron alignment */
+  /* Header-level text-visual-center definitions - exactly matches base-node.svelte for perfect chevron alignment */
   .ns-node-tree :global(.node--h1) {
     --text-visual-center: calc(1.2em + var(--baseline-correction) + 0.053125em);
   }

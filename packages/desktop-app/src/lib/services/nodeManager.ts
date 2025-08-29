@@ -14,8 +14,8 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { ContentProcessor } from './contentProcessor';
-import { eventBus } from './EventBus';
-import type { NodeStatus } from './EventTypes';
+import { eventBus } from './eventBus';
+import type { NodeStatus } from './eventTypes';
 
 export interface Node {
   id: string;
@@ -75,7 +75,7 @@ export class NodeManager {
   private setupEventBusIntegration(): void {
     // Listen for cache invalidation events that might affect nodes
     eventBus.subscribe('cache:invalidate', (event) => {
-      const cacheEvent = event as import('./EventTypes').CacheInvalidateEvent;
+      const cacheEvent = event as import('./eventTypes').CacheInvalidateEvent;
       if (cacheEvent.scope === 'node' && cacheEvent.nodeId) {
         // Node-specific cache invalidation - might need to refresh decorations
         this.emitNodeStatusChanged(cacheEvent.nodeId, 'processing', 'cache invalidation');
@@ -89,7 +89,7 @@ export class NodeManager {
 
     // Listen for reference resolution events
     eventBus.subscribe('reference:resolved', (event) => {
-      const refEvent = event as import('./EventTypes').ReferenceResolutionEvent;
+      const refEvent = event as import('./eventTypes').ReferenceResolutionEvent;
       // When a reference is resolved, update any decorations that might be affected
       this.emitDecorationUpdateNeeded(refEvent.nodeId, 'reference-updated');
     });
@@ -436,7 +436,7 @@ export class NodeManager {
     }
 
     // Emit EventBus events for dynamic coordination
-    const nodeCreatedEvent: Omit<import('./EventTypes').NodeCreatedEvent, 'timestamp'> = {
+    const nodeCreatedEvent: Omit<import('./eventTypes').NodeCreatedEvent, 'timestamp'> = {
       type: 'node:created',
       namespace: 'lifecycle',
       source: this.serviceName,
@@ -447,7 +447,7 @@ export class NodeManager {
     };
     eventBus.emit(nodeCreatedEvent);
 
-    const hierarchyChangedEvent: Omit<import('./EventTypes').HierarchyChangedEvent, 'timestamp'> = {
+    const hierarchyChangedEvent: Omit<import('./eventTypes').HierarchyChangedEvent, 'timestamp'> = {
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: this.serviceName,
@@ -488,7 +488,7 @@ export class NodeManager {
       node.content = content;
 
       // Emit EventBus events for dynamic coordination
-      const nodeUpdatedEvent: Omit<import('./EventTypes').NodeUpdatedEvent, 'timestamp'> = {
+      const nodeUpdatedEvent: Omit<import('./eventTypes').NodeUpdatedEvent, 'timestamp'> = {
         type: 'node:updated',
         namespace: 'lifecycle',
         source: this.serviceName,
@@ -551,7 +551,7 @@ export class NodeManager {
     deleteRecursive(nodeId);
 
     // Emit EventBus events for dynamic coordination
-    const nodeDeletedEvent: Omit<import('./EventTypes').NodeDeletedEvent, 'timestamp'> = {
+    const nodeDeletedEvent: Omit<import('./eventTypes').NodeDeletedEvent, 'timestamp'> = {
       type: 'node:deleted',
       namespace: 'lifecycle',
       source: this.serviceName,
@@ -561,7 +561,7 @@ export class NodeManager {
     };
     eventBus.emit(nodeDeletedEvent);
 
-    const hierarchyDeletedEvent: Omit<import('./EventTypes').HierarchyChangedEvent, 'timestamp'> = {
+    const hierarchyDeletedEvent: Omit<import('./eventTypes').HierarchyChangedEvent, 'timestamp'> = {
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: this.serviceName,
@@ -625,7 +625,7 @@ export class NodeManager {
     this.updateDescendantDepths(nodeId);
 
     // Emit EventBus events for dynamic coordination
-    const indentEvent: Omit<import('./EventTypes').HierarchyChangedEvent, 'timestamp'> = {
+    const indentEvent: Omit<import('./eventTypes').HierarchyChangedEvent, 'timestamp'> = {
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: this.serviceName,
@@ -677,7 +677,7 @@ export class NodeManager {
     this.updateDescendantDepths(nodeId);
 
     // Emit EventBus events for dynamic coordination
-    const outdentEvent: Omit<import('./EventTypes').HierarchyChangedEvent, 'timestamp'> = {
+    const outdentEvent: Omit<import('./eventTypes').HierarchyChangedEvent, 'timestamp'> = {
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: this.serviceName,
@@ -715,7 +715,7 @@ export class NodeManager {
     // Emit EventBus events for dynamic coordination
     this.emitNodeStatusChanged(nodeId, node.expanded ? 'expanded' : 'collapsed', 'toggle expanded');
 
-    const expandCollapseEvent: Omit<import('./EventTypes').HierarchyChangedEvent, 'timestamp'> = {
+    const expandCollapseEvent: Omit<import('./eventTypes').HierarchyChangedEvent, 'timestamp'> = {
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: this.serviceName,
@@ -1005,7 +1005,7 @@ export class NodeManager {
    * Emit node status changed event
    */
   private emitNodeStatusChanged(nodeId: string, status: NodeStatus, reason: string): void {
-    const statusEvent: Omit<import('./EventTypes').NodeStatusChangedEvent, 'timestamp'> = {
+    const statusEvent: Omit<import('./eventTypes').NodeStatusChangedEvent, 'timestamp'> = {
       type: 'node:status-changed',
       namespace: 'coordination',
       source: this.serviceName,
@@ -1024,7 +1024,7 @@ export class NodeManager {
     reason: 'content-changed' | 'status-changed' | 'reference-updated' | 'cache-invalidated'
   ): void {
     const decorationUpdateEvent: Omit<
-      import('./EventTypes').DecorationUpdateNeededEvent,
+      import('./eventTypes').DecorationUpdateNeededEvent,
       'timestamp'
     > = {
       type: 'decoration:update-needed',
@@ -1045,7 +1045,7 @@ export class NodeManager {
     updateType: 'content' | 'status' | 'hierarchy' | 'deletion'
   ): void {
     const referencesUpdateEvent: Omit<
-      import('./EventTypes').ReferencesUpdateNeededEvent,
+      import('./eventTypes').ReferencesUpdateNeededEvent,
       'timestamp'
     > = {
       type: 'references:update-needed',
@@ -1065,7 +1065,7 @@ export class NodeManager {
     nodeId?: string,
     reason?: string
   ): void {
-    const cacheEvent: Omit<import('./EventTypes').CacheInvalidateEvent, 'timestamp'> = {
+    const cacheEvent: Omit<import('./eventTypes').CacheInvalidateEvent, 'timestamp'> = {
       type: 'cache:invalidate',
       namespace: 'coordination',
       source: this.serviceName,
@@ -1085,7 +1085,7 @@ export class NodeManager {
     position?: number,
     reason: string = 'programmatic'
   ): void {
-    const focusEvent: Omit<import('./EventTypes').FocusRequestedEvent, 'timestamp'> = {
+    const focusEvent: Omit<import('./eventTypes').FocusRequestedEvent, 'timestamp'> = {
       type: 'focus:requested',
       namespace: 'navigation',
       source: this.serviceName,
