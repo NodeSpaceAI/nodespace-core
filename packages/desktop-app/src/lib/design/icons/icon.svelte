@@ -6,16 +6,16 @@
 <script lang="ts">
   import { textIcon } from './ui/text';
   import { circleIcon } from './ui/circle';
-  import { circleRingIcon } from './ui/circle-ring';
-  import { chevronRightIcon } from './ui/chevron-right';
+  import { circleRingIcon } from './ui/circleRing';
+  import { chevronRightIcon } from './ui/chevronRight';
   import type { IconName } from './types.js';
 
   // Icon registry mapping names to SVG paths
   const iconRegistry: Record<IconName, string> = {
     text: textIcon,
     circle: circleIcon,
-    'circle-ring': circleRingIcon,
-    'chevron-right': chevronRightIcon
+    'circleRing': circleRingIcon,
+    'chevronRight': chevronRightIcon
   };
 
   // Component props
@@ -43,7 +43,7 @@
 <svg
   width={size}
   height={size}
-  viewBox={name === 'circle' || name === 'circle-ring' || name === 'chevron-right'
+  viewBox={name === 'circle' || name === 'circleRing' || name === 'chevronRight'
     ? '0 0 16 16'
     : '0 -960 960 960'}
   fill={color}
@@ -58,13 +58,13 @@
       <circle cx="8" cy="8" r="8" fill={color} opacity="0" />
       <!-- Inner circle: 11px diameter (r=5.5) -->
       <circle cx="8" cy="8" r="5.5" fill={color} />
-    {:else if name === 'circle-ring'}
+    {:else if name === 'circleRing'}
       <!-- Layered circles: 16px parent ring + 11px inner circle -->
       <!-- Background ring: 16px diameter filled area -->
       <circle cx="8" cy="8" r="8" fill={color} opacity="0.5" />
       <!-- Inner circle: 11px diameter (r=5.5) -->
       <circle cx="8" cy="8" r="5.5" fill={color} />
-    {:else if name === 'chevron-right'}
+    {:else if name === 'chevronRight'}
       <!-- Chevron right: 16x16 viewBox, points right by default -->
       <path d={iconPath} fill={color} />
     {:else}

@@ -267,7 +267,7 @@
   );
 
   // Icon for node type
-  const icon = $derived((children.length > 0 ? 'circle-ring' : 'circle') as IconName);
+  const icon = $derived((children.length > 0 ? 'circleRing' : 'circle') as IconName);
   const nodeColor = $derived(`hsl(var(--node-${nodeType}, var(--node-text)))`);
 </script>
 

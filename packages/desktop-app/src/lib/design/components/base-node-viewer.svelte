@@ -548,7 +548,7 @@
               onclick={() => handleToggleExpanded(node.id)}
               aria-label={node.expanded ? 'Collapse' : 'Expand'}
             >
-              <Icon name="chevron-right" size={16} color={getNodeColor(node.nodeType)} />
+              <Icon name="chevronRight" size={16} color={getNodeColor(node.nodeType)} />
             </button>
           {:else}
             <!-- Spacer for nodes without children to maintain alignment -->

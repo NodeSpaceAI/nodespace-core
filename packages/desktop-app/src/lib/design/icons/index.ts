@@ -24,15 +24,15 @@ export type { IconName } from './types';
 // Export individual icon paths for direct usage if needed
 export { textIcon } from './ui/text';
 export { circleIcon } from './ui/circle';
-export { circleRingIcon } from './ui/circle-ring';
-export { chevronRightIcon } from './ui/chevron-right';
+export { circleRingIcon } from './ui/circleRing';
+export { chevronRightIcon } from './ui/chevronRight';
 
 /**
  * Available Icons:
  * - text: Document with pencil icon for text content and editing
  * - circle: Simple filled circle for node indicators
- * - circle-ring: Circle with ring for parent node indicators
- * - chevron-right: Right-pointing chevron for collapse/expand controls
+ * - circleRing: Circle with ring for parent node indicators
+ * - chevronRight: Right-pointing chevron for collapse/expand controls
  *
  * Future icons will be added to ./ui/ directory and exported here.
  */

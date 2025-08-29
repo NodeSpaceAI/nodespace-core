@@ -1,7 +1,7 @@
 /**
  * Simple mock node data for testing
  */
-import type { MockNodeData } from '../utils/testUtils';
+import type { MockNodeData } from '../utils/test-utils';
 
 export const sampleTextNode: MockNodeData = {
   id: 'sample-text-1',

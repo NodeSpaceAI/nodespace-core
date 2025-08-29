@@ -4,6 +4,7 @@ import tsParser from '@typescript-eslint/parser';
 import svelte from 'eslint-plugin-svelte';
 import svelteParser from 'svelte-eslint-parser';
 import oxlint from 'eslint-plugin-oxlint';
+import unicorn from 'eslint-plugin-unicorn';
 
 export default [
   js.configs.recommended,
@@ -63,7 +64,8 @@ export default [
     },
     plugins: {
       '@typescript-eslint': ts,
-      oxlint
+      oxlint,
+      unicorn
     },
     rules: {
       ...oxlint.configs.recommended.rules,
@@ -71,7 +73,20 @@ export default [
       // Customize rules as needed
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
-      'no-console': process.env.NODE_ENV === 'production' ? 'error' : 'off'
+      'no-console': process.env.NODE_ENV === 'production' ? 'error' : 'off',
+      // File naming conventions for TypeScript files
+      'unicorn/filename-case': ['error', {
+        cases: {
+          camelCase: true
+        },
+        ignore: [
+          // Ignore index files and files with specific patterns
+          'index\\.ts$',
+          '\\.d\\.ts$',
+          '\\.test\\.ts$',
+          '\\.spec\\.ts$'
+        ]
+      }]
     }
   },
   {
@@ -98,14 +113,21 @@ export default [
     },
     plugins: {
       '@typescript-eslint': ts,
-      oxlint
+      oxlint,
+      unicorn
     },
     rules: {
       ...oxlint.configs.recommended.rules,
       ...ts.configs.recommended.rules,
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
-      'no-console': process.env.NODE_ENV === 'production' ? 'error' : 'off'
+      'no-console': process.env.NODE_ENV === 'production' ? 'error' : 'off',
+      // File naming conventions for Svelte TypeScript files (camelCase)
+      'unicorn/filename-case': ['error', {
+        cases: {
+          camelCase: true
+        }
+      }]
     }
   },
   {
@@ -163,7 +185,8 @@ export default [
       }
     },
     plugins: {
-      svelte
+      svelte,
+      unicorn
     },
     rules: {
       ...svelte.configs.recommended.rules,
@@ -171,6 +194,16 @@ export default [
       'svelte/no-unused-svelte-ignore': 'error',
       'svelte/no-at-html-tags': 'warn',
       'svelte/valid-compile': 'error',
+      // File naming conventions for Svelte components (kebab-case)
+      'unicorn/filename-case': ['error', {
+        cases: {
+          kebabCase: true
+        },
+        ignore: [
+          // Allow PascalCase for component names that haven't been migrated yet
+          'app\\.html$'
+        ]
+      }]
     }
   },
   {
@@ -213,14 +246,21 @@ export default [
     },
     plugins: {
       '@typescript-eslint': ts,
-      oxlint
+      oxlint,
+      unicorn
     },
     rules: {
       ...oxlint.configs.recommended.rules,
       ...ts.configs.recommended.rules,
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
-      'no-console': 'off' // Allow console in tests
+      'no-console': 'off', // Allow console in tests
+      // File naming conventions for test files (kebab-case)
+      'unicorn/filename-case': ['error', {
+        cases: {
+          kebabCase: true
+        }
+      }]
     }
   },
   {

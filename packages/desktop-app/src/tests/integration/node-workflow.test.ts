@@ -3,7 +3,7 @@
  * Tests complete workflows across multiple components and systems
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { SimpleMockStore, createTestNode, type MockNodeData } from '../utils/testUtils';
+import { SimpleMockStore, createTestNode, type MockNodeData } from '../utils/test-utils';
 
 // Mock API layer for integration testing
 class MockNodeAPI {

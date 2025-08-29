@@ -3,4 +3,4 @@
  */
 
 // Icon name type (expandable for future icons)
-export type IconName = 'text' | 'circle' | 'circle-ring' | 'chevron-right';
+export type IconName = 'text' | 'circle' | 'circleRing' | 'chevronRight';

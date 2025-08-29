@@ -3,8 +3,8 @@
  * Demonstrates simple testing without component complexity
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { SimpleMockStore, createTestNode } from '../utils/testUtils';
-import { sampleTextNode } from '../fixtures/mockNodes';
+import { SimpleMockStore, createTestNode } from '../utils/test-utils';
+import { sampleTextNode } from '../fixtures/mock-nodes';
 
 describe('Basic Function Testing', () => {
   describe('Test Data Creation', () => {
