@@ -3,7 +3,7 @@
  *
  * CRITICAL: This configuration is designed ONLY for inline formatting (bold, italic).
  * Headers are handled separately by NodeSpace's inheritHeaderLevel system and
- * rendered as actual <h1>, <h2>, <h3> elements in BaseNode.svelte.
+ * rendered as actual <h1>, <h2>, <h3> elements in base-node.svelte.
  *
  * This marked.js integration provides:
  * - Custom CSS classes for inline formatting compatibility

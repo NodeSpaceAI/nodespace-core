@@ -6,7 +6,7 @@
  */
 
 import { writable, derived } from 'svelte/store';
-import type { Node } from './NodeManager';
+import type { Node } from './nodeManager';
 
 // Core reactive state stores
 export const nodes = writable<Map<string, Node>>(new Map());

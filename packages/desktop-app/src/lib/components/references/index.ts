@@ -5,7 +5,7 @@
  * reference system. Supports both core components and plugin components.
  */
 
-import BaseNodeReference from '../BaseNodeReference.svelte';
+import BaseNodeReference from '../base-node-reference.svelte';
 import type { SvelteComponent } from 'svelte';
 
 // Component type for Svelte components

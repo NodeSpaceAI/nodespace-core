@@ -1,6 +1,6 @@
 <script lang="ts">
-  import ThemeProvider from '$lib/design/components/ThemeProvider.svelte';
-  import BaseNodeViewer from '$lib/design/components/BaseNodeViewer.svelte';
+  import ThemeProvider from '$lib/design/components/theme-provider.svelte';
+  import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import { themePreference, currentTheme } from '$lib/design/theme.js';
 
   function toggleTheme() {
