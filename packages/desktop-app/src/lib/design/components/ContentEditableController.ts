@@ -1466,37 +1466,55 @@ export class ContentEditableController {
   }
 
   /**
-   * Check if text is already formatted with the EXACT target marker (not equivalents)
-   * FIXED: Only checks for exact marker matches to enable proper nesting of different marker types
+   * Check if text is already formatted with the target marker OR equivalent markers
+   * FIXED: Handle double-click selection that includes formatting markers
+   * When user double-clicks "__bold__", the selection includes underscores and should be toggled off
    */
   private isTextAlreadyFormatted(text: string, targetMarker: string): boolean {
-    // FIXED: Only check for EXACT marker matches to enable nesting of different marker types
-    // For nesting behavior: __bold__ + Cmd+B (**) should create **__bold__**, not remove __
-    // Only return true if the text uses the EXACT SAME marker as requested
+    // CRITICAL FIX: When user double-clicks "__bold__" and presses Cmd+B,
+    // the selectedText is "__bold__" and targetMarker is "**"
+    // We need to detect that this text is already bold-formatted (with __ equivalent)
+    // and should be toggled OFF, not nested
 
     if (targetMarker === '**') {
-      // Bold formatting: check for ** only (not __ - allow nesting)
-      return text.startsWith('**') && text.endsWith('**') && text.length > 4;
-    } else if (targetMarker === '*') {
-      // Italic formatting: check for * only (not _ - allow nesting)
+      // Bold formatting: check for ** OR __ (equivalent markers when selection includes them)
       return (
-        text.startsWith('*') &&
-        text.endsWith('*') &&
-        text.length > 2 &&
-        !text.startsWith('**') &&
-        !text.endsWith('**')
+        (text.startsWith('**') && text.endsWith('**') && text.length > 4) ||
+        (text.startsWith('__') && text.endsWith('__') && text.length > 4)
+      );
+    } else if (targetMarker === '*') {
+      // Italic formatting: check for * OR _ (equivalent markers when selection includes them)
+      return (
+        (text.startsWith('*') &&
+          text.endsWith('*') &&
+          text.length > 2 &&
+          !text.startsWith('**') &&
+          !text.endsWith('**')) ||
+        (text.startsWith('_') &&
+          text.endsWith('_') &&
+          text.length > 2 &&
+          !text.startsWith('__') &&
+          !text.endsWith('__'))
       );
     } else if (targetMarker === '__') {
-      // Bold underscore formatting: check for __ only (not ** - allow nesting)
-      return text.startsWith('__') && text.endsWith('__') && text.length > 4;
-    } else if (targetMarker === '_') {
-      // Italic underscore formatting: check for _ only (not * - allow nesting)
+      // Bold underscore formatting: check for __ OR ** (equivalent markers when selection includes them)
       return (
-        text.startsWith('_') &&
-        text.endsWith('_') &&
-        text.length > 2 &&
-        !text.startsWith('__') &&
-        !text.endsWith('__')
+        (text.startsWith('__') && text.endsWith('__') && text.length > 4) ||
+        (text.startsWith('**') && text.endsWith('**') && text.length > 4)
+      );
+    } else if (targetMarker === '_') {
+      // Italic underscore formatting: check for _ OR * (equivalent markers when selection includes them)
+      return (
+        (text.startsWith('_') &&
+          text.endsWith('_') &&
+          text.length > 2 &&
+          !text.startsWith('__') &&
+          !text.endsWith('__')) ||
+        (text.startsWith('*') &&
+          text.endsWith('*') &&
+          text.length > 2 &&
+          !text.startsWith('**') &&
+          !text.endsWith('**'))
       );
     }
 
@@ -1504,23 +1522,24 @@ export class ContentEditableController {
   }
 
   /**
-   * Remove formatting markers from text based on EXACT target marker type
-   * FIXED: Only removes exact marker matches, not equivalents, for proper nesting
+   * Remove formatting markers from text based on target marker type or equivalent markers
+   * FIXED: Handle equivalent markers when removing formatting (for double-click scenarios)
    */
   private removeFormattingFromText(text: string, targetMarker: string): string {
     // Remove formatting markers that correspond to the target format type
-    // For bold (targetMarker **): remove ** or __
+    // For bold (targetMarker **): remove ** or __ 
     // For italic (targetMarker *): remove * or _
+    // This handles the double-click scenario where "__bold__" should be unformatted by Cmd+B
 
     if (targetMarker === '**') {
-      // Bold: remove ** or __
+      // Bold: remove ** or __ (equivalent markers)
       if (text.startsWith('**') && text.endsWith('**') && text.length > 4) {
         return text.substring(2, text.length - 2);
       } else if (text.startsWith('__') && text.endsWith('__') && text.length > 4) {
         return text.substring(2, text.length - 2);
       }
     } else if (targetMarker === '*') {
-      // Italic: remove * or _ (but not ** or __)
+      // Italic: remove * or _ (equivalent markers, but not ** or __)
       if (
         text.startsWith('*') &&
         text.endsWith('*') &&
@@ -1535,6 +1554,32 @@ export class ContentEditableController {
         text.length > 2 &&
         !text.startsWith('__') &&
         !text.endsWith('__')
+      ) {
+        return text.substring(1, text.length - 1);
+      }
+    } else if (targetMarker === '__') {
+      // Bold underscore: remove __ or ** (equivalent markers)
+      if (text.startsWith('__') && text.endsWith('__') && text.length > 4) {
+        return text.substring(2, text.length - 2);
+      } else if (text.startsWith('**') && text.endsWith('**') && text.length > 4) {
+        return text.substring(2, text.length - 2);
+      }
+    } else if (targetMarker === '_') {
+      // Italic underscore: remove _ or * (equivalent markers, but not __ or **)
+      if (
+        text.startsWith('_') &&
+        text.endsWith('_') &&
+        text.length > 2 &&
+        !text.startsWith('__') &&
+        !text.endsWith('__')
+      ) {
+        return text.substring(1, text.length - 1);
+      } else if (
+        text.startsWith('*') &&
+        text.endsWith('*') &&
+        text.length > 2 &&
+        !text.startsWith('**') &&
+        !text.endsWith('**')
       ) {
         return text.substring(1, text.length - 1);
       }
