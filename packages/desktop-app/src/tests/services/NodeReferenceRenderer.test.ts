@@ -167,8 +167,15 @@ describe('NodeReferenceRenderer', () => {
         'Test Task\nstatus: pending\npriority: high\n\nTest task description'
       );
 
-      mockElement = {
-        innerHTML: '',
+      // Create a proper mock element that handles innerHTML correctly for Vitest assertions
+      const mockElementData = {
+        _innerHTML: '',
+        get innerHTML() {
+          return this._innerHTML;
+        },
+        set innerHTML(value: string) {
+          this._innerHTML = value;
+        },
         classList: {
           add: vi.fn(),
           remove: vi.fn(),
@@ -179,16 +186,19 @@ describe('NodeReferenceRenderer', () => {
         setAttribute: vi.fn(),
         addEventListener: vi.fn(),
         removeEventListener: vi.fn()
-      } as unknown as HTMLElement;
+      };
+      
+      mockElement = mockElementData as unknown as HTMLElement;
     });
 
     it('should render a single task reference correctly', async () => {
       await renderer.renderReference(mockElement, testNode.id, 'inline');
 
       // Should render component placeholder for task node
-      expect(mockElement.innerHTML).toContain('ns-component-placeholder');
-      expect(mockElement.innerHTML).toContain('data-node-type="task"');
-      expect(mockElement.innerHTML).toContain('Test Task');
+      const innerHTML = String(mockElement.innerHTML);
+      expect(innerHTML.includes('ns-component-placeholder')).toBe(true);
+      expect(innerHTML.includes('data-node-type="task"')).toBe(true);
+      expect(innerHTML.includes('Test Task')).toBe(true);
       expect(mockElement.setAttribute).toHaveBeenCalledWith(
         'aria-label',
         expect.stringContaining('Task')
@@ -210,8 +220,9 @@ describe('NodeReferenceRenderer', () => {
     it('should handle non-existent nodes gracefully', async () => {
       await renderer.renderReference(mockElement, 'non-existent-id', 'inline');
 
-      expect(mockElement.innerHTML).toContain('ns-noderef--error');
-      expect(mockElement.innerHTML).toContain('Reference Error');
+      const innerHTML = String(mockElement.innerHTML);
+      expect(innerHTML.includes('ns-noderef--error')).toBe(true);
+      expect(innerHTML.includes('Reference Error')).toBe(true);
     });
 
     it('should use cache on subsequent renders', async () => {
@@ -338,8 +349,9 @@ describe('NodeReferenceRenderer', () => {
 
       // Initial render
       await renderer.renderReference(mockElement, testNode.id, 'inline');
-      expect(mockElement.innerHTML).toContain('Cached Task');
-      expect(mockElement.innerHTML).toContain('ns-component-placeholder');
+      const innerHTML = String(mockElement.innerHTML);
+      expect(innerHTML.includes('Cached Task')).toBe(true);
+      expect(innerHTML.includes('ns-component-placeholder')).toBe(true);
 
       // Simulate decoration update
       await renderer.updateDecoration(testNode.id, 'content-changed');
@@ -413,7 +425,8 @@ describe('NodeReferenceRenderer', () => {
       }
 
       // Should render error state
-      expect(mockElement.innerHTML).toContain('ns-noderef--error');
+      const innerHTML = String(mockElement.innerHTML);
+      expect(innerHTML.includes('ns-noderef--error')).toBe(true);
     });
   });
 

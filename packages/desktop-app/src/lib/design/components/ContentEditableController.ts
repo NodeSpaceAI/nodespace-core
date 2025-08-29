@@ -1380,21 +1380,24 @@ export class ContentEditableController {
    * FIXED: Only checks for exact marker matches to enable proper nesting of different marker types
    */
   private isTextAlreadyFormatted(text: string, targetMarker: string): boolean {
-    // Check if text has formatting markers that correspond to the target format type
-    // For bold (targetMarker **): check for ** or __
-    // For italic (targetMarker *): check for * or _
+    // FIXED: Only check for EXACT marker matches to enable nesting of different marker types
+    // For nesting behavior: __bold__ + Cmd+B (**) should create **__bold__**, not remove __
+    // Only return true if the text uses the EXACT SAME marker as requested
     
     if (targetMarker === '**') {
-      // Bold formatting: check for ** or __
-      return (text.startsWith('**') && text.endsWith('**') && text.length > 4) ||
-             (text.startsWith('__') && text.endsWith('__') && text.length > 4);
+      // Bold formatting: check for ** only (not __ - allow nesting)
+      return (text.startsWith('**') && text.endsWith('**') && text.length > 4);
     } else if (targetMarker === '*') {
-      // Italic formatting: check for * or _ (but not ** or __)
-      const hasSingleStar = text.startsWith('*') && text.endsWith('*') && text.length > 2 &&
-                           !text.startsWith('**') && !text.endsWith('**');
-      const hasSingleUnderscore = text.startsWith('_') && text.endsWith('_') && text.length > 2 &&
-                                 !text.startsWith('__') && !text.endsWith('__');
-      return hasSingleStar || hasSingleUnderscore;
+      // Italic formatting: check for * only (not _ - allow nesting)
+      return text.startsWith('*') && text.endsWith('*') && text.length > 2 &&
+             !text.startsWith('**') && !text.endsWith('**');
+    } else if (targetMarker === '__') {
+      // Bold underscore formatting: check for __ only (not ** - allow nesting)  
+      return (text.startsWith('__') && text.endsWith('__') && text.length > 4);
+    } else if (targetMarker === '_') {
+      // Italic underscore formatting: check for _ only (not * - allow nesting)
+      return text.startsWith('_') && text.endsWith('_') && text.length > 2 &&
+             !text.startsWith('__') && !text.endsWith('__');
     }
     
     return false;

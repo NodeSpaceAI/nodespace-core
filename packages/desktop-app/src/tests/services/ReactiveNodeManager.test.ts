@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { ReactiveNodeManager } from '$lib/services/ReactiveNodeManager.svelte';
+import { ReactiveNodeManager } from '$lib/services/ReactiveNodeManager';
 import type { NodeManagerEvents } from '$lib/services/NodeManager';
 
 describe('ReactiveNodeManager - Reactive State Synchronization', () => {
