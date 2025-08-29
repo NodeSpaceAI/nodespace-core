@@ -15,13 +15,6 @@
   } from './ContentEditableController.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
   import type { TriggerContext } from '$lib/services/NodeReferenceService';
-  import type { NodeSpaceNode } from '$lib/services/MockDatabaseService';
-  
-  // Type for new node creation requests
-  interface NewNodeRequest {
-    type: 'create';
-    content: string;
-  }
   import { getNodeServices } from '$lib/contexts/NodeServiceContext.svelte';
 
   // Props (Svelte 5 runes syntax) - nodeReferenceService removed
@@ -266,24 +259,8 @@
   }
 
   // ============================================================================
-  // Utility Functions
+  // Utility Functions  
   // ============================================================================
-
-  function extractNodeTitle(content: string): string {
-    if (!content) return 'Untitled';
-
-    const lines = content.split('\n');
-    const firstLine = lines[0].trim();
-
-    // Remove markdown header syntax
-    const headerMatch = firstLine.match(/^#{1,6}\s*(.*)$/);
-    if (headerMatch) {
-      return headerMatch[1].trim() || 'Untitled';
-    }
-
-    // Return first non-empty line, truncated
-    return firstLine.substring(0, 50) || 'Untitled';
-  }
 
   // Compute CSS classes
   const containerClasses = $derived(

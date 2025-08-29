@@ -15,6 +15,14 @@ import { NodeManager, type NodeManagerEvents } from '$lib/services/NodeManager';
 import { HierarchyService } from '$lib/services/HierarchyService';
 import { eventBus } from '$lib/services/EventBus';
 
+// Test helper interfaces
+interface TestHierarchyNode {
+  id: string;
+  type: string;
+  content: string;
+  children: TestHierarchyNode[];
+}
+
 describe('HierarchyService', () => {
   let nodeManager: NodeManager;
   let hierarchyService: HierarchyService;
@@ -545,11 +553,10 @@ describe('HierarchyService', () => {
       void initialCacheSize; // Used for cache size verification
 
       // Emit hierarchy update event
-      eventBus.emit({
+      eventBus.emit<import('../../lib/services/EventTypes').NodeUpdatedEvent>({
         type: 'node:updated',
         namespace: 'lifecycle',
         source: 'test',
-        timestamp: Date.now(),
         nodeId: 'test-node',
         updateType: 'hierarchy'
       });
@@ -580,11 +587,10 @@ describe('HierarchyService', () => {
       hierarchyService.getNodeDepth('node2');
 
       // Emit hierarchy changed event
-      eventBus.emit({
+      eventBus.emit<import('../../lib/services/EventTypes').HierarchyChangedEvent>({
         type: 'hierarchy:changed',
         namespace: 'lifecycle',
         source: 'test',
-        timestamp: Date.now(),
         affectedNodes: ['node1', 'node2'],
         changeType: 'move'
       });
@@ -643,8 +649,8 @@ describe('HierarchyService', () => {
   // Helper Functions
   // ========================================================================
 
-  function createDeepHierarchy(depth: number): any {
-    let current: any = {
+  function createDeepHierarchy(depth: number): TestHierarchyNode {
+    let current: TestHierarchyNode = {
       id: `level-${depth - 1}`,
       type: 'text',
       content: `Level ${depth - 1}`,
@@ -663,12 +669,12 @@ describe('HierarchyService', () => {
     return current;
   }
 
-  function createLargeHierarchy(nodeCount: number): any {
+  function createLargeHierarchy(nodeCount: number): TestHierarchyNode {
     const root = {
       id: 'root',
       type: 'text',
       content: 'Root',
-      children: [] as any[]
+      children: [] as TestHierarchyNode[]
     };
 
     // Create a balanced tree structure
@@ -677,7 +683,7 @@ describe('HierarchyService', () => {
     const maxChildrenPerNode = 10;
 
     while (nodeIdCounter < nodeCount - 1) { // -1 because root is already counted
-      const nextLevel: any[] = [];
+      const nextLevel: TestHierarchyNode[] = [];
 
       for (const parent of currentLevel) {
         const childrenCount = Math.min(

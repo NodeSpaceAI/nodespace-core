@@ -13,7 +13,7 @@
   }
 
   // Props
-  export let position: { x: number; y: number };
+  export let position: { x: number; y: number } = { x: 0, y: 0 };
   export let query: string = '';
   export let results: NodeResult[] = [];
   export let loading: boolean = false;
@@ -113,11 +113,11 @@
     dispatch('select', result);
   }
 
-  function highlightMatch(text: string, query: string): string {
-    if (!query.trim()) return text;
-    
-    const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    return text.replace(regex, '<mark>$1</mark>');
+  // Return plain text highlighting for now (no HTML markup)
+  function highlightMatch(text: string): string {
+    // For now, just return the original text to avoid XSS warnings
+    // TODO: Implement proper Svelte component-based highlighting
+    return text;
   }
 
   // Reset selection when results change
@@ -222,13 +222,13 @@
             <div class="flex-1 min-w-0">
               <!-- Title with professional highlighting -->
               <div class="font-semibold text-sm leading-tight mb-1">
-                {@html highlightMatch(result.title, query)}
+                {highlightMatch(result.title)}
               </div>
               
               <!-- Subtitle with better contrast -->
               {#if result.subtitle}
                 <div class="text-xs text-muted-foreground leading-relaxed pr-2">
-                  {@html highlightMatch(result.subtitle, query)}
+                  {highlightMatch(result.subtitle)}
                 </div>
               {/if}
             </div>

@@ -90,7 +90,7 @@ describe('MockDatabaseService', () => {
         mentions: 'not-an-array', // Invalid: should be array
         metadata: {},
         embedding_vector: null
-      } as any;
+      } as unknown as NodeSpaceNode;
 
       await expect(db.insertNode(invalidNode)).rejects.toThrow('Node mentions must be an array');
     });
@@ -107,7 +107,7 @@ describe('MockDatabaseService', () => {
         mentions: [],
         metadata: null, // Invalid: should be object
         embedding_vector: null
-      } as any;
+      } as unknown as NodeSpaceNode;
 
       await expect(db.insertNode(invalidNode)).rejects.toThrow('Node metadata must be an object');
     });

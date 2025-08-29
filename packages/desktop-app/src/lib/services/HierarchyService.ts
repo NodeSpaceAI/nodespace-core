@@ -19,7 +19,7 @@
  */
 
 import { eventBus } from './EventBus';
-import type { NodeManager } from './NodeManager';
+import type { NodeManager, Node } from './NodeManager';
 // import type { NodeSpaceNode } from './MockDatabaseService';
 
 // ============================================================================
@@ -39,6 +39,14 @@ export interface NodePath {
   totalDepth: number;
 }
 
+export interface HierarchyPerformanceMetrics {
+  cacheHits: number;
+  cacheMisses: number;
+  avgDepthComputeTime: number;
+  avgChildrenComputeTime: number;
+  avgSiblingsComputeTime: number;
+}
+
 // ============================================================================
 // HierarchyService Implementation
 // ============================================================================
@@ -49,7 +57,7 @@ export class HierarchyService {
   private readonly serviceName = 'HierarchyService';
   
   // Performance monitoring
-  private performanceMetrics = {
+  private performanceMetrics: HierarchyPerformanceMetrics = {
     cacheHits: 0,
     cacheMisses: 0,
     avgDepthComputeTime: 0,
@@ -302,8 +310,8 @@ export class HierarchyService {
    * Performance optimized for large hierarchies
    */
   public getAllNodesInRoot(rootId: string): {
-    nodes: Map<string, any>;
-    rootNode: any | null;
+    nodes: Map<string, Node>;
+    rootNode: Node | null;
     totalCount: number;
     maxDepth: number;
   } {
@@ -321,7 +329,7 @@ export class HierarchyService {
 
     // Get all descendants efficiently
     const allDescendants = this.getDescendants(rootId);
-    const allNodes = new Map<string, any>();
+    const allNodes = new Map<string, Node>();
     
     // Add root node
     allNodes.set(rootId, rootNode);
@@ -341,11 +349,10 @@ export class HierarchyService {
     const computeTime = performance.now() - startTime;
     
     // Emit performance event
-    eventBus.emit({
+    eventBus.emit<import('./EventTypes').DebugEvent>({
       type: 'debug:log',
       namespace: 'debug',
       source: this.serviceName,
-      timestamp: Date.now(),
       level: 'info',
       message: `Bulk root fetch completed: ${allNodes.size} nodes in ${computeTime.toFixed(2)}ms`,
       metadata: { rootId, nodeCount: allNodes.size, maxDepth, computeTime }
@@ -366,7 +373,7 @@ export class HierarchyService {
   public getBulkHierarchyStructure(rootId: string): {
     nodes: Array<{
       id: string;
-      node: any;
+      node: Node;
       parent_id: string | null;
       before_sibling_id: string | null;
       depth: number;
@@ -451,7 +458,7 @@ export class HierarchyService {
     childrenCacheSize: number;
     siblingsCacheSize: number;
     hitRatio: number;
-    performance: typeof this.performanceMetrics;
+    performance: HierarchyPerformanceMetrics;
   } {
     const totalRequests = this.performanceMetrics.cacheHits + this.performanceMetrics.cacheMisses;
     const hitRatio = totalRequests > 0 ? this.performanceMetrics.cacheHits / totalRequests : 0;

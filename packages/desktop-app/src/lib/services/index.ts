@@ -15,7 +15,6 @@ export * from './MockDatabaseService';
 // ============================================================================
 export * from './NodeManager';
 export * from './EnhancedNodeManager';
-export * from './ReactiveNodeManager.svelte';
 export * from './NodeOperationsService';
 export * from './HierarchyService';
 

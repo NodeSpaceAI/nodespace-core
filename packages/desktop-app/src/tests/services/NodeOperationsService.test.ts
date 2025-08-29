@@ -14,7 +14,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 import { NodeManager, type NodeManagerEvents } from '$lib/services/NodeManager';
 import { HierarchyService } from '$lib/services/HierarchyService';
 import { NodeOperationsService } from '$lib/services/NodeOperationsService';
-import { ContentProcessor } from '$lib/services/ContentProcessor';
+import { ContentProcessor } from '$lib/services/contentProcessor';
 import { eventBus } from '$lib/services/EventBus';
 import type { NodeSpaceNode } from '$lib/services/MockDatabaseService';
 
@@ -123,12 +123,20 @@ describe('NodeOperationsService', () => {
     test('extractContentWithContext provides rich analysis', () => {
       const result = nodeOperationsService.extractContentWithContext({
         content: '# Header with [[link]] and **bold** text'
-      });
+      }) as {
+        content: string;
+        ast: unknown;
+        wikiLinks: unknown[];
+        headerLevel: number;
+        wordCount: number;
+        hasFormatting: boolean;
+        metadata: Record<string, unknown>;
+      };
 
       expect(result.content).toBe('# Header with [[link]] and **bold** text');
       expect(result.headerLevel).toBe(1);
       expect(result.wikiLinks).toHaveLength(1);
-      expect(result.wikiLinks[0].target).toBe('link');
+      expect((result.wikiLinks[0] as any).target).toBe('link');
       expect(result.hasFormatting).toBe(true);
       expect(result.wordCount).toBe(7); // "Header", "with", "link", "and", "bold", "text" = 6 words + "link" in wikilink = 7
       expect(result.ast).toBeDefined();
@@ -153,12 +161,20 @@ const x = 42;
 
       const result = nodeOperationsService.extractContentWithContext({
         content: complexContent
-      });
+      }) as {
+        content: string;
+        ast: unknown;
+        wikiLinks: unknown[];
+        headerLevel: number;
+        wordCount: number;
+        hasFormatting: boolean;
+        metadata: Record<string, unknown>;
+      };
 
       expect(result.wikiLinks).toHaveLength(2);
-      expect(result.wikiLinks[0].target).toBe('first-link');
-      expect(result.wikiLinks[1].target).toBe('second-link');
-      expect(result.wikiLinks[1].displayText).toBe('Display Text');
+      expect((result.wikiLinks[0] as any).target).toBe('first-link');
+      expect((result.wikiLinks[1] as any).target).toBe('second-link');
+      expect((result.wikiLinks[1] as any).displayText).toBe('Display Text');
       expect(result.headerLevel).toBe(1); // First header level
       expect(result.hasFormatting).toBe(true);
       expect(result.wordCount).toBeGreaterThan(10);
@@ -510,11 +526,10 @@ const x = 42;
       }
 
       // Simulate content update that should trigger mention processing
-      eventBus.emit({
+      eventBus.emit<import('../../lib/services/EventTypes').NodeUpdatedEvent>({
         type: 'node:updated',
         namespace: 'lifecycle',
         source: 'test',
-        timestamp: Date.now(),
         nodeId: nodeId,
         updateType: 'content',
         previousValue: 'old content',

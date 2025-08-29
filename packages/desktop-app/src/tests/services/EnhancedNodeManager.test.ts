@@ -17,6 +17,14 @@ import { EnhancedNodeManager } from '$lib/services/EnhancedNodeManager';
 import type { NodeManagerEvents } from '$lib/services/NodeManager';
 import { eventBus } from '$lib/services/EventBus';
 
+// Test helper interfaces
+interface TestHierarchyNode {
+  id: string;
+  type: string;
+  content: string;
+  children: TestHierarchyNode[];
+}
+
 describe('EnhancedNodeManager', () => {
   let enhancedNodeManager: EnhancedNodeManager;
   let events: NodeManagerEvents;
@@ -190,7 +198,7 @@ describe('EnhancedNodeManager', () => {
         id: 'deep-root',
         type: 'text',
         content: 'Deep root',
-        children: [] as any[]
+        children: [] as TestHierarchyNode[]
       };
 
       let current = deepHierarchy;
@@ -199,7 +207,7 @@ describe('EnhancedNodeManager', () => {
           id: `level-${i}`,
           type: 'text',
           content: `Level ${i}`,
-          children: [] as any[]
+          children: [] as TestHierarchyNode[]
         };
         current.children.push(child);
         current = child;
@@ -378,10 +386,15 @@ describe('EnhancedNodeManager', () => {
       const secondTime = performance.now() - secondCallTime;
 
       // Compare analysis content without timestamp
-      const { lastAnalyzed: _ignored1, ...analysis1Clean } = analysis1 as any;
-      const { lastAnalyzed: _ignored2, ...analysis2Clean } = analysis2 as any;
-      void _ignored1; // Mark as intentionally unused
-      void _ignored2; // Mark as intentionally unused
+      const analysis1Clean = { ...analysis1 };
+      const analysis2Clean = { ...analysis2 };
+      // Remove lastAnalyzed property if it exists
+      if ('lastAnalyzed' in analysis1Clean) {
+        delete (analysis1Clean as { lastAnalyzed?: number }).lastAnalyzed;
+      }
+      if ('lastAnalyzed' in analysis2Clean) {  
+        delete (analysis2Clean as { lastAnalyzed?: number }).lastAnalyzed;
+      }
       
       expect(analysis1Clean).toEqual(analysis2Clean);
       expect(secondTime).toBeLessThan(firstTime); // Cached call should be faster
@@ -464,7 +477,7 @@ describe('EnhancedNodeManager', () => {
       });
 
       const recentEvents = eventBus.getRecentEvents();
-      const debugEvents = recentEvents.filter(e => e.type === 'debug:log' && e.message?.includes('Bulk operation'));
+      const debugEvents = recentEvents.filter(e => e.type === 'debug:log' && (e as any).message?.includes('Bulk operation')) as import('../../lib/services/EventTypes').DebugEvent[];
       
       expect(debugEvents.length).toBeGreaterThan(0);
       expect(debugEvents[0].message).toContain('2 success');
@@ -658,7 +671,7 @@ describe('EnhancedNodeManager', () => {
           id: 'root', 
           type: 'document', 
           content: 'Root', 
-          children: [] as any[] 
+          children: [] as TestHierarchyNode[] 
         }];
 
         for (let i = 1; i < size; i++) {
@@ -707,11 +720,10 @@ describe('EnhancedNodeManager', () => {
       expect(analysis1).toBeTruthy();
 
       // Emit node updated event
-      eventBus.emit({
+      eventBus.emit<import('../../lib/services/EventTypes').NodeUpdatedEvent>({
         type: 'node:updated',
         namespace: 'lifecycle',
         source: 'test',
-        timestamp: Date.now(),
         nodeId: 'test-node',
         updateType: 'content',
         previousValue: 'old',
@@ -743,11 +755,10 @@ describe('EnhancedNodeManager', () => {
       enhancedNodeManager.analyzeNode('parent');
 
       // Emit hierarchy change event
-      eventBus.emit({
+      eventBus.emit<import('../../lib/services/EventTypes').HierarchyChangedEvent>({
         type: 'hierarchy:changed',
         namespace: 'lifecycle',
         source: 'test',
-        timestamp: Date.now(),
         affectedNodes: ['parent', 'child'],
         changeType: 'move'
       });
@@ -768,11 +779,10 @@ describe('EnhancedNodeManager', () => {
       enhancedNodeManager.analyzeNode('to-delete');
 
       // Emit node deleted event
-      eventBus.emit({
+      eventBus.emit<import('../../lib/services/EventTypes').NodeDeletedEvent>({
         type: 'node:deleted',
         namespace: 'lifecycle',
         source: 'test',
-        timestamp: Date.now(),
         nodeId: 'to-delete'
       });
 
