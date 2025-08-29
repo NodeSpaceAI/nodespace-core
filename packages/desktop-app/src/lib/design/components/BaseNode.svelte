@@ -11,7 +11,8 @@
 
   import {
     ContentEditableController,
-    type ContentEditableEvents
+    type ContentEditableEvents,
+    type ContentEditableConfig
   } from './ContentEditableController.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
   import type { TriggerContext } from '$lib/services/NodeReferenceService';
@@ -24,7 +25,8 @@
     autoFocus = false,
     content = $bindable(''),
     headerLevel = 0,
-    children = []
+    children = [],
+    editableConfig = {}
   }: {
     nodeId: string;
     nodeType?: string;
@@ -32,6 +34,7 @@
     content?: string;
     headerLevel?: number;
     children?: unknown[];
+    editableConfig?: ContentEditableConfig;
   } = $props();
 
   // Get services from context
@@ -208,7 +211,7 @@
   $effect(() => {
     const element = contentEditableElement; // Force dependency tracking
     if (element && !controller) {
-      controller = new ContentEditableController(element, nodeId, controllerEvents, nodeType);
+      controller = new ContentEditableController(element, nodeId, controllerEvents, editableConfig);
       controller.initialize(content, autoFocus);
     }
   });

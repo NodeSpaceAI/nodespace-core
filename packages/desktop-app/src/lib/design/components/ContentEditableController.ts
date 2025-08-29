@@ -35,10 +35,14 @@ export interface ContentEditableEvents {
   nodeReferenceSelected: (data: { nodeId: string; nodeTitle: string }) => void;
 }
 
+export interface ContentEditableConfig {
+  allowMultiline?: boolean;
+}
+
 export class ContentEditableController {
   private element: HTMLDivElement;
   private nodeId: string;
-  private nodeType: string;
+  private config: ContentEditableConfig;
   private isEditing: boolean = false;
   private isInitialized: boolean = false;
   private events: ContentEditableEvents;
@@ -57,10 +61,10 @@ export class ContentEditableController {
   private boundHandleKeyDown = this.handleKeyDown.bind(this);
   private boundHandleMouseDown = this.handleMouseDown.bind(this);
 
-  constructor(element: HTMLDivElement, nodeId: string, events: ContentEditableEvents, nodeType: string = 'text') {
+  constructor(element: HTMLDivElement, nodeId: string, events: ContentEditableEvents, config: ContentEditableConfig = {}) {
     this.element = element;
     this.nodeId = nodeId;
-    this.nodeType = nodeType;
+    this.config = { allowMultiline: false, ...config };
     this.events = events;
     // Mark DOM element as having a controller attached
     (
@@ -532,8 +536,8 @@ export class ContentEditableController {
       }
     }
 
-    // Shift+Enter key inserts a newline character (no new node) - only for text nodes
-    if (event.key === 'Enter' && event.shiftKey && this.nodeType === 'text') {
+    // Shift+Enter key inserts a newline character (no new node) - only for nodes that allow multiline
+    if (event.key === 'Enter' && event.shiftKey && this.config.allowMultiline) {
       event.preventDefault();
 
       // Insert newline at current cursor position

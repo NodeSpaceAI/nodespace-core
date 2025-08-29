@@ -84,6 +84,7 @@
   content={internalContent}
   {headerLevel}
   {children}
+  editableConfig={{ allowMultiline: true }}
   on:createNewNode={(e) =>
     dispatch('createNewNode', { ...e.detail, inheritHeaderLevel: headerLevel })}
   on:contentChanged={handleContentChange}
