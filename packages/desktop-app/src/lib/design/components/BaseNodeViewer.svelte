@@ -240,7 +240,30 @@
 
   // Handle chevron click to toggle expand/collapse
   function handleToggleExpanded(nodeId: string) {
+    // Get the currently focused element before DOM changes
+    const activeElement = document.activeElement as HTMLElement;
+    const isTextEditor = activeElement && activeElement.id?.startsWith('contenteditable-');
+    let focusedNodeId: string | null = null;
+    let cursorPosition = 0;
+
+    // Store cursor position if we have an active text editor
+    if (isTextEditor) {
+      focusedNodeId = activeElement.id.replace('contenteditable-', '');
+      cursorPosition = saveCursorPosition(focusedNodeId);
+    }
+
+    // Perform the toggle operation
     nodeManager.toggleExpanded(nodeId);
+
+    // Restore focus and cursor position after DOM update
+    if (focusedNodeId && isTextEditor) {
+      setTimeout(() => {
+        const element = document.getElementById(`contenteditable-${focusedNodeId}`);
+        if (element && document.body.contains(element)) {
+          restoreCursorPosition(focusedNodeId, cursorPosition);
+        }
+      }, 0);
+    }
   }
 
   // Get node type color from design system

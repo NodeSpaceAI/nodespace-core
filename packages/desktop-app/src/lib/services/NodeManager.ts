@@ -591,6 +591,7 @@ export class NodeManager {
 
   /**
    * Indent node (move to previous sibling's children)
+   * Auto-expands parent if it's collapsed to show the newly added child
    */
   indentNode(nodeId: string): boolean {
     const node = this.findNode(nodeId);
@@ -606,6 +607,12 @@ export class NodeManager {
     const previousSiblingId = siblings[nodeIndex - 1];
     const previousSibling = this.findNode(previousSiblingId);
     if (!previousSibling) return false;
+
+    // Auto-expand the target parent if it's collapsed to show the newly added child
+    if (!previousSibling.expanded || this._collapsedNodes.has(previousSiblingId)) {
+      previousSibling.expanded = true;
+      this._collapsedNodes.delete(previousSiblingId);
+    }
 
     // Remove from current position
     siblings.splice(nodeIndex, 1);
