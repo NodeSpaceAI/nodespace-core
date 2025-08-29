@@ -137,15 +137,6 @@
     });
   }
 
-  // Debug effect to track showAutocomplete changes (disabled for cleaner logs)
-  // $effect(() => {
-  //   console.log('🔄 showAutocomplete changed to:', showAutocomplete);
-  //   if (!showAutocomplete) {
-  //     console.trace('🔄 Stack trace for showAutocomplete = false');
-  //   }
-  // });
-  // let _currentTriggerContext = $state<TriggerContext | null>(null);
-
   // Event dispatcher
   const dispatch = createEventDispatcher<{
     contentChanged: { content: string };
@@ -205,7 +196,6 @@
       showAutocomplete = false;
       currentQuery = '';
       autocompleteResults = [];
-      // _currentTriggerContext = null;
     },
     nodeReferenceSelected: (data: { nodeId: string; nodeTitle: string }) => {
       // Forward the event for potential parent component handling
@@ -281,7 +271,7 @@
 <div class={containerClasses} data-node-id={nodeId}>
   <!-- Node indicator -->
   <div class="node__indicator">
-    <Icon name={icon} size={16} color={nodeColor} />
+    <Icon name={icon} size={20} color={nodeColor} />
   </div>
 
   <!-- Content area -->
@@ -312,23 +302,50 @@
   .node {
     position: relative;
     padding: 0.25rem;
-    padding-left: calc(0.25rem + 20px); /* Original padding + space for indicator */
+    padding-left: 54px; /* 26px circle position + 20px circle width + 8px gap */
     width: 100%;
+    /* 
+      Circle positioning system using CSS-first dynamic calculation
+      
+      MATHEMATICAL FOUNDATION:
+      The circle needs to be positioned at the visual center of the first line of text.
+      
+      Formula: containerPaddingPx + (lineHeightPx / 2)
+      - containerPaddingPx = 0.25rem (top padding of .node container)  
+      - lineHeightPx = font-size × line-height multiplier
+      
+      DERIVATION:
+      1. Text baseline starts at container top + padding (0.25rem)
+      2. Line height creates vertical space around text
+      3. Visual center is at baseline + (line-height / 2)
+      4. Therefore: top = 0.25rem + (line-height-px / 2)
+      
+      BROWSER COMPATIBILITY:
+      - CSS custom properties: IE 11+ (95%+ browser support)
+      - CSS calc(): IE 9+ (98%+ browser support) 
+      - Graceful fallback to 1.05rem for older browsers
+    */
+    
+    /* Default values for normal text (1rem × 1.6 = 1.6rem line-height) */
+    --line-height: 1.6;
+    --font-size: 1rem;
+    --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 
   .node__indicator {
     position: absolute;
-    left: 8px; /* Center X coordinate (half of 16px icon width) */
-    /* Precise vertical centering: container padding + empirically corrected visual text center */
-    top: calc(
-      0.25rem + var(--text-visual-center, calc(0.816em + var(--baseline-correction, -0.15em)))
-    );
+    left: 26px; /* Match design system positioning */
+    /* Fallback positioning for older browsers that don't support CSS custom properties */
+    top: 1.05rem; /* Approximates normal text center: 0.25rem padding + (1rem * 1.6 / 2) */
+    /* CSS-first dynamic positioning using proven formula: containerPaddingPx + (lineHeightPx / 2) */
+    top: calc(0.25rem + (var(--line-height-px) / 2));
     transform: translate(-50%, -50%); /* Center icon on coordinates */
-    width: 16px;
-    height: 16px;
+    width: 20px; /* Match design system container size */
+    height: 20px; /* Match design system container size */
     display: flex;
     align-items: center;
     justify-content: center;
+    /* No transition - position updates should be instant */
   }
 
   .node__content {
@@ -352,76 +369,60 @@
     cursor: text;
   }
 
-  /* Header styling with empirically corrected visual text center for pixel-perfect circle alignment */
-  .node {
-    /* Base correction factor adjusted based on precise Playwright measurements - circles positioned exactly at text visual center */
-    --baseline-correction: -0.06375em; /* Refined: original -0.12em + 0.05625em to move circles UP by measured 0.9px on 16px text */
+  /* Header styling with CSS variables for dynamic positioning */
+  
+  /* Shared header class - eliminates code duplication */
+  .node--h1,
+  .node--h2,
+  .node--h3,
+  .node--h4,
+  .node--h5,
+  .node--h6 {
+    /* Calculate line-height in pixels for positioning formula */
+    --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 
-  .node--h1 {
-    /* 2rem * 1.2 * 0.5 + baseline correction = true visual center for H1 (corrected to move circles UP by measured 1.7px) */
-    --text-visual-center: calc(1.2em + var(--baseline-correction) + 0.053125em);
-  }
-
-  .node--h1 .node__content {
-    font-size: 2rem;
+  /* Shared header content styling */
+  .node--h1 .node__content,
+  .node--h2 .node__content,
+  .node--h3 .node__content,
+  .node--h4 .node__content,
+  .node--h5 .node__content,
+  .node--h6 .node__content {
+    font-size: var(--font-size);
     font-weight: bold;
-    line-height: 1.2;
+    line-height: var(--line-height);
+  }
+
+  /* Header-specific typography variables */
+  .node--h1 {
+    --font-size: 2rem;
+    --line-height: 1.2;
   }
 
   .node--h2 {
-    /* 1.5rem * 1.3 * 0.5 + baseline correction = true visual center for H2 (corrected to move circles UP by measured 1.3px) */
-    --text-visual-center: calc(0.975em + var(--baseline-correction) + 0.0542em);
-  }
-
-  .node--h2 .node__content {
-    font-size: 1.5rem;
-    font-weight: bold;
-    line-height: 1.3;
+    --font-size: 1.5rem;
+    --line-height: 1.3;
   }
 
   .node--h3 {
-    /* 1.25rem * 1.4 * 0.5 + baseline correction = true visual center for H3 (fine-tuned for perfect alignment - additional 0.03em correction) */
-    --text-visual-center: calc(0.875em + var(--baseline-correction) + 0.1em);
-  }
-
-  .node--h3 .node__content {
-    font-size: 1.25rem;
-    font-weight: bold;
-    line-height: 1.4;
+    --font-size: 1.25rem;
+    --line-height: 1.4;
   }
 
   .node--h4 {
-    /* 1.125rem * 1.4 * 0.5 + baseline correction = true visual center for H4 */
-    --text-visual-center: calc(0.7875em + var(--baseline-correction));
-  }
-
-  .node--h4 .node__content {
-    font-size: 1.125rem;
-    font-weight: bold;
-    line-height: 1.4;
+    --font-size: 1.125rem;
+    --line-height: 1.4;
   }
 
   .node--h5 {
-    /* 1rem * 1.4 * 0.5 + baseline correction = true visual center for H5 */
-    --text-visual-center: calc(0.7em + var(--baseline-correction));
-  }
-
-  .node--h5 .node__content {
-    font-size: 1rem;
-    font-weight: bold;
-    line-height: 1.4;
+    --font-size: 1rem;
+    --line-height: 1.4;
   }
 
   .node--h6 {
-    /* 0.875rem * 1.4 * 0.5 + baseline correction = true visual center for H6 */
-    --text-visual-center: calc(0.6125em + var(--baseline-correction));
-  }
-
-  .node--h6 .node__content {
-    font-size: 0.875rem;
-    font-weight: bold;
-    line-height: 1.4;
+    --font-size: 0.875rem;
+    --line-height: 1.4;
   }
 
   /* Header empty state - ensure proper height */

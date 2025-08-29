@@ -531,9 +531,6 @@
 </script>
 
 <!-- Wrap all node content with NodeServiceContext to provide @ autocomplete functionality -->
-{#if typeof console !== 'undefined'}
-  {console.log('🔥 BaseNodeViewer rendering NodeServiceContext wrapper')}
-{/if}
 <NodeServiceContext>
   <div class="node-viewer">
     {#each visibleNodes as node (node.id)}
@@ -666,36 +663,56 @@
     display: none; /* Hide spacer since chevron doesn't affect layout flow */
   }
 
-  /* Header-level text-visual-center definitions - exactly matches BaseNode.svelte for perfect chevron alignment */
+  /* UPDATED: CSS-first positioning to match BaseNode.svelte implementation */
   .node-content-wrapper {
-    /* Base correction factor - matches BaseNode.svelte exactly */
-    --baseline-correction: -0.06375em;
-    /* Default text visual center for normal text (not headers) */
-    --text-visual-center: calc(0.816em + var(--baseline-correction));
+    /* Default values for normal text - matches BaseNode.svelte exactly */
+    --line-height: 1.6;
+    --font-size: 1rem;
+    --line-height-px: calc(var(--font-size) * var(--line-height));
+    /* Calculate chevron position using same formula as BaseNode circles */
+    --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
-
-  /* Set CSS variables directly on node-content-wrapper based on TextNode header levels */
+  
+  /* Inherit font-size and line-height from nested BaseNode header classes */
   .node-content-wrapper:has(:global(.node--h1)) {
-    --text-visual-center: calc(1.2em + var(--baseline-correction) + 0.053125em);
+    --font-size: 2rem;
+    --line-height: 1.2;
+    --line-height-px: calc(var(--font-size) * var(--line-height));
+    --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h2)) {
-    --text-visual-center: calc(0.975em + var(--baseline-correction) + 0.0542em);
+    --font-size: 1.5rem;
+    --line-height: 1.3;
+    --line-height-px: calc(var(--font-size) * var(--line-height));
+    --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h3)) {
-    --text-visual-center: calc(0.875em + var(--baseline-correction) + 0.1em);
+    --font-size: 1.25rem;
+    --line-height: 1.4;
+    --line-height-px: calc(var(--font-size) * var(--line-height));
+    --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h4)) {
-    --text-visual-center: calc(0.7875em + var(--baseline-correction));
+    --font-size: 1.125rem;
+    --line-height: 1.4;
+    --line-height-px: calc(var(--font-size) * var(--line-height));
+    --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h5)) {
-    --text-visual-center: calc(0.7em + var(--baseline-correction));
+    --font-size: 1rem;
+    --line-height: 1.4;
+    --line-height-px: calc(var(--font-size) * var(--line-height));
+    --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h6)) {
-    --text-visual-center: calc(0.6125em + var(--baseline-correction));
+    --font-size: 0.875rem;
+    --line-height: 1.4;
+    --line-height-px: calc(var(--font-size) * var(--line-height));
+    --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
 </style>

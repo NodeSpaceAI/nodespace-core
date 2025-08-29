@@ -1527,7 +1527,7 @@ export class ContentEditableController {
    */
   private removeFormattingFromText(text: string, targetMarker: string): string {
     // Remove formatting markers that correspond to the target format type
-    // For bold (targetMarker **): remove ** or __ 
+    // For bold (targetMarker **): remove ** or __
     // For italic (targetMarker *): remove * or _
     // This handles the double-click scenario where "__bold__" should be unformatted by Cmd+B
 

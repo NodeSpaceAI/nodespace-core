@@ -54,7 +54,6 @@
   // Initialize services on mount
   onMount(async () => {
     try {
-      console.log('🚀 NodeServiceContext mounted - starting service initialization');
       // Initialize services in dependency order
       const databaseService = new MockDatabaseService();
 
@@ -107,7 +106,6 @@
       setNodeServices(services);
 
       servicesInitialized = true;
-      console.log('✅ NodeServiceContext services initialized successfully');
     } catch (error) {
       console.error('NodeServiceContext: Failed to initialize services:', error);
       initializationError = error instanceof Error ? error.message : 'Unknown error';

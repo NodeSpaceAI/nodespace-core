@@ -27,7 +27,7 @@ const requiredFiles = [
   'docs/design-system/colors.html',
   'docs/design-system/assets/style-guide.css',
   'docs/design-system/assets/interactive.js',
-  'docs/design-system/COMPONENT_ARCHITECTURE.md'
+  'docs/design-system/component-architecture.md'
 ];
 
 let filesExist = 0;
