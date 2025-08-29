@@ -208,7 +208,7 @@
   $effect(() => {
     const element = contentEditableElement; // Force dependency tracking
     if (element && !controller) {
-      controller = new ContentEditableController(element, nodeId, controllerEvents);
+      controller = new ContentEditableController(element, nodeId, controllerEvents, nodeType);
       controller.initialize(content, autoFocus);
     }
   });

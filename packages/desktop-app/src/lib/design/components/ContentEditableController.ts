@@ -38,6 +38,7 @@ export interface ContentEditableEvents {
 export class ContentEditableController {
   private element: HTMLDivElement;
   private nodeId: string;
+  private nodeType: string;
   private isEditing: boolean = false;
   private isInitialized: boolean = false;
   private events: ContentEditableEvents;
@@ -56,9 +57,10 @@ export class ContentEditableController {
   private boundHandleKeyDown = this.handleKeyDown.bind(this);
   private boundHandleMouseDown = this.handleMouseDown.bind(this);
 
-  constructor(element: HTMLDivElement, nodeId: string, events: ContentEditableEvents) {
+  constructor(element: HTMLDivElement, nodeId: string, events: ContentEditableEvents, nodeType: string = 'text') {
     this.element = element;
     this.nodeId = nodeId;
+    this.nodeType = nodeType;
     this.events = events;
     // Mark DOM element as having a controller attached
     (
@@ -528,6 +530,31 @@ export class ContentEditableController {
           this.events.headerLevelChanged(newHeaderLevel);
         }, 0);
       }
+    }
+
+    // Shift+Enter key inserts a newline character (no new node) - only for text nodes
+    if (event.key === 'Enter' && event.shiftKey && this.nodeType === 'text') {
+      event.preventDefault();
+
+      // Insert newline at current cursor position
+      const selection = window.getSelection();
+      if (selection && selection.rangeCount > 0) {
+        const range = selection.getRangeAt(0);
+        const textNode = document.createTextNode('\n');
+        
+        range.deleteContents();
+        range.insertNode(textNode);
+        
+        // Move cursor after the inserted newline
+        range.setStartAfter(textNode);
+        range.setEndAfter(textNode);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        
+        // Trigger input event to update content
+        this.handleInput();
+      }
+      return;
     }
 
     // Enter key creates new node with smart text splitting
