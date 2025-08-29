@@ -14,12 +14,12 @@
   
   // Service interface definition
   export interface NodeServices {
-    nodeReferenceService: any;
-    nodeManager: any;
-    hierarchyService: any;
-    nodeOperationsService: any;
-    contentProcessor: any;
-    databaseService: any;
+    nodeReferenceService: unknown;
+    nodeManager: unknown;
+    hierarchyService: unknown;
+    nodeOperationsService: unknown;
+    contentProcessor: unknown;
+    databaseService: unknown;
   }
   
   // Context accessor functions

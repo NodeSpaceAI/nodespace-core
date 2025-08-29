@@ -455,7 +455,7 @@ export class NodeOperationsService {
    * Merge metadata with type-specific handling
    */
   private mergeMetadata(
-    existingNode: any,
+    existingNode: unknown,
     newMetadata?: Record<string, unknown>,
     extractedMetadata?: Record<string, unknown>,
     preserve = true
@@ -483,7 +483,7 @@ export class NodeOperationsService {
   /**
    * Convert NodeSpaceNode format to NodeManager format
    */
-  private convertToNodeManagerFormat(node: NodeSpaceNode): any {
+  private convertToNodeManagerFormat(node: NodeSpaceNode): unknown {
     return {
       id: node.id,
       content: node.content,
@@ -541,7 +541,7 @@ export class NodeOperationsService {
     content: string;
     metadata: Record<string, unknown>;
   } {
-    const defaults: Record<string, any> = {
+    const defaults: Record<string, unknown> = {
       'text': {
         content: '',
         metadata: {}
@@ -648,7 +648,7 @@ export class NodeOperationsService {
   /**
    * Find root ID for a node by walking up hierarchy
    */
-  private findNodeRootId(node: any): string {
+  private findNodeRootId(node: unknown): string {
     let current = node;
     while (current.parentId) {
       const parent = this.nodeManager.findNode(current.parentId);
@@ -661,7 +661,7 @@ export class NodeOperationsService {
   /**
    * Get created_at timestamp from existing node
    */
-  private getCreatedAtFromNode(node: any): string {
+  private getCreatedAtFromNode(node: unknown): string {
     // NodeManager nodes don't have created_at, so we'll use current time
     // In full implementation, this would be stored in metadata or database
     return node.metadata?.created_at || new Date().toISOString();
@@ -697,7 +697,7 @@ export class NodeOperationsService {
   private emitNodeOperationEvent(
     operation: string,
     nodeId: string,
-    data: any,
+    data: unknown,
     metadata?: Record<string, unknown>
   ): void {
     eventBus.emit({

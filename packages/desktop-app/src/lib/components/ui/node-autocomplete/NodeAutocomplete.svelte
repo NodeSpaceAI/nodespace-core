@@ -21,7 +21,7 @@
 
   // State
   let selectedIndex: number = 0;
-  let containerRef: HTMLElement | undefined;
+  let containerRef: HTMLElement | undefined = undefined; // Explicitly assigned
   let itemRefs: HTMLElement[] = [];
 
   const dispatch = createEventDispatcher<{

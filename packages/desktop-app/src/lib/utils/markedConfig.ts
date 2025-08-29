@@ -22,28 +22,28 @@ import { marked } from 'marked';
 marked.use({
   renderer: {
     // Override strong rendering to use custom CSS classes
-    strong(token: any): string {
+    strong(token: unknown): string {
       // Extract the rendered text content from the token
       const text = this.parser.parseInline(token.tokens);
       return `<span class="markdown-bold">${text}</span>`;
     },
 
     // Override em rendering to use custom CSS classes  
-    em(token: any): string {
+    em(token: unknown): string {
       // Extract the rendered text content from the token
       const text = this.parser.parseInline(token.tokens);
       return `<span class="markdown-italic">${text}</span>`;
     },
 
     // Override paragraph to avoid wrapping inline content in <p> tags
-    paragraph(token: any): string {
+    paragraph(token: unknown): string {
       const text = this.parser.parseInline(token.tokens);
       return text;
     },
 
     // CRITICAL: Disable header processing - NodeSpace handles headers separately
     // Headers are controlled by inheritHeaderLevel property, not markdown syntax
-    heading(token: any): string {
+    heading(token: unknown): string {
       // Return the raw token text instead of processing as HTML header
       // This preserves "# Header text" as plain text for NodeSpace's header system
       const level = '#'.repeat(token.depth);
