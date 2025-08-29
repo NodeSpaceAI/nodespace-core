@@ -540,6 +540,9 @@ export class ContentEditableController {
     if (event.key === 'Enter' && event.shiftKey && this.config.allowMultiline) {
       event.preventDefault();
 
+      // Get current cursor position before any DOM changes
+      const cursorOffset = this.getCurrentColumn();
+      
       // Insert newline at current cursor position
       const selection = window.getSelection();
       if (selection && selection.rangeCount > 0) {
@@ -549,14 +552,19 @@ export class ContentEditableController {
         range.deleteContents();
         range.insertNode(textNode);
         
-        // Move cursor after the inserted newline
-        range.setStartAfter(textNode);
-        range.setEndAfter(textNode);
-        selection.removeAllRanges();
-        selection.addRange(range);
+        // Calculate new cursor position (after the newline we just inserted)
+        const newCursorOffset = cursorOffset + 1;
         
-        // Trigger input event to update content
-        this.handleInput();
+        // Update content and format, then restore cursor position
+        const newContent = this.element.textContent || '';
+        this.originalContent = newContent;
+        
+        // Apply live formatting while preserving cursor position
+        this.setLiveFormattedContent(newContent);
+        this.restoreCursorPosition(newCursorOffset);
+        
+        // Notify of content change
+        this.events.contentChanged(newContent);
       }
       return;
     }
