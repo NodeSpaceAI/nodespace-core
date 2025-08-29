@@ -14,8 +14,8 @@
   const iconRegistry: Record<IconName, string> = {
     text: textIcon,
     circle: circleIcon,
-    'circleRing': circleRingIcon,
-    'chevronRight': chevronRightIcon
+    circleRing: circleRingIcon,
+    chevronRight: chevronRightIcon
   };
 
   // Component props
