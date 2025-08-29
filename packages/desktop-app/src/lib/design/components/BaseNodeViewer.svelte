@@ -672,7 +672,7 @@
     /* Calculate chevron position using same formula as BaseNode circles */
     --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
-  
+
   /* Inherit font-size and line-height from nested BaseNode header classes */
   .node-content-wrapper:has(:global(.node--h1)) {
     --font-size: 2rem;

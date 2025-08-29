@@ -325,7 +325,7 @@
       - CSS calc(): IE 9+ (98%+ browser support) 
       - Graceful fallback to 1.05rem for older browsers
     */
-    
+
     /* Default values for normal text (1rem × 1.6 = 1.6rem line-height) */
     --line-height: 1.6;
     --font-size: 1rem;
@@ -370,7 +370,7 @@
   }
 
   /* Header styling with CSS variables for dynamic positioning */
-  
+
   /* Shared header class - eliminates code duplication */
   .node--h1,
   .node--h2,
