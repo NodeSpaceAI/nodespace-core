@@ -220,7 +220,7 @@ export abstract class BaseNodeDecorator {
 }
 
 // ============================================================================
-// Default Decorator Implementation  
+// Default Decorator Implementation
 // ============================================================================
 
 /**
@@ -245,44 +245,33 @@ class TaskNodeDecorator extends BaseNodeDecorator {
     super(nodeReferenceService, 'task');
   }
 
-  public decorateReference(context: DecorationContext): DecorationResult {
-    const baseDecoration = this.getBaseDecoration(context);
+  public decorateReference(context: DecorationContext): ComponentDecoration {
+    // Use the base component decoration for tasks
+    const componentDecoration = this.getBaseComponentDecoration(context);
     const metadata = this.extractMetadata(context.content, 'task');
     const status = (metadata.status as string) || 'pending';
     const priority = (metadata.priority as string) || 'normal';
-
-    // Determine checkbox state
     const isCompleted = status === 'completed' || status === 'done';
-    const checkboxIcon = isCompleted ? '☑' : '☐';
 
-    // Priority indicator
-    const priorityIcon = priority === 'high' ? '🔴' : priority === 'low' ? '🔵' : '';
+    // Add task-specific props
+    componentDecoration.props = {
+      ...componentDecoration.props,
+      status,
+      priority,
+      isCompleted,
+      checkboxIcon: isCompleted ? '☑' : '☐',
+      priorityIcon: priority === 'high' ? '🔴' : priority === 'low' ? '🔵' : '',
+      mentionedDate: metadata.mentionedDate
+    };
 
-    const safeTitle = this.sanitizeText(context.title);
+    componentDecoration.metadata = {
+      ...componentDecoration.metadata,
+      status,
+      priority,
+      isCompleted
+    };
 
-    baseDecoration.html = `
-      <span class="ns-noderef ns-noderef--task ns-noderef--task-${status}" 
-            data-node-id="${context.nodeId}" 
-            data-uri="${context.uri}"
-            data-status="${status}"
-            data-priority="${priority}"
-            role="button"
-            tabindex="0">
-        <span class="ns-noderef__checkbox">${checkboxIcon}</span>
-        <span class="ns-noderef__title ${isCompleted ? 'ns-noderef__title--completed' : ''}">${safeTitle}</span>
-        ${priorityIcon ? `<span class="ns-noderef__priority">${priorityIcon}</span>` : ''}
-        ${metadata.mentionedDate ? `<span class="ns-noderef__date">${metadata.mentionedDate}</span>` : ''}
-      </span>
-    `;
-
-    baseDecoration.cssClasses.push(
-      `ns-noderef--task-${status}`,
-      `ns-noderef--priority-${priority}`
-    );
-    baseDecoration.ariaLabel = `Task: ${safeTitle} (${status}${priority !== 'normal' ? `, ${priority} priority` : ''})`;
-    baseDecoration.metadata = { ...baseDecoration.metadata, status, priority, isCompleted };
-
-    return baseDecoration;
+    return componentDecoration;
   }
 }
 
@@ -291,42 +280,35 @@ class UserNodeDecorator extends BaseNodeDecorator {
     super(nodeReferenceService, 'user');
   }
 
-  public decorateReference(context: DecorationContext): DecorationResult {
-    const baseDecoration = this.getBaseDecoration(context);
+  public decorateReference(context: DecorationContext): ComponentDecoration {
+    // Use the base component decoration for users
+    const componentDecoration = this.getBaseComponentDecoration(context);
     const metadata = this.extractMetadata(context.content, 'user');
 
     // Mock online status (in real implementation, this would come from presence service)
     const isOnline = Math.random() > 0.5; // Mock for demo
     const role = (metadata.role as string) || 'member';
-
     const safeTitle = this.sanitizeText(context.title);
     const displayName = safeTitle.split(' ')[0] || safeTitle; // Use first name for compact display
 
-    baseDecoration.html = `
-      <span class="ns-noderef ns-noderef--user ns-noderef--user-${isOnline ? 'online' : 'offline'}" 
-            data-node-id="${context.nodeId}" 
-            data-uri="${context.uri}"
-            data-online="${isOnline}"
-            data-role="${role}"
-            role="button"
-            tabindex="0">
-        <span class="ns-noderef__avatar">
-          <span class="ns-noderef__avatar-initial">${displayName.charAt(0).toUpperCase()}</span>
-          <span class="ns-noderef__status-indicator ${isOnline ? 'ns-noderef__status--online' : 'ns-noderef__status--offline'}"></span>
-        </span>
-        <span class="ns-noderef__name">${displayName}</span>
-        ${role !== 'member' ? `<span class="ns-noderef__role">${role}</span>` : ''}
-      </span>
-    `;
+    // Add user-specific props
+    componentDecoration.props = {
+      ...componentDecoration.props,
+      isOnline,
+      role,
+      displayName,
+      email: metadata.email,
+      avatarInitial: displayName.charAt(0).toUpperCase()
+    };
 
-    baseDecoration.cssClasses.push(
-      `ns-noderef--user-${isOnline ? 'online' : 'offline'}`,
-      `ns-noderef--role-${role}`
-    );
-    baseDecoration.ariaLabel = `User: ${safeTitle} (${isOnline ? 'online' : 'offline'}${role !== 'member' ? `, ${role}` : ''})`;
-    baseDecoration.metadata = { ...baseDecoration.metadata, isOnline, role, displayName };
+    componentDecoration.metadata = {
+      ...componentDecoration.metadata,
+      isOnline,
+      role,
+      displayName
+    };
 
-    return baseDecoration;
+    return componentDecoration;
   }
 }
 
@@ -335,46 +317,37 @@ class DateNodeDecorator extends BaseNodeDecorator {
     super(nodeReferenceService, 'date');
   }
 
-  public decorateReference(context: DecorationContext): DecorationResult {
-    const baseDecoration = this.getBaseDecoration(context);
+  public decorateReference(context: DecorationContext): ComponentDecoration {
+    // Use the base component decoration for dates
+    const componentDecoration = this.getBaseComponentDecoration(context);
 
     // Try to parse date from title or content
     const dateStr = context.title || context.content.split('\n')[0];
     const parsedDate = this.parseDate(dateStr);
 
-    const safeTitle = this.sanitizeText(context.title);
     const relativeTime = parsedDate ? this.formatRelativeTime(parsedDate.getTime()) : '';
     const isToday = parsedDate ? this.isToday(parsedDate) : false;
     const isPast = parsedDate ? parsedDate.getTime() < Date.now() : false;
 
-    baseDecoration.html = `
-      <span class="ns-noderef ns-noderef--date ${isToday ? 'ns-noderef--date-today' : ''} ${isPast ? 'ns-noderef--date-past' : 'ns-noderef--date-future'}" 
-            data-node-id="${context.nodeId}" 
-            data-uri="${context.uri}"
-            data-timestamp="${parsedDate?.getTime() || ''}"
-            role="button"
-            tabindex="0">
-        <span class="ns-noderef__icon">📅</span>
-        <span class="ns-noderef__date-text">${safeTitle}</span>
-        ${relativeTime ? `<span class="ns-noderef__relative-time">${relativeTime}</span>` : ''}
-        ${isToday ? `<span class="ns-noderef__today-badge">Today</span>` : ''}
-      </span>
-    `;
+    // Add date-specific props
+    componentDecoration.props = {
+      ...componentDecoration.props,
+      parsedDate: parsedDate?.toISOString() || null,
+      relativeTime,
+      isToday,
+      isPast,
+      timestamp: parsedDate?.getTime() || null
+    };
 
-    baseDecoration.cssClasses.push(
-      isToday ? 'ns-noderef--date-today' : '',
-      isPast ? 'ns-noderef--date-past' : 'ns-noderef--date-future'
-    );
-    baseDecoration.ariaLabel = `Date: ${safeTitle}${relativeTime ? ` (${relativeTime})` : ''}${isToday ? ' (Today)' : ''}`;
-    baseDecoration.metadata = {
-      ...baseDecoration.metadata,
+    componentDecoration.metadata = {
+      ...componentDecoration.metadata,
       parsedDate: parsedDate?.toISOString() || null,
       relativeTime,
       isToday,
       isPast
     };
 
-    return baseDecoration;
+    return componentDecoration;
   }
 
   private parseDate(dateStr: string): Date | null {
@@ -398,41 +371,34 @@ class DocumentNodeDecorator extends BaseNodeDecorator {
     super(nodeReferenceService, 'document');
   }
 
-  public decorateReference(context: DecorationContext): DecorationResult {
-    const baseDecoration = this.getBaseDecoration(context);
+  public decorateReference(context: DecorationContext): ComponentDecoration {
+    // Use the base component decoration for documents
+    const componentDecoration = this.getBaseComponentDecoration(context);
 
     // Extract file type and preview from content
     const fileType = this.extractFileType(context.content);
     const preview = this.extractPreview(context.content);
     const size = this.extractSize(context.content);
-
-    const safeTitle = this.sanitizeText(context.title);
     const fileTypeIcon = this.getFileTypeIcon(fileType);
 
-    baseDecoration.html = `
-      <span class="ns-noderef ns-noderef--document ns-noderef--document-${fileType}" 
-            data-node-id="${context.nodeId}" 
-            data-uri="${context.uri}"
-            data-file-type="${fileType}"
-            role="button"
-            tabindex="0">
-        <span class="ns-noderef__file-icon">${fileTypeIcon}</span>
-        <span class="ns-noderef__document-info">
-          <span class="ns-noderef__title">${safeTitle}</span>
-          ${preview ? `<span class="ns-noderef__preview">${preview}</span>` : ''}
-          <span class="ns-noderef__meta">
-            <span class="ns-noderef__file-type">${fileType.toUpperCase()}</span>
-            ${size ? `<span class="ns-noderef__file-size">${size}</span>` : ''}
-          </span>
-        </span>
-      </span>
-    `;
+    // Add document-specific props
+    componentDecoration.props = {
+      ...componentDecoration.props,
+      fileType,
+      preview,
+      size,
+      fileTypeIcon,
+      fileTypeLabel: fileType.toUpperCase()
+    };
 
-    baseDecoration.cssClasses.push(`ns-noderef--document-${fileType}`);
-    baseDecoration.ariaLabel = `Document: ${safeTitle} (${fileType.toUpperCase()}${size ? `, ${size}` : ''})`;
-    baseDecoration.metadata = { ...baseDecoration.metadata, fileType, preview, size };
+    componentDecoration.metadata = {
+      ...componentDecoration.metadata,
+      fileType,
+      preview,
+      size
+    };
 
-    return baseDecoration;
+    return componentDecoration;
   }
 
   private extractFileType(content: string): string {
@@ -485,49 +451,36 @@ class AINodeDecorator extends BaseNodeDecorator {
     super(nodeReferenceService, 'ai_chat');
   }
 
-  public decorateReference(context: DecorationContext): DecorationResult {
-    const baseDecoration = this.getBaseDecoration(context);
+  public decorateReference(context: DecorationContext): ComponentDecoration {
+    // Use the base component decoration for AI chats
+    const componentDecoration = this.getBaseComponentDecoration(context);
 
     // Extract AI-specific metadata
     const model = this.extractModel(context.content);
     const messageCount = this.extractMessageCount(context.content);
     const lastActivity = this.extractLastActivity(context.content);
-
-    const safeTitle = this.sanitizeText(context.title);
     const relativeTime = lastActivity ? this.formatRelativeTime(lastActivity) : '';
 
-    baseDecoration.html = `
-      <span class="ns-noderef ns-noderef--ai-chat" 
-            data-node-id="${context.nodeId}" 
-            data-uri="${context.uri}"
-            data-model="${model}"
-            data-message-count="${messageCount}"
-            role="button"
-            tabindex="0">
-        <span class="ns-noderef__ai-icon">🤖</span>
-        <span class="ns-noderef__ai-info">
-          <span class="ns-noderef__title">${safeTitle}</span>
-          <span class="ns-noderef__ai-meta">
-            ${model ? `<span class="ns-noderef__model">${model}</span>` : ''}
-            ${messageCount ? `<span class="ns-noderef__message-count">${messageCount} messages</span>` : ''}
-            ${relativeTime ? `<span class="ns-noderef__last-activity">${relativeTime}</span>` : ''}
-          </span>
-        </span>
-        <span class="ns-noderef__ai-status">💭</span>
-      </span>
-    `;
+    // Add AI-specific props
+    componentDecoration.props = {
+      ...componentDecoration.props,
+      model,
+      messageCount,
+      lastActivity,
+      relativeTime,
+      aiIcon: '🤖',
+      statusIcon: '💭'
+    };
 
-    baseDecoration.cssClasses.push('ns-noderef--ai-chat');
-    baseDecoration.ariaLabel = `AI Chat: ${safeTitle}${model ? ` (${model})` : ''}${messageCount ? `, ${messageCount} messages` : ''}`;
-    baseDecoration.metadata = {
-      ...baseDecoration.metadata,
+    componentDecoration.metadata = {
+      ...componentDecoration.metadata,
       model,
       messageCount,
       lastActivity,
       relativeTime
     };
 
-    return baseDecoration;
+    return componentDecoration;
   }
 
   private extractModel(content: string): string {

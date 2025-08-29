@@ -31,7 +31,6 @@ export * from './DecorationCoordinator';
 // ============================================================================
 export * from './NodeReferenceService';
 export * from './BaseNodeDecoration';
-export * from './NodeReferenceRenderer';
 
 // ============================================================================
 // Content Processing

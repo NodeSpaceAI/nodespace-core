@@ -1,15 +1,15 @@
 /**
  * HierarchyService - Desktop-Optimized Hierarchy Computation Service
- * 
+ *
  * Implements hierarchy computation service with Map-based caching for desktop performance.
  * Provides efficient operations for node depth calculation, children/descendants retrieval,
  * path computation, and sibling navigation using single-pointer sibling ordering.
- * 
+ *
  * Performance Targets:
  * - getNodeDepth: O(1) cached, max 1ms
- * - getChildren: O(1) query, max 5ms  
+ * - getChildren: O(1) query, max 5ms
  * - getSiblings: O(n) chain build, max 10ms
- * 
+ *
  * Key Features:
  * - Map-based caching for desktop performance
  * - Single-pointer sibling navigation using before_sibling_id
@@ -55,7 +55,7 @@ export class HierarchyService {
   private nodeManager: NodeManager;
   private cache: HierarchyCache;
   private readonly serviceName = 'HierarchyService';
-  
+
   // Performance monitoring
   private performanceMetrics: HierarchyPerformanceMetrics = {
     cacheHits: 0,
@@ -73,7 +73,7 @@ export class HierarchyService {
       siblingOrderCache: new Map(),
       lastInvalidation: Date.now()
     };
-    
+
     this.setupEventBusIntegration();
   }
 
@@ -87,7 +87,7 @@ export class HierarchyService {
    */
   public getNodeDepth(nodeId: string): number {
     const startTime = performance.now();
-    
+
     // Check cache first
     if (this.cache.depthCache.has(nodeId)) {
       this.performanceMetrics.cacheHits++;
@@ -95,11 +95,11 @@ export class HierarchyService {
     }
 
     this.performanceMetrics.cacheMisses++;
-    
+
     // Compute depth by walking up parent chain
     let depth = 0;
     let currentNode = this.nodeManager.findNode(nodeId);
-    
+
     if (!currentNode) {
       return 0;
     }
@@ -110,13 +110,13 @@ export class HierarchyService {
       depth++;
       const parentId = currentNode.parentId;
       pathNodes.push(parentId);
-      
+
       // Check if parent depth is cached
       if (this.cache.depthCache.has(parentId)) {
         depth += this.cache.depthCache.get(parentId)!;
         break;
       }
-      
+
       currentNode = this.nodeManager.findNode(parentId);
     }
 
@@ -129,7 +129,7 @@ export class HierarchyService {
     // Update performance metrics
     const computeTime = performance.now() - startTime;
     this.updateDepthComputeTime(computeTime);
-    
+
     return depth;
   }
 
@@ -139,7 +139,7 @@ export class HierarchyService {
    */
   public getChildren(nodeId: string): string[] {
     const startTime = performance.now();
-    
+
     // Check cache first
     if (this.cache.childrenCache.has(nodeId)) {
       this.performanceMetrics.cacheHits++;
@@ -155,14 +155,14 @@ export class HierarchyService {
 
     // Get children from NodeManager
     const children = [...node.children];
-    
+
     // Cache the result
     this.cache.childrenCache.set(nodeId, children);
 
     // Update performance metrics
     const computeTime = performance.now() - startTime;
     this.updateChildrenComputeTime(computeTime);
-    
+
     return children;
   }
 
@@ -177,7 +177,7 @@ export class HierarchyService {
     while (toProcess.length > 0) {
       const currentId = toProcess.shift()!;
       const children = this.getChildren(currentId);
-      
+
       for (const childId of children) {
         descendants.push(childId);
         toProcess.push(childId);
@@ -194,17 +194,17 @@ export class HierarchyService {
   public getNodePath(nodeId: string): NodePath {
     const nodeIds: string[] = [];
     const depths: number[] = [];
-    
+
     let currentId: string | undefined = nodeId;
-    
+
     // Walk up to root, building path
     while (currentId) {
       const currentNode = this.nodeManager.findNode(currentId);
       if (!currentNode) break;
-      
+
       nodeIds.unshift(currentId);
       depths.unshift(this.getNodeDepth(currentId));
-      
+
       currentId = currentNode.parentId;
     }
 
@@ -222,7 +222,7 @@ export class HierarchyService {
    */
   public getSiblings(nodeId: string): string[] {
     const startTime = performance.now();
-    
+
     const node = this.nodeManager.findNode(nodeId);
     if (!node) {
       return [];
@@ -230,12 +230,12 @@ export class HierarchyService {
 
     const parentId = node.parentId;
     const cacheKey = parentId || '__root__';
-    
+
     // Check cache first - now with timestamp validation
     if (this.cache.siblingOrderCache.has(cacheKey)) {
       this.performanceMetrics.cacheHits++;
       const cached = this.cache.siblingOrderCache.get(cacheKey)!;
-      
+
       // Fast return for cached result
       const computeTime = performance.now() - startTime;
       this.updateSiblingsComputeTime(computeTime);
@@ -243,7 +243,7 @@ export class HierarchyService {
     }
 
     this.performanceMetrics.cacheMisses++;
-    
+
     // OPTIMIZATION: Use direct children access instead of full computation
     let siblingIds: string[];
     if (parentId) {
@@ -260,7 +260,7 @@ export class HierarchyService {
     // Update performance metrics
     const computeTime = performance.now() - startTime;
     this.updateSiblingsComputeTime(computeTime);
-    
+
     return siblingIds;
   }
 
@@ -278,11 +278,11 @@ export class HierarchyService {
   public getNextSibling(nodeId: string): string | null {
     const siblings = this.getSiblings(nodeId);
     const currentIndex = siblings.indexOf(nodeId);
-    
+
     if (currentIndex === -1 || currentIndex === siblings.length - 1) {
       return null;
     }
-    
+
     return siblings[currentIndex + 1];
   }
 
@@ -292,11 +292,11 @@ export class HierarchyService {
   public getPreviousSibling(nodeId: string): string | null {
     const siblings = this.getSiblings(nodeId);
     const currentIndex = siblings.indexOf(nodeId);
-    
+
     if (currentIndex <= 0) {
       return null;
     }
-    
+
     return siblings[currentIndex - 1];
   }
 
@@ -317,7 +317,7 @@ export class HierarchyService {
   } {
     const startTime = performance.now();
     const rootNode = this.nodeManager.findNode(rootId);
-    
+
     if (!rootNode) {
       return {
         nodes: new Map(),
@@ -330,7 +330,7 @@ export class HierarchyService {
     // Get all descendants efficiently
     const allDescendants = this.getDescendants(rootId);
     const allNodes = new Map<string, Node>();
-    
+
     // Add root node
     allNodes.set(rootId, rootNode);
     let maxDepth = 0;
@@ -347,7 +347,7 @@ export class HierarchyService {
     }
 
     const computeTime = performance.now() - startTime;
-    
+
     // Emit performance event
     eventBus.emit<import('./EventTypes').DebugEvent>({
       type: 'debug:log',
@@ -388,10 +388,10 @@ export class HierarchyService {
   } {
     const startTime = performance.now();
     const bulkData = this.getAllNodesInRoot(rootId);
-    
+
     const structuredNodes = Array.from(bulkData.nodes.entries()).map(([nodeId, node]) => {
       const children = this.getChildren(nodeId);
-      
+
       return {
         id: nodeId,
         node: node,
@@ -425,14 +425,14 @@ export class HierarchyService {
   public invalidateNodeCache(nodeId: string): void {
     this.cache.depthCache.delete(nodeId);
     this.cache.childrenCache.delete(nodeId);
-    
+
     // Invalidate sibling caches that might include this node
     const node = this.nodeManager.findNode(nodeId);
     if (node) {
       const parentKey = node.parentId || '__root__';
       this.cache.siblingOrderCache.delete(parentKey);
     }
-    
+
     // Invalidate descendant depth caches
     const descendants = this.getDescendantsFromMap(nodeId);
     for (const descendantId of descendants) {
@@ -462,7 +462,7 @@ export class HierarchyService {
   } {
     const totalRequests = this.performanceMetrics.cacheHits + this.performanceMetrics.cacheMisses;
     const hitRatio = totalRequests > 0 ? this.performanceMetrics.cacheHits / totalRequests : 0;
-    
+
     return {
       depthCacheSize: this.cache.depthCache.size,
       childrenCacheSize: this.cache.childrenCache.size,
@@ -486,7 +486,7 @@ export class HierarchyService {
       if (nodeEvent.updateType === 'hierarchy') {
         // Hierarchy changes affect multiple nodes, invalidate broadly
         this.invalidateNodeCache(nodeEvent.nodeId);
-        
+
         // Also invalidate parent and children caches
         const node = this.nodeManager.findNode(nodeEvent.nodeId);
         if (node?.parentId) {
@@ -498,7 +498,7 @@ export class HierarchyService {
     // Listen for hierarchy changes
     eventBus.subscribe('hierarchy:changed', (event) => {
       const hierarchyEvent = event as import('./EventTypes').HierarchyChangedEvent;
-      
+
       // Invalidate cache for all affected nodes
       for (const nodeId of hierarchyEvent.affectedNodes) {
         this.invalidateNodeCache(nodeId);
@@ -508,7 +508,7 @@ export class HierarchyService {
     // Listen for node creation/deletion
     eventBus.subscribe('node:created', (event) => {
       const nodeEvent = event as import('./EventTypes').NodeCreatedEvent;
-      
+
       // Invalidate parent's children cache
       if (nodeEvent.parentId) {
         this.cache.childrenCache.delete(nodeEvent.parentId);
@@ -520,10 +520,10 @@ export class HierarchyService {
 
     eventBus.subscribe('node:deleted', (event) => {
       const nodeEvent = event as import('./EventTypes').NodeDeletedEvent;
-      
+
       // Remove from all caches
       this.invalidateNodeCache(nodeEvent.nodeId);
-      
+
       // Invalidate parent's caches
       if (nodeEvent.parentId) {
         this.cache.childrenCache.delete(nodeEvent.parentId);
@@ -545,17 +545,17 @@ export class HierarchyService {
   private getDescendantsFromMap(nodeId: string): string[] {
     const descendants: string[] = [];
     const node = this.nodeManager.findNode(nodeId);
-    
+
     if (!node || !node.children.length) {
       return descendants;
     }
 
     const toProcess = [...node.children];
-    
+
     while (toProcess.length > 0) {
       const currentId = toProcess.shift()!;
       descendants.push(currentId);
-      
+
       const currentNode = this.nodeManager.findNode(currentId);
       if (currentNode?.children.length) {
         toProcess.push(...currentNode.children);
@@ -571,7 +571,7 @@ export class HierarchyService {
   private updateDepthComputeTime(time: number): void {
     const current = this.performanceMetrics.avgDepthComputeTime;
     const count = this.performanceMetrics.cacheMisses;
-    this.performanceMetrics.avgDepthComputeTime = 
+    this.performanceMetrics.avgDepthComputeTime =
       count === 1 ? time : (current * (count - 1) + time) / count;
   }
 
@@ -581,7 +581,7 @@ export class HierarchyService {
   private updateChildrenComputeTime(time: number): void {
     const current = this.performanceMetrics.avgChildrenComputeTime;
     const count = this.performanceMetrics.cacheMisses;
-    this.performanceMetrics.avgChildrenComputeTime = 
+    this.performanceMetrics.avgChildrenComputeTime =
       count === 1 ? time : (current * (count - 1) + time) / count;
   }
 
@@ -591,7 +591,7 @@ export class HierarchyService {
   private updateSiblingsComputeTime(time: number): void {
     const current = this.performanceMetrics.avgSiblingsComputeTime;
     const count = this.performanceMetrics.cacheMisses;
-    this.performanceMetrics.avgSiblingsComputeTime = 
+    this.performanceMetrics.avgSiblingsComputeTime =
       count === 1 ? time : (current * (count - 1) + time) / count;
   }
 }

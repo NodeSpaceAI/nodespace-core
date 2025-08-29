@@ -15,16 +15,18 @@ describe('marked.js Integration', () => {
           expected: '<span class="markdown-italic"><span class="markdown-bold">bold</span></span>'
         },
         {
-          markdown: '**_italic_**', 
+          markdown: '**_italic_**',
           expected: '<span class="markdown-bold"><span class="markdown-italic">italic</span></span>'
         },
         {
           markdown: '_italic with **bold** inside_',
-          expected: '<span class="markdown-italic">italic with <span class="markdown-bold">bold</span> inside</span>'
+          expected:
+            '<span class="markdown-italic">italic with <span class="markdown-bold">bold</span> inside</span>'
         },
         {
           markdown: '**bold with *italic* inside**',
-          expected: '<span class="markdown-bold">bold with <span class="markdown-italic">italic</span> inside</span>'
+          expected:
+            '<span class="markdown-bold">bold with <span class="markdown-italic">italic</span> inside</span>'
         }
       ];
 
@@ -38,11 +40,13 @@ describe('marked.js Integration', () => {
       const testCases = [
         {
           markdown: '***bold italic***',
-          expected: '<span class="markdown-italic"><span class="markdown-bold">bold italic</span></span>'
+          expected:
+            '<span class="markdown-italic"><span class="markdown-bold">bold italic</span></span>'
         },
         {
           markdown: '___bold italic___',
-          expected: '<span class="markdown-italic"><span class="markdown-bold">bold italic</span></span>'
+          expected:
+            '<span class="markdown-italic"><span class="markdown-bold">bold italic</span></span>'
         }
       ];
 
@@ -77,11 +81,7 @@ describe('marked.js Integration', () => {
 
   describe('Round-trip conversion', () => {
     it('should maintain consistency for simple formatting', () => {
-      const testCases = [
-        '**bold**',
-        '*italic*',
-        '***bold italic***'
-      ];
+      const testCases = ['**bold**', '*italic*', '***bold italic***'];
 
       testCases.forEach((markdown) => {
         const html = markdownToHtml(markdown);
@@ -138,7 +138,7 @@ describe('marked.js Integration', () => {
         },
         {
           input: '## Subheader',
-          expected: '## Subheader', 
+          expected: '## Subheader',
           description: 'H2 header should remain as plain text'
         },
         {
@@ -151,7 +151,7 @@ describe('marked.js Integration', () => {
       headerCases.forEach(({ input, expected, description }) => {
         const result = markdownToHtml(input);
         expect(result, description).toBe(expected);
-        
+
         // Additional check: should NOT contain HTML header tags
         expect(result).not.toMatch(/<h[1-6][^>]*>/);
         expect(result).not.toMatch(/<\/h[1-6]>/);
@@ -175,7 +175,7 @@ describe('marked.js Integration', () => {
       mixedCases.forEach(({ input, expected, description }) => {
         const result = markdownToHtml(input);
         expect(result, description).toBe(expected);
-        
+
         // Verify header symbols are preserved
         expect(result).toMatch(/^#{1,6}\s/);
         // Verify no HTML header tags are created
@@ -185,15 +185,17 @@ describe('marked.js Integration', () => {
 
     it('should maintain header syntax in round-trip conversion', () => {
       const headerWithFormatting = '# Welcome to **NodeSpace** with *style*';
-      
+
       // Forward conversion
       const html = markdownToHtml(headerWithFormatting);
-      expect(html).toBe('# Welcome to <span class="markdown-bold">NodeSpace</span> with <span class="markdown-italic">style</span>');
-      
+      expect(html).toBe(
+        '# Welcome to <span class="markdown-bold">NodeSpace</span> with <span class="markdown-italic">style</span>'
+      );
+
       // Backward conversion
       const backToMarkdown = htmlToMarkdown(html);
       expect(backToMarkdown).toBe(headerWithFormatting);
-      
+
       // Should still have # at the beginning
       expect(backToMarkdown).toMatch(/^#\s/);
     });
@@ -205,7 +207,7 @@ describe('marked.js Integration', () => {
       const start = Date.now();
       const result = markdownToHtml(largeText);
       const duration = Date.now() - start;
-      
+
       // Should complete within reasonable time (less than 100ms for this size)
       expect(duration).toBeLessThan(100);
       expect(result).toContain('class="markdown-bold"');
@@ -213,13 +215,7 @@ describe('marked.js Integration', () => {
     });
 
     it('should handle malformed input without crashing', () => {
-      const malformedCases = [
-        '**bold*',
-        '*italic**',
-        '***mixed**',
-        '__**bold*_',
-        ''
-      ];
+      const malformedCases = ['**bold*', '*italic**', '***mixed**', '__**bold*_', ''];
 
       malformedCases.forEach((input) => {
         // Should not throw errors

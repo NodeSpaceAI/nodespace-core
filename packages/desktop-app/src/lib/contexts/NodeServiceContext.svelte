@@ -8,10 +8,10 @@
 
 <script lang="ts" context="module">
   import { getContext, setContext } from 'svelte';
-  
+
   // Context key for service access
   const NODE_SERVICE_CONTEXT_KEY = Symbol('nodeServices');
-  
+
   // Service interface definition
   export interface NodeServices {
     nodeReferenceService: unknown;
@@ -21,12 +21,12 @@
     contentProcessor: unknown;
     databaseService: unknown;
   }
-  
+
   // Context accessor functions
   export function getNodeServices(): NodeServices | null {
     return getContext(NODE_SERVICE_CONTEXT_KEY) || null;
   }
-  
+
   export function setNodeServices(services: NodeServices): void {
     setContext(NODE_SERVICE_CONTEXT_KEY, services);
   }
@@ -34,7 +34,7 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
-  
+
   // Service imports
   import NodeReferenceService from '$lib/services/NodeReferenceService';
   import { EnhancedNodeManager } from '$lib/services/EnhancedNodeManager';
@@ -42,38 +42,57 @@
   import { NodeOperationsService } from '$lib/services/NodeOperationsService';
   import { MockDatabaseService } from '$lib/services/MockDatabaseService';
   import { ContentProcessor } from '$lib/services/contentProcessor';
-  
+
   // Props - external reference only for service configuration
   export const initializationMode: 'full' | 'mock' = 'mock';
-  
+
   // Services state
   let services: NodeServices | null = null;
   let servicesInitialized = false;
   let initializationError: string | null = null;
-  
+
   // Initialize services on mount
   onMount(async () => {
     try {
       console.log('🚀 NodeServiceContext mounted - starting service initialization');
       // Initialize services in dependency order
       const databaseService = new MockDatabaseService();
-      const nodeManager = new EnhancedNodeManager();
-      const hierarchyService = new HierarchyService(nodeManager);
-      const nodeOperationsService = new NodeOperationsService(
-        nodeManager,
-        hierarchyService,
-        databaseService
+
+      // Create node manager events
+      const nodeManagerEvents = {
+        focusRequested: (nodeId: string, position?: number) => {
+          console.log('Focus requested:', nodeId, position);
+        },
+        hierarchyChanged: () => {
+          console.log('Hierarchy changed');
+        },
+        nodeCreated: (nodeId: string) => {
+          console.log('Node created:', nodeId);
+        },
+        nodeDeleted: (nodeId: string) => {
+          console.log('Node deleted:', nodeId);
+        }
+      };
+
+      const nodeManager = new EnhancedNodeManager(nodeManagerEvents);
+      const hierarchyService = new HierarchyService(
+        nodeManager as unknown as import('$lib/services/NodeManager').NodeManager
       );
       const contentProcessor = ContentProcessor.getInstance();
-      
+      const nodeOperationsService = new NodeOperationsService(
+        nodeManager as unknown as import('$lib/services/NodeManager').NodeManager,
+        hierarchyService,
+        contentProcessor
+      );
+
       const nodeReferenceService = new NodeReferenceService(
-        nodeManager,
+        nodeManager as unknown as import('$lib/services/NodeManager').NodeManager,
         hierarchyService,
         nodeOperationsService,
         databaseService,
         contentProcessor
       );
-      
+
       // Create service bundle
       services = {
         nodeReferenceService,
@@ -83,13 +102,12 @@
         contentProcessor,
         databaseService
       };
-      
+
       // Set context for child components
       setNodeServices(services);
-      
+
       servicesInitialized = true;
       console.log('✅ NodeServiceContext services initialized successfully');
-      
     } catch (error) {
       console.error('NodeServiceContext: Failed to initialize services:', error);
       initializationError = error instanceof Error ? error.message : 'Unknown error';
@@ -107,7 +125,9 @@
   </div>
 {:else}
   <div class="flex items-center gap-2 text-muted-foreground p-4">
-    <div class="animate-spin h-4 w-4 border-2 border-primary border-t-transparent rounded-full"></div>
+    <div
+      class="animate-spin h-4 w-4 border-2 border-primary border-t-transparent rounded-full"
+    ></div>
     <span>Initializing node services...</span>
   </div>
 {/if}

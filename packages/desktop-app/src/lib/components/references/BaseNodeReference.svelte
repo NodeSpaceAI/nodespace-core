@@ -62,7 +62,14 @@
 
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
-      handleClick(event as MouseEvent);
+      // Create a synthetic click by dispatching the same event data
+      dispatch('nodeClick', {
+        nodeId,
+        href,
+        nodeType,
+        content,
+        event
+      });
     }
   }
 </script>

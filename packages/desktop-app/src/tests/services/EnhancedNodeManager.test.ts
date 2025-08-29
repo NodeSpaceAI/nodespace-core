@@ -1,6 +1,6 @@
 /**
  * EnhancedNodeManager Test Suite
- * 
+ *
  * Comprehensive integration tests for EnhancedNodeManager focusing on:
  * - Service composition integration
  * - Backward compatibility with NodeManager
@@ -102,7 +102,7 @@ describe('EnhancedNodeManager', () => {
       ]);
 
       const newNodeId = enhancedNodeManager.createNode('root', 'New content');
-      
+
       expect(events.nodeCreated).toHaveBeenCalledWith(newNodeId);
       expect(events.hierarchyChanged).toHaveBeenCalled();
     });
@@ -163,8 +163,8 @@ describe('EnhancedNodeManager', () => {
     test('getEnhancedDescendants returns all descendants recursively', () => {
       const descendants = enhancedNodeManager.getEnhancedDescendants('root');
       expect(descendants).toHaveLength(3); // section1, section2, subsection1
-      
-      const descendantIds = descendants.map(n => n.id);
+
+      const descendantIds = descendants.map((n) => n.id);
       expect(descendantIds).toContain('section1');
       expect(descendantIds).toContain('section2');
       expect(descendantIds).toContain('subsection1');
@@ -172,15 +172,15 @@ describe('EnhancedNodeManager', () => {
 
     test('getNodePath returns complete node path with depths', () => {
       const path = enhancedNodeManager.getNodePath('subsection1');
-      
+
       expect(path.nodes).toHaveLength(3);
       expect(path.depths).toEqual([0, 1, 2]);
-      expect(path.nodes.map(n => n.id)).toEqual(['root', 'section1', 'subsection1']);
+      expect(path.nodes.map((n) => n.id)).toEqual(['root', 'section1', 'subsection1']);
     });
 
     test('getEnhancedSiblings provides rich sibling information', () => {
       const siblingInfo = enhancedNodeManager.getEnhancedSiblings('section1');
-      
+
       expect(siblingInfo.siblings).toHaveLength(2);
       expect(siblingInfo.currentPosition).toBe(0);
       expect(siblingInfo.nextSibling?.id).toBe('section2');
@@ -269,7 +269,7 @@ describe('EnhancedNodeManager', () => {
       });
 
       expect(success).toBe(true);
-      
+
       const updatedNode = enhancedNodeManager.findNode('node1');
       expect(updatedNode!.content).toBe('Updated content');
       expect(updatedNode!.metadata).toHaveProperty('originalProp');
@@ -292,10 +292,10 @@ describe('EnhancedNodeManager', () => {
       enhancedNodeManager.updateNodeMentions('node1', ['node2']);
 
       expect(node1!.mentions).toEqual(['node2']);
-      
+
       // Verify event was emitted for consistency
       const recentEvents = eventBus.getRecentEvents();
-      const mentionEvents = recentEvents.filter(e => e.type === 'node:updated');
+      const mentionEvents = recentEvents.filter((e) => e.type === 'node:updated');
       expect(mentionEvents.length).toBeGreaterThan(0);
     });
   });
@@ -345,7 +345,7 @@ describe('EnhancedNodeManager', () => {
       const documentNode = enhancedNodeManager.findNode('document');
       const sectionNode = enhancedNodeManager.findNode('section');
       const note2Node = enhancedNodeManager.findNode('note2');
-      
+
       if (documentNode) documentNode.mentions = ['note1'];
       if (sectionNode) sectionNode.mentions = ['note2'];
       if (note2Node) note2Node.mentions = ['document'];
@@ -353,7 +353,7 @@ describe('EnhancedNodeManager', () => {
 
     test('analyzeNode provides comprehensive insights', () => {
       const analysis = enhancedNodeManager.analyzeNode('document');
-      
+
       expect(analysis).toBeTruthy();
       expect(analysis!.nodeId).toBe('document');
       expect(analysis!.contentType).toBe('linked'); // Has wikilinks
@@ -369,7 +369,7 @@ describe('EnhancedNodeManager', () => {
 
     test('analyzeNode handles nodes with no formatting', () => {
       const analysis = enhancedNodeManager.analyzeNode('subsection');
-      
+
       expect(analysis!.hasWikiLinks).toBe(false);
       expect(analysis!.headerLevel).toBe(0);
       expect(analysis!.formattingComplexity).toBe(0);
@@ -392,17 +392,17 @@ describe('EnhancedNodeManager', () => {
       if ('lastAnalyzed' in analysis1Clean) {
         delete (analysis1Clean as { lastAnalyzed?: number }).lastAnalyzed;
       }
-      if ('lastAnalyzed' in analysis2Clean) {  
+      if ('lastAnalyzed' in analysis2Clean) {
         delete (analysis2Clean as { lastAnalyzed?: number }).lastAnalyzed;
       }
-      
+
       expect(analysis1Clean).toEqual(analysis2Clean);
       expect(secondTime).toBeLessThan(firstTime); // Cached call should be faster
     });
 
     test('analyzeAllNodes provides aggregate insights', () => {
       const globalAnalysis = enhancedNodeManager.analyzeAllNodes();
-      
+
       expect(globalAnalysis.totalNodes).toBeGreaterThan(4); // At least the nodes we created
       expect(globalAnalysis.byType).toBeDefined();
       expect(globalAnalysis.avgDepth).toBeGreaterThanOrEqual(0);
@@ -433,13 +433,13 @@ describe('EnhancedNodeManager', () => {
           children: []
         });
       }
-      
+
       enhancedNodeManager.initializeFromLegacyData(nodes);
     });
 
     test('bulkUpdateNodes processes multiple nodes efficiently', async () => {
       const nodeIds = ['bulk-node-0', 'bulk-node-2', 'bulk-node-4'];
-      
+
       const result = await enhancedNodeManager.bulkUpdateNodes(nodeIds, {
         metadata: { bulk: true, updated: Date.now() },
         nodeType: 'updated-even'
@@ -460,7 +460,7 @@ describe('EnhancedNodeManager', () => {
 
     test('bulkUpdateNodes handles failures gracefully', async () => {
       const nodeIds = ['bulk-node-0', 'non-existent-node', 'bulk-node-2'];
-      
+
       const result = await enhancedNodeManager.bulkUpdateNodes(nodeIds, {
         content: 'Updated content'
       });
@@ -477,8 +477,14 @@ describe('EnhancedNodeManager', () => {
       });
 
       const recentEvents = eventBus.getRecentEvents();
-      const debugEvents = recentEvents.filter(e => e.type === 'debug:log' && (e as any).message?.includes('Bulk operation')) as import('../../lib/services/EventTypes').DebugEvent[];
-      
+      const debugEvents = recentEvents.filter(
+        (e) =>
+          e.type === 'debug:log' &&
+          (e as import('../../lib/services/EventTypes').DebugEvent).message?.includes(
+            'Bulk operation'
+          )
+      ) as import('../../lib/services/EventTypes').DebugEvent[];
+
       expect(debugEvents.length).toBeGreaterThan(0);
       expect(debugEvents[0].message).toContain('2 success');
     });
@@ -541,9 +547,9 @@ describe('EnhancedNodeManager', () => {
       });
 
       expect(results).toHaveLength(3); // doc1, note2, milestone1
-      expect(results.map(n => n.id)).toContain('doc1');
-      expect(results.map(n => n.id)).toContain('note2');
-      expect(results.map(n => n.id)).toContain('milestone1');
+      expect(results.map((n) => n.id)).toContain('doc1');
+      expect(results.map((n) => n.id)).toContain('note2');
+      expect(results.map((n) => n.id)).toContain('milestone1');
     });
 
     test('searchNodes filters by node type', () => {
@@ -552,7 +558,7 @@ describe('EnhancedNodeManager', () => {
       });
 
       expect(results).toHaveLength(2);
-      expect(results.every(n => n.nodeType === 'document')).toBe(true);
+      expect(results.every((n) => n.nodeType === 'document')).toBe(true);
     });
 
     test('searchNodes filters by wikilinks presence', () => {
@@ -566,7 +572,7 @@ describe('EnhancedNodeManager', () => {
 
       expect(resultsWithLinks.length).toBeGreaterThan(0);
       expect(resultsWithoutLinks.length).toBeGreaterThan(0);
-      
+
       // Total should match all nodes in the system
       const totalNodes = enhancedNodeManager.nodes.size;
       expect(resultsWithLinks.length + resultsWithoutLinks.length).toBe(totalNodes);
@@ -579,10 +585,10 @@ describe('EnhancedNodeManager', () => {
 
       // Should find nodes that mention milestone1 (section1 in the test data)
       expect(results.length).toBeGreaterThanOrEqual(0); // May be 0 if mentions not set up properly
-      
+
       // If we find results, verify they have the right mentions
       if (results.length > 0) {
-        expect(results.some(node => node.mentions?.includes('milestone1'))).toBe(true);
+        expect(results.some((node) => node.mentions?.includes('milestone1'))).toBe(true);
       }
     });
 
@@ -593,7 +599,7 @@ describe('EnhancedNodeManager', () => {
 
       expect(results.length).toBeGreaterThan(0);
       expect(results.length).toBeLessThan(5); // Should exclude short notes
-      expect(results.map(n => n.id)).toContain('note2');
+      expect(results.map((n) => n.id)).toContain('note2');
     });
 
     test('searchNodes filters by hierarchy depth', () => {
@@ -603,7 +609,7 @@ describe('EnhancedNodeManager', () => {
 
       // Should only contain nodes at depth 0 (root nodes)
       expect(results.length).toBeGreaterThan(0);
-      
+
       // Verify all results are actually at depth 0
       for (const node of results) {
         const depth = enhancedNodeManager.getEnhancedNodeDepth(node.id);
@@ -667,12 +673,14 @@ describe('EnhancedNodeManager', () => {
     test('performance remains good with cached operations', () => {
       // Create a moderately sized hierarchy
       const createLargeHierarchy = (size: number) => {
-        const nodes = [{ 
-          id: 'root', 
-          type: 'document', 
-          content: 'Root', 
-          children: [] as TestHierarchyNode[] 
-        }];
+        const nodes = [
+          {
+            id: 'root',
+            type: 'document',
+            content: 'Root',
+            children: [] as TestHierarchyNode[]
+          }
+        ];
 
         for (let i = 1; i < size; i++) {
           nodes.push({
@@ -731,7 +739,7 @@ describe('EnhancedNodeManager', () => {
       });
 
       // Allow event processing
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 10));
 
       // Analysis should be refreshed (cache invalidated)
       const analysis2 = enhancedNodeManager.analyzeNode('test-node', false); // Force fresh analysis
@@ -744,9 +752,7 @@ describe('EnhancedNodeManager', () => {
           id: 'parent',
           type: 'text',
           content: 'Parent',
-          children: [
-            { id: 'child', type: 'text', content: 'Child', children: [] }
-          ]
+          children: [{ id: 'child', type: 'text', content: 'Child', children: [] }]
         }
       ]);
 
@@ -764,7 +770,7 @@ describe('EnhancedNodeManager', () => {
       });
 
       // Allow event processing
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 10));
 
       // Service should have responded to the event (no errors thrown)
       expect(true).toBe(true);
@@ -787,7 +793,7 @@ describe('EnhancedNodeManager', () => {
       });
 
       // Allow event processing
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 10));
 
       // Analysis cache should not contain deleted node
       const stats = enhancedNodeManager.getEnhancedStats();
@@ -859,7 +865,7 @@ describe('EnhancedNodeManager', () => {
 
       // Test hierarchy navigation
       const path = enhancedNodeManager.getNodePath('section1-1');
-      expect(path.nodes.map(n => n.id)).toEqual(['main-doc', 'chapter1', 'section1-1']);
+      expect(path.nodes.map((n) => n.id)).toEqual(['main-doc', 'chapter1', 'section1-1']);
 
       // Test search capabilities
       const documentsWithRefs = enhancedNodeManager.searchNodes({
@@ -873,7 +879,7 @@ describe('EnhancedNodeManager', () => {
     test('maintains performance with large interconnected knowledge base', () => {
       // Create interconnected knowledge base
       const nodes = [];
-      
+
       // Create 100 nodes with random cross-references
       for (let i = 0; i < 100; i++) {
         nodes.push({
@@ -907,10 +913,10 @@ describe('EnhancedNodeManager', () => {
       const globalAnalysis = enhancedNodeManager.analyzeAllNodes();
       const conceptNodes = enhancedNodeManager.searchNodes({ nodeType: 'concept' });
       const nodesWithManyRefs = enhancedNodeManager.searchNodes({ minWordCount: 5 });
-      
+
       // Use the results to prevent dead code elimination
       void globalAnalysis;
-      void conceptNodes; 
+      void conceptNodes;
       void nodesWithManyRefs;
 
       for (let i = 0; i < 10; i++) {

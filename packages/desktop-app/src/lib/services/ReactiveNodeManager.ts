@@ -12,7 +12,7 @@ import { nodes, rootNodeIds } from './nodeStore';
 export class ReactiveNodeManager extends NodeManager {
   constructor(events: NodeManagerEvents) {
     super(events);
-    
+
     // Initialize stores with current state
     this.syncStores();
 
@@ -32,10 +32,13 @@ export class ReactiveNodeManager extends NodeManager {
 
     // Listen for decoration updates to trigger re-rendering
     eventBus.subscribe('decoration:update-needed', (event) => {
-      // Update the specific node in stores
-      const node = super.nodes.get(event.nodeId);
-      if (node) {
-        this.syncStores();
+      // Type guard to ensure the event has nodeId property
+      if (this.hasNodeId(event)) {
+        // Update the specific node in stores
+        const node = super.nodes.get(event.nodeId);
+        if (node) {
+          this.syncStores();
+        }
       }
     });
 
@@ -107,7 +110,7 @@ export class ReactiveNodeManager extends NodeManager {
       inheritHeaderLevel,
       cursorAtBeginning
     );
-    
+
     // Sync stores to trigger UI reactivity
     this.syncStores();
 
@@ -185,5 +188,16 @@ export class ReactiveNodeManager extends NodeManager {
    */
   isNodeCollapsed(nodeId: string): boolean {
     return super.isNodeCollapsed(nodeId);
+  }
+
+  /**
+   * Type guard to check if an event has a nodeId property
+   */
+  private hasNodeId(
+    event: import('./EventTypes').NodeSpaceEvent
+  ): event is import('./EventTypes').NodeSpaceEvent & { nodeId: string } {
+    return (
+      'nodeId' in event && typeof (event as unknown as { nodeId: unknown }).nodeId === 'string'
+    );
   }
 }

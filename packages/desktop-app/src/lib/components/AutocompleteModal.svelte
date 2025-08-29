@@ -338,7 +338,7 @@
         // Calculate best position that fits
         const availableBelow = viewportHeight - pos.y - padding;
         const availableAbove = pos.y - padding;
-        
+
         if (availableBelow >= availableAbove) {
           y = pos.y + offset;
           placement = 'below';
@@ -439,8 +439,8 @@
   <!-- Modal overlay for click-outside handling -->
   <!-- svelte-ignore a11y-click-events-have-key-events -->
   <!-- svelte-ignore a11y-no-static-element-interactions -->
-  <div 
-    class="fixed inset-0 z-50 bg-red-500/50 backdrop-blur-[2px]" 
+  <div
+    class="fixed inset-0 z-50 bg-red-500/50 backdrop-blur-[2px]"
     on:click={closeModal}
     style="animation: overlayFadeIn 0.15s ease-out;"
   >
@@ -454,8 +454,9 @@
       on:click|stopPropagation
     >
       <!-- Use shadcn-svelte dropdown content styling -->
-      <div class="bg-popover text-popover-foreground z-50 min-w-[8rem] overflow-y-auto overflow-x-hidden rounded-md border p-1 shadow-md outline-none max-h-[320px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
-        
+      <div
+        class="bg-popover text-popover-foreground z-50 min-w-[8rem] overflow-y-auto overflow-x-hidden rounded-md border p-1 shadow-md outline-none max-h-[320px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
+      >
         <!-- Header using dropdown menu patterns -->
         <div class="flex items-center gap-2 px-2 py-1.5 text-sm">
           <div class="flex items-center gap-1.5">
@@ -468,7 +469,7 @@
               {/if}
             </span>
           </div>
-          
+
           <!-- Results count badge -->
           {#if totalResults > 0 && !isLoading}
             <div class="ml-auto">
@@ -477,7 +478,7 @@
               </Badge>
             </div>
           {/if}
-          
+
           <!-- Keyboard shortcuts -->
           {#if !totalResults || totalResults === 0}
             <div class="flex items-center gap-1 ml-auto">
@@ -496,11 +497,14 @@
         <!-- Content area -->
         {#if isLoading}
           <!-- Loading state using dropdown item structure -->
-          <div class="relative flex cursor-default select-none items-center rounded-sm px-2 py-6 text-sm justify-center gap-3">
-            <div class="w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin"></div>
+          <div
+            class="relative flex cursor-default select-none items-center rounded-sm px-2 py-6 text-sm justify-center gap-3"
+          >
+            <div
+              class="w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin"
+            ></div>
             <span class="text-muted-foreground">Searching...</span>
           </div>
-          
         {:else if searchError}
           <!-- Error state -->
           <div class="px-2 py-4 text-center space-y-3">
@@ -509,12 +513,11 @@
               variant="ghost"
               size="sm"
               class="h-7 px-2 text-xs"
-              on:click={() => performSearch(query)}
+              onclick={() => performSearch(query)}
             >
               Try again
             </Button>
           </div>
-          
         {:else if searchResults.length === 0}
           <!-- Empty state -->
           <div class="px-2 py-4 text-center space-y-3">
@@ -522,25 +525,24 @@
               {query ? 'No matching nodes found' : 'No recent nodes'}
             </div>
             {#if query}
-              <Button 
-                variant="outline" 
-                size="sm" 
+              <Button
+                variant="outline"
+                size="sm"
                 class="h-7 px-2 text-xs gap-1"
-                on:click={createNewNode}
+                onclick={createNewNode}
               >
                 <span class="text-sm">✨</span>
                 Create "{query.length > 20 ? query.substring(0, 20) + '...' : query}"
               </Button>
             {/if}
           </div>
-          
         {:else}
           <!-- Results using proper dropdown menu items -->
           {#each searchResults as suggestion, index (suggestion.nodeId)}
             {@const isSelected = index === selectedIndex}
             {@const nodeConfig = getNodeTypeConfig(suggestion.nodeType)}
 
-            <div 
+            <div
               class={cn(
                 'flex items-start gap-3 py-2 px-2 cursor-pointer rounded-sm transition-colors hover:bg-accent hover:text-accent-foreground',
                 isSelected && 'bg-accent text-accent-foreground'
@@ -551,7 +553,9 @@
               on:keydown={(e) => e.key === 'Enter' && selectNodeSuggestion(suggestion)}
             >
               <!-- Node type icon -->
-              <div class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded bg-muted/50">
+              <div
+                class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded bg-muted/50"
+              >
                 <span class="text-xs">{nodeConfig.icon}</span>
               </div>
 
@@ -573,7 +577,9 @@
                 <!-- Content preview -->
                 {#if suggestion.content && suggestion.content !== suggestion.title}
                   <div class="text-xs text-muted-foreground leading-relaxed line-clamp-2">
-                    {suggestion.content.substring(0, 100)}{suggestion.content.length > 100 ? '...' : ''}
+                    {suggestion.content.substring(0, 100)}{suggestion.content.length > 100
+                      ? '...'
+                      : ''}
                   </div>
                 {/if}
 
@@ -581,7 +587,12 @@
                 {#if suggestion.hierarchy.length > 1}
                   <div class="flex items-center gap-1 text-xs text-muted-foreground">
                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2z"></path>
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2z"
+                      ></path>
                     </svg>
                     <span class="truncate max-w-32">
                       {suggestion.hierarchy.slice(0, -1).join(' › ')}
@@ -603,9 +614,7 @@
                     Excellent
                   </Badge>
                 {:else if suggestion.relevanceScore > 0.7}
-                  <Badge variant="outline" class="text-xs h-4 px-1 text-blue-600">
-                    Good
-                  </Badge>
+                  <Badge variant="outline" class="text-xs h-4 px-1 text-blue-600">Good</Badge>
                 {/if}
               </div>
             </div>
@@ -616,8 +625,8 @@
             {@const isCreateSelected = selectedIndex === searchResults.length}
 
             <Separator class="my-1" />
-            
-            <div 
+
+            <div
               class={cn(
                 'flex items-center gap-3 py-2 px-2 cursor-pointer rounded-sm transition-colors hover:bg-accent hover:text-accent-foreground',
                 isCreateSelected && 'bg-accent text-accent-foreground'
@@ -628,7 +637,9 @@
               on:keydown={(e) => e.key === 'Enter' && createNewNode()}
             >
               <!-- Create icon -->
-              <div class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded bg-primary/10">
+              <div
+                class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded bg-primary/10"
+              >
                 <span class="text-xs">✨</span>
               </div>
 
@@ -641,9 +652,7 @@
               </div>
 
               <!-- Node type badge -->
-              <Badge variant="secondary" class="text-xs h-5">
-                Text
-              </Badge>
+              <Badge variant="secondary" class="text-xs h-5">Text</Badge>
             </div>
           {/if}
         {/if}
@@ -660,6 +669,7 @@
   .line-clamp-2 {
     display: -webkit-box;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }

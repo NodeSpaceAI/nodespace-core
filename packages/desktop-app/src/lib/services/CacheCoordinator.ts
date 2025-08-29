@@ -408,10 +408,10 @@ export class CacheCoordinator {
       name: 'hierarchy-change',
       condition: (event, cache) => {
         const typedEvent = event as import('./EventTypes').HierarchyChangedEvent;
-        return (
+        return Boolean(
           typedEvent.type === 'hierarchy:changed' &&
-          cache.nodeId &&
-          typedEvent.affectedNodes?.includes(cache.nodeId)
+            cache.nodeId &&
+            typedEvent.affectedNodes?.includes(cache.nodeId)
         );
       },
       priority: 90,
@@ -437,7 +437,9 @@ export class CacheCoordinator {
       name: 'reference-update',
       condition: (event, cache) => {
         const typedEvent = event as import('./EventTypes').ReferencesUpdateNeededEvent;
-        return typedEvent.type === 'references:update-needed' && cache.nodeId === typedEvent.nodeId;
+        return Boolean(
+          typedEvent.type === 'references:update-needed' && cache.nodeId === typedEvent.nodeId
+        );
       },
       priority: 80,
       batchable: true

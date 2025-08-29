@@ -2,7 +2,7 @@
   import { cn } from '$lib/utils';
   import Badge from '../badge/badge.svelte';
   import { createEventDispatcher, onMount } from 'svelte';
-  
+
   // Types for node results
   interface NodeResult {
     id: string;
@@ -31,14 +31,14 @@
 
   // Node type configuration with proper NodeSpace colors
   const nodeTypeConfig = {
-    'text': { icon: '📄', label: 'Text', color: 'hsl(142 71% 45%)' },
-    'task': { icon: '✅', label: 'Task', color: 'hsl(25 95% 53%)' },
+    text: { icon: '📄', label: 'Text', color: 'hsl(142 71% 45%)' },
+    task: { icon: '✅', label: 'Task', color: 'hsl(25 95% 53%)' },
     'ai-chat': { icon: '🤖', label: 'AI Chat', color: 'hsl(221 83% 53%)' },
-    'entity': { icon: '🏷️', label: 'Entity', color: 'hsl(271 81% 56%)' },
-    'query': { icon: '🔍', label: 'Query', color: 'hsl(330 81% 60%)' },
-    'user': { icon: '👤', label: 'User', color: 'hsl(142 71% 45%)' },
-    'date': { icon: '📅', label: 'Date', color: 'hsl(142 71% 45%)' },
-    'document': { icon: '📋', label: 'Document', color: 'hsl(142 71% 45%)' }
+    entity: { icon: '🏷️', label: 'Entity', color: 'hsl(271 81% 56%)' },
+    query: { icon: '🔍', label: 'Query', color: 'hsl(330 81% 60%)' },
+    user: { icon: '👤', label: 'User', color: 'hsl(142 71% 45%)' },
+    date: { icon: '📅', label: 'Date', color: 'hsl(142 71% 45%)' },
+    document: { icon: '📋', label: 'Document', color: 'hsl(142 71% 45%)' }
   };
 
   // Smart positioning to avoid viewport edges
@@ -46,9 +46,9 @@
     const padding = 16;
     const maxWidth = 360;
     const maxHeight = 300;
-    
+
     let { x, y } = pos;
-    
+
     // Adjust horizontal position
     if (x + maxWidth > window.innerWidth - padding) {
       x = window.innerWidth - maxWidth - padding;
@@ -56,14 +56,14 @@
     if (x < padding) {
       x = padding;
     }
-    
+
     // Adjust vertical position (show above cursor if not enough space below)
     if (y + maxHeight > window.innerHeight - padding) {
       y = y - maxHeight - 20; // Show above cursor
     } else {
       y = y + 20; // Show below cursor
     }
-    
+
     return { x, y };
   }
 
@@ -73,7 +73,7 @@
   function scrollToSelected() {
     const selectedItem = itemRefs[selectedIndex];
     if (selectedItem && containerRef) {
-      selectedItem.scrollIntoView({ 
+      selectedItem.scrollIntoView({
         block: 'nearest',
         behavior: 'smooth'
       });
@@ -139,13 +139,13 @@
     bind:this={containerRef}
     class={cn(
       // Professional popover styling using design system tokens
-      "fixed z-[9999] bg-popover text-popover-foreground",
-      "border border-border rounded-lg shadow-lg",
-      "min-w-[340px] max-w-[400px] max-h-[320px]",
-      "overflow-hidden",
+      'fixed z-[9999] bg-popover text-popover-foreground',
+      'border border-border rounded-lg shadow-lg',
+      'min-w-[340px] max-w-[400px] max-h-[320px]',
+      'overflow-hidden',
       // Smooth animations matching design system
-      "animate-in fade-in-0 zoom-in-95 duration-200",
-      "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
+      'animate-in fade-in-0 zoom-in-95 duration-200',
+      'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95'
     )}
     style="left: {smartPosition.x}px; top: {smartPosition.y}px;"
     role="listbox"
@@ -163,7 +163,9 @@
         {#if query}
           <div class="flex items-center gap-1.5 text-muted-foreground">
             <span>•</span>
-            <code class="bg-muted/80 px-2 py-0.5 rounded-md text-[10px] font-mono border">{query}</code>
+            <code class="bg-muted/80 px-2 py-0.5 rounded-md text-[10px] font-mono border"
+              >{query}</code
+            >
           </div>
         {/if}
       </div>
@@ -173,7 +175,9 @@
     <div class="overflow-y-auto max-h-[240px] py-1">
       {#if loading}
         <div class="flex items-center gap-3 px-4 py-5 text-sm text-muted-foreground">
-          <div class="animate-spin h-4 w-4 border-2 border-primary/30 border-r-primary rounded-full"></div>
+          <div
+            class="animate-spin h-4 w-4 border-2 border-primary/30 border-r-primary rounded-full"
+          ></div>
           <span>Searching nodes...</span>
         </div>
       {:else if results.length === 0}
@@ -192,28 +196,32 @@
             bind:this={itemRefs[index]}
             class={cn(
               // Base professional item styling
-              "w-full flex items-center gap-3.5 px-4 py-3 text-left",
-              "transition-all duration-150 ease-out",
-              "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-              "border-l-2 border-transparent",
+              'w-full flex items-center gap-3.5 px-4 py-3 text-left',
+              'transition-all duration-150 ease-out',
+              'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+              'border-l-2 border-transparent',
               // Selection states with professional styling
               selectedIndex === index
-                ? "bg-accent/80 text-accent-foreground border-l-primary shadow-sm"
-                : "hover:bg-accent/40 hover:border-l-accent-foreground/20"
+                ? 'bg-accent/80 text-accent-foreground border-l-primary shadow-sm'
+                : 'hover:bg-accent/40 hover:border-l-accent-foreground/20'
             )}
             role="option"
             aria-selected={selectedIndex === index}
             onclick={() => selectResult(result)}
-            onmouseenter={() => { selectedIndex = index; }}
+            onmouseenter={() => {
+              selectedIndex = index;
+            }}
           >
             <!-- Professional node type icon -->
-            <div 
+            <div
               class={cn(
-                "flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center",
-                "text-sm font-semibold shadow-sm border",
-                selectedIndex === index ? "shadow-md" : ""
+                'flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center',
+                'text-sm font-semibold shadow-sm border',
+                selectedIndex === index ? 'shadow-md' : ''
               )}
-              style="background-color: {nodeTypeConfig[result.type].color}12; color: {nodeTypeConfig[result.type].color}; border-color: {nodeTypeConfig[result.type].color}25;"
+              style="background-color: {nodeTypeConfig[result.type]
+                .color}12; color: {nodeTypeConfig[result.type]
+                .color}; border-color: {nodeTypeConfig[result.type].color}25;"
             >
               {nodeTypeConfig[result.type].icon}
             </div>
@@ -224,7 +232,7 @@
               <div class="font-semibold text-sm leading-tight mb-1">
                 {highlightMatch(result.title)}
               </div>
-              
+
               <!-- Subtitle with better contrast -->
               {#if result.subtitle}
                 <div class="text-xs text-muted-foreground leading-relaxed pr-2">
@@ -236,11 +244,11 @@
             <!-- Professional metadata badge -->
             {#if result.metadata}
               <div class="flex-shrink-0">
-                <Badge 
-                  variant="secondary" 
+                <Badge
+                  variant="secondary"
                   class={cn(
-                    "text-[10px] px-2.5 py-1 h-auto font-medium border",
-                    selectedIndex === index ? "bg-background/50" : ""
+                    'text-[10px] px-2.5 py-1 h-auto font-medium border',
+                    selectedIndex === index ? 'bg-background/50' : ''
                   )}
                 >
                   {result.metadata}
@@ -255,20 +263,31 @@
     <!-- Professional footer with keyboard hints -->
     {#if results.length > 0}
       <div class="px-4 py-2.5 border-t border-border bg-muted/20">
-        <div class="flex items-center justify-between text-[10px] text-muted-foreground font-semibold">
+        <div
+          class="flex items-center justify-between text-[10px] text-muted-foreground font-semibold"
+        >
           <div class="flex items-center gap-3">
             <span class="flex items-center gap-1">
-              <kbd class="inline-flex items-center rounded border bg-muted px-1.5 py-0.5 text-[9px] font-mono">↑↓</kbd>
+              <kbd
+                class="inline-flex items-center rounded border bg-muted px-1.5 py-0.5 text-[9px] font-mono"
+                >↑↓</kbd
+              >
               Navigate
             </span>
           </div>
           <div class="flex items-center gap-3">
             <span class="flex items-center gap-1">
-              <kbd class="inline-flex items-center rounded border bg-muted px-1.5 py-0.5 text-[9px] font-mono">Enter</kbd>
+              <kbd
+                class="inline-flex items-center rounded border bg-muted px-1.5 py-0.5 text-[9px] font-mono"
+                >Enter</kbd
+              >
               Select
             </span>
             <span class="flex items-center gap-1">
-              <kbd class="inline-flex items-center rounded border bg-muted px-1.5 py-0.5 text-[9px] font-mono">Esc</kbd>
+              <kbd
+                class="inline-flex items-center rounded border bg-muted px-1.5 py-0.5 text-[9px] font-mono"
+                >Esc</kbd
+              >
               Close
             </span>
           </div>
@@ -288,7 +307,7 @@
     font-weight: 600;
     font-size: inherit;
   }
-  
+
   :global(.dark mark) {
     background-color: hsl(var(--primary) / 0.2);
     color: hsl(var(--primary-foreground));

@@ -1,15 +1,15 @@
 /**
  * Custom marked.js configuration for NodeSpace
- * 
+ *
  * CRITICAL: This configuration is designed ONLY for inline formatting (bold, italic).
- * Headers are handled separately by NodeSpace's inheritHeaderLevel system and 
+ * Headers are handled separately by NodeSpace's inheritHeaderLevel system and
  * rendered as actual <h1>, <h2>, <h3> elements in BaseNode.svelte.
- * 
+ *
  * This marked.js integration provides:
  * - Custom CSS classes for inline formatting compatibility
  * - Robust parsing for edge cases (nested formatting, malformed syntax)
  * - Preservation of header syntax as plain text (not processed as HTML headers)
- * 
+ *
  * Examples of what this processes:
  * ✅ "**bold text**" → <span class="markdown-bold">bold text</span>
  * ✅ "*italic text*" → <span class="markdown-italic">italic text</span>
@@ -17,33 +17,34 @@
  */
 
 import { marked } from 'marked';
+import type { Tokens } from 'marked';
 
 // Configure marked with custom renderer that uses NodeSpace CSS classes
 marked.use({
   renderer: {
     // Override strong rendering to use custom CSS classes
-    strong(token: unknown): string {
+    strong(token: Tokens.Strong): string {
       // Extract the rendered text content from the token
       const text = this.parser.parseInline(token.tokens);
       return `<span class="markdown-bold">${text}</span>`;
     },
 
-    // Override em rendering to use custom CSS classes  
-    em(token: unknown): string {
+    // Override em rendering to use custom CSS classes
+    em(token: Tokens.Em): string {
       // Extract the rendered text content from the token
       const text = this.parser.parseInline(token.tokens);
       return `<span class="markdown-italic">${text}</span>`;
     },
 
     // Override paragraph to avoid wrapping inline content in <p> tags
-    paragraph(token: unknown): string {
+    paragraph(token: Tokens.Paragraph): string {
       const text = this.parser.parseInline(token.tokens);
       return text;
     },
 
     // CRITICAL: Disable header processing - NodeSpace handles headers separately
     // Headers are controlled by inheritHeaderLevel property, not markdown syntax
-    heading(token: unknown): string {
+    heading(token: Tokens.Heading): string {
       // Return the raw token text instead of processing as HTML header
       // This preserves "# Header text" as plain text for NodeSpace's header system
       const level = '#'.repeat(token.depth);
@@ -52,22 +53,28 @@ marked.use({
     }
   },
   // Configure options
-  breaks: false,        // Don't convert \n to <br>
-  gfm: true,           // GitHub Flavored Markdown
-  headerIds: false,    // Don't add IDs to headers
+  breaks: false, // Don't convert \n to <br>
+  gfm: true // GitHub Flavored Markdown
 });
 
 /**
  * Convert markdown to HTML using marked.js with NodeSpace styling
- * 
+ *
  * This replaces the custom regex-based parser in ContentEditableController
  * and handles edge cases like nested formatting correctly.
  */
 export function markdownToHtml(markdown: string): string {
   try {
     const html = marked(markdown);
-    // Remove any trailing whitespace/newlines and strip <p> tags
-    return html.trim().replace(/^<p>|<\/p>$/g, '');
+    // Handle both sync and async returns from marked()
+    if (typeof html === 'string') {
+      // Remove any trailing whitespace/newlines and strip <p> tags
+      return html.trim().replace(/^<p>|<\/p>$/g, '');
+    } else {
+      // If marked returns a Promise (shouldn't happen with our config, but handle it)
+      console.warn('marked() returned Promise unexpectedly, falling back to plain text');
+      return escapeHtml(markdown);
+    }
   } catch (error) {
     console.warn('marked.js parsing error:', error);
     // Fallback to plain text if parsing fails

@@ -8,7 +8,7 @@
 <script lang="ts">
   import { createEventDispatcher, onDestroy } from 'svelte';
   import Icon, { type IconName } from '$lib/design/icons';
-  
+
   import {
     ContentEditableController,
     type ContentEditableEvents
@@ -60,7 +60,7 @@
         metadata: '2 days ago'
       },
       {
-        id: 'mock-node-2', 
+        id: 'mock-node-2',
         title: 'Project Notes',
         type: 'document',
         subtitle: 'Comprehensive project documentation and meeting notes',
@@ -101,9 +101,10 @@
     }
 
     // Filter results based on query
-    return mockNodes.filter(node => 
-      node.title.toLowerCase().includes(query.toLowerCase()) ||
-      (node.subtitle && node.subtitle.toLowerCase().includes(query.toLowerCase()))
+    return mockNodes.filter(
+      (node) =>
+        node.title.toLowerCase().includes(query.toLowerCase()) ||
+        (node.subtitle && node.subtitle.toLowerCase().includes(query.toLowerCase()))
     );
   }
 
@@ -117,26 +118,25 @@
   // Autocomplete event handlers
   function handleAutocompleteSelect(event: CustomEvent<NodeResult>) {
     const result = event.detail;
-    
+
     if (controller) {
       // Insert node reference in markdown link format: [nodeTitle](nodespace://nodeId)
       // This replaces the @ trigger text with the proper reference format
       controller.insertNodeReference(result.id, result.title);
     }
-    
+
     // Hide autocomplete and clear state
     showAutocomplete = false;
     currentQuery = '';
     autocompleteResults = [];
-    
+
     // Emit event for parent components to handle if needed
-    dispatch('nodeReferenceSelected', { 
-      nodeId: result.id, 
-      nodeTitle: result.title 
+    dispatch('nodeReferenceSelected', {
+      nodeId: result.id,
+      nodeTitle: result.title
     });
   }
 
-  
   // Debug effect to track showAutocomplete changes (disabled for cleaner logs)
   // $effect(() => {
   //   console.log('🔄 showAutocomplete changed to:', showAutocomplete);
@@ -237,7 +237,6 @@
     }
   });
 
-
   onDestroy(() => {
     if (controller) {
       controller.destroy();
@@ -259,7 +258,7 @@
   }
 
   // ============================================================================
-  // Utility Functions  
+  // Utility Functions
   // ============================================================================
 
   // Compute CSS classes
@@ -294,7 +293,6 @@
     role="textbox"
     tabindex="0"
   ></div>
-
 </div>
 
 <!-- Professional Node Autocomplete Component -->

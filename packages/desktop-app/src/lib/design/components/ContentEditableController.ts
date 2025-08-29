@@ -44,7 +44,7 @@ export class ContentEditableController {
   private originalContent: string = ''; // Store original markdown content
   private isUpdatingFromInput: boolean = false; // Flag to prevent reactive loops
   private currentHeaderLevel: number = 0; // Track header level for CSS updates
-  
+
   // Cursor positioning state for precise click-to-edit
   private pendingClickPosition: { x: number; y: number } | null = null;
   private wasEditing: boolean = false;
@@ -61,7 +61,9 @@ export class ContentEditableController {
     this.nodeId = nodeId;
     this.events = events;
     // Mark DOM element as having a controller attached
-    (this.element as unknown as { _contentEditableController: ContentEditableController })._contentEditableController = this;
+    (
+      this.element as unknown as { _contentEditableController: ContentEditableController }
+    )._contentEditableController = this;
     this.setupEventListeners();
   }
 
@@ -152,7 +154,8 @@ export class ContentEditableController {
   public destroy(): void {
     this.removeEventListeners();
     // Clean up the controller reference from DOM element
-    delete (this.element as unknown as { _contentEditableController?: ContentEditableController })._contentEditableController;
+    delete (this.element as unknown as { _contentEditableController?: ContentEditableController })
+      ._contentEditableController;
   }
 
   // ============================================================================
@@ -199,21 +202,21 @@ export class ContentEditableController {
   private markdownToLiveHtml(content: string): string {
     // Find all formatting patterns including mixed syntax
     const patterns = this.findAllFormattingPatterns(content);
-    
+
     if (patterns.length === 0) {
       return content; // No formatting patterns found
     }
-    
+
     let result = '';
     let lastIndex = 0;
-    
+
     // Process each pattern in order
-    patterns.forEach(pattern => {
+    patterns.forEach((pattern) => {
       const { start, end, openMarker, closeMarker, content: innerContent, type } = pattern;
-      
+
       // Add any text before this pattern
       result += content.substring(lastIndex, start);
-      
+
       // Build CSS class based on formatting type
       let cssClass = '';
       if (type === 'bold-italic') {
@@ -223,16 +226,16 @@ export class ContentEditableController {
       } else if (type === 'italic') {
         cssClass = 'markdown-italic';
       }
-      
+
       // Create the edit-mode format with visible syntax
       result += `<span class="markdown-syntax">${openMarker}<span class="${cssClass}">${innerContent}</span>${closeMarker}</span>`;
-      
+
       lastIndex = end;
     });
-    
+
     // Add any remaining text after the last pattern
     result += content.substring(lastIndex);
-    
+
     return result;
   }
 
@@ -256,42 +259,82 @@ export class ContentEditableController {
       content: string;
       type: 'bold-italic' | 'bold' | 'italic';
     }> = [];
-    
+
     // Define all possible formatting patterns in order of precedence
     // Mixed patterns first, then homogeneous patterns
     const formatRules = [
       // Mixed bold-italic patterns (highest precedence)
-      { regex: /\*__(.*?)__\*/g, type: 'bold-italic' as const, openMarker: '*__', closeMarker: '__*' },
-      { regex: /__\*(.*?)\*__/g, type: 'bold-italic' as const, openMarker: '__*', closeMarker: '*__' },
-      { regex: /\*\*_(.*?)_\*\*/g, type: 'bold-italic' as const, openMarker: '**_', closeMarker: '_**' },
-      { regex: /_\*\*(.*?)\*\*_/g, type: 'bold-italic' as const, openMarker: '_**', closeMarker: '**_' },
-      
+      {
+        regex: /\*__(.*?)__\*/g,
+        type: 'bold-italic' as const,
+        openMarker: '*__',
+        closeMarker: '__*'
+      },
+      {
+        regex: /__\*(.*?)\*__/g,
+        type: 'bold-italic' as const,
+        openMarker: '__*',
+        closeMarker: '*__'
+      },
+      {
+        regex: /\*\*_(.*?)_\*\*/g,
+        type: 'bold-italic' as const,
+        openMarker: '**_',
+        closeMarker: '_**'
+      },
+      {
+        regex: /_\*\*(.*?)\*\*_/g,
+        type: 'bold-italic' as const,
+        openMarker: '_**',
+        closeMarker: '**_'
+      },
+
       // Homogeneous bold-italic patterns
-      { regex: /\*\*\*(.*?)\*\*\*/g, type: 'bold-italic' as const, openMarker: '***', closeMarker: '***' },
-      { regex: /___(.*?)___/g, type: 'bold-italic' as const, openMarker: '___', closeMarker: '___' },
-      
+      {
+        regex: /\*\*\*(.*?)\*\*\*/g,
+        type: 'bold-italic' as const,
+        openMarker: '***',
+        closeMarker: '***'
+      },
+      {
+        regex: /___(.*?)___/g,
+        type: 'bold-italic' as const,
+        openMarker: '___',
+        closeMarker: '___'
+      },
+
       // Bold patterns (medium precedence)
       { regex: /\*\*([^*]+?)\*\*/g, type: 'bold' as const, openMarker: '**', closeMarker: '**' },
       { regex: /__([^_]+?)__/g, type: 'bold' as const, openMarker: '__', closeMarker: '__' },
-      
+
       // Italic patterns (lowest precedence)
-      { regex: /(?<!\*)\*([^*\n]+?)\*(?!\*)/g, type: 'italic' as const, openMarker: '*', closeMarker: '*' },
-      { regex: /(?<!_)_([^_\n]+?)_(?!_)/g, type: 'italic' as const, openMarker: '_', closeMarker: '_' }
+      {
+        regex: /(?<!\*)\*([^*\n]+?)\*(?!\*)/g,
+        type: 'italic' as const,
+        openMarker: '*',
+        closeMarker: '*'
+      },
+      {
+        regex: /(?<!_)_([^_\n]+?)_(?!_)/g,
+        type: 'italic' as const,
+        openMarker: '_',
+        closeMarker: '_'
+      }
     ];
-    
+
     // Find all matches for each pattern type
-    formatRules.forEach(rule => {
+    formatRules.forEach((rule) => {
       let match;
       while ((match = rule.regex.exec(text)) !== null) {
         const start = match.index;
         const end = match.index + match[0].length;
         const content = match[1];
-        
+
         // Check for overlaps with existing patterns (skip if overlapping)
-        const hasOverlap = patterns.some(existing => 
-          (start < existing.end && end > existing.start)
+        const hasOverlap = patterns.some(
+          (existing) => start < existing.end && end > existing.start
         );
-        
+
         if (!hasOverlap) {
           patterns.push({
             start,
@@ -303,11 +346,11 @@ export class ContentEditableController {
           });
         }
       }
-      
+
       // Reset regex lastIndex to ensure we find all matches
       rule.regex.lastIndex = 0;
     });
-    
+
     // Sort patterns by start position for proper processing order
     return patterns.sort((a, b) => a.start - b.start);
   }
@@ -451,7 +494,7 @@ export class ContentEditableController {
     if (event.key === 'Tab') {
       // Tab handling logic will follow
     }
-    
+
     if (event.key === 'Backspace') {
       // Backspace handling logic will follow
     }
@@ -469,7 +512,6 @@ export class ContentEditableController {
         return;
       }
     }
-
 
     // Check for immediate header detection when space is typed
     if (event.key === ' ' && this.isEditing) {
@@ -684,35 +726,35 @@ export class ContentEditableController {
 
   /**
    * Toggle markdown formatting for selected text or at cursor position
-   * 
+   *
    * ADVANCED NESTED FORMATTING SOLUTION
    * ===================================
-   * 
+   *
    * This implementation solves complex nested markdown formatting scenarios that standard
    * markdown editors struggle with. Key capabilities:
-   * 
+   *
    * 1. **Cross-Marker Toggle**: Cmd+B toggles both ** and __ (bold formatting)
-   *    - `__bold__` + Cmd+B → `bold` (removes __ markers)  
+   *    - `__bold__` + Cmd+B → `bold` (removes __ markers)
    *    - `**bold**` + Cmd+B → `bold` (removes ** markers)
-   * 
+   *
    * 2. **Nested Formatting Support**: Handles mixed marker scenarios
    *    - `*__bold__*` + select "bold" + Cmd+B → `*bold*` (removes inner __)
    *    - `**_italic_**` + select "italic" + Cmd+I → `**italic**` (removes inner _)
-   * 
-   * 3. **Sequential Application**: Enables rich formatting combinations  
+   *
+   * 3. **Sequential Application**: Enables rich formatting combinations
    *    - `**text**` + Cmd+I → `***text***` (adds italic outside bold)
    *    - `***text***` + Cmd+I → `**text**` (removes italic component)
-   * 
+   *
    * 4. **Smart Context Detection**: Analyzes surrounding text to determine action
    *    - Uses `shouldRemoveInnerFormatting()` for nested pattern detection
    *    - Uses `isTextAlreadyFormatted()` for cross-marker compatibility
-   * 
+   *
    * ALGORITHM DESIGN:
    * - Inspired by analysis of Logseq's formatting approach (examined at /Users/malibio/Zed Projects/logseq)
-   * - Uses marked.js library for markdown parsing consistency  
+   * - Uses marked.js library for markdown parsing consistency
    * - Implements context-aware selection analysis instead of simple regex matching
    * - Handles double-click selection behavior (includes underscores in word boundaries)
-   * 
+   *
    * Supports: Bold (**,__), Italic (*,_), Sequential nesting, Mixed scenarios
    */
   private toggleFormatting(marker: string): void {
@@ -725,48 +767,64 @@ export class ContentEditableController {
 
     if (selectedText) {
       // Get the actual selection positions using DOM position calculation
-      const selectionStartOffset = this.getTextOffsetFromElement(range.startContainer, range.startOffset);
+      const selectionStartOffset = this.getTextOffsetFromElement(
+        range.startContainer,
+        range.startOffset
+      );
       const selectionEndOffset = this.getTextOffsetFromElement(range.endContainer, range.endOffset);
 
       // FIXED LOGIC: Check for existing formatting with strict marker type detection
-      const formattingState = this.getFormattingState(textContent, selectionStartOffset, selectionEndOffset, marker);
-      
+      const formattingState = this.getFormattingState(
+        textContent,
+        selectionStartOffset,
+        selectionEndOffset,
+        marker
+      );
+
       let newContent: string = textContent;
       let newSelectionStart: number = selectionStartOffset;
       let newSelectionEnd: number = selectionEndOffset;
 
       if (formattingState.hasFormatting && formattingState.actualMarker === marker) {
         // TOGGLE OFF: Remove exact marker formatting only
-        
+
         const beforeFormat = textContent.substring(0, formattingState.formatStart!);
         const insideFormat = textContent.substring(
           formattingState.formatStart! + formattingState.actualMarker.length,
           formattingState.formatEnd!
         );
-        const afterFormat = textContent.substring(formattingState.formatEnd! + formattingState.actualMarker.length);
-        
+        const afterFormat = textContent.substring(
+          formattingState.formatEnd! + formattingState.actualMarker.length
+        );
+
         newContent = beforeFormat + insideFormat + afterFormat;
         // Adjust selection position to account for removed opening marker
         const markerLength = formattingState.actualMarker.length;
         newSelectionStart = selectionStartOffset - markerLength;
         newSelectionEnd = selectionEndOffset - markerLength;
-        
-      } else if (this.shouldRemoveInnerFormatting(selectedText, marker, textContent, selectionStartOffset, selectionEndOffset)) {
+      } else if (
+        this.shouldRemoveInnerFormatting(
+          selectedText,
+          marker,
+          textContent,
+          selectionStartOffset,
+          selectionEndOffset
+        )
+      ) {
         // TOGGLE OFF: Remove inner formatting markers from nested scenarios
         // e.g., *__bold__* + Cmd+B should remove __ and leave *bold*
         // e.g., **_italic_** + Cmd+I should remove _ and leave **italic**
-        
+
         const cleanedText = this.removeInnerFormatting(selectedText, marker);
         const beforeSelection = textContent.substring(0, selectionStartOffset);
         const afterSelection = textContent.substring(selectionEndOffset);
-        
+
         newContent = beforeSelection + cleanedText + afterSelection;
         newSelectionStart = selectionStartOffset;
         newSelectionEnd = selectionStartOffset + cleanedText.length;
-        
       } else if (formattingState.hasFormatting && formattingState.actualMarker?.startsWith('***')) {
         // TOGGLE OFF: Handle triple asterisk scenarios
-        
+
         if (formattingState.actualMarker === '***-italic') {
           // Remove italic component from ***text***, leaving **text**
           const beforeFormat = textContent.substring(0, formattingState.formatStart!);
@@ -775,11 +833,10 @@ export class ContentEditableController {
             formattingState.formatEnd!
           );
           const afterFormat = textContent.substring(formattingState.formatEnd! + 3); // Skip ***
-          
+
           newContent = beforeFormat + '**' + insideFormat + '**' + afterFormat;
           newSelectionStart = selectionStartOffset - 1; // One less asterisk
           newSelectionEnd = selectionEndOffset - 1;
-          
         } else if (formattingState.actualMarker === '***-bold') {
           // Remove bold component from ***text***, leaving *text*
           const beforeFormat = textContent.substring(0, formattingState.formatStart!);
@@ -788,36 +845,33 @@ export class ContentEditableController {
             formattingState.formatEnd!
           );
           const afterFormat = textContent.substring(formattingState.formatEnd! + 3); // Skip ***
-          
+
           newContent = beforeFormat + '*' + insideFormat + '*' + afterFormat;
           newSelectionStart = selectionStartOffset - 2; // Two less asterisks
           newSelectionEnd = selectionEndOffset - 2;
         }
-        
       } else {
         // Check if the selected text itself contains the exact formatting markers
         const isFormattedSelection = this.isTextAlreadyFormatted(selectedText, marker);
-        
-        
+
         if (isFormattedSelection) {
           // TOGGLE OFF: Remove exact formatting from the selected text itself
-          
+
           const unformattedText = this.removeFormattingFromText(selectedText, marker);
           const beforeSelection = textContent.substring(0, selectionStartOffset);
           const afterSelection = textContent.substring(selectionEndOffset);
-          
+
           newContent = beforeSelection + unformattedText + afterSelection;
           newSelectionStart = selectionStartOffset;
           newSelectionEnd = selectionStartOffset + unformattedText.length;
-          
         } else {
           // NEST ADD: Add formatting markers around selection (including mixed scenarios)
-          
+
           // For nesting scenarios like **text** + Cmd+I, we want to create ***text***
           // DO NOT clean conflicting markers - preserve them for nesting
           const beforeSelection = textContent.substring(0, selectionStartOffset);
           const afterSelection = textContent.substring(selectionEndOffset);
-          
+
           newContent = beforeSelection + marker + selectedText + marker + afterSelection;
           newSelectionStart = selectionStartOffset + marker.length;
           newSelectionEnd = selectionStartOffset + marker.length + selectedText.length;
@@ -833,7 +887,6 @@ export class ContentEditableController {
       setTimeout(() => {
         this.setSelection(newSelectionStart, newSelectionEnd);
       }, 0);
-      
     } else {
       // No selection - check if cursor is inside existing formatting
       const cursorPos = this.getTextOffsetFromElement(range.startContainer, range.startOffset);
@@ -857,7 +910,7 @@ export class ContentEditableController {
         // Insert formatting markers at cursor
         const beforeCursor = textContent.substring(0, cursorPos);
         const afterCursor = textContent.substring(cursorPos);
-        
+
         newContent = beforeCursor + marker + marker + afterCursor;
         newCursorPos = cursorPos + marker.length;
       }
@@ -1028,13 +1081,17 @@ export class ContentEditableController {
     return unmatchedOpening;
   }
 
-
   /**
    * Detect triple asterisk formatting scenarios for proper toggle behavior
    * ***text*** + Cmd+I should become **text** (remove italic component)
    * ***text*** + Cmd+B should become *text* (remove bold component)
    */
-  private detectTripleAsteriskFormatting(text: string, selectionStart: number, selectionEnd: number, marker: string): {
+  private detectTripleAsteriskFormatting(
+    text: string,
+    selectionStart: number,
+    selectionEnd: number,
+    marker: string
+  ): {
     hasFormatting: boolean;
     formatStart?: number;
     formatEnd?: number;
@@ -1042,11 +1099,11 @@ export class ContentEditableController {
   } {
     // CRITICAL FIX: Only apply to actual *** patterns, not nested ** + _ patterns
     // First, check if the selection is actually within a *** pattern
-    
+
     // Look for *** patterns around the selection
     const beforeSelection = text.substring(0, selectionStart);
     const afterSelection = text.substring(selectionEnd);
-    
+
     // Find the closest *** before selection
     let tripleStarStart = -1;
     for (let i = beforeSelection.length - 3; i >= 0; i--) {
@@ -1060,11 +1117,11 @@ export class ContentEditableController {
         }
       }
     }
-    
+
     if (tripleStarStart === -1) {
       return { hasFormatting: false };
     }
-    
+
     // Find the closest *** after selection
     let tripleStarEnd = -1;
     for (let i = 0; i <= afterSelection.length - 3; i++) {
@@ -1073,23 +1130,26 @@ export class ContentEditableController {
         break;
       }
     }
-    
+
     if (tripleStarEnd === -1) {
       return { hasFormatting: false };
     }
-    
+
     // ADDITIONAL FIX: Verify this is actually a ***text*** pattern, not nested **_text_**
     // Check that the content between markers doesn't have other nested patterns that would conflict
     // Content between triple stars (not used in current logic)
     // const contentBetween = text.substring(tripleStarStart + 3, tripleStarEnd);
     const selectedText = text.substring(selectionStart, selectionEnd);
-    
+
     // If the selected text contains mixed format markers (**_text_**), this is not a triple asterisk scenario
-    if (selectedText.includes('**') || selectedText.includes('__') || 
-        (selectedText.includes('_') && !selectedText.startsWith('_') && !selectedText.endsWith('_'))) {
+    if (
+      selectedText.includes('**') ||
+      selectedText.includes('__') ||
+      (selectedText.includes('_') && !selectedText.startsWith('_') && !selectedText.endsWith('_'))
+    ) {
       return { hasFormatting: false };
     }
-    
+
     // We have a ***text*** pattern - determine which component to toggle off
     if (marker === '*') {
       // Cmd+I on ***text*** should remove italic, leaving **text**
@@ -1108,7 +1168,7 @@ export class ContentEditableController {
         actualMarker: '***-bold' // Special marker to indicate triple asterisk bold removal
       };
     }
-    
+
     return { hasFormatting: false };
   }
 
@@ -1119,13 +1179,17 @@ export class ContentEditableController {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
-
   /**
    * Get formatting state for a selection, similar to easy-markdown-editor's getState()
    * Returns whether the selection is currently formatted and where the markers are
    * FIXED: Handles nested formatting properly without interfering with normal operations
    */
-  private getFormattingState(text: string, selectionStart: number, selectionEnd: number, marker: string): {
+  private getFormattingState(
+    text: string,
+    selectionStart: number,
+    selectionEnd: number,
+    marker: string
+  ): {
     hasFormatting: boolean;
     formatStart?: number;
     formatEnd?: number;
@@ -1134,7 +1198,12 @@ export class ContentEditableController {
     // Handle triple asterisk patterns ONLY when we actually have *** in the text
     // AND the selection is for an exact *** pattern (not nested patterns like **_text_**)
     if (text.includes('***')) {
-      const result = this.detectTripleAsteriskFormatting(text, selectionStart, selectionEnd, marker);
+      const result = this.detectTripleAsteriskFormatting(
+        text,
+        selectionStart,
+        selectionEnd,
+        marker
+      );
       if (result.hasFormatting) {
         return result;
       }
@@ -1152,7 +1221,12 @@ export class ContentEditableController {
 
     // Try each equivalent marker type with strict boundary detection
     for (const testMarker of equivalentMarkers) {
-      const result = this.findFormattingBoundariesStrict(text, selectionStart, selectionEnd, testMarker);
+      const result = this.findFormattingBoundariesStrict(
+        text,
+        selectionStart,
+        selectionEnd,
+        testMarker
+      );
       if (result.hasFormatting) {
         return {
           hasFormatting: true,
@@ -1171,17 +1245,22 @@ export class ContentEditableController {
    * Find formatting boundaries with strict marker type checking
    * FIXED: Prevents ** from being detected as * markers in sequential operations
    */
-  private findFormattingBoundariesStrict(text: string, selectionStart: number, selectionEnd: number, marker: string): {
+  private findFormattingBoundariesStrict(
+    text: string,
+    selectionStart: number,
+    selectionEnd: number,
+    marker: string
+  ): {
     hasFormatting: boolean;
     formatStart?: number;
     formatEnd?: number;
   } {
     // For italic (*), we must exclude positions that are part of bold (**)
     // For bold (**), we must check for exact ** patterns
-    
+
     const allOpeningPositions: number[] = [];
     const allClosingPositions: number[] = [];
-    
+
     // Find all valid occurrences of the marker with strict type checking
     for (let i = 0; i <= text.length - marker.length; i++) {
       if (this.isValidMarkerAtPosition(text, i, marker)) {
@@ -1194,7 +1273,7 @@ export class ContentEditableController {
         }
       }
     }
-    
+
     // Find the closest opening marker before the selection
     let bestOpeningPos = -1;
     for (let i = allOpeningPositions.length - 1; i >= 0; i--) {
@@ -1202,38 +1281,39 @@ export class ContentEditableController {
       // Check if this could be a valid opening (even count of same markers before it)
       const beforePos = text.substring(0, pos);
       const markerCountBefore = this.countValidMarkersInText(beforePos, marker);
-      
+
       if (markerCountBefore % 2 === 0) {
         bestOpeningPos = pos;
         break;
       }
     }
-    
+
     if (bestOpeningPos === -1) {
       return { hasFormatting: false };
     }
-    
+
     // Find the closest closing marker after the selection
     let bestClosingPos = -1;
     for (const pos of allClosingPositions) {
       // Check if this could be a valid closing (odd total count up to this point)
       const beforeAndAtPos = text.substring(0, pos + marker.length);
       const markerCountTotal = this.countValidMarkersInText(beforeAndAtPos, marker);
-      
-      if (markerCountTotal % 2 === 0) { // After adding this marker, we have an even count = closing
+
+      if (markerCountTotal % 2 === 0) {
+        // After adding this marker, we have an even count = closing
         bestClosingPos = pos;
         break;
       }
     }
-    
+
     if (bestClosingPos === -1) {
       return { hasFormatting: false };
     }
-    
+
     // Verify we have a proper pairing
     const insideText = text.substring(bestOpeningPos + marker.length, bestClosingPos);
     const markerCountInside = this.countValidMarkersInText(insideText, marker);
-    
+
     // Must have even number of markers inside for a valid pair
     if (markerCountInside % 2 === 0) {
       return {
@@ -1261,7 +1341,7 @@ export class ContentEditableController {
       // Make sure this * is not part of a ** pattern
       const charBefore = position > 0 ? text[position - 1] : '';
       const charAfter = position + 1 < text.length ? text[position + 1] : '';
-      
+
       // Invalid if this * is part of **
       if (charBefore === '*' || charAfter === '*') {
         return false;
@@ -1273,7 +1353,7 @@ export class ContentEditableController {
       // Make sure this _ is not part of a __ pattern
       const charBefore = position > 0 ? text[position - 1] : '';
       const charAfter = position + 1 < text.length ? text[position + 1] : '';
-      
+
       // Invalid if this _ is part of __
       if (charBefore === '_' || charAfter === '_') {
         return false;
@@ -1299,7 +1379,12 @@ export class ContentEditableController {
   /**
    * Find formatting boundaries for a specific marker type (DEPRECATED - using strict version)
    */
-  private findFormattingBoundaries(text: string, selectionStart: number, selectionEnd: number, marker: string): {
+  private findFormattingBoundaries(
+    text: string,
+    selectionStart: number,
+    selectionEnd: number,
+    marker: string
+  ): {
     hasFormatting: boolean;
     formatStart?: number;
     formatEnd?: number;
@@ -1307,10 +1392,10 @@ export class ContentEditableController {
     // For nested formatting scenarios, we need to find the closest matching pair
     // For example: **_italic_** - if "**" is requested and "_italic_" is selected,
     // we should find the outer ** markers, not inner ones
-    
+
     const allOpeningPositions: number[] = [];
     const allClosingPositions: number[] = [];
-    
+
     // Find all occurrences of the marker
     for (let i = 0; i <= text.length - marker.length; i++) {
       if (text.substring(i, i + marker.length) === marker) {
@@ -1323,46 +1408,51 @@ export class ContentEditableController {
         }
       }
     }
-    
+
     // Find the closest opening marker before the selection
     let bestOpeningPos = -1;
     for (let i = allOpeningPositions.length - 1; i >= 0; i--) {
       const pos = allOpeningPositions[i];
       // Check if this could be a valid opening (even count of same markers before it)
       const beforePos = text.substring(0, pos);
-      const markerCountBefore = (beforePos.match(new RegExp(this.escapeRegex(marker), 'g')) || []).length;
-      
+      const markerCountBefore = (beforePos.match(new RegExp(this.escapeRegex(marker), 'g')) || [])
+        .length;
+
       if (markerCountBefore % 2 === 0) {
         bestOpeningPos = pos;
         break;
       }
     }
-    
+
     if (bestOpeningPos === -1) {
       return { hasFormatting: false };
     }
-    
+
     // Find the closest closing marker after the selection
     let bestClosingPos = -1;
     for (const pos of allClosingPositions) {
       // Check if this could be a valid closing (odd total count up to this point)
       const beforeAndAtPos = text.substring(0, pos + marker.length);
-      const markerCountTotal = (beforeAndAtPos.match(new RegExp(this.escapeRegex(marker), 'g')) || []).length;
-      
-      if (markerCountTotal % 2 === 0) { // After adding this marker, we have an even count = closing
+      const markerCountTotal = (
+        beforeAndAtPos.match(new RegExp(this.escapeRegex(marker), 'g')) || []
+      ).length;
+
+      if (markerCountTotal % 2 === 0) {
+        // After adding this marker, we have an even count = closing
         bestClosingPos = pos;
         break;
       }
     }
-    
+
     if (bestClosingPos === -1) {
       return { hasFormatting: false };
     }
-    
+
     // Verify we have a proper pairing
     const insideText = text.substring(bestOpeningPos + marker.length, bestClosingPos);
-    const markerCountInside = (insideText.match(new RegExp(this.escapeRegex(marker), 'g')) || []).length;
-    
+    const markerCountInside = (insideText.match(new RegExp(this.escapeRegex(marker), 'g')) || [])
+      .length;
+
     // Must have even number of markers inside for a valid pair
     if (markerCountInside % 2 === 0) {
       return {
@@ -1383,23 +1473,33 @@ export class ContentEditableController {
     // FIXED: Only check for EXACT marker matches to enable nesting of different marker types
     // For nesting behavior: __bold__ + Cmd+B (**) should create **__bold__**, not remove __
     // Only return true if the text uses the EXACT SAME marker as requested
-    
+
     if (targetMarker === '**') {
       // Bold formatting: check for ** only (not __ - allow nesting)
-      return (text.startsWith('**') && text.endsWith('**') && text.length > 4);
+      return text.startsWith('**') && text.endsWith('**') && text.length > 4;
     } else if (targetMarker === '*') {
       // Italic formatting: check for * only (not _ - allow nesting)
-      return text.startsWith('*') && text.endsWith('*') && text.length > 2 &&
-             !text.startsWith('**') && !text.endsWith('**');
+      return (
+        text.startsWith('*') &&
+        text.endsWith('*') &&
+        text.length > 2 &&
+        !text.startsWith('**') &&
+        !text.endsWith('**')
+      );
     } else if (targetMarker === '__') {
-      // Bold underscore formatting: check for __ only (not ** - allow nesting)  
-      return (text.startsWith('__') && text.endsWith('__') && text.length > 4);
+      // Bold underscore formatting: check for __ only (not ** - allow nesting)
+      return text.startsWith('__') && text.endsWith('__') && text.length > 4;
     } else if (targetMarker === '_') {
       // Italic underscore formatting: check for _ only (not * - allow nesting)
-      return text.startsWith('_') && text.endsWith('_') && text.length > 2 &&
-             !text.startsWith('__') && !text.endsWith('__');
+      return (
+        text.startsWith('_') &&
+        text.endsWith('_') &&
+        text.length > 2 &&
+        !text.startsWith('__') &&
+        !text.endsWith('__')
+      );
     }
-    
+
     return false;
   }
 
@@ -1411,7 +1511,7 @@ export class ContentEditableController {
     // Remove formatting markers that correspond to the target format type
     // For bold (targetMarker **): remove ** or __
     // For italic (targetMarker *): remove * or _
-    
+
     if (targetMarker === '**') {
       // Bold: remove ** or __
       if (text.startsWith('**') && text.endsWith('**') && text.length > 4) {
@@ -1421,15 +1521,25 @@ export class ContentEditableController {
       }
     } else if (targetMarker === '*') {
       // Italic: remove * or _ (but not ** or __)
-      if (text.startsWith('*') && text.endsWith('*') && text.length > 2 &&
-          !text.startsWith('**') && !text.endsWith('**')) {
+      if (
+        text.startsWith('*') &&
+        text.endsWith('*') &&
+        text.length > 2 &&
+        !text.startsWith('**') &&
+        !text.endsWith('**')
+      ) {
         return text.substring(1, text.length - 1);
-      } else if (text.startsWith('_') && text.endsWith('_') && text.length > 2 &&
-                !text.startsWith('__') && !text.endsWith('__')) {
+      } else if (
+        text.startsWith('_') &&
+        text.endsWith('_') &&
+        text.length > 2 &&
+        !text.startsWith('__') &&
+        !text.endsWith('__')
+      ) {
         return text.substring(1, text.length - 1);
       }
     }
-    
+
     return text; // Return original if no formatting found
   }
 
@@ -1459,62 +1569,79 @@ export class ContentEditableController {
    * e.g., *__bold__* + Cmd+B should remove inner __ markers
    * e.g., **_italic_** + Cmd+I should remove inner _ markers
    */
-  private shouldRemoveInnerFormatting(selectedText: string, marker: string, textContent: string, selectionStartOffset: number, selectionEndOffset: number): boolean {
-
+  private shouldRemoveInnerFormatting(
+    selectedText: string,
+    marker: string,
+    textContent: string,
+    selectionStartOffset: number,
+    selectionEndOffset: number
+  ): boolean {
     // Look for nested formatting patterns around the current selection
     if (marker === '**') {
       // Cmd+B: Check if selection is inside *__text__* pattern (bold inside italic)
       const beforeSelection = textContent.substring(0, selectionStartOffset);
       const afterSelection = textContent.substring(selectionEndOffset);
-      
+
       // Check different scenarios:
       // 1. Selection includes markers: "*__bold__*" where selectedText = "__bold__"
       // 2. Selection is just text: "*__bold__*" where selectedText = "bold"
-      
+
       let isInsideStarUnderscore = false;
-      
+
       if (selectedText.startsWith('__') && selectedText.endsWith('__')) {
         // Case 1: Selection includes the __ markers, look for * around
         // IMPORTANT: Only consider this inner formatting if there are actually * markers around
         isInsideStarUnderscore = beforeSelection.endsWith('*') && afterSelection.startsWith('*');
       } else {
         // Case 2: Selection is just text, look for *__ before and __* after
-        isInsideStarUnderscore = !!beforeSelection.match(/\*__[^_]*$/) && !!afterSelection.match(/^[^_]*__\*/);
+        isInsideStarUnderscore =
+          !!beforeSelection.match(/\*__[^_]*$/) && !!afterSelection.match(/^[^_]*__\*/);
       }
-      
+
       // Additional validation: only return true if we're actually in a nested scenario
       // Don't interfere with normal __text__ toggle behavior
       if (selectedText.startsWith('__') && selectedText.endsWith('__') && !isInsideStarUnderscore) {
         // This is standalone __bold__, let normal toggle logic handle it
         return false;
       }
-      
+
       return isInsideStarUnderscore;
     } else if (marker === '*') {
       // Cmd+I: Check if selection is inside **_text_** pattern (italic inside bold)
       const beforeSelection = textContent.substring(0, selectionStartOffset);
       const afterSelection = textContent.substring(selectionEndOffset);
-      
+
       let isInsideDoubleStarUnderscore = false;
-      
-      if (selectedText.startsWith('_') && selectedText.endsWith('_') && !selectedText.startsWith('__')) {
+
+      if (
+        selectedText.startsWith('_') &&
+        selectedText.endsWith('_') &&
+        !selectedText.startsWith('__')
+      ) {
         // Case 1: Selection includes the _ markers (double-click behavior), look for ** around
-        isInsideDoubleStarUnderscore = beforeSelection.endsWith('**') && afterSelection.startsWith('**');
+        isInsideDoubleStarUnderscore =
+          beforeSelection.endsWith('**') && afterSelection.startsWith('**');
       } else {
-        // Case 2: Selection is just text, look for **_ before and _** after  
-        isInsideDoubleStarUnderscore = !!beforeSelection.match(/\*\*_[^_]*$/) && !!afterSelection.match(/^[^_]*_\*\*/);
+        // Case 2: Selection is just text, look for **_ before and _** after
+        isInsideDoubleStarUnderscore =
+          !!beforeSelection.match(/\*\*_[^_]*$/) && !!afterSelection.match(/^[^_]*_\*\*/);
       }
-      
+
       // Additional validation: only return true if we're actually in a nested scenario
       // Don't interfere with normal _text_ toggle behavior
-      if (selectedText.startsWith('_') && selectedText.endsWith('_') && !selectedText.startsWith('__') && !isInsideDoubleStarUnderscore) {
+      if (
+        selectedText.startsWith('_') &&
+        selectedText.endsWith('_') &&
+        !selectedText.startsWith('__') &&
+        !isInsideDoubleStarUnderscore
+      ) {
         // This is standalone _italic_, let normal toggle logic handle it
         return false;
       }
-      
+
       return isInsideDoubleStarUnderscore;
     }
-    
+
     return false;
   }
 
@@ -1622,7 +1749,6 @@ export class ContentEditableController {
    * Insert node reference at current cursor position
    */
   public insertNodeReference(nodeId: string, nodeTitle: string): void {
-    
     // Allow insertion even when not actively editing since this is programmatic
     // Temporarily switch to editing mode for the insertion
     const wasEditing = this.isEditing;
@@ -1641,7 +1767,7 @@ export class ContentEditableController {
 
     // Find the @ trigger that initiated this
     const triggerContext = this.detectTrigger(currentContent, cursorPosition);
-    
+
     if (!triggerContext) {
       return;
     }
@@ -1685,16 +1811,15 @@ export class ContentEditableController {
   private handleMouseDown(event: MouseEvent): void {
     // Only capture single clicks (preserve double-click selection)
     if (event.detail !== 1) return;
-    
+
     // Store current editing state
     this.wasEditing = this.isEditing;
-    
+
     // Capture click coordinates for later use during focus
     this.pendingClickPosition = { x: event.clientX, y: event.clientY };
-    
+
     // Let event bubble - don't interfere with other functionality
   }
-
 
   /**
    * Calculate markdown cursor position from click coordinates using pre-calculation approach
@@ -1737,19 +1862,37 @@ export class ContentEditableController {
   private getCharacterPositionFromCoordinates(x: number, y: number): number | null {
     try {
       // Try modern caretPositionFromPoint first (better accuracy)
-      if ((document as unknown as { caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null }).caretPositionFromPoint) {
-        const caretPosition = (document as unknown as { caretPositionFromPoint: (x: number, y: number) => { offsetNode: Node; offset: number } | null }).caretPositionFromPoint(x, y);
+      if (
+        (
+          document as unknown as {
+            caretPositionFromPoint?: (
+              x: number,
+              y: number
+            ) => { offsetNode: Node; offset: number } | null;
+          }
+        ).caretPositionFromPoint
+      ) {
+        const caretPosition = (
+          document as unknown as {
+            caretPositionFromPoint: (
+              x: number,
+              y: number
+            ) => { offsetNode: Node; offset: number } | null;
+          }
+        ).caretPositionFromPoint(x, y);
         if (caretPosition && caretPosition.offsetNode) {
-          return this.getTextOffsetFromElement(
-            caretPosition.offsetNode,
-            caretPosition.offset
-          );
+          return this.getTextOffsetFromElement(caretPosition.offsetNode, caretPosition.offset);
         }
       }
 
       // Fallback to caretRangeFromPoint (older but widely supported)
-      if ((document as unknown as { caretRangeFromPoint?: (x: number, y: number) => Range | null }).caretRangeFromPoint) {
-        const range = (document as unknown as { caretRangeFromPoint: (x: number, y: number) => Range | null }).caretRangeFromPoint(x, y);
+      if (
+        (document as unknown as { caretRangeFromPoint?: (x: number, y: number) => Range | null })
+          .caretRangeFromPoint
+      ) {
+        const range = (
+          document as unknown as { caretRangeFromPoint: (x: number, y: number) => Range | null }
+        ).caretRangeFromPoint(x, y);
         if (range && range.startContainer) {
           return this.getTextOffsetFromElement(range.startContainer, range.startOffset);
         }
@@ -1777,12 +1920,12 @@ export class ContentEditableController {
 
     // Build character mapping between HTML and markdown
     const mapping = this.buildCharacterMapping(htmlText, markdownContent);
-    
+
     // Get mapped position (with bounds checking)
     if (htmlPosition < mapping.length && mapping[htmlPosition] !== undefined) {
       return mapping[htmlPosition];
     }
-    
+
     // Fallback: proportional positioning
     const ratio = htmlPosition / htmlText.length;
     return Math.floor(ratio * markdownContent.length);
@@ -1795,7 +1938,7 @@ export class ContentEditableController {
     const mapping: number[] = [];
     let htmlIndex = 0;
     let markdownIndex = 0;
-    
+
     while (htmlIndex < htmlText.length && markdownIndex < markdownText.length) {
       if (htmlText[htmlIndex] === markdownText[markdownIndex]) {
         // Characters match - direct mapping
@@ -1807,13 +1950,13 @@ export class ContentEditableController {
         markdownIndex++;
       }
     }
-    
+
     // Handle remaining HTML characters
     while (htmlIndex < htmlText.length) {
       mapping[htmlIndex] = markdownText.length;
       htmlIndex++;
     }
-    
+
     return mapping;
   }
 

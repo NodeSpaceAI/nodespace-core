@@ -44,7 +44,7 @@
   };
 
   const nodeManager = new ReactiveNodeManager(nodeManagerEvents);
-  
+
   // Initialize NodeManager with demo data
   nodeManager.initializeFromLegacyData(demoNodes);
 
@@ -57,9 +57,8 @@
       newContent?: string;
       inheritHeaderLevel?: number;
       cursorAtBeginning?: boolean;
-    }> 
+    }>
   ) {
-    
     const {
       afterNodeId,
       nodeType,
@@ -69,15 +68,17 @@
       cursorAtBeginning
     } = event.detail;
 
-
     // CRITICAL FIX: Add validation to prevent circular reference issues
     if (!afterNodeId || !nodeType) {
-      console.error('❌ VALIDATION FAILED: Invalid node creation parameters:', { afterNodeId, nodeType });
+      console.error('❌ VALIDATION FAILED: Invalid node creation parameters:', {
+        afterNodeId,
+        nodeType
+      });
       return;
     }
 
     // Verify the after node exists before creating
-    
+
     if (!nodeManager.nodes.has(afterNodeId)) {
       console.error('❌ VALIDATION FAILED: After node does not exist:', afterNodeId);
       return;
@@ -89,7 +90,7 @@
     }
 
     // Create new node using NodeManager with sophisticated logic
-    
+
     const newNodeId = nodeManager.createNode(
       afterNodeId,
       newContent || '',
@@ -98,12 +99,14 @@
       cursorAtBeginning || false
     );
 
-
     // CRITICAL FIX: Validate that node creation was successful
     if (!newNodeId || !nodeManager.nodes.has(newNodeId)) {
       console.error('❌ NODE CREATION FAILED: Node creation failed for afterNodeId:', afterNodeId);
       console.error('❌ newNodeId:', newNodeId);
-      console.error('❌ nodeManager.nodes.has(newNodeId):', newNodeId ? nodeManager.nodes.has(newNodeId) : 'newNodeId is falsy');
+      console.error(
+        '❌ nodeManager.nodes.has(newNodeId):',
+        newNodeId ? nodeManager.nodes.has(newNodeId) : 'newNodeId is falsy'
+      );
       return;
     }
 
@@ -117,7 +120,7 @@
   }
 
   // Handle indenting nodes (Tab key)
-  function handleIndentNode(event: CustomEvent<{ nodeId: string }> ) {
+  function handleIndentNode(event: CustomEvent<{ nodeId: string }>) {
     const { nodeId } = event.detail;
 
     try {
@@ -211,7 +214,7 @@
   }
 
   // Handle outdenting nodes (Shift+Tab key)
-  function handleOutdentNode(event: CustomEvent<{ nodeId: string }> ) {
+  function handleOutdentNode(event: CustomEvent<{ nodeId: string }>) {
     const { nodeId } = event.detail;
 
     try {
@@ -275,7 +278,7 @@
       nodeId: string;
       direction: 'up' | 'down';
       columnHint: number;
-    }> 
+    }>
   ) {
     const { nodeId, direction, columnHint } = event.detail;
 
@@ -450,11 +453,11 @@
   // Handle combining current node with previous node (Backspace at start of node)
   // CLEAN DELEGATION: All logic handled by NodeManager
   function handleCombineWithPrevious(
-    event: CustomEvent<{ nodeId: string; currentContent: string }> 
+    event: CustomEvent<{ nodeId: string; currentContent: string }>
   ) {
     try {
       const { nodeId, currentContent } = event.detail;
-      
+
       // CRITICAL FIX: Add error recovery for node operations
       if (!nodeManager.nodes.has(nodeId)) {
         console.error('Cannot combine non-existent node:', nodeId);
@@ -469,7 +472,7 @@
       }
 
       const previousNode = visibleNodes[currentIndex - 1];
-      
+
       if (!previousNode || !nodeManager.nodes.has(previousNode.id)) {
         console.error('Previous node not found or invalid:', previousNode?.id);
         return;
@@ -489,10 +492,10 @@
   }
 
   // Handle deleting empty node (Backspace at start of empty node)
-  function handleDeleteNode(event: CustomEvent<{ nodeId: string }> ) {
+  function handleDeleteNode(event: CustomEvent<{ nodeId: string }>) {
     try {
       const { nodeId } = event.detail;
-      
+
       // CRITICAL FIX: Add error recovery for node operations
       if (!nodeManager.nodes.has(nodeId)) {
         console.error('Cannot delete non-existent node:', nodeId);
@@ -505,7 +508,7 @@
       if (currentIndex <= 0) return; // No previous node to focus
 
       const previousNode = visibleNodes[currentIndex - 1];
-      
+
       if (!previousNode || !nodeManager.nodes.has(previousNode.id)) {
         console.error('Previous node not found for focus after deletion:', previousNode?.id);
         // Still delete the node even if we can\'t focus the previous one
@@ -525,7 +528,6 @@
 
   // Use Svelte stores for proper reactivity
   const visibleNodes = $derived($storeVisibleNodes);
-
 </script>
 
 <!-- Wrap all node content with NodeServiceContext to provide @ autocomplete functionality -->
@@ -538,7 +540,7 @@
       <div
         class="node-container"
         data-has-children={node.children?.length > 0}
-        style="margin-left: {(node.hierarchyDepth || 0) * 2.5}rem"
+        style="margin-left: {(node.depth || 0) * 2.5}rem"
       >
         <div class="node-content-wrapper">
           <!-- Chevron for parent nodes (only visible on hover) -->

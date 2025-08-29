@@ -323,20 +323,20 @@ describe('ContentEditableController', () => {
       // Set up the content with bold text
       controller.updateContent('__bold__');
       element.textContent = '__bold__';
-      
+
       // Create a selection that includes the bold markers
       const range = document.createRange();
       const textNode = element.firstChild as Text;
       range.setStart(textNode, 0);
       range.setEnd(textNode, 8); // selects "__bold__"
-      
+
       const selection = window.getSelection()!;
       selection.removeAllRanges();
       selection.addRange(range);
 
       // Simulate Cmd+I (italic) keyboard shortcut
-      const italicEvent = new KeyboardEvent('keydown', { 
-        key: 'i', 
+      const italicEvent = new KeyboardEvent('keydown', {
+        key: 'i',
         metaKey: true,
         bubbles: true
       });
@@ -350,22 +350,22 @@ describe('ContentEditableController', () => {
       // Set up the content with italic text
       controller.updateContent('_italic_');
       element.textContent = '_italic_';
-      
+
       // Create a selection that includes the italic markers
       const range = document.createRange();
       const textNode = element.firstChild as Text;
       range.setStart(textNode, 0);
       range.setEnd(textNode, 8); // selects "_italic_"
-      
+
       const selection = window.getSelection()!;
       selection.removeAllRanges();
       selection.addRange(range);
 
       // Simulate Cmd+B (bold) keyboard shortcut
-      const boldEvent = new KeyboardEvent('keydown', { 
-        key: 'b', 
+      const boldEvent = new KeyboardEvent('keydown', {
+        key: 'b',
         metaKey: true,
-        bubbles: true 
+        bubbles: true
       });
       element.dispatchEvent(boldEvent);
 
@@ -377,22 +377,22 @@ describe('ContentEditableController', () => {
       // Set up the content with asterisk bold text (so Cmd+B will match exactly)
       controller.updateContent('**bold**');
       element.textContent = '**bold**';
-      
+
       // Create a selection that includes the bold markers
       const range = document.createRange();
       const textNode = element.firstChild as Text;
       range.setStart(textNode, 0);
       range.setEnd(textNode, 8); // selects "**bold**"
-      
+
       const selection = window.getSelection()!;
       selection.removeAllRanges();
       selection.addRange(range);
 
       // Simulate Cmd+B (bold) keyboard shortcut - should toggle off since ** matches **
-      const boldEvent = new KeyboardEvent('keydown', { 
-        key: 'b', 
+      const boldEvent = new KeyboardEvent('keydown', {
+        key: 'b',
         metaKey: true,
-        bubbles: true 
+        bubbles: true
       });
       element.dispatchEvent(boldEvent);
 
@@ -404,22 +404,22 @@ describe('ContentEditableController', () => {
       // Set up the content with underscore bold text
       controller.updateContent('__bold__');
       element.textContent = '__bold__';
-      
+
       // Create a selection that includes the bold markers
       const range = document.createRange();
       const textNode = element.firstChild as Text;
       range.setStart(textNode, 0);
       range.setEnd(textNode, 8); // selects "__bold__"
-      
+
       const selection = window.getSelection()!;
       selection.removeAllRanges();
       selection.addRange(range);
 
       // Simulate Cmd+B (bold) keyboard shortcut - should nest since __ != **
-      const boldEvent = new KeyboardEvent('keydown', { 
-        key: 'b', 
+      const boldEvent = new KeyboardEvent('keydown', {
+        key: 'b',
         metaKey: true,
-        bubbles: true 
+        bubbles: true
       });
       element.dispatchEvent(boldEvent);
 

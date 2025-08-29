@@ -16,7 +16,6 @@
   export let indentSize: number = 4; // Uses --ns-spacing-4 by default
   export const expandedByDefault: boolean = true;
   export let showExpandControls: boolean = true;
-  export let allowEdit: boolean = true;
 
   // Event dispatcher
   const dispatch = createEventDispatcher<{
@@ -122,7 +121,6 @@
           <TextNode
             nodeId={node.id}
             content={node.content}
-            editable={allowEdit}
             on:save={handleNodeSave}
             on:click={() => handleNodeSelect(node.id)}
           />

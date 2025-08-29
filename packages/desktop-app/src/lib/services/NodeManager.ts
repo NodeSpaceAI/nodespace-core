@@ -56,7 +56,7 @@ export class NodeManager {
   private events: NodeManagerEvents;
   protected contentProcessor: ContentProcessor;
   private activeNodeId?: string;
-  protected readonly serviceName = 'NodeManager';
+  protected readonly serviceName: string = 'NodeManager';
 
   constructor(events: NodeManagerEvents) {
     this._nodes = new Map<string, Node>();
@@ -352,9 +352,8 @@ export class NodeManager {
     inheritHeaderLevel?: number,
     cursorAtBeginning: boolean = false
   ): string {
-    
     const afterNode = this.findNode(afterNodeId);
-    
+
     if (!afterNode) {
       console.error('⚙️ ❌ CRITICAL: afterNode not found, returning empty string');
       return '';
