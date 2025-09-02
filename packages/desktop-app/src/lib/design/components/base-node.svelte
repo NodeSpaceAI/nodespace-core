@@ -305,7 +305,7 @@
   .node {
     position: relative;
     padding: 0.25rem;
-    padding-left: 54px; /* 26px circle position + 20px circle width + 8px gap */
+    padding-left: calc(var(--circle-offset, 26px) + var(--circle-diameter, 20px) + var(--circle-text-gap, 8px)); /* Dynamic: circle position + circle width + gap */
     width: 100%;
     /* 
       Circle positioning system using CSS-first dynamic calculation
@@ -337,14 +337,14 @@
 
   .node__indicator {
     position: absolute;
-    left: 26px; /* Match design system positioning */
+    left: var(--circle-offset, 26px); /* Dynamic circle positioning */
     /* Fallback positioning for older browsers that don't support CSS custom properties */
     top: 1.05rem; /* Approximates normal text center: 0.25rem padding + (1rem * 1.6 / 2) */
     /* CSS-first dynamic positioning using proven formula: containerPaddingPx + (lineHeightPx / 2) */
     top: calc(0.25rem + (var(--line-height-px) / 2));
     transform: translate(-50%, -50%); /* Center icon on coordinates */
-    width: 20px; /* Match design system container size */
-    height: 20px; /* Match design system container size */
+    width: var(--circle-diameter, 20px); /* Dynamic circle size */
+    height: var(--circle-diameter, 20px); /* Dynamic circle size */
     display: flex;
     align-items: center;
     justify-content: center;

@@ -588,8 +588,11 @@
     gap: 0; /* 0px gap - all spacing from node padding for 8px total */
     padding-left: 2rem; /* Add left padding to accommodate chevrons positioned at negative left */
 
-    /* Node indentation system - defines consistent spacing */
-    --node-indent: 2.5rem; /* 40px indentation between parent and child circles */
+    /* Dynamic Circle Positioning System - All values configurable from here */
+    --circle-offset: 26px;           /* Circle center distance from container left edge */
+    --circle-diameter: 20px;         /* Circle size (width and height) */
+    --circle-text-gap: 8px;          /* Gap between circle edge and text content */
+    --node-indent: 2.5rem;           /* Indentation distance between parent and child levels */
 
     /* NodeSpace Extension Colors - Node type colors per design system */
     --node-text: 142 71% 45%; /* Green for text nodes */
@@ -613,7 +616,27 @@
     position: relative; /* Enable absolute positioning for chevrons */
   }
 
-  /* Chevron styling - anchored to circle position */
+  /* 
+    Chevron positioning system - matches circle positioning exactly
+    
+    POSITIONING FORMULA:
+    The chevron must be vertically centered with the circles, which use:
+    top: calc(0.25rem + (var(--line-height-px) / 2))
+    
+    Where:
+    - 0.25rem = container top padding (.node has padding: 0.25rem)
+    - line-height-px = font-size × line-height multiplier
+    - This formula positions at the visual center of the first line of text
+    
+    HORIZONTAL POSITION:
+    - Exactly halfway between parent and child circles
+    - Parent is at current depth, child is at depth + 2.5rem (--node-indent)
+    - Chevron positioned at -1.25rem (half of 2.5rem) from current node
+    
+    INHERITANCE:
+    The --line-height-px variable is inherited from .node-content-wrapper
+    which detects the header level of nested content using :has() selector
+  */
   .node-chevron {
     opacity: 0; /* Hidden by default - shows on hover */
     background: none;
@@ -622,23 +645,19 @@
     cursor: pointer;
     border-radius: 0.125rem; /* 2px border radius */
     transition: opacity 0.15s ease-in-out; /* Smooth fade in/out */
-    transform-origin: center;
     pointer-events: auto; /* Ensure chevron always receives pointer events */
     flex-shrink: 0;
-    width: 1.25em; /* Responsive width: scales with text size (20px at 16px base) */
-    height: 1.25em; /* Responsive height: scales with text size */
+    width: 1.25rem; /* Fixed 20px to match circle size */
+    height: 1.25rem; /* Fixed 20px to match circle size */
     display: flex;
     align-items: center;
     justify-content: center;
     /* Position chevron exactly halfway between parent and child circles */
     position: absolute;
-    left: calc(
-      -1 * var(--node-indent) / 2
-    ); /* Exactly half the indentation distance back from current node */
-    top: 50%; /* Center vertically relative to the text content area */
-    transform: translateY(
-      -50%
-    ); /* Center vertically only - horizontal positioning is mathematically exact */
+    left: calc(-1 * var(--node-indent) / 2 + var(--circle-offset)); /* Halfway back to parent + parent circle offset */
+    /* Use same CSS-first positioning as circles: containerPaddingPx + (lineHeightPx / 2) */
+    top: calc(0.25rem + (var(--line-height-px) / 2));
+    transform: translate(-50%, -50%); /* Center icon on coordinates, same as circles */
     z-index: 999; /* Very high z-index to ensure clickability over all other elements */
   }
 
@@ -655,7 +674,7 @@
 
   /* Expanded state: rotate 90 degrees to point down */
   .node-chevron.expanded {
-    transform: translateY(-50%) rotate(90deg);
+    transform: translate(-50%, -50%) rotate(90deg);
   }
 
   /* Spacer for alignment when no chevron - no longer needed since chevron is absolutely positioned */
@@ -663,14 +682,12 @@
     display: none; /* Hide spacer since chevron doesn't affect layout flow */
   }
 
-  /* UPDATED: CSS-first positioning to match base-node.svelte implementation */
+  /* CSS-first positioning to match base-node.svelte implementation */
   .node-content-wrapper {
     /* Default values for normal text - matches base-node.svelte exactly */
     --line-height: 1.6;
     --font-size: 1rem;
     --line-height-px: calc(var(--font-size) * var(--line-height));
-    /* Calculate chevron position using same formula as BaseNode circles */
-    --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
 
   /* Inherit font-size and line-height from nested BaseNode header classes */
@@ -678,41 +695,35 @@
     --font-size: 2rem;
     --line-height: 1.2;
     --line-height-px: calc(var(--font-size) * var(--line-height));
-    --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h2)) {
     --font-size: 1.5rem;
     --line-height: 1.3;
     --line-height-px: calc(var(--font-size) * var(--line-height));
-    --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h3)) {
     --font-size: 1.25rem;
     --line-height: 1.4;
     --line-height-px: calc(var(--font-size) * var(--line-height));
-    --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h4)) {
     --font-size: 1.125rem;
     --line-height: 1.4;
     --line-height-px: calc(var(--font-size) * var(--line-height));
-    --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h5)) {
     --font-size: 1rem;
     --line-height: 1.4;
     --line-height-px: calc(var(--font-size) * var(--line-height));
-    --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h6)) {
     --font-size: 0.875rem;
     --line-height: 1.4;
     --line-height-px: calc(var(--font-size) * var(--line-height));
-    --text-visual-center: calc(0.25rem + (var(--line-height-px) / 2));
   }
 </style>
