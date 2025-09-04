@@ -1,11 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(gh *)",
-      "Bash(*gh *)",
-      "Bash(for ISSUE_NUMBER in * gh *)",
-      "Bash(*ITEM_ID=$(gh *)",
-      "Bash(for * in *; do ITEM_ID=$(gh *)"
+      "Bash(gh:*)",
+      "Bash(bun:*)"
     ]
   }
 }
