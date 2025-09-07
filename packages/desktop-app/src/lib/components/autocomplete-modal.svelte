@@ -38,6 +38,7 @@
   import Button from '$lib/components/ui/button/button.svelte';
   import Badge from '$lib/components/ui/badge/badge.svelte';
   import Separator from '$lib/components/ui/separator/separator.svelte';
+  import Icon, { type IconName } from '$lib/design/icons';
   import type { AutocompleteResult, NodeSuggestion } from '$lib/services/nodeReferenceService';
   import type { NodeSpaceNode } from '$lib/services/mockDatabaseService';
 
@@ -80,18 +81,18 @@
     placement: 'below'
   };
 
-  // Node type configuration
+  // Node type configuration with proper Icon components
   const NODE_TYPE_CONFIG = {
-    text: { icon: '📄', label: 'Text' },
-    task: { icon: '☐', label: 'Task' },
-    user: { icon: '👤', label: 'User' },
-    date: { icon: '📅', label: 'Date' },
-    ai_chat: { icon: '🤖', label: 'AI Chat' },
-    entity: { icon: '🏷️', label: 'Entity' },
-    query: { icon: '🔍', label: 'Query' }
+    text: { icon: 'circle' as IconName, label: 'Text' },
+    task: { icon: 'taskIncomplete' as IconName, label: 'Task' },
+    user: { icon: 'circle' as IconName, label: 'User' },
+    date: { icon: 'circle' as IconName, label: 'Date' },
+    ai_chat: { icon: 'aiSquare' as IconName, label: 'AI Chat' },
+    entity: { icon: 'circle' as IconName, label: 'Entity' },
+    query: { icon: 'circle' as IconName, label: 'Query' }
   } as const;
 
-  const DEFAULT_NODE_TYPE = { icon: '📄', label: 'Node' };
+  const DEFAULT_NODE_TYPE = { icon: 'circle' as IconName, label: 'Node' };
 
   // ============================================================================
   // Reactive Statements
@@ -372,7 +373,7 @@
     return firstLine.substring(0, 50) || 'Untitled';
   }
 
-  function getNodeTypeConfig(nodeType: string): { icon: string; label: string } {
+  function getNodeTypeConfig(nodeType: string): { icon: IconName; label: string } {
     return NODE_TYPE_CONFIG[nodeType as keyof typeof NODE_TYPE_CONFIG] || DEFAULT_NODE_TYPE;
   }
 
@@ -552,11 +553,11 @@
               on:click={() => selectNodeSuggestion(suggestion)}
               on:keydown={(e) => e.key === 'Enter' && selectNodeSuggestion(suggestion)}
             >
-              <!-- Node type icon -->
+              <!-- Node type icon with semantic class -->
               <div
-                class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded bg-muted/50"
+                class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded bg-muted/50 node-icon"
               >
-                <span class="text-xs">{nodeConfig.icon}</span>
+                <Icon name={nodeConfig.icon} size={14} />
               </div>
 
               <!-- Node content -->
@@ -638,9 +639,9 @@
             >
               <!-- Create icon -->
               <div
-                class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded bg-primary/10"
+                class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded bg-primary/10 node-icon"
               >
-                <span class="text-xs">✨</span>
+                <Icon name="circle" size={14} color="hsl(var(--primary))" />
               </div>
 
               <!-- Content -->

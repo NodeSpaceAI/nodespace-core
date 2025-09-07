@@ -1,13 +1,14 @@
 <script lang="ts">
   import { cn } from '$lib/utils';
   import Badge from '../badge/badge.svelte';
+  import Icon, { type NodeType } from '$lib/design/icons';
   import { createEventDispatcher, onMount } from 'svelte';
 
   // Types for node results
   interface NodeResult {
     id: string;
     title: string;
-    type: 'text' | 'task' | 'ai-chat' | 'entity' | 'query' | 'user' | 'date' | 'document';
+    type: NodeType;
     subtitle?: string;
     metadata?: string;
   }
@@ -29,17 +30,29 @@
     close: void;
   }>();
 
-  // Node type configuration with proper NodeSpace colors
-  const nodeTypeConfig = {
-    text: { icon: '📄', label: 'Text', color: 'hsl(142 71% 45%)' },
-    task: { icon: '✅', label: 'Task', color: 'hsl(25 95% 53%)' },
-    'ai-chat': { icon: '🤖', label: 'AI Chat', color: 'hsl(221 83% 53%)' },
-    entity: { icon: '🏷️', label: 'Entity', color: 'hsl(271 81% 56%)' },
-    query: { icon: '🔍', label: 'Query', color: 'hsl(330 81% 60%)' },
-    user: { icon: '👤', label: 'User', color: 'hsl(142 71% 45%)' },
-    date: { icon: '📅', label: 'Date', color: 'hsl(142 71% 45%)' },
-    document: { icon: '📋', label: 'Document', color: 'hsl(142 71% 45%)' }
-  };
+  // Import icon configuration from registry for consistency
+  import { getIconConfig } from '$lib/design/icons/registry.js';
+  
+  // Helper function to get node configuration
+  function getNodeConfig(nodeType: NodeType) {
+    const iconConfig = getIconConfig(nodeType);
+    const labels: Record<NodeType, string> = {
+      text: 'Text',
+      document: 'Document', 
+      task: 'Task',
+      'ai-chat': 'AI Chat',
+      ai_chat: 'AI Chat',
+      user: 'User',
+      entity: 'Entity',
+      query: 'Query'
+    };
+    
+    return {
+      label: labels[nodeType] || 'Node',
+      color: iconConfig.colorVar,
+      semanticClass: iconConfig.semanticClass
+    };
+  }
 
   // Smart positioning to avoid viewport edges
   function getSmartPosition(pos: { x: number; y: number }) {
@@ -216,14 +229,16 @@
             <div
               class={cn(
                 'flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center',
-                'text-sm font-semibold shadow-sm border',
+                'shadow-sm border node-icon',
                 selectedIndex === index ? 'shadow-md' : ''
               )}
-              style="background-color: {nodeTypeConfig[result.type]
-                .color}12; color: {nodeTypeConfig[result.type]
-                .color}; border-color: {nodeTypeConfig[result.type].color}25;"
+              style="background-color: {getNodeConfig(result.type).color}12; border-color: {getNodeConfig(result.type).color}25;"
             >
-              {nodeTypeConfig[result.type].icon}
+              <Icon 
+                nodeType={result.type}
+                size={16} 
+                color={getNodeConfig(result.type).color}
+              />
             </div>
 
             <!-- Content with improved typography -->

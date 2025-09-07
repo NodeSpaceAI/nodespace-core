@@ -1,16 +1,23 @@
 /**
- * NodeSpace SVG Icon System
+ * NodeSpace Elegant Icon System
  *
- * A modular, tree-shakable icon system with TypeScript support.
- * Supports theme integration via currentColor and follows shadcn-svelte design system.
+ * Component-based icon registry that unifies design system with implementation.
+ * Eliminates architectural inconsistency and provides semantic node-based API.
  *
- * Usage:
+ * New Semantic Usage (Recommended):
  * ```svelte
  * <script>
- *   import Icon, { type IconName } from '$lib/design/icons';
+ *   import Icon, { type NodeType } from '$lib/design/icons';
  * </script>
  *
- * <Icon name="text" size={24} color="var(--ns-color-text-primary)" />
+ * <Icon nodeType="text" hasChildren={true} size={20} />
+ * <Icon nodeType="task" state="completed" />
+ * <Icon nodeType="ai-chat" />
+ * ```
+ *
+ * Legacy Usage (Backward Compatible):
+ * ```svelte
+ * <Icon name="circle" size={24} color="currentColor" />
  * ```
  */
 
@@ -18,7 +25,13 @@
 export { default } from './icon.svelte';
 export { default as Icon } from './icon.svelte';
 
-// Export icon types for TypeScript autocomplete - import from types file for better support
+// Export new semantic types (recommended)
+export type { NodeType, NodeState, NodeIconProps, IconConfig } from './types';
+
+// Export registry functions
+export { getIconConfig, resolveNodeState } from './registry';
+
+// Export legacy types for backward compatibility
 export type { IconName } from './types';
 
 // Export individual icon paths for direct usage if needed
@@ -26,6 +39,10 @@ export { textIcon } from './ui/text';
 export { circleIcon } from './ui/circle';
 export { circleRingIcon } from './ui/circleRing';
 export { chevronRightIcon } from './ui/chevronRight';
+export { taskCompleteIcon } from './ui/taskComplete';
+export { taskIncompleteIcon } from './ui/taskIncomplete';
+export { taskInProgressIcon } from './ui/taskInProgress';
+export { aiSquareIcon } from './ui/aiSquare';
 
 /**
  * Available Icons:
@@ -33,6 +50,10 @@ export { chevronRightIcon } from './ui/chevronRight';
  * - circle: Simple filled circle for node indicators
  * - circleRing: Circle with ring for parent node indicators
  * - chevronRight: Right-pointing chevron for collapse/expand controls
+ * - taskComplete: Checkmark in circle for completed tasks
+ * - taskIncomplete: Empty circle for uncompleted tasks
+ * - taskInProgress: Half-filled circle for tasks in progress
+ * - aiSquare: Rounded square with "AI" text for AI chat nodes
  *
  * Future icons will be added to ./ui/ directory and exported here.
  */

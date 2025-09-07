@@ -7,7 +7,7 @@
 
 <script lang="ts">
   import { createEventDispatcher, onDestroy } from 'svelte';
-  import Icon, { type IconName } from '$lib/design/icons';
+  import Icon, { type NodeType } from '$lib/design/icons';
 
   import {
     ContentEditableController,
@@ -266,15 +266,24 @@
       .join(' ')
   );
 
-  // Icon for node type
-  const icon = $derived((children.length > 0 ? 'circleRing' : 'circle') as IconName);
+  // Convert string nodeType to typed NodeType for new icon system
+  const typedNodeType = $derived(() => {
+    // Ensure nodeType matches our NodeType union
+    if (['text', 'document', 'task', 'ai-chat', 'ai_chat', 'user', 'entity', 'query'].includes(nodeType)) {
+      return nodeType as NodeType;
+    }
+    // Fallback to text for unrecognized types
+    return 'text' as NodeType;
+  });
   const nodeColor = $derived(`hsl(var(--node-${nodeType}, var(--node-text)))`);
+  
+  // Note: Semantic classes handled internally by Icon component
 </script>
 
 <div class={containerClasses} data-node-id={nodeId}>
   <!-- Node indicator -->
   <div class="node__indicator">
-    <Icon name={icon} size={20} color={nodeColor} />
+    <Icon nodeType={typedNodeType()} hasChildren={children.length > 0} size={20} color={nodeColor} />
   </div>
 
   <!-- Content area -->
@@ -349,6 +358,15 @@
     align-items: center;
     justify-content: center;
     /* No transition - position updates should be instant */
+  }
+  
+  /* Design system semantic classes for icon containers */
+  .node-icon,
+  .task-icon,
+  .ai-icon {
+    /* Classes applied dynamically based on node type */
+    /* Base styling inherited from .node__indicator */
+    position: relative;
   }
 
   .node__content {
