@@ -30,7 +30,7 @@
 <svelte:window on:keydown={handleKeydown} />
 
 <nav 
-  class="sidebar"
+  class="sidebar navigation-sidebar"
   class:sidebar-collapsed={isCollapsed}
   class:sidebar-expanded={!isCollapsed}
   role="navigation"
@@ -91,7 +91,6 @@
 <style>
   .sidebar {
     background: hsl(var(--background));
-    border-right: 1px solid hsl(var(--border));
     display: flex;
     flex-direction: column;
     height: 100vh;

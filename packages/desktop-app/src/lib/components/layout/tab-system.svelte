@@ -20,9 +20,8 @@
   
   Usage:
   <TabSystem>
-    {#snippet children({ activeTab })}
-      <!-- Content based on activeTab -->
-    {/snippet}
+    Snippet: children({ activeTab })
+      Content based on activeTab
   </TabSystem>
 -->
 <script lang="ts">
@@ -40,11 +39,6 @@
     setActiveTab(tabId);
   }
 
-  // Handle close button click with event stopping
-  function handleCloseClick(event: MouseEvent, tabId: string): void {
-    event.stopPropagation();
-    closeTab(tabId);
-  }
 
   // Handle keyboard navigation for accessibility
   function handleTabKeydown(event: KeyboardEvent, tabId: string): void {
@@ -90,33 +84,6 @@
         <span class="tab-title" title={tab.title}>
           {truncateTitle(tab.title)}
         </span>
-        
-        {#if tab.closeable}
-          <Button
-            variant="ghost"
-            size="icon"
-            class="tab-close-button"
-            aria-label={`Close ${tab.title} tab`}
-            on:click={(event) => handleCloseClick(event, tab.id)}
-          >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 12 12"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-              aria-hidden="true"
-            >
-              <path
-                d="M9 3L3 9M3 3L9 9"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-          </Button>
-        {/if}
       </div>
     {/each}
   </div>
@@ -137,11 +104,24 @@
     display: flex;
     align-items: center;
     background-color: hsl(var(--muted));
-    border-bottom: 1px solid hsl(var(--border));
     padding: 0;
+    margin: 0;
     overflow-x: auto;
     scrollbar-width: none;
     -ms-overflow-style: none;
+    position: relative;
+    /* Ensure tabs start from the very edge */
+    margin-left: 0;
+    padding-left: 0;
+  }
+
+  /* Add border to the empty space after the last tab */
+  .tab-bar::after {
+    content: '';
+    flex: 1;
+    border-bottom: 1px solid hsl(var(--border));
+    height: 1px;
+    align-self: flex-end;
   }
 
   .tab-bar::-webkit-scrollbar {
@@ -152,36 +132,111 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 16px;
+    padding: 0 16px;
+    height: 40px;
     min-width: 0;
     flex-shrink: 0;
     cursor: pointer;
-    border-right: 1px solid hsl(var(--border));
     background-color: transparent;
     color: hsl(var(--muted-foreground));
-    transition: all 0.2s ease-in-out;
     font-weight: 500;
     font-size: 14px;
     outline: none;
     position: relative;
+    box-sizing: border-box;
+    line-height: 1.2;
+    /* Use box-shadow for borders to avoid mitered corners */
+    box-shadow: 
+      inset 1px 0 0 0 hsl(var(--border)), /* left border */
+      inset 0 -1px 0 0 hsl(var(--border)); /* bottom border */
+    top: 0;
+  }
+
+  /* Add right border to the last tab */
+  .tab-item:last-child {
+    box-shadow: 
+      inset 1px 0 0 0 hsl(var(--border)),  /* left border */
+      inset 0 -1px 0 0 hsl(var(--border)), /* bottom border */
+      inset -1px 0 0 0 hsl(var(--border)); /* right border */
+  }
+  
+  /* Remove bottom border from last tab when it's active */
+  .tab-item:last-child.tab-item--active {
+    box-shadow: 
+      inset 1px 0 0 0 hsl(var(--border)),  /* left border */
+      inset -1px 0 0 0 hsl(var(--border)); /* right border only */
+  }
+
+  /* Hide left border from tab immediately after active tab to avoid double border */
+  .tab-item--active + .tab-item {
+    box-shadow: 
+      inset 0 -1px 0 0 hsl(var(--border)); /* bottom border only */
   }
 
   .tab-item:hover {
-    background-color: hsl(var(--accent));
-    color: hsl(var(--accent-foreground));
+    background-color: hsl(var(--border));
+    color: hsl(var(--foreground));
   }
 
   .tab-item:focus-visible {
-    background-color: hsl(var(--accent));
-    color: hsl(var(--accent-foreground));
-    box-shadow: inset 0 0 0 2px hsl(var(--ring));
+    background-color: hsl(var(--hover-background));
+    color: hsl(var(--hover-foreground));
+    box-shadow: 
+      inset 1px 0 0 0 hsl(var(--border)),  /* left border */
+      inset 0 -1px 0 0 hsl(var(--border)), /* bottom border */
+      inset 0 0 0 2px hsl(var(--ring));    /* focus ring */
   }
 
   .tab-item--active {
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
-    border-bottom: 1px solid hsl(var(--background));
-    margin-bottom: -1px;
+    position: relative;
+    box-sizing: border-box;
+    line-height: 1.2;
+    /* Identical properties to inactive tabs */
+    padding: 0 16px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    /* Ensure exact same positioning as inactive tabs */
+    top: 0;
+    /* Remove margin-bottom to prevent text shifting */
+    margin-bottom: 0;
+    /* Active tab borders only (accent will be separate) */
+    box-shadow: 
+      inset 1px 0 0 0 hsl(var(--border)),  /* left border */
+      inset -1px 0 0 0 hsl(var(--border)); /* right border */
+  }
+  
+  /* Active tab accent - positioned at the very top edge */
+  .tab-item--active::before {
+    content: '';
+    position: absolute;
+    top: 0;     /* At the top edge of the tab */
+    left: 0;    /* Start at tab edge (no extending beyond) */
+    right: 0;   /* End at tab edge (no extending beyond) */
+    height: 4px; /* Standard accent height */
+    background: hsl(var(--primary));
+    z-index: 1;  /* Lower z-index so it doesn't interfere with text */
+    pointer-events: none;
+  }
+  
+  /* Special handling for first tab accent to reach browser edge */
+  .tab-item:first-child.tab-item--active::before {
+    left: -100px;   /* Extend far left to ensure it reaches the edge */
+  }
+
+  /* Cover the content border below active tab */
+  .tab-item--active::after {
+    content: '';
+    position: absolute;
+    bottom: 0;    /* Position at the bottom edge of the tab */
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: hsl(var(--background));
+    z-index: 1;
   }
 
   .tab-item--active:hover {
@@ -203,30 +258,6 @@
     background-color: hsl(var(--background));
   }
 
-  /* Custom styling for close button */
-  :global(.tab-close-button) {
-    width: 20px !important;
-    height: 20px !important;
-    padding: 0 !important;
-    border-radius: var(--radius) !important;
-    opacity: 0.7;
-    transition: opacity 0.2s ease-in-out;
-    flex-shrink: 0;
-  }
-
-  :global(.tab-close-button:hover) {
-    opacity: 1;
-    background-color: hsl(var(--destructive) / 0.1) !important;
-    color: hsl(var(--destructive)) !important;
-  }
-
-  .tab-item--active :global(.tab-close-button) {
-    opacity: 0.8;
-  }
-
-  .tab-item--active :global(.tab-close-button:hover) {
-    opacity: 1;
-  }
 
   /* Responsive behavior */
   @media (max-width: 768px) {

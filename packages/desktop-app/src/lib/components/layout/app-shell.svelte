@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import NavigationSidebar from './navigation-sidebar.svelte';
+  import TabSystem from './tab-system.svelte';
   import ThemeProvider from '$lib/design/components/theme-provider.svelte';
   import { initializeTheme } from '$lib/design/theme.js';
   import { layoutState } from '$lib/stores/layout.js';
@@ -43,25 +44,49 @@
     <!-- Navigation Sidebar -->
     <NavigationSidebar />
 
-    <!-- Main Content Area -->
-    <main 
-      class="main-content"
-      role="main"
-      aria-label="Main content"
-    >
-      <slot />
-    </main>
+    <!-- Tab System - positioned to span both tabs and content grid areas -->
+    <div class="tab-system-wrapper">
+      <TabSystem let:activeTab>
+        <!-- Main Content Area -->
+        <main 
+          class="main-content"
+          role="main"
+          aria-label="Main content"
+        >
+          <slot {activeTab} />
+        </main>
+      </TabSystem>
+    </div>
   </div>
 </ThemeProvider>
 
 <style>
   .app-shell {
     display: grid;
+    grid-template-areas: 
+      "sidebar tabs"
+      "sidebar content";
     grid-template-columns: auto 1fr;
+    grid-template-rows: auto 1fr;
     height: 100vh;
     overflow: hidden;
     background: hsl(var(--background));
     color: hsl(var(--foreground));
+  }
+
+  /* Navigation Sidebar */
+  :global(.navigation-sidebar) {
+    grid-area: sidebar;
+  }
+
+  /* Tab System Wrapper - spans both tabs and content areas */
+  .tab-system-wrapper {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    position: relative;
   }
 
   /* Main content area */
@@ -70,6 +95,9 @@
     position: relative;
     background: hsl(var(--background));
     transition: margin-left 0.3s ease;
+    flex: 1;
+    min-height: 0;
+    border-left: 1px solid hsl(var(--border));
   }
 
   /* Ensure proper scrolling behavior */

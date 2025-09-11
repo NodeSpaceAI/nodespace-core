@@ -95,6 +95,15 @@
     border-color: hsl(var(--border));
   }
   
+  /* Disable all transitions globally */
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+  }
+  
   html, body {
     margin: 0;
     padding: 0;
