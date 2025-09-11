@@ -20,7 +20,7 @@
 
 <script lang="ts">
   import { createEventDispatcher, onDestroy } from 'svelte';
-  import { type NodeType } from '$lib/design/icons';
+  // import { type NodeType } from '$lib/design/icons'; // Unused but preserved for future use
 
   import {
     ContentEditableController,

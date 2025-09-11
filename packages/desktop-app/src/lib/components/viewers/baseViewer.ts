@@ -3,7 +3,7 @@
  * This ensures consistent event handling and prop structure
  */
 
-import type { NodeViewerEventDetails } from '$lib/types/node-viewers.js';
+import type { NodeViewerEventDetails } from '$lib/types/nodeViewers.js';
 
 export interface BaseNodeViewerInterface {
   // Required props

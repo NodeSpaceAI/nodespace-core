@@ -4,7 +4,7 @@ export interface Tab {
   id: string;
   title: string;
   type: 'date' | 'placeholder';
-  content?: any;
+  content?: unknown;
   closeable: boolean;
 }
 

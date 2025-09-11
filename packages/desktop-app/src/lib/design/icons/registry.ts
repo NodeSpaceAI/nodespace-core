@@ -12,9 +12,9 @@
  */
 
 import type { ComponentType } from 'svelte';
-import CircleIcon from './components/CircleIcon.svelte';
-import TaskIcon from './components/TaskIcon.svelte';
-import AIIcon from './components/AIIcon.svelte';
+import CircleIcon from './components/circle-icon.svelte';
+import TaskIcon from './components/task-icon.svelte';
+import AIIcon from './components/ai-icon.svelte';
 
 export type NodeType = 
   | 'text' 
@@ -161,7 +161,7 @@ export function getIconConfig(nodeType: NodeType): IconConfig {
 export function resolveNodeState(
   nodeType: NodeType, 
   explicitState?: NodeState,
-  additionalProps?: Record<string, unknown>
+  _additionalProps?: Record<string, unknown>
 ): NodeState {
   // If explicit state is provided, use it
   if (explicitState) {

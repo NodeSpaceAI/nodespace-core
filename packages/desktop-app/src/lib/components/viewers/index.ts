@@ -11,7 +11,7 @@
 import type { 
   NodeViewerComponent, 
   ViewerRegistration 
-} from '$lib/types/node-viewers.js';
+} from '$lib/types/nodeViewers.js';
 
 class ViewerRegistry {
   private viewers = new Map<string, ViewerRegistration>();

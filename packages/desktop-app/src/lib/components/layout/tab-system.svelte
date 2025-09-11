@@ -25,8 +25,7 @@
   </TabSystem>
 -->
 <script lang="ts">
-  import { tabState, setActiveTab, closeTab, type Tab } from '$lib/stores/navigation.js';
-  import { Button } from '$lib/components/ui/button/index.js';
+  import { tabState, setActiveTab } from '$lib/stores/navigation.js';
   import { cn } from '$lib/utils.js';
 
   // Truncate title to specified length with ellipsis

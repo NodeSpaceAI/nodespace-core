@@ -33,8 +33,6 @@
   class="sidebar navigation-sidebar"
   class:sidebar-collapsed={isCollapsed}
   class:sidebar-expanded={!isCollapsed}
-  role="navigation"
-  aria-label="Main navigation"
 >
   <!-- Hamburger menu button -->
   <button

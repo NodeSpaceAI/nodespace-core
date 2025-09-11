@@ -12,7 +12,7 @@
   import { createEventDispatcher } from 'svelte';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import Icon from '$lib/design/icons/icon.svelte';
-  import type { ViewerComponentProps } from './base-viewer.js';
+  import type { ViewerComponentProps } from './baseViewer.js';
 
   // Props following the new viewer interface
   let { 

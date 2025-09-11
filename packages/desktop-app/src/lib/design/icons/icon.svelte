@@ -23,7 +23,8 @@
     calendar: calendarIcon
   };
 
-  export let name: IconName;
+   
+  export let name: IconName = 'circle'; // Default to circle icon if none specified
   export let size: number = 20;
   export let className: string = '';
   export let color: string = 'currentColor';
@@ -51,8 +52,17 @@
     <circle cx="12" cy="12" r="8" fill={color} />
   {:else if name === 'calendar'}
     <path d={iconPath} fill="none" stroke={color} stroke-width="2" />
-  {:else if name === 'taskComplete' || name === 'taskIncomplete' || name === 'taskInProgress' || name === 'aiSquare'}
-    {@html iconPath}
+  {:else if name === 'taskComplete'}
+    <circle cx="8" cy="8" r="7" fill="currentColor" opacity="0.1" stroke="currentColor" stroke-width="1"/>
+    <path d="M6 8l1.5 1.5L11 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  {:else if name === 'taskIncomplete'}
+    <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1" opacity="0.6"/>
+  {:else if name === 'taskInProgress'}
+    <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3"/>
+    <path d="M8 1 A7 7 0 0 1 8 15 Z" fill="currentColor" opacity="0.6"/>
+  {:else if name === 'aiSquare'}
+    <rect x="2" y="2" width="12" height="12" rx="2" ry="2" fill="currentColor" opacity="0.1" stroke="currentColor" stroke-width="1"/>
+    <text x="8" y="10.5" font-family="system-ui, -apple-system, sans-serif" font-size="6" font-weight="600" text-anchor="middle" fill="currentColor">AI</text>
   {:else}
     <path d={iconPath} fill={color} />
   {/if}

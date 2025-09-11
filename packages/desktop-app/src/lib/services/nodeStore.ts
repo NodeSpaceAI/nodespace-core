@@ -16,11 +16,12 @@ export const rootNodeIds = writable<string[]>([]);
 const nodeDepthCache = new Map<string, Node & { hierarchyDepth: number }>();
 
 // Force cache invalidation for complex operations that affect multiple nodes
-let _cacheVersion = 0;
+ 
+let _cacheVersion = 0; // Incremented by invalidateNodeCache to force cache clearing
 
 // Function to invalidate cache for complex operations (indent/outdent/hierarchy changes)
 export function invalidateNodeCache() {
-  _cacheVersion++;
+  _cacheVersion++; // Force cache recreation by changing version
   nodeDepthCache.clear();
 }
 
@@ -32,8 +33,8 @@ export const visibleNodes = derived([nodes, rootNodeIds], ([$nodes, $rootNodeIds
     for (const nodeId of nodeIds) {
       const node = $nodes.get(nodeId);
       if (node) {
-        // Check if we have a cached version with the same depth
-        const cacheKey = `${nodeId}-${depth}`;
+        // Check if we have a cached version with the same depth and cache version
+        const cacheKey = `${nodeId}-${depth}-${_cacheVersion}`;
         let cachedNode = nodeDepthCache.get(cacheKey);
         
         // Create new cached node only if needed (new node, content, expanded state, or children changed)

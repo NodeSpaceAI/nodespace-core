@@ -16,12 +16,12 @@
   $: isCollapsed = $layoutState.sidebarCollapsed;
 
   // Handle global keyboard shortcuts
-  function handleKeydown(event: KeyboardEvent) {
-    // No global shortcuts currently defined
-  }
+  // function handleKeydown(_event: KeyboardEvent) {
+  //   // No global shortcuts currently defined
+  // }
 </script>
 
-<svelte:window on:keydown={handleKeydown} />
+<!-- <svelte:window on:keydown={handleKeydown} /> -->
 
 <!-- 
   Application Shell Component
@@ -48,11 +48,7 @@
     <div class="tab-system-wrapper">
       <TabSystem let:activeTab>
         <!-- Main Content Area -->
-        <main 
-          class="main-content"
-          role="main"
-          aria-label="Main content"
-        >
+        <main class="main-content">
           <slot {activeTab} />
         </main>
       </TabSystem>

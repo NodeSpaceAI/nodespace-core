@@ -15,7 +15,7 @@
   import { createEventDispatcher } from 'svelte';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import { contentProcessor } from '$lib/services/contentProcessor.js';
-  import type { NodeViewerProps, NodeViewerEventDetails } from '$lib/types/node-viewers.js';
+  import type { NodeViewerProps, NodeViewerEventDetails } from '$lib/types/nodeViewers.js';
 
   // Props - implements NodeViewerProps interface
   let {
