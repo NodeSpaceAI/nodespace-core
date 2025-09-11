@@ -23,7 +23,7 @@
 {:else}
   <!-- Placeholder content for other tabs -->
   <div class="placeholder-content">
-    <h2>{tabs.find(t => t.id === activeTabId)?.title}</h2>
+    <h2>{tabs.find((t) => t.id === activeTabId)?.title}</h2>
     <p>This is a placeholder tab. Content will be implemented later.</p>
   </div>
 {/if}

@@ -39,14 +39,16 @@
 
   // Smart multiline logic - headers are single-line only, regular text allows multiline
   const editableConfig = $derived({
-    allowMultiline: headerLevel === 0  // Only allow multiline for regular text (headerLevel 0)
+    allowMultiline: headerLevel === 0 // Only allow multiline for regular text (headerLevel 0)
   });
 
   // Event dispatcher
-  const dispatch = createEventDispatcher<NodeViewerEventDetails & {
-    focus: void;
-    blur: void;
-  }>();
+  const dispatch = createEventDispatcher<
+    NodeViewerEventDetails & {
+      focus: void;
+      blur: void;
+    }
+  >();
 
   // Handle focus/blur for TextNodeViewer-specific behavior
   function handleFocus() {
@@ -78,7 +80,7 @@
   content={internalContent}
   {headerLevel}
   {children}
-  editableConfig={editableConfig}
+  {editableConfig}
   on:createNewNode={(e) =>
     dispatch('createNewNode', { ...e.detail, inheritHeaderLevel: headerLevel })}
   on:contentChanged={handleContentChange}

@@ -25,13 +25,13 @@ export interface NodeViewerEventDetails {
   contentChanged: { content: string };
   indentNode: { nodeId: string };
   outdentNode: { nodeId: string };
-  navigateArrow: { 
-    nodeId: string; 
-    direction: 'up' | 'down'; 
+  navigateArrow: {
+    nodeId: string;
+    direction: 'up' | 'down';
     columnHint: number;
   };
-  combineWithPrevious: { 
-    nodeId: string; 
+  combineWithPrevious: {
+    nodeId: string;
     currentContent: string;
   };
   deleteNode: { nodeId: string };
@@ -50,7 +50,7 @@ export interface BaseNodeViewer {
   nodeId: string;
   content: string;
   nodeType: string;
-  
+
   // Optional props
   autoFocus?: boolean;
   inheritHeaderLevel?: number;

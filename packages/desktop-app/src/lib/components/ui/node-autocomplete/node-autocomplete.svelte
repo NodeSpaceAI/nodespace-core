@@ -32,13 +32,13 @@
 
   // Import icon configuration from registry for consistency
   import { getIconConfig } from '$lib/design/icons/registry.js';
-  
+
   // Helper function to get node configuration
   function getNodeConfig(nodeType: NodeType) {
     const iconConfig = getIconConfig(nodeType);
     const labels: Record<NodeType, string> = {
       text: 'Text',
-      document: 'Document', 
+      document: 'Document',
       task: 'Task',
       'ai-chat': 'AI Chat',
       ai_chat: 'AI Chat',
@@ -46,7 +46,7 @@
       entity: 'Entity',
       query: 'Query'
     };
-    
+
     return {
       label: labels[nodeType] || 'Node',
       color: iconConfig.colorVar,
@@ -232,13 +232,10 @@
                 'shadow-sm border node-icon',
                 selectedIndex === index ? 'shadow-md' : ''
               )}
-              style="background-color: {getNodeConfig(result.type).color}12; border-color: {getNodeConfig(result.type).color}25;"
+              style="background-color: {getNodeConfig(result.type)
+                .color}12; border-color: {getNodeConfig(result.type).color}25;"
             >
-              <Icon 
-                nodeType={result.type}
-                size={16} 
-                color={getNodeConfig(result.type).color}
-              />
+              <Icon name="circle" size={16} color={getNodeConfig(result.type).color} />
             </div>
 
             <!-- Content with improved typography -->

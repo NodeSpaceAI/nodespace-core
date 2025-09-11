@@ -13,19 +13,21 @@
   import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import Icon from '$lib/design/icons/icon.svelte';
   import { updateTabTitle, getDateTabTitle } from '$lib/stores/navigation.js';
-  
+
   // Props using Svelte 5 runes mode
   let { tabId = 'today' }: { tabId?: string } = $props();
 
   // Current date state - defaults to today
   let currentDate = $state(new Date());
-  
+
   // Format date for display (e.g., "September 7, 2025") using Svelte 5 $derived
-  const formattedDate = $derived(currentDate.toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  }));
+  const formattedDate = $derived(
+    currentDate.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    })
+  );
 
   // Update tab title when date changes using Svelte 5 $effect
   $effect(() => {
@@ -55,7 +57,7 @@
     // Only handle if focus is not on contenteditable elements
     const activeElement = document.activeElement as HTMLElement;
     const isTextEditor = activeElement && activeElement.contentEditable === 'true';
-    
+
     if (isTextEditor) return;
 
     if (event.key === 'ArrowLeft') {
@@ -76,10 +78,19 @@
   <div class="date-header">
     <div class="date-nav-container">
       <div class="date-display">
-        <Icon name="calendar" size={18} color="hsl(var(--muted-foreground))" className="calendar-icon" />
-        <h1 style="font-size: 2rem; font-weight: 500; color: hsl(var(--muted-foreground)); margin: 0;">{formattedDate}</h1>
+        <Icon
+          name="calendar"
+          size={18}
+          color="hsl(var(--muted-foreground))"
+          className="calendar-icon"
+        />
+        <h1
+          style="font-size: 2rem; font-weight: 500; color: hsl(var(--muted-foreground)); margin: 0;"
+        >
+          {formattedDate}
+        </h1>
       </div>
-      
+
       <div class="date-nav-buttons">
         <button class="date-nav-btn" onclick={() => navigateDate('prev')} aria-label="Previous day">
           <Icon name="chevronRight" size={16} color="currentColor" className="rotate-left" />

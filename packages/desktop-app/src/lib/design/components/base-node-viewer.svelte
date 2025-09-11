@@ -16,9 +16,8 @@
   import { viewerRegistry } from '$lib/components/viewers/index.js';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import TextNodeViewer from '$lib/components/viewers/text-node-viewer.svelte';
-  
-  // No props currently used
 
+  // No props currently used
 
   // Demo data imported from external file
 
@@ -270,7 +269,6 @@
       }, 0);
     }
   }
-
 
   // Handle arrow key navigation between nodes using entry/exit methods
   function handleArrowNavigation(
@@ -537,7 +535,7 @@
     async function preloadViewers() {
       // Pre-load all known viewer types
       const knownTypes = ['text', 'date', 'task', 'ai-chat'];
-      
+
       for (const nodeType of knownTypes) {
         if (!loadedViewers.has(nodeType)) {
           try {
@@ -555,10 +553,9 @@
         }
       }
     }
-    
+
     preloadViewers();
   });
-
 </script>
 
 <!-- Wrap all node content with NodeServiceContext to provide @ autocomplete functionality -->
@@ -573,9 +570,9 @@
         <div class="node-content-wrapper">
           <!-- Chevron for parent nodes using design system approach -->
           {#if node.children && node.children.length > 0}
-            <button 
-              class="chevron-icon" 
-              class:expanded={node.expanded} 
+            <button
+              class="chevron-icon"
+              class:expanded={node.expanded}
               onclick={() => handleToggleExpanded(node.id)}
               onkeydown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
@@ -587,7 +584,7 @@
               aria-expanded={node.expanded}
             >
               <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
-                <path d="M6 3l5 5-5 5-1-1 4-4-4-4 1-1z"/>
+                <path d="M6 3l5 5-5 5-1-1 4-4-4-4 1-1z" />
               </svg>
             </button>
           {/if}
@@ -648,10 +645,10 @@
     /* No left padding - match patterns.html exactly */
 
     /* Dynamic Circle Positioning System - All values configurable from here */
-    --circle-offset: 22px;           /* Circle center distance from container left edge - reserves space for chevrons */
-    --circle-diameter: 20px;         /* Circle size (width and height) */
-    --circle-text-gap: 8px;          /* Gap between circle edge and text content */
-    --node-indent: 2.5rem;           /* Indentation distance between parent and child levels */
+    --circle-offset: 22px; /* Circle center distance from container left edge - reserves space for chevrons */
+    --circle-diameter: 20px; /* Circle size (width and height) */
+    --circle-text-gap: 8px; /* Gap between circle edge and text content */
+    --node-indent: 2.5rem; /* Indentation distance between parent and child levels */
 
     /* NodeSpace Extension Colors - Node type colors per design system */
     --node-text: 142 71% 45%; /* Green for text nodes */
@@ -713,7 +710,9 @@
     justify-content: center;
     /* Position chevron exactly halfway between parent and child circles */
     position: absolute;
-    left: calc(-1 * var(--node-indent) / 2 + var(--circle-offset)); /* Halfway back to parent + parent circle offset */
+    left: calc(
+      -1 * var(--node-indent) / 2 + var(--circle-offset)
+    ); /* Halfway back to parent + parent circle offset */
     /* Use same CSS-first positioning as circles: containerPaddingPx + (lineHeightPx / 2) */
     top: calc(0.25rem + (var(--line-height-px) / 2));
     transform: translate(-50%, -50%); /* Center icon on coordinates, same as circles */

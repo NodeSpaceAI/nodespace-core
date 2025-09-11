@@ -16,7 +16,7 @@ export const rootNodeIds = writable<string[]>([]);
 const nodeDepthCache = new Map<string, Node & { hierarchyDepth: number }>();
 
 // Force cache invalidation for complex operations that affect multiple nodes
- 
+
 let _cacheVersion = 0; // Incremented by invalidateNodeCache to force cache clearing
 
 // Function to invalidate cache for complex operations (indent/outdent/hierarchy changes)
@@ -28,7 +28,10 @@ export function invalidateNodeCache() {
 // Derived store for visible nodes with hierarchy traversal
 export const visibleNodes = derived([nodes, rootNodeIds], ([$nodes, $rootNodeIds]) => {
   // Recursive helper function to get visible nodes with depth
-  const getVisibleNodesRecursive = (nodeIds: string[], depth: number = 0): (Node & { hierarchyDepth: number })[] => {
+  const getVisibleNodesRecursive = (
+    nodeIds: string[],
+    depth: number = 0
+  ): (Node & { hierarchyDepth: number })[] => {
     const result: (Node & { hierarchyDepth: number })[] = [];
     for (const nodeId of nodeIds) {
       const node = $nodes.get(nodeId);
@@ -36,19 +39,22 @@ export const visibleNodes = derived([nodes, rootNodeIds], ([$nodes, $rootNodeIds
         // Check if we have a cached version with the same depth and cache version
         const cacheKey = `${nodeId}-${depth}-${_cacheVersion}`;
         let cachedNode = nodeDepthCache.get(cacheKey);
-        
+
         // Create new cached node only if needed (new node, content, expanded state, or children changed)
-        const childrenChanged = !cachedNode || 
+        const childrenChanged =
+          !cachedNode ||
           cachedNode.children.length !== node.children.length ||
           !cachedNode.children.every((id, index) => id === node.children[index]);
-          
-        if (!cachedNode || 
-            cachedNode.content !== node.content || 
-            cachedNode.expanded !== node.expanded ||
-            childrenChanged) {
+
+        if (
+          !cachedNode ||
+          cachedNode.content !== node.content ||
+          cachedNode.expanded !== node.expanded ||
+          childrenChanged
+        ) {
           cachedNode = { ...node, hierarchyDepth: depth };
           nodeDepthCache.set(cacheKey, cachedNode);
-          
+
           // Clean up old cache entries for this node at different depths
           for (const [key] of nodeDepthCache) {
             if (key.startsWith(`${nodeId}-`) && key !== cacheKey) {
@@ -56,7 +62,7 @@ export const visibleNodes = derived([nodes, rootNodeIds], ([$nodes, $rootNodeIds
             }
           }
         }
-        
+
         result.push(cachedNode);
 
         // Include children if node is expanded

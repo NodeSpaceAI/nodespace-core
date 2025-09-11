@@ -9,8 +9,8 @@
   // Handle navigation item clicks
   function handleNavItemClick(itemId: string) {
     // For now, just update active state in navigation items
-    navigationItems.update(items => 
-      items.map(item => ({
+    navigationItems.update((items) =>
+      items.map((item) => ({
         ...item,
         active: item.id === itemId
       }))
@@ -29,7 +29,7 @@
 
 <svelte:window on:keydown={handleKeydown} />
 
-<nav 
+<nav
   class="sidebar navigation-sidebar"
   class:sidebar-collapsed={isCollapsed}
   class:sidebar-expanded={!isCollapsed}
@@ -41,7 +41,13 @@
     aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
     aria-expanded={!isCollapsed}
   >
-    <svg class="hamburger-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <svg
+      class="hamburger-icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+    >
       <line x1="3" y1="6" x2="21" y2="6"></line>
       <line x1="3" y1="12" x2="21" y2="12"></line>
       <line x1="3" y1="18" x2="21" y2="18"></line>
@@ -59,7 +65,13 @@
         disabled={item.type === 'placeholder'}
         title={isCollapsed ? item.label : undefined}
       >
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg
+          class="nav-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
           <path d={item.icon}></path>
         </svg>
         {#if !isCollapsed}
@@ -74,11 +86,13 @@
     class="theme-toggle"
     on:click={toggleTheme}
     aria-label="Toggle theme"
-    title={isCollapsed ? "Toggle theme" : undefined}
+    title={isCollapsed ? 'Toggle theme' : undefined}
   >
     <svg class="theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-      <circle cx="12" cy="12" r="5"/>
-      <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+      <circle cx="12" cy="12" r="5" />
+      <path
+        d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"
+      />
     </svg>
     {#if !isCollapsed}
       <span class="theme-label">Toggle Theme</span>
@@ -170,7 +184,9 @@
     gap: 0.75rem;
     height: 40px; /* Fixed height for consistent alignment */
     box-sizing: border-box;
-    transition: background-color 0.2s, color 0.2s;
+    transition:
+      background-color 0.2s,
+      color 0.2s;
     color: hsl(var(--muted-foreground));
     position: relative;
     text-align: left;
@@ -260,7 +276,9 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    transition: background-color 0.2s, color 0.2s;
+    transition:
+      background-color 0.2s,
+      color 0.2s;
     color: hsl(var(--muted-foreground));
     margin-top: auto;
     text-align: left;

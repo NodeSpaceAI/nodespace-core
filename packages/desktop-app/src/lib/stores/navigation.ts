@@ -27,22 +27,22 @@ export const tabState = writable<TabState>(initialTabState);
 
 // Helper functions
 export function setActiveTab(tabId: string) {
-  tabState.update(state => ({
+  tabState.update((state) => ({
     ...state,
     activeTabId: tabId
   }));
 }
 
 export function closeTab(tabId: string) {
-  tabState.update(state => {
-    const newTabs = state.tabs.filter(tab => tab.id !== tabId);
+  tabState.update((state) => {
+    const newTabs = state.tabs.filter((tab) => tab.id !== tabId);
     let newActiveTabId = state.activeTabId;
-    
+
     // If we closed the active tab, switch to first remaining tab
     if (tabId === state.activeTabId && newTabs.length > 0) {
       newActiveTabId = newTabs[0].id;
     }
-    
+
     return {
       tabs: newTabs,
       activeTabId: newActiveTabId
@@ -51,7 +51,7 @@ export function closeTab(tabId: string) {
 }
 
 export function addTab(tab: Tab) {
-  tabState.update(state => ({
+  tabState.update((state) => ({
     ...state,
     tabs: [...state.tabs, tab],
     activeTabId: tab.id
@@ -59,13 +59,9 @@ export function addTab(tab: Tab) {
 }
 
 export function updateTabTitle(tabId: string, newTitle: string) {
-  tabState.update(state => ({
+  tabState.update((state) => ({
     ...state,
-    tabs: state.tabs.map(tab => 
-      tab.id === tabId 
-        ? { ...tab, title: newTitle }
-        : tab
-    )
+    tabs: state.tabs.map((tab) => (tab.id === tabId ? { ...tab, title: newTitle } : tab))
   }));
 }
 
@@ -76,14 +72,14 @@ export function getDateTabTitle(date: Date): string {
   tomorrow.setDate(tomorrow.getDate() + 1);
   const yesterday = new Date(today);
   yesterday.setDate(yesterday.getDate() - 1);
-  
+
   // Normalize dates to compare only year, month, day (ignore time)
   const normalizeDate = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const targetDate = normalizeDate(date);
   const todayNormalized = normalizeDate(today);
   const tomorrowNormalized = normalizeDate(tomorrow);
   const yesterdayNormalized = normalizeDate(yesterday);
-  
+
   if (targetDate.getTime() === todayNormalized.getTime()) {
     return 'Today';
   } else if (targetDate.getTime() === tomorrowNormalized.getTime()) {

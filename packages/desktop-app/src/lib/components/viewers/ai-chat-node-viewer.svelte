@@ -15,7 +15,7 @@
   import type { ViewerComponentProps } from './baseViewer.js';
 
   // Props following the new viewer interface
-  let { 
+  let {
     nodeId,
     content = '',
     autoFocus = false,
@@ -31,7 +31,7 @@
   let model = $state(parseModel(content) || 'claude-3');
   let tokenCount = $state(parseTokenCount(content) || estimateTokens(content));
   let timestamp = $state(parseTimestamp(content) || new Date());
-  
+
   const roleColors = {
     user: 'hsl(142 71% 45%)',
     assistant: 'hsl(221 83% 53%)',
@@ -39,9 +39,9 @@
   };
 
   const roleIcons = {
-    user: 'user',
-    assistant: 'cpu',
-    system: 'settings'
+    user: 'circle',
+    assistant: 'aiSquare',
+    system: 'circle'
   };
 
   /**
@@ -49,7 +49,7 @@
    */
   function parseRole(content: string): 'user' | 'assistant' | 'system' | null {
     const roleMatch = content.match(/role:(user|assistant|system)/i);
-    return roleMatch ? roleMatch[1].toLowerCase() as 'user' | 'assistant' | 'system' : null;
+    return roleMatch ? (roleMatch[1].toLowerCase() as 'user' | 'assistant' | 'system') : null;
   }
 
   /**
@@ -89,7 +89,7 @@
    */
   function changeRole(newRole: 'user' | 'assistant' | 'system') {
     role = newRole;
-    
+
     // Update content with new role
     let newContent = content;
     if (newContent.includes('role:')) {
@@ -97,7 +97,7 @@
     } else {
       newContent = `role:${newRole} ${newContent}`;
     }
-    
+
     dispatch('contentChanged', { content: newContent });
   }
 
@@ -138,7 +138,7 @@
       <!-- Model Info (for assistant messages) -->
       {#if role === 'assistant'}
         <div class="model-info">
-          <Icon name="cpu" size={12} />
+          <Icon name="circle" size={12} />
           <span class="model-text">{model}</span>
         </div>
       {/if}
@@ -151,9 +151,9 @@
       <!-- Timestamp -->
       <div class="timestamp">
         <span class="timestamp-text">
-          {timestamp.toLocaleTimeString('en-US', { 
-            hour: '2-digit', 
-            minute: '2-digit' 
+          {timestamp.toLocaleTimeString('en-US', {
+            hour: '2-digit',
+            minute: '2-digit'
           })}
         </span>
       </div>
@@ -162,8 +162,8 @@
     <div class="chat-actions">
       <!-- Role Selector -->
       <div class="role-selector">
-        {#each ['user', 'assistant', 'system'] as r}
-          <button 
+        {#each (['user', 'assistant', 'system'] as const) as r}
+          <button
             class="role-btn"
             class:active={role === r}
             onclick={() => changeRole(r)}
@@ -178,13 +178,13 @@
 
       <!-- Regenerate Button (for assistant messages) -->
       {#if role === 'assistant'}
-        <button 
+        <button
           class="regenerate-btn"
           onclick={regenerateResponse}
           title="Regenerate response"
           type="button"
         >
-          <Icon name="refresh" size={12} />
+          <Icon name="circle" size={12} />
         </button>
       {/if}
     </div>

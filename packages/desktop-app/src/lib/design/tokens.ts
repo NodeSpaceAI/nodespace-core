@@ -5,16 +5,22 @@
  * with minimal NodeSpace-specific extensions.
  */
 
+import type { NodeType as RegistryNodeType } from './icons/registry.js';
+
+// Re-export NodeType from registry for consistency
+export type NodeType = RegistryNodeType;
+
 // Node-specific colors for different node types
 export const nodeTypeColors = {
   text: 'hsl(142 71% 45%)', // Green
+  document: 'hsl(142 71% 45%)', // Green (same as text)
   task: 'hsl(25 95% 53%)', // Orange
   'ai-chat': 'hsl(221 83% 53%)', // Blue
+  ai_chat: 'hsl(221 83% 53%)', // Blue (alias)
+  user: 'hsl(142 71% 45%)', // Green (same as text)
   entity: 'hsl(271 81% 56%)', // Purple
   query: 'hsl(330 81% 60%)' // Pink
 } as const;
-
-export type NodeType = keyof typeof nodeTypeColors;
 
 // Theme types for runtime theme switching
 export type Theme = 'light' | 'dark' | 'system';

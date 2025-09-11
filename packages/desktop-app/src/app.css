@@ -7,85 +7,85 @@
     /* NodeSpace Warm Gray Design System - from patterns.html */
 
     /* Color system - Warm Gray theme (light mode) */
-    --primary: 25 25% 55%;             /* Warm gray primary */
-    --primary-foreground: 0 0% 98%;    /* Off-white for primary text */
-    
-    --secondary: 25 15% 94%;           /* Light warm gray secondary */
+    --primary: 25 25% 55%; /* Warm gray primary */
+    --primary-foreground: 0 0% 98%; /* Off-white for primary text */
+
+    --secondary: 25 15% 94%; /* Light warm gray secondary */
     --secondary-foreground: 25 15% 45%; /* Medium warm gray for secondary text */
-    
-    --accent: 25 25% 55%;              /* Same as primary for consistency */
-    --accent-foreground: 0 0% 98%;     /* Off-white for accent text */
-    
-    --background: 0 0% 98%;            /* Clean off-white background */
-    --foreground: 25 25% 15%;          /* Dark warm gray text */
-    
-    --card: 0 0% 100%;                 /* Pure white cards */
-    --card-foreground: 25 25% 15%;     /* Dark warm gray text */
-    
-    --popover: 0 0% 100%;              /* Same as cards */
+
+    --accent: 25 25% 55%; /* Same as primary for consistency */
+    --accent-foreground: 0 0% 98%; /* Off-white for accent text */
+
+    --background: 0 0% 98%; /* Clean off-white background */
+    --foreground: 25 25% 15%; /* Dark warm gray text */
+
+    --card: 0 0% 100%; /* Pure white cards */
+    --card-foreground: 25 25% 15%; /* Dark warm gray text */
+
+    --popover: 0 0% 100%; /* Same as cards */
     --popover-foreground: 25 25% 15%;
-    
-    --muted: 25 15% 94%;               /* Light warm gray muted areas */
-    --muted-foreground: 25 15% 45%;    /* Medium warm gray for muted text */
-    
+
+    --muted: 25 15% 94%; /* Light warm gray muted areas */
+    --muted-foreground: 25 15% 45%; /* Medium warm gray for muted text */
+
     /* Systematic hover states - WCAG-compliant contrast */
     --hover-background: var(--muted);
     --hover-foreground: var(--muted-foreground);
-    
-    --border: 25 15% 88%;              /* Light warm gray borders */
+
+    --border: 25 15% 88%; /* Light warm gray borders */
     --input: 25 15% 88%;
-    --ring: 25 25% 55%;                /* Focus ring matches primary */
-    
+    --ring: 25 25% 55%; /* Focus ring matches primary */
+
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
-    
-    --success: 142 76% 36%;            /* #22c55e - Green for completed items */
+
+    --success: 142 76% 36%; /* #22c55e - Green for completed items */
     --success-foreground: 0 0% 100%;
-    
-    --warning: 45 93% 47%;             /* #eab308 - Yellow/orange for in-progress */
+
+    --warning: 45 93% 47%; /* #eab308 - Yellow/orange for in-progress */
     --warning-foreground: 0 0% 100%;
-    
+
     --radius: 0.5rem;
   }
 
   .dark {
     /* Color system - Warm Gray theme (dark mode) */
-    --primary: 25 25% 65%;             /* Lighter warm gray primary for dark theme */
-    --primary-foreground: 0 0% 95%;    /* Very light gray for primary text */
-    
-    --secondary: 25 15% 12%;           /* Very dark warm gray secondary */
+    --primary: 25 25% 65%; /* Lighter warm gray primary for dark theme */
+    --primary-foreground: 0 0% 95%; /* Very light gray for primary text */
+
+    --secondary: 25 15% 12%; /* Very dark warm gray secondary */
     --secondary-foreground: 25 15% 60%; /* Light warm gray for secondary text */
-    
-    --accent: 25 25% 65%;              /* Same as primary for consistency */
-    --accent-foreground: 0 0% 95%;     /* Very light gray for accent text */
-    
-    --background: 0 0% 8%;             /* Very dark background */
-    --foreground: 25 25% 90%;          /* Light warm gray text */
-    
-    --card: 25 15% 10%;                /* Slightly elevated dark cards */
-    --card-foreground: 25 25% 90%;     /* Light warm gray text */
-    
-    --popover: 25 15% 10%;             /* Same as cards */
+
+    --accent: 25 25% 65%; /* Same as primary for consistency */
+    --accent-foreground: 0 0% 95%; /* Very light gray for accent text */
+
+    --background: 0 0% 8%; /* Very dark background */
+    --foreground: 25 25% 90%; /* Light warm gray text */
+
+    --card: 25 15% 10%; /* Slightly elevated dark cards */
+    --card-foreground: 25 25% 90%; /* Light warm gray text */
+
+    --popover: 25 15% 10%; /* Same as cards */
     --popover-foreground: 25 25% 90%;
-    
-    --muted: 25 15% 12%;               /* Dark warm gray muted areas */
-    --muted-foreground: 25 15% 60%;    /* Light warm gray for muted text */
-    
+
+    --muted: 25 15% 12%; /* Dark warm gray muted areas */
+    --muted-foreground: 25 15% 60%; /* Light warm gray for muted text */
+
     /* Systematic hover states - WCAG-compliant contrast */
     --hover-background: var(--muted);
     --hover-foreground: var(--muted-foreground);
-    
-    --border: 25 15% 20%;              /* Dark warm gray borders */
-    --input: 25 15% 22%;               /* Slightly lighter for inputs */
-    --ring: 25 25% 65%;                /* Focus ring matches primary */
-    
+
+    --border: 25 15% 20%; /* Dark warm gray borders */
+    --input: 25 15% 22%; /* Slightly lighter for inputs */
+    --ring: 25 25% 65%; /* Focus ring matches primary */
+
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
-    
-    --success: 142 76% 36%;            /* #22c55e - Same green */
+
+    --success: 142 76% 36%; /* #22c55e - Same green */
     --success-foreground: 0 0% 100%;
-    
-    --warning: 45 93% 47%;             /* #eab308 - Same yellow/orange */
+
+    --warning: 45 93% 47%; /* #eab308 - Same yellow/orange */
     --warning-foreground: 0 0% 100%;
   }
 }
@@ -94,7 +94,7 @@
   * {
     border-color: hsl(var(--border));
   }
-  
+
   /* Disable all transitions globally */
   *,
   *::before,
@@ -103,8 +103,9 @@
     animation-duration: 0s !important;
     animation-delay: 0s !important;
   }
-  
-  html, body {
+
+  html,
+  body {
     margin: 0;
     padding: 0;
     height: 100%;
@@ -115,7 +116,13 @@
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
     /* NodeSpace font stack - Inter for UI, monospace for editing */
-    font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family:
+      Inter,
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      Roboto,
+      sans-serif;
   }
 }
 
@@ -123,18 +130,24 @@
 
 /* Blinking cursor animation for demo */
 @keyframes blink {
-  0%, 50% { opacity: 1; }
-  51%, 100% { opacity: 0; }
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
 }
 
 /* Perfect Node Alignment System - CSS Variables Architecture */
 .node-viewer {
   /* Dynamic Circle Positioning System - All values configurable from here */
-  --circle-offset: 22px;           /* Circle center distance from container left edge - reserves space for chevrons */
-  --circle-diameter: 20px;         /* Circle size (width and height) */
-  --circle-text-gap: 8px;          /* Gap between circle edge and text content */
-  --node-indent: 2.5rem;           /* Indentation distance between parent and child levels */
-  
+  --circle-offset: 22px; /* Circle center distance from container left edge - reserves space for chevrons */
+  --circle-diameter: 20px; /* Circle size (width and height) */
+  --circle-text-gap: 8px; /* Gap between circle edge and text content */
+  --node-indent: 2.5rem; /* Indentation distance between parent and child levels */
+
   /* Base correction factor for text visual center alignment */
   --baseline-correction: -0.06375em;
 }
@@ -146,11 +159,13 @@
   border-radius: 0.25rem;
   transition: background-color 0.15s ease;
   /* Dynamic padding calculation: circle-offset + circle-diameter + circle-text-gap */
-  padding-left: calc(var(--circle-offset, 22px) + var(--circle-diameter, 20px) + var(--circle-text-gap, 8px));
+  padding-left: calc(
+    var(--circle-offset, 22px) + var(--circle-diameter, 20px) + var(--circle-text-gap, 8px)
+  );
   padding-top: 0.25rem;
   padding-bottom: 0.25rem;
   min-height: calc(var(--circle-diameter, 20px) + 0.5rem); /* Ensure minimum height for circle */
-  
+
   /* Default values for normal text (1rem × 1.6 = 1.6rem line-height) */
   --line-height: 1.6;
   --font-size: 1rem;
@@ -239,7 +254,7 @@
 
 /* Checkmark for completed tasks - theme-aware stroke color */
 .task-circle-completed::after {
-  content: "";
+  content: '';
   position: absolute;
   left: 50%;
   top: 50%;
@@ -282,7 +297,7 @@
 }
 
 .ai-square-alt::before {
-  content: "";
+  content: '';
   position: absolute;
   top: 0;
   left: 0;
@@ -293,7 +308,7 @@
 }
 
 .ai-square-alt::after {
-  content: "";
+  content: '';
   position: absolute;
   top: 50%;
   left: 50%;
@@ -301,9 +316,11 @@
   height: 14px;
   transform: translate(-50%, -50%);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M80-120v-80h800v80H80Zm680-160v-560h60v560h-60Zm-600 0 210-560h100l210 560h-96l-50-144H308l-52 144h-96Zm176-224h168l-82-232h-4l-82 232Z' fill='%23FAF9F5'/%3E%3C/svg%3E");
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M80-120v-80h800v80H80Zm680-160v-560h60v560h-60Zm-600 0 210-560h100l210 560h-96l-50-144H308l-52 144h-96Zm176-224h168l-82-232h-4l-82 232Z' fill='%23FAF9F5'/%3E%3C/svg%3E") no-repeat center;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M80-120v-80h800v80H80Zm680-160v-560h60v560h-60Zm-600 0 210-560h100l210 560h-96l-50-144H308l-52 144h-96Zm176-224h168l-82-232h-4l-82 232Z' fill='%23FAF9F5'/%3E%3C/svg%3E")
+    no-repeat center;
   mask-size: contain;
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M80-120v-80h800v80H80Zm680-160v-560h60v560h-60Zm-600 0 210-560h100l210 560h-96l-50-144H308l-52 144h-96Zm176-224h168l-82-232h-4l-82 232Z' fill='%23FAF9F5'/%3E%3C/svg%3E") no-repeat center;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M80-120v-80h800v80H80Zm680-160v-560h60v560h-60Zm-600 0 210-560h100l210 560h-96l-50-144H308l-52 144h-96Zm176-224h168l-82-232h-4l-82 232Z' fill='%23FAF9F5'/%3E%3C/svg%3E")
+    no-repeat center;
   -webkit-mask-size: contain;
 }
 
@@ -330,7 +347,9 @@
   border: 1px solid hsl(var(--border));
   border-radius: var(--radius);
   z-index: 10;
-  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  box-shadow:
+    0 4px 6px -1px rgb(0 0 0 / 0.1),
+    0 2px 4px -2px rgb(0 0 0 / 0.1);
 }
 
 .dropdown-item {
@@ -383,13 +402,13 @@
 /* NodeSpace Extensions - Design system aligned colors */
 :root {
   /* NodeSpace node-specific extensions using design system colors */
-  --node-text: 25 25% 55%;              /* Text nodes use primary color per patterns.html */
-  --node-task: 25 25% 55%;              /* Task nodes use primary color for consistency */
-  --node-ai-chat: 25 25% 55%;           /* AI chat nodes use primary color */
-  --node-entity: 25 25% 55%;            /* Entity nodes use primary color */
-  --node-query: 25 25% 55%;             /* Query nodes use primary color */
-  --node-user: 25 25% 55%;              /* User nodes use primary color */
-  --node-date: 25 25% 55%;              /* Date nodes use primary color */
-  --node-document: 25 25% 55%;          /* Document nodes use primary color */
+  --node-text: 25 25% 55%; /* Text nodes use primary color per patterns.html */
+  --node-task: 25 25% 55%; /* Task nodes use primary color for consistency */
+  --node-ai-chat: 25 25% 55%; /* AI chat nodes use primary color */
+  --node-entity: 25 25% 55%; /* Entity nodes use primary color */
+  --node-query: 25 25% 55%; /* Query nodes use primary color */
+  --node-user: 25 25% 55%; /* User nodes use primary color */
+  --node-date: 25 25% 55%; /* Date nodes use primary color */
+  --node-document: 25 25% 55%; /* Document nodes use primary color */
   --processing-opacity: 0.7;
 }

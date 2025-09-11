@@ -1,6 +1,6 @@
 /**
  * Node Viewer Registry System
- * 
+ *
  * Provides a plugin-style architecture for node viewers where:
  * - Simple node types (like text) use BaseNode directly
  * - Complex node types can register custom viewers
@@ -8,10 +8,7 @@
  * - Supports lazy loading for performance
  */
 
-import type { 
-  NodeViewerComponent, 
-  ViewerRegistration 
-} from '$lib/types/nodeViewers.js';
+import type { NodeViewerComponent, ViewerRegistration } from '$lib/types/nodeViewers.js';
 
 class ViewerRegistry {
   private viewers = new Map<string, ViewerRegistration>();

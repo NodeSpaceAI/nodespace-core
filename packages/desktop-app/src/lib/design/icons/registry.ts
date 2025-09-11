@@ -1,9 +1,9 @@
 /**
  * Component-Based Icon Registry
- * 
+ *
  * This registry maps node types to their icon configurations using a component-based approach
  * that eliminates the architectural inconsistency between CSS-based design system and SVG-based components.
- * 
+ *
  * Key Features:
  * - Node semantic thinking instead of individual icon management
  * - Component references for type safety and performance
@@ -16,21 +16,17 @@ import CircleIcon from './components/circle-icon.svelte';
 import TaskIcon from './components/task-icon.svelte';
 import AIIcon from './components/ai-icon.svelte';
 
-export type NodeType = 
-  | 'text' 
+export type NodeType =
+  | 'text'
   | 'document'
-  | 'task' 
-  | 'ai-chat' 
+  | 'task'
+  | 'ai-chat'
   | 'ai_chat'
   | 'user'
   | 'entity'
   | 'query';
 
-export type NodeState = 
-  | 'pending'
-  | 'inProgress' 
-  | 'completed'
-  | 'default';
+export type NodeState = 'pending' | 'inProgress' | 'completed' | 'default';
 
 export interface IconConfig {
   /** Svelte component reference for the icon */
@@ -56,7 +52,7 @@ export interface NodeIconProps {
 
 /**
  * Icon Registry: Maps node types to their configuration
- * 
+ *
  * This eliminates the complex conditional logic in the old Icon component
  * and provides a clean, scalable way to manage icon semantics.
  */
@@ -73,7 +69,7 @@ export const iconRegistry: Record<NodeType, IconConfig> = {
   // Document nodes - similar to text but potentially different semantics
   document: {
     component: CircleIcon,
-    semanticClass: 'node-icon', 
+    semanticClass: 'node-icon',
     colorVar: 'currentColor',
     hasState: false,
     hasRingEffect: true
@@ -136,7 +132,7 @@ export const iconRegistry: Record<NodeType, IconConfig> = {
 
 /**
  * Get icon configuration for a specific node type
- * 
+ *
  * @param nodeType - The type of node
  * @returns The icon configuration for the node type
  */
@@ -152,14 +148,14 @@ export function getIconConfig(nodeType: NodeType): IconConfig {
 /**
  * Determine the appropriate state for a task node
  * This can be expanded to include more sophisticated state logic
- * 
+ *
  * @param nodeType - The type of node
  * @param explicitState - Explicitly provided state
  * @param additionalProps - Additional properties that might influence state
  * @returns The resolved node state
  */
 export function resolveNodeState(
-  nodeType: NodeType, 
+  nodeType: NodeType,
   explicitState?: NodeState,
   _additionalProps?: Record<string, unknown>
 ): NodeState {
@@ -167,12 +163,12 @@ export function resolveNodeState(
   if (explicitState) {
     return explicitState;
   }
-  
+
   // For task nodes, default to pending if no state specified
   if (nodeType === 'task') {
     return 'pending';
   }
-  
+
   // For other node types, use default state
   return 'default';
 }

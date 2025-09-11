@@ -15,7 +15,7 @@
   import type { ViewerComponentProps } from './baseViewer.js';
 
   // Props following the new viewer interface
-  let { 
+  let {
     nodeId,
     content = '',
     autoFocus = false,
@@ -30,10 +30,10 @@
   let isCompleted = $state(parseCompletionStatus(content));
   let priority = $state(parsePriority(content) || 'medium');
   let dueDate = $state(parseDueDate(content));
-  
+
   const priorityColors = {
     high: 'hsl(0 84% 60%)',
-    medium: 'hsl(38 92% 50%)', 
+    medium: 'hsl(38 92% 50%)',
     low: 'hsl(142 71% 45%)'
   };
 
@@ -50,7 +50,7 @@
    */
   function parsePriority(content: string): 'high' | 'medium' | 'low' | null {
     const priorityMatch = content.match(/priority:(high|medium|low)/i);
-    return priorityMatch ? priorityMatch[1].toLowerCase() as 'high' | 'medium' | 'low' : null;
+    return priorityMatch ? (priorityMatch[1].toLowerCase() as 'high' | 'medium' | 'low') : null;
   }
 
   /**
@@ -66,7 +66,7 @@
    */
   function toggleCompletion() {
     isCompleted = !isCompleted;
-    
+
     // Update content with new completion status
     let newContent = content;
     if (isCompleted) {
@@ -79,7 +79,7 @@
       // Mark as incomplete
       newContent = newContent.replace(/^\s*-\s*\[x\]/i, '- [ ]');
     }
-    
+
     dispatch('contentChanged', { content: newContent });
   }
 
@@ -88,7 +88,7 @@
    */
   function updatePriority(newPriority: 'high' | 'medium' | 'low') {
     priority = newPriority;
-    
+
     // Update content with new priority
     let newContent = content;
     if (newContent.includes('priority:')) {
@@ -96,7 +96,7 @@
     } else {
       newContent = `${newContent} priority:${newPriority}`;
     }
-    
+
     dispatch('contentChanged', { content: newContent });
   }
 
@@ -113,22 +113,22 @@
   <div class="task-header">
     <div class="task-controls">
       <!-- Completion Checkbox -->
-      <button 
-        class="task-checkbox" 
+      <button
+        class="task-checkbox"
         class:completed={isCompleted}
         onclick={toggleCompletion}
         aria-label={isCompleted ? 'Mark as incomplete' : 'Mark as complete'}
         type="button"
       >
         {#if isCompleted}
-          <Icon name="check" size={12} />
+          <Icon name="taskComplete" size={12} />
         {/if}
       </button>
 
       <!-- Priority Indicator -->
       <div class="priority-indicator">
-        <span 
-          class="priority-dot" 
+        <span
+          class="priority-dot"
           style="background-color: {priorityColors[priority]}"
           title="Priority: {priority}"
         ></span>
@@ -147,8 +147,8 @@
 
     <!-- Priority Selector -->
     <div class="priority-selector">
-      {#each ['high', 'medium', 'low'] as p}
-        <button 
+      {#each (['high', 'medium', 'low'] as const) as p}
+        <button
           class="priority-btn"
           class:active={priority === p}
           onclick={() => updatePriority(p)}

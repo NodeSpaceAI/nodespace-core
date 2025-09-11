@@ -34,7 +34,7 @@
 -->
 
 <ThemeProvider>
-  <div 
+  <div
     class="app-shell"
     class:sidebar-collapsed={isCollapsed}
     class:sidebar-expanded={!isCollapsed}
@@ -59,9 +59,9 @@
 <style>
   .app-shell {
     display: grid;
-    grid-template-areas: 
-      "sidebar tabs"
-      "sidebar content";
+    grid-template-areas:
+      'sidebar tabs'
+      'sidebar content';
     grid-template-columns: auto 1fr;
     grid-template-rows: auto 1fr;
     height: 100vh;
@@ -109,19 +109,23 @@
     .app-shell {
       grid-template-columns: auto 1fr;
     }
-    
+
     .sidebar-collapsed {
       /* Mobile: collapsed sidebar should be minimal */
+      width: auto;
     }
-    
+
     .sidebar-expanded {
       /* Mobile: expanded sidebar might overlay content */
+      width: 250px;
     }
   }
 
   /* Focus management for accessibility */
   .app-shell:focus-within {
     /* Ensure focus indicators are visible */
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
   }
 
   /* Prevent content shift during sidebar transitions */

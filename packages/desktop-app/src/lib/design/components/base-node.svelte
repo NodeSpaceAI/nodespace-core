@@ -327,7 +327,9 @@
   .node {
     position: relative;
     padding: 0.25rem;
-    padding-left: calc(var(--circle-offset, 26px) + var(--circle-diameter, 20px) + var(--circle-text-gap, 8px)); /* Dynamic: circle position + circle width + gap */
+    padding-left: calc(
+      var(--circle-offset, 26px) + var(--circle-diameter, 20px) + var(--circle-text-gap, 8px)
+    ); /* Dynamic: circle position + circle width + gap */
     width: 100%;
     /* 
       Circle positioning system using CSS-first dynamic calculation
@@ -372,7 +374,7 @@
     justify-content: center;
     /* No transition - position updates should be instant */
   }
-  
+
   /* Design system semantic classes for icon containers */
   .node-icon,
   .task-icon,

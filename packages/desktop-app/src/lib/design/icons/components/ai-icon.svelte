@@ -28,27 +28,27 @@
   aria-label="AI node icon"
 >
   <!-- Rounded square background with subtle fill and stroke -->
-  <rect 
-    x="2" 
-    y="2" 
-    width="12" 
-    height="12" 
-    rx="2" 
-    ry="2" 
-    fill={color} 
-    opacity="0.1" 
-    stroke={color} 
+  <rect
+    x="2"
+    y="2"
+    width="12"
+    height="12"
+    rx="2"
+    ry="2"
+    fill={color}
+    opacity="0.1"
+    stroke={color}
     stroke-width="1"
   />
-  
+
   <!-- "AI" text centered in square -->
-  <text 
-    x="8" 
-    y="10.5" 
-    font-family="system-ui, -apple-system, sans-serif" 
-    font-size="6" 
-    font-weight="600" 
-    text-anchor="middle" 
+  <text
+    x="8"
+    y="10.5"
+    font-family="system-ui, -apple-system, sans-serif"
+    font-size="6"
+    font-weight="600"
+    text-anchor="middle"
     fill={color}
   >
     AI
@@ -61,7 +61,7 @@
     flex-shrink: 0;
     vertical-align: middle;
   }
-  
+
   /* AI-specific styling */
   .ai-icon text {
     /* Ensure text renders consistently across browsers */

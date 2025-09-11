@@ -10,12 +10,12 @@ export interface BaseNodeViewerInterface {
   nodeId: string;
   content: string;
   nodeType: string;
-  
+
   // Optional props
   autoFocus?: boolean;
   inheritHeaderLevel?: number;
   children?: unknown[];
-  
+
   // Required event dispatchers (must forward these events)
   // All viewers must dispatch these events for BaseNodeViewer to function
   createNewNode: (detail: NodeViewerEventDetails['createNewNode']) => void;

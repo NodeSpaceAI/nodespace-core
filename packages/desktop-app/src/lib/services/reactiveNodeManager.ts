@@ -71,7 +71,7 @@ export class ReactiveNodeManager extends NodeManager {
 
     const currentNodes = super.nodes;
     const currentRootIds = super.rootNodeIds;
-    
+
     // Check if nodes actually changed
     let nodesChanged = false;
     if (this.currentStoreNodes.size !== currentNodes.size) {
@@ -213,18 +213,18 @@ export class ReactiveNodeManager extends NodeManager {
    */
   updateNodeContent(nodeId: string, content: string): void {
     super.updateNodeContent(nodeId, content);
-    
+
     // Mark as typing and delay store sync
     this.isTyping = true;
     if (this.typingTimer) {
       clearTimeout(this.typingTimer);
     }
-    
+
     this.typingTimer = setTimeout(() => {
       this.isTyping = false;
       this.syncStores(true); // Force update after typing stops
     }, 150) as unknown as number; // Short delay for responsive feel
-    
+
     // For now, still sync immediately but let the syncStores method decide
     this.syncStores();
   }
