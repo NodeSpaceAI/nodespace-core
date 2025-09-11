@@ -1,8 +1,21 @@
 <!--
-  Clean BaseNode for ContentProcessor Integration
+  BaseNode - Abstract Core Component (Internal Use Only)
   
-  Built specifically for dual-representation with focus/blur markdown syntax
-  visibility. Uses ContentEditableController to eliminate reactive conflicts.
+  IMPORTANT: This component should NOT be used directly in application code.
+  It serves as the abstract foundation for all node viewers and should only 
+  be consumed by concrete node viewer implementations like TextNodeViewer.
+  
+  Core Features:
+  - ContentEditableController integration for markdown syntax handling
+  - Dual-representation with focus/blur state management
+  - Universal keyboard shortcuts (Enter, Backspace, Cmd+B/I, etc.)
+  - Node reference autocomplete system (@-trigger)
+  - Base styling and layout for all node types
+  
+  Architecture:
+  - Abstract Base: Provides core functionality but should not be instantiated directly
+  - Concrete Viewers: TextNodeViewer, TaskNodeViewer, etc. wrap this component
+  - Plugin System: Registered viewers extend this base with type-specific logic
 -->
 
 <script lang="ts">

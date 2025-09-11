@@ -395,7 +395,7 @@ export class NodeManager {
       const isCollapsed = this._collapsedNodes.has(afterNodeId);
 
       if (isCollapsed) {
-        // CRITICAL FIX: When parent is collapsed, children ALWAYS stay with original node
+        // When parent is collapsed, children always stay with original node
         // regardless of cursor position or content splitting
         // No children transfer needed - they stay put
       } else if (!cursorAtBeginning) {
@@ -697,7 +697,7 @@ export class NodeManager {
 
   /**
    * Toggle node expanded state
-   * CRITICAL FIX: Synchronize with collapsed nodes set
+   * Synchronize with collapsed nodes set
    */
   toggleExpanded(nodeId: string): boolean {
     const node = this.findNode(nodeId);
@@ -959,7 +959,7 @@ export class NodeManager {
 
   /**
    * Toggle collapsed state of a node
-   * CRITICAL FIX: Synchronize with node.expanded property
+   * Synchronize with node.expanded property
    */
   toggleCollapsed(nodeId: string): boolean {
     const node = this.findNode(nodeId);

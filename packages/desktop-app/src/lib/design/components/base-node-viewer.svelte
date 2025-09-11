@@ -7,7 +7,6 @@
 -->
 
 <script lang="ts">
-  import TextNode from '$lib/components/text-node.svelte';
   import Icon from '$lib/design/icons';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
   import { ReactiveNodeManager } from '$lib/services/reactiveNodeManager';
@@ -15,9 +14,14 @@
   import { demoNodes } from './demoData';
   import { visibleNodes as storeVisibleNodes } from '$lib/services/nodeStore';
   import NodeServiceContext from '$lib/contexts/node-service-context.svelte';
+  import { viewerRegistry } from '$lib/components/viewers/index.js';
+  import BaseNode from '$lib/design/components/base-node.svelte';
+  import TextNodeViewer from '$lib/components/viewers/text-node-viewer.svelte';
+  import { onMount } from 'svelte';
   
   // Props using Svelte 5 runes mode
   let { tabId }: { tabId?: string } = $props();
+
 
   // Demo data imported from external file
 
@@ -531,6 +535,41 @@
 
   // Use Svelte stores for proper reactivity
   const visibleNodes = $derived($storeVisibleNodes);
+
+  // Dynamic viewer component loading - create stable component mapping
+  let loadedViewers = $state(new Map<string, any>());
+
+  // Pre-load viewers when component mounts
+  $effect(() => {
+    async function preloadViewers() {
+      // Pre-load all known viewer types
+      const knownTypes = ['text', 'date', 'task', 'ai-chat'];
+      
+      for (const nodeType of knownTypes) {
+        if (!loadedViewers.has(nodeType)) {
+          try {
+            const customViewer = await viewerRegistry.getViewer(nodeType);
+            if (customViewer) {
+              loadedViewers.set(nodeType, customViewer);
+            } else {
+              // Fallback to BaseNode for unknown types
+              loadedViewers.set(nodeType, BaseNode);
+            }
+          } catch (error) {
+            console.warn(`Failed to load viewer for ${nodeType}:`, error);
+            loadedViewers.set(nodeType, BaseNode);
+          }
+        }
+      }
+    }
+    
+    preloadViewers();
+  });
+
+  // Static component lookup - no re-evaluation on content changes
+  function getStaticViewerComponent(nodeType: string) {
+    return loadedViewers.get(nodeType) || BaseNode;
+  }
 </script>
 
 <!-- Wrap all node content with NodeServiceContext to provide @ autocomplete functionality -->
@@ -545,26 +584,60 @@
         <div class="node-content-wrapper">
           <!-- Chevron for parent nodes using design system approach -->
           {#if node.children && node.children.length > 0}
-            <span class="chevron-icon" class:expanded={node.expanded} onclick={() => handleToggleExpanded(node.id)}>
+            <button 
+              class="chevron-icon" 
+              class:expanded={node.expanded} 
+              onclick={() => handleToggleExpanded(node.id)}
+              onkeydown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  handleToggleExpanded(node.id);
+                }
+              }}
+              aria-label={node.expanded ? 'Collapse node' : 'Expand node'}
+              aria-expanded={node.expanded}
+            >
               <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
                 <path d="M6 3l5 5-5 5-1-1 4-4-4-4 1-1z"/>
               </svg>
-            </span>
+            </button>
           {/if}
 
+          <!-- Node viewer with stable component references -->
           {#if node.nodeType === 'text'}
-            <TextNode
+            <TextNodeViewer
               nodeId={node.id}
+              nodeType={node.nodeType}
               autoFocus={node.autoFocus}
               content={node.content}
-              inheritHeaderLevel={node.inheritHeaderLevel}
+              inheritHeaderLevel={node.inheritHeaderLevel || 0}
               children={node.children}
               on:createNewNode={handleCreateNewNode}
               on:indentNode={handleIndentNode}
               on:outdentNode={handleOutdentNode}
               on:navigateArrow={handleArrowNavigation}
               on:contentChanged={(e) => {
-                // Use NodeManager to update content
+                // Use the optimized ReactiveNodeManager which handles typing detection
+                nodeManager.updateNodeContent(node.id, e.detail.content);
+              }}
+              on:combineWithPrevious={handleCombineWithPrevious}
+              on:deleteNode={handleDeleteNode}
+            />
+          {:else}
+            <!-- Fallback to BaseNode for other types until plugin system is stable -->
+            <BaseNode
+              nodeId={node.id}
+              nodeType={node.nodeType}
+              autoFocus={node.autoFocus}
+              content={node.content}
+              headerLevel={node.inheritHeaderLevel || 0}
+              children={node.children}
+              on:createNewNode={handleCreateNewNode}
+              on:indentNode={handleIndentNode}
+              on:outdentNode={handleOutdentNode}
+              on:navigateArrow={handleArrowNavigation}
+              on:contentChanged={(e) => {
+                // Use the optimized ReactiveNodeManager which handles typing detection
                 nodeManager.updateNodeContent(node.id, e.detail.content);
               }}
               on:combineWithPrevious={handleCombineWithPrevious}

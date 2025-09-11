@@ -7,9 +7,13 @@
 
 import { NodeManager, type NodeManagerEvents, type Node } from './nodeManager';
 import { eventBus } from './eventBus';
-import { nodes, rootNodeIds } from './nodeStore';
+import { nodes, rootNodeIds, invalidateNodeCache } from './nodeStore';
 
 export class ReactiveNodeManager extends NodeManager {
+  private currentStoreNodes: Map<string, Node> = new Map();
+  private isTyping = false;
+  private typingTimer: number | null = null;
+
   constructor(events: NodeManagerEvents) {
     super(events);
 
@@ -56,12 +60,46 @@ export class ReactiveNodeManager extends NodeManager {
   }
 
   /**
-   * Sync Svelte stores with base class state
+   * Sync Svelte stores with base class state - smart synchronization
+   * Only updates stores if there are actual changes to prevent unnecessary re-renders
    */
-  private syncStores(): void {
-    // Update stores with current base class state
-    nodes.set(new Map(super.nodes));
-    rootNodeIds.set([...super.rootNodeIds]);
+  private syncStores(forceUpdate: boolean = false): void {
+    // Don't sync during rapid typing to prevent cursor jumping
+    if (this.isTyping && !forceUpdate) {
+      return;
+    }
+
+    const currentNodes = super.nodes;
+    const currentRootIds = super.rootNodeIds;
+    
+    // Check if nodes actually changed
+    let nodesChanged = false;
+    if (this.currentStoreNodes.size !== currentNodes.size) {
+      nodesChanged = true;
+    } else {
+      // Check if any node references or content changed
+      for (const [id, node] of currentNodes) {
+        const storeNode = this.currentStoreNodes.get(id);
+        if (!storeNode || storeNode !== node) {
+          nodesChanged = true;
+          break;
+        }
+      }
+    }
+
+    // Only update nodes store if there are changes
+    if (nodesChanged || forceUpdate) {
+      // Update our tracking map with current references
+      this.currentStoreNodes.clear();
+      for (const [id, node] of currentNodes) {
+        this.currentStoreNodes.set(id, node);
+      }
+      // Update the store with the same Map reference if possible
+      nodes.set(new Map(this.currentStoreNodes));
+    }
+
+    // Always update root node IDs as they're lightweight
+    rootNodeIds.set([...currentRootIds]);
   }
 
   /**
@@ -127,10 +165,12 @@ export class ReactiveNodeManager extends NodeManager {
 
   /**
    * Override to sync stores after operations
+   * Indent/outdent affect multiple parent-child relationships, so invalidate cache
    */
   indentNode(nodeId: string): boolean {
     const result = super.indentNode(nodeId);
     if (result) {
+      invalidateNodeCache(); // Clear cache for hierarchy changes
       this.syncStores();
     }
     return result;
@@ -138,10 +178,12 @@ export class ReactiveNodeManager extends NodeManager {
 
   /**
    * Override to sync stores after operations
+   * Indent/outdent affect multiple parent-child relationships, so invalidate cache
    */
   outdentNode(nodeId: string): boolean {
     const result = super.outdentNode(nodeId);
     if (result) {
+      invalidateNodeCache(); // Clear cache for hierarchy changes
       this.syncStores();
     }
     return result;
@@ -167,11 +209,45 @@ export class ReactiveNodeManager extends NodeManager {
   }
 
   /**
-   * Override to sync stores for content updates
+   * Override to sync stores for content updates with typing optimization
    */
   updateNodeContent(nodeId: string, content: string): void {
     super.updateNodeContent(nodeId, content);
+    
+    // Mark as typing and delay store sync
+    this.isTyping = true;
+    if (this.typingTimer) {
+      clearTimeout(this.typingTimer);
+    }
+    
+    this.typingTimer = setTimeout(() => {
+      this.isTyping = false;
+      this.syncStores(true); // Force update after typing stops
+    }, 150) as unknown as number; // Short delay for responsive feel
+    
+    // For now, still sync immediately but let the syncStores method decide
     this.syncStores();
+  }
+
+  /**
+   * Method for UI components to signal when typing starts
+   */
+  startTyping(): void {
+    this.isTyping = true;
+    if (this.typingTimer) {
+      clearTimeout(this.typingTimer);
+    }
+  }
+
+  /**
+   * Method for UI components to signal when typing stops
+   */
+  stopTyping(): void {
+    this.isTyping = false;
+    if (this.typingTimer) {
+      clearTimeout(this.typingTimer);
+    }
+    this.syncStores(true); // Force update
   }
 
   /**
