@@ -1,5 +1,8 @@
 <script>
   import '../app.css';
+  import AppShell from '$lib/components/layout/app-shell.svelte';
 </script>
 
-<slot></slot>
+<AppShell>
+  <slot />
+</AppShell>

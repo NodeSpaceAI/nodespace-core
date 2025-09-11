@@ -4,76 +4,89 @@
 
 @layer base {
   :root {
-    /* NodeSpace Color Palette - migrated to shadcn-svelte variables */
+    /* NodeSpace Warm Gray Design System - from patterns.html */
 
-    /* Primary: Professional Blue (#007acc) */
-    --primary: 210 100% 40%;
-    --primary-foreground: 0 0% 100%;
-
-    /* Background & Surfaces */
-    --background: 0 0% 100%; /* White backgrounds */
-    --foreground: 220 13% 10%; /* Dark text (#1a1a1a) */
-    --card: 0 0% 100%;
-    --card-foreground: 220 13% 10%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 220 13% 10%;
-
-    /* Muted/Secondary colors */
-    --muted: 210 40% 98%; /* Light gray (#f8f9fa) */
-    --muted-foreground: 215 16% 47%; /* Medium gray for secondary text */
-    --secondary: 210 40% 98%;
-    --secondary-foreground: 215 16% 47%;
-
-    /* Accent colors */
-    --accent: 210 40% 98%;
-    --accent-foreground: 215 16% 47%;
-
-    /* Borders & Input */
-    --border: 214 32% 91%; /* Light border (#e1e5e9) */
-    --input: 214 32% 91%;
-    --ring: 210 100% 40%; /* Focus ring matches primary */
-
-    /* Destructive/Error */
+    /* Color system - Warm Gray theme (light mode) */
+    --primary: 25 25% 55%;             /* Warm gray primary */
+    --primary-foreground: 0 0% 98%;    /* Off-white for primary text */
+    
+    --secondary: 25 15% 94%;           /* Light warm gray secondary */
+    --secondary-foreground: 25 15% 45%; /* Medium warm gray for secondary text */
+    
+    --accent: 25 25% 55%;              /* Same as primary for consistency */
+    --accent-foreground: 0 0% 98%;     /* Off-white for accent text */
+    
+    --background: 0 0% 98%;            /* Clean off-white background */
+    --foreground: 25 25% 15%;          /* Dark warm gray text */
+    
+    --card: 0 0% 100%;                 /* Pure white cards */
+    --card-foreground: 25 25% 15%;     /* Dark warm gray text */
+    
+    --popover: 0 0% 100%;              /* Same as cards */
+    --popover-foreground: 25 25% 15%;
+    
+    --muted: 25 15% 94%;               /* Light warm gray muted areas */
+    --muted-foreground: 25 15% 45%;    /* Medium warm gray for muted text */
+    
+    /* Systematic hover states - WCAG-compliant contrast */
+    --hover-background: var(--muted);
+    --hover-foreground: var(--muted-foreground);
+    
+    --border: 25 15% 88%;              /* Light warm gray borders */
+    --input: 25 15% 88%;
+    --ring: 25 25% 55%;                /* Focus ring matches primary */
+    
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
-
-    /* Border radius */
+    
+    --success: 142 76% 36%;            /* #22c55e - Green for completed items */
+    --success-foreground: 0 0% 100%;
+    
+    --warning: 45 93% 47%;             /* #eab308 - Yellow/orange for in-progress */
+    --warning-foreground: 0 0% 100%;
+    
     --radius: 0.5rem;
   }
 
   .dark {
-    /* NodeSpace Dark Theme */
-
-    /* Primary: Same professional blue but adjusted for dark mode */
-    --primary: 210 100% 50%;
-    --primary-foreground: 220 13% 10%;
-
-    /* Dark backgrounds */
-    --background: 224 71% 4%; /* Very dark blue-gray */
-    --foreground: 213 31% 91%; /* Light text for dark mode */
-    --card: 224 71% 4%;
-    --card-foreground: 213 31% 91%;
-    --popover: 224 71% 4%;
-    --popover-foreground: 213 31% 91%;
-
-    /* Muted colors for dark mode */
-    --muted: 223 47% 11%; /* Dark muted background */
-    --muted-foreground: 215 20% 65%; /* Light muted text */
-    --secondary: 223 47% 11%;
-    --secondary-foreground: 215 20% 65%;
-
-    /* Accent colors for dark mode */
-    --accent: 223 47% 11%;
-    --accent-foreground: 215 20% 65%;
-
-    /* Borders for dark mode */
-    --border: 223 47% 11%;
-    --input: 223 47% 11%;
-    --ring: 210 100% 50%;
-
-    /* Destructive for dark mode */
-    --destructive: 0 63% 31%;
-    --destructive-foreground: 213 31% 91%;
+    /* Color system - Warm Gray theme (dark mode) */
+    --primary: 25 25% 65%;             /* Lighter warm gray primary for dark theme */
+    --primary-foreground: 0 0% 95%;    /* Very light gray for primary text */
+    
+    --secondary: 25 15% 12%;           /* Very dark warm gray secondary */
+    --secondary-foreground: 25 15% 60%; /* Light warm gray for secondary text */
+    
+    --accent: 25 25% 65%;              /* Same as primary for consistency */
+    --accent-foreground: 0 0% 95%;     /* Very light gray for accent text */
+    
+    --background: 0 0% 8%;             /* Very dark background */
+    --foreground: 25 25% 90%;          /* Light warm gray text */
+    
+    --card: 25 15% 10%;                /* Slightly elevated dark cards */
+    --card-foreground: 25 25% 90%;     /* Light warm gray text */
+    
+    --popover: 25 15% 10%;             /* Same as cards */
+    --popover-foreground: 25 25% 90%;
+    
+    --muted: 25 15% 12%;               /* Dark warm gray muted areas */
+    --muted-foreground: 25 15% 60%;    /* Light warm gray for muted text */
+    
+    /* Systematic hover states - WCAG-compliant contrast */
+    --hover-background: var(--muted);
+    --hover-foreground: var(--muted-foreground);
+    
+    --border: 25 15% 20%;              /* Dark warm gray borders */
+    --input: 25 15% 22%;               /* Slightly lighter for inputs */
+    --ring: 25 25% 65%;                /* Focus ring matches primary */
+    
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    
+    --success: 142 76% 36%;            /* #22c55e - Same green */
+    --success-foreground: 0 0% 100%;
+    
+    --warning: 45 93% 47%;             /* #eab308 - Same yellow/orange */
+    --warning-foreground: 0 0% 100%;
   }
 }
 
@@ -81,25 +94,293 @@
   * {
     border-color: hsl(var(--border));
   }
+  
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden; /* Prevent scrollbars */
+  }
 
   body {
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
-    /* NodeSpace monospace font stack for precise editing */
-    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    /* NodeSpace font stack - Inter for UI, monospace for editing */
+    font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
 }
 
-/* NodeSpace Extensions - Minimal additions to shadcn-svelte foundation */
+/* NodeSpace Design System Components - from patterns.html */
+
+/* Blinking cursor animation for demo */
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Perfect Node Alignment System - CSS Variables Architecture */
+.node-viewer {
+  /* Dynamic Circle Positioning System - All values configurable from here */
+  --circle-offset: 22px;           /* Circle center distance from container left edge - reserves space for chevrons */
+  --circle-diameter: 20px;         /* Circle size (width and height) */
+  --circle-text-gap: 8px;          /* Gap between circle edge and text content */
+  --node-indent: 2.5rem;           /* Indentation distance between parent and child levels */
+  
+  /* Base correction factor for text visual center alignment */
+  --baseline-correction: -0.06375em;
+}
+
+/* Hierarchy Node with Perfect Alignment System */
+.hierarchy-node {
+  position: relative;
+  cursor: pointer;
+  border-radius: 0.25rem;
+  transition: background-color 0.15s ease;
+  /* Dynamic padding calculation: circle-offset + circle-diameter + circle-text-gap */
+  padding-left: calc(var(--circle-offset, 22px) + var(--circle-diameter, 20px) + var(--circle-text-gap, 8px));
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+  min-height: calc(var(--circle-diameter, 20px) + 0.5rem); /* Ensure minimum height for circle */
+  
+  /* Default values for normal text (1rem × 1.6 = 1.6rem line-height) */
+  --line-height: 1.6;
+  --font-size: 1rem;
+  --line-height-px: calc(var(--font-size) * var(--line-height));
+}
+
+/* Child Node Indentation System - Match Svelte implementation exactly */
+.hierarchy-node.child-1 {
+  margin-left: 2.5rem; /* Single indentation level: 40px */
+}
+
+.hierarchy-node.child-2 {
+  margin-left: 5rem; /* Double indentation level: 80px */
+}
+
+/* Circle Indicators - Use same system as BaseNode/TextNode sections */
+.hierarchy-indicator {
+  position: absolute;
+  left: var(--circle-offset, 22px);
+  top: calc(0.25rem + (var(--line-height-px) / 2));
+  transform: translateY(-50%);
+  width: var(--circle-diameter, 20px);
+  height: var(--circle-diameter, 20px);
+  flex-shrink: 0;
+  z-index: 2;
+}
+
+/* Icon System CSS - All node types */
+.task-icon {
+  width: var(--circle-diameter, 20px);
+  height: var(--circle-diameter, 20px);
+  position: relative;
+  display: block;
+}
+
+.node-icon {
+  width: var(--circle-diameter, 20px);
+  height: var(--circle-diameter, 20px);
+  position: relative;
+  display: block;
+}
+
+.ai-icon {
+  width: var(--circle-diameter, 20px);
+  height: var(--circle-diameter, 20px);
+  position: relative;
+  display: block;
+}
+
+/* Text Node Circle */
+.text-circle {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: hsl(var(--primary));
+  position: absolute;
+  top: 2px;
+  left: 2px;
+}
+
+/* Task Circle States */
+.task-circle {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+}
+
+.task-circle-pending {
+  background: transparent;
+  border: 1px solid hsl(var(--primary));
+  box-sizing: border-box;
+}
+
+.task-circle-in-progress {
+  background: linear-gradient(90deg, hsl(var(--primary)) 50%, transparent 50%);
+  border: 1px solid hsl(var(--primary));
+  box-sizing: border-box;
+}
+
+.task-circle-completed {
+  background: hsl(var(--primary));
+}
+
+/* Checkmark for completed tasks - theme-aware stroke color */
+.task-circle-completed::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 8px;
+  transform: translate(-50%, -50%);
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='8' viewBox='0 0 10 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 4L3.5 6.5L9 1' stroke='%23FAF9F5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+}
+
+.dark .task-circle-completed::after {
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='8' viewBox='0 0 10 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 4L3.5 6.5L9 1' stroke='%23252523' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+}
+
+/* Task Ring for Parent Nodes */
+.task-ring {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid hsl(var(--primary) / 0.5);
+  box-sizing: border-box;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* AI Chat Node Square Icons */
+.ai-square-alt {
+  width: 16px;
+  height: 16px;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  border-radius: 0.5px;
+}
+
+.ai-square-alt::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: hsl(var(--primary));
+  border-radius: inherit;
+}
+
+.ai-square-alt::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  transform: translate(-50%, -50%);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M80-120v-80h800v80H80Zm680-160v-560h60v560h-60Zm-600 0 210-560h100l210 560h-96l-50-144H308l-52 144h-96Zm176-224h168l-82-232h-4l-82 232Z' fill='%23FAF9F5'/%3E%3C/svg%3E");
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M80-120v-80h800v80H80Zm680-160v-560h60v560h-60Zm-600 0 210-560h100l210 560h-96l-50-144H308l-52 144h-96Zm176-224h168l-82-232h-4l-82 232Z' fill='%23FAF9F5'/%3E%3C/svg%3E") no-repeat center;
+  mask-size: contain;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M80-120v-80h800v80H80Zm680-160v-560h60v560h-60Zm-600 0 210-560h100l210 560h-96l-50-144H308l-52 144h-96Zm176-224h168l-82-232h-4l-82 232Z' fill='%23FAF9F5'/%3E%3C/svg%3E") no-repeat center;
+  -webkit-mask-size: contain;
+}
+
+.dark .ai-square-alt::after {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M80-120v-80h800v80H80Zm680-160v-560h60v560h-60Zm-600 0 210-560h100l210 560h-96l-50-144H308l-52 144h-96Zm176-224h168l-82-232h-4l-82 232Z' fill='%23252523'/%3E%3C/svg%3E");
+}
+
+.ai-square-ring {
+  width: 20px;
+  height: 20px;
+  border-radius: 1px;
+  border: 2px solid hsl(var(--primary) / 0.5);
+  box-sizing: border-box;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* Dropdown System - @mention and slash commands */
+.dropdown-menu {
+  position: absolute;
+  min-width: 300px;
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  z-index: 10;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+}
+
+.dropdown-item {
+  padding: 0.75rem;
+  border-bottom: 1px solid hsl(var(--border));
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: background-color 0.15s ease;
+}
+
+.dropdown-item:hover {
+  background: hsl(var(--muted));
+}
+
+.dropdown-item:last-child {
+  border-bottom: none;
+}
+
+.dropdown-item-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dropdown-item-content {
+  font-weight: 500;
+}
+
+.dropdown-create-action {
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted) / 0.5);
+  font-weight: 600;
+  text-align: center;
+}
+
+.dropdown-create-action:hover {
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+}
+
+.search-highlight {
+  color: hsl(var(--primary));
+  font-weight: 600;
+}
+
+/* NodeSpace Extensions - Design system aligned colors */
 :root {
-  /* NodeSpace node-specific extensions only */
-  --node-text: 142 71% 45%;
-  --node-task: 25 95% 53%;
-  --node-ai-chat: 221 83% 53%;
-  --node-entity: 271 81% 56%;
-  --node-query: 330 81% 60%;
-  --node-user: 200 100% 45%;
-  --node-date: 45 100% 45%;
-  --node-document: 270 75% 50%;
+  /* NodeSpace node-specific extensions using design system colors */
+  --node-text: 25 25% 55%;              /* Text nodes use primary color per patterns.html */
+  --node-task: 25 25% 55%;              /* Task nodes use primary color for consistency */
+  --node-ai-chat: 25 25% 55%;           /* AI chat nodes use primary color */
+  --node-entity: 25 25% 55%;            /* Entity nodes use primary color */
+  --node-query: 25 25% 55%;             /* Query nodes use primary color */
+  --node-user: 25 25% 55%;              /* User nodes use primary color */
+  --node-date: 25 25% 55%;              /* Date nodes use primary color */
+  --node-document: 25 25% 55%;          /* Document nodes use primary color */
   --processing-opacity: 0.7;
 }

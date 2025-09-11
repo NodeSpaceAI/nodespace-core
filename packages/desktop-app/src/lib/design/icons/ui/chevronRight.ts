@@ -3,7 +3,7 @@
  *
  * Points right when collapsed, rotates 90° to point down when expanded.
  * Inspired by VS Code and modern IDE tree controls.
- * Uses 16x16 viewBox for consistency with existing icons.
+ * Updated to use 24x24 viewBox for consistency with Icon component.
  * Proper chevron shape (angle brackets >) not triangle.
  */
-export const chevronRightIcon = 'M6 3l5 5-5 5-1-1 4-4-4-4 1-1z';
+export const chevronRightIcon = 'M9 6l6 6-6 6-1.5-1.5L12 12 7.5 7.5 9 6z';

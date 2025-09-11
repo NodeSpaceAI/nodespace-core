@@ -1,0 +1,112 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import NavigationSidebar from './navigation-sidebar.svelte';
+  import ThemeProvider from '$lib/design/components/theme-provider.svelte';
+  import { initializeTheme } from '$lib/design/theme.js';
+  import { layoutState } from '$lib/stores/layout.js';
+
+  // Initialize theme system
+  onMount(() => {
+    const cleanup = initializeTheme();
+    return cleanup;
+  });
+
+  // Subscribe to layout state
+  $: isCollapsed = $layoutState.sidebarCollapsed;
+
+  // Handle global keyboard shortcuts
+  function handleKeydown(event: KeyboardEvent) {
+    // No global shortcuts currently defined
+  }
+</script>
+
+<svelte:window on:keydown={handleKeydown} />
+
+<!-- 
+  Application Shell Component
+  
+  Provides the main application layout with:
+  - Collapsible navigation sidebar
+  - Main content area with responsive sizing
+  - Global keyboard shortcuts
+  - Theme initialization
+-->
+
+<ThemeProvider>
+  <div 
+    class="app-shell"
+    class:sidebar-collapsed={isCollapsed}
+    class:sidebar-expanded={!isCollapsed}
+    role="application"
+    aria-label="NodeSpace Application"
+  >
+    <!-- Navigation Sidebar -->
+    <NavigationSidebar />
+
+    <!-- Main Content Area -->
+    <main 
+      class="main-content"
+      role="main"
+      aria-label="Main content"
+    >
+      <slot />
+    </main>
+  </div>
+</ThemeProvider>
+
+<style>
+  .app-shell {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    height: 100vh;
+    overflow: hidden;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+
+  /* Main content area */
+  .main-content {
+    overflow: auto;
+    position: relative;
+    background: hsl(var(--background));
+    transition: margin-left 0.3s ease;
+  }
+
+  /* Ensure proper scrolling behavior */
+  .main-content {
+    /* Allow content to scroll independently */
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+
+  /* Responsive behavior for smaller screens */
+  @media (max-width: 768px) {
+    .app-shell {
+      grid-template-columns: auto 1fr;
+    }
+    
+    .sidebar-collapsed {
+      /* Mobile: collapsed sidebar should be minimal */
+    }
+    
+    .sidebar-expanded {
+      /* Mobile: expanded sidebar might overlay content */
+    }
+  }
+
+  /* Focus management for accessibility */
+  .app-shell:focus-within {
+    /* Ensure focus indicators are visible */
+  }
+
+  /* Prevent content shift during sidebar transitions */
+  .main-content {
+    will-change: margin-left;
+  }
+
+  /* Handle content overflow properly */
+  .main-content > :global(*) {
+    max-width: 100%;
+  }
+</style>

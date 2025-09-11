@@ -65,7 +65,7 @@ export const iconRegistry: Record<NodeType, IconConfig> = {
   text: {
     component: CircleIcon,
     semanticClass: 'node-icon',
-    colorVar: 'hsl(var(--node-text, 142 71% 45%))',
+    colorVar: 'currentColor',
     hasState: false,
     hasRingEffect: true
   },
@@ -74,7 +74,7 @@ export const iconRegistry: Record<NodeType, IconConfig> = {
   document: {
     component: CircleIcon,
     semanticClass: 'node-icon', 
-    colorVar: 'hsl(var(--node-text, 142 71% 45%))',
+    colorVar: 'currentColor',
     hasState: false,
     hasRingEffect: true
   },

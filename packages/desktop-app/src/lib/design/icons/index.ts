@@ -43,6 +43,7 @@ export { taskCompleteIcon } from './ui/taskComplete';
 export { taskIncompleteIcon } from './ui/taskIncomplete';
 export { taskInProgressIcon } from './ui/taskInProgress';
 export { aiSquareIcon } from './ui/aiSquare';
+export { calendarIcon } from './ui/calendar';
 
 /**
  * Available Icons:
@@ -54,6 +55,7 @@ export { aiSquareIcon } from './ui/aiSquare';
  * - taskIncomplete: Empty circle for uncompleted tasks
  * - taskInProgress: Half-filled circle for tasks in progress
  * - aiSquare: Rounded square with "AI" text for AI chat nodes
+ * - calendar: Calendar grid icon for date/time functionality
  *
  * Future icons will be added to ./ui/ directory and exported here.
  */

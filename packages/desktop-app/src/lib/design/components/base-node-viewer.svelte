@@ -15,6 +15,9 @@
   import { demoNodes } from './demoData';
   import { visibleNodes as storeVisibleNodes } from '$lib/services/nodeStore';
   import NodeServiceContext from '$lib/contexts/node-service-context.svelte';
+  
+  // Props using Svelte 5 runes mode
+  let { tabId }: { tabId?: string } = $props();
 
   // Demo data imported from external file
 
@@ -540,19 +543,13 @@
         style="margin-left: {(node.depth || 0) * 2.5}rem"
       >
         <div class="node-content-wrapper">
-          <!-- Chevron for parent nodes (only visible on hover) -->
+          <!-- Chevron for parent nodes using design system approach -->
           {#if node.children && node.children.length > 0}
-            <button
-              class="node-chevron"
-              class:expanded={node.expanded}
-              onclick={() => handleToggleExpanded(node.id)}
-              aria-label={node.expanded ? 'Collapse' : 'Expand'}
-            >
-              <Icon name="chevronRight" size={16} color={getNodeColor(node.nodeType)} />
-            </button>
-          {:else}
-            <!-- Spacer for nodes without children to maintain alignment -->
-            <div class="node-chevron-spacer"></div>
+            <span class="chevron-icon" class:expanded={node.expanded} onclick={() => handleToggleExpanded(node.id)}>
+              <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6 3l5 5-5 5-1-1 4-4-4-4 1-1z"/>
+              </svg>
+            </span>
           {/if}
 
           {#if node.nodeType === 'text'}
@@ -586,10 +583,10 @@
     display: flex;
     flex-direction: column;
     gap: 0; /* 0px gap - all spacing from node padding for 8px total */
-    padding-left: 2rem; /* Add left padding to accommodate chevrons positioned at negative left */
+    /* No left padding - match patterns.html exactly */
 
     /* Dynamic Circle Positioning System - All values configurable from here */
-    --circle-offset: 26px;           /* Circle center distance from container left edge */
+    --circle-offset: 22px;           /* Circle center distance from container left edge - reserves space for chevrons */
     --circle-diameter: 20px;         /* Circle size (width and height) */
     --circle-text-gap: 8px;          /* Gap between circle edge and text content */
     --node-indent: 2.5rem;           /* Indentation distance between parent and child levels */
@@ -637,7 +634,7 @@
     The --line-height-px variable is inherited from .node-content-wrapper
     which detects the header level of nested content using :has() selector
   */
-  .node-chevron {
+  .chevron-icon {
     opacity: 0; /* Hidden by default - shows on hover */
     background: none;
     border: none;
@@ -661,25 +658,31 @@
     z-index: 999; /* Very high z-index to ensure clickability over all other elements */
   }
 
-  .node-chevron:focus {
+  .chevron-icon svg {
+    width: 16px;
+    height: 16px;
+    fill: hsl(var(--muted-foreground));
+    transition: fill 0.15s ease;
+  }
+
+  .chevron-icon:focus {
     outline: 2px solid hsl(var(--ring));
     outline-offset: 2px;
     opacity: 1; /* Always visible when focused */
   }
 
+  .chevron-icon:hover svg {
+    fill: hsl(var(--foreground));
+  }
+
   /* Show chevron only when hovering directly over this node's content wrapper (not child nodes) */
-  .node-content-wrapper:hover > .node-chevron {
+  .node-content-wrapper:hover > .chevron-icon {
     opacity: 1;
   }
 
   /* Expanded state: rotate 90 degrees to point down */
-  .node-chevron.expanded {
+  .chevron-icon.expanded {
     transform: translate(-50%, -50%) rotate(90deg);
-  }
-
-  /* Spacer for alignment when no chevron - no longer needed since chevron is absolutely positioned */
-  .node-chevron-spacer {
-    display: none; /* Hide spacer since chevron doesn't affect layout flow */
   }
 
   /* CSS-first positioning to match base-node.svelte implementation */

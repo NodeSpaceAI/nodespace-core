@@ -6,7 +6,7 @@
  */
 
 // Legacy icon name type for backward compatibility
-export type IconName = 'text' | 'circle' | 'circleRing' | 'chevronRight' | 'taskComplete' | 'taskIncomplete' | 'taskInProgress' | 'aiSquare';
+export type IconName = 'text' | 'circle' | 'circleRing' | 'chevronRight' | 'taskComplete' | 'taskIncomplete' | 'taskInProgress' | 'aiSquare' | 'calendar';
 
 // Re-export new semantic types from registry
 export type { NodeType, NodeState, NodeIconProps, IconConfig } from './registry.js';

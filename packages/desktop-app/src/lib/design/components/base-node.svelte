@@ -283,7 +283,18 @@
 <div class={containerClasses} data-node-id={nodeId}>
   <!-- Node indicator -->
   <div class="node__indicator">
-    <Icon nodeType={typedNodeType()} hasChildren={children.length > 0} size={20} color={nodeColor} />
+    {#if children.length > 0}
+      <!-- Text Node with Children (Ring Effect) -->
+      <div class="node-icon">
+        <div class="task-ring"></div>
+        <div class="text-circle"></div>
+      </div>
+    {:else}
+      <!-- Regular Text Node -->
+      <div class="node-icon">
+        <div class="text-circle"></div>
+      </div>
+    {/if}
   </div>
 
   <!-- Content area -->
