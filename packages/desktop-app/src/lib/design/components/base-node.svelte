@@ -153,7 +153,7 @@
     });
   }
 
-  // Event dispatcher
+  // Event dispatcher - aligned with NodeViewerEventDetails interface
   const dispatch = createEventDispatcher<{
     contentChanged: { content: string };
     headerLevelChanged: { level: number };
@@ -164,6 +164,8 @@
       nodeType: string;
       currentContent?: string;
       newContent?: string;
+      inheritHeaderLevel?: number;
+      cursorAtBeginning?: boolean;
     };
     indentNode: { nodeId: string };
     outdentNode: { nodeId: string };

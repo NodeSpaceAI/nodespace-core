@@ -11,10 +11,10 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import BaseNode from '$lib/design/components/base-node.svelte';
-  import Icon from '$lib/design/icons/icon.svelte';
-  import type { ViewerComponentProps } from './baseViewer.js';
+  import Icon, { type IconName } from '$lib/design/icons/icon.svelte';
+  import type { NodeViewerProps } from '$lib/types/nodeViewers.js';
 
-  // Props following the new viewer interface
+  // Props following the NodeViewer interface
   let {
     nodeId,
     content = '',
@@ -22,7 +22,7 @@
     nodeType = 'ai-chat',
     inheritHeaderLevel = 0,
     children = []
-  }: ViewerComponentProps = $props();
+  }: NodeViewerProps = $props();
 
   const dispatch = createEventDispatcher();
 
@@ -38,7 +38,7 @@
     system: 'hsl(271 81% 56%)'
   };
 
-  const roleIcons = {
+  const roleIcons: Record<'user' | 'assistant' | 'system', IconName> = {
     user: 'circle',
     assistant: 'aiSquare',
     system: 'circle'
@@ -162,7 +162,7 @@
     <div class="chat-actions">
       <!-- Role Selector -->
       <div class="role-selector">
-        {#each (['user', 'assistant', 'system'] as const) as r}
+        {#each ['user', 'assistant', 'system'] as const as r}
           <button
             class="role-btn"
             class:active={role === r}

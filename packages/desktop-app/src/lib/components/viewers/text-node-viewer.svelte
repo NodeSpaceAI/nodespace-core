@@ -15,7 +15,7 @@
   import { createEventDispatcher } from 'svelte';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import { contentProcessor } from '$lib/services/contentProcessor.js';
-  import type { NodeViewerProps, NodeViewerEventDetails } from '$lib/types/nodeViewers.js';
+  import type { NodeViewerProps } from '$lib/types/nodeViewers.js';
 
   // Props - implements NodeViewerProps interface
   let {
@@ -42,13 +42,32 @@
     allowMultiline: headerLevel === 0 // Only allow multiline for regular text (headerLevel 0)
   });
 
-  // Event dispatcher
-  const dispatch = createEventDispatcher<
-    NodeViewerEventDetails & {
-      focus: void;
-      blur: void;
-    }
-  >();
+  // Event dispatcher - explicitly typed with all events this component can dispatch
+  const dispatch = createEventDispatcher<{
+    createNewNode: {
+      afterNodeId: string;
+      nodeType: string;
+      currentContent?: string;
+      newContent?: string;
+      inheritHeaderLevel?: number;
+      cursorAtBeginning?: boolean;
+    };
+    contentChanged: { content: string };
+    indentNode: { nodeId: string };
+    outdentNode: { nodeId: string };
+    navigateArrow: {
+      nodeId: string;
+      direction: 'up' | 'down';
+      columnHint: number;
+    };
+    combineWithPrevious: {
+      nodeId: string;
+      currentContent: string;
+    };
+    deleteNode: { nodeId: string };
+    focus: void;
+    blur: void;
+  }>();
 
   // Handle focus/blur for TextNodeViewer-specific behavior
   function handleFocus() {

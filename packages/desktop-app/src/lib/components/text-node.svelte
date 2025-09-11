@@ -17,6 +17,8 @@
   export let content: string = '';
   export let inheritHeaderLevel: number = 0;
   export let children: unknown[] = [];
+
+  // This wrapper directly forwards events from TextNodeViewer
 </script>
 
 <!-- Direct passthrough to TextNodeViewer -->

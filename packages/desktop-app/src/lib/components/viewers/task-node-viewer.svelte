@@ -12,9 +12,9 @@
   import { createEventDispatcher } from 'svelte';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import Icon from '$lib/design/icons/icon.svelte';
-  import type { ViewerComponentProps } from './baseViewer.js';
+  import type { NodeViewerProps } from '$lib/types/nodeViewers.js';
 
-  // Props following the new viewer interface
+  // Props following the NodeViewer interface
   let {
     nodeId,
     content = '',
@@ -22,7 +22,7 @@
     nodeType = 'task',
     inheritHeaderLevel = 0,
     children = []
-  }: ViewerComponentProps = $props();
+  }: NodeViewerProps = $props();
 
   const dispatch = createEventDispatcher();
 
@@ -147,7 +147,7 @@
 
     <!-- Priority Selector -->
     <div class="priority-selector">
-      {#each (['high', 'medium', 'low'] as const) as p}
+      {#each ['high', 'medium', 'low'] as const as p}
         <button
           class="priority-btn"
           class:active={priority === p}
