@@ -20,7 +20,7 @@
 
 <script lang="ts">
   import { createEventDispatcher, onDestroy } from 'svelte';
-  import Icon, { type NodeType } from '$lib/design/icons';
+  import { type NodeType } from '$lib/design/icons';
 
   import {
     ContentEditableController,
@@ -279,17 +279,6 @@
       .join(' ')
   );
 
-  // Convert string nodeType to typed NodeType for new icon system
-  const typedNodeType = $derived(() => {
-    // Ensure nodeType matches our NodeType union
-    if (['text', 'document', 'task', 'ai-chat', 'ai_chat', 'user', 'entity', 'query'].includes(nodeType)) {
-      return nodeType as NodeType;
-    }
-    // Fallback to text for unrecognized types
-    return 'text' as NodeType;
-  });
-  const nodeColor = $derived(`hsl(var(--node-${nodeType}, var(--node-text)))`);
-  
   // Note: Semantic classes handled internally by Icon component
 </script>
 

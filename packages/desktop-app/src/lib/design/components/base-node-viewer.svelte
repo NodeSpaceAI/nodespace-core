@@ -7,7 +7,6 @@
 -->
 
 <script lang="ts">
-  import Icon from '$lib/design/icons';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
   import { ReactiveNodeManager } from '$lib/services/reactiveNodeManager';
   import { type NodeManagerEvents } from '$lib/services/nodeManager';
@@ -17,10 +16,8 @@
   import { viewerRegistry } from '$lib/components/viewers/index.js';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import TextNodeViewer from '$lib/components/viewers/text-node-viewer.svelte';
-  import { onMount } from 'svelte';
   
-  // Props using Svelte 5 runes mode
-  let { tabId }: { tabId?: string } = $props();
+  // No props currently used
 
 
   // Demo data imported from external file
@@ -274,10 +271,6 @@
     }
   }
 
-  // Get node type color from design system
-  function getNodeColor(nodeType: string): string {
-    return `hsl(var(--node-${nodeType}, var(--node-text)))`;
-  }
 
   // Handle arrow key navigation between nodes using entry/exit methods
   function handleArrowNavigation(
@@ -537,7 +530,7 @@
   const visibleNodes = $derived($storeVisibleNodes);
 
   // Dynamic viewer component loading - create stable component mapping
-  let loadedViewers = $state(new Map<string, any>());
+  let loadedViewers = $state(new Map<string, unknown>());
 
   // Pre-load viewers when component mounts
   $effect(() => {
@@ -566,10 +559,6 @@
     preloadViewers();
   });
 
-  // Static component lookup - no re-evaluation on content changes
-  function getStaticViewerComponent(nodeType: string) {
-    return loadedViewers.get(nodeType) || BaseNode;
-  }
 </script>
 
 <!-- Wrap all node content with NodeServiceContext to provide @ autocomplete functionality -->
