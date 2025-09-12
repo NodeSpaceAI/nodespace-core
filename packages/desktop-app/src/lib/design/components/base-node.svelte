@@ -355,10 +355,9 @@
       - Graceful fallback to 1.05rem for older browsers
     */
 
-    /* Default values for normal text (1rem × 1.6 = 1.6rem line-height) */
+    /* Default values for normal text - dynamic font-responsive alignment */
     --line-height: 1.6;
     --font-size: 1rem;
-    --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 
   .node__indicator {
@@ -367,7 +366,7 @@
     /* Fallback positioning for older browsers that don't support CSS custom properties */
     top: 1.05rem; /* Approximates normal text center: 0.25rem padding + (1rem * 1.6 / 2) */
     /* CSS-first dynamic positioning using proven formula: containerPaddingPx + (lineHeightPx / 2) */
-    top: calc(0.25rem + (var(--line-height-px) / 2));
+    top: calc(0.25rem + (var(--font-size) * var(--line-height) / 2));
     transform: translate(-50%, -50%); /* Center icon on coordinates */
     width: var(--circle-diameter, 20px); /* Dynamic circle size */
     height: var(--circle-diameter, 20px); /* Dynamic circle size */
@@ -494,12 +493,5 @@
     text-decoration: underline;
   }
 
-  /* Node type extension colors */
-  :global(.node) {
-    --node-text: 142 71% 45%;
-    --node-task: 25 95% 53%;
-    --node-ai-chat: 221 83% 53%;
-    --node-entity: 271 81% 56%;
-    --node-query: 330 81% 60%;
-  }
+  /* Node colors now managed globally in app.css - Subtle Tint System */
 </style>

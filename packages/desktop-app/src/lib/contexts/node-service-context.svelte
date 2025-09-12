@@ -59,17 +59,17 @@
 
       // Create node manager events
       const nodeManagerEvents = {
-        focusRequested: (nodeId: string, position?: number) => {
-          console.log('Focus requested:', nodeId, position);
+        focusRequested: () => {
+          // Focus handling logic here if needed
         },
         hierarchyChanged: () => {
-          console.log('Hierarchy changed');
+          // Hierarchy change handling logic here if needed
         },
-        nodeCreated: (nodeId: string) => {
-          console.log('Node created:', nodeId);
+        nodeCreated: () => {
+          // Node creation handling logic here if needed
         },
-        nodeDeleted: (nodeId: string) => {
-          console.log('Node deleted:', nodeId);
+        nodeDeleted: () => {
+          // Node deletion handling logic here if needed
         }
       };
 

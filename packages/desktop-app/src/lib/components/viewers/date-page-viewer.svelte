@@ -80,7 +80,7 @@
       <div class="date-display">
         <Icon
           name="calendar"
-          size={18}
+          size={20}
           color="hsl(var(--muted-foreground))"
           className="calendar-icon"
         />

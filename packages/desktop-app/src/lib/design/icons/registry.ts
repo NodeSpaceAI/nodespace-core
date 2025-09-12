@@ -79,7 +79,7 @@ export const iconRegistry: Record<NodeType, IconConfig> = {
   task: {
     component: TaskIcon,
     semanticClass: 'task-icon',
-    colorVar: 'hsl(var(--node-task, 25 95% 53%))',
+    colorVar: 'hsl(var(--node-task, 200 40% 45%))',
     hasState: true,
     hasRingEffect: false // Tasks use state-specific icons instead of ring effects
   },
@@ -88,7 +88,7 @@ export const iconRegistry: Record<NodeType, IconConfig> = {
   'ai-chat': {
     component: AIIcon,
     semanticClass: 'ai-icon',
-    colorVar: 'hsl(var(--node-ai-chat, 221 83% 53%))',
+    colorVar: 'hsl(var(--node-ai-chat, 200 40% 45%))',
     hasState: false,
     hasRingEffect: false
   },
@@ -97,7 +97,7 @@ export const iconRegistry: Record<NodeType, IconConfig> = {
   ai_chat: {
     component: AIIcon,
     semanticClass: 'ai-icon',
-    colorVar: 'hsl(var(--node-ai-chat, 221 83% 53%))',
+    colorVar: 'hsl(var(--node-ai-chat, 200 40% 45%))',
     hasState: false,
     hasRingEffect: false
   },
@@ -106,7 +106,7 @@ export const iconRegistry: Record<NodeType, IconConfig> = {
   user: {
     component: CircleIcon,
     semanticClass: 'node-icon',
-    colorVar: 'hsl(var(--node-text, 142 71% 45%))', // Use text color for now, can be customized
+    colorVar: 'hsl(var(--node-text, 200 40% 45%))', // Blue-gray (Scheme 3)
     hasState: false,
     hasRingEffect: true
   },
@@ -115,7 +115,7 @@ export const iconRegistry: Record<NodeType, IconConfig> = {
   entity: {
     component: CircleIcon,
     semanticClass: 'node-icon',
-    colorVar: 'hsl(var(--node-entity, 271 81% 56%))',
+    colorVar: 'hsl(var(--node-entity, 200 40% 45%))',
     hasState: false,
     hasRingEffect: true
   },
@@ -124,7 +124,7 @@ export const iconRegistry: Record<NodeType, IconConfig> = {
   query: {
     component: CircleIcon,
     semanticClass: 'node-icon',
-    colorVar: 'hsl(var(--node-query, 330 81% 60%))',
+    colorVar: 'hsl(var(--node-query, 200 40% 45%))',
     hasState: false,
     hasRingEffect: true
   }

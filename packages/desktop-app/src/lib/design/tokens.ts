@@ -10,16 +10,16 @@ import type { NodeType as RegistryNodeType } from './icons/registry.js';
 // Re-export NodeType from registry for consistency
 export type NodeType = RegistryNodeType;
 
-// Node-specific colors for different node types
+// Node-specific colors - Subtle Tint System (Scheme 3)
 export const nodeTypeColors = {
-  text: 'hsl(142 71% 45%)', // Green
-  document: 'hsl(142 71% 45%)', // Green (same as text)
-  task: 'hsl(25 95% 53%)', // Orange
-  'ai-chat': 'hsl(221 83% 53%)', // Blue
-  ai_chat: 'hsl(221 83% 53%)', // Blue (alias)
-  user: 'hsl(142 71% 45%)', // Green (same as text)
-  entity: 'hsl(271 81% 56%)', // Purple
-  query: 'hsl(330 81% 60%)' // Pink
+  text: 'hsl(200 40% 45%)', // Blue-gray (Scheme 3)
+  document: 'hsl(200 40% 45%)', // Blue-gray (Scheme 3)
+  task: 'hsl(200 40% 45%)', // Blue-gray (Scheme 3)
+  'ai-chat': 'hsl(200 40% 45%)', // Blue-gray (Scheme 3)
+  ai_chat: 'hsl(200 40% 45%)', // Blue-gray (Scheme 3)
+  user: 'hsl(200 40% 45%)', // Blue-gray (Scheme 3)
+  entity: 'hsl(200 40% 45%)', // Blue-gray (Scheme 3)
+  query: 'hsl(200 40% 45%)' // Blue-gray (Scheme 3)
 } as const;
 
 // Theme types for runtime theme switching

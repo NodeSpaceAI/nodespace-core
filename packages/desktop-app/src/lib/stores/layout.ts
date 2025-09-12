@@ -35,28 +35,28 @@ export const navigationItems = writable<NavigationItem[]>([
     label: 'Dashboard',
     icon: 'M3 3h18v18H3V3zM9 15h6', // dashboard icon
     active: false,
-    type: 'placeholder'
+    type: 'link'
   },
   {
     id: 'search',
     label: 'Search',
     icon: 'M11 11m-8 0a8 8 0 1 0 16 0a8 8 0 1 0-16 0M21 21l-4.35-4.35', // search icon
     active: false,
-    type: 'placeholder'
+    type: 'link'
   },
   {
     id: 'favorites',
     label: 'Favorites',
     icon: 'M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 21.02L12 17.77l-6.18 3.25L7 14.14l-5-4.87l6.91-1.01L12 2z', // star icon
     active: false,
-    type: 'placeholder'
+    type: 'link'
   },
   {
     id: 'library',
     label: 'Library',
     icon: 'M3 3h18v18H3V3zM9 15h6', // placeholder dashboard-style icon
     active: false,
-    type: 'placeholder'
+    type: 'link'
   }
 ]);
 

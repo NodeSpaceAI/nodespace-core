@@ -650,12 +650,12 @@
     --circle-text-gap: 8px; /* Gap between circle edge and text content */
     --node-indent: 2.5rem; /* Indentation distance between parent and child levels */
 
-    /* NodeSpace Extension Colors - Node type colors per design system */
-    --node-text: 142 71% 45%; /* Green for text nodes */
-    --node-task: 25 95% 53%; /* Orange for task nodes */
-    --node-ai-chat: 221 83% 53%; /* Blue for AI chat nodes */
-    --node-entity: 271 81% 56%; /* Purple for entity nodes */
-    --node-query: 330 81% 60%; /* Pink for query nodes */
+    /* NodeSpace Extension Colors - Subtle Tint System (Scheme 3) */
+    --node-text: 200 40% 45%; /* Blue-gray for all nodes (Scheme 3) */
+    --node-task: 200 40% 45%; /* Blue-gray for all nodes (Scheme 3) */
+    --node-ai-chat: 200 40% 45%; /* Blue-gray for all nodes (Scheme 3) */
+    --node-entity: 200 40% 45%; /* Blue-gray for all nodes (Scheme 3) */
+    --node-query: 200 40% 45%; /* Blue-gray for all nodes (Scheme 3) */
   }
 
   .node-container {
@@ -677,7 +677,7 @@
     
     POSITIONING FORMULA:
     The chevron must be vertically centered with the circles, which use:
-    top: calc(0.25rem + (var(--line-height-px) / 2))
+    top: calc(0.25rem + (var(--font-size) * var(--line-height) / 2))
     
     Where:
     - 0.25rem = container top padding (.node has padding: 0.25rem)
@@ -714,7 +714,7 @@
       -1 * var(--node-indent) / 2 + var(--circle-offset)
     ); /* Halfway back to parent + parent circle offset */
     /* Use same CSS-first positioning as circles: containerPaddingPx + (lineHeightPx / 2) */
-    top: calc(0.25rem + (var(--line-height-px) / 2));
+    top: calc(0.25rem + (var(--font-size) * var(--line-height) / 2));
     transform: translate(-50%, -50%); /* Center icon on coordinates, same as circles */
     z-index: 999; /* Very high z-index to ensure clickability over all other elements */
   }
@@ -722,7 +722,7 @@
   .chevron-icon svg {
     width: 16px;
     height: 16px;
-    fill: hsl(var(--muted-foreground));
+    fill: hsl(var(--node-text) / 0.5);
     transition: fill 0.15s ease;
   }
 
@@ -733,7 +733,7 @@
   }
 
   .chevron-icon:hover svg {
-    fill: hsl(var(--foreground));
+    fill: hsl(var(--node-text) / 0.5);
   }
 
   /* Show chevron only when hovering directly over this node's content wrapper (not child nodes) */
@@ -748,46 +748,39 @@
 
   /* CSS-first positioning to match base-node.svelte implementation */
   .node-content-wrapper {
-    /* Default values for normal text - matches base-node.svelte exactly */
-    --line-height: 1.6;
+    /* Default values for normal text - adjusted for better circle alignment */
+    --line-height: 1.875;
     --font-size: 1rem;
-    --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 
   /* Inherit font-size and line-height from nested BaseNode header classes */
   .node-content-wrapper:has(:global(.node--h1)) {
     --font-size: 2rem;
     --line-height: 1.2;
-    --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 
   .node-content-wrapper:has(:global(.node--h2)) {
     --font-size: 1.5rem;
     --line-height: 1.3;
-    --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 
   .node-content-wrapper:has(:global(.node--h3)) {
     --font-size: 1.25rem;
     --line-height: 1.4;
-    --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 
   .node-content-wrapper:has(:global(.node--h4)) {
     --font-size: 1.125rem;
     --line-height: 1.4;
-    --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 
   .node-content-wrapper:has(:global(.node--h5)) {
     --font-size: 1rem;
     --line-height: 1.4;
-    --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 
   .node-content-wrapper:has(:global(.node--h6)) {
     --font-size: 0.875rem;
     --line-height: 1.4;
-    --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 </style>

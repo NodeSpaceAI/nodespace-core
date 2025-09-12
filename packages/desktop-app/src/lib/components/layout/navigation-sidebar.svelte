@@ -1,6 +1,5 @@
 <script lang="ts">
   import { layoutState, navigationItems, toggleSidebar } from '$lib/stores/layout.js';
-  import { toggleTheme } from '$lib/design/theme.js';
 
   // Subscribe to stores
   $: isCollapsed = $layoutState.sidebarCollapsed;
@@ -16,18 +15,7 @@
       }))
     );
   }
-
-  // Keyboard shortcuts
-  function handleKeydown(event: KeyboardEvent) {
-    // Toggle theme with Cmd/Ctrl + Shift + T
-    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === 'T') {
-      event.preventDefault();
-      toggleTheme();
-    }
-  }
 </script>
-
-<svelte:window on:keydown={handleKeydown} />
 
 <nav
   class="sidebar navigation-sidebar"
@@ -80,40 +68,24 @@
       </button>
     {/each}
   </div>
-
-  <!-- Theme toggle (at bottom) -->
-  <button
-    class="theme-toggle"
-    on:click={toggleTheme}
-    aria-label="Toggle theme"
-    title={isCollapsed ? 'Toggle theme' : undefined}
-  >
-    <svg class="theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-      <circle cx="12" cy="12" r="5" />
-      <path
-        d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"
-      />
-    </svg>
-    {#if !isCollapsed}
-      <span class="theme-label">Toggle Theme</span>
-    {/if}
-  </button>
 </nav>
 
 <style>
   .sidebar {
-    background: hsl(var(--background));
+    background: hsl(var(--sidebar-background));
+    border-right: 1px solid hsl(var(--border));
     display: flex;
     flex-direction: column;
     height: 100vh;
-    transition: width 0.3s ease;
     position: relative;
   }
 
-  /* Collapsed sidebar - exact specifications from patterns.html */
+  /* Sidebar transition animation configured in app.css */
+
+  /* Collapsed sidebar - adjusted width to center hamburger menu */
   .sidebar-collapsed {
-    width: 48px;
-    align-items: center; /* Center all content within the 48px panel */
+    width: 52px; /* Width to center hamburger: 8px left + 16px padding + 20px icon + 8px right = 52px */
+    align-items: stretch; /* Don't center content - let nav items control their own alignment */
     padding: 1rem 0; /* Remove left padding - center everything */
   }
 
@@ -123,19 +95,10 @@
     padding: 1rem;
   }
 
-  /* Hamburger button */
-  .hamburger-button {
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 0;
-    transition: color 0.2s;
-    color: hsl(var(--foreground));
-    flex-shrink: 0;
-  }
+  /* Hamburger button - base styles moved to positioning section */
 
   .hamburger-button:hover {
-    color: hsl(var(--primary));
+    color: hsl(var(--foreground));
   }
 
   .hamburger-button:focus-visible {
@@ -150,19 +113,18 @@
     flex-shrink: 0;
   }
 
-  /* Consistent hamburger positioning - perfectly centered in collapsed sidebar */
-  .sidebar-collapsed .hamburger-icon {
-    margin-bottom: 0.5rem;
-    /* Centered automatically by container align-items: center */
-    /* Ensure consistent alignment with nav items */
-  }
-
-  .sidebar-expanded .hamburger-icon {
-    margin-bottom: 0.5rem;
-    width: 20px;
-    height: 20px;
-    align-self: flex-start;
-    margin-left: calc(1rem - 18px); /* Move left to align with nav icons at same position */
+  /* Hamburger button - keep at fixed position, adjust sidebar width instead */
+  .hamburger-button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0.5rem;
+    transition: color 0.2s;
+    color: hsl(var(--foreground));
+    position: absolute;
+    left: 0.5rem; /* Fixed 8px from left edge */
+    top: 1rem; /* Fixed top position */
+    z-index: 10; /* Ensure it stays above nav items */
   }
 
   /* Navigation items container */
@@ -170,7 +132,8 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 0; /* Remove gaps between nav items */
+    margin-top: 3rem; /* Space for absolutely positioned hamburger button */
   }
 
   /* Navigation items - Full-width navigation items with no gaps */
@@ -194,7 +157,7 @@
   }
 
   .nav-item:hover:not(:disabled) {
-    background: hsl(var(--muted));
+    background: hsl(var(--border)); /* Use border color for more visible hover effect */
     color: hsl(var(--foreground));
   }
 
@@ -209,23 +172,28 @@
     cursor: not-allowed;
   }
 
-  /* Collapsed sidebar specific nav items - perfect icon centering */
+  /* Collapsed sidebar specific nav items - align icons at 16px from left edge */
   .sidebar-collapsed .nav-item {
     display: flex;
     align-items: center;
-    justify-content: center; /* Center the icons within the nav item */
+    justify-content: flex-start; /* Align left instead of center */
     margin: 0;
     width: 100%; /* Full width for background highlights */
     padding: 0.5rem 0; /* Vertical padding only - NO horizontal padding */
+    padding-left: 1rem; /* This should put icon at 16px from edge */
     position: relative;
+    box-sizing: border-box;
   }
 
-  /* Collapsed sidebar active item - overlay accent without affecting icon position */
+  /* Collapsed sidebar active item - full-width background with left accent */
   .sidebar-collapsed .nav-item.active {
-    /* DO NOT add padding-left - keep icon perfectly centered */
-    border-left: none; /* Remove default border */
-    padding-left: 0; /* Override general .nav-item.active padding-left */
-    padding-right: 0; /* Ensure no horizontal padding */
+    background: hsl(var(--active-nav-background));
+    color: hsl(var(--foreground)); /* Same brightness as expanded state */
+    width: 100%; /* Full width of collapsed sidebar (52px) */
+    margin: 0; /* Remove any margin that might narrow the background */
+    padding: 0.5rem 0; /* Keep vertical padding */
+    padding-left: 1rem; /* Maintain 16px left padding to align with hamburger */
+    position: relative;
   }
 
   .sidebar-collapsed .nav-item.active::before {
@@ -248,17 +216,16 @@
   }
 
   .sidebar-expanded .nav-item.active {
-    background: hsl(var(--muted));
+    background: hsl(var(--active-nav-background));
     color: hsl(var(--foreground));
-    font-weight: 600;
     border-left: 4px solid hsl(var(--primary));
     padding-left: calc(1rem - 4px);
   }
 
   /* Navigation icon */
   .nav-icon {
-    width: 16px;
-    height: 16px;
+    width: 20px;
+    height: 20px;
     flex-shrink: 0;
   }
 
@@ -266,57 +233,6 @@
   .nav-label {
     font-size: 0.875rem;
     white-space: nowrap;
-  }
-
-  /* Theme toggle */
-  .theme-toggle {
-    background: none;
-    border: none;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    transition:
-      background-color 0.2s,
-      color 0.2s;
-    color: hsl(var(--muted-foreground));
-    margin-top: auto;
-    text-align: left;
-    font-weight: 500;
-  }
-
-  .theme-toggle:hover {
-    background: hsl(var(--muted));
-    color: hsl(var(--foreground));
-  }
-
-  .theme-toggle:focus-visible {
-    outline: 2px solid hsl(var(--primary));
-    outline-offset: 2px;
-    border-radius: 4px;
-  }
-
-  /* Collapsed state theme toggle - centered like nav items */
-  .sidebar-collapsed .theme-toggle {
-    justify-content: center;
-    padding: 0.5rem 0;
-    margin: 0;
-  }
-
-  /* Expanded state theme toggle */
-  .sidebar-expanded .theme-toggle {
-    margin: 0 -1rem;
-    padding: 0.5rem 1rem;
-  }
-
-  .theme-icon {
-    width: 16px;
-    height: 16px;
-    flex-shrink: 0;
-  }
-
-  .theme-label {
-    font-size: 0.875rem;
-    white-space: nowrap;
+    transition: opacity 0.2s ease-out;
   }
 </style>

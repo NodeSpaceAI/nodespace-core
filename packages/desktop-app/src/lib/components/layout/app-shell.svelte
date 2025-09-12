@@ -89,11 +89,10 @@
   .main-content {
     overflow: auto;
     position: relative;
-    background: hsl(var(--background));
+    background: hsl(var(--content-background));
     transition: margin-left 0.3s ease;
     flex: 1;
     min-height: 0;
-    border-left: 1px solid hsl(var(--border));
   }
 
   /* Ensure proper scrolling behavior */

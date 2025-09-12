@@ -6,35 +6,35 @@
   :root {
     /* NodeSpace Warm Gray Design System - from patterns.html */
 
-    /* Color system - Warm Gray theme (light mode) */
-    --primary: 25 25% 55%; /* Warm gray primary */
+    /* Color system - Scheme 3: Subtle Tint System (light mode) */
+    --primary: 200 40% 45%; /* Blue-gray primary for Scheme 3 */
     --primary-foreground: 0 0% 98%; /* Off-white for primary text */
 
-    --secondary: 25 15% 94%; /* Light warm gray secondary */
-    --secondary-foreground: 25 15% 45%; /* Medium warm gray for secondary text */
+    --secondary: 200 12% 92%; /* Light blue-gray secondary for Scheme 3 */
+    --secondary-foreground: 200 12% 45%; /* Medium blue-gray for secondary text */
 
-    --accent: 25 25% 55%; /* Same as primary for consistency */
+    --accent: 200 40% 45%; /* Blue-gray accent for Scheme 3 consistency */
     --accent-foreground: 0 0% 98%; /* Off-white for accent text */
 
     --background: 0 0% 98%; /* Clean off-white background */
-    --foreground: 25 25% 15%; /* Dark warm gray text */
+    --foreground: 0 0% 15%; /* Dark neutral gray text - Scheme 3 active items */
 
     --card: 0 0% 100%; /* Pure white cards */
-    --card-foreground: 25 25% 15%; /* Dark warm gray text */
+    --card-foreground: 0 0% 15%; /* Dark neutral gray text */
 
     --popover: 0 0% 100%; /* Same as cards */
-    --popover-foreground: 25 25% 15%;
+    --popover-foreground: 0 0% 15%;
 
-    --muted: 25 15% 94%; /* Light warm gray muted areas */
-    --muted-foreground: 25 15% 45%; /* Medium warm gray for muted text */
+    --muted: 200 12% 94%; /* Light blue-gray muted areas - Scheme 3 */
+    --muted-foreground: 0 0% 25%; /* Medium neutral gray for muted text - Scheme 3 inactive items */
 
     /* Systematic hover states - WCAG-compliant contrast */
     --hover-background: var(--muted);
     --hover-foreground: var(--muted-foreground);
 
-    --border: 25 15% 88%; /* Light warm gray borders */
-    --input: 25 15% 88%;
-    --ring: 25 25% 55%; /* Focus ring matches primary */
+    --border: 200 12% 88%; /* Light blue-gray borders - Scheme 3 */
+    --input: 200 12% 88%;
+    --ring: 200 40% 55%; /* Focus ring matches blue-gray primary - Scheme 3 */
 
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
@@ -46,38 +46,46 @@
     --warning-foreground: 0 0% 100%;
 
     --radius: 0.5rem;
+
+    /* Hierarchy background colors for visual separation - Subtle Tint System */
+    --sidebar-background: 200 12% 92%; /* Subtle blue-gray sidebar */
+    --active-nav-background: 200 12% 85%; /* Active navigation item highlight - darker than hover (88%) */
+    --tab-bar-background: 200 12% 85%; /* Tab bar background */
+    --inactive-tab-background: 200 12% 80%; /* Inactive tab background */
+    --active-tab-background: 0 0% 99%; /* Active tab matches content */
+    --content-background: 0 0% 99%; /* Background color for main content */
   }
 
   .dark {
-    /* Color system - Warm Gray theme (dark mode) */
-    --primary: 25 25% 65%; /* Lighter warm gray primary for dark theme */
+    /* Color system - Scheme 3: Subtle Tint System (dark mode) */
+    --primary: 200 40% 55%; /* Blue-gray primary for Scheme 3 dark */
     --primary-foreground: 0 0% 95%; /* Very light gray for primary text */
 
-    --secondary: 25 15% 12%; /* Very dark warm gray secondary */
-    --secondary-foreground: 25 15% 60%; /* Light warm gray for secondary text */
+    --secondary: 200 12% 14%; /* Dark blue-gray secondary for Scheme 3 */
+    --secondary-foreground: 200 12% 60%; /* Light blue-gray for secondary text */
 
-    --accent: 25 25% 65%; /* Same as primary for consistency */
+    --accent: 200 40% 55%; /* Blue-gray accent for Scheme 3 consistency */
     --accent-foreground: 0 0% 95%; /* Very light gray for accent text */
 
-    --background: 0 0% 8%; /* Very dark background */
-    --foreground: 25 25% 90%; /* Light warm gray text */
+    --background: 0 0% 12%; /* More comfortable dark background (VS Code standard) */
+    --foreground: 0 0% 90%; /* Light neutral gray text - Scheme 3 active items dark */
 
-    --card: 25 15% 10%; /* Slightly elevated dark cards */
-    --card-foreground: 25 25% 90%; /* Light warm gray text */
+    --card: 25 15% 14%; /* Slightly elevated dark cards */
+    --card-foreground: 0 0% 90%; /* Light neutral gray text */
 
-    --popover: 25 15% 10%; /* Same as cards */
-    --popover-foreground: 25 25% 90%;
+    --popover: 25 15% 14%; /* Same as cards */
+    --popover-foreground: 0 0% 90%;
 
-    --muted: 25 15% 12%; /* Dark warm gray muted areas */
-    --muted-foreground: 25 15% 60%; /* Light warm gray for muted text */
+    --muted: 200 12% 16%; /* Dark blue-gray muted areas - Scheme 3 */
+    --muted-foreground: 0 0% 75%; /* Light neutral gray for muted text - Scheme 3 inactive items dark */
 
     /* Systematic hover states - WCAG-compliant contrast */
     --hover-background: var(--muted);
     --hover-foreground: var(--muted-foreground);
 
-    --border: 25 15% 20%; /* Dark warm gray borders */
-    --input: 25 15% 22%; /* Slightly lighter for inputs */
-    --ring: 25 25% 65%; /* Focus ring matches primary */
+    --border: 200 12% 24%; /* Dark blue-gray borders - Scheme 3 */
+    --input: 200 12% 26%; /* Slightly lighter for inputs - Scheme 3 */
+    --ring: 200 40% 65%; /* Focus ring matches blue-gray primary - Scheme 3 */
 
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
@@ -87,6 +95,16 @@
 
     --warning: 45 93% 47%; /* #eab308 - Same yellow/orange */
     --warning-foreground: 0 0% 100%;
+
+    /* Dark mode hierarchy colors for visual separation - Subtle Tint System */
+    --sidebar-background: 200 12% 14%; /* Subtle blue-gray sidebar dark */
+    --active-nav-background: 200 12% 17%; /* Active navigation item highlight dark */
+    --tab-bar-background: 200 12% 18%; /* Tab bar background dark */
+    --inactive-tab-background: 200 12% 22%; /* Inactive tab background dark */
+    --active-tab-background: 0 0% 12%; /* Active tab matches content dark */
+    --content-background: 0 0% 12%; /* Background color for main content dark */
+
+    /* Dark mode node colors are now defined at the end of the file for proper specificity */
   }
 }
 
@@ -95,13 +113,21 @@
     border-color: hsl(var(--border));
   }
 
-  /* Disable all transitions globally */
+  /* Disable all transitions globally except for specific components */
   *,
   *::before,
   *::after {
     transition: none !important;
     animation-duration: 0s !important;
     animation-delay: 0s !important;
+  }
+
+  /* Sidebar slide animation */
+  .navigation-sidebar.sidebar,
+  .navigation-sidebar.sidebar.sidebar-collapsed,
+  .navigation-sidebar.sidebar.sidebar-expanded {
+    transition: width 0.25s ease-out !important;
+    animation-duration: 0.25s !important;
   }
 
   html,
@@ -217,13 +243,13 @@
 
 /* Text Node Circle */
 .text-circle {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  background: hsl(var(--primary));
+  background: hsl(var(--node-text));
   position: absolute;
-  top: 2px;
-  left: 2px;
+  top: 3px;
+  left: 3px;
 }
 
 /* Task Circle States */
@@ -279,7 +305,7 @@
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  border: 2px solid hsl(var(--primary) / 0.5);
+  border: 8px solid hsl(var(--node-text) / 0.5);
   box-sizing: border-box;
   position: absolute;
   top: 0;
@@ -401,14 +427,27 @@
 
 /* NodeSpace Extensions - Design system aligned colors */
 :root {
-  /* NodeSpace node-specific extensions using design system colors */
-  --node-text: 25 25% 55%; /* Text nodes use primary color per patterns.html */
-  --node-task: 25 25% 55%; /* Task nodes use primary color for consistency */
-  --node-ai-chat: 25 25% 55%; /* AI chat nodes use primary color */
-  --node-entity: 25 25% 55%; /* Entity nodes use primary color */
-  --node-query: 25 25% 55%; /* Query nodes use primary color */
-  --node-user: 25 25% 55%; /* User nodes use primary color */
-  --node-date: 25 25% 55%; /* Date nodes use primary color */
-  --node-document: 25 25% 55%; /* Document nodes use primary color */
+  /* NodeSpace node-specific extensions - Subtle Tint System (Light mode) */
+  --node-text: 200 40% 45%; /* Text nodes use Scheme 3 blue-gray light */
+  --node-task: 200 40% 45%; /* Task nodes use Scheme 3 blue-gray light */
+  --node-ai-chat: 200 40% 45%; /* AI chat nodes use Scheme 3 blue-gray light */
+  --node-entity: 200 40% 45%; /* Entity nodes use Scheme 3 blue-gray light */
+  --node-query: 200 40% 45%; /* Query nodes use Scheme 3 blue-gray light */
+  --node-user: 200 40% 45%; /* User nodes use Scheme 3 blue-gray light */
+  --node-date: 200 40% 45%; /* Date nodes use Scheme 3 blue-gray light */
+  --node-document: 200 40% 45%; /* Document nodes use Scheme 3 blue-gray light */
   --processing-opacity: 0.7;
+}
+
+/* Dark mode overrides for NodeSpace node colors */
+.dark {
+  /* Override node colors for dark theme - these must be after the light mode definitions */
+  --node-text: 200 40% 55%; /* Text nodes use Scheme 3 blue-gray dark */
+  --node-task: 200 40% 55%; /* Task nodes use Scheme 3 blue-gray dark */
+  --node-ai-chat: 200 40% 55%; /* AI chat nodes use Scheme 3 blue-gray dark */
+  --node-entity: 200 40% 55%; /* Entity nodes use Scheme 3 blue-gray dark */
+  --node-query: 200 40% 55%; /* Query nodes use Scheme 3 blue-gray dark */
+  --node-user: 200 40% 55%; /* User nodes use Scheme 3 blue-gray dark */
+  --node-date: 200 40% 55%; /* Date nodes use Scheme 3 blue-gray dark */
+  --node-document: 200 40% 55%; /* Document nodes use Scheme 3 blue-gray dark */
 }

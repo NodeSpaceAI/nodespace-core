@@ -98,7 +98,7 @@
   .tab-bar {
     display: flex;
     align-items: center;
-    background-color: hsl(var(--muted));
+    background-color: hsl(var(--tab-bar-background));
     padding: 0;
     margin: 0;
     overflow-x: auto;
@@ -110,13 +110,13 @@
     padding-left: 0;
   }
 
-  /* Add border to the empty space after the last tab */
+  /* Add bottom border to empty space after tabs */
   .tab-bar::after {
     content: '';
     flex: 1;
-    border-bottom: 1px solid hsl(var(--border));
     height: 1px;
     align-self: flex-end;
+    border-bottom: 1px solid hsl(var(--border));
   }
 
   .tab-bar::-webkit-scrollbar {
@@ -132,7 +132,7 @@
     min-width: 0;
     flex-shrink: 0;
     cursor: pointer;
-    background-color: transparent;
+    background-color: hsl(var(--inactive-tab-background));
     color: hsl(var(--muted-foreground));
     font-weight: 500;
     font-size: 14px;
@@ -140,31 +140,21 @@
     position: relative;
     box-sizing: border-box;
     line-height: 1.2;
-    /* Use box-shadow for borders to avoid mitered corners */
-    box-shadow:
-      inset 1px 0 0 0 hsl(var(--border)),
-      /* left border */ inset 0 -1px 0 0 hsl(var(--border)); /* bottom border */
     top: 0;
+    border-left: 1px solid hsl(var(--border));
+    border-bottom: 1px solid hsl(var(--border));
+    border-right: 0; /* Remove right border except for the last tab */
+    border-top: none; /* No top borders on tabs */
+  }
+
+  /* Remove left border from first tab to avoid double border */
+  .tab-item:first-child {
+    border-left: none;
   }
 
   /* Add right border to the last tab */
   .tab-item:last-child {
-    box-shadow:
-      inset 1px 0 0 0 hsl(var(--border)),
-      /* left border */ inset 0 -1px 0 0 hsl(var(--border)),
-      /* bottom border */ inset -1px 0 0 0 hsl(var(--border)); /* right border */
-  }
-
-  /* Remove bottom border from last tab when it's active */
-  .tab-item:last-child.tab-item--active {
-    box-shadow:
-      inset 1px 0 0 0 hsl(var(--border)),
-      /* left border */ inset -1px 0 0 0 hsl(var(--border)); /* right border only */
-  }
-
-  /* Hide left border from tab immediately after active tab to avoid double border */
-  .tab-item--active + .tab-item {
-    box-shadow: inset 0 -1px 0 0 hsl(var(--border)); /* bottom border only */
+    border-right: 1px solid hsl(var(--border));
   }
 
   .tab-item:hover {
@@ -175,14 +165,17 @@
   .tab-item:focus-visible {
     background-color: hsl(var(--hover-background));
     color: hsl(var(--hover-foreground));
-    box-shadow:
-      inset 1px 0 0 0 hsl(var(--border)),
-      /* left border */ inset 0 -1px 0 0 hsl(var(--border)),
-      /* bottom border */ inset 0 0 0 2px hsl(var(--ring)); /* focus ring */
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: -2px;
+  }
+
+  .tab-item--active:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: -2px;
   }
 
   .tab-item--active {
-    background-color: hsl(var(--background));
+    background-color: hsl(var(--active-tab-background));
     color: hsl(var(--foreground));
     position: relative;
     box-sizing: border-box;
@@ -197,44 +190,14 @@
     top: 0;
     /* Remove margin-bottom to prevent text shifting */
     margin-bottom: 0;
-    /* Active tab borders only (accent will be separate) */
-    box-shadow:
-      inset 1px 0 0 0 hsl(var(--border)),
-      /* left border */ inset -1px 0 0 0 hsl(var(--border)); /* right border */
+    /* Remove bottom border for active tab to connect with content */
+    border-bottom: none !important;
   }
 
-  /* Active tab accent - positioned at the very top edge */
-  .tab-item--active::before {
-    content: '';
-    position: absolute;
-    top: 0; /* At the top edge of the tab */
-    left: 0; /* Start at tab edge (no extending beyond) */
-    right: 0; /* End at tab edge (no extending beyond) */
-    height: 4px; /* Standard accent height */
-    background: hsl(var(--primary));
-    z-index: 1; /* Lower z-index so it doesn't interfere with text */
-    pointer-events: none;
-  }
-
-  /* Special handling for first tab accent to reach browser edge */
-  .tab-item:first-child.tab-item--active::before {
-    left: -100px; /* Extend far left to ensure it reaches the edge */
-  }
-
-  /* Cover the content border below active tab */
-  .tab-item--active::after {
-    content: '';
-    position: absolute;
-    bottom: 0; /* Position at the bottom edge of the tab */
-    left: 0;
-    right: 0;
-    height: 1px;
-    background: hsl(var(--background));
-    z-index: 1;
-  }
+  /* Active tab styling */
 
   .tab-item--active:hover {
-    background-color: hsl(var(--background));
+    background-color: hsl(var(--active-tab-background));
     color: hsl(var(--foreground));
   }
 
@@ -249,7 +212,8 @@
   .tab-content {
     flex: 1;
     min-height: 0;
-    background-color: hsl(var(--background));
+    background-color: hsl(var(--content-background));
+    /* Remove top border to allow seamless connection with active tab */
   }
 
   /* Responsive behavior */
