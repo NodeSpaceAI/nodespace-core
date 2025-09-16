@@ -1846,21 +1846,9 @@ export class ContentEditableController {
    * Detect @ trigger in content at cursor position
    */
   private detectTrigger(content: string, cursorPosition: number): TriggerContext | null {
-    console.log(
-      '🎯 DEBUG: detectTrigger called with content:',
-      JSON.stringify(content),
-      'cursorPosition:',
-      cursorPosition
-    );
     // Look backwards from cursor to find @ symbol
     const beforeCursor = content.substring(0, cursorPosition);
     const lastAtIndex = beforeCursor.lastIndexOf('@');
-    console.log(
-      '🎯 DEBUG: lastAtIndex:',
-      lastAtIndex,
-      'beforeCursor:',
-      JSON.stringify(beforeCursor)
-    );
 
     if (lastAtIndex === -1) {
       return null; // No @ symbol found
@@ -1897,7 +1885,7 @@ export class ContentEditableController {
 
   /**
    * Get cursor position in screen coordinates for modal positioning
-   * Uses tight positioning: cursor position + 0px vertical spacing for optimal UX
+   * Uses consistent positioning: -8px from cursor baseline regardless of text formatting
    */
   private getCursorScreenPosition(): { x: number; y: number } | null {
     const selection = window.getSelection();
@@ -1906,14 +1894,32 @@ export class ContentEditableController {
     }
 
     const range = selection.getRangeAt(0);
-    const rect = range.getBoundingClientRect();
 
-    // Use minimal spacing for tight positioning as requested by user
-    const verticalSpacing = 0; // 0px for tight positioning
+    // Create a temporary element at the cursor to get consistent positioning
+    const tempElement = document.createElement('span');
+    tempElement.style.position = 'absolute';
+    tempElement.style.visibility = 'hidden';
+    tempElement.style.height = '1px';
+    tempElement.style.width = '1px';
+
+    // Insert the temp element at cursor position
+    range.insertNode(tempElement);
+
+    // Get the position of our temp element (this gives consistent baseline positioning)
+    const rect = tempElement.getBoundingClientRect();
+
+    // Clean up the temp element
+    tempElement.remove();
+
+    // Normalize selection after cleanup
+    selection.collapseToEnd();
+
+    // Add small spacing below cursor for optimal readability
+    const verticalSpacing = 4; // 4px below cursor baseline
 
     return {
       x: rect.left,
-      y: rect.bottom + verticalSpacing // Position modal directly below cursor
+      y: rect.top + verticalSpacing // Position with small gap below cursor
     };
   }
 
@@ -2153,21 +2159,9 @@ export class ContentEditableController {
    * Detect / slash command in content at cursor position
    */
   private detectSlashCommand(content: string, cursorPosition: number): SlashCommandContext | null {
-    console.log(
-      '🎯 DEBUG: detectSlashCommand called with content:',
-      JSON.stringify(content),
-      'cursorPosition:',
-      cursorPosition
-    );
     // Look backwards from cursor to find / symbol
     const beforeCursor = content.substring(0, cursorPosition);
     const lastSlashIndex = beforeCursor.lastIndexOf('/');
-    console.log(
-      '🎯 DEBUG: lastSlashIndex:',
-      lastSlashIndex,
-      'beforeCursor:',
-      JSON.stringify(beforeCursor)
-    );
 
     if (lastSlashIndex === -1) {
       return null; // No / symbol found

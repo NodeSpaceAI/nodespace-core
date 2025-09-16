@@ -21,7 +21,6 @@
       (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
     ) {
       unlistenMenu = listen('menu-toggle-sidebar', () => {
-        console.log('Menu toggle sidebar event received');
         toggleSidebar();
       });
     }

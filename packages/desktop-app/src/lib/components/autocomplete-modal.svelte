@@ -251,7 +251,6 @@
   }
 
   function closeModal(): void {
-    console.log('🚪 AutocompleteModal closeModal called!');
     dispatch('close');
   }
 

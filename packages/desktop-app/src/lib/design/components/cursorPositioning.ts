@@ -30,19 +30,6 @@ export function findCharacterFromClick(
   const relativeX = clickX - editableRect.left;
   const relativeY = clickY - editableRect.top;
 
-  console.log('CursorPositioning Debug:', {
-    clickX,
-    clickY,
-    editableRect: {
-      left: editableRect.left,
-      top: editableRect.top,
-      width: editableRect.width,
-      height: editableRect.height
-    },
-    relativeX,
-    relativeY
-  });
-
   let bestMatch: PositionResult = { index: 0, distance: Infinity, accuracy: 'approximate' };
 
   // Get all character spans from the mock element
@@ -82,8 +69,6 @@ export function findCharacterFromClick(
       };
     }
   }
-
-  console.log('Best position match:', bestMatch);
 
   return bestMatch;
 }
@@ -261,8 +246,6 @@ export function findCharacterFromClickFast(
   if (duration > 50) {
     console.warn(`Cursor positioning took ${duration}ms, exceeding 50ms target`);
   }
-
-  console.log(`Cursor positioning completed in ${duration}ms`, bestMatch);
 
   return bestMatch;
 }
