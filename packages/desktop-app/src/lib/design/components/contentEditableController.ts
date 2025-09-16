@@ -115,6 +115,17 @@ export class ContentEditableController {
       this.isEditing = true;
       this.setRawMarkdown(content);
       this.focus();
+
+      // Position cursor after header syntax for new header nodes
+      if (this.currentHeaderLevel > 0) {
+        const headerPrefix = '#'.repeat(this.currentHeaderLevel) + ' ';
+        if (content === headerPrefix) {
+          // This is a new header node - position cursor at the end
+          setTimeout(() => {
+            this.restoreCursorPosition(headerPrefix.length);
+          }, 0);
+        }
+      }
     } else {
       this.isEditing = false;
       this.setFormattedContent(content);
