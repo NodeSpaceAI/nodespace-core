@@ -89,7 +89,8 @@
 
     // Update current node content if provided
     if (currentContent !== undefined) {
-      nodeManager.updateNodeContent(afterNodeId, currentContent);
+      // Use forceUpdateNodeContent for node splitting to bypass typing optimization
+      nodeManager.forceUpdateNodeContent(afterNodeId, currentContent);
     }
 
     // Create new node using NodeManager with sophisticated logic
@@ -330,13 +331,36 @@
 
       // Entry point logic: nodes define where cursor should land when entered
       const content = targetElement.textContent || '';
-      const lines = content.split('\n');
+
+      // Helper function to get line information for multiline contenteditable
+      function getLineInfo(element: HTMLElement) {
+        const divElements = element.querySelectorAll(':scope > div');
+        if (divElements.length > 0) {
+          // Multiline content with div structure
+          const lines = Array.from(divElements).map((div) => div.textContent || '');
+          return { lines, isMultiline: true };
+        } else {
+          // Single line or fallback
+          const lines = content.split('\n');
+          return { lines, isMultiline: false };
+        }
+      }
+
+      const { lines, isMultiline } = getLineInfo(targetElement);
       let targetPosition: number;
 
       if (direction === 'up') {
         // Entering from bottom: convert visual columnHint to logical position
         const lastLine = lines[lines.length - 1] || '';
-        const lastLineStart = content.length - lastLine.length;
+
+        // Calculate position of last line start
+        let lastLineStart: number;
+        if (isMultiline && lines.length > 1) {
+          // For multiline, sum up all previous lines
+          lastLineStart = lines.slice(0, -1).reduce((sum, line) => sum + line.length, 0);
+        } else {
+          lastLineStart = content.length - lastLine.length;
+        }
 
         // Apply same fixed assumptions as MinimalBaseNode
         // Get hierarchy level for target node
@@ -546,8 +570,7 @@
               // Fallback to BaseNode for unknown types
               loadedViewers.set(nodeType, BaseNode);
             }
-          } catch (error) {
-            console.warn(`Failed to load viewer for ${nodeType}:`, error);
+          } catch {
             loadedViewers.set(nodeType, BaseNode);
           }
         }
@@ -618,6 +641,7 @@
               content={node.content}
               headerLevel={node.inheritHeaderLevel || 0}
               children={node.children}
+              editableConfig={{ allowMultiline: true }}
               on:createNewNode={handleCreateNewNode}
               on:indentNode={handleIndentNode}
               on:outdentNode={handleOutdentNode}

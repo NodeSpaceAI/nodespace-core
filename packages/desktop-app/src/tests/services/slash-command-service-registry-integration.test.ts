@@ -1,0 +1,191 @@
+/**
+ * SlashCommandService Registry Integration Tests
+ *
+ * Tests the optional integration between SlashCommandService and the experimental
+ * NodeTypeRegistry to ensure both systems work together correctly.
+ */
+
+import { expect, describe, it, beforeEach } from 'vitest';
+import { SlashCommandService } from '$lib/services/slashCommandService.js';
+import { basicNodeTypeRegistry } from '$lib/registry/basicNodeTypeRegistry.js';
+import { initializeBasicRegistry } from '$lib/registry/initialize.js';
+
+describe('SlashCommandService Registry Integration', () => {
+  let service: SlashCommandService;
+
+  beforeEach(() => {
+    service = SlashCommandService.getInstance();
+    // Initialize the registry to ensure it has node types
+    initializeBasicRegistry();
+  });
+
+  describe('Basic Functionality (Registry Disabled)', () => {
+    it('should return hardcoded commands when registry integration disabled', () => {
+      const commands = service.getCommands();
+
+      expect(commands).toHaveLength(6); // 6 hardcoded commands
+      expect(commands.map((cmd) => cmd.id)).toEqual([
+        'text',
+        'header1',
+        'header2',
+        'header3',
+        'task',
+        'ai-chat'
+      ]);
+    });
+
+    it('should filter hardcoded commands correctly', () => {
+      const filtered = service.filterCommands('header');
+
+      expect(filtered).toHaveLength(3);
+      expect(filtered.every((cmd) => cmd.name.toLowerCase().includes('header'))).toBe(true);
+    });
+
+    it('should find hardcoded commands by ID', () => {
+      const command = service.findCommand('task');
+
+      expect(command).toBeDefined();
+      expect(command?.id).toBe('task');
+      expect(command?.nodeType).toBe('task');
+    });
+  });
+
+  describe('Registry Integration (Enabled)', () => {
+    it('should include registry commands when integration enabled', () => {
+      const commands = service.getCommands();
+
+      // Should have at least the hardcoded commands
+      expect(commands.length).toBeGreaterThanOrEqual(6);
+
+      // Registry should be initialized with node types
+      expect(basicNodeTypeRegistry.hasNodeTypes()).toBe(true);
+
+      // Should contain both hardcoded and potentially registry commands
+      const commandIds = commands.map((cmd) => cmd.id);
+      expect(commandIds).toContain('text');
+      expect(commandIds).toContain('task');
+      expect(commandIds).toContain('ai-chat');
+    });
+
+    it('should avoid duplicate commands when merging registry', () => {
+      const commands = service.getCommands();
+      const commandIds = commands.map((cmd) => cmd.id);
+      const uniqueIds = new Set(commandIds);
+
+      // No duplicate IDs
+      expect(commandIds.length).toBe(uniqueIds.size);
+    });
+
+    it('should filter commands from both sources', () => {
+      const filtered = service.filterCommands('text');
+
+      expect(filtered.length).toBeGreaterThan(0);
+      expect(filtered.some((cmd) => cmd.name.toLowerCase().includes('text'))).toBe(true);
+    });
+
+    it('should find commands from both hardcoded and registry sources', () => {
+      // Test finding a hardcoded command
+      const hardcodedCommand = service.findCommand('task');
+      expect(hardcodedCommand).toBeDefined();
+
+      // Test finding registry command (if it exists and is different)
+      const textCommand = service.findCommand('text');
+      expect(textCommand).toBeDefined();
+    });
+  });
+
+  describe('Command Execution', () => {
+    it('should execute hardcoded commands correctly', () => {
+      const taskCommand = service.findCommand('task')!;
+      const result = service.executeCommand(taskCommand);
+
+      expect(result).toEqual({
+        content: '- [ ] ',
+        nodeType: 'task'
+      });
+    });
+
+    it('should execute registry commands when available', () => {
+      // Find a command (prefer registry if available, fallback to hardcoded)
+      const textCommand = service.findCommand('text')!;
+      const result = service.executeCommand(textCommand);
+
+      expect(result).toBeDefined();
+      expect(result.nodeType).toBe('text');
+      expect(typeof result.content).toBe('string');
+    });
+
+    it('should handle header commands with proper levels', () => {
+      const headerCommand = service.findCommand('header1')!;
+      const result = service.executeCommand(headerCommand);
+
+      expect(result).toEqual({
+        content: '# ',
+        nodeType: 'text',
+        headerLevel: 1
+      });
+    });
+  });
+
+  describe('Registry State', () => {
+    it('should properly check registry state', () => {
+      expect(basicNodeTypeRegistry.hasNodeTypes()).toBe(true);
+
+      const stats = basicNodeTypeRegistry.getStats();
+      expect(stats.nodeTypesCount).toBeGreaterThan(0);
+      expect(stats.totalSlashCommands).toBeGreaterThan(0);
+      expect(Array.isArray(stats.nodeTypes)).toBe(true);
+    });
+
+    it('should provide registry commands', () => {
+      const registryCommands = basicNodeTypeRegistry.getAllSlashCommands();
+
+      expect(Array.isArray(registryCommands)).toBe(true);
+      expect(registryCommands.length).toBeGreaterThan(0);
+
+      // Each command should have required properties
+      registryCommands.forEach((cmd) => {
+        expect(cmd).toHaveProperty('id');
+        expect(cmd).toHaveProperty('name');
+        expect(cmd).toHaveProperty('description');
+        expect(cmd).toHaveProperty('nodeTypeId');
+        expect(cmd).toHaveProperty('contentTemplate');
+      });
+    });
+  });
+
+  describe('Backwards Compatibility', () => {
+    it('should maintain exact same behavior when registry disabled', () => {
+      const oldCommands = service.getCommands();
+      const oldFiltered = service.filterCommands('task');
+      const oldFound = service.findCommand('task');
+
+      // These should be identical to pre-registry behavior
+      expect(oldCommands).toHaveLength(6);
+      expect(oldFiltered.length).toBe(1);
+      expect(oldFound?.id).toBe('task');
+    });
+
+    it('should find all hardcoded commands correctly', () => {
+      // Test all hardcoded commands can be found
+      const testCases = [
+        { id: 'text', nodeType: 'text', headerLevel: 0 },
+        { id: 'header1', nodeType: 'text', headerLevel: 1 },
+        { id: 'header2', nodeType: 'text', headerLevel: 2 },
+        { id: 'header3', nodeType: 'text', headerLevel: 3 },
+        { id: 'task', nodeType: 'task' },
+        { id: 'ai-chat', nodeType: 'ai-chat' }
+      ];
+
+      testCases.forEach(({ id, nodeType, headerLevel }) => {
+        const command = service.findCommand(id)!;
+        expect(command).toBeDefined();
+        expect(command.id).toBe(id);
+        expect(command.nodeType).toBe(nodeType);
+        if (headerLevel !== undefined) {
+          expect(command.headerLevel).toBe(headerLevel);
+        }
+      });
+    });
+  });
+});

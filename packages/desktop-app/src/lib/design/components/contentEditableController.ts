@@ -94,6 +94,7 @@ export class ContentEditableController {
     this.nodeId = nodeId;
     this.config = { allowMultiline: false, ...config };
     this.events = events;
+
     // Mark DOM element as having a controller attached
     (
       this.element as unknown as { _contentEditableController: ContentEditableController }
@@ -245,7 +246,25 @@ export class ContentEditableController {
     // Apply live formatting while preserving markdown syntax for editing
     // Use sequential parser to handle nested patterns correctly
     const escapedContent = this.escapeHtml(content);
-    const html = this.markdownToLiveHtml(escapedContent);
+    let html = this.markdownToLiveHtml(escapedContent);
+
+    // For multiline nodes: preserve newlines in appropriate format
+    if (this.config.allowMultiline) {
+      if (this.isEditing) {
+        // During editing: convert \n to <div> structure for native browser editing
+        html = html.replace(/\n/g, '</div><div>');
+        // Wrap in div structure if we have line breaks
+        if (html.includes('</div><div>')) {
+          html = '<div>' + html + '</div>';
+          // Clean up empty divs and fix structure
+          html = html.replace('<div></div><div>', '<div>').replace('</div><div></div>', '</div>');
+        }
+      } else {
+        // During display: convert \n to <br> tags for formatted display
+        html = html.replace(/\n/g, '<br>');
+      }
+    }
+
     this.element.innerHTML = html;
   }
 
@@ -557,8 +576,24 @@ export class ContentEditableController {
         cursorOffset = this.getTextOffsetFromElement(range.startContainer, range.startOffset);
       }
 
-      // When editing (focused), content is plain text - use it directly
-      const textContent = this.element.textContent || '';
+      // When editing (focused), extract content - preserve HTML structure for multiline nodes
+      let textContent: string;
+      if (this.config.allowMultiline) {
+        // For multiline nodes: preserve the HTML structure directly to maintain line breaks
+        const hasLineBreaks =
+          this.element.innerHTML.includes('<div>') || this.element.innerHTML.includes('<br>');
+        if (hasLineBreaks) {
+          // Store the HTML structure directly to preserve line breaks
+          textContent = this.convertHtmlToTextWithNewlines(this.element.innerHTML);
+          // But don't overwrite the innerHTML since it's already correct
+        } else {
+          // No line breaks, use textContent
+          textContent = this.element.textContent || '';
+        }
+      } else {
+        // For single-line nodes: use textContent as before
+        textContent = this.element.textContent || '';
+      }
       this.originalContent = textContent; // Update stored content immediately
 
       // Check for @ trigger and / slash command detection
@@ -572,7 +607,12 @@ export class ContentEditableController {
       }
 
       // Apply live formatting while preserving cursor, unless we just had a Shift+Enter or regular Enter
-      if (!this.recentShiftEnter && !this.recentEnter) {
+      // Also skip formatting for multiline nodes with line breaks to preserve <div><br></div> structure
+      const hasLineBreaks =
+        this.config.allowMultiline &&
+        (this.element.innerHTML.includes('<div>') || this.element.innerHTML.includes('<br>'));
+
+      if (!this.recentShiftEnter && !this.recentEnter && !hasLineBreaks) {
         this.setLiveFormattedContent(textContent);
         this.restoreCursorPosition(cursorOffset);
       }
@@ -679,14 +719,19 @@ export class ContentEditableController {
             cursorAtBeginning: true
           });
         } else {
-          // Normal split with formatting preservation
-          const splitResult = this.smartTextSplit(currentContent, cursorPosition);
+          // Simple split at cursor position - direct content manipulation
+          const beforeCursor = currentContent.substring(0, cursorPosition);
+          const afterCursor = currentContent.substring(cursorPosition);
+
+          // Update current element immediately to show truncated content
+          this.originalContent = beforeCursor;
+          this.element.textContent = beforeCursor;
 
           this.events.createNewNode({
             afterNodeId: this.nodeId,
             nodeType: 'text',
-            currentContent: splitResult.beforeCursor,
-            newContent: splitResult.afterCursor,
+            currentContent: beforeCursor,
+            newContent: afterCursor,
             cursorAtBeginning: false
           });
         }
@@ -711,6 +756,20 @@ export class ContentEditableController {
     // Arrow keys for navigation
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
       const direction = event.key === 'ArrowUp' ? 'up' : 'down';
+
+      // For multiline nodes, only navigate between nodes if at first/last line
+      if (this.config.allowMultiline) {
+        const shouldNavigate =
+          (direction === 'up' && this.isAtFirstLine()) ||
+          (direction === 'down' && this.isAtLastLine());
+
+        if (!shouldNavigate) {
+          // Let the browser handle line-by-line navigation within the multiline node
+          return;
+        }
+      }
+
+      // Navigate between nodes
       const columnHint = this.getCurrentColumn();
       this.events.navigateArrow({
         nodeId: this.nodeId,
@@ -748,6 +807,15 @@ export class ContentEditableController {
     }
 
     const range = selection.getRangeAt(0);
+
+    // For multiline nodes: check if cursor is at the very beginning of the entire content
+    if (this.config.allowMultiline) {
+      // Calculate the absolute text position within the entire element
+      const textPosition = this.getTextOffsetFromElement(range.startContainer, range.startOffset);
+      return textPosition === 0 && range.collapsed;
+    }
+
+    // For single-line nodes: use the original logic
     return range.startOffset === 0 && range.collapsed;
   }
 
@@ -756,6 +824,35 @@ export class ContentEditableController {
     if (!selection || selection.rangeCount === 0) return 0;
 
     const range = selection.getRangeAt(0);
+
+    // For multiline content, calculate column position within the current line
+    if (this.config.allowMultiline) {
+      // Find the containing div (line) element
+      let currentElement: Node | null = range.startContainer;
+      let lineElement: Element | null = null;
+
+      while (currentElement && currentElement !== this.element) {
+        if (
+          currentElement.nodeType === Node.ELEMENT_NODE &&
+          (currentElement as Element).tagName === 'DIV' &&
+          currentElement.parentNode === this.element
+        ) {
+          lineElement = currentElement as Element;
+          break;
+        }
+        currentElement = currentElement.parentNode;
+      }
+
+      if (lineElement) {
+        // Calculate position within this line element
+        const lineRange = document.createRange();
+        lineRange.selectNodeContents(lineElement);
+        lineRange.setEnd(range.startContainer, range.startOffset);
+        return lineRange.toString().length;
+      }
+    }
+
+    // For single-line content, calculate from start of element
     const preCaretRange = range.cloneRange();
     preCaretRange.selectNodeContents(this.element);
     preCaretRange.setEnd(range.startContainer, range.startOffset);
@@ -778,6 +875,64 @@ export class ContentEditableController {
     }
 
     return textOffset;
+  }
+
+  private isAtFirstLine(): boolean {
+    if (!this.config.allowMultiline) return true;
+
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return true;
+
+    const range = selection.getRangeAt(0);
+
+    // Check if cursor is within the first div element (first line)
+    // For multiline contenteditable, each line is typically a div
+    let currentElement: Node | null = range.startContainer;
+
+    // Walk up to find the containing div within our contenteditable
+    while (currentElement && currentElement !== this.element) {
+      if (
+        currentElement.nodeType === Node.ELEMENT_NODE &&
+        (currentElement as Element).tagName === 'DIV' &&
+        currentElement.parentNode === this.element
+      ) {
+        // Found the containing div - check if it's the first one
+        return currentElement === this.element.firstElementChild;
+      }
+      currentElement = currentElement.parentNode;
+    }
+
+    // If no div structure found, assume single line (first line)
+    return true;
+  }
+
+  private isAtLastLine(): boolean {
+    if (!this.config.allowMultiline) return true;
+
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return true;
+
+    const range = selection.getRangeAt(0);
+
+    // Check if cursor is within the last div element (last line)
+    // For multiline contenteditable, each line is typically a div
+    let currentElement: Node | null = range.startContainer;
+
+    // Walk up to find the containing div within our contenteditable
+    while (currentElement && currentElement !== this.element) {
+      if (
+        currentElement.nodeType === Node.ELEMENT_NODE &&
+        (currentElement as Element).tagName === 'DIV' &&
+        currentElement.parentNode === this.element
+      ) {
+        // Found the containing div - check if it's the last one
+        return currentElement === this.element.lastElementChild;
+      }
+      currentElement = currentElement.parentNode;
+    }
+
+    // If no div structure found, assume single line (last line)
+    return true;
   }
 
   private restoreCursorPosition(textOffset: number): void {
@@ -2053,8 +2208,7 @@ export class ContentEditableController {
       );
 
       return markdownPosition;
-    } catch (error) {
-      console.warn('Error calculating markdown position from click:', error);
+    } catch {
       return null;
     }
   }
@@ -2102,8 +2256,7 @@ export class ContentEditableController {
       }
 
       return null;
-    } catch (error) {
-      console.warn('Error getting character position from coordinates:', error);
+    } catch {
       return null;
     }
   }
