@@ -71,6 +71,9 @@ export class ContentEditableController {
   // Track recent Shift+Enter to avoid interfering with newlines
   private recentShiftEnter: boolean = false;
 
+  // Track recent Enter to avoid interfering with node creation
+  private recentEnter: boolean = false;
+
   // Bound event handlers for proper cleanup
   private boundHandleFocus = this.handleFocus.bind(this);
   private boundHandleBlur = this.handleBlur.bind(this);
@@ -129,6 +132,11 @@ export class ContentEditableController {
       return;
     }
 
+    // Skip updates during Enter key handling to prevent cursor jumping
+    if (this.recentEnter) {
+      return;
+    }
+
     // Prevent reactive loops - don't update if content hasn't changed
     if (this.originalContent === content) {
       return;
@@ -154,6 +162,10 @@ export class ContentEditableController {
    * Focus the element programmatically
    */
   public focus(): void {
+    // Skip focus during Enter key handling to prevent cursor jumping
+    if (this.recentEnter) {
+      return;
+    }
     this.element.focus();
   }
 
@@ -545,8 +557,8 @@ export class ContentEditableController {
         this.events.headerLevelChanged(newHeaderLevel);
       }
 
-      // Apply live formatting while preserving cursor, unless we just had a Shift+Enter
-      if (!this.recentShiftEnter) {
+      // Apply live formatting while preserving cursor, unless we just had a Shift+Enter or regular Enter
+      if (!this.recentShiftEnter && !this.recentEnter) {
         this.setLiveFormattedContent(textContent);
         this.restoreCursorPosition(cursorOffset);
       }
@@ -628,17 +640,23 @@ export class ContentEditableController {
         const cursorPosition = this.getCurrentColumn();
         const cursorAtBeginning = cursorPosition === 0;
 
+        // Set flag to prevent cursor restoration during node creation
+        this.recentEnter = true;
+        setTimeout(() => {
+          this.recentEnter = false;
+        }, 100); // Clear flag after brief delay
+
         if (cursorAtBeginning) {
-          // SOPHISTICATED LOGIC: Cursor at beginning - create node above
+          // Cursor at beginning - create node above
           this.events.createNewNode({
             afterNodeId: this.nodeId,
             nodeType: 'text',
-            currentContent: currentContent, // Keep all content in original node
-            newContent: '', // Empty new node above
+            currentContent: currentContent,
+            newContent: '',
             cursorAtBeginning: true
           });
         } else {
-          // SOPHISTICATED LOGIC: Normal split with formatting preservation
+          // Normal split with formatting preservation
           const splitResult = this.smartTextSplit(currentContent, cursorPosition);
 
           this.events.createNewNode({
