@@ -1,6 +1,4 @@
 <script lang="ts">
-  import { cn } from '$lib/utils';
-  import Icon, { type NodeType } from '$lib/design/icons';
   import { createEventDispatcher, onMount } from 'svelte';
   import type { SlashCommand } from '$lib/services/slashCommandService';
 
