@@ -20,6 +20,8 @@ describe('ContentProcessor', () => {
 
   beforeEach(() => {
     processor = ContentProcessor.getInstance();
+    // Clear any cached state to ensure test isolation
+    processor.clearReferenceCache();
   });
 
   // ========================================================================

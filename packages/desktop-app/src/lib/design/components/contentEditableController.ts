@@ -1341,15 +1341,11 @@ export class ContentEditableController {
       }
     }
 
-    // Define equivalent markers based on the requested marker
+    // For nesting behavior, only check for exact marker matches
+    // This allows different but equivalent markers to nest properly
+    // e.g., __bold__ + Cmd+B (**) should nest to **__bold__**
     let equivalentMarkers: string[];
-    if (marker === '**') {
-      equivalentMarkers = ['**', '__']; // Only bold equivalents
-    } else if (marker === '*') {
-      equivalentMarkers = ['*', '_']; // Only italic equivalents, but exclude ** patterns
-    } else {
-      equivalentMarkers = [marker];
-    }
+    equivalentMarkers = [marker]; // Only check for exact marker match
 
     // Try each equivalent marker type with strict boundary detection
     for (const testMarker of equivalentMarkers) {
@@ -1603,37 +1599,25 @@ export class ContentEditableController {
    * When user double-clicks "__bold__", the selection includes underscores and should be toggled off
    */
   private isTextAlreadyFormatted(text: string, targetMarker: string): boolean {
-    // CRITICAL FIX: When user double-clicks "__bold__" and presses Cmd+B,
-    // the selectedText is "__bold__" and targetMarker is "**"
-    // We need to detect that this text is already bold-formatted (with __ equivalent)
-    // and should be toggled OFF, not nested
+    // UPDATED: Only check for exact marker matches to enable nesting behavior
+    // Different but equivalent markers (__ vs **) should nest, not toggle off
+    // Example: __bold__ + Cmd+B (**) should nest to **__bold__**
 
     if (targetMarker === '**') {
-      // Bold formatting: check for ** OR __ (equivalent markers when selection includes them)
-      return (
-        (text.startsWith('**') && text.endsWith('**') && text.length > 4) ||
-        (text.startsWith('__') && text.endsWith('__') && text.length > 4)
-      );
+      // Bold formatting: check for ** only (not __ to allow nesting)
+      return text.startsWith('**') && text.endsWith('**') && text.length > 4;
     } else if (targetMarker === '*') {
-      // Italic formatting: check for * OR _ (equivalent markers when selection includes them)
+      // Italic formatting: check for * only (not _ to allow nesting)
       return (
-        (text.startsWith('*') &&
-          text.endsWith('*') &&
-          text.length > 2 &&
-          !text.startsWith('**') &&
-          !text.endsWith('**')) ||
-        (text.startsWith('_') &&
-          text.endsWith('_') &&
-          text.length > 2 &&
-          !text.startsWith('__') &&
-          !text.endsWith('__'))
+        text.startsWith('*') &&
+        text.endsWith('*') &&
+        text.length > 2 &&
+        !text.startsWith('**') &&
+        !text.endsWith('**')
       );
     } else if (targetMarker === '__') {
-      // Bold underscore formatting: check for __ OR ** (equivalent markers when selection includes them)
-      return (
-        (text.startsWith('__') && text.endsWith('__') && text.length > 4) ||
-        (text.startsWith('**') && text.endsWith('**') && text.length > 4)
-      );
+      // Bold underscore formatting: check for __ only (not ** to allow nesting)
+      return text.startsWith('__') && text.endsWith('__') && text.length > 4;
     } else if (targetMarker === '_') {
       // Italic underscore formatting: check for _ OR * (equivalent markers when selection includes them)
       return (

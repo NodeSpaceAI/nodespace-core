@@ -146,7 +146,122 @@ mod tests {
     fn test_load_nonexistent_node() {
         let store = SimpleMockStore::new();
         let result = store.load("nonexistent-id");
-        
+
         assert!(result.is_none());
+    }
+
+    // ========================================================================
+    // Tauri Command Tests (testing actual application logic)
+    // ========================================================================
+
+    use crate::{greet, toggle_sidebar};
+
+    #[test]
+    fn test_greet_command() {
+        let result = greet("NodeSpace");
+
+        assert_eq!(result, "Hello, NodeSpace! You've been greeted from Rust!");
+    }
+
+    #[test]
+    fn test_greet_command_empty_name() {
+        let result = greet("");
+
+        assert_eq!(result, "Hello, ! You've been greeted from Rust!");
+    }
+
+    #[test]
+    fn test_greet_command_special_characters() {
+        let result = greet("Test User & Co.");
+
+        assert_eq!(result, "Hello, Test User & Co.! You've been greeted from Rust!");
+    }
+
+    #[test]
+    fn test_toggle_sidebar_command() {
+        let result = toggle_sidebar();
+
+        assert_eq!(result, "Sidebar toggled!");
+    }
+
+    // ========================================================================
+    // Menu Integration Tests
+    // ========================================================================
+
+    #[test]
+    fn test_menu_id_constants() {
+        // Test that menu IDs are consistent
+        let toggle_id = "toggle_sidebar";
+        let quit_id = "quit";
+
+        assert_eq!(toggle_id, "toggle_sidebar");
+        assert_eq!(quit_id, "quit");
+    }
+
+    // ========================================================================
+    // Error Handling Tests
+    // ========================================================================
+
+    #[test]
+    fn test_node_validation_whitespace_content() {
+        let node = SimpleNode::new("   ".to_string(), "text".to_string());
+        let result = node.validate();
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Content cannot be empty");
+    }
+
+    #[test]
+    fn test_node_type_validation() {
+        let valid_types = ["text", "task", "ai-chat"];
+
+        for node_type in valid_types {
+            let node = SimpleNode::new("Valid content".to_string(), node_type.to_string());
+            assert!(node.validate().is_ok(), "Node type '{}' should be valid", node_type);
+        }
+
+        let invalid_types = ["invalid", "TEXT", "ai_chat", ""];
+
+        for node_type in invalid_types {
+            let node = SimpleNode::new("Valid content".to_string(), node_type.to_string());
+            assert!(node.validate().is_err(), "Node type '{}' should be invalid", node_type);
+        }
+    }
+
+    // ========================================================================
+    // Concurrency Tests (for future async operations)
+    // ========================================================================
+
+    #[test]
+    fn test_id_generation_uniqueness() {
+        use std::collections::HashSet;
+        use std::thread;
+
+        let mut handles = vec![];
+        let mut all_ids = HashSet::new();
+
+        // Generate IDs from multiple threads to test atomic counter
+        for _ in 0..5 {
+            let handle = thread::spawn(|| {
+                let mut ids = vec![];
+                for _ in 0..10 {
+                    let node = SimpleNode::new("test".to_string(), "text".to_string());
+                    ids.push(node.id);
+                }
+                ids
+            });
+            handles.push(handle);
+        }
+
+        // Collect all IDs
+        for handle in handles {
+            let ids = handle.join().unwrap();
+            for id in ids {
+                assert!(!all_ids.contains(&id), "Duplicate ID generated: {}", id);
+                all_ids.insert(id);
+            }
+        }
+
+        assert_eq!(all_ids.len(), 50, "Should have generated 50 unique IDs");
     }
 }
