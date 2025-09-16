@@ -7,6 +7,7 @@
 
 import ContentProcessor from '$lib/services/contentProcessor';
 import type { TriggerContext } from '$lib/services/nodeReferenceService';
+import type { SlashCommandContext } from '$lib/services/slashCommandService';
 import { markdownToHtml, htmlToMarkdown } from '$lib/utils/markedConfig';
 
 export interface ContentEditableEvents {
@@ -33,6 +34,19 @@ export interface ContentEditableEvents {
   }) => void;
   triggerHidden: () => void;
   nodeReferenceSelected: (data: { nodeId: string; nodeTitle: string }) => void;
+  // / Slash Command System Events
+  slashCommandDetected: (data: {
+    commandContext: SlashCommandContext;
+    cursorPosition: { x: number; y: number };
+  }) => void;
+  slashCommandHidden: () => void;
+  slashCommandSelected: (data: { 
+    command: { 
+      content: string; 
+      nodeType: string; 
+      headerLevel?: number; 
+    }; 
+  }) => void;
 }
 
 export interface ContentEditableConfig {
@@ -521,7 +535,7 @@ export class ContentEditableController {
       const textContent = this.element.textContent || '';
       this.originalContent = textContent; // Update stored content immediately
 
-      // Check for @ trigger detection
+      // Check for @ trigger and / slash command detection
       this.checkForTrigger(textContent, cursorOffset);
 
       // Check for header level changes
@@ -1789,7 +1803,7 @@ export class ContentEditableController {
   // ============================================================================
 
   /**
-   * Check for @ trigger and emit events for autocomplete modal
+   * Check for @ trigger and / slash commands and emit events for autocomplete modals
    */
   private checkForTrigger(content: string, cursorPosition: number): void {
     const triggerContext = this.detectTrigger(content, cursorPosition);
@@ -1805,6 +1819,26 @@ export class ContentEditableController {
       }
     } else {
       this.events.triggerHidden();
+    }
+
+    // Check for / slash command (only if @ is not active)
+    if (!triggerContext || !triggerContext.isValid) {
+      const slashContext = this.detectSlashCommand(content, cursorPosition);
+      if (slashContext && slashContext.isValid) {
+        // Get cursor position in screen coordinates
+        const cursorCoords = this.getCursorScreenPosition();
+        if (cursorCoords) {
+          this.events.slashCommandDetected({
+            commandContext: slashContext,
+            cursorPosition: cursorCoords
+          });
+        }
+      } else {
+        this.events.slashCommandHidden();
+      }
+    } else {
+      // Hide slash commands when @ is active
+      this.events.slashCommandHidden();
     }
   }
 
@@ -2097,5 +2131,80 @@ export class ContentEditableController {
    */
   public setCursorPosition(characterIndex: number): void {
     this.restoreCursorPosition(characterIndex);
+  }
+
+  /**
+   * Detect / slash command in content at cursor position
+   */
+  private detectSlashCommand(content: string, cursorPosition: number): SlashCommandContext | null {
+    // Look backwards from cursor to find / symbol
+    const beforeCursor = content.substring(0, cursorPosition);
+    const lastSlashIndex = beforeCursor.lastIndexOf('/');
+    
+    if (lastSlashIndex === -1) {
+      return null; // No / symbol found
+    }
+    
+    // Check if / is at line start or after whitespace only
+    const lineStart = beforeCursor.lastIndexOf('\n', lastSlashIndex - 1) + 1;
+    const textBeforeSlash = beforeCursor.substring(lineStart, lastSlashIndex);
+    
+    // Only allow / at line start or after whitespace
+    if (textBeforeSlash.trim() !== '') {
+      return null; // / is not at line start or after whitespace
+    }
+    
+    // Extract query text between / and cursor
+    const queryText = content.substring(lastSlashIndex + 1, cursorPosition);
+    
+    // Validate query (no spaces, reasonable length)
+    if (queryText.includes(' ') || queryText.includes('\n')) {
+      return null; // Query contains invalid characters
+    }
+    if (queryText.length > 20) {
+      return null; // Query too long for commands
+    }
+    
+    return {
+      trigger: '/',
+      query: queryText,
+      startPosition: lastSlashIndex,
+      endPosition: cursorPosition,
+      element: this.element,
+      isValid: true,
+      metadata: {}
+    };
+  }
+
+  /**
+   * Insert slash command content at current cursor position
+   */
+  public insertSlashCommand(content: string): void {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+
+    const range = selection.getRangeAt(0);
+    const cursorPosition = this.getTextOffsetFromElement(range.startContainer, range.startOffset);
+    const currentText = this.element.textContent || '';
+
+    // Find the slash command to replace
+    const slashContext = this.detectSlashCommand(currentText, cursorPosition);
+    if (!slashContext) return;
+
+    // Replace the /command with the new content
+    const beforeSlash = currentText.substring(0, slashContext.startPosition);
+    const afterCommand = currentText.substring(slashContext.endPosition);
+    const newContent = beforeSlash + content + afterCommand;
+
+    // Update content and position cursor after inserted content
+    this.originalContent = newContent;
+    this.setLiveFormattedContent(newContent);
+    this.events.contentChanged(newContent);
+    
+    // Position cursor at end of inserted content
+    const newCursorPos = slashContext.startPosition + content.length;
+    setTimeout(() => {
+      this.restoreCursorPosition(newCursorPos);
+    }, 0);
   }
 }

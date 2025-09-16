@@ -1,15 +1,26 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { listen } from '@tauri-apps/api/event';
   import NavigationSidebar from './navigation-sidebar.svelte';
   import TabSystem from './tab-system.svelte';
   import ThemeProvider from '$lib/design/components/theme-provider.svelte';
   import { initializeTheme } from '$lib/design/theme.js';
-  import { layoutState } from '$lib/stores/layout.js';
+  import { layoutState, toggleSidebar } from '$lib/stores/layout.ts';
 
-  // Initialize theme system
+  // Initialize theme system and menu event listeners
   onMount(() => {
     const cleanup = initializeTheme();
-    return cleanup;
+    
+    // Listen for menu events from Tauri
+    const unlistenMenu = listen('menu-toggle-sidebar', () => {
+      console.log('Menu toggle sidebar event received');
+      toggleSidebar();
+    });
+
+    return async () => {
+      cleanup();
+      (await unlistenMenu)();
+    };
   });
 
   // Subscribe to layout state
@@ -69,6 +80,7 @@
     background: hsl(var(--background));
     color: hsl(var(--foreground));
   }
+
 
   /* Navigation Sidebar */
   :global(.navigation-sidebar) {

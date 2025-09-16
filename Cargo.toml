@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "nodespace-app/src-tauri"
+    "packages/desktop-app/src-tauri"
 ]
 resolver = "2"
 

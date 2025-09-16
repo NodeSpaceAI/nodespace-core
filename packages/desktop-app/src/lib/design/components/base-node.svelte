@@ -28,6 +28,8 @@
     type ContentEditableConfig
   } from './contentEditableController.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
+  import { SlashCommandDropdown } from '$lib/components/ui/slash-command-dropdown';
+  import { SlashCommandService, type SlashCommand, type SlashCommandContext } from '$lib/services/slashCommandService';
   import type { TriggerContext } from '$lib/services/nodeReferenceService';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
 
@@ -64,6 +66,13 @@
   let currentQuery = $state('');
   let autocompleteResults = $state<NodeResult[]>([]);
   let autocompleteLoading = $state(false);
+
+  // Slash command modal state
+  let showSlashCommands = $state(false);
+  let slashCommandPosition = $state({ x: 0, y: 0 });
+  let currentSlashQuery = $state('');
+  let slashCommands = $state<SlashCommand[]>([]);
+  let slashCommandService = SlashCommandService.getInstance();
 
   // Generate mock autocomplete results based on query
   function generateMockResults(query: string): NodeResult[] {
@@ -131,6 +140,13 @@
     }
   });
 
+  // Reactive effect to update slash commands when query changes
+  $effect(() => {
+    if (showSlashCommands) {
+      slashCommands = slashCommandService.filterCommands(currentSlashQuery);
+    }
+  });
+
   // Autocomplete event handlers
   function handleAutocompleteSelect(event: CustomEvent<NodeResult>) {
     const result = event.detail;
@@ -150,6 +166,35 @@
     dispatch('nodeReferenceSelected', {
       nodeId: result.id,
       nodeTitle: result.title
+    });
+  }
+
+  // Slash command event handlers
+  function handleSlashCommandSelect(event: CustomEvent<SlashCommand>) {
+    const command = event.detail;
+    
+    if (controller) {
+      // Execute the command and get the content to insert
+      const result = slashCommandService.executeCommand(command);
+      
+      // Insert the command content (e.g., "# " for header 1)
+      controller.insertSlashCommand(result.content);
+      
+      // Emit event to notify parent of node type/header level change
+      if (result.headerLevel !== undefined) {
+        dispatch('headerLevelChanged', { level: result.headerLevel });
+      }
+    }
+
+    // Hide slash commands and clear state
+    showSlashCommands = false;
+    currentSlashQuery = '';
+    slashCommands = [];
+    
+    // Emit event for parent components to handle if needed
+    dispatch('slashCommandSelected', {
+      command: command.id,
+      nodeType: command.nodeType
     });
   }
 
@@ -173,6 +218,7 @@
     combineWithPrevious: { nodeId: string; currentContent: string };
     deleteNode: { nodeId: string };
     nodeReferenceSelected: { nodeId: string; nodeTitle: string };
+    slashCommandSelected: { command: string; nodeType: string };
   }>();
 
   // Controller event handlers
@@ -218,6 +264,31 @@
     nodeReferenceSelected: (data: { nodeId: string; nodeTitle: string }) => {
       // Forward the event for potential parent component handling
       dispatch('nodeReferenceSelected', data);
+    },
+    // / Slash Command System Events
+    slashCommandDetected: (data: {
+      commandContext: SlashCommandContext;
+      cursorPosition: { x: number; y: number };
+    }) => {
+      currentSlashQuery = data.commandContext.query;
+      slashCommandPosition = data.cursorPosition;
+      slashCommands = slashCommandService.filterCommands(currentSlashQuery);
+      showSlashCommands = true;
+    },
+    slashCommandHidden: () => {
+      showSlashCommands = false;
+      currentSlashQuery = '';
+      slashCommands = [];
+    },
+    slashCommandSelected: (data: { 
+      command: { 
+        content: string; 
+        nodeType: string; 
+        headerLevel?: number; 
+      }; 
+    }) => {
+      // This is handled directly in handleSlashCommandSelect
+      // Keep this here for interface compatibility
     }
   };
 
@@ -258,6 +329,16 @@
   function handleAutocompleteClose(): void {
     showAutocomplete = false;
     currentQuery = '';
+
+    // Return focus to the content editable element
+    if (controller) {
+      controller.focus();
+    }
+  }
+
+  function handleSlashCommandClose(): void {
+    showSlashCommands = false;
+    currentSlashQuery = '';
 
     // Return focus to the content editable element
     if (controller) {
@@ -324,6 +405,17 @@
     on:close={handleAutocompleteClose}
   />
 {/if}
+
+<!-- Slash Command Dropdown Component -->
+<SlashCommandDropdown
+  position={slashCommandPosition}
+  query={currentSlashQuery}
+  commands={slashCommands}
+  loading={false}
+  visible={showSlashCommands}
+  on:select={handleSlashCommandSelect}
+  on:close={handleSlashCommandClose}
+/>
 
 <style>
   .node {
