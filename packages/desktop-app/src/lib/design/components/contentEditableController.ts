@@ -1897,7 +1897,7 @@ export class ContentEditableController {
 
   /**
    * Get cursor position in screen coordinates for modal positioning
-   * Follows patterns.html spec: cursor position + 0.1rem vertical spacing (measured at 1.59px)
+   * Uses tight positioning: cursor position + 0px vertical spacing for optimal UX
    */
   private getCursorScreenPosition(): { x: number; y: number } | null {
     const selection = window.getSelection();
@@ -1908,12 +1908,12 @@ export class ContentEditableController {
     const range = selection.getRangeAt(0);
     const rect = range.getBoundingClientRect();
 
-    // Convert 0.6rem to pixels to match patterns.html specification exactly
-    const verticalSpacing = 0.6 * 16; // 0.6rem = 9.6px as per patterns.html spec
+    // Use minimal spacing for tight positioning as requested by user
+    const verticalSpacing = 0; // 0px for tight positioning
 
     return {
       x: rect.left,
-      y: rect.bottom + verticalSpacing // Position modal with minimal spacing below cursor
+      y: rect.bottom + verticalSpacing // Position modal directly below cursor
     };
   }
 
