@@ -21,8 +21,14 @@ declare global {
   }
 }
 
+// Create proper type for global object
+interface GlobalWithTauri {
+  __TAURI__: typeof mockTauri;
+  window?: { __TAURI__?: typeof mockTauri };
+}
+
 // Simulate what the frontend would call
-(global as any).__TAURI__ = mockTauri;
+(global as GlobalWithTauri).__TAURI__ = mockTauri;
 
 describe('Tauri Command Integration', () => {
   beforeEach(() => {
@@ -164,7 +170,7 @@ export async function callToggleSidebarCommand(): Promise<string> {
 describe('Frontend Helper Functions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (global as any).window = { __TAURI__: mockTauri };
+    (global as GlobalWithTauri).window = { __TAURI__: mockTauri };
   });
 
   it('should call greet through helper function', async () => {
@@ -184,7 +190,7 @@ describe('Frontend Helper Functions', () => {
   });
 
   it('should throw error when Tauri not available', async () => {
-    (global as any).window = {};
+    (global as GlobalWithTauri).window = {};
 
     await expect(callGreetCommand('Test')).rejects.toThrow('Tauri not available');
     await expect(callToggleSidebarCommand()).rejects.toThrow('Tauri not available');
