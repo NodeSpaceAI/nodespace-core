@@ -195,6 +195,11 @@
     currentSlashQuery = '';
     slashCommands = [];
 
+    // Ensure controller knows dropdown is closed immediately to prevent double Enter handling
+    if (controller) {
+      controller.setSlashCommandDropdownActive(false);
+    }
+
     // Emit event for parent components to handle if needed
     dispatch('slashCommandSelected', {
       command: command.id,
@@ -320,6 +325,13 @@
   $effect(() => {
     if (controller && autoFocus) {
       controller.focus();
+    }
+  });
+
+  // Update controller when slash command dropdown state changes
+  $effect(() => {
+    if (controller) {
+      controller.setSlashCommandDropdownActive(showSlashCommands);
     }
   });
 

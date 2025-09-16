@@ -74,6 +74,9 @@ export class ContentEditableController {
   // Track recent Enter to avoid interfering with node creation
   private recentEnter: boolean = false;
 
+  // Track if slash command dropdown is currently active
+  private slashCommandDropdownActive: boolean = false;
+
   // Bound event handlers for proper cleanup
   private boundHandleFocus = this.handleFocus.bind(this);
   private boundHandleBlur = this.handleBlur.bind(this);
@@ -632,6 +635,15 @@ export class ContentEditableController {
 
     // Enter key handling - distinguish between regular Enter and Shift+Enter
     if (event.key === 'Enter') {
+      // If slash command dropdown is active, let it handle the Enter key
+      // Check both the state variable and if dropdown is actually visible in DOM
+      const dropdownExists = document.querySelector(
+        '[role="listbox"][aria-label="Slash command palette"]'
+      );
+      if (this.slashCommandDropdownActive || dropdownExists) {
+        return; // Don't preventDefault, let the dropdown handle it
+      }
+
       if (event.shiftKey && this.config.allowMultiline) {
         // Shift+Enter for multiline nodes: allow default browser behavior (insert newline)
         // Don't preventDefault() - let the browser handle newline insertion naturally
@@ -2228,24 +2240,58 @@ export class ContentEditableController {
   }
 
   /**
+   * Set whether the slash command dropdown is currently active
+   * This prevents Enter key from creating new nodes when dropdown should handle it
+   */
+  public setSlashCommandDropdownActive(active: boolean): void {
+    this.slashCommandDropdownActive = active;
+  }
+
+  /**
    * Insert slash command content at current cursor position
    */
   public insertSlashCommand(content: string): void {
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) return;
-
-    const range = selection.getRangeAt(0);
-    const cursorPosition = this.getTextOffsetFromElement(range.startContainer, range.startOffset);
     const currentText = this.element.textContent || '';
 
-    // Find the slash command to replace
-    const slashContext = this.detectSlashCommand(currentText, cursorPosition);
-    if (!slashContext) return;
+    // Find the last slash command in the text (since cursor position is unreliable)
+    const lastSlashIndex = currentText.lastIndexOf('/');
+    if (lastSlashIndex === -1) {
+      return;
+    }
 
-    // Replace the /command with the new content
+    // Find the end of the slash command (until space or end of text)
+    const afterSlash = currentText.substring(lastSlashIndex + 1);
+    const spaceIndex = afterSlash.indexOf(' ');
+    const endOffset = spaceIndex === -1 ? afterSlash.length : spaceIndex + 1; // +1 to include the space
+
+    // Create a synthetic slash context
+    const slashContext = {
+      startPosition: lastSlashIndex,
+      endPosition: lastSlashIndex + 1 + endOffset, // End after the slash command
+      trigger: '/',
+      query: afterSlash.substring(0, spaceIndex === -1 ? afterSlash.length : spaceIndex),
+      element: this.element,
+      isValid: true,
+      metadata: {}
+    };
+
+    // Replace the /command with the new content, handling existing header syntax
     const beforeSlash = currentText.substring(0, slashContext.startPosition);
     const afterCommand = currentText.substring(slashContext.endPosition);
-    const newContent = beforeSlash + content + afterCommand;
+
+    // Check if there's existing header syntax that should be replaced
+    // For "/# Hello", we need to detect the "# " part in afterCommand
+    const headerMatch = afterCommand.match(/^(#{1,6}\s*)/);
+
+    let finalBeforeContent = beforeSlash;
+    let finalAfterContent = afterCommand;
+
+    if (headerMatch) {
+      // Replace existing header syntax - remove it from the after content
+      finalAfterContent = afterCommand.replace(/^(#{1,6}\s*)/, '');
+    }
+
+    const newContent = finalBeforeContent + content + finalAfterContent;
 
     // Update content and position cursor after inserted content
     this.originalContent = newContent;
@@ -2253,7 +2299,7 @@ export class ContentEditableController {
     this.events.contentChanged(newContent);
 
     // Position cursor at end of inserted content
-    const newCursorPos = slashContext.startPosition + content.length;
+    const newCursorPos = finalBeforeContent.length + content.length;
     setTimeout(() => {
       this.restoreCursorPosition(newCursorPos);
     }, 0);
