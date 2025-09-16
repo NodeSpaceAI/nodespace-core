@@ -106,7 +106,6 @@
    */
   function regenerateResponse() {
     // In a real implementation, this would trigger AI regeneration
-    console.log('Regenerating AI response for node:', nodeId);
     // For demo, just add a marker
     const newContent = `${content} [regenerated]`;
     dispatch('contentChanged', { content: newContent });

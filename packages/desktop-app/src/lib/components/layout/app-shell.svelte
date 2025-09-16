@@ -4,22 +4,33 @@
   import NavigationSidebar from './navigation-sidebar.svelte';
   import TabSystem from './tab-system.svelte';
   import ThemeProvider from '$lib/design/components/theme-provider.svelte';
-  import { initializeTheme } from '$lib/design/theme.js';
-  import { layoutState, toggleSidebar } from '$lib/stores/layout.ts';
+  import { initializeTheme } from '$lib/design/theme';
+  import { layoutState, toggleSidebar } from '$lib/stores/layout';
+
+  // TypeScript compatibility for Tauri window check
 
   // Initialize theme system and menu event listeners
   onMount(() => {
     const cleanup = initializeTheme();
-    
-    // Listen for menu events from Tauri
-    const unlistenMenu = listen('menu-toggle-sidebar', () => {
-      console.log('Menu toggle sidebar event received');
-      toggleSidebar();
-    });
+
+    // Listen for menu events from Tauri (only if running in Tauri environment)
+    let unlistenMenu: Promise<() => void> | null = null;
+
+    if (
+      typeof window !== 'undefined' &&
+      (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+    ) {
+      unlistenMenu = listen('menu-toggle-sidebar', () => {
+        console.log('Menu toggle sidebar event received');
+        toggleSidebar();
+      });
+    }
 
     return async () => {
-      cleanup();
-      (await unlistenMenu)();
+      cleanup?.();
+      if (unlistenMenu) {
+        (await unlistenMenu)();
+      }
     };
   });
 
@@ -80,7 +91,6 @@
     background: hsl(var(--background));
     color: hsl(var(--foreground));
   }
-
 
   /* Navigation Sidebar */
   :global(.navigation-sidebar) {

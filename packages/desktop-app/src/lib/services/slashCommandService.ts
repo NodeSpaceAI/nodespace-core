@@ -1,7 +1,7 @@
 /**
  * Slash Command Service - Handles slash command detection and execution
- * 
- * Provides command definitions, filtering, and execution logic for the 
+ *
+ * Provides command definitions, filtering, and execution logic for the
  * slash command system (/) that allows quick node type creation.
  */
 
@@ -29,7 +29,7 @@ export interface SlashCommandContext {
 
 export class SlashCommandService {
   private static instance: SlashCommandService | null = null;
-  
+
   private commands: SlashCommand[] = [
     {
       id: 'text',
@@ -79,7 +79,8 @@ export class SlashCommandService {
       name: 'AI Chat',
       description: 'Start an AI conversation',
       nodeType: 'ai-chat',
-      icon: 'ai_chat'
+      icon: 'ai_chat',
+      shortcut: '⌘ + k'
     }
   ];
 
@@ -106,10 +107,11 @@ export class SlashCommandService {
     }
 
     const lowerQuery = query.toLowerCase();
-    return this.commands.filter(command => 
-      command.name.toLowerCase().includes(lowerQuery) ||
-      command.description.toLowerCase().includes(lowerQuery) ||
-      command.shortcut?.toLowerCase().includes(lowerQuery)
+    return this.commands.filter(
+      (command) =>
+        command.name.toLowerCase().includes(lowerQuery) ||
+        command.description.toLowerCase().includes(lowerQuery) ||
+        command.shortcut?.toLowerCase().includes(lowerQuery)
     );
   }
 
@@ -117,7 +119,7 @@ export class SlashCommandService {
    * Find command by ID
    */
   public findCommand(id: string): SlashCommand | null {
-    return this.commands.find(cmd => cmd.id === id) || null;
+    return this.commands.find((cmd) => cmd.id === id) || null;
   }
 
   /**
@@ -131,22 +133,22 @@ export class SlashCommandService {
     switch (command.id) {
       case 'text':
         return { content: '', nodeType: 'text', headerLevel: 0 };
-      
+
       case 'header1':
         return { content: '# ', nodeType: 'text', headerLevel: 1 };
-      
+
       case 'header2':
         return { content: '## ', nodeType: 'text', headerLevel: 2 };
-      
+
       case 'header3':
         return { content: '### ', nodeType: 'text', headerLevel: 3 };
-      
+
       case 'task':
         return { content: '- [ ] ', nodeType: 'task' };
-      
+
       case 'ai-chat':
         return { content: '', nodeType: 'ai-chat' };
-      
+
       default:
         return { content: '', nodeType: 'text', headerLevel: 0 };
     }

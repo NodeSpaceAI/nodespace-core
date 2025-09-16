@@ -40,12 +40,12 @@ export interface ContentEditableEvents {
     cursorPosition: { x: number; y: number };
   }) => void;
   slashCommandHidden: () => void;
-  slashCommandSelected: (data: { 
-    command: { 
-      content: string; 
-      nodeType: string; 
-      headerLevel?: number; 
-    }; 
+  slashCommandSelected: (data: {
+    command: {
+      content: string;
+      nodeType: string;
+      headerLevel?: number;
+    };
   }) => void;
 }
 
@@ -1846,9 +1846,21 @@ export class ContentEditableController {
    * Detect @ trigger in content at cursor position
    */
   private detectTrigger(content: string, cursorPosition: number): TriggerContext | null {
+    console.log(
+      '🎯 DEBUG: detectTrigger called with content:',
+      JSON.stringify(content),
+      'cursorPosition:',
+      cursorPosition
+    );
     // Look backwards from cursor to find @ symbol
     const beforeCursor = content.substring(0, cursorPosition);
     const lastAtIndex = beforeCursor.lastIndexOf('@');
+    console.log(
+      '🎯 DEBUG: lastAtIndex:',
+      lastAtIndex,
+      'beforeCursor:',
+      JSON.stringify(beforeCursor)
+    );
 
     if (lastAtIndex === -1) {
       return null; // No @ symbol found
@@ -1885,6 +1897,7 @@ export class ContentEditableController {
 
   /**
    * Get cursor position in screen coordinates for modal positioning
+   * Follows patterns.html spec: cursor position + 0.1rem vertical spacing (measured at 1.59px)
    */
   private getCursorScreenPosition(): { x: number; y: number } | null {
     const selection = window.getSelection();
@@ -1895,9 +1908,12 @@ export class ContentEditableController {
     const range = selection.getRangeAt(0);
     const rect = range.getBoundingClientRect();
 
+    // Convert 0.6rem to pixels to match patterns.html specification exactly
+    const verticalSpacing = 0.6 * 16; // 0.6rem = 9.6px as per patterns.html spec
+
     return {
       x: rect.left,
-      y: rect.bottom + 5 // Position modal slightly below cursor
+      y: rect.bottom + verticalSpacing // Position modal with minimal spacing below cursor
     };
   }
 
@@ -2137,26 +2153,38 @@ export class ContentEditableController {
    * Detect / slash command in content at cursor position
    */
   private detectSlashCommand(content: string, cursorPosition: number): SlashCommandContext | null {
+    console.log(
+      '🎯 DEBUG: detectSlashCommand called with content:',
+      JSON.stringify(content),
+      'cursorPosition:',
+      cursorPosition
+    );
     // Look backwards from cursor to find / symbol
     const beforeCursor = content.substring(0, cursorPosition);
     const lastSlashIndex = beforeCursor.lastIndexOf('/');
-    
+    console.log(
+      '🎯 DEBUG: lastSlashIndex:',
+      lastSlashIndex,
+      'beforeCursor:',
+      JSON.stringify(beforeCursor)
+    );
+
     if (lastSlashIndex === -1) {
       return null; // No / symbol found
     }
-    
+
     // Check if / is at line start or after whitespace only
     const lineStart = beforeCursor.lastIndexOf('\n', lastSlashIndex - 1) + 1;
     const textBeforeSlash = beforeCursor.substring(lineStart, lastSlashIndex);
-    
+
     // Only allow / at line start or after whitespace
     if (textBeforeSlash.trim() !== '') {
       return null; // / is not at line start or after whitespace
     }
-    
+
     // Extract query text between / and cursor
     const queryText = content.substring(lastSlashIndex + 1, cursorPosition);
-    
+
     // Validate query (no spaces, reasonable length)
     if (queryText.includes(' ') || queryText.includes('\n')) {
       return null; // Query contains invalid characters
@@ -2164,7 +2192,7 @@ export class ContentEditableController {
     if (queryText.length > 20) {
       return null; // Query too long for commands
     }
-    
+
     return {
       trigger: '/',
       query: queryText,
@@ -2200,7 +2228,7 @@ export class ContentEditableController {
     this.originalContent = newContent;
     this.setLiveFormattedContent(newContent);
     this.events.contentChanged(newContent);
-    
+
     // Position cursor at end of inserted content
     const newCursorPos = slashContext.startPosition + content.length;
     setTimeout(() => {

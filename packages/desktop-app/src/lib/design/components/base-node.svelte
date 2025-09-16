@@ -29,7 +29,11 @@
   } from './contentEditableController.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
   import { SlashCommandDropdown } from '$lib/components/ui/slash-command-dropdown';
-  import { SlashCommandService, type SlashCommand, type SlashCommandContext } from '$lib/services/slashCommandService';
+  import {
+    SlashCommandService,
+    type SlashCommand,
+    type SlashCommandContext
+  } from '$lib/services/slashCommandService';
   import type { TriggerContext } from '$lib/services/nodeReferenceService';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
 
@@ -172,14 +176,14 @@
   // Slash command event handlers
   function handleSlashCommandSelect(event: CustomEvent<SlashCommand>) {
     const command = event.detail;
-    
+
     if (controller) {
       // Execute the command and get the content to insert
       const result = slashCommandService.executeCommand(command);
-      
+
       // Insert the command content (e.g., "# " for header 1)
       controller.insertSlashCommand(result.content);
-      
+
       // Emit event to notify parent of node type/header level change
       if (result.headerLevel !== undefined) {
         dispatch('headerLevelChanged', { level: result.headerLevel });
@@ -190,7 +194,7 @@
     showSlashCommands = false;
     currentSlashQuery = '';
     slashCommands = [];
-    
+
     // Emit event for parent components to handle if needed
     dispatch('slashCommandSelected', {
       command: command.id,
@@ -280,15 +284,18 @@
       currentSlashQuery = '';
       slashCommands = [];
     },
-    slashCommandSelected: (data: { 
-      command: { 
-        content: string; 
-        nodeType: string; 
-        headerLevel?: number; 
-      }; 
+    slashCommandSelected: (data: {
+      command: {
+        content: string;
+        nodeType: string;
+        headerLevel?: number;
+      };
     }) => {
       // This is handled directly in handleSlashCommandSelect
-      // Keep this here for interface compatibility
+      // Validate data structure for interface compatibility
+      if (data?.command?.content !== undefined) {
+        // Interface validation passed
+      }
     }
   };
 

@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { cn } from '$lib/utils';
-  import Badge from '../badge/badge.svelte';
   import Icon, { type NodeType } from '$lib/design/icons';
   import { createEventDispatcher, onMount } from 'svelte';
+
+  // Import icon configuration from registry for consistency
+  import { getIconConfig } from '$lib/design/icons/registry';
 
   // Types for node results
   interface NodeResult {
@@ -29,9 +30,6 @@
     select: NodeResult;
     close: void;
   }>();
-
-  // Import icon configuration from registry for consistency
-  import { getIconConfig } from '$lib/design/icons/registry.js';
 
   // Helper function to get node configuration
   function getNodeConfig(nodeType: NodeType) {
@@ -126,13 +124,6 @@
     dispatch('select', result);
   }
 
-  // Return plain text highlighting for now (no HTML markup)
-  function highlightMatch(text: string): string {
-    // For now, just return the original text to avoid XSS warnings
-    // TODO: Implement proper Svelte component-based highlighting
-    return text;
-  }
-
   // Reset selection when results change
   $: if (results) {
     selectedIndex = 0;
@@ -150,178 +141,112 @@
 {#if visible}
   <div
     bind:this={containerRef}
-    class={cn(
-      // Professional popover styling using design system tokens
-      'fixed z-[9999] bg-popover text-popover-foreground',
-      'border border-border rounded-lg shadow-lg',
-      'min-w-[340px] max-w-[400px] max-h-[320px]',
-      'overflow-hidden',
-      // Smooth animations matching design system
-      'animate-in fade-in-0 zoom-in-95 duration-200',
-      'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95'
-    )}
-    style="left: {smartPosition.x}px; top: {smartPosition.y}px;"
+    style="
+      position: fixed;
+      top: {smartPosition.y}px;
+      left: {smartPosition.x}px;
+      min-width: 300px;
+      background: hsl(var(--popover));
+      border: 1px solid hsl(var(--border));
+      border-radius: var(--radius);
+      z-index: 1000;
+    "
     role="listbox"
     aria-label="Node reference autocomplete"
   >
-    <!-- Professional header with search context -->
-    <div class="px-4 py-3 border-b border-border bg-muted/30">
-      <div class="flex items-center gap-2.5 text-xs">
-        <div class="flex items-center gap-2">
-          <div class="w-4 h-4 rounded-sm bg-primary/10 flex items-center justify-center">
-            <span class="text-[10px] font-bold text-primary">@</span>
-          </div>
-          <span class="font-semibold text-foreground">Node Reference</span>
-        </div>
+    {#if loading}
+      <div
+        style="padding: 2rem; display: flex; align-items: center; justify-content: center; gap: 0.75rem; color: hsl(var(--muted-foreground));"
+      >
+        <div
+          style="
+          width: 16px;
+          height: 16px;
+          border: 2px solid hsl(var(--border));
+          border-top: 2px solid hsl(var(--primary));
+          border-radius: 50%;
+          animation: spin 1s linear infinite;
+        "
+        ></div>
+        <span>Searching nodes...</span>
+      </div>
+    {:else if results.length === 0}
+      <div style="padding: 2rem; text-align: center; color: hsl(var(--muted-foreground));">
         {#if query}
-          <div class="flex items-center gap-1.5 text-muted-foreground">
-            <span>•</span>
-            <code class="bg-muted/80 px-2 py-0.5 rounded-md text-[10px] font-mono border"
-              >{query}</code
-            >
-          </div>
+          <div style="margin-bottom: 0.5rem; font-weight: 500;">No nodes found matching</div>
+          <code
+            style="background: hsl(var(--input)); color: hsl(var(--foreground)); padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.75rem;"
+            >{query}</code
+          >
+        {:else}
+          <div style="font-weight: 500; margin-bottom: 0.25rem;">No nodes available</div>
+          <div style="font-size: 0.875rem;">Start typing to search</div>
         {/if}
       </div>
-    </div>
-
-    <!-- Results container -->
-    <div class="overflow-y-auto max-h-[240px] py-1">
-      {#if loading}
-        <div class="flex items-center gap-3 px-4 py-5 text-sm text-muted-foreground">
-          <div
-            class="animate-spin h-4 w-4 border-2 border-primary/30 border-r-primary rounded-full"
-          ></div>
-          <span>Searching nodes...</span>
-        </div>
-      {:else if results.length === 0}
-        <div class="px-4 py-8 text-center text-muted-foreground">
-          {#if query}
-            <div class="text-sm mb-2 font-medium">No nodes found matching</div>
-            <code class="bg-muted/80 px-2.5 py-1 rounded-md text-xs border">{query}</code>
-          {:else}
-            <div class="text-sm font-medium">No nodes available</div>
-            <div class="text-xs mt-1">Start typing to search</div>
-          {/if}
-        </div>
-      {:else}
-        {#each results as result, index (result.id)}
-          <button
-            bind:this={itemRefs[index]}
-            class={cn(
-              // Base professional item styling
-              'w-full flex items-center gap-3.5 px-4 py-3 text-left',
-              'transition-all duration-150 ease-out',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-              'border-l-2 border-transparent',
-              // Selection states with professional styling
-              selectedIndex === index
-                ? 'bg-accent/80 text-accent-foreground border-l-primary shadow-sm'
-                : 'hover:bg-accent/40 hover:border-l-accent-foreground/20'
-            )}
-            role="option"
-            aria-selected={selectedIndex === index}
-            onclick={() => selectResult(result)}
-            onmouseenter={() => {
+    {:else}
+      {#each results as result, index}
+        <div
+          bind:this={itemRefs[index]}
+          style="
+            padding: 0.75rem;
+            {index < results.length - 1 ? 'border-bottom: 1px solid hsl(var(--border));' : ''}
+            cursor: pointer;
+            {index === 0
+            ? 'border-top-left-radius: var(--radius); border-top-right-radius: var(--radius);'
+            : ''}
+            {index === results.length - 1
+            ? 'border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius);'
+            : ''}
+            {selectedIndex === index ? 'background: hsl(var(--muted));' : ''}
+          "
+          role="option"
+          aria-selected={selectedIndex === index}
+          tabindex={selectedIndex === index ? 0 : -1}
+          on:click={() => selectResult(result)}
+          on:mouseover={() => (selectedIndex = index)}
+          on:mouseenter={() => {
+            if (selectedIndex !== index) {
               selectedIndex = index;
-            }}
-          >
-            <!-- Professional node type icon -->
+            }
+          }}
+          on:focus={() => (selectedIndex = index)}
+          on:keydown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              selectResult(result);
+            }
+          }}
+        >
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
             <div
-              class={cn(
-                'flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center',
-                'shadow-sm border node-icon',
-                selectedIndex === index ? 'shadow-md' : ''
-              )}
-              style="background-color: {getNodeConfig(result.type)
-                .color}12; border-color: {getNodeConfig(result.type).color}25;"
+              style="width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;"
             >
-              <Icon name="circle" size={16} color={getNodeConfig(result.type).color} />
-            </div>
-
-            <!-- Content with improved typography -->
-            <div class="flex-1 min-w-0">
-              <!-- Title with professional highlighting -->
-              <div class="font-semibold text-sm leading-tight mb-1">
-                {highlightMatch(result.title)}
-              </div>
-
-              <!-- Subtitle with better contrast -->
-              {#if result.subtitle}
-                <div class="text-xs text-muted-foreground leading-relaxed pr-2">
-                  {highlightMatch(result.subtitle)}
+              {#if result.type && getNodeConfig(result.type)}
+                <!-- Future: Dynamic icon based on node type -->
+                <Icon name={result.type as any} size={16} />
+              {:else}
+                <!-- Fallback: Static text circle -->
+                <div class="node-icon">
+                  <div class="text-circle"></div>
                 </div>
               {/if}
             </div>
-
-            <!-- Professional metadata badge -->
-            {#if result.metadata}
-              <div class="flex-shrink-0">
-                <Badge
-                  variant="secondary"
-                  class={cn(
-                    'text-[10px] px-2.5 py-1 h-auto font-medium border',
-                    selectedIndex === index ? 'bg-background/50' : ''
-                  )}
-                >
-                  {result.metadata}
-                </Badge>
-              </div>
-            {/if}
-          </button>
-        {/each}
-      {/if}
-    </div>
-
-    <!-- Professional footer with keyboard hints -->
-    {#if results.length > 0}
-      <div class="px-4 py-2.5 border-t border-border bg-muted/20">
-        <div
-          class="flex items-center justify-between text-[10px] text-muted-foreground font-semibold"
-        >
-          <div class="flex items-center gap-3">
-            <span class="flex items-center gap-1">
-              <kbd
-                class="inline-flex items-center rounded border bg-muted px-1.5 py-0.5 text-[9px] font-mono"
-                >↑↓</kbd
-              >
-              Navigate
-            </span>
-          </div>
-          <div class="flex items-center gap-3">
-            <span class="flex items-center gap-1">
-              <kbd
-                class="inline-flex items-center rounded border bg-muted px-1.5 py-0.5 text-[9px] font-mono"
-                >Enter</kbd
-              >
-              Select
-            </span>
-            <span class="flex items-center gap-1">
-              <kbd
-                class="inline-flex items-center rounded border bg-muted px-1.5 py-0.5 text-[9px] font-mono"
-                >Esc</kbd
-              >
-              Close
-            </span>
+            <div style="font-weight: 500;">{result.title}</div>
           </div>
         </div>
-      </div>
+      {/each}
     {/if}
   </div>
 {/if}
 
 <style>
-  /* Professional highlight styling for search matches */
-  :global(mark) {
-    background-color: hsl(var(--primary) / 0.12);
-    color: hsl(var(--primary));
-    padding: 0.125rem 0.25rem;
-    border-radius: 0.25rem;
-    font-weight: 600;
-    font-size: inherit;
-  }
-
-  :global(.dark mark) {
-    background-color: hsl(var(--primary) / 0.2);
-    color: hsl(var(--primary-foreground));
+  /* Spin animation for loading */
+  @keyframes spin {
+    0% {
+      transform: rotate(0deg);
+    }
+    100% {
+      transform: rotate(360deg);
+    }
   }
 </style>

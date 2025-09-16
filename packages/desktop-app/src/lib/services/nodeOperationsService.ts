@@ -176,7 +176,6 @@ export class NodeOperationsService {
           await this.updateNodeMentions(nodeId, baseNodeData.mentions);
         } catch {
           // Node doesn't exist in NodeManager yet, that's okay for upsert
-          console.debug('Mentions update skipped for new node:', nodeId);
         }
       }
     }

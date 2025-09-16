@@ -22,7 +22,7 @@
   // Smart positioning to avoid viewport edges
   function getSmartPosition(pos: { x: number; y: number }) {
     const padding = 16;
-    const maxWidth = 360;
+    const maxWidth = 300; // Match patterns.html min-width
     const maxHeight = 300;
 
     let { x, y } = pos;
@@ -71,7 +71,6 @@
       case 'ArrowUp':
         event.preventDefault();
         selectedIndex = Math.max(selectedIndex - 1, 0);
-        scrollToSelected();
         break;
       case 'Enter':
         event.preventDefault();
@@ -108,196 +107,146 @@
 {#if visible}
   <div
     bind:this={containerRef}
-    class={cn(
-      // Professional popover styling using design system tokens
-      'fixed z-[9999] bg-popover text-popover-foreground',
-      'border border-border rounded-lg shadow-lg',
-      'min-w-[340px] max-w-[400px] max-h-[320px]',
-      'overflow-hidden',
-      // Smooth animations matching design system
-      'animate-in fade-in-0 zoom-in-95 duration-200'
-    )}
-    style="left: {smartPosition.x}px; top: {smartPosition.y}px;"
+    style="
+      position: fixed;
+      top: {smartPosition.y}px;
+      left: {smartPosition.x}px;
+      min-width: 300px;
+      background: hsl(var(--popover));
+      border: 1px solid hsl(var(--border));
+      border-radius: var(--radius);
+      z-index: 1000;
+    "
     role="listbox"
     aria-label="Slash command palette"
   >
-    <!-- Professional header with command context -->
-    <div class="px-4 py-3 border-b border-border bg-muted/30">
-      <div class="flex items-center gap-2.5 text-xs">
-        <div class="flex items-center gap-2">
-          <div class="w-4 h-4 rounded-sm bg-primary/10 flex items-center justify-center">
-            <span class="text-[10px] font-bold text-primary">/</span>
-          </div>
-          <span class="font-semibold text-foreground">Quick Commands</span>
-        </div>
+    {#if loading}
+      <div
+        style="padding: 2rem; display: flex; align-items: center; justify-content: center; gap: 0.75rem; color: hsl(var(--muted-foreground));"
+      >
+        <div
+          style="
+          width: 16px;
+          height: 16px;
+          border: 2px solid hsl(var(--border));
+          border-top: 2px solid hsl(var(--primary));
+          border-radius: 50%;
+          animation: spin 1s linear infinite;
+        "
+        ></div>
+        <span>Loading commands...</span>
+      </div>
+    {:else if commands.length === 0}
+      <div style="padding: 2rem; text-align: center; color: hsl(var(--muted-foreground));">
         {#if query}
-          <div class="flex items-center gap-1.5 text-muted-foreground">
-            <span>•</span>
-            <code class="bg-muted/80 px-2 py-0.5 rounded-md text-[10px] font-mono border"
-              >{query}</code
-            >
-          </div>
+          <div style="margin-bottom: 0.5rem; font-weight: 500;">No commands found matching</div>
+          <code
+            style="background: hsl(var(--muted)); padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.75rem;"
+            >{query}</code
+          >
+        {:else}
+          <div style="font-weight: 500; margin-bottom: 0.25rem;">No commands available</div>
+          <div style="font-size: 0.875rem;">Try typing after the / character</div>
         {/if}
       </div>
-    </div>
-
-    <!-- Commands container -->
-    <div class="overflow-y-auto max-h-[240px] py-1">
-      {#if loading}
-        <div class="flex items-center gap-3 px-4 py-5 text-sm text-muted-foreground">
-          <div
-            class="animate-spin h-4 w-4 border-2 border-primary/30 border-r-primary rounded-full"
-          ></div>
-          <span>Loading commands...</span>
-        </div>
-      {:else if commands.length === 0}
-        <div class="px-4 py-8 text-center text-muted-foreground">
-          {#if query}
-            <div class="text-sm mb-2 font-medium">No commands found matching</div>
-            <code class="bg-muted/80 px-2.5 py-1 rounded-md text-xs border">{query}</code>
-          {:else}
-            <div class="text-sm font-medium mb-1">No commands available</div>
-            <div class="text-xs">Try typing after the / character</div>
-          {/if}
-        </div>
-      {:else}
-        {#each commands as command, index}
-          <button
-            bind:this={itemRefs[index]}
-            class={cn(
-              'w-full flex items-center gap-3 px-4 py-3 text-left transition-colors',
-              'hover:bg-muted/50 focus:bg-muted/50 focus:outline-none',
-              selectedIndex === index && 'bg-muted/70'
-            )}
-            role="option"
-            aria-selected={selectedIndex === index}
-            on:click={() => selectCommand(command)}
-            on:mouseover={() => (selectedIndex = index)}
-          >
-            <!-- Command Icon - matching design system exactly -->
-            <div class="flex-shrink-0 w-5 h-5 flex items-center justify-center">
-              {#if command.id === 'text'}
-                <div class="node-icon">
-                  <div class="text-circle"></div>
-                </div>
-              {:else if command.id === 'header1'}
-                <div class="ai-icon">
-                  <div class="h1-square-alt"></div>
-                </div>
-              {:else if command.id === 'header2'}
-                <div class="ai-icon">
-                  <div class="h2-square-alt"></div>
-                </div>
-              {:else if command.id === 'header3'}
-                <div class="ai-icon">
-                  <div class="h3-square-alt"></div>
-                </div>
-              {:else if command.id === 'task'}
-                <div class="task-icon">
-                  <div class="task-circle task-circle-completed"></div>
-                </div>
-              {:else if command.id === 'ai-chat'}
-                <div class="ai-icon">
-                  <div class="ai-square-alt"></div>
-                </div>
-              {:else}
-                <div class="node-icon">
-                  <div class="text-circle"></div>
-                </div>
-              {/if}
-            </div>
-
-            <!-- Command Details -->
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center justify-between">
-                <div class="font-medium text-sm text-foreground truncate">
-                  {command.name}
-                </div>
-                {#if command.shortcut}
-                  <code class="ml-2 bg-muted/80 px-2 py-0.5 rounded text-[10px] font-mono border flex-shrink-0">
-                    {command.shortcut}
-                  </code>
+    {:else}
+      {#each commands as command, index}
+        <div
+          bind:this={itemRefs[index]}
+          style="
+            padding: 0.75rem;
+            {index < commands.length - 1 ? 'border-bottom: 1px solid hsl(var(--border));' : ''}
+            cursor: pointer;
+            {index === 0
+            ? 'border-top-left-radius: var(--radius); border-top-right-radius: var(--radius);'
+            : ''}
+            {index === commands.length - 1
+            ? 'border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius);'
+            : ''}
+            {selectedIndex === index ? 'background: hsl(var(--muted));' : ''}
+          "
+          role="option"
+          aria-selected={selectedIndex === index}
+          tabindex={selectedIndex === index ? 0 : -1}
+          on:click={() => selectCommand(command)}
+          on:mouseover={() => (selectedIndex = index)}
+          on:mouseenter={() => {
+            if (selectedIndex !== index) {
+              selectedIndex = index;
+            }
+          }}
+          on:focus={() => (selectedIndex = index)}
+          on:keydown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              selectCommand(command);
+            }
+          }}
+        >
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <div
+                style="width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;"
+              >
+                {#if command.id === 'text'}
+                  <div class="node-icon">
+                    <div class="text-circle"></div>
+                  </div>
+                {:else if command.id === 'header1'}
+                  <div class="ai-icon">
+                    <div class="h1-square-alt"></div>
+                  </div>
+                {:else if command.id === 'header2'}
+                  <div class="ai-icon">
+                    <div class="h2-square-alt"></div>
+                  </div>
+                {:else if command.id === 'header3'}
+                  <div class="ai-icon">
+                    <div class="h3-square-alt"></div>
+                  </div>
+                {:else if command.id === 'task'}
+                  <div class="task-icon">
+                    <div class="task-circle task-circle-completed"></div>
+                  </div>
+                {:else if command.id === 'ai-chat'}
+                  <div class="ai-icon">
+                    <div class="ai-square-alt"></div>
+                  </div>
+                {:else}
+                  <div class="node-icon">
+                    <div class="text-circle"></div>
+                  </div>
                 {/if}
               </div>
+              <div style="font-weight: 500;">{command.name}</div>
             </div>
-          </button>
-        {/each}
-      {/if}
-    </div>
-
-    <!-- Footer with navigation hints -->
-    <div class="px-4 py-2 border-t border-border bg-muted/20">
-      <div class="flex items-center justify-between text-[10px] text-muted-foreground">
-        <div class="flex items-center gap-3">
-          <div class="flex items-center gap-1">
-            <code class="bg-muted/80 px-1.5 py-0.5 rounded border">↑↓</code>
-            <span>Navigate</span>
-          </div>
-          <div class="flex items-center gap-1">
-            <code class="bg-muted/80 px-1.5 py-0.5 rounded border">Enter</code>
-            <span>Select</span>
+            {#if command.shortcut}
+              <code
+                style="
+                background: hsl(var(--input));
+                color: hsl(var(--foreground));
+                padding: 0.125rem 0.25rem;
+                border-radius: 0.25rem;
+                font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+                font-size: 0.75rem;
+              ">{command.shortcut}</code
+              >
+            {/if}
           </div>
         </div>
-        <div class="flex items-center gap-1">
-          <code class="bg-muted/80 px-1.5 py-0.5 rounded border">Esc</code>
-          <span>Close</span>
-        </div>
-      </div>
-    </div>
+      {/each}
+    {/if}
   </div>
 {/if}
 
 <style>
-  /* Node Icons - matching design system exactly */
-  .node-icon {
-    width: 20px;
-    height: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .text-circle {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: hsl(200 40% 45%); /* Blue-gray for text nodes */
-  }
-
-  .task-icon {
-    width: 20px;
-    height: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .task-circle {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: hsl(200 40% 45%);
-  }
-
-  .task-circle-completed {
-    background: hsl(200 40% 45%);
-  }
-
-  .ai-icon {
-    width: 20px;
-    height: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .h1-square-alt,
-  .h2-square-alt,
-  .h3-square-alt,
-  .ai-square-alt {
-    width: 8px;
-    height: 8px;
-    background: hsl(200 40% 45%);
-    border-radius: 1px;
+  /* Spin animation for loading */
+  @keyframes spin {
+    0% {
+      transform: rotate(0deg);
+    }
+    100% {
+      transform: rotate(360deg);
+    }
   }
 </style>

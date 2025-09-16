@@ -47,6 +47,9 @@ interface EventCallRecord {
   }>;
   triggerHidden?: boolean[];
   nodeReferenceSelected?: Array<{ nodeId: string; nodeTitle: string }>;
+  slashCommandDetected?: Array<unknown>;
+  slashCommandHidden?: boolean[];
+  slashCommandSelected?: Array<unknown>;
 }
 
 describe('ContentEditableController', () => {
@@ -115,6 +118,18 @@ describe('ContentEditableController', () => {
       nodeReferenceSelected: (data) => {
         eventCalls.nodeReferenceSelected = eventCalls.nodeReferenceSelected || [];
         eventCalls.nodeReferenceSelected.push(data);
+      },
+      slashCommandDetected: (data) => {
+        eventCalls.slashCommandDetected = eventCalls.slashCommandDetected || [];
+        eventCalls.slashCommandDetected.push(data);
+      },
+      slashCommandHidden: () => {
+        eventCalls.slashCommandHidden = eventCalls.slashCommandHidden || [];
+        eventCalls.slashCommandHidden.push(true);
+      },
+      slashCommandSelected: (data) => {
+        eventCalls.slashCommandSelected = eventCalls.slashCommandSelected || [];
+        eventCalls.slashCommandSelected.push(data);
       }
     };
 
