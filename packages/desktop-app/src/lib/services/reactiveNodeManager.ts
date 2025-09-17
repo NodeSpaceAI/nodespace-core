@@ -94,8 +94,13 @@ export class ReactiveNodeManager extends NodeManager {
       for (const [id, node] of currentNodes) {
         this.currentStoreNodes.set(id, node);
       }
-      // Update the store with the same Map reference if possible
-      nodes.set(new Map(this.currentStoreNodes));
+      // Create a completely new Map with cloned Node objects for Svelte reactivity
+      const newNodeMap = new Map();
+      for (const [id, node] of this.currentStoreNodes) {
+        // Clone the node object to trigger Svelte reactivity
+        newNodeMap.set(id, { ...node });
+      }
+      nodes.set(newNodeMap);
     }
 
     // Always update root node IDs as they're lightweight
@@ -149,8 +154,8 @@ export class ReactiveNodeManager extends NodeManager {
       cursorAtBeginning
     );
 
-    // Sync stores to trigger UI reactivity
-    this.syncStores();
+    // Sync stores to trigger UI reactivity - force update for node creation
+    this.syncStores(true);
 
     return result;
   }
@@ -227,6 +232,15 @@ export class ReactiveNodeManager extends NodeManager {
 
     // For now, still sync immediately but let the syncStores method decide
     this.syncStores();
+  }
+
+  /**
+   * Force update node content - bypasses typing optimization
+   * Used for operations like node splitting where immediate UI update is required
+   */
+  forceUpdateNodeContent(nodeId: string, content: string): void {
+    super.updateNodeContent(nodeId, content);
+    this.syncStores(true); // Force immediate update
   }
 
   /**

@@ -6,12 +6,16 @@
   import ThemeProvider from '$lib/design/components/theme-provider.svelte';
   import { initializeTheme } from '$lib/design/theme';
   import { layoutState, toggleSidebar } from '$lib/stores/layout';
+  import { initializeBasicRegistry } from '$lib/registry/initialize.js';
 
   // TypeScript compatibility for Tauri window check
 
   // Initialize theme system and menu event listeners
   onMount(() => {
     const cleanup = initializeTheme();
+
+    // Initialize the experimental node type registry
+    initializeBasicRegistry();
 
     // Listen for menu events from Tauri (only if running in Tauri environment)
     let unlistenMenu: Promise<() => void> | null = null;
