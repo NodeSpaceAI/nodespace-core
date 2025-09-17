@@ -8,7 +8,8 @@
 
 import type { SvelteComponent } from 'svelte';
 import type { ComponentDecoration } from '../types/componentDecoration';
-import { NODE_REFERENCE_COMPONENTS, getNodeReferenceComponent } from '../components/references';
+import { getNodeReferenceComponent } from '../components/references';
+import { pluginRegistry } from '../plugins/index';
 import { performanceTracker } from './performanceTracker';
 
 export interface HydrationContext {
@@ -180,19 +181,19 @@ export class ComponentHydrationSystem {
 
   /**
    * Resolve component class by name and node type
-   * Supports both core components and plugin components (bundled at build time)
+   * Now uses the unified plugin registry system
    */
   private resolveComponent(
     componentName: string,
     nodeType: string
   ): new (...args: unknown[]) => SvelteComponent {
-    // Try exact component name first (for plugin components)
-    const exactComponent = NODE_REFERENCE_COMPONENTS[componentName];
-    if (exactComponent) {
-      return exactComponent as new (...args: unknown[]) => SvelteComponent;
+    // Try getting from unified plugin registry first
+    const pluginComponent = pluginRegistry.getReferenceComponent(nodeType);
+    if (pluginComponent) {
+      return pluginComponent as new (...args: unknown[]) => SvelteComponent;
     }
 
-    // Fall back to node type resolution (for core components)
+    // Fall back to legacy system (maintains compatibility during transition)
     return getNodeReferenceComponent(nodeType) as new (...args: unknown[]) => SvelteComponent;
   }
 

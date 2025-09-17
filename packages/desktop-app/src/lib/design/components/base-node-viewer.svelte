@@ -13,7 +13,7 @@
   import { demoNodes } from './demoData';
   import { visibleNodes as storeVisibleNodes } from '$lib/services/nodeStore';
   import NodeServiceContext from '$lib/contexts/node-service-context.svelte';
-  import { viewerRegistry } from '$lib/components/viewers/index.js';
+  import { pluginRegistry } from '$lib/components/viewers/index';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import TextNodeViewer from '$lib/components/viewers/text-node-viewer.svelte';
 
@@ -563,7 +563,7 @@
       for (const nodeType of knownTypes) {
         if (!loadedViewers.has(nodeType)) {
           try {
-            const customViewer = await viewerRegistry.getViewer(nodeType);
+            const customViewer = await pluginRegistry.getViewer(nodeType);
             if (customViewer) {
               loadedViewers.set(nodeType, customViewer);
             } else {
