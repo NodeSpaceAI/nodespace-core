@@ -1,22 +1,23 @@
 /**
  * SlashCommandService Registry Integration Tests
  *
- * Tests the optional integration between SlashCommandService and the experimental
- * NodeTypeRegistry to ensure both systems work together correctly.
+ * Tests the integration between SlashCommandService and the unified
+ * plugin registry system to ensure both systems work together correctly.
  */
 
 import { expect, describe, it, beforeEach } from 'vitest';
 import { SlashCommandService } from '$lib/services/slashCommandService.js';
-import { basicNodeTypeRegistry } from '$lib/registry/basicNodeTypeRegistry.js';
-import { initializeBasicRegistry } from '$lib/registry/initialize.js';
+import { pluginRegistry } from '$lib/plugins/index';
+import { registerCorePlugins } from '$lib/plugins/corePlugins';
 
 describe('SlashCommandService Registry Integration', () => {
   let service: SlashCommandService;
 
   beforeEach(() => {
     service = SlashCommandService.getInstance();
-    // Initialize the registry to ensure it has node types
-    initializeBasicRegistry();
+    // Initialize the unified plugin registry with core plugins
+    pluginRegistry.clear(); // Clear previous state
+    registerCorePlugins(pluginRegistry);
   });
 
   describe('Basic Functionality (Registry Disabled)', () => {
@@ -57,8 +58,8 @@ describe('SlashCommandService Registry Integration', () => {
       // Should have at least the hardcoded commands
       expect(commands.length).toBeGreaterThanOrEqual(6);
 
-      // Registry should be initialized with node types
-      expect(basicNodeTypeRegistry.hasNodeTypes()).toBe(true);
+      // Plugin registry should be initialized with plugins
+      expect(pluginRegistry.getAllPlugins().length).toBeGreaterThan(0);
 
       // Should contain both hardcoded and potentially registry commands
       const commandIds = commands.map((cmd) => cmd.id);
@@ -129,16 +130,16 @@ describe('SlashCommandService Registry Integration', () => {
 
   describe('Registry State', () => {
     it('should properly check registry state', () => {
-      expect(basicNodeTypeRegistry.hasNodeTypes()).toBe(true);
+      expect(pluginRegistry.getAllPlugins().length).toBeGreaterThan(0);
 
-      const stats = basicNodeTypeRegistry.getStats();
-      expect(stats.nodeTypesCount).toBeGreaterThan(0);
-      expect(stats.totalSlashCommands).toBeGreaterThan(0);
-      expect(Array.isArray(stats.nodeTypes)).toBe(true);
+      const stats = pluginRegistry.getStats();
+      expect(stats.pluginsCount).toBeGreaterThan(0);
+      expect(stats.slashCommandsCount).toBeGreaterThan(0);
+      expect(Array.isArray(stats.plugins)).toBe(true);
     });
 
     it('should provide registry commands', () => {
-      const registryCommands = basicNodeTypeRegistry.getAllSlashCommands();
+      const registryCommands = pluginRegistry.getAllSlashCommands();
 
       expect(Array.isArray(registryCommands)).toBe(true);
       expect(registryCommands.length).toBeGreaterThan(0);
@@ -148,7 +149,6 @@ describe('SlashCommandService Registry Integration', () => {
         expect(cmd).toHaveProperty('id');
         expect(cmd).toHaveProperty('name');
         expect(cmd).toHaveProperty('description');
-        expect(cmd).toHaveProperty('nodeTypeId');
         expect(cmd).toHaveProperty('contentTemplate');
       });
     });

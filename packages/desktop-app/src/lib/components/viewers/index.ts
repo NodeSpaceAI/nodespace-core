@@ -1,110 +1,75 @@
 /**
- * Node Viewer Registry System
+ * Node Viewer Registry System - MIGRATED TO UNIFIED PLUGIN SYSTEM
  *
- * Provides a plugin-style architecture for node viewers where:
- * - Simple node types (like text) use BaseNode directly
- * - Complex node types can register custom viewers
- * - Unknown types gracefully fall back to BaseNode
- * - Supports lazy loading for performance
+ * This file now acts as a compatibility layer that forwards to the unified
+ * plugin registry. All functionality has been moved to the plugin system.
  */
 
+// Import the unified plugin system
+import { pluginRegistry } from '$lib/plugins/index';
+import { registerCorePlugins } from '$lib/plugins/corePlugins';
 import type { NodeViewerComponent, ViewerRegistration } from '$lib/types/nodeViewers.js';
 
+/**
+ * Legacy ViewerRegistry class - forwards to unified plugin system
+ * @deprecated Use pluginRegistry directly instead
+ */
 class ViewerRegistry {
-  private viewers = new Map<string, ViewerRegistration>();
-  private loadedComponents = new Map<string, NodeViewerComponent>();
-
   /**
-   * Register a viewer for a specific node type
+   * @deprecated Use pluginRegistry.register() with full plugin definition instead
    */
-  register(nodeType: string, registration: ViewerRegistration): void {
-    this.viewers.set(nodeType, registration);
+  register(_nodeType: string, _registration: ViewerRegistration): void {
+    console.warn(`ViewerRegistry.register() is deprecated. Use pluginRegistry.register() instead.`);
+    // This is a breaking change - we don't support the old API
+    throw new Error(
+      'ViewerRegistry.register() is no longer supported. Use the unified plugin system.'
+    );
   }
 
   /**
    * Get a viewer component for a node type
-   * Returns null if no custom viewer is registered (falls back to BaseNode)
+   * Forwards to the unified plugin registry
    */
   async getViewer(nodeType: string): Promise<NodeViewerComponent | null> {
-    // Check if already loaded
-    if (this.loadedComponents.has(nodeType)) {
-      return this.loadedComponents.get(nodeType)!;
-    }
-
-    const registration = this.viewers.get(nodeType);
-    if (!registration) {
-      return null; // Fallback to BaseNode
-    }
-
-    // Load component if lazy loading
-    if (registration.lazyLoad) {
-      try {
-        const module = await registration.lazyLoad();
-        this.loadedComponents.set(nodeType, module.default);
-        return module.default;
-      } catch (error) {
-        console.warn(`Failed to lazy load viewer for ${nodeType}:`, error);
-        return null;
-      }
-    }
-
-    // Use direct component reference
-    if (registration.component) {
-      this.loadedComponents.set(nodeType, registration.component);
-      return registration.component;
-    }
-
-    return null;
+    return pluginRegistry.getViewer(nodeType);
   }
 
   /**
    * Check if a custom viewer is registered for a node type
+   * Forwards to the unified plugin registry
    */
   hasViewer(nodeType: string): boolean {
-    return this.viewers.has(nodeType);
+    return pluginRegistry.hasViewer(nodeType);
   }
 
   /**
    * Get all registered node types
+   * Forwards to the unified plugin registry
    */
   getRegisteredTypes(): string[] {
-    return Array.from(this.viewers.keys());
+    return pluginRegistry
+      .getAllPlugins()
+      .filter((plugin) => plugin.viewer)
+      .map((plugin) => plugin.id);
   }
 
   /**
    * Clear all registrations (useful for testing)
+   * Forwards to the unified plugin registry
    */
   clear(): void {
-    this.viewers.clear();
-    this.loadedComponents.clear();
+    pluginRegistry.clear();
   }
 }
 
-// Create the global registry instance
+// Create the legacy registry instance that forwards to the unified system
 export const viewerRegistry = new ViewerRegistry();
 
-// Register viewers for all node types including text
-// Text nodes now use TextNodeViewer for smart multiline behavior
-
-viewerRegistry.register('text', {
-  lazyLoad: () => import('./text-node-viewer.svelte'),
-  priority: 1
-});
-
-viewerRegistry.register('date', {
-  lazyLoad: () => import('./date-node-viewer.svelte'),
-  priority: 1
-});
-
-viewerRegistry.register('task', {
-  lazyLoad: () => import('./task-node-viewer.svelte'),
-  priority: 1
-});
-
-viewerRegistry.register('ai-chat', {
-  lazyLoad: () => import('./ai-chat-node-viewer.svelte'),
-  priority: 1
-});
+// Initialize the unified plugin system with core plugins
+registerCorePlugins(pluginRegistry);
 
 export { ViewerRegistry };
 export type { ViewerRegistration, NodeViewerComponent };
+
+// Re-export the unified plugin system for direct access
+export { pluginRegistry } from '$lib/plugins/index';

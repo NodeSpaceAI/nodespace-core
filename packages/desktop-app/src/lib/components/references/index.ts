@@ -1,72 +1,108 @@
 /**
- * Node Reference Components Registry
+ * Node Reference Components Registry - MIGRATED TO UNIFIED PLUGIN SYSTEM
  *
- * Central registry for all node reference components used in the universal
- * reference system. Supports both core components and plugin components.
+ * This file now acts as a compatibility layer that forwards to the unified
+ * plugin registry. All functionality has been moved to the plugin system.
  */
 
 import BaseNodeReference from '../base-node-reference.svelte';
+import { pluginRegistry } from '$lib/plugins/index';
 import type { SvelteComponent } from 'svelte';
 
 // Component type for Svelte components
 export type NodeReferenceComponent = new (...args: unknown[]) => SvelteComponent;
 
 /**
- * Registry of available node reference components
- * Core components are always available, plugin components are added at build time
+ * Legacy registry object - now forwards to unified plugin system
+ * @deprecated Use pluginRegistry.getReferenceComponent() instead
  */
-export const NODE_REFERENCE_COMPONENTS: Record<string, NodeReferenceComponent> = {
-  // Core component (used as base/fallback for all node types)
-  BaseNodeReference: BaseNodeReference as NodeReferenceComponent,
-  base: BaseNodeReference as NodeReferenceComponent,
+export const NODE_REFERENCE_COMPONENTS: Record<string, NodeReferenceComponent> = new Proxy(
+  {} as Record<string, NodeReferenceComponent>,
+  {
+    get(target, prop: string) {
+      // Handle special base cases
+      if (prop === 'base' || prop === 'BaseNodeReference') {
+        return BaseNodeReference as NodeReferenceComponent;
+      }
 
-  // Node type specific mappings (all use BaseNodeReference for now)
-  text: BaseNodeReference as NodeReferenceComponent,
-  task: BaseNodeReference as NodeReferenceComponent,
-  user: BaseNodeReference as NodeReferenceComponent,
-  date: BaseNodeReference as NodeReferenceComponent,
-  document: BaseNodeReference as NodeReferenceComponent,
-  ai_chat: BaseNodeReference as NodeReferenceComponent
+      // Try to get from unified plugin registry
+      const component = pluginRegistry.getReferenceComponent(prop);
+      if (component) {
+        return component;
+      }
 
-  // Future plugin components will be registered here at build time
-  // pdf: PdfNodeReference (example)
-  // image: ImageNodeReference (example)
-  // code: CodeNodeReference (example)
-};
+      // Fallback to base component
+      return BaseNodeReference as NodeReferenceComponent;
+    },
+
+    set(_target, _prop: string, _value: NodeReferenceComponent) {
+      console.warn(
+        `NODE_REFERENCE_COMPONENTS assignment is deprecated. Use the unified plugin system instead.`
+      );
+      // We don't support the old API anymore
+      return false;
+    },
+
+    has(target, prop: string) {
+      if (prop === 'base' || prop === 'BaseNodeReference') {
+        return true;
+      }
+      return pluginRegistry.hasReferenceComponent(prop);
+    },
+
+    ownKeys(_target) {
+      const pluginIds = pluginRegistry
+        .getAllPlugins()
+        .filter((plugin) => plugin.reference)
+        .map((plugin) => plugin.id);
+      return ['base', 'BaseNodeReference', ...pluginIds];
+    }
+  }
+);
 
 /**
  * Get the appropriate component for a node type
- * Falls back to BaseNodeReference for unknown types
+ * Now forwards to the unified plugin registry
  */
 export function getNodeReferenceComponent(nodeType: string): NodeReferenceComponent {
-  return NODE_REFERENCE_COMPONENTS[nodeType] || NODE_REFERENCE_COMPONENTS.base;
+  const component = pluginRegistry.getReferenceComponent(nodeType);
+  return component || (BaseNodeReference as NodeReferenceComponent);
 }
 
 /**
  * Register a new node reference component (for plugins)
- * Used at build time to add plugin components
+ * @deprecated Use pluginRegistry.register() with full plugin definition instead
  */
 export function registerNodeReferenceComponent(
-  nodeType: string,
-  component: NodeReferenceComponent
+  _nodeType: string,
+  _component: NodeReferenceComponent
 ): void {
-  NODE_REFERENCE_COMPONENTS[nodeType] = component;
-}
-
-/**
- * Get all registered component types
- */
-export function getRegisteredNodeTypes(): string[] {
-  return Object.keys(NODE_REFERENCE_COMPONENTS).filter(
-    (key) => key !== 'base' && key !== 'BaseNodeReference'
+  console.warn(
+    `registerNodeReferenceComponent() is deprecated. Use the unified plugin system instead.`
+  );
+  // This is a breaking change - we don't support the old API
+  throw new Error(
+    'registerNodeReferenceComponent() is no longer supported. Use the unified plugin system.'
   );
 }
 
 /**
+ * Get all registered component types
+ * Now forwards to the unified plugin registry
+ */
+export function getRegisteredNodeTypes(): string[] {
+  return pluginRegistry
+    .getAllPlugins()
+    .filter((plugin) => plugin.reference)
+    .map((plugin) => plugin.id);
+}
+
+/**
  * Check if a component is registered for a node type
+ * Now forwards to the unified plugin registry
  */
 export function hasComponentForNodeType(nodeType: string): boolean {
-  return nodeType in NODE_REFERENCE_COMPONENTS;
+  return pluginRegistry.hasReferenceComponent(nodeType);
 }
 
 // Export the BaseNodeReference as default
