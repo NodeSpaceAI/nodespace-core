@@ -188,18 +188,20 @@ export class ContentEditableController {
     }
     this.element.focus();
 
-    // Only position cursor at end if:
-    // 1. There's no existing selection (preserves Cmd+B, etc.)
-    // 2. Element doesn't already have focus (prevents disrupting ongoing editing)
-    // 3. User is not actively editing (prevents interrupting typing/formatting edits)
-    const selection = window.getSelection();
-    const hadFocus = document.activeElement === this.element;
+    // Detect context and position cursor appropriately
+    const content = this.element.textContent || '';
 
-    if ((!selection || selection.isCollapsed) && !hadFocus && !this.isEditing) {
+    // For empty content or just header syntax (from Enter key), position at end
+    // For header syntax with no additional content (from slash commands), position at end
+    // The key insight: both scenarios want cursor at end, but for different reasons
+    const isEmptyOrHeaderOnly = content.trim() === '' || /^#{1,6}\s*$/.test(content.trim());
+
+    if (isEmptyOrHeaderOnly) {
       setTimeout(() => {
         this.positionCursorAtEnd();
       }, 10);
     }
+    // For content that already has text, don't interfere with cursor positioning
   }
 
 
@@ -213,6 +215,20 @@ export class ContentEditableController {
     const range = document.createRange();
     range.selectNodeContents(this.element);
     range.collapse(false); // Collapse to end
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  /**
+   * Position cursor at the beginning of the content
+   */
+  private positionCursorAtBeginning(): void {
+    const selection = window.getSelection();
+    if (!selection) return;
+
+    const range = document.createRange();
+    range.selectNodeContents(this.element);
+    range.collapse(true); // Collapse to beginning
     selection.removeAllRanges();
     selection.addRange(range);
   }
@@ -725,21 +741,6 @@ export class ContentEditableController {
   }
 
   private handleKeyDown(event: KeyboardEvent): void {
-    // Debug logging for all keyboard interactions
-    console.log(`🎹 Key pressed: ${event.key}${event.shiftKey ? ' + Shift' : ''}${event.ctrlKey ? ' + Ctrl' : ''}${event.metaKey ? ' + Meta' : ''}`);
-
-    if (event.key === 'Tab') {
-      console.log(`🎹 Tab key detected, shift: ${event.shiftKey}`);
-    }
-
-    if (event.key === 'Backspace') {
-      console.log(`🎹 Backspace key detected at position:`, this.isAtStart() ? 'START' : 'MIDDLE/END');
-    }
-
-    if (event.key === 'Enter') {
-      console.log(`🎹 Enter key detected, shift: ${event.shiftKey}`);
-    }
-
     // Handle formatting shortcuts (Cmd+B, Cmd+I)
     if ((event.metaKey || event.ctrlKey) && this.isEditing) {
       if (event.key === 'b' || event.key === 'B') {
@@ -799,57 +800,35 @@ export class ContentEditableController {
 
         const currentContent = this.element.textContent || '';
         const cursorPosition = this.getCurrentColumn();
-        const cursorAtBeginning = cursorPosition === 0;
 
         // Set flag to prevent cursor restoration during node creation
         this.recentEnter = true;
         setTimeout(() => {
           this.recentEnter = false;
-        }, 100); // Clear flag after brief delay
+        }, 100);
 
-        if (cursorAtBeginning) {
-          // Cursor at beginning - create node above
-          console.log(`🎹 Dispatching createNewNode (cursor at beginning) for node: ${this.nodeId}`);
-          this.events.createNewNode({
-            afterNodeId: this.nodeId,
-            nodeType: this.nodeType, // Inherit current node's type
-            currentContent: currentContent,
-            newContent: '',
-            inheritHeaderLevel: this.currentHeaderLevel, // Inherit current header level
-            cursorAtBeginning: true
-          });
-        } else {
-          // Markdown-aware split at cursor position
-          const splitResult = splitMarkdownContent(currentContent, cursorPosition);
+        // Always split content at cursor position, preserving markdown formatting
+        const splitResult = splitMarkdownContent(currentContent, cursorPosition);
 
-          console.log(`🎹 Dispatching createNewNode (markdown-aware split) for node: ${this.nodeId}`, {
-            original: currentContent,
-            position: cursorPosition,
-            before: splitResult.beforeContent,
-            after: splitResult.afterContent
-          });
+        // Update current element immediately to show completed syntax
+        this.originalContent = splitResult.beforeContent;
+        this.element.textContent = splitResult.beforeContent;
 
-          // Update current element immediately to show completed syntax
-          this.originalContent = splitResult.beforeContent;
-          this.element.textContent = splitResult.beforeContent;
-
-          this.events.createNewNode({
-            afterNodeId: this.nodeId,
-            nodeType: this.nodeType, // Inherit current node's type
-            currentContent: splitResult.beforeContent,
-            newContent: splitResult.afterContent,
-            inheritHeaderLevel: this.currentHeaderLevel, // Inherit current header level
-            cursorAtBeginning: false,
-            newNodeCursorPosition: splitResult.newNodeCursorPosition
-          });
-        }
+        this.events.createNewNode({
+          afterNodeId: this.nodeId,
+          nodeType: this.nodeType, // Preserve original node's type
+          currentContent: splitResult.beforeContent,
+          newContent: splitResult.afterContent,
+          inheritHeaderLevel: this.currentHeaderLevel, // Preserve original header level
+          cursorAtBeginning: false,
+          newNodeCursorPosition: splitResult.newNodeCursorPosition
+        });
         return;
       }
     }
 
     // Tab key indents node
     if (event.key === 'Tab' && !event.shiftKey) {
-      console.log(`🎹 Dispatching indentNode event for node: ${this.nodeId}`);
       event.preventDefault();
       this.events.indentNode({ nodeId: this.nodeId });
       return;
@@ -857,7 +836,6 @@ export class ContentEditableController {
 
     // Shift+Tab outdents node
     if (event.key === 'Tab' && event.shiftKey) {
-      console.log(`🎹 Dispatching outdentNode event for node: ${this.nodeId}`);
       event.preventDefault();
       this.events.outdentNode({ nodeId: this.nodeId });
       return;
@@ -893,13 +871,10 @@ export class ContentEditableController {
     if (event.key === 'Backspace' && this.isAtStart()) {
       event.preventDefault();
       const currentContent = this.element.textContent || '';
-      console.log(`🔙 Backspace at start of node ${this.nodeId}, content: "${currentContent}"`);
 
       if (currentContent.trim() === '') {
-        console.log(`🗑️ Empty node - calling deleteNode for ${this.nodeId}`);
         this.events.deleteNode({ nodeId: this.nodeId });
       } else {
-        console.log(`🔗 Non-empty node - calling combineWithPrevious for ${this.nodeId}`);
         this.events.combineWithPrevious({
           nodeId: this.nodeId,
           currentContent
@@ -921,18 +896,31 @@ export class ContentEditableController {
 
     const range = selection.getRangeAt(0);
 
-    // For multiline nodes: check if cursor is at the very beginning of the entire content
-    if (this.config.allowMultiline) {
-      // Calculate the absolute text position within the entire element
-      const textPosition = this.getTextOffsetFromElement(range.startContainer, range.startOffset);
-      console.log(`🔍 isAtStart (multiline): textPosition=${textPosition}, collapsed=${range.collapsed}, allowMultiline=${this.config.allowMultiline}`);
-      return textPosition === 0 && range.collapsed;
+    // Simplified approach: check if we're at the beginning by examining the DOM structure
+    // For both single-line and multiline content
+    if (range.collapsed) {
+      // Check if we're at the very first position of the first text node
+      const firstChild = this.element.firstChild;
+
+      if (!firstChild) {
+        // Empty element - cursor is at start
+        return true;
+      }
+
+      // If the first child is a text node and cursor is at offset 0 within it
+      if (firstChild.nodeType === Node.TEXT_NODE &&
+          range.startContainer === firstChild &&
+          range.startOffset === 0) {
+        return true;
+      }
+
+      // If the cursor is directly in the element at offset 0 (before any children)
+      if (range.startContainer === this.element && range.startOffset === 0) {
+        return true;
+      }
     }
 
-    // For single-line nodes: use the original logic
-    const isAtStart = range.startOffset === 0 && range.collapsed;
-    console.log(`🔍 isAtStart (single-line): startOffset=${range.startOffset}, collapsed=${range.collapsed}, result=${isAtStart}`);
-    return isAtStart;
+    return false;
   }
 
   private getCurrentColumn(): number {

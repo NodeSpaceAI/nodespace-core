@@ -46,13 +46,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Force reactivity by accessing the trigger
     _updateTrigger;
     const result = getVisibleNodesRecursive(_rootNodeIds);
-    console.log(`🔄 visibleNodes updated: ${result.length} nodes from ${_rootNodeIds.length} roots`);
     return result;
   });
 
-  function getVisibleNodes(): Node[] {
-    return visibleNodes;
-  }
 
   const contentProcessor = ContentProcessor.getInstance();
   const serviceName = 'ReactiveNodeService';
@@ -77,14 +73,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
   function findNode(nodeId: string): Node | null {
     const node = _nodes[nodeId] || null;
-    if (nodeId === 'todo-section' && node) {
-      console.log(`🔍 DEBUG findNode for todo-section:`, {
-        id: node.id,
-        children: node.children,
-        childrenType: typeof node.children,
-        fullNode: node
-      });
-    }
     return node;
   }
 
@@ -182,10 +170,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     } else {
       // Cursor not at beginning: new node goes AFTER as sibling
       // Transfer all children from afterNode to the new node
-      console.log(`🌳 Taking ELSE branch - node goes AFTER as sibling`);
-      console.log(`🌳 AfterNode children count: ${afterNode.children?.length || 0}`);
       if (afterNode.children && afterNode.children.length > 0) {
-        console.log(`🌳 Transferring ${afterNode.children.length} children to new node`);
         newNode.children = [...afterNode.children];
         // Update children's parent reference to point to new node
         for (const childId of afterNode.children) {
@@ -196,15 +181,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         }
         // Clear afterNode's children since they now belong to newNode
         _nodes[afterNodeId] = { ...afterNode, children: [] };
-        console.log(`🌳 Cleared afterNode children, transferred to new node`);
       } else {
-        console.log(`🌳 AfterNode has no children to transfer`);
       }
 
       // Insert new node as sibling after afterNode
-      console.log(`🌳 Inserting new node after afterNode. AfterNode parentId: ${afterNode.parentId}`);
       if (afterNode.parentId) {
-        console.log(`🌳 AfterNode has parent, inserting in parent's children`);
         const parent = _nodes[afterNode.parentId];
         if (parent) {
           const afterNodeIndex = parent.children.indexOf(afterNodeId);
@@ -215,34 +196,29 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           ];
         }
       } else {
-        console.log(`🌳 AfterNode is a root node, inserting in _rootNodeIds`);
         const afterNodeIndex = _rootNodeIds.indexOf(afterNodeId);
-        console.log(`🌳 AfterNode index in roots: ${afterNodeIndex}, current _rootNodeIds: ${_rootNodeIds.length}`);
         _rootNodeIds = [
           ..._rootNodeIds.slice(0, afterNodeIndex + 1),
           nodeId,
           ..._rootNodeIds.slice(afterNodeIndex + 1)
         ];
-        console.log(`🌳 Reassigned _rootNodeIds array, new length: ${_rootNodeIds.length}`);
 
         // Manually trigger reactivity
         _updateTrigger++;
-        console.log(`🔄 Incremented trigger to: ${_updateTrigger}`);
       }
     }
 
-    console.log(`🎉 About to dispatch nodeCreated event for ${nodeId}`);
     events.nodeCreated(nodeId);
-    console.log(`✅ nodeCreated event dispatched, returning nodeId: ${nodeId}`);
     return nodeId;
   }
 
   function createPlaceholderNode(
     afterNodeId: string,
     nodeType: string = 'text',
-    headerLevel?: number
+    headerLevel?: number,
+    insertAtBeginning: boolean = false
   ): string {
-    return createNode(afterNodeId, '', nodeType, headerLevel, false);
+    return createNode(afterNodeId, '', nodeType, headerLevel, false, insertAtBeginning);
   }
 
   // Debounce timers for expensive operations
@@ -412,7 +388,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function rebuildChildrenArrays(): void {
-    console.log('🔧 Rebuilding children arrays from parent relationships');
 
     // Clear all children arrays
     for (const node of Object.values(_nodes)) {
@@ -429,22 +404,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       }
     }
 
-    console.log('🔧 Children arrays rebuilt successfully');
   }
 
   function updateDescendantDepths(node: Node): void {
     const expectedDepth = node.parentId ? (findNode(node.parentId)?.depth ?? 0) + 1 : 0;
 
-    console.log(`🔧 updateDescendantDepths for ${node.id}: current depth=${node.depth}, expected depth=${expectedDepth}`);
 
     if (node.depth !== expectedDepth) {
-      const depthDiff = expectedDepth - node.depth;
-      console.log(`📏 Updating ${node.id} depth: ${node.depth} -> ${expectedDepth} (diff: ${depthDiff})`);
-
       // Use assignment-based reactivity - reassign the entire object
       _nodes[node.id] = { ...node, depth: expectedDepth };
-    } else {
-      console.log(`✅ ${node.id} depth already correct (${node.depth})`);
     }
 
     // ALWAYS update children depths regardless of whether parent depth changed
@@ -453,13 +421,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     for (const childId of node.children) {
       const child = _nodes[childId];
       if (child) {
-        const oldChildDepth = child.depth;
         if (child.depth !== expectedChildDepth) {
-          console.log(`📏 Updating child ${childId} depth: ${oldChildDepth} -> ${expectedChildDepth}`);
           // Use assignment-based reactivity - reassign the entire object
           _nodes[childId] = { ...child, depth: expectedChildDepth };
-        } else {
-          console.log(`✅ Child ${childId} depth already correct (${child.depth})`);
         }
         // Recursively update the child's descendants
         updateDescendantDepths(child);
@@ -521,9 +485,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     newNodesRecord[previousNodeId] = updatedPreviousNode;
     delete newNodesRecord[currentNodeId];
 
-    console.log(`🎯 combineNodes: Combining "${currentNode.content}" into "${previousNode.content}"`);
-    console.log(`🔄 combineNodes: Combined content will be: "${combinedContent}"`);
-    console.log(`📍 combineNodes: Cursor will be positioned at index ${mergePosition} in node ${previousNodeId}`);
 
     // Apply atomic changes
     Object.keys(_nodes).forEach(key => delete _nodes[key]);
@@ -556,7 +517,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
 
     // Emit focus request to position cursor at merge point
-    console.log(`🎯 combineNodes: Requesting focus on ${previousNodeId} at position ${mergePosition}`);
     events.focusRequested(previousNodeId, mergePosition);
 
     events.hierarchyChanged();
@@ -570,10 +530,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function indentNode(nodeId: string): boolean {
-    console.log(`🔧 indentNode called for node: ${nodeId}`);
     const node = findNode(nodeId);
     if (!node) {
-      console.log(`❌ indentNode: node not found: ${nodeId}`);
       return false;
     }
 
@@ -620,61 +578,27 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     return true;
   }
 
-  function collectAllFollowingNodes(targetNodeId: string, currentDepth: number): string[] {
-    const result: string[] = [];
-    const visibleNodes = getVisibleNodes();
-
-    // Find the index of the target node in the visible list
-    const targetIndex = visibleNodes.findIndex(node => node.id === targetNodeId);
-    if (targetIndex === -1) return result;
-
-    // Collect all nodes after the target in tree order
-    for (let i = targetIndex + 1; i < visibleNodes.length; i++) {
-      const node = visibleNodes[i];
-
-      // Stop if we encounter a node at the same or lesser depth than current depth
-      // (this means we've moved out of the scope that should be affected)
-      if (node.depth <= currentDepth) {
-        break;
-      }
-
-      result.push(node.id);
-    }
-
-    // console.log(`🔍 collectAllFollowingNodes for ${targetNodeId} (depth ${currentDepth}):`, result);
-    return result;
-  }
 
   function outdentNode(nodeId: string): boolean {
     const node = findNode(nodeId);
 
     if (!node || !node.parentId) {
-      console.log(`❌ outdentNode: node not found or no parent: ${nodeId}, parentId: ${node?.parentId}`);
       return false;
     }
 
-    console.log(`🔍 Looking for parent: ${node.parentId}`);
     const parent = findNode(node.parentId);
-    console.log(`🔍 Parent found:`, {
-      found: !!parent,
-      id: parent?.id,
-      children: parent?.children
-    });
 
     if (!parent) {
-      console.log(`❌ outdentNode: parent not found: ${node.parentId}`);
       return false;
     }
 
     // WORKAROUND: Rebuild children arrays from parent relationships if corrupted
     if (!parent.children || !Array.isArray(parent.children) || parent.children.indexOf(nodeId) === -1) {
-      console.log(`🔧 WORKAROUND: rebuilding children arrays from parent relationships`);
       rebuildChildrenArrays();
 
       // Re-fetch parent after rebuilding
       const rebuiltParent = findNode(node.parentId);
       if (!rebuiltParent || !rebuiltParent.children || rebuiltParent.children.indexOf(nodeId) === -1) {
-        console.log(`❌ outdentNode: still can't find node in parent's children after rebuild`);
         return false;
       }
 
@@ -684,79 +608,58 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Find the position of this node among its siblings
     const nodeIndexInParent = parent.children.indexOf(nodeId);
-    console.log(`🔍 nodeIndexInParent: ${nodeIndexInParent}, parent.children:`, parent.children);
     if (nodeIndexInParent === -1) {
-      console.log(`❌ outdentNode: node ${nodeId} not found in parent's children`);
       return false;
     }
 
     // Collect siblings that come after this node - they will become children of the outdented node
     const followingSiblings = parent.children.slice(nodeIndexInParent + 1);
-    console.log(`🔍 Following siblings that will become children:`, followingSiblings);
 
     // Remove the outdented node AND all following siblings from the parent
     parent.children = parent.children.slice(0, nodeIndexInParent);
-    console.log(`🔍 After removing node and following siblings, parent.children:`, parent.children);
 
     // Determine where to place the outdented node
-    console.log(`🔍 Determining placement for outdented node ${nodeId}`);
     let newParentId: string | undefined;
     let insertionTarget: { isRoot: boolean; parentId?: string; insertIndex: number };
 
     if (parent.parentId) {
       // Parent has a parent (grandparent exists)
-      console.log(`🔍 Parent has grandparent: ${parent.parentId}`);
       const grandparent = findNode(parent.parentId);
       if (!grandparent) {
-        console.log(`❌ Grandparent not found: ${parent.parentId}`);
         return false;
       }
 
       const parentIndexInGrandparent = grandparent.children.indexOf(parent.id);
-      console.log(`🔍 Parent index in grandparent: ${parentIndexInGrandparent}`);
       newParentId = parent.parentId;
       insertionTarget = {
         isRoot: false,
         parentId: parent.parentId,
         insertIndex: parentIndexInGrandparent + 1
       };
-      console.log(`🔍 Will insert as child of grandparent at index ${insertionTarget.insertIndex}`);
     } else {
       // Parent is a root node, so outdented node becomes root
-      console.log(`🔍 Parent is root node, outdented node will become root`);
       const parentIndexInRoot = _rootNodeIds.indexOf(parent.id);
-      console.log(`🔍 Parent index in root: ${parentIndexInRoot}`);
       newParentId = undefined;
       insertionTarget = {
         isRoot: true,
         insertIndex: parentIndexInRoot + 1
       };
-      console.log(`🔍 Will insert as root at index ${insertionTarget.insertIndex}`);
     }
 
     // Update the outdented node with assignment-based reactivity
     const newDepth = newParentId ? (findNode(newParentId)?.depth ?? 0) + 1 : 0;
-    console.log(`🔧 Updating outdented node ${nodeId}: parentId ${node.parentId} -> ${newParentId}, depth ${node.depth} -> ${newDepth}`);
 
     _nodes[nodeId] = { ...node, parentId: newParentId, depth: newDepth };
     // Update our local reference to the updated node
     const updatedNode = _nodes[nodeId];
-    console.log(`✅ Node updated: parentId=${updatedNode.parentId}, depth=${updatedNode.depth}`);
 
     // Insert the outdented node at its new position
-    console.log(`🔧 Inserting node at position: isRoot=${insertionTarget.isRoot}, parentId=${insertionTarget.parentId}, index=${insertionTarget.insertIndex}`);
     if (insertionTarget.isRoot) {
-      console.log(`🔧 Inserting ${nodeId} as root at index ${insertionTarget.insertIndex}`);
       _rootNodeIds.splice(insertionTarget.insertIndex, 0, nodeId);
-      console.log(`✅ Root node inserted. New root IDs:`, $state.snapshot(_rootNodeIds));
     } else {
-      console.log(`🔧 Looking for new parent: ${insertionTarget.parentId}`);
       const newParent = findNode(insertionTarget.parentId!);
       if (newParent) {
-        console.log(`🔧 Inserting ${nodeId} into parent ${insertionTarget.parentId} children at index ${insertionTarget.insertIndex}`);
-        console.log(`🔍 Parent children before:`, $state.snapshot(newParent.children));
         newParent.children.splice(insertionTarget.insertIndex, 0, nodeId);
-        console.log(`✅ Node inserted. Parent children after:`, $state.snapshot(newParent.children));
       } else {
         console.error(`❌ Could not find new parent: ${insertionTarget.parentId}`);
       }
@@ -764,19 +667,16 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Add the following siblings as children of the outdented node (after existing children)
     if (followingSiblings.length > 0) {
-      console.log(`🔧 Adding ${followingSiblings.length} following siblings as children of outdented node`);
 
       // Update their parent references in the reactive storage
       for (const siblingId of followingSiblings) {
         const siblingNode = findNode(siblingId);
         if (siblingNode) {
-          console.log(`📦 Before: ${siblingId} parentId=${siblingNode.parentId}, depth=${siblingNode.depth}`);
 
           // Create updated node and save back to reactive storage
           const updatedSibling = { ...siblingNode, parentId: nodeId };
           _nodes[siblingId] = updatedSibling;
 
-          console.log(`📦 After: ${siblingId} parentId=${updatedSibling.parentId}`);
         } else {
           console.error(`❌ Could not find sibling node: ${siblingId}`);
         }
@@ -785,105 +685,17 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       // Add them to the outdented node's children (after existing children)
       const newChildren = [...updatedNode.children, ...followingSiblings];
       _nodes[nodeId] = { ...updatedNode, children: newChildren };
-      console.log(`✅ Outdented node children updated:`, newChildren);
-      console.log(`✅ Outdented node saved to reactive storage`);
     }
 
     // Update depths for the outdented node and all its children (including the new ones)
-    console.log(`🔧 About to update depths for outdented node and all descendants`);
     const finalUpdatedNode = _nodes[nodeId]; // Get the latest version with updated children
     updateDescendantDepths(finalUpdatedNode);
-    console.log(`✅ Depths updated for outdented node and all descendants`);
 
-    console.log(`🔧 Triggering hierarchy change event`);
     events.hierarchyChanged();
 
-    console.log(`✅ Outdent operation completed successfully for node: ${nodeId}`);
     return true;
   }
 
-  function repositionFollowingNodes(
-    outdentedNodeId: string,
-    followingNodes: string[],
-    outdentedDepth: number
-  ): void {
-    const outdentedNode = findNode(outdentedNodeId);
-    if (!outdentedNode) return;
-
-    // First, remove all following nodes from their current parents
-    const nodesToReposition: { node: Node; id: string }[] = [];
-    for (const nodeId of followingNodes) {
-      const followingNode = findNode(nodeId);
-      if (!followingNode) continue;
-
-      // Remove from current parent
-      if (followingNode.parentId) {
-        const currentParent = findNode(followingNode.parentId);
-        if (currentParent) {
-          currentParent.children = currentParent.children.filter(id => id !== nodeId);
-        }
-      } else {
-        // Remove from root nodes
-        const rootIndex = _rootNodeIds.indexOf(nodeId);
-        if (rootIndex !== -1) {
-          _rootNodeIds.splice(rootIndex, 1);
-        }
-      }
-
-      nodesToReposition.push({ node: followingNode, id: nodeId });
-    }
-
-    // Group nodes by their new parent and insert them in order
-    const childrenForOutdentedNode: string[] = [];
-    const siblingsForNewParent: string[] = [];
-
-    // Separate nodes based on where they should go
-    for (const { node: followingNode, id: nodeId } of nodesToReposition) {
-      // Update parent reference first
-      if (followingNode.depth > outdentedDepth) {
-        // Following node should become a child of the outdented node
-        followingNode.parentId = outdentedNodeId;
-        childrenForOutdentedNode.push(nodeId);
-        console.log(`📦 Moving ${nodeId} (depth ${followingNode.depth}) as child of outdented node ${outdentedNodeId}`);
-      } else {
-        // Following node should become a sibling of the outdented node
-        followingNode.parentId = outdentedNode.parentId;
-        siblingsForNewParent.push(nodeId);
-        console.log(`📦 Moving ${nodeId} (depth ${followingNode.depth}) as sibling of outdented node ${outdentedNodeId}`);
-      }
-
-      // Update depths for the repositioned node and its descendants
-      updateDescendantDepths(followingNode);
-    }
-
-    // Insert children into the outdented node (at the end since they maintain their internal order)
-    outdentedNode.children.push(...childrenForOutdentedNode);
-
-    // Insert siblings into the new parent right after the outdented node
-    if (siblingsForNewParent.length > 0) {
-      if (outdentedNode.parentId) {
-        const newParent = findNode(outdentedNode.parentId);
-        if (newParent) {
-          const outdentedNodeIndex = newParent.children.indexOf(outdentedNodeId);
-          if (outdentedNodeIndex !== -1) {
-            // Insert right after the outdented node to maintain order
-            newParent.children.splice(outdentedNodeIndex + 1, 0, ...siblingsForNewParent);
-          } else {
-            // Fallback: add at the end
-            newParent.children.push(...siblingsForNewParent);
-          }
-        }
-      } else {
-        // Outdented node is at root level, insert siblings after it in root
-        const outdentedNodeIndex = _rootNodeIds.indexOf(outdentedNodeId);
-        if (outdentedNodeIndex !== -1) {
-          _rootNodeIds.splice(outdentedNodeIndex + 1, 0, ...siblingsForNewParent);
-        } else {
-          _rootNodeIds.push(...siblingsForNewParent);
-        }
-      }
-    }
-  }
 
   function deleteNode(nodeId: string): void {
     const node = findNode(nodeId);
@@ -954,7 +766,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       const newExpandedState = !node.expanded;
       _nodes[nodeId] = { ...node, expanded: newExpandedState };
 
-      console.log(`✅ Toggled node expansion: ${nodeId} -> ${newExpandedState ? 'expanded' : 'collapsed'}`);
       return true;
     } catch (error) {
       console.error('❌ Error toggling node expansion:', error);
@@ -991,8 +802,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
 
   function initializeWithRichDemoData(): void {
-    const today = new Date();
-    const todayStr = today.toISOString().split('T')[0]; // YYYY-MM-DD format
 
     const demoNodes: Node[] = [
       {
@@ -1185,33 +994,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         metadata: { ...node.metadata }
       };
 
-      console.log(`🔧 Adding node ${preservedNode.id} with children:`, preservedNode.children);
       _nodes[preservedNode.id] = preservedNode;
 
-      // Debug: Immediately check what was stored
-      const storedNode = _nodes[preservedNode.id];
-      console.log(`🔍 Stored node ${preservedNode.id} children:`, storedNode?.children);
 
       if (preservedNode.depth === 0) {
         _rootNodeIds = [..._rootNodeIds, preservedNode.id];
       }
     }
 
-    console.log('ReactiveNodeService initialized with rich demo data');
 
-    // Debug: Check node relationships after initialization
-    console.log('🔍 Node relationships after init:');
-    for (const [nodeId, node] of Object.entries(_nodes)) {
-      if (node.parentId) {
-        console.log(`  ${nodeId} -> parent: ${node.parentId}, depth: ${node.depth}`);
-      } else {
-        console.log(`  ${nodeId} -> ROOT (no parent), depth: ${node.depth}`);
-      }
-    }
-
-    // Debug: Check if children are still intact after the loop
-    const todoAfterLoop = _nodes['todo-section'];
-    console.log('🔍 todo-section children after debug loop:', todoAfterLoop?.children);
   }
 
   return {

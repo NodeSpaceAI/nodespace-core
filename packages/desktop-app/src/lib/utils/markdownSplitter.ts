@@ -43,7 +43,6 @@ function analyzeMarkdownContext(text: string, position: number): MarkdownContext
   while (i < beforeText.length) {
     const char = beforeText[i];
     const nextChar = beforeText[i + 1];
-    const next2Char = beforeText[i + 2];
 
     // Code blocks take precedence - ignore other formatting inside
     if (char === '`' && !inCode) {

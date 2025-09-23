@@ -20,7 +20,7 @@
     throw new Error('NodeServices not available. Make sure base-node-viewer is wrapped in NodeServiceContext.');
   }
 
-  const nodeManager = services.nodeManager as any;
+  const nodeManager = services.nodeManager as unknown;
 
   // Focus handling function
   function requestNodeFocus(nodeId: string, position: number) {
@@ -146,7 +146,7 @@
 
     if (!newContent || newContent.trim() === '') {
       // Create placeholder node for empty content (Enter key without splitting)
-      newNodeId = nodeManager.createPlaceholderNode(afterNodeId, nodeType, inheritHeaderLevel);
+      newNodeId = nodeManager.createPlaceholderNode(afterNodeId, nodeType, inheritHeaderLevel, cursorAtBeginning || false);
     } else {
       // Create real node when splitting existing content
       // Add formatting syntax to the new content based on node type and header level
