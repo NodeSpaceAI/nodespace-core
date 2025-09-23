@@ -26,7 +26,12 @@
     "gh:view": "bun run scripts/gh-utils.ts issues:view",
     "gh:pr": "bun run scripts/gh-utils.ts pr:create",
     "gh:help": "bun run scripts/gh-utils.ts",
-    "quality:fix": "bun run --cwd packages/desktop-app quality:fix"
+    "quality:fix": "bun run --cwd packages/desktop-app quality:fix",
+    "container:build": "bun run scripts/container.ts build",
+    "container:run": "bun run scripts/container.ts run",
+    "container:list": "bun run scripts/container.ts list",
+    "container:stop": "bun run scripts/container.ts stop",
+    "container:help": "bun run scripts/container.ts"
   },
   "devDependencies": {
     "@types/jsdom": "^21.1.7",
