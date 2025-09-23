@@ -36,6 +36,7 @@
   } from '$lib/services/slashCommandService';
   import type { TriggerContext } from '$lib/services/nodeReferenceService';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
+  import { getIconConfig, resolveNodeState, type NodeType } from '$lib/design/icons/registry';
 
   // Props (Svelte 5 runes syntax) - nodeReferenceService removed
   let {
@@ -45,7 +46,8 @@
     content = $bindable(''),
     headerLevel = 0,
     children = [],
-    editableConfig = {}
+    editableConfig = {},
+    metadata = {}
   }: {
     nodeId: string;
     nodeType?: string;
@@ -54,11 +56,23 @@
     headerLevel?: number;
     children?: unknown[];
     editableConfig?: ContentEditableConfig;
+    metadata?: Record<string, unknown>;
   } = $props();
 
-  // Get services from context
-  const services = getNodeServices();
-  const nodeReferenceService = services?.nodeReferenceService || null;
+  // Get services from context (optional for now during refactoring)
+  let services = $state(null);
+  let nodeReferenceService = $state(null);
+
+  // TEMPORARILY DISABLED - might be causing infinite loop
+  // $effect(() => {
+  //   try {
+  //     services = getNodeServices();
+  //     nodeReferenceService = services?.nodeReferenceService || null;
+  //   } catch (error) {
+  //     // Context not available - that's okay for now
+  //     console.log('Context services not available, continuing without them');
+  //   }
+  // });
 
   // DOM element and controller - Svelte bind:this assignment
   let contentEditableElement: HTMLDivElement | undefined = undefined;
@@ -175,6 +189,7 @@
 
   // Slash command event handlers
   function handleSlashCommandSelect(event: CustomEvent<SlashCommand>) {
+    console.log('🎯 handleSlashCommandSelect called with:', event.detail);
     const command = event.detail;
 
     if (controller) {
@@ -184,13 +199,18 @@
       // Insert the command content (e.g., "# " for header 1)
       controller.insertSlashCommand(result.content);
 
+      // Update node type when changed by slash command
+      if (result.nodeType !== nodeType) {
+        nodeType = result.nodeType;
+      }
+
       // Emit event to notify parent of node type/header level change
       if (result.headerLevel !== undefined) {
         dispatch('headerLevelChanged', { level: result.headerLevel });
       }
     }
 
-    // Hide slash commands and clear state
+    // Hide slash commands and clear state first
     showSlashCommands = false;
     currentSlashQuery = '';
     slashCommands = [];
@@ -200,10 +220,23 @@
       controller.setSlashCommandDropdownActive(false);
     }
 
-    // Emit event for parent components to handle if needed
+    // Emit event for parent components to handle node type changes
+    // This will trigger the component switch, so we don't focus here - let autoFocus handle it
+    console.log('🚀 Dispatching slashCommandSelected event:', { command: command.id, nodeType: command.nodeType });
     dispatch('slashCommandSelected', {
       command: command.id,
       nodeType: command.nodeType
+    });
+  }
+
+  // Handle icon click events (for task state changes, etc.)
+  function handleIconClick(event: MouseEvent | KeyboardEvent) {
+    event.stopPropagation(); // Prevent triggering content editable focus
+
+    dispatch('iconClick', {
+      nodeId: nodeId,
+      nodeType: nodeType,
+      currentState: resolveNodeState(nodeType as NodeType, undefined, metadata)
     });
   }
 
@@ -228,6 +261,7 @@
     deleteNode: { nodeId: string };
     nodeReferenceSelected: { nodeId: string; nodeTitle: string };
     slashCommandSelected: { command: string; nodeType: string };
+    iconClick: { nodeId: string; nodeType: string; currentState?: string };
   }>();
 
   // Controller event handlers
@@ -309,8 +343,22 @@
   $effect(() => {
     const element = contentEditableElement; // Force dependency tracking
     if (element && !controller) {
-      controller = new ContentEditableController(element, nodeId, controllerEvents, editableConfig);
+      console.log(`🎛️ Creating new ContentEditableController for node ${nodeId} (type: ${nodeType})`);
+
+      // Create controller immediately - DOM should be ready when effect runs
+      controller = new ContentEditableController(
+        element,
+        nodeId,
+        nodeType,
+        controllerEvents,
+        editableConfig
+      );
       controller.initialize(content, autoFocus);
+      console.log(`✅ Controller initialized for node ${nodeId} with autoFocus: ${autoFocus}`);
+    } else if (element && controller) {
+      console.log(`🔄 Element exists but controller already present for node ${nodeId} (type: ${nodeType})`);
+    } else if (!element) {
+      console.log(`⚠️ No DOM element available for controller creation on node ${nodeId} (type: ${nodeType})`);
     }
   });
 
@@ -322,11 +370,13 @@
   });
 
   // Focus programmatically when autoFocus changes
-  $effect(() => {
-    if (controller && autoFocus) {
-      controller.focus();
-    }
-  });
+  // TEMPORARILY DISABLED - causing infinite loop
+  // $effect(() => {
+  //   if (controller && autoFocus) {
+  //     console.log(`🎯 AutoFocus triggered for node ${nodeId} (type: ${nodeType})`);
+  //     controller.focus();
+  //   }
+  // });
 
   // Update controller when slash command dropdown state changes
   $effect(() => {
@@ -337,7 +387,9 @@
 
   onDestroy(() => {
     if (controller) {
+      console.log(`🧹 Destroying ContentEditableController for node ${nodeId} (type: ${nodeType})`);
       controller.destroy();
+      console.log(`🗑️ Controller destroyed for node ${nodeId}`);
     }
   });
 
@@ -386,15 +438,32 @@
 
 <div class={containerClasses} data-node-id={nodeId}>
   <!-- Node indicator -->
-  <div class="node__indicator">
-    {#if children.length > 0}
-      <!-- Text Node with Children (Ring Effect) -->
-      <div class="node-icon">
-        <div class="task-ring"></div>
-        <div class="text-circle"></div>
+  <div
+    class="node__indicator"
+    onclick={handleIconClick}
+    onkeydown={(e) => e.key === 'Enter' && handleIconClick(e)}
+    role="button"
+    tabindex="0"
+    aria-label="Toggle node state"
+  >
+    {#if getIconConfig(nodeType as NodeType)}
+      {@const iconConfig = getIconConfig(nodeType as NodeType)}
+      {@const nodeState = resolveNodeState(nodeType as NodeType, undefined, metadata)}
+      {@const hasChildren = children.length > 0}
+      <div class={iconConfig.semanticClass}>
+        {#snippet iconComponent()}
+          {@const IconComponent = iconConfig.component}
+          <IconComponent
+            size={20}
+            state={iconConfig.hasState ? nodeState : undefined}
+            hasChildren={iconConfig.hasRingEffect ? hasChildren : undefined}
+            color={iconConfig.colorVar}
+          />
+        {/snippet}
+        {@render iconComponent()}
       </div>
     {:else}
-      <!-- Regular Text Node -->
+      <!-- Fallback for unrecognized node types -->
       <div class="node-icon">
         <div class="text-circle"></div>
       </div>
@@ -602,6 +671,21 @@
 
   :global(.markdown-underline) {
     text-decoration: underline;
+  }
+
+  :global(.markdown-code) {
+    font-family: 'Fira Code', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.9em;
+    background-color: hsl(var(--muted));
+    border: 1px solid hsl(var(--border));
+    border-radius: 3px;
+    padding: 0.1em 0.3em;
+    color: hsl(var(--foreground));
+  }
+
+  :global(.markdown-strikethrough) {
+    text-decoration: line-through;
+    opacity: 0.7;
   }
 
   /* Node colors now managed globally in app.css - Subtle Tint System */

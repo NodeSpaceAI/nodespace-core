@@ -37,7 +37,7 @@
 
   // Service imports
   import NodeReferenceService from '$lib/services/nodeReferenceService';
-  import { EnhancedNodeManager } from '$lib/services/enhancedNodeManager';
+  import { createReactiveNodeService } from '$lib/services/reactiveNodeService.svelte';
   import { HierarchyService } from '$lib/services/hierarchyService';
   import { NodeOperationsService } from '$lib/services/nodeOperationsService';
   import { MockDatabaseService } from '$lib/services/mockDatabaseService';
@@ -59,8 +59,61 @@
 
       // Create node manager events
       const nodeManagerEvents = {
-        focusRequested: () => {
-          // Focus handling logic here if needed
+        focusRequested: (nodeId: string, position: number) => {
+          console.log(`🎯 NodeServiceContext.focusRequested: ${nodeId} at position ${position}`);
+
+          // Use DOM API to focus the node directly with cursor positioning
+          setTimeout(() => {
+            const nodeElement = document.querySelector(`[data-node-id="${nodeId}"] [contenteditable]`) as HTMLElement;
+            if (nodeElement) {
+              console.log(`📝 Element content: "${nodeElement.textContent}"`);
+              console.log(`📏 Element content length: ${nodeElement.textContent?.length}`);
+              nodeElement.focus();
+
+              // Set cursor position using proven algorithm from working version
+              if (position >= 0) {
+                const selection = window.getSelection();
+                if (!selection) return;
+
+                const walker = document.createTreeWalker(nodeElement, NodeFilter.SHOW_TEXT, null);
+
+                let currentOffset = 0;
+                let currentNode;
+
+                while ((currentNode = walker.nextNode())) {
+                  const nodeLength = currentNode.textContent?.length || 0;
+                  console.log(`🔍 Walking text node: "${currentNode.textContent}" (length: ${nodeLength}, currentOffset: ${currentOffset})`);
+
+                  if (currentOffset + nodeLength >= position) {
+                    const range = document.createRange();
+                    const offsetInNode = position - currentOffset;
+                    console.log(`🎯 Found target node: offsetInNode=${offsetInNode}, nodeLength=${nodeLength}`);
+                    range.setStart(currentNode, Math.min(offsetInNode, nodeLength));
+                    range.setEnd(currentNode, Math.min(offsetInNode, nodeLength));
+
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                    console.log(`✅ Cursor positioned at offset ${offsetInNode} in text node (requested ${position})`);
+                    return;
+                  }
+
+                  currentOffset += nodeLength;
+                }
+
+                // Fallback: place cursor at end
+                const range = document.createRange();
+                range.selectNodeContents(nodeElement);
+                range.collapse(false);
+                selection.removeAllRanges();
+                selection.addRange(range);
+                console.log(`⚠️ Fallback: positioned cursor at end of content`);
+              }
+
+              console.log(`✅ Focus set on node ${nodeId}`);
+            } else {
+              console.error(`❌ Could not find contenteditable element for node ${nodeId}`);
+            }
+          }, 10);
         },
         hierarchyChanged: () => {
           // Hierarchy change handling logic here if needed
@@ -73,7 +126,11 @@
         }
       };
 
-      const nodeManager = new EnhancedNodeManager(nodeManagerEvents);
+      const nodeManager = createReactiveNodeService(nodeManagerEvents);
+
+      // Initialize with demo data
+      nodeManager.initializeWithRichDemoData();
+
       const hierarchyService = new HierarchyService(
         nodeManager as unknown as import('$lib/services/nodeManager').NodeManager
       );

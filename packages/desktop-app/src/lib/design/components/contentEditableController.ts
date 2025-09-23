@@ -8,6 +8,7 @@
 import ContentProcessor from '$lib/services/contentProcessor';
 import type { TriggerContext } from '$lib/services/nodeReferenceService';
 import type { SlashCommandContext } from '$lib/services/slashCommandService';
+import { splitMarkdownContent } from '$lib/utils/markdownSplitter';
 import { markdownToHtml, htmlToMarkdown } from '$lib/utils/markedConfig';
 
 export interface ContentEditableEvents {
@@ -56,6 +57,7 @@ export interface ContentEditableConfig {
 export class ContentEditableController {
   private element: HTMLDivElement;
   private nodeId: string;
+  private nodeType: string;
   private config: ContentEditableConfig;
   private isEditing: boolean = false;
   private isInitialized: boolean = false;
@@ -87,11 +89,13 @@ export class ContentEditableController {
   constructor(
     element: HTMLDivElement,
     nodeId: string,
+    nodeType: string,
     events: ContentEditableEvents,
     config: ContentEditableConfig = {}
   ) {
     this.element = element;
     this.nodeId = nodeId;
+    this.nodeType = nodeType;
     this.config = { allowMultiline: false, ...config };
     this.events = events;
 
@@ -123,8 +127,8 @@ export class ContentEditableController {
       // Position cursor after header syntax for new header nodes
       if (this.currentHeaderLevel > 0) {
         const headerPrefix = '#'.repeat(this.currentHeaderLevel) + ' ';
-        if (content === headerPrefix) {
-          // This is a new header node - position cursor at the end
+        if (content.startsWith(headerPrefix)) {
+          // This is a header node - position cursor after the syntax
           setTimeout(() => {
             this.restoreCursorPosition(headerPrefix.length);
           }, 0);
@@ -269,6 +273,54 @@ export class ContentEditableController {
   }
 
   /**
+   * Convert markdown to HTML for display mode (no visible syntax markers)
+   * Keeps all visual styling but hides the raw markdown syntax
+   */
+  private markdownToDisplayHtml(content: string): string {
+    // Find all formatting patterns including mixed syntax
+    const patterns = this.findAllFormattingPatterns(content);
+
+    if (patterns.length === 0) {
+      return content; // No formatting patterns found
+    }
+
+    let result = '';
+    let lastIndex = 0;
+
+    // Process each pattern in order
+    patterns.forEach((pattern) => {
+      const { start, end, content: innerContent, type } = pattern;
+
+      // Add any text before this pattern
+      result += content.substring(lastIndex, start);
+
+      // Build CSS class based on formatting type
+      let cssClass = '';
+      if (type === 'bold-italic') {
+        cssClass = 'markdown-bold markdown-italic';
+      } else if (type === 'bold') {
+        cssClass = 'markdown-bold';
+      } else if (type === 'italic') {
+        cssClass = 'markdown-italic';
+      } else if (type === 'code') {
+        cssClass = 'markdown-code';
+      } else if (type === 'strikethrough') {
+        cssClass = 'markdown-strikethrough';
+      }
+
+      // Create the display format WITHOUT visible syntax markers
+      result += `<span class="${cssClass}">${innerContent}</span>`;
+
+      lastIndex = end;
+    });
+
+    // Add any remaining text after the last pattern
+    result += content.substring(lastIndex);
+
+    return result;
+  }
+
+  /**
    * Convert markdown to HTML with syntax highlighting for editing mode
    * Uses comprehensive parsing to handle all formatting patterns including mixed syntax
    */
@@ -298,6 +350,10 @@ export class ContentEditableController {
         cssClass = 'markdown-bold';
       } else if (type === 'italic') {
         cssClass = 'markdown-italic';
+      } else if (type === 'code') {
+        cssClass = 'markdown-code';
+      } else if (type === 'strikethrough') {
+        cssClass = 'markdown-strikethrough';
       }
 
       // Create the edit-mode format with visible syntax
@@ -322,7 +378,7 @@ export class ContentEditableController {
     openMarker: string;
     closeMarker: string;
     content: string;
-    type: 'bold-italic' | 'bold' | 'italic';
+    type: 'bold-italic' | 'bold' | 'italic' | 'code' | 'strikethrough';
   }> {
     const patterns: Array<{
       start: number;
@@ -330,7 +386,7 @@ export class ContentEditableController {
       openMarker: string;
       closeMarker: string;
       content: string;
-      type: 'bold-italic' | 'bold' | 'italic';
+      type: 'bold-italic' | 'bold' | 'italic' | 'code' | 'strikethrough';
     }> = [];
 
     // Define all possible formatting patterns in order of precedence
@@ -379,6 +435,13 @@ export class ContentEditableController {
       // Bold patterns (medium precedence)
       { regex: /\*\*([^*]+?)\*\*/g, type: 'bold' as const, openMarker: '**', closeMarker: '**' },
       { regex: /__([^_]+?)__/g, type: 'bold' as const, openMarker: '__', closeMarker: '__' },
+
+      // Code patterns (high precedence - must come before single * and _ for italic)
+      { regex: /`([^`]+?)`/g, type: 'code' as const, openMarker: '`', closeMarker: '`' },
+
+      // Strikethrough patterns (medium precedence) - both single and double tilde
+      { regex: /~~([^~]+?)~~/g, type: 'strikethrough' as const, openMarker: '~~', closeMarker: '~~' },
+      { regex: /~([^~\n]+?)~/g, type: 'strikethrough' as const, openMarker: '~', closeMarker: '~' },
 
       // Italic patterns (lowest precedence)
       {
@@ -440,11 +503,11 @@ export class ContentEditableController {
     if (headerLevel > 0) {
       // For headers: strip # symbols but preserve inline formatting
       const cleanText = ContentProcessor.getInstance().stripHeaderSyntax(content);
-      const htmlContent = this.markdownToHtml(cleanText);
+      const htmlContent = this.markdownToDisplayHtml(cleanText);
       this.element.innerHTML = htmlContent;
     } else {
-      // For non-headers: show formatted HTML (bold, italic, etc.)
-      let htmlContent = this.markdownToHtml(content);
+      // For non-headers: show formatted HTML with custom styling (bold, italic, code, strikethrough)
+      let htmlContent = this.markdownToDisplayHtml(content);
 
       // For multiline nodes: ensure newlines are preserved as <br> tags
       if (this.config.allowMultiline) {
@@ -633,13 +696,19 @@ export class ContentEditableController {
   }
 
   private handleKeyDown(event: KeyboardEvent): void {
-    // Debug logging for Tab and Backspace keys
+    // Debug logging for all keyboard interactions
+    console.log(`🎹 Key pressed: ${event.key}${event.shiftKey ? ' + Shift' : ''}${event.ctrlKey ? ' + Ctrl' : ''}${event.metaKey ? ' + Meta' : ''}`);
+
     if (event.key === 'Tab') {
-      // Tab handling logic will follow
+      console.log(`🎹 Tab key detected, shift: ${event.shiftKey}`);
     }
 
     if (event.key === 'Backspace') {
-      // Backspace handling logic will follow
+      console.log(`🎹 Backspace key detected at position:`, this.isAtStart() ? 'START' : 'MIDDLE/END');
+    }
+
+    if (event.key === 'Enter') {
+      console.log(`🎹 Enter key detected, shift: ${event.shiftKey}`);
     }
 
     // Handle formatting shortcuts (Cmd+B, Cmd+I)
@@ -711,27 +780,36 @@ export class ContentEditableController {
 
         if (cursorAtBeginning) {
           // Cursor at beginning - create node above
+          console.log(`🎹 Dispatching createNewNode (cursor at beginning) for node: ${this.nodeId}`);
           this.events.createNewNode({
             afterNodeId: this.nodeId,
-            nodeType: 'text',
+            nodeType: this.nodeType, // Inherit current node's type
             currentContent: currentContent,
             newContent: '',
+            inheritHeaderLevel: this.currentHeaderLevel, // Inherit current header level
             cursorAtBeginning: true
           });
         } else {
-          // Simple split at cursor position - direct content manipulation
-          const beforeCursor = currentContent.substring(0, cursorPosition);
-          const afterCursor = currentContent.substring(cursorPosition);
+          // Markdown-aware split at cursor position
+          const splitResult = splitMarkdownContent(currentContent, cursorPosition);
 
-          // Update current element immediately to show truncated content
-          this.originalContent = beforeCursor;
-          this.element.textContent = beforeCursor;
+          console.log(`🎹 Dispatching createNewNode (markdown-aware split) for node: ${this.nodeId}`, {
+            original: currentContent,
+            position: cursorPosition,
+            before: splitResult.beforeContent,
+            after: splitResult.afterContent
+          });
+
+          // Update current element immediately to show completed syntax
+          this.originalContent = splitResult.beforeContent;
+          this.element.textContent = splitResult.beforeContent;
 
           this.events.createNewNode({
             afterNodeId: this.nodeId,
-            nodeType: 'text',
-            currentContent: beforeCursor,
-            newContent: afterCursor,
+            nodeType: this.nodeType, // Inherit current node's type
+            currentContent: splitResult.beforeContent,
+            newContent: splitResult.afterContent,
+            inheritHeaderLevel: this.currentHeaderLevel, // Inherit current header level
             cursorAtBeginning: false
           });
         }
@@ -741,6 +819,7 @@ export class ContentEditableController {
 
     // Tab key indents node
     if (event.key === 'Tab' && !event.shiftKey) {
+      console.log(`🎹 Dispatching indentNode event for node: ${this.nodeId}`);
       event.preventDefault();
       this.events.indentNode({ nodeId: this.nodeId });
       return;
@@ -748,6 +827,7 @@ export class ContentEditableController {
 
     // Shift+Tab outdents node
     if (event.key === 'Tab' && event.shiftKey) {
+      console.log(`🎹 Dispatching outdentNode event for node: ${this.nodeId}`);
       event.preventDefault();
       this.events.outdentNode({ nodeId: this.nodeId });
       return;
@@ -783,10 +863,13 @@ export class ContentEditableController {
     if (event.key === 'Backspace' && this.isAtStart()) {
       event.preventDefault();
       const currentContent = this.element.textContent || '';
+      console.log(`🔙 Backspace at start of node ${this.nodeId}, content: "${currentContent}"`);
 
       if (currentContent.trim() === '') {
+        console.log(`🗑️ Empty node - calling deleteNode for ${this.nodeId}`);
         this.events.deleteNode({ nodeId: this.nodeId });
       } else {
+        console.log(`🔗 Non-empty node - calling combineWithPrevious for ${this.nodeId}`);
         this.events.combineWithPrevious({
           nodeId: this.nodeId,
           currentContent
@@ -812,11 +895,14 @@ export class ContentEditableController {
     if (this.config.allowMultiline) {
       // Calculate the absolute text position within the entire element
       const textPosition = this.getTextOffsetFromElement(range.startContainer, range.startOffset);
+      console.log(`🔍 isAtStart (multiline): textPosition=${textPosition}, collapsed=${range.collapsed}, allowMultiline=${this.config.allowMultiline}`);
       return textPosition === 0 && range.collapsed;
     }
 
     // For single-line nodes: use the original logic
-    return range.startOffset === 0 && range.collapsed;
+    const isAtStart = range.startOffset === 0 && range.collapsed;
+    console.log(`🔍 isAtStart (single-line): startOffset=${range.startOffset}, collapsed=${range.collapsed}, result=${isAtStart}`);
+    return isAtStart;
   }
 
   private getCurrentColumn(): number {
@@ -1754,25 +1840,37 @@ export class ContentEditableController {
    * When user double-clicks "__bold__", the selection includes underscores and should be toggled off
    */
   private isTextAlreadyFormatted(text: string, targetMarker: string): boolean {
-    // UPDATED: Only check for exact marker matches to enable nesting behavior
-    // Different but equivalent markers (__ vs **) should nest, not toggle off
-    // Example: __bold__ + Cmd+B (**) should nest to **__bold__**
+    // CRITICAL FIX: When user double-clicks "__bold__" and presses Cmd+B,
+    // the selectedText is "__bold__" and targetMarker is "**"
+    // We need to detect that this text is already bold-formatted (with __ equivalent)
+    // and should be toggled OFF, not nested
 
     if (targetMarker === '**') {
-      // Bold formatting: check for ** only (not __ to allow nesting)
-      return text.startsWith('**') && text.endsWith('**') && text.length > 4;
-    } else if (targetMarker === '*') {
-      // Italic formatting: check for * only (not _ to allow nesting)
+      // Bold formatting: check for ** OR __ (equivalent markers when selection includes them)
       return (
-        text.startsWith('*') &&
-        text.endsWith('*') &&
-        text.length > 2 &&
-        !text.startsWith('**') &&
-        !text.endsWith('**')
+        (text.startsWith('**') && text.endsWith('**') && text.length > 4) ||
+        (text.startsWith('__') && text.endsWith('__') && text.length > 4)
+      );
+    } else if (targetMarker === '*') {
+      // Italic formatting: check for * OR _ (equivalent markers when selection includes them)
+      return (
+        (text.startsWith('*') &&
+          text.endsWith('*') &&
+          text.length > 2 &&
+          !text.startsWith('**') &&
+          !text.endsWith('**')) ||
+        (text.startsWith('_') &&
+          text.endsWith('_') &&
+          text.length > 2 &&
+          !text.startsWith('__') &&
+          !text.endsWith('__'))
       );
     } else if (targetMarker === '__') {
-      // Bold underscore formatting: check for __ only (not ** to allow nesting)
-      return text.startsWith('__') && text.endsWith('__') && text.length > 4;
+      // Bold underscore formatting: check for __ OR ** (equivalent markers when selection includes them)
+      return (
+        (text.startsWith('__') && text.endsWith('__') && text.length > 4) ||
+        (text.startsWith('**') && text.endsWith('**') && text.length > 4)
+      );
     } else if (targetMarker === '_') {
       // Italic underscore formatting: check for _ OR * (equivalent markers when selection includes them)
       return (
@@ -2435,8 +2533,16 @@ export class ContentEditableController {
     this.setLiveFormattedContent(newContent);
     this.events.contentChanged(newContent);
 
-    // Position cursor at end of inserted content
-    const newCursorPos = finalBeforeContent.length + content.length;
+    // Position cursor appropriately based on content type
+    let newCursorPos = finalBeforeContent.length + content.length;
+
+    // For header content (# , ## , ### ), position cursor after the syntax for ready typing
+    const contentHeaderMatch = content.match(/^(#{1,6}\s+)(.*)$/);
+    if (contentHeaderMatch) {
+      // Position cursor after the header syntax, before any additional content
+      newCursorPos = finalBeforeContent.length + contentHeaderMatch[1].length;
+    }
+
     setTimeout(() => {
       this.restoreCursorPosition(newCursorPos);
     }, 0);
