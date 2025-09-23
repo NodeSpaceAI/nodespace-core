@@ -19,50 +19,10 @@ if (
   }
 }
 
-// Ensure DOM globals are available
-import { JSDOM } from 'jsdom';
+// DOM globals are provided by happy-dom environment
+// No need to set up additional DOM globals - happy-dom handles this
 
-const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', {
-  url: 'http://localhost:3000',
-  pretendToBeVisual: true,
-  resources: 'usable'
-});
-
-// Set up global DOM
-Object.defineProperty(globalThis, 'window', {
-  value: dom.window,
-  writable: true
-});
-
-Object.defineProperty(globalThis, 'document', {
-  value: dom.window.document,
-  writable: true
-});
-
-Object.defineProperty(globalThis, 'navigator', {
-  value: dom.window.navigator,
-  writable: true
-});
-
-Object.defineProperty(globalThis, 'HTMLElement', {
-  value: dom.window.HTMLElement,
-  writable: true
-});
-
-Object.defineProperty(globalThis, 'Element', {
-  value: dom.window.Element,
-  writable: true
-});
-
-Object.defineProperty(globalThis, 'Node', {
-  value: dom.window.Node,
-  writable: true
-});
-
-Object.defineProperty(globalThis, 'NodeFilter', {
-  value: dom.window.NodeFilter,
-  writable: true
-});
+// Plugin registry initialization moved to globalSetup.ts
 
 // Mock MutationObserver for testing
 interface MockMutationRecord {

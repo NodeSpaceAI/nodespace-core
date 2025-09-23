@@ -6,18 +6,18 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { NodeReferenceService } from '$lib/services/nodeReferenceService';
+import { NodeReferenceService } from '../../lib/services/nodeReferenceService';
 import {
   createReactiveNodeService,
   type ReactiveNodeService as NodeManager,
   type Node
-} from '$lib/services/reactiveNodeService.svelte.js';
-import { HierarchyService } from '$lib/services/hierarchyService';
-import { NodeOperationsService } from '$lib/services/nodeOperationsService';
-import { MockDatabaseService } from '$lib/services/mockDatabaseService';
-import { ContentProcessor } from '$lib/services/contentProcessor';
-import { eventBus } from '$lib/services/eventBus';
-import type { ReferencesUpdateNeededEvent, NodeDeletedEvent } from '$lib/services/eventTypes';
+} from '../../lib/services/reactiveNodeService.svelte.js';
+import { HierarchyService } from '../../lib/services/hierarchyService';
+import { NodeOperationsService } from '../../lib/services/nodeOperationsService';
+import { MockDatabaseService } from '../../lib/services/mockDatabaseService';
+import { ContentProcessor } from '../../lib/services/contentProcessor';
+import { eventBus } from '../../lib/services/eventBus';
+import type { ReferencesUpdateNeededEvent, NodeDeletedEvent } from '../../lib/services/eventTypes';
 
 // Mock document for test environment
 Object.defineProperty(global, 'document', {

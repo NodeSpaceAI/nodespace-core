@@ -4,7 +4,10 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { ReactiveNodeService as NodeManager } from '../../lib/services/reactiveNodeService.svelte.js';
+import {
+  createReactiveNodeService,
+  ReactiveNodeService as NodeManager
+} from '../../lib/services/reactiveNodeService.svelte.js';
 import type { NodeManagerEvents } from '../../lib/services/reactiveNodeService.svelte.js';
 
 describe('NodeManager Performance Tests', () => {
@@ -18,7 +21,7 @@ describe('NodeManager Performance Tests', () => {
       nodeCreated: () => {},
       nodeDeleted: () => {}
     };
-    nodeManager = new NodeManager(mockEvents);
+    nodeManager = createReactiveNodeService(mockEvents);
   });
 
   // Generate large dataset for performance testing

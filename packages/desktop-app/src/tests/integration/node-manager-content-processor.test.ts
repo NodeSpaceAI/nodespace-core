@@ -5,6 +5,7 @@
 
 import { describe, test, expect, beforeEach } from 'vitest';
 import {
+  createReactiveNodeService,
   ReactiveNodeService as NodeManager,
   type NodeManagerEvents
 } from '../../lib/services/reactiveNodeService.svelte.js';
@@ -20,7 +21,7 @@ describe('NodeManager + ContentProcessor Integration', () => {
       nodeCreated: () => {},
       nodeDeleted: () => {}
     };
-    nodeManager = new NodeManager(mockEvents);
+    nodeManager = createReactiveNodeService(mockEvents);
   });
 
   describe('Dual-Representation Methods', () => {

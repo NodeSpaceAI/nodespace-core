@@ -9,7 +9,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { ReactiveNodeService as NodeManager } from '../../lib/services/reactiveNodeService.svelte.js';
+import {
+  createReactiveNodeService,
+  ReactiveNodeService as NodeManager
+} from '../../lib/services/reactiveNodeService.svelte.js';
 import { eventBus } from '../../lib/services/eventBus';
 import type { NodeManagerEvents } from '../../lib/services/reactiveNodeService.svelte.js';
 import type { NodeSpaceEvent } from '../../lib/services/eventTypes';
@@ -30,7 +33,7 @@ describe('EventBus-NodeManager Integration', () => {
       nodeDeleted: vi.fn()
     };
 
-    nodeManager = new NodeManager(mockEvents);
+    nodeManager = createReactiveNodeService(mockEvents);
     // Skip ReactiveNodeManager in tests due to $state not being available
 
     // Reset EventBus state first

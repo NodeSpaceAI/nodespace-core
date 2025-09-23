@@ -59,7 +59,6 @@
             selection?.addRange(range);
           }
         }
-
       } else {
         console.error(`❌ Could not find contenteditable element for node ${nodeId}`);
       }

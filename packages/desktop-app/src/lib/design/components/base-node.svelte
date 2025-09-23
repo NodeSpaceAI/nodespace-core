@@ -61,7 +61,6 @@
   // Services temporarily disabled during refactoring
   let nodeReferenceService = $state(null);
 
-
   // DOM element and controller - Svelte bind:this assignment
   let contentEditableElement: HTMLDivElement | undefined = undefined;
   let controller: ContentEditableController | null = null;

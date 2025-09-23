@@ -68,7 +68,6 @@
       // Create node manager events
       const nodeManagerEvents = {
         focusRequested: (nodeId: string, position: number) => {
-
           // Use DOM API to focus the node directly with cursor positioning
           setTimeout(() => {
             const nodeElement = document.querySelector(
@@ -111,7 +110,6 @@
                 selection.removeAllRanges();
                 selection.addRange(range);
               }
-
             } else {
               console.error(`❌ Could not find contenteditable element for node ${nodeId}`);
             }

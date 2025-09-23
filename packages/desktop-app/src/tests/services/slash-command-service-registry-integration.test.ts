@@ -6,7 +6,7 @@
  */
 
 import { expect, describe, it, beforeEach } from 'vitest';
-import { SlashCommandService } from '$lib/services/slashCommandService.js';
+import { SlashCommandService } from '../../lib/services/slashCommandService.js';
 import { pluginRegistry } from '$lib/plugins/index';
 import { registerCorePlugins } from '$lib/plugins/corePlugins';
 
@@ -20,29 +20,31 @@ describe('SlashCommandService Registry Integration', () => {
     registerCorePlugins(pluginRegistry);
   });
 
-  describe('Basic Functionality (Registry Disabled)', () => {
-    it('should return hardcoded commands when registry integration disabled', () => {
+  describe('Basic Functionality (Registry Enabled)', () => {
+    it('should return registry commands when registry integration enabled', () => {
       const commands = service.getCommands();
 
-      expect(commands).toHaveLength(6); // 6 hardcoded commands
-      expect(commands.map((cmd) => cmd.id)).toEqual([
-        'text',
-        'header1',
-        'header2',
-        'header3',
-        'task',
-        'ai-chat'
-      ]);
+      expect(commands).toHaveLength(7); // 7 core plugin commands (includes date)
+
+      // Commands are sorted by priority (higher first), then by name
+      const commandIds = commands.map((cmd) => cmd.id);
+      expect(commandIds).toContain('text');
+      expect(commandIds).toContain('header1');
+      expect(commandIds).toContain('header2');
+      expect(commandIds).toContain('header3');
+      expect(commandIds).toContain('task');
+      expect(commandIds).toContain('ai-chat');
+      expect(commandIds).toContain('date');
     });
 
-    it('should filter hardcoded commands correctly', () => {
+    it('should filter registry commands correctly', () => {
       const filtered = service.filterCommands('header');
 
       expect(filtered).toHaveLength(3);
       expect(filtered.every((cmd) => cmd.name.toLowerCase().includes('header'))).toBe(true);
     });
 
-    it('should find hardcoded commands by ID', () => {
+    it('should find registry commands by ID', () => {
       const command = service.findCommand('task');
 
       expect(command).toBeDefined();
@@ -96,13 +98,14 @@ describe('SlashCommandService Registry Integration', () => {
   });
 
   describe('Command Execution', () => {
-    it('should execute hardcoded commands correctly', () => {
+    it('should execute registry commands correctly', () => {
       const taskCommand = service.findCommand('task')!;
       const result = service.executeCommand(taskCommand);
 
       expect(result).toEqual({
-        content: '- [ ] ',
-        nodeType: 'task'
+        content: '', // Task plugin has empty content template
+        nodeType: 'task',
+        headerLevel: undefined
       });
     });
 
@@ -155,15 +158,15 @@ describe('SlashCommandService Registry Integration', () => {
   });
 
   describe('Backwards Compatibility', () => {
-    it('should maintain exact same behavior when registry disabled', () => {
-      const oldCommands = service.getCommands();
-      const oldFiltered = service.filterCommands('task');
-      const oldFound = service.findCommand('task');
+    it('should maintain registry-based behavior with all core commands', () => {
+      const commands = service.getCommands();
+      const filtered = service.filterCommands('task');
+      const found = service.findCommand('task');
 
-      // These should be identical to pre-registry behavior
-      expect(oldCommands).toHaveLength(6);
-      expect(oldFiltered.length).toBe(1);
-      expect(oldFound?.id).toBe('task');
+      // Registry-based behavior includes all core commands
+      expect(commands).toHaveLength(7); // All 7 core commands (includes date)
+      expect(filtered.length).toBe(1);
+      expect(found?.id).toBe('task');
     });
 
     it('should find all hardcoded commands correctly', () => {

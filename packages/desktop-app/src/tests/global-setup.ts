@@ -1,17 +1,9 @@
 /**
- * Early setup for Svelte 5 mocks
- * This must run before any Svelte components are imported
+ * Global setup for Vitest
+ * This runs once before all test files
  */
 
-// Declare global types for Svelte runes
-declare global {
-  var $state: <T>(initialValue: T) => T;
-  var $derived: { by: <T>(getter: () => T) => T };
-  var $effect: (fn: () => void | (() => void)) => void;
-}
-
 // Mock Svelte 5 runes for testing compatibility
-
 function createMockState<T>(initialValue: T): T {
   // For primitive values, just return the value directly
   if (typeof initialValue !== 'object' || initialValue === null) {
@@ -31,29 +23,18 @@ function createMockDerived<T>(getter: () => T): { get value(): T } {
   };
 }
 
-// Mock effect function (used in some reactive code)
-function createMockEffect(fn: () => void | (() => void)): void {
-  // Execute effect immediately in tests and ignore cleanup
-  // Execute effect immediately in tests
-  fn();
-  // Could store cleanup functions if needed for teardown
-}
-
-// Mock functions with TypeScript compatibility
+// Define Svelte 5 runes globally
 const stateFunction = function <T>(initialValue: T): T {
   return createMockState(initialValue);
-} as unknown;
+};
 
 const derivedFunction = {
   by: function <T>(getter: () => T) {
     return createMockDerived(getter);
   }
-} as unknown;
+};
 
-const effectFunction = createMockEffect as unknown;
-
-// CRITICAL: Set up mocks immediately before any imports can happen
-// Define on globalThis first
+// Global definitions
 Object.defineProperty(globalThis, '$state', {
   value: stateFunction,
   writable: true,
@@ -66,24 +47,10 @@ Object.defineProperty(globalThis, '$derived', {
   configurable: true
 });
 
-Object.defineProperty(globalThis, '$effect', {
-  value: effectFunction,
-  writable: true,
-  configurable: true
-});
-
-// Also define on global for Node.js compatibility (Vitest environment)
+// Also define on global for Node.js compatibility
 if (typeof global !== 'undefined') {
   (global as Record<string, unknown>).$state = stateFunction;
   (global as Record<string, unknown>).$derived = derivedFunction;
-  (global as Record<string, unknown>).$effect = effectFunction;
-}
-
-// Ensure the mocks are available in window context as well (if DOM environment)
-if (typeof window !== 'undefined') {
-  (window as Record<string, unknown>).$state = stateFunction;
-  (window as Record<string, unknown>).$derived = derivedFunction;
-  (window as Record<string, unknown>).$effect = effectFunction;
 }
 
 // Initialize global plugin registry for all tests
@@ -93,4 +60,9 @@ import { registerCorePlugins } from '$lib/plugins/corePlugins';
 // Register core plugins globally for all tests - only once per test run
 if (!pluginRegistry.hasPlugin('text')) {
   registerCorePlugins(pluginRegistry);
+}
+
+export default async function setup() {
+  // Global setup runs once before all tests
+  console.log('Global test setup complete: Svelte 5 runes mocked, plugin registry initialized');
 }

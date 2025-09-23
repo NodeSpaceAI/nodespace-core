@@ -41,6 +41,18 @@ declare global {
   var $state: <T>(initialValue: T) => T;
 
   /**
+   * Mock Svelte 5 $derived rune for testing
+   */
+  var $derived: {
+    by: <T>(getter: () => T) => { get value(): T };
+  };
+
+  /**
+   * Mock Svelte 5 $effect rune for testing
+   */
+  var $effect: (fn: () => void | (() => void)) => void;
+
+  /**
    * Additional test-specific global extensions
    */
   namespace globalThis {

@@ -79,12 +79,10 @@ describe('Core Plugins Integration', () => {
     it('should have valid dateNodePlugin definition', () => {
       expect(dateNodePlugin.id).toBe('date');
       expect(dateNodePlugin.name).toBe('Date Node');
-      expect(dateNodePlugin.config.slashCommands).toHaveLength(1);
+      expect(dateNodePlugin.config.slashCommands).toHaveLength(0);
       expect(dateNodePlugin.viewer).toBeDefined();
       expect(dateNodePlugin.reference).toBeDefined();
-
-      const dateCommand = dateNodePlugin.config.slashCommands[0];
-      expect(dateCommand.contentTemplate).toMatch(/^\d{4}-\d{2}-\d{2}$/); // YYYY-MM-DD format
+      // Date nodes do not have slash commands - they are created through other mechanisms
     });
 
     it('should have valid reference-only plugins', () => {
@@ -155,8 +153,8 @@ describe('Core Plugins Integration', () => {
 
       const stats = registry.getStats();
 
-      // text: 4 commands, task: 1, ai-chat: 1, date: 1, user: 0, document: 0 = 7 total
-      expect(stats.slashCommandsCount).toBe(7);
+      // text: 4 commands, task: 1, ai-chat: 1, date: 0, user: 0, document: 0 = 6 total
+      expect(stats.slashCommandsCount).toBe(6);
     });
 
     it('should provide all slash commands with proper inheritance', () => {
@@ -164,7 +162,7 @@ describe('Core Plugins Integration', () => {
 
       const commands = registry.getAllSlashCommands();
 
-      expect(commands).toHaveLength(7);
+      expect(commands).toHaveLength(6);
 
       // Verify text node commands from BasicNodeTypeRegistry work
       const textCommands = commands.filter((cmd) =>
@@ -175,7 +173,7 @@ describe('Core Plugins Integration', () => {
       // Verify other core commands
       expect(commands.find((cmd) => cmd.id === 'task')).toBeDefined();
       expect(commands.find((cmd) => cmd.id === 'ai-chat')).toBeDefined();
-      expect(commands.find((cmd) => cmd.id === 'date')).toBeDefined();
+      // Date nodes do not have slash commands - they are created through other mechanisms
     });
   });
 
@@ -230,8 +228,8 @@ describe('Core Plugins Integration', () => {
         'header2',
         'header3', // text plugin
         'task', // task plugin
-        'ai-chat', // ai-chat plugin
-        'date' // date plugin
+        'ai-chat' // ai-chat plugin
+        // date plugin has no slash commands
       ];
 
       for (const commandId of expectedCommands) {
@@ -328,7 +326,7 @@ describe('Core Plugins Integration', () => {
       registerExternalPlugin(registry, externalPlugin);
 
       expect(registry.getAllPlugins()).toHaveLength(initialCount + 1);
-      expect(registry.getAllSlashCommands()).toHaveLength(8); // 7 core + 1 external
+      expect(registry.getAllSlashCommands()).toHaveLength(7); // 6 core + 1 external
     });
   });
 

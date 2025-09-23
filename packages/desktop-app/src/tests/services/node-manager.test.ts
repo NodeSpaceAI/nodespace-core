@@ -14,7 +14,7 @@ import {
   createReactiveNodeService,
   type ReactiveNodeService as NodeManager,
   type NodeManagerEvents
-} from '$lib/services/reactiveNodeService.svelte.js';
+} from '../../lib/services/reactiveNodeService.svelte.js';
 
 describe('NodeManager', () => {
   let nodeManager: NodeManager;

@@ -4,6 +4,45 @@
 import { defineConfig } from 'vitest/config';
 import { sveltekit } from '@sveltejs/kit/vite';
 
+// Early Svelte 5 rune mocks - must be defined BEFORE any module imports
+function createMockState<T>(initialValue: T): T {
+  if (typeof initialValue !== 'object' || initialValue === null) {
+    return initialValue;
+  }
+  return initialValue;
+}
+
+function createMockDerived<T>(getter: () => T): { get value(): T } {
+  return {
+    get value() {
+      return getter();
+    }
+  };
+}
+
+function createMockEffect(fn: () => void | (() => void)): void {
+  // Execute effect immediately in tests
+  fn();
+}
+
+// Set up mocks immediately at module level
+const stateFunction = function <T>(initialValue: T): T {
+  return createMockState(initialValue);
+};
+
+const derivedFunction = {
+  by: function <T>(getter: () => T) {
+    return createMockDerived(getter);
+  }
+};
+
+const effectFunction = createMockEffect;
+
+// Ensure mocks exist on globalThis before any imports
+globalThis.$state = stateFunction as unknown;
+globalThis.$derived = derivedFunction as unknown;
+globalThis.$effect = effectFunction as unknown;
+
 export default defineConfig({
   plugins: [sveltekit()],
 
@@ -13,7 +52,7 @@ export default defineConfig({
     globals: true,
     setupFiles: ['src/tests/setup-svelte-mocks.ts', 'src/tests/setup.ts'],
 
-    // Ensure proper global environment
+    // Global setup runs once, but variables don't persist to test environment
     globalSetup: undefined,
     environmentOptions: {
       node: {

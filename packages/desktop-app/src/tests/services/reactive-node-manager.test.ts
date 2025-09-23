@@ -6,11 +6,11 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { createReactiveNodeService } from '$lib/services/reactiveNodeService.svelte.js';
+import { createReactiveNodeService } from '../../lib/services/reactiveNodeService.svelte.js';
 import type {
   NodeManagerEvents,
   ReactiveNodeService
-} from '$lib/services/reactiveNodeService.svelte.js';
+} from '../../lib/services/reactiveNodeService.svelte.js';
 
 describe('ReactiveNodeService - Reactive State Synchronization', () => {
   let nodeManager: ReactiveNodeService;

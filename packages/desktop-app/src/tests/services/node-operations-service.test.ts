@@ -15,12 +15,12 @@ import {
   createReactiveNodeService,
   type ReactiveNodeService as NodeManager,
   type NodeManagerEvents
-} from '$lib/services/reactiveNodeService.svelte.js';
-import { HierarchyService } from '$lib/services/hierarchyService';
-import { NodeOperationsService } from '$lib/services/nodeOperationsService';
-import { ContentProcessor } from '$lib/services/contentProcessor';
-import { eventBus } from '$lib/services/eventBus';
-import type { NodeSpaceNode } from '$lib/services/mockDatabaseService';
+} from '../../lib/services/reactiveNodeService.svelte.js';
+import { HierarchyService } from '../../lib/services/hierarchyService';
+import { NodeOperationsService } from '../../lib/services/nodeOperationsService';
+import { ContentProcessor } from '../../lib/services/contentProcessor';
+import { eventBus } from '../../lib/services/eventBus';
+import type { NodeSpaceNode } from '../../lib/services/mockDatabaseService';
 
 describe('NodeOperationsService', () => {
   let nodeManager: NodeManager;

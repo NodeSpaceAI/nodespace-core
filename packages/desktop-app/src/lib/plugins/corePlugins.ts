@@ -131,7 +131,7 @@ export const dateNodePlugin: PluginDefinition = {
   description: 'Date and time node',
   version: '1.0.0',
   config: {
-    slashCommands: [], // Date nodes should not be creatable via slash commands
+    slashCommands: [],
     canHaveChildren: false,
     canBeChild: true
   },
@@ -190,24 +190,28 @@ export const corePlugins = [
   documentNodePlugin
 ];
 
-// Track if core plugins have been registered to prevent double registration
-let corePluginsRegistered = false;
-
 /**
  * Register all core plugins with the unified registry
  * Replaces the old BasicNodeTypeRegistry initialization
  */
 export function registerCorePlugins(registry: import('./pluginRegistry').PluginRegistry): void {
-  // Prevent double registration
-  if (corePluginsRegistered) {
-    return;
+  // Check if plugins are already registered in this specific registry instance
+  if (registry.hasPlugin('text')) {
+    return; // Already registered in this registry
   }
 
   for (const plugin of corePlugins) {
     registry.register(plugin);
   }
 
-  corePluginsRegistered = true;
+  // Log registration statistics
+  const stats = registry.getStats();
+  console.log('[UnifiedPluginRegistry] Core plugins registered:', {
+    plugins: stats.pluginsCount,
+    slashCommands: stats.slashCommandsCount,
+    viewers: stats.viewersCount,
+    references: stats.referencesCount
+  });
 }
 
 /**
@@ -219,4 +223,5 @@ export function registerExternalPlugin(
   plugin: PluginDefinition
 ): void {
   registry.register(plugin);
+  console.log(`[UnifiedPluginRegistry] External plugin registered: ${plugin.name} (${plugin.id})`);
 }

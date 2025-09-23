@@ -12,11 +12,12 @@
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
 import {
+  createReactiveNodeService,
   ReactiveNodeService as NodeManager,
   type NodeManagerEvents
-} from '$lib/services/reactiveNodeService.svelte.js';
-import { HierarchyService } from '$lib/services/hierarchyService';
-import { eventBus } from '$lib/services/eventBus';
+} from '../../lib/services/reactiveNodeService.svelte.js';
+import { HierarchyService } from '../../lib/services/hierarchyService';
+import { eventBus } from '../../lib/services/eventBus';
 
 // Test helper interfaces
 interface TestHierarchyNode {
@@ -44,7 +45,7 @@ describe('HierarchyService', () => {
     };
 
     // Initialize services
-    nodeManager = new NodeManager(events);
+    nodeManager = createReactiveNodeService(events);
     hierarchyService = new HierarchyService(nodeManager);
   });
 

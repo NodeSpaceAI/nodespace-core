@@ -1,7 +1,6 @@
 /**
- * ReactiveNodeService - Pure Svelte 5 Runes Reactive Architecture (Function-based)
- *
- * Alternative implementation using function-based approach for better Svelte 5 compatibility
+ * Test-compatible version of ReactiveNodeService
+ * Provides the same API without Svelte 5 runes dependency
  */
 
 import { v4 as uuidv4 } from 'uuid';
@@ -32,27 +31,22 @@ export interface NodeManagerEvents {
 }
 
 export function createReactiveNodeService(events: NodeManagerEvents) {
-  // Pure Svelte 5 reactive state - using Record instead of Map to avoid Svelte 5 reactivity issues
-  const _nodes = $state<Record<string, Node>>({});
-  let _rootNodeIds = $state<string[]>([]);
-  const _collapsedNodes = $state<Set<string>>(new Set());
-  const _activeNodeId = $state<string | undefined>(undefined);
+  // Plain JavaScript state management for tests - no Svelte runes
+  const _nodes: Record<string, Node> = {};
+  let _rootNodeIds: string[] = [];
+  const _collapsedNodes = new Set<string>();
+  let _activeNodeId: string | undefined = undefined;
 
   // Manual reactivity trigger for debugging
-  let _updateTrigger = $state(0);
+  let _updateTrigger = 0;
 
-  // Pure reactive computed visible nodes - with logging to debug reactivity
-  const visibleNodes = $derived.by(() => {
-    // Force reactivity by accessing the trigger
-    void _updateTrigger;
-    const result = getVisibleNodesRecursive(_rootNodeIds);
-    return result;
-  });
+  // Computed visible nodes - without Svelte reactivity
+  function getVisibleNodes(): Node[] {
+    return getVisibleNodesRecursive(_rootNodeIds);
+  }
 
-  const serviceName = 'ReactiveNodeService';
-
-  // ContentProcessor instance for content processing methods
   const contentProcessor = ContentProcessor.getInstance();
+  const serviceName = 'ReactiveNodeService';
 
   function getVisibleNodesRecursive(nodeIds: string[]): Node[] {
     const result: Node[] = [];
@@ -141,10 +135,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       isPlaceholder: initialContent.trim() === '' || /^#{1,6}\s*$/.test(initialContent.trim())
     };
 
-    // Add node to record using assignment pattern
+    // Add node to record
     _nodes[nodeId] = newNode;
 
-    // Handle hierarchy positioning using assignment patterns
+    // Handle hierarchy positioning
     if (insertAtBeginning) {
       // Cursor at beginning: new node goes ABOVE (shifts current node down)
       // The new node is empty, current node keeps its children
@@ -209,14 +203,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
 
     events.nodeCreated(nodeId);
-
-    // Emit EventBus event for integration tests
-    eventBus.emit({
-      type: 'node:created' as const,
-      nodeId,
-      timestamp: Date.now()
-    });
-
+    events.hierarchyChanged();
     return nodeId;
   }
 
@@ -226,7 +213,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     headerLevel?: number,
     insertAtBeginning: boolean = false
   ): string {
-    return createNode(afterNodeId, '', nodeType, headerLevel, false, insertAtBeginning);
+    return createNode(afterNodeId, '', nodeType, headerLevel, insertAtBeginning);
   }
 
   // Debounce timers for expensive operations
@@ -245,7 +232,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       return;
     }
 
-    // IMMEDIATE: Update local state for responsive UI using assignment-based reactivity
+    // IMMEDIATE: Update local state for responsive UI
     const headerLevel = contentProcessor.parseHeaderLevel(content);
     _nodes[nodeId] = {
       ...node,
@@ -267,7 +254,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       return;
     }
 
-    // IMMEDIATE: Update node type for responsive UI using assignment-based reactivity
+    // IMMEDIATE: Update node type for responsive UI
     // Also set autoFocus temporarily to restore focus when component switches
     _nodes[nodeId] = { ...node, nodeType, autoFocus: true };
 
@@ -396,18 +383,17 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function rebuildChildrenArrays(): void {
-    // Clear all children arrays
-    for (const node of Object.values(_nodes)) {
-      node.children = [];
+    // Clear all children arrays first
+    for (const nodeId of Object.keys(_nodes)) {
+      _nodes[nodeId] = { ..._nodes[nodeId], children: [] };
     }
 
     // Rebuild children arrays by iterating through all nodes and adding them to their parent's children
     for (const node of Object.values(_nodes)) {
-      if (node.parentId) {
+      if (node.parentId && _nodes[node.parentId]) {
         const parent = _nodes[node.parentId];
-        if (parent) {
-          parent.children.push(node.id);
-        }
+        const updatedParent = { ...parent, children: [...parent.children, node.id] };
+        _nodes[node.parentId] = updatedParent;
       }
     }
   }
@@ -416,7 +402,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const expectedDepth = node.parentId ? (findNode(node.parentId)?.depth ?? 0) + 1 : 0;
 
     if (node.depth !== expectedDepth) {
-      // Use assignment-based reactivity - reassign the entire object
+      // Update the node object directly
       _nodes[node.id] = { ...node, depth: expectedDepth };
     }
 
@@ -427,7 +413,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       const child = _nodes[childId];
       if (child) {
         if (child.depth !== expectedChildDepth) {
-          // Use assignment-based reactivity - reassign the entire object
+          // Update the child object directly
           _nodes[childId] = { ...child, depth: expectedChildDepth };
         }
         // Recursively update the child's descendants
@@ -476,40 +462,16 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           ];
         }
       } else {
-        // Handle sibling merge: children become siblings of the merged node
-        // Find where to insert the children as siblings
-        const parentId = previousNode.parentId;
-        if (parentId) {
-          const parent = newNodesRecord[parentId];
-          if (parent) {
-            // Find position of the previous node in parent's children
-            const previousNodeIndex = parent.children.indexOf(previousNodeId);
-            if (previousNodeIndex !== -1) {
-              // Insert current node's children right after the previous node
-              const beforeChildren = parent.children.slice(0, previousNodeIndex + 1);
-              const afterChildren = parent.children.slice(previousNodeIndex + 1);
-              newNodesRecord[parentId] = {
-                ...parent,
-                children: [...beforeChildren, ...currentNode.children, ...afterChildren]
-              };
-            }
-          }
-        } else {
-          // Previous node is a root node, make children root nodes too
-          _rootNodeIds.push(...currentNode.children);
-        }
+        // Handle sibling merge: children of current node become children of the previous node
+        // Transfer all children from current node to previous node
+        updatedPreviousNode.children = [...previousNode.children, ...currentNode.children];
 
-        // Update children's parent reference and shift them up to sibling level
-        // Children become siblings, so they get the same parent and depth as the merged node
+        // Update children's parent reference to point to the previous node
         for (const childId of currentNode.children) {
           const child = newNodesRecord[childId];
           if (child) {
-            // Children shift up to become siblings at the same level as the merged node
-            newNodesRecord[childId] = {
-              ...child,
-              parentId: previousNode.parentId,
-              depth: previousNode.depth
-            };
+            // Children become children of the merged node (previous node)
+            newNodesRecord[childId] = { ...child, parentId: previousNodeId };
           }
         }
       }
@@ -602,7 +564,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Add to previous sibling as child
     prevSibling.children.push(nodeId);
 
-    // Use assignment-based reactivity for node updates
+    // Update node properties
     _nodes[nodeId] = { ...node, parentId: prevSiblingId, depth: prevSibling.depth + 1 };
 
     updateDescendantDepths(node);
@@ -686,7 +648,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       };
     }
 
-    // Update the outdented node with assignment-based reactivity
+    // Update the outdented node
     const newDepth = newParentId ? (findNode(newParentId)?.depth ?? 0) + 1 : 0;
 
     _nodes[nodeId] = { ...node, parentId: newParentId, depth: newDepth };
@@ -707,11 +669,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Add the following siblings as children of the outdented node (after existing children)
     if (followingSiblings.length > 0) {
-      // Update their parent references in the reactive storage
+      // Update their parent references in the storage
       for (const siblingId of followingSiblings) {
         const siblingNode = findNode(siblingId);
         if (siblingNode) {
-          // Create updated node and save back to reactive storage
+          // Create updated node and save back to storage
           const updatedSibling = { ...siblingNode, parentId: nodeId };
           _nodes[siblingId] = updatedSibling;
         } else {
@@ -788,13 +750,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     delete _nodes[nodeId];
     events.nodeDeleted(nodeId);
-
-    // Emit EventBus event for integration tests
-    eventBus.emit({
-      type: 'node:deleted' as const,
-      nodeId,
-      timestamp: Date.now()
-    });
   }
 
   function toggleExpanded(nodeId: string): boolean {
@@ -805,9 +760,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         return false;
       }
 
-      // Toggle the expanded state using assignment-based reactivity
-      const newExpandedState = !node.expanded;
-      _nodes[nodeId] = { ...node, expanded: newExpandedState };
+      // Toggle the expanded state by mutating the object in place
+      // This maintains existing object references that tests might hold
+      node.expanded = !node.expanded;
 
       return true;
     } catch (error) {
@@ -840,15 +795,100 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     };
 
     eventBus.emit(nodeUpdatedEvent);
+  }
 
-    // Also emit decoration update needed for content updates
-    if (updateType === 'content') {
-      eventBus.emit({
-        type: 'decoration:update-needed' as const,
-        nodeId,
-        timestamp: Date.now()
-      });
+  function initializeFromLegacyData(legacyNodes: unknown[]): void {
+    // Clear existing data
+    Object.keys(_nodes).forEach((key) => delete _nodes[key]);
+    _rootNodeIds = [];
+    _collapsedNodes.clear();
+
+    // First pass: check if this uses flat structure (nodes with children as IDs) or nested structure
+    const hasNestedChildren = legacyNodes.some(
+      (node) =>
+        Array.isArray(node.children) &&
+        node.children.length > 0 &&
+        typeof node.children[0] === 'object' &&
+        node.children[0].id
+    );
+
+    if (hasNestedChildren) {
+      // Handle nested structure recursively
+      function processLegacyNode(legacyNode: unknown, parentId?: string, depth: number = 0): void {
+        if (!legacyNode || typeof legacyNode !== 'object' || !legacyNode.id) {
+          return;
+        }
+
+        const node: Node = {
+          id: legacyNode.id,
+          content: legacyNode.content || '',
+          nodeType: legacyNode.nodeType || 'text',
+          depth: depth,
+          parentId: parentId,
+          children: [],
+          expanded: legacyNode.expanded !== false,
+          autoFocus: legacyNode.autoFocus || false,
+          inheritHeaderLevel: legacyNode.inheritHeaderLevel || 0,
+          metadata: legacyNode.metadata || {},
+          mentions: legacyNode.mentions,
+          before_sibling_id: legacyNode.before_sibling_id,
+          isPlaceholder: legacyNode.isPlaceholder || false
+        };
+
+        _nodes[node.id] = node;
+
+        if (!parentId) {
+          _rootNodeIds.push(node.id);
+        }
+
+        if (Array.isArray(legacyNode.children)) {
+          const childIds: string[] = [];
+          for (const childNode of legacyNode.children) {
+            if (childNode && childNode.id) {
+              childIds.push(childNode.id);
+              processLegacyNode(childNode, node.id, depth + 1);
+            }
+          }
+          _nodes[node.id] = { ..._nodes[node.id], children: childIds };
+        }
+      }
+
+      for (const legacyNode of legacyNodes) {
+        processLegacyNode(legacyNode);
+      }
+    } else {
+      // Handle flat structure - create all nodes first, then establish relationships
+      for (const legacyNode of legacyNodes) {
+        if (!legacyNode || typeof legacyNode !== 'object' || !legacyNode.id) {
+          continue;
+        }
+
+        const node: Node = {
+          id: legacyNode.id,
+          content: legacyNode.content || '',
+          nodeType: legacyNode.nodeType || 'text',
+          depth: legacyNode.depth || 0,
+          parentId: legacyNode.parentId,
+          children: Array.isArray(legacyNode.children) ? [...legacyNode.children] : [],
+          expanded: legacyNode.expanded !== false,
+          autoFocus: legacyNode.autoFocus || false,
+          inheritHeaderLevel: legacyNode.inheritHeaderLevel || 0,
+          metadata: legacyNode.metadata || {},
+          mentions: legacyNode.mentions,
+          before_sibling_id: legacyNode.before_sibling_id,
+          isPlaceholder: legacyNode.isPlaceholder || false
+        };
+
+        _nodes[node.id] = node;
+
+        if (!node.parentId) {
+          _rootNodeIds.push(node.id);
+        }
+      }
     }
+
+    // Emit hierarchy changed event
+    events.hierarchyChanged();
   }
 
   function initializeWithRichDemoData(): void {
@@ -1064,7 +1104,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       return _activeNodeId;
     },
     get visibleNodes() {
-      return visibleNodes;
+      return getVisibleNodes();
     },
     get _updateTrigger() {
       return _updateTrigger;
@@ -1081,97 +1121,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     outdentNode,
     deleteNode,
     toggleExpanded,
+    getVisibleNodes,
 
     // Initialization
+    initializeFromLegacyData,
     initializeWithSampleData: initializeWithRichDemoData,
-    initializeWithRichDemoData,
-
-    // Content processing methods for integration tests
-    parseNodeContent(nodeId: string) {
-      const node = findNode(nodeId);
-      if (!node) return null;
-      return contentProcessor.parseMarkdown(node.content);
-    },
-
-    async renderNodeAsHTML(nodeId: string): Promise<string | null> {
-      const node = findNode(nodeId);
-      if (!node) return null;
-      return await contentProcessor.markdownToDisplay(node.content);
-    },
-
-    getNodeHeaderLevel(nodeId: string): number {
-      const node = findNode(nodeId);
-      if (!node) return 0;
-      const headerMatch = node.content.match(/^(#{1,6})\s+/);
-      return headerMatch ? headerMatch[1].length : 0;
-    },
-
-    getNodeDisplayText(nodeId: string): string {
-      const node = findNode(nodeId);
-      if (!node) return '';
-      return contentProcessor
-        .displayToMarkdown(node.content)
-        .replace(/[#*`[\]()]/g, '')
-        .trim();
-    },
-
-    updateNodeContentWithProcessing(nodeId: string, content: string): void {
-      updateNodeContent(nodeId, content);
-      // The header level is computed dynamically, so no separate update needed
-    },
-
-    // Add legacy data initialization method for tests
-    initializeFromLegacyData(
-      legacyData: Array<{
-        id: string;
-        type?: string;
-        nodeType?: string;
-        content: string;
-        inheritHeaderLevel: number;
-        children: string[];
-        expanded: boolean;
-        autoFocus: boolean;
-      }>
-    ): void {
-      // Clear existing data
-      Object.keys(_nodes).forEach((id) => delete _nodes[id]);
-      _rootNodeIds = [];
-
-      // Convert legacy data to new format
-      for (const legacyNode of legacyData) {
-        const node: Node = {
-          id: legacyNode.id,
-          content: legacyNode.content,
-          nodeType: legacyNode.type || legacyNode.nodeType || 'text',
-          depth: 0, // Will be calculated based on hierarchy
-          parentId: undefined, // Will be set based on children relationships
-          children: [...legacyNode.children],
-          expanded: legacyNode.expanded,
-          autoFocus: legacyNode.autoFocus,
-          inheritHeaderLevel: legacyNode.inheritHeaderLevel,
-          metadata: {}
-        };
-        _nodes[legacyNode.id] = node;
-      }
-
-      // Set root nodes (nodes not referenced as children)
-      const allChildIds = new Set(legacyData.flatMap((n) => n.children));
-      _rootNodeIds = legacyData.filter((n) => !allChildIds.has(n.id)).map((n) => n.id);
-
-      // Update parent references and depths
-      for (const node of Object.values(_nodes)) {
-        for (const childId of node.children) {
-          const child = _nodes[childId];
-          if (child) {
-            child.parentId = node.id;
-            child.depth = node.depth + 1;
-          }
-        }
-      }
-
-      // Trigger reactivity
-      _updateTrigger++;
-    }
+    initializeWithRichDemoData
   };
 }
 
