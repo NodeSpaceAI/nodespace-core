@@ -199,10 +199,8 @@
       // Insert the command content (e.g., "# " for header 1)
       controller.insertSlashCommand(result.content);
 
-      // Update node type when changed by slash command
-      if (result.nodeType !== nodeType) {
-        nodeType = result.nodeType;
-      }
+      // Don't update nodeType locally - let parent handle it to avoid double re-renders
+      // The parent (base-node-viewer) will update nodeType via nodeManager and trigger autoFocus
 
       // Emit event to notify parent of node type/header level change
       if (result.headerLevel !== undefined) {
@@ -357,6 +355,11 @@
       console.log(`✅ Controller initialized for node ${nodeId} with autoFocus: ${autoFocus}`);
     } else if (element && controller) {
       console.log(`🔄 Element exists but controller already present for node ${nodeId} (type: ${nodeType})`);
+      // If autoFocus is true and controller exists, still call focus to restore pending cursor position
+      if (autoFocus) {
+        console.log(`🎯 Calling focus on existing controller for node ${nodeId} due to autoFocus`);
+        setTimeout(() => controller?.focus(), 10);
+      }
     } else if (!element) {
       console.log(`⚠️ No DOM element available for controller creation on node ${nodeId} (type: ${nodeType})`);
     }
@@ -370,13 +373,17 @@
   });
 
   // Focus programmatically when autoFocus changes
-  // TEMPORARILY DISABLED - causing infinite loop
-  // $effect(() => {
-  //   if (controller && autoFocus) {
-  //     console.log(`🎯 AutoFocus triggered for node ${nodeId} (type: ${nodeType})`);
-  //     controller.focus();
-  //   }
-  // });
+  $effect(() => {
+    if (controller && autoFocus) {
+      console.log(`🎯 AutoFocus triggered for node ${nodeId} (type: ${nodeType})`);
+      // Use a small delay to ensure DOM is updated after nodeType change
+      setTimeout(() => {
+        if (controller) {
+          controller.focus();
+        }
+      }, 10);
+    }
+  });
 
   // Update controller when slash command dropdown state changes
   $effect(() => {

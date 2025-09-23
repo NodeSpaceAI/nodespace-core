@@ -659,6 +659,21 @@
   let loadedViewers = $state(new Map<string, unknown>());
   let loadedNodes = $state(new Map<string, unknown>());
 
+  // Track focused node for autoFocus after node type changes
+  let focusedNodeId = $state<string | null>(null);
+
+
+  // Clear focusedNodeId after a delay to prevent permanent focus
+  $effect(() => {
+    if (focusedNodeId) {
+      const timeoutId = setTimeout(() => {
+        focusedNodeId = null;
+      }, 100); // Clear after 100ms to allow autoFocus to trigger
+
+      return () => clearTimeout(timeoutId);
+    }
+  });
+
   // Pre-load components when component mounts
   onMount(async () => {
     async function preloadComponents() {
@@ -741,7 +756,7 @@
             <TextNodeViewer
               nodeId={node.id}
               nodeType={node.nodeType}
-              autoFocus={node.autoFocus}
+              autoFocus={node.autoFocus || node.id === focusedNodeId}
               content={node.content}
               inheritHeaderLevel={node.inheritHeaderLevel || 0}
               children={node.children}
@@ -757,6 +772,7 @@
               }}
               on:slashCommandSelected={(e) => {
                 console.log(`🎛️ Slash command selected for node ${node.id}:`, e.detail, 'isPlaceholder:', node.isPlaceholder);
+
                 if (node.isPlaceholder) {
                   // For placeholder nodes, just update the nodeType locally
                   console.log(`📝 Updating placeholder node ${node.id} to type: ${e.detail.nodeType}`);
@@ -768,6 +784,10 @@
                   console.log(`🔄 Updating real node ${node.id} to type: ${e.detail.nodeType}`);
                   nodeManager.updateNodeType(node.id, e.detail.nodeType);
                 }
+
+                // Set autoFocus to restore focus after nodeType change
+                console.log(`🎯 Setting autoFocus for node ${node.id} after slash command`);
+                focusedNodeId = node.id;
               }}
               on:combineWithPrevious={handleCombineWithPrevious}
               on:deleteNode={handleDeleteNode}
@@ -781,7 +801,7 @@
               <NodeComponent
                 nodeId={node.id}
                 nodeType={node.nodeType}
-                autoFocus={node.autoFocus}
+                autoFocus={node.autoFocus || node.id === focusedNodeId}
                 content={node.content}
                 headerLevel={node.inheritHeaderLevel || 0}
                 children={node.children}
@@ -799,6 +819,13 @@
                 }}
                 on:slashCommandSelected={(e) => {
                   console.log(`🎛️ Slash command selected for node ${node.id}:`, e.detail, 'isPlaceholder:', node.isPlaceholder);
+
+                  // Store cursor position before node type change
+                  if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
+                    console.log(`💾 Storing cursor position ${e.detail.cursorPosition} for node ${node.id}`);
+                    pendingCursorPositions.set(node.id, e.detail.cursorPosition);
+                  }
+
                   if (node.isPlaceholder) {
                     // For placeholder nodes, just update the nodeType locally
                     console.log(`📝 Updating placeholder node ${node.id} to type: ${e.detail.nodeType}`);
@@ -810,6 +837,10 @@
                     console.log(`🔄 Updating real node ${node.id} to type: ${e.detail.nodeType}`);
                     nodeManager.updateNodeType(node.id, e.detail.nodeType);
                   }
+
+                  // Set autoFocus to restore focus after nodeType change
+                  console.log(`🎯 Setting autoFocus for node ${node.id} after slash command`);
+                  focusedNodeId = node.id;
                 }}
                 on:iconClick={handleIconClick}
                 on:combineWithPrevious={handleCombineWithPrevious}
@@ -820,7 +851,7 @@
               <BaseNode
                 nodeId={node.id}
                 nodeType={node.nodeType}
-                autoFocus={node.autoFocus}
+                autoFocus={node.autoFocus || node.id === focusedNodeId}
                 content={node.content}
                 headerLevel={node.inheritHeaderLevel || 0}
                 children={node.children}
@@ -838,6 +869,13 @@
                 }}
                 on:slashCommandSelected={(e) => {
                   console.log(`🎛️ Slash command selected for node ${node.id}:`, e.detail, 'isPlaceholder:', node.isPlaceholder);
+
+                  // Store cursor position before node type change
+                  if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
+                    console.log(`💾 Storing cursor position ${e.detail.cursorPosition} for node ${node.id}`);
+                    pendingCursorPositions.set(node.id, e.detail.cursorPosition);
+                  }
+
                   if (node.isPlaceholder) {
                     // For placeholder nodes, just update the nodeType locally
                     console.log(`📝 Updating placeholder node ${node.id} to type: ${e.detail.nodeType}`);
@@ -849,6 +887,10 @@
                     console.log(`🔄 Updating real node ${node.id} to type: ${e.detail.nodeType}`);
                     nodeManager.updateNodeType(node.id, e.detail.nodeType);
                   }
+
+                  // Set autoFocus to restore focus after nodeType change
+                  console.log(`🎯 Setting autoFocus for node ${node.id} after slash command`);
+                  focusedNodeId = node.id;
                 }}
                 on:iconClick={handleIconClick}
                 on:combineWithPrevious={handleCombineWithPrevious}

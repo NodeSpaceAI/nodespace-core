@@ -10,6 +10,7 @@
 export interface MarkdownSplitResult {
   beforeContent: string;
   afterContent: string;
+  newNodeCursorPosition: number; // Position where cursor should be placed in the new node
 }
 
 interface MarkdownContext {
@@ -179,14 +180,16 @@ export function splitMarkdownContent(content: string, position: number): Markdow
   if (position <= 0) {
     return {
       beforeContent: '',
-      afterContent: content
+      afterContent: content,
+      newNodeCursorPosition: 0
     };
   }
 
   if (position >= content.length) {
     return {
       beforeContent: content,
-      afterContent: ''
+      afterContent: '',
+      newNodeCursorPosition: 0
     };
   }
 
@@ -201,7 +204,8 @@ export function splitMarkdownContent(content: string, position: number): Markdow
   if (!context.bold && !context.italic && !context.strikethrough && !context.code) {
     return {
       beforeContent: beforeCursor,
-      afterContent: afterCursor
+      afterContent: afterCursor,
+      newNodeCursorPosition: 0
     };
   }
 
@@ -213,9 +217,13 @@ export function splitMarkdownContent(content: string, position: number): Markdow
   const openingMarkers = getOpeningMarkers(context);
   const afterContent = openingMarkers + afterCursor;
 
+  // Calculate cursor position in new node (after opening markers)
+  const newNodeCursorPosition = openingMarkers.length;
+
   return {
     beforeContent,
-    afterContent
+    afterContent,
+    newNodeCursorPosition
   };
 }
 

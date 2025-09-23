@@ -79,6 +79,7 @@ export class ContentEditableController {
   // Track if slash command dropdown is currently active
   private slashCommandDropdownActive: boolean = false;
 
+
   // Bound event handlers for proper cleanup
   private boundHandleFocus = this.handleFocus.bind(this);
   private boundHandleBlur = this.handleBlur.bind(this);
@@ -186,6 +187,34 @@ export class ContentEditableController {
       return;
     }
     this.element.focus();
+
+    // Only position cursor at end if:
+    // 1. There's no existing selection (preserves Cmd+B, etc.)
+    // 2. Element doesn't already have focus (prevents disrupting ongoing editing)
+    // 3. User is not actively editing (prevents interrupting typing/formatting edits)
+    const selection = window.getSelection();
+    const hadFocus = document.activeElement === this.element;
+
+    if ((!selection || selection.isCollapsed) && !hadFocus && !this.isEditing) {
+      setTimeout(() => {
+        this.positionCursorAtEnd();
+      }, 10);
+    }
+  }
+
+
+  /**
+   * Position cursor at the end of the content
+   */
+  private positionCursorAtEnd(): void {
+    const selection = window.getSelection();
+    if (!selection) return;
+
+    const range = document.createRange();
+    range.selectNodeContents(this.element);
+    range.collapse(false); // Collapse to end
+    selection.removeAllRanges();
+    selection.addRange(range);
   }
 
   /**
@@ -810,7 +839,8 @@ export class ContentEditableController {
             currentContent: splitResult.beforeContent,
             newContent: splitResult.afterContent,
             inheritHeaderLevel: this.currentHeaderLevel, // Inherit current header level
-            cursorAtBeginning: false
+            cursorAtBeginning: false,
+            newNodeCursorPosition: splitResult.newNodeCursorPosition
           });
         }
         return;
@@ -2482,6 +2512,7 @@ export class ContentEditableController {
     this.slashCommandDropdownActive = active;
   }
 
+
   /**
    * Insert slash command content at current cursor position
    */
@@ -2542,6 +2573,7 @@ export class ContentEditableController {
       // Position cursor after the header syntax, before any additional content
       newCursorPos = finalBeforeContent.length + contentHeaderMatch[1].length;
     }
+
 
     setTimeout(() => {
       this.restoreCursorPosition(newCursorPos);
