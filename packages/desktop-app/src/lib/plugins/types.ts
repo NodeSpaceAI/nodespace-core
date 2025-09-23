@@ -57,8 +57,8 @@ export interface PluginDefinition {
   description: string;
   version: string;
   config: NodeTypeConfig;
-  node?: NodeRegistration;      // Individual node component (TaskNode, TextNode, etc.)
-  viewer?: ViewerRegistration;  // Rich viewer component (TaskNodeViewer, DatePageViewer, etc.)
+  node?: NodeRegistration; // Individual node component (TaskNode, TextNode, etc.)
+  viewer?: ViewerRegistration; // Rich viewer component (TaskNodeViewer, DatePageViewer, etc.)
   reference?: ReferenceRegistration;
 }
 

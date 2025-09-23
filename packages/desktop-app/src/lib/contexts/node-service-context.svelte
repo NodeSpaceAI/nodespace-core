@@ -12,14 +12,22 @@
   // Context key for service access
   const NODE_SERVICE_CONTEXT_KEY = Symbol('nodeServices');
 
-  // Service interface definition
+  // Import proper types for the services
+  import type { ReactiveNodeService } from '$lib/services/reactiveNodeService.svelte';
+  import type { HierarchyService } from '$lib/services/hierarchyService';
+  import type { NodeOperationsService } from '$lib/services/nodeOperationsService';
+  import type { ContentProcessor } from '$lib/services/contentProcessor';
+  import type { MockDatabaseService } from '$lib/services/mockDatabaseService';
+  import type NodeReferenceService from '$lib/services/nodeReferenceService';
+
+  // Service interface definition with proper types
   export interface NodeServices {
-    nodeReferenceService: unknown;
-    nodeManager: unknown;
-    hierarchyService: unknown;
-    nodeOperationsService: unknown;
-    contentProcessor: unknown;
-    databaseService: unknown;
+    nodeReferenceService: NodeReferenceService;
+    nodeManager: ReactiveNodeService;
+    hierarchyService: HierarchyService;
+    nodeOperationsService: NodeOperationsService;
+    contentProcessor: ContentProcessor;
+    databaseService: MockDatabaseService;
   }
 
   // Context accessor functions
@@ -60,14 +68,13 @@
       // Create node manager events
       const nodeManagerEvents = {
         focusRequested: (nodeId: string, position: number) => {
-          console.log(`🎯 NodeServiceContext.focusRequested: ${nodeId} at position ${position}`);
 
           // Use DOM API to focus the node directly with cursor positioning
           setTimeout(() => {
-            const nodeElement = document.querySelector(`[data-node-id="${nodeId}"] [contenteditable]`) as HTMLElement;
+            const nodeElement = document.querySelector(
+              `[data-node-id="${nodeId}"] [contenteditable]`
+            ) as HTMLElement;
             if (nodeElement) {
-              console.log(`📝 Element content: "${nodeElement.textContent}"`);
-              console.log(`📏 Element content length: ${nodeElement.textContent?.length}`);
               nodeElement.focus();
 
               // Set cursor position using proven algorithm from working version
@@ -82,18 +89,15 @@
 
                 while ((currentNode = walker.nextNode())) {
                   const nodeLength = currentNode.textContent?.length || 0;
-                  console.log(`🔍 Walking text node: "${currentNode.textContent}" (length: ${nodeLength}, currentOffset: ${currentOffset})`);
 
                   if (currentOffset + nodeLength >= position) {
                     const range = document.createRange();
                     const offsetInNode = position - currentOffset;
-                    console.log(`🎯 Found target node: offsetInNode=${offsetInNode}, nodeLength=${nodeLength}`);
                     range.setStart(currentNode, Math.min(offsetInNode, nodeLength));
                     range.setEnd(currentNode, Math.min(offsetInNode, nodeLength));
 
                     selection.removeAllRanges();
                     selection.addRange(range);
-                    console.log(`✅ Cursor positioned at offset ${offsetInNode} in text node (requested ${position})`);
                     return;
                   }
 
@@ -106,10 +110,8 @@
                 range.collapse(false);
                 selection.removeAllRanges();
                 selection.addRange(range);
-                console.log(`⚠️ Fallback: positioned cursor at end of content`);
               }
 
-              console.log(`✅ Focus set on node ${nodeId}`);
             } else {
               console.error(`❌ Could not find contenteditable element for node ${nodeId}`);
             }
@@ -131,18 +133,16 @@
       // Initialize with demo data
       nodeManager.initializeWithRichDemoData();
 
-      const hierarchyService = new HierarchyService(
-        nodeManager as unknown as import('$lib/services/nodeManager').NodeManager
-      );
+      const hierarchyService = new HierarchyService(nodeManager);
       const contentProcessor = ContentProcessor.getInstance();
       const nodeOperationsService = new NodeOperationsService(
-        nodeManager as unknown as import('$lib/services/nodeManager').NodeManager,
+        nodeManager,
         hierarchyService,
         contentProcessor
       );
 
       const nodeReferenceService = new NodeReferenceService(
-        nodeManager as unknown as import('$lib/services/nodeManager').NodeManager,
+        nodeManager,
         hierarchyService,
         nodeOperationsService,
         databaseService,

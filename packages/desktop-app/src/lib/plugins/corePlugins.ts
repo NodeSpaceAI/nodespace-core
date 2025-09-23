@@ -200,7 +200,6 @@ let corePluginsRegistered = false;
 export function registerCorePlugins(registry: import('./pluginRegistry').PluginRegistry): void {
   // Prevent double registration
   if (corePluginsRegistered) {
-    console.log('[UnifiedPluginRegistry] Core plugins already registered, skipping');
     return;
   }
 
@@ -209,13 +208,6 @@ export function registerCorePlugins(registry: import('./pluginRegistry').PluginR
   }
 
   corePluginsRegistered = true;
-
-  console.log('[UnifiedPluginRegistry] Core plugins registered:', {
-    plugins: corePlugins.length,
-    slashCommands: registry.getAllSlashCommands().length,
-    viewers: corePlugins.filter((p) => p.viewer).length,
-    references: corePlugins.filter((p) => p.reference).length
-  });
 }
 
 /**
@@ -227,5 +219,4 @@ export function registerExternalPlugin(
   plugin: PluginDefinition
 ): void {
   registry.register(plugin);
-  console.log(`[UnifiedPluginRegistry] External plugin registered: ${plugin.name} (${plugin.id})`);
 }

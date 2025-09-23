@@ -131,6 +131,7 @@ async function runContainer(options: { name?: string } = {}): Promise<void> {
     dockerCmd.push("-v", `${gitConfigPath}:/root/.gitconfig:ro`);
   }
 
+
   dockerCmd.push(CONTAINER_IMAGE);
 
   console.log(`🚀 Starting container: ${containerName}`);
@@ -164,6 +165,44 @@ async function listContainers(): Promise<void> {
     }
   } catch (error) {
     console.error("❌ Failed to list containers:", error);
+  }
+}
+
+async function saveContainer(containerName?: string): Promise<void> {
+  const runtime = await detectContainerRuntime();
+  if (!runtime.available) {
+    console.error("❌ No container runtime available");
+    return;
+  }
+
+  const cmd = runtime.runtime !== "Podman" ? "docker" : "podman";
+
+  try {
+    // Get running container name if not specified
+    let targetContainer = containerName;
+    if (!targetContainer) {
+      const result = await $`${cmd} ps --filter name=${CONTAINER_PREFIX} --format "{{.Names}}"`.quiet();
+      const runningContainers = result.stdout.toString().trim().split('\n').filter(name => name);
+
+      if (runningContainers.length === 0) {
+        console.error("❌ No running NodeSpace containers found to save");
+        return;
+      } else if (runningContainers.length > 1) {
+        console.error("❌ Multiple containers running. Specify which one to save:");
+        runningContainers.forEach(name => console.log(`  ${name}`));
+        return;
+      }
+      targetContainer = runningContainers[0];
+    }
+
+    const newImageName = `${CONTAINER_IMAGE}:authenticated`;
+    console.log(`💾 Saving container ${targetContainer} as ${newImageName}...`);
+
+    await $`${cmd} commit ${targetContainer} ${newImageName}`;
+    console.log(`✅ Container saved! Use CONTAINER_IMAGE=${newImageName} to run authenticated containers`);
+    console.log(`   Or update CONTAINER_IMAGE in the script to use by default`);
+  } catch (error) {
+    console.error("❌ Failed to save container:", error);
   }
 }
 
@@ -204,6 +243,7 @@ function showHelp(): void {
 Commands:
   bun run container:build         Build the development container image
   bun run container:run           Run a new development container
+  bun run container:save [name]   Save running container as authenticated image
   bun run container:list          List all NodeSpace containers
   bun run container:stop [name]   Stop container(s)
   bun run container:help          Show this help
@@ -211,8 +251,15 @@ Commands:
 Examples:
   bun run container:build                    # Build the image
   bun run container:run                      # Start new container
+  bun run container:save                     # Save current container with auth
   bun run container:stop nodespace-dev-123  # Stop specific container
   bun run container:stop                     # Stop all containers
+
+Workflow for authenticated containers:
+  1. bun run container:run                   # Start container
+  2. claude auth login                       # Authenticate inside container
+  3. bun run container:save                  # Save as authenticated image
+  4. Update CONTAINER_IMAGE to use saved image
 
 Each container:
   • Has independent nodespace-core clone
@@ -231,6 +278,9 @@ switch (command) {
     break;
   case "run":
     await runContainer();
+    break;
+  case "save":
+    await saveContainer(process.argv[3]);
     break;
   case "list":
     await listContainers();

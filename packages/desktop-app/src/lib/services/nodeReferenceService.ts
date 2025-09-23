@@ -753,7 +753,12 @@ export class NodeReferenceService {
         content: createdNode.content,
         nodeType: createdNode.type,
         parentId: createdNode.parent_id || undefined,
-        metadata: createdNode.metadata || {}
+        metadata: createdNode.metadata || {},
+        depth: 0,
+        children: [],
+        expanded: true,
+        autoFocus: false,
+        inheritHeaderLevel: 0
       });
 
       // Emit node creation event

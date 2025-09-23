@@ -44,7 +44,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   // Pure reactive computed visible nodes - with logging to debug reactivity
   const visibleNodes = $derived.by(() => {
     // Force reactivity by accessing the trigger
-    _updateTrigger;
+    void _updateTrigger;
     const result = getVisibleNodesRecursive(_rootNodeIds);
     return result;
   });
@@ -181,7 +181,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         }
         // Clear afterNode's children since they now belong to newNode
         _nodes[afterNodeId] = { ...afterNode, children: [] };
-      } else {
       }
 
       // Insert new node as sibling after afterNode
@@ -454,29 +453,35 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const newNodesRecord = { ..._nodes };
     const updatedPreviousNode = { ...previousNode, content: combinedContent };
 
-    // Handle child-to-parent merging
-    if (isChildToParent) {
-      // Find current node's position in parent's children
-      const currentNodeIndex = previousNode.children.indexOf(currentNodeId);
+    // Handle child-to-parent merging OR any merge where current node has children
+    if (isChildToParent || currentNode.children.length > 0) {
+      if (isChildToParent) {
+        // Find current node's position in parent's children
+        const currentNodeIndex = previousNode.children.indexOf(currentNodeId);
 
-      if (currentNodeIndex !== -1) {
-        // Remove current node and insert its children in its place
-        const beforeChildren = previousNode.children.slice(0, currentNodeIndex);
-        const afterChildren = previousNode.children.slice(currentNodeIndex + 1);
-        updatedPreviousNode.children = [
-          ...beforeChildren,
-          ...currentNode.children,
-          ...afterChildren
-        ];
+        if (currentNodeIndex !== -1) {
+          // Remove current node and insert its children in its place
+          const beforeChildren = previousNode.children.slice(0, currentNodeIndex);
+          const afterChildren = previousNode.children.slice(currentNodeIndex + 1);
+          updatedPreviousNode.children = [
+            ...beforeChildren,
+            ...currentNode.children,
+            ...afterChildren
+          ];
+        }
+      } else {
+        // Handle sibling merge: just add children to the previous node
+        updatedPreviousNode.children = [...updatedPreviousNode.children, ...currentNode.children];
+      }
 
-        // Update children's parent reference and depths
-        for (const childId of currentNode.children) {
-          const child = newNodesRecord[childId];
-          if (child) {
-            // Update parent reference and recalculate depth
-            const newDepth = previousNode.depth + 1; // Children should be one level deeper than the merged parent
-            newNodesRecord[childId] = { ...child, parentId: previousNodeId, depth: newDepth };
-          }
+      // Update children's parent reference and preserve/improve depth
+      // In document experience: nodes shift UP, never increase depth unnecessarily
+      for (const childId of currentNode.children) {
+        const child = newNodesRecord[childId];
+        if (child) {
+          const targetDepth = previousNode.depth + 1;
+          const preservedDepth = Math.min(child.depth, targetDepth); // Never increase depth
+          newNodesRecord[childId] = { ...child, parentId: previousNodeId, depth: preservedDepth };
         }
       }
     }
@@ -492,8 +497,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       _nodes[id] = node;
     });
 
-    // Update depths for all descendants of promoted children (if child-to-parent merge)
-    if (isChildToParent && currentNode.children.length > 0) {
+    // Update depths for all descendants of promoted children (for any merge with children)
+    if (currentNode.children.length > 0) {
       for (const childId of currentNode.children) {
         const promotedChild = _nodes[childId];
         if (promotedChild) {
@@ -1044,5 +1049,5 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
 export type ReactiveNodeService = ReturnType<typeof createReactiveNodeService>;
 
-// For backward compatibility with existing imports - export both
-export const ReactiveNodeService = createReactiveNodeService;
+// For backward compatibility with existing imports
+export { createReactiveNodeService as ReactiveNodeService };

@@ -12,7 +12,8 @@
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
 import {
-  ReactiveNodeService as NodeManager,
+  createReactiveNodeService,
+  type ReactiveNodeService as NodeManager,
   type NodeManagerEvents
 } from '$lib/services/reactiveNodeService.svelte.js';
 import { HierarchyService } from '$lib/services/hierarchyService';
@@ -41,7 +42,7 @@ describe('NodeOperationsService', () => {
     };
 
     // Initialize services
-    nodeManager = new NodeManager(events);
+    nodeManager = createReactiveNodeService(events);
     hierarchyService = new HierarchyService(nodeManager);
     contentProcessor = ContentProcessor.getInstance();
     nodeOperationsService = new NodeOperationsService(
@@ -54,21 +55,36 @@ describe('NodeOperationsService', () => {
     nodeManager.initializeFromLegacyData([
       {
         id: 'root1',
-        type: 'text',
+        nodeType: 'text',
         content: 'Root node 1',
-        children: [
-          {
-            id: 'child1',
-            type: 'text',
-            content: 'Child node 1',
-            children: []
-          }
-        ]
+        autoFocus: false,
+        inheritHeaderLevel: 0,
+        expanded: true,
+        depth: 0,
+        metadata: {},
+        children: ['child1']
+      },
+      {
+        id: 'child1',
+        nodeType: 'text',
+        content: 'Child node 1',
+        autoFocus: false,
+        inheritHeaderLevel: 0,
+        expanded: true,
+        depth: 1,
+        metadata: {},
+        parentId: 'root1',
+        children: []
       },
       {
         id: 'root2',
-        type: 'text',
+        nodeType: 'text',
         content: 'Root node 2',
+        autoFocus: false,
+        inheritHeaderLevel: 0,
+        expanded: true,
+        depth: 0,
+        metadata: {},
         children: []
       }
     ]);

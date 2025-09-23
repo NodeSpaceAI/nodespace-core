@@ -8,7 +8,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NodeReferenceService } from '$lib/services/nodeReferenceService';
 import {
-  ReactiveNodeService as NodeManager,
+  createReactiveNodeService,
+  type ReactiveNodeService as NodeManager,
   type Node
 } from '$lib/services/reactiveNodeService.svelte.js';
 import { HierarchyService } from '$lib/services/hierarchyService';
@@ -50,18 +51,20 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
       nodeCreated: () => {},
       nodeDeleted: () => {}
     };
-    nodeManager = new NodeManager(mockEvents);
+    nodeManager = createReactiveNodeService(mockEvents);
 
     // Initialize with a root node so other nodes can be created after it
     nodeManager.initializeFromLegacyData([
       {
         id: 'root',
-        type: 'text',
+        nodeType: 'text',
         content: 'Root node',
         autoFocus: false,
         inheritHeaderLevel: 0,
         children: [],
-        expanded: true
+        expanded: true,
+        depth: 0,
+        metadata: {}
       }
     ]);
 
@@ -182,7 +185,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
 
       await databaseService.upsertNode({
         id: node3.id,
-        type: 'text',
+        nodeType: 'text',
         content: 'Another Test',
         parent_id: null,
         root_id: node3.id,
@@ -305,7 +308,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
 
       expect(resolved).toMatchObject({
         id: node.id,
-        type: 'text',
+        nodeType: 'text',
         content: 'Test Node Content'
       });
     });
@@ -359,7 +362,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
       // Add to database for incoming reference query
       await databaseService.upsertNode({
         id: sourceNode.id,
-        type: 'text',
+        nodeType: 'text',
         content: 'Source Node',
         parent_id: null,
         root_id: sourceNode.id,
@@ -578,7 +581,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
       // Add the source node to database so cleanup can find it
       await databaseService.upsertNode({
         id: sourceNodeId,
-        type: 'text',
+        nodeType: 'text',
         content: 'Source',
         parent_id: null,
         root_id: sourceNodeId,

@@ -35,7 +35,6 @@
     type SlashCommandContext
   } from '$lib/services/slashCommandService';
   import type { TriggerContext } from '$lib/services/nodeReferenceService';
-  import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { getIconConfig, resolveNodeState, type NodeType } from '$lib/design/icons/registry';
 
   // Props (Svelte 5 runes syntax) - nodeReferenceService removed
@@ -59,20 +58,9 @@
     metadata?: Record<string, unknown>;
   } = $props();
 
-  // Get services from context (optional for now during refactoring)
-  let services = $state(null);
+  // Services temporarily disabled during refactoring
   let nodeReferenceService = $state(null);
 
-  // TEMPORARILY DISABLED - might be causing infinite loop
-  // $effect(() => {
-  //   try {
-  //     services = getNodeServices();
-  //     nodeReferenceService = services?.nodeReferenceService || null;
-  //   } catch (error) {
-  //     // Context not available - that's okay for now
-  //     console.log('Context services not available, continuing without them');
-  //   }
-  // });
 
   // DOM element and controller - Svelte bind:this assignment
   let contentEditableElement: HTMLDivElement | undefined = undefined;
@@ -189,7 +177,6 @@
 
   // Slash command event handlers
   function handleSlashCommandSelect(event: CustomEvent<SlashCommand>) {
-    console.log('🎯 handleSlashCommandSelect called with:', event.detail);
     const command = event.detail;
 
     if (controller) {
@@ -220,7 +207,6 @@
 
     // Emit event for parent components to handle node type changes
     // This will trigger the component switch, so we don't focus here - let autoFocus handle it
-    console.log('🚀 Dispatching slashCommandSelected event:', { command: command.id, nodeType: command.nodeType });
     dispatch('slashCommandSelected', {
       command: command.id,
       nodeType: command.nodeType
@@ -341,8 +327,6 @@
   $effect(() => {
     const element = contentEditableElement; // Force dependency tracking
     if (element && !controller) {
-      console.log(`🎛️ Creating new ContentEditableController for node ${nodeId} (type: ${nodeType})`);
-
       // Create controller immediately - DOM should be ready when effect runs
       controller = new ContentEditableController(
         element,
@@ -352,16 +336,11 @@
         editableConfig
       );
       controller.initialize(content, autoFocus);
-      console.log(`✅ Controller initialized for node ${nodeId} with autoFocus: ${autoFocus}`);
     } else if (element && controller) {
-      console.log(`🔄 Element exists but controller already present for node ${nodeId} (type: ${nodeType})`);
       // If autoFocus is true and controller exists, still call focus to restore pending cursor position
       if (autoFocus) {
-        console.log(`🎯 Calling focus on existing controller for node ${nodeId} due to autoFocus`);
         setTimeout(() => controller?.focus(), 10);
       }
-    } else if (!element) {
-      console.log(`⚠️ No DOM element available for controller creation on node ${nodeId} (type: ${nodeType})`);
     }
   });
 
@@ -375,7 +354,6 @@
   // Focus programmatically when autoFocus changes
   $effect(() => {
     if (controller && autoFocus) {
-      console.log(`🎯 AutoFocus triggered for node ${nodeId} (type: ${nodeType})`);
       // Use a small delay to ensure DOM is updated after nodeType change
       setTimeout(() => {
         if (controller) {
@@ -394,9 +372,7 @@
 
   onDestroy(() => {
     if (controller) {
-      console.log(`🧹 Destroying ContentEditableController for node ${nodeId} (type: ${nodeType})`);
       controller.destroy();
-      console.log(`🗑️ Controller destroyed for node ${nodeId}`);
     }
   });
 

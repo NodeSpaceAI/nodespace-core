@@ -79,7 +79,6 @@ export class ContentEditableController {
   // Track if slash command dropdown is currently active
   private slashCommandDropdownActive: boolean = false;
 
-
   // Bound event handlers for proper cleanup
   private boundHandleFocus = this.handleFocus.bind(this);
   private boundHandleBlur = this.handleBlur.bind(this);
@@ -203,7 +202,6 @@ export class ContentEditableController {
     }
     // For content that already has text, don't interfere with cursor positioning
   }
-
 
   /**
    * Position cursor at the end of the content
@@ -485,7 +483,12 @@ export class ContentEditableController {
       { regex: /`([^`]+?)`/g, type: 'code' as const, openMarker: '`', closeMarker: '`' },
 
       // Strikethrough patterns (medium precedence) - both single and double tilde
-      { regex: /~~([^~]+?)~~/g, type: 'strikethrough' as const, openMarker: '~~', closeMarker: '~~' },
+      {
+        regex: /~~([^~]+?)~~/g,
+        type: 'strikethrough' as const,
+        openMarker: '~~',
+        closeMarker: '~~'
+      },
       { regex: /~([^~\n]+?)~/g, type: 'strikethrough' as const, openMarker: '~', closeMarker: '~' },
 
       // Italic patterns (lowest precedence)
@@ -819,9 +822,7 @@ export class ContentEditableController {
           nodeType: this.nodeType, // Preserve original node's type
           currentContent: splitResult.beforeContent,
           newContent: splitResult.afterContent,
-          inheritHeaderLevel: this.currentHeaderLevel, // Preserve original header level
-          cursorAtBeginning: false,
-          newNodeCursorPosition: splitResult.newNodeCursorPosition
+          cursorAtBeginning: false
         });
         return;
       }
@@ -908,9 +909,11 @@ export class ContentEditableController {
       }
 
       // If the first child is a text node and cursor is at offset 0 within it
-      if (firstChild.nodeType === Node.TEXT_NODE &&
-          range.startContainer === firstChild &&
-          range.startOffset === 0) {
+      if (
+        firstChild.nodeType === Node.TEXT_NODE &&
+        range.startContainer === firstChild &&
+        range.startOffset === 0
+      ) {
         return true;
       }
 
@@ -2500,7 +2503,6 @@ export class ContentEditableController {
     this.slashCommandDropdownActive = active;
   }
 
-
   /**
    * Insert slash command content at current cursor position
    */
@@ -2561,7 +2563,6 @@ export class ContentEditableController {
       // Position cursor after the header syntax, before any additional content
       newCursorPos = finalBeforeContent.length + contentHeaderMatch[1].length;
     }
-
 
     setTimeout(() => {
       this.restoreCursorPosition(newCursorPos);

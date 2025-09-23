@@ -11,7 +11,8 @@
 
 import { describe, test, expect, beforeEach } from 'vitest';
 import {
-  ReactiveNodeService as NodeManager,
+  createReactiveNodeService,
+  type ReactiveNodeService as NodeManager,
   type NodeManagerEvents
 } from '$lib/services/reactiveNodeService.svelte.js';
 
@@ -46,7 +47,7 @@ describe('NodeManager', () => {
       }
     };
 
-    nodeManager = new NodeManager(events);
+    nodeManager = createReactiveNodeService(events);
   });
 
   describe('Data Migration', () => {
@@ -54,21 +55,25 @@ describe('NodeManager', () => {
       const legacyNodes = [
         {
           id: 'node1',
-          type: 'text',
+          nodeType: 'text',
           content: 'First node',
+          depth: 0,
           autoFocus: false,
           inheritHeaderLevel: 0,
           children: [],
-          expanded: true
+          expanded: true,
+          metadata: {}
         },
         {
           id: 'node2',
-          type: 'text',
+          nodeType: 'text',
           content: 'Second node',
+          depth: 0,
           autoFocus: false,
           inheritHeaderLevel: 0,
           children: [],
-          expanded: true
+          expanded: true,
+          metadata: {}
         }
       ];
 
@@ -90,7 +95,7 @@ describe('NodeManager', () => {
       const legacyNodes = [
         {
           id: 'complex-node',
-          type: 'ai-chat',
+          nodeType: 'ai-chat',
           content: '# Header with **formatting**',
           autoFocus: true,
           inheritHeaderLevel: 1,
@@ -116,7 +121,7 @@ describe('NodeManager', () => {
       const legacyNodes = [
         {
           id: 'parent',
-          type: 'text',
+          nodeType: 'text',
           content: 'Parent node',
           autoFocus: false,
           inheritHeaderLevel: 0,
@@ -124,7 +129,7 @@ describe('NodeManager', () => {
           children: [
             {
               id: 'child1',
-              type: 'text',
+              nodeType: 'text',
               content: 'First child',
               autoFocus: false,
               inheritHeaderLevel: 0,
@@ -133,7 +138,7 @@ describe('NodeManager', () => {
             },
             {
               id: 'child2',
-              type: 'text',
+              nodeType: 'text',
               content: 'Second child',
               autoFocus: false,
               inheritHeaderLevel: 0,
@@ -161,7 +166,7 @@ describe('NodeManager', () => {
       const legacyNodes = [
         {
           id: 'root',
-          type: 'text',
+          nodeType: 'text',
           content: 'Root',
           autoFocus: false,
           inheritHeaderLevel: 0,
@@ -169,7 +174,7 @@ describe('NodeManager', () => {
           children: [
             {
               id: 'level1',
-              type: 'text',
+              nodeType: 'text',
               content: 'Level 1',
               autoFocus: false,
               inheritHeaderLevel: 0,
@@ -177,7 +182,7 @@ describe('NodeManager', () => {
               children: [
                 {
                   id: 'level2',
-                  type: 'text',
+                  nodeType: 'text',
                   content: 'Level 2',
                   autoFocus: false,
                   inheritHeaderLevel: 0,
@@ -185,7 +190,7 @@ describe('NodeManager', () => {
                   children: [
                     {
                       id: 'level3',
-                      type: 'text',
+                      nodeType: 'text',
                       content: 'Level 3',
                       autoFocus: false,
                       inheritHeaderLevel: 0,
@@ -218,32 +223,36 @@ describe('NodeManager', () => {
       const testNodes = [
         {
           id: 'node1',
-          type: 'text',
+          nodeType: 'text',
           content: 'First content',
           autoFocus: false,
           inheritHeaderLevel: 0,
           children: [],
-          expanded: true
+          expanded: true,
+          depth: 0,
+          metadata: {}
         },
         {
           id: 'node2',
-          type: 'text',
+          nodeType: 'text',
           content: 'Second content',
           autoFocus: false,
           inheritHeaderLevel: 0,
           children: [],
-          expanded: true
+          expanded: true,
+          depth: 0,
+          metadata: {}
         },
         {
           id: 'node3',
-          type: 'text',
+          nodeType: 'text',
           content: 'Third content',
           autoFocus: false,
           inheritHeaderLevel: 0,
           children: [
             {
               id: 'child1',
-              type: 'text',
+              nodeType: 'text',
               content: 'Child content',
               autoFocus: false,
               inheritHeaderLevel: 0,
@@ -360,12 +369,14 @@ describe('NodeManager', () => {
       const testNodes = [
         {
           id: 'node1',
-          type: 'text',
+          nodeType: 'text',
           content: 'Test content',
           autoFocus: false,
           inheritHeaderLevel: 0,
           children: [],
-          expanded: true
+          expanded: true,
+          depth: 0,
+          metadata: {}
         }
       ];
       nodeManager.initializeFromLegacyData(testNodes);
@@ -421,7 +432,7 @@ describe('NodeManager', () => {
       const testNodes = [
         {
           id: 'parent',
-          type: 'text',
+          nodeType: 'text',
           content: 'Parent',
           autoFocus: false,
           inheritHeaderLevel: 0,
@@ -430,21 +441,25 @@ describe('NodeManager', () => {
         },
         {
           id: 'child1',
-          type: 'text',
+          nodeType: 'text',
           content: 'Child 1',
           autoFocus: false,
           inheritHeaderLevel: 0,
           children: [],
-          expanded: true
+          expanded: true,
+          depth: 0,
+          metadata: {}
         },
         {
           id: 'child2',
-          type: 'text',
+          nodeType: 'text',
           content: 'Child 2',
           autoFocus: false,
           inheritHeaderLevel: 0,
           children: [],
-          expanded: true
+          expanded: true,
+          depth: 0,
+          metadata: {}
         }
       ];
       nodeManager.initializeFromLegacyData(testNodes);
@@ -534,20 +549,24 @@ describe('NodeManager', () => {
       const testNodes = [
         {
           id: 'node1',
-          type: 'text',
+          nodeType: 'text',
           content: 'Node 1',
           autoFocus: false,
           inheritHeaderLevel: 0,
           expanded: true,
+          depth: 0,
+          metadata: {},
           children: [
             {
               id: 'child1',
-              type: 'text',
+              nodeType: 'text',
               content: 'Child 1',
               autoFocus: false,
               inheritHeaderLevel: 0,
               children: [],
-              expanded: true
+              expanded: true,
+              depth: 1,
+              metadata: {}
             }
           ]
         }
@@ -570,12 +589,14 @@ describe('NodeManager', () => {
       const testNodes = [
         {
           id: 'test',
-          type: 'text',
+          nodeType: 'text',
           content: 'Test',
           autoFocus: false,
           inheritHeaderLevel: 0,
           children: [],
-          expanded: true
+          expanded: true,
+          depth: 0,
+          metadata: {}
         }
       ];
       nodeManager.initializeFromLegacyData(testNodes);
@@ -624,30 +645,36 @@ describe('NodeManager', () => {
       const testNodes = [
         {
           id: 'a',
-          type: 'text',
+          nodeType: 'text',
           content: 'A',
           autoFocus: false,
           inheritHeaderLevel: 0,
           children: [],
-          expanded: true
+          expanded: true,
+          depth: 0,
+          metadata: {}
         },
         {
           id: 'b',
-          type: 'text',
+          nodeType: 'text',
           content: 'B',
           autoFocus: false,
           inheritHeaderLevel: 0,
           children: [],
-          expanded: true
+          expanded: true,
+          depth: 0,
+          metadata: {}
         },
         {
           id: 'c',
-          type: 'text',
+          nodeType: 'text',
           content: 'C',
           autoFocus: false,
           inheritHeaderLevel: 0,
           children: [],
-          expanded: true
+          expanded: true,
+          depth: 0,
+          metadata: {}
         }
       ];
       nodeManager.initializeFromLegacyData(testNodes);

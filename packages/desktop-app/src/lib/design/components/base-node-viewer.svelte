@@ -17,15 +17,18 @@
   // Get nodeManager from shared context
   const services = getNodeServices();
   if (!services) {
-    throw new Error('NodeServices not available. Make sure base-node-viewer is wrapped in NodeServiceContext.');
+    throw new Error(
+      'NodeServices not available. Make sure base-node-viewer is wrapped in NodeServiceContext.'
+    );
   }
 
   const nodeManager = services.nodeManager as unknown;
 
+  // Map to store cursor positions during node type changes
+  const pendingCursorPositions = new Map<string, number>();
+
   // Focus handling function
   function requestNodeFocus(nodeId: string, position: number) {
-    console.log(`🎯 requestNodeFocus called: node ${nodeId} at position ${position}`);
-
     // Find the node in the visible nodes
     const node = nodeManager.findNode(nodeId);
     if (!node) {
@@ -35,7 +38,9 @@
 
     // Use DOM API to focus the node directly with cursor positioning
     setTimeout(() => {
-      const nodeElement = document.querySelector(`[data-node-id="${nodeId}"] [contenteditable]`) as HTMLElement;
+      const nodeElement = document.querySelector(
+        `[data-node-id="${nodeId}"] [contenteditable]`
+      ) as HTMLElement;
       if (nodeElement) {
         nodeElement.focus();
 
@@ -52,13 +57,9 @@
             range.setEnd(textNode, actualPosition);
             selection?.removeAllRanges();
             selection?.addRange(range);
-            console.log(`✅ Cursor positioned at ${actualPosition} in node ${nodeId}`);
-          } else {
-            console.log(`⚠️ Could not position cursor - no text node found in ${nodeId}`);
           }
         }
 
-        console.log(`✅ Focus set on node ${nodeId}`);
       } else {
         console.error(`❌ Could not find contenteditable element for node ${nodeId}`);
       }
@@ -114,8 +115,6 @@
       cursorAtBeginning
     } = event.detail;
 
-    console.log(`📥 handleCreateNewNode received:`, { afterNodeId, nodeType, currentContent, newContent, inheritHeaderLevel, cursorAtBeginning });
-
     // CRITICAL FIX: Add validation to prevent circular reference issues
     if (!afterNodeId || !nodeType) {
       console.error('❌ VALIDATION FAILED: Invalid node creation parameters:', {
@@ -124,10 +123,6 @@
       });
       return;
     }
-
-    // Debug: Show what nodes actually exist
-    console.log('🔍 Available nodes:', Array.from(nodeManager.nodes.keys()));
-    console.log('🔍 Looking for node:', afterNodeId);
 
     // Verify the after node exists before creating
     if (!nodeManager.nodes.has(afterNodeId)) {
@@ -146,7 +141,12 @@
 
     if (!newContent || newContent.trim() === '') {
       // Create placeholder node for empty content (Enter key without splitting)
-      newNodeId = nodeManager.createPlaceholderNode(afterNodeId, nodeType, inheritHeaderLevel, cursorAtBeginning || false);
+      newNodeId = nodeManager.createPlaceholderNode(
+        afterNodeId,
+        nodeType,
+        inheritHeaderLevel,
+        cursorAtBeginning || false
+      );
     } else {
       // Create real node when splitting existing content
       // Add formatting syntax to the new content based on node type and header level
@@ -184,7 +184,6 @@
   // Handle indenting nodes (Tab key)
   function handleIndentNode(event: CustomEvent<{ nodeId: string }>) {
     const { nodeId } = event.detail;
-    console.log(`📥 handleIndentNode received for node: ${nodeId}`);
 
     try {
       // CRITICAL FIX: Add error recovery for node operations
@@ -279,7 +278,6 @@
   // Handle outdenting nodes (Shift+Tab key)
   function handleOutdentNode(event: CustomEvent<{ nodeId: string }>) {
     const { nodeId } = event.detail;
-    console.log(`📥 handleOutdentNode received for node: ${nodeId}`);
 
     try {
       // CRITICAL FIX: Add error recovery for node operations
@@ -539,7 +537,6 @@
   ) {
     try {
       const { nodeId, currentContent } = event.detail;
-      console.log(`🔗 handleCombineWithPrevious called for node ${nodeId} with content: "${currentContent}"`);
 
       // CRITICAL FIX: Add error recovery for node operations
       if (!nodeManager.nodes.has(nodeId)) {
@@ -549,15 +546,12 @@
 
       const currentVisibleNodes = nodeManager.visibleNodes;
       const currentIndex = currentVisibleNodes.findIndex((n) => n.id === nodeId);
-      console.log(`📍 Current node index: ${currentIndex} of ${currentVisibleNodes.length} visible nodes`);
 
       if (currentIndex <= 0) {
-        console.log(`⚠️ No previous node to combine with (currentIndex: ${currentIndex})`);
         return; // No previous node to combine with
       }
 
       const previousNode = currentVisibleNodes[currentIndex - 1];
-      console.log(`🎯 Previous node found: ${previousNode.id} with content: "${previousNode.content}"`);
 
       if (!previousNode || !nodeManager.nodes.has(previousNode.id)) {
         console.error('Previous node not found or invalid:', previousNode?.id);
@@ -566,15 +560,11 @@
 
       if (currentContent.trim() === '') {
         // Empty node - delete and focus previous at end
-        console.log(`🗑️ Empty node - deleting ${nodeId} and focusing ${previousNode.id}`);
         nodeManager.deleteNode(nodeId);
         requestNodeFocus(previousNode.id, previousNode.content.length);
       } else {
         // Combine nodes - NodeManager handles focus automatically
-        console.log(`🔗 Combining nodes: ${nodeId} → ${previousNode.id}`);
-        console.log(`🔧 About to call nodeManager.combineNodes(${nodeId}, ${previousNode.id})`);
-        const result = nodeManager.combineNodes(nodeId, previousNode.id);
-        console.log(`✅ nodeManager.combineNodes completed, result:`, result);
+        nodeManager.combineNodes(nodeId, previousNode.id);
       }
     } catch (error) {
       console.error('Error during node combination:', error);
@@ -651,8 +641,6 @@
 
   // Helper functions removed - NodeManager handles all node operations
 
-  console.log(`🔧 BaseNodeViewer component initializing with nodeManager:`, nodeManager);
-
   // Simple reactive access - let template handle reactivity directly
 
   // Dynamic component loading - create stable component mapping for both viewers and nodes
@@ -661,7 +649,6 @@
 
   // Track focused node for autoFocus after node type changes
   let focusedNodeId = $state<string | null>(null);
-
 
   // Clear focusedNodeId after a delay to prevent permanent focus
   $effect(() => {
@@ -699,13 +686,10 @@
         // Load node components
         if (!loadedNodes.has(nodeType)) {
           try {
-            console.log(`🔍 Loading node component for type: ${nodeType}`);
             const customNode = await pluginRegistry.getNodeComponent(nodeType);
             if (customNode) {
-              console.log(`✅ Found custom node component for ${nodeType}:`, customNode);
               loadedNodes.set(nodeType, customNode);
             } else {
-              console.log(`❌ No custom node component found for ${nodeType}, using BaseNode fallback`);
               // Fallback to BaseNode for unknown types
               loadedNodes.set(nodeType, BaseNode);
             }
@@ -723,43 +707,83 @@
 
 <!-- Node viewer content -->
 <div class="node-viewer">
-    {#each nodeManager.visibleNodes as node (node.id)}
-      <div
-        class="node-container"
-        data-has-children={node.children?.length > 0}
-        style="margin-left: {(node.depth || 0) * 2.5}rem"
-      >
-        <div class="node-content-wrapper">
-          <!-- Chevron for parent nodes using design system approach -->
-          {#if node.children && node.children.length > 0}
-            <button
-              class="chevron-icon"
-              class:expanded={node.expanded}
-              onclick={() => handleToggleExpanded(node.id)}
-              onkeydown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  handleToggleExpanded(node.id);
-                }
-              }}
-              aria-label={node.expanded ? 'Collapse node' : 'Expand node'}
-              aria-expanded={node.expanded}
-            >
-              <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
-                <path d="M6 3l5 5-5 5-1-1 4-4-4-4 1-1z" />
-              </svg>
-            </button>
-          {/if}
+  {#each nodeManager.visibleNodes as node (node.id)}
+    <div
+      class="node-container"
+      data-has-children={node.children?.length > 0}
+      style="margin-left: {(node.depth || 0) * 2.5}rem"
+    >
+      <div class="node-content-wrapper">
+        <!-- Chevron for parent nodes using design system approach -->
+        {#if node.children && node.children.length > 0}
+          <button
+            class="chevron-icon"
+            class:expanded={node.expanded}
+            onclick={() => handleToggleExpanded(node.id)}
+            onkeydown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleToggleExpanded(node.id);
+              }
+            }}
+            aria-label={node.expanded ? 'Collapse node' : 'Expand node'}
+            aria-expanded={node.expanded}
+          >
+            <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+              <path d="M6 3l5 5-5 5-1-1 4-4-4-4 1-1z" />
+            </svg>
+          </button>
+        {/if}
 
-          <!-- Node viewer with stable component references -->
-          {#if node.nodeType === 'text'}
-            <TextNodeViewer
+        <!-- Node viewer with stable component references -->
+        {#if node.nodeType === 'text'}
+          <TextNodeViewer
+            nodeId={node.id}
+            nodeType={node.nodeType}
+            autoFocus={node.autoFocus || node.id === focusedNodeId}
+            content={node.content}
+            inheritHeaderLevel={node.inheritHeaderLevel || 0}
+            children={node.children}
+            on:createNewNode={handleCreateNewNode}
+            on:indentNode={handleIndentNode}
+            on:outdentNode={handleOutdentNode}
+            on:navigateArrow={handleArrowNavigation}
+            on:contentChanged={(e) => {
+              const content = e.detail.content;
+
+              // Update node content (placeholder flag is handled automatically)
+              nodeManager.updateNodeContent(node.id, content);
+            }}
+            on:slashCommandSelected={(e) => {
+              if (node.isPlaceholder) {
+                // For placeholder nodes, just update the nodeType locally
+                if ('updatePlaceholderNodeType' in nodeManager) {
+                  (nodeManager as any).updatePlaceholderNodeType(node.id, e.detail.nodeType);
+                }
+              } else {
+                // For real nodes, update node type with full persistence
+                nodeManager.updateNodeType(node.id, e.detail.nodeType);
+              }
+
+              // Set autoFocus to restore focus after nodeType change
+              focusedNodeId = node.id;
+            }}
+            on:combineWithPrevious={handleCombineWithPrevious}
+            on:deleteNode={handleDeleteNode}
+          />
+        {:else}
+          <!-- Use registered node component from plugin registry -->
+          {#if loadedNodes.has(node.nodeType)}
+            {@const NodeComponent = loadedNodes.get(node.nodeType)}
+            <NodeComponent
               nodeId={node.id}
               nodeType={node.nodeType}
               autoFocus={node.autoFocus || node.id === focusedNodeId}
               content={node.content}
-              inheritHeaderLevel={node.inheritHeaderLevel || 0}
+              headerLevel={node.inheritHeaderLevel || 0}
               children={node.children}
+              metadata={node.metadata || {}}
+              editableConfig={{ allowMultiline: true }}
               on:createNewNode={handleCreateNewNode}
               on:indentNode={handleIndentNode}
               on:outdentNode={handleOutdentNode}
@@ -771,136 +795,77 @@
                 nodeManager.updateNodeContent(node.id, content);
               }}
               on:slashCommandSelected={(e) => {
-                console.log(`🎛️ Slash command selected for node ${node.id}:`, e.detail, 'isPlaceholder:', node.isPlaceholder);
+                // Store cursor position before node type change
+                if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
+                  pendingCursorPositions.set(node.id, e.detail.cursorPosition);
+                }
 
                 if (node.isPlaceholder) {
                   // For placeholder nodes, just update the nodeType locally
-                  console.log(`📝 Updating placeholder node ${node.id} to type: ${e.detail.nodeType}`);
                   if ('updatePlaceholderNodeType' in nodeManager) {
                     (nodeManager as any).updatePlaceholderNodeType(node.id, e.detail.nodeType);
                   }
                 } else {
                   // For real nodes, update node type with full persistence
-                  console.log(`🔄 Updating real node ${node.id} to type: ${e.detail.nodeType}`);
                   nodeManager.updateNodeType(node.id, e.detail.nodeType);
                 }
 
                 // Set autoFocus to restore focus after nodeType change
-                console.log(`🎯 Setting autoFocus for node ${node.id} after slash command`);
                 focusedNodeId = node.id;
               }}
+              on:iconClick={handleIconClick}
               on:combineWithPrevious={handleCombineWithPrevious}
               on:deleteNode={handleDeleteNode}
             />
           {:else}
-            <!-- Use registered node component from plugin registry -->
-            {#if loadedNodes.has(node.nodeType)}
-              {@const NodeComponent = loadedNodes.get(node.nodeType)}
-              <!-- Debug: Log node type and component -->
-              {console.log(`🎯 Rendering node ${node.id} with type: ${node.nodeType}, component:`, NodeComponent)}
-              <NodeComponent
-                nodeId={node.id}
-                nodeType={node.nodeType}
-                autoFocus={node.autoFocus || node.id === focusedNodeId}
-                content={node.content}
-                headerLevel={node.inheritHeaderLevel || 0}
-                children={node.children}
-                metadata={node.metadata || {}}
-                editableConfig={{ allowMultiline: true }}
-                on:createNewNode={handleCreateNewNode}
-                on:indentNode={handleIndentNode}
-                on:outdentNode={handleOutdentNode}
-                on:navigateArrow={handleArrowNavigation}
-                on:contentChanged={(e) => {
-                  const content = e.detail.content;
+            <!-- Final fallback to BaseNode -->
+            <BaseNode
+              nodeId={node.id}
+              nodeType={node.nodeType}
+              autoFocus={node.autoFocus || node.id === focusedNodeId}
+              content={node.content}
+              headerLevel={node.inheritHeaderLevel || 0}
+              children={node.children}
+              metadata={node.metadata || {}}
+              editableConfig={{ allowMultiline: true }}
+              on:createNewNode={handleCreateNewNode}
+              on:indentNode={handleIndentNode}
+              on:outdentNode={handleOutdentNode}
+              on:navigateArrow={handleArrowNavigation}
+              on:contentChanged={(e) => {
+                const content = e.detail.content;
 
-                  // Update node content (placeholder flag is handled automatically)
-                  nodeManager.updateNodeContent(node.id, content);
-                }}
-                on:slashCommandSelected={(e) => {
-                  console.log(`🎛️ Slash command selected for node ${node.id}:`, e.detail, 'isPlaceholder:', node.isPlaceholder);
+                // Update node content (placeholder flag is handled automatically)
+                nodeManager.updateNodeContent(node.id, content);
+              }}
+              on:slashCommandSelected={(e) => {
+                // Store cursor position before node type change
+                if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
+                  pendingCursorPositions.set(node.id, e.detail.cursorPosition);
+                }
 
-                  // Store cursor position before node type change
-                  if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
-                    console.log(`💾 Storing cursor position ${e.detail.cursorPosition} for node ${node.id}`);
-                    pendingCursorPositions.set(node.id, e.detail.cursorPosition);
+                if (node.isPlaceholder) {
+                  // For placeholder nodes, just update the nodeType locally
+                  if ('updatePlaceholderNodeType' in nodeManager) {
+                    (nodeManager as any).updatePlaceholderNodeType(node.id, e.detail.nodeType);
                   }
+                } else {
+                  // For real nodes, update node type with full persistence
+                  nodeManager.updateNodeType(node.id, e.detail.nodeType);
+                }
 
-                  if (node.isPlaceholder) {
-                    // For placeholder nodes, just update the nodeType locally
-                    console.log(`📝 Updating placeholder node ${node.id} to type: ${e.detail.nodeType}`);
-                    if ('updatePlaceholderNodeType' in nodeManager) {
-                      (nodeManager as any).updatePlaceholderNodeType(node.id, e.detail.nodeType);
-                    }
-                  } else {
-                    // For real nodes, update node type with full persistence
-                    console.log(`🔄 Updating real node ${node.id} to type: ${e.detail.nodeType}`);
-                    nodeManager.updateNodeType(node.id, e.detail.nodeType);
-                  }
-
-                  // Set autoFocus to restore focus after nodeType change
-                  console.log(`🎯 Setting autoFocus for node ${node.id} after slash command`);
-                  focusedNodeId = node.id;
-                }}
-                on:iconClick={handleIconClick}
-                on:combineWithPrevious={handleCombineWithPrevious}
-                on:deleteNode={handleDeleteNode}
-              />
-            {:else}
-              <!-- Final fallback to BaseNode -->
-              <BaseNode
-                nodeId={node.id}
-                nodeType={node.nodeType}
-                autoFocus={node.autoFocus || node.id === focusedNodeId}
-                content={node.content}
-                headerLevel={node.inheritHeaderLevel || 0}
-                children={node.children}
-                metadata={node.metadata || {}}
-                editableConfig={{ allowMultiline: true }}
-                on:createNewNode={handleCreateNewNode}
-                on:indentNode={handleIndentNode}
-                on:outdentNode={handleOutdentNode}
-                on:navigateArrow={handleArrowNavigation}
-                on:contentChanged={(e) => {
-                  const content = e.detail.content;
-
-                  // Update node content (placeholder flag is handled automatically)
-                  nodeManager.updateNodeContent(node.id, content);
-                }}
-                on:slashCommandSelected={(e) => {
-                  console.log(`🎛️ Slash command selected for node ${node.id}:`, e.detail, 'isPlaceholder:', node.isPlaceholder);
-
-                  // Store cursor position before node type change
-                  if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
-                    console.log(`💾 Storing cursor position ${e.detail.cursorPosition} for node ${node.id}`);
-                    pendingCursorPositions.set(node.id, e.detail.cursorPosition);
-                  }
-
-                  if (node.isPlaceholder) {
-                    // For placeholder nodes, just update the nodeType locally
-                    console.log(`📝 Updating placeholder node ${node.id} to type: ${e.detail.nodeType}`);
-                    if ('updatePlaceholderNodeType' in nodeManager) {
-                      (nodeManager as any).updatePlaceholderNodeType(node.id, e.detail.nodeType);
-                    }
-                  } else {
-                    // For real nodes, update node type with full persistence
-                    console.log(`🔄 Updating real node ${node.id} to type: ${e.detail.nodeType}`);
-                    nodeManager.updateNodeType(node.id, e.detail.nodeType);
-                  }
-
-                  // Set autoFocus to restore focus after nodeType change
-                  console.log(`🎯 Setting autoFocus for node ${node.id} after slash command`);
-                  focusedNodeId = node.id;
-                }}
-                on:iconClick={handleIconClick}
-                on:combineWithPrevious={handleCombineWithPrevious}
-                on:deleteNode={handleDeleteNode}
-              />
-            {/if}
+                // Set autoFocus to restore focus after nodeType change
+                focusedNodeId = node.id;
+              }}
+              on:iconClick={handleIconClick}
+              on:combineWithPrevious={handleCombineWithPrevious}
+              on:deleteNode={handleDeleteNode}
+            />
           {/if}
-        </div>
+        {/if}
       </div>
-    {/each}
+    </div>
+  {/each}
 </div>
 
 <style>

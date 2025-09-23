@@ -29,6 +29,7 @@
     "quality:fix": "bun run --cwd packages/desktop-app quality:fix",
     "container:build": "bun run scripts/container.ts build",
     "container:run": "bun run scripts/container.ts run",
+    "container:save": "bun run scripts/container.ts save",
     "container:list": "bun run scripts/container.ts list",
     "container:stop": "bun run scripts/container.ts stop",
     "container:help": "bun run scripts/container.ts"
