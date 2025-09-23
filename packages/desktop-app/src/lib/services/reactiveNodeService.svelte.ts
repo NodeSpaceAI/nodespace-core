@@ -470,18 +470,37 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           ];
         }
       } else {
-        // Handle sibling merge: just add children to the previous node
-        updatedPreviousNode.children = [...updatedPreviousNode.children, ...currentNode.children];
-      }
+        // Handle sibling merge: children become siblings of the merged node
+        // Find where to insert the children as siblings
+        const parentId = previousNode.parentId;
+        if (parentId) {
+          const parent = newNodesRecord[parentId];
+          if (parent) {
+            // Find position of the previous node in parent's children
+            const previousNodeIndex = parent.children.indexOf(previousNodeId);
+            if (previousNodeIndex !== -1) {
+              // Insert current node's children right after the previous node
+              const beforeChildren = parent.children.slice(0, previousNodeIndex + 1);
+              const afterChildren = parent.children.slice(previousNodeIndex + 1);
+              newNodesRecord[parentId] = {
+                ...parent,
+                children: [...beforeChildren, ...currentNode.children, ...afterChildren]
+              };
+            }
+          }
+        } else {
+          // Previous node is a root node, make children root nodes too
+          _rootNodeIds.push(...currentNode.children);
+        }
 
-      // Update children's parent reference and preserve/improve depth
-      // In document experience: nodes shift UP, never increase depth unnecessarily
-      for (const childId of currentNode.children) {
-        const child = newNodesRecord[childId];
-        if (child) {
-          const targetDepth = previousNode.depth + 1;
-          const preservedDepth = Math.min(child.depth, targetDepth); // Never increase depth
-          newNodesRecord[childId] = { ...child, parentId: previousNodeId, depth: preservedDepth };
+        // Update children's parent reference and shift them up to sibling level
+        // Children become siblings, so they get the same parent and depth as the merged node
+        for (const childId of currentNode.children) {
+          const child = newNodesRecord[childId];
+          if (child) {
+            // Children shift up to become siblings at the same level as the merged node
+            newNodesRecord[childId] = { ...child, parentId: previousNode.parentId, depth: previousNode.depth };
+          }
         }
       }
     }
