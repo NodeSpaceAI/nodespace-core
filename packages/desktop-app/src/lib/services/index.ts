@@ -13,7 +13,7 @@ export * from './mockDatabaseService';
 // ============================================================================
 // Node Management
 // ============================================================================
-export * from './nodeManager';
+export * from './reactiveNodeService.svelte.js';
 export * from './enhancedNodeManager';
 export * from './nodeOperationsService';
 export * from './hierarchyService';

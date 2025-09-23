@@ -16,15 +16,8 @@ import CircleIcon from './components/circle-icon.svelte';
 import TaskIcon from './components/task-icon.svelte';
 import AIIcon from './components/ai-icon.svelte';
 
-export type NodeType =
-  | 'text'
-  | 'document'
-  | 'task'
-  | 'ai-chat'
-  | 'ai_chat'
-  | 'user'
-  | 'entity'
-  | 'query';
+// Dynamic node types - can be extended by plugins
+export type NodeType = string;
 
 export type NodeState = 'pending' | 'inProgress' | 'completed' | 'default';
 
@@ -51,84 +44,131 @@ export interface NodeIconProps {
 }
 
 /**
- * Icon Registry: Maps node types to their configuration
+ * Dynamic Icon Registry: Maps node types to their configuration
  *
  * This eliminates the complex conditional logic in the old Icon component
  * and provides a clean, scalable way to manage icon semantics.
+ * External plugins can register their own icon configurations.
  */
-export const iconRegistry: Record<NodeType, IconConfig> = {
-  // Text nodes - default node type with ring effect for children
-  text: {
-    component: CircleIcon,
-    semanticClass: 'node-icon',
-    colorVar: 'currentColor',
-    hasState: false,
-    hasRingEffect: true
-  },
+class IconRegistry {
+  private registry = new Map<string, IconConfig>();
 
-  // Document nodes - similar to text but potentially different semantics
-  document: {
-    component: CircleIcon,
-    semanticClass: 'node-icon',
-    colorVar: 'currentColor',
-    hasState: false,
-    hasRingEffect: true
-  },
-
-  // Task nodes - with state support (pending/inProgress/completed)
-  task: {
-    component: TaskIcon,
-    semanticClass: 'task-icon',
-    colorVar: 'hsl(var(--node-task, 200 40% 45%))',
-    hasState: true,
-    hasRingEffect: false // Tasks use state-specific icons instead of ring effects
-  },
-
-  // AI Chat nodes - square design with "AI" text
-  'ai-chat': {
-    component: AIIcon,
-    semanticClass: 'ai-icon',
-    colorVar: 'hsl(var(--node-ai-chat, 200 40% 45%))',
-    hasState: false,
-    hasRingEffect: false
-  },
-
-  // AI Chat nodes (alternative naming convention)
-  ai_chat: {
-    component: AIIcon,
-    semanticClass: 'ai-icon',
-    colorVar: 'hsl(var(--node-ai-chat, 200 40% 45%))',
-    hasState: false,
-    hasRingEffect: false
-  },
-
-  // User nodes - for user-related content
-  user: {
-    component: CircleIcon,
-    semanticClass: 'node-icon',
-    colorVar: 'hsl(var(--node-text, 200 40% 45%))', // Blue-gray (Scheme 3)
-    hasState: false,
-    hasRingEffect: true
-  },
-
-  // Entity nodes - for entities and relationships
-  entity: {
-    component: CircleIcon,
-    semanticClass: 'node-icon',
-    colorVar: 'hsl(var(--node-entity, 200 40% 45%))',
-    hasState: false,
-    hasRingEffect: true
-  },
-
-  // Query nodes - for search queries and filters
-  query: {
-    component: CircleIcon,
-    semanticClass: 'node-icon',
-    colorVar: 'hsl(var(--node-query, 200 40% 45%))',
-    hasState: false,
-    hasRingEffect: true
+  constructor() {
+    // Register core icon configs
+    this.registerCoreConfigs();
   }
-};
+
+  private registerCoreConfigs(): void {
+    // Text nodes - default node type with ring effect for children
+    this.register('text', {
+      component: CircleIcon,
+      semanticClass: 'node-icon',
+      colorVar: 'currentColor',
+      hasState: false,
+      hasRingEffect: true
+    });
+
+    // Document nodes - similar to text but potentially different semantics
+    this.register('document', {
+      component: CircleIcon,
+      semanticClass: 'node-icon',
+      colorVar: 'currentColor',
+      hasState: false,
+      hasRingEffect: true
+    });
+
+    // Task nodes - with state support (pending/inProgress/completed)
+    this.register('task', {
+      component: TaskIcon,
+      semanticClass: 'task-icon',
+      colorVar: 'hsl(var(--node-task, 200 40% 45%))',
+      hasState: true,
+      hasRingEffect: false // Tasks use state-specific icons instead of ring effects
+    });
+
+    // AI Chat nodes - square design with "AI" text
+    this.register('ai-chat', {
+      component: AIIcon,
+      semanticClass: 'ai-icon',
+      colorVar: 'hsl(var(--node-ai-chat, 200 40% 45%))',
+      hasState: false,
+      hasRingEffect: false
+    });
+
+    // AI Chat nodes (alternative naming convention)
+    this.register('ai_chat', {
+      component: AIIcon,
+      semanticClass: 'ai-icon',
+      colorVar: 'hsl(var(--node-ai-chat, 200 40% 45%))',
+      hasState: false,
+      hasRingEffect: false
+    });
+
+    // User nodes - for user-related content
+    this.register('user', {
+      component: CircleIcon,
+      semanticClass: 'node-icon',
+      colorVar: 'hsl(var(--node-text, 200 40% 45%))', // Blue-gray (Scheme 3)
+      hasState: false,
+      hasRingEffect: true
+    });
+
+    // Entity nodes - for entities and relationships
+    this.register('entity', {
+      component: CircleIcon,
+      semanticClass: 'node-icon',
+      colorVar: 'hsl(var(--node-entity, 200 40% 45%))',
+      hasState: false,
+      hasRingEffect: true
+    });
+
+    // Query nodes - for search queries and filters
+    this.register('query', {
+      component: CircleIcon,
+      semanticClass: 'node-icon',
+      colorVar: 'hsl(var(--node-query, 200 40% 45%))',
+      hasState: false,
+      hasRingEffect: true
+    });
+  }
+
+  /**
+   * Register an icon configuration for a node type
+   * External plugins can use this to register their own icons
+   */
+  public register(nodeType: string, config: IconConfig): void {
+    this.registry.set(nodeType, config);
+  }
+
+  /**
+   * Get icon configuration for a specific node type
+   */
+  public getConfig(nodeType: string): IconConfig {
+    const config = this.registry.get(nodeType);
+    if (!config) {
+      // Fallback to text node for unrecognized types
+      return this.registry.get('text')!;
+    }
+    return config;
+  }
+
+  /**
+   * Check if a node type has a registered icon config
+   */
+  public hasConfig(nodeType: string): boolean {
+    return this.registry.has(nodeType);
+  }
+
+  /**
+   * Get all registered node types
+   */
+  public getAllNodeTypes(): string[] {
+    return Array.from(this.registry.keys());
+  }
+}
+
+// Global icon registry instance
+export const iconRegistry = new IconRegistry();
 
 /**
  * Get icon configuration for a specific node type
@@ -137,12 +177,7 @@ export const iconRegistry: Record<NodeType, IconConfig> = {
  * @returns The icon configuration for the node type
  */
 export function getIconConfig(nodeType: NodeType): IconConfig {
-  const config = iconRegistry[nodeType];
-  if (!config) {
-    // Fallback to text node for unrecognized types
-    return iconRegistry.text;
-  }
-  return config;
+  return iconRegistry.getConfig(nodeType);
 }
 
 /**
@@ -157,16 +192,20 @@ export function getIconConfig(nodeType: NodeType): IconConfig {
 export function resolveNodeState(
   nodeType: NodeType,
   explicitState?: NodeState,
-  _additionalProps?: Record<string, unknown>
+  additionalProps?: Record<string, unknown>
 ): NodeState {
   // If explicit state is provided, use it
   if (explicitState) {
     return explicitState;
   }
 
-  // For task nodes, default to pending if no state specified
-  if (nodeType === 'task') {
-    return 'pending';
+  // For task nodes, read state from metadata
+  if (nodeType === 'task' && additionalProps) {
+    const taskState = additionalProps.taskState as string;
+    if (taskState && ['pending', 'inProgress', 'completed'].includes(taskState)) {
+      return taskState as NodeState;
+    }
+    return 'pending'; // Default to pending if no valid state
   }
 
   // For other node types, use default state

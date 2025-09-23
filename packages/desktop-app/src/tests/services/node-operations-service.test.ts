@@ -11,7 +11,10 @@
  */
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { NodeManager, type NodeManagerEvents } from '$lib/services/nodeManager';
+import {
+  ReactiveNodeService as NodeManager,
+  type NodeManagerEvents
+} from '$lib/services/reactiveNodeService.svelte.js';
 import { HierarchyService } from '$lib/services/hierarchyService';
 import { NodeOperationsService } from '$lib/services/nodeOperationsService';
 import { ContentProcessor } from '$lib/services/contentProcessor';

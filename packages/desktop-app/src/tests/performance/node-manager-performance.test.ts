@@ -4,8 +4,8 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { NodeManager } from '../../lib/services/nodeManager';
-import type { NodeManagerEvents } from '../../lib/services/nodeManager';
+import { ReactiveNodeService as NodeManager } from '../../lib/services/reactiveNodeService.svelte.js';
+import type { NodeManagerEvents } from '../../lib/services/reactiveNodeService.svelte.js';
 
 describe('NodeManager Performance Tests', () => {
   let nodeManager: NodeManager;

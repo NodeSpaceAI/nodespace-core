@@ -7,7 +7,10 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NodeReferenceService } from '$lib/services/nodeReferenceService';
-import { NodeManager, type Node } from '$lib/services/nodeManager';
+import {
+  ReactiveNodeService as NodeManager,
+  type Node
+} from '$lib/services/reactiveNodeService.svelte.js';
 import { HierarchyService } from '$lib/services/hierarchyService';
 import { NodeOperationsService } from '$lib/services/nodeOperationsService';
 import { MockDatabaseService } from '$lib/services/mockDatabaseService';

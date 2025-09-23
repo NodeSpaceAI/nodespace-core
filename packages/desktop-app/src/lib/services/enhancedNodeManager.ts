@@ -14,7 +14,14 @@
  * - Seamless integration with existing EventBus patterns
  */
 
-import { NodeManager, type NodeManagerEvents, type Node } from './nodeManager';
+import {
+  createReactiveNodeService,
+  type ReactiveNodeService,
+  type NodeManagerEvents,
+  type Node
+} from './reactiveNodeService.svelte.js';
+
+type NodeManager = ReactiveNodeService;
 import { HierarchyService } from './hierarchyService';
 import { NodeOperationsService } from './nodeOperationsService';
 import { ContentProcessor } from './contentProcessor';
@@ -62,7 +69,8 @@ export interface BulkOperationResult extends Record<string, unknown> {
 // EnhancedNodeManager Implementation
 // ============================================================================
 
-export class EnhancedNodeManager extends NodeManager {
+export class EnhancedNodeManager {
+  private nodeManager: NodeManager;
   private hierarchyService: HierarchyService;
   private nodeOperationsService: NodeOperationsService;
   protected readonly serviceName = 'EnhancedNodeManager';
@@ -72,19 +80,38 @@ export class EnhancedNodeManager extends NodeManager {
   private lastGlobalAnalysis = 0;
 
   constructor(events: NodeManagerEvents) {
-    super(events);
+    this.nodeManager = createReactiveNodeService(events);
 
     // Initialize enhanced services
-    this.hierarchyService = new HierarchyService(this);
-    this.contentProcessor = ContentProcessor.getInstance();
+    this.hierarchyService = new HierarchyService(this.nodeManager);
+    const contentProcessor = ContentProcessor.getInstance();
     this.nodeOperationsService = new NodeOperationsService(
-      this,
+      this.nodeManager,
       this.hierarchyService,
-      this.contentProcessor
+      contentProcessor
     );
 
     this.setupEnhancedEventBusIntegration();
   }
+
+  // ========================================================================
+  // Basic NodeManager Delegation (for compatibility)
+  // ========================================================================
+
+  get nodes() { return this.nodeManager.nodes; }
+  get rootNodeIds() { return this.nodeManager.rootNodeIds; }
+  get activeNodeId() { return this.nodeManager.activeNodeId; }
+  get visibleNodes() { return this.nodeManager.visibleNodes; }
+
+  findNode(nodeId: string) { return this.nodeManager.findNode(nodeId); }
+  createNode(afterNodeId: string, content?: string, nodeType?: string, headerLevel?: number, insertAtBeginning?: boolean) {
+    return this.nodeManager.createNode(afterNodeId, content, nodeType, headerLevel, insertAtBeginning);
+  }
+  updateNodeContent(nodeId: string, content: string) { return this.nodeManager.updateNodeContent(nodeId, content); }
+  combineNodes(currentNodeId: string, previousNodeId: string) { return this.nodeManager.combineNodes(currentNodeId, previousNodeId); }
+  indentNode(nodeId: string) { return this.nodeManager.indentNode(nodeId); }
+  outdentNode(nodeId: string) { return this.nodeManager.outdentNode(nodeId); }
+  deleteNode(nodeId: string) { return this.nodeManager.deleteNode(nodeId); }
 
   // ========================================================================
   // Enhanced Hierarchy Operations

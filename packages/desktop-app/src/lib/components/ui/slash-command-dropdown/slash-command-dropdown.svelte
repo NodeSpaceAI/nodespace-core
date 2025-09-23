@@ -86,8 +86,10 @@
   }
 
   function selectCommand(command: SlashCommand) {
+    console.log('🎯 selectCommand called with:', command);
     selectedIndex = commands.indexOf(command);
     dispatch('select', command);
+    console.log('🚀 dispatched select event');
   }
 
   // Reset selection when commands change

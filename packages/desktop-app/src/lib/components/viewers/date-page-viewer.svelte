@@ -13,6 +13,7 @@
   import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import Icon from '$lib/design/icons/icon.svelte';
   import { updateTabTitle, getDateTabTitle } from '$lib/stores/navigation.js';
+  import NodeServiceContext from '$lib/contexts/node-service-context.svelte';
 
   // Props using Svelte 5 runes mode
   let { tabId = 'today' }: { tabId?: string } = $props();
@@ -104,7 +105,9 @@
 
   <!-- Node Content Area -->
   <div class="node-content-area">
-    <BaseNodeViewer />
+    <NodeServiceContext>
+      <BaseNodeViewer />
+    </NodeServiceContext>
   </div>
 </div>
 

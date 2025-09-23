@@ -26,7 +26,7 @@
 
 import { eventBus } from './eventBus';
 import { ContentProcessor } from './contentProcessor';
-import type { NodeManager, Node } from './nodeManager';
+import type { ReactiveNodeService as NodeManager, Node } from './reactiveNodeService.svelte.ts';
 import type { HierarchyService } from './hierarchyService';
 import type { NodeOperationsService } from './nodeOperationsService';
 import type { MockDatabaseService, NodeSpaceNode } from './mockDatabaseService';

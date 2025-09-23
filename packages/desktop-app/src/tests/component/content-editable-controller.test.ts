@@ -133,7 +133,7 @@ describe('ContentEditableController', () => {
       }
     };
 
-    controller = new ContentEditableController(element, 'test-node', mockEvents);
+    controller = new ContentEditableController(element, 'test-node', 'text', mockEvents);
   });
 
   afterEach(() => {
@@ -307,6 +307,7 @@ describe('ContentEditableController', () => {
       const editingController = new ContentEditableController(
         editingElement,
         'editing-test-node',
+        'text',
         mockEvents
       );
       editingController.initialize('**old**', true);
@@ -448,7 +449,7 @@ describe('ContentEditableController', () => {
       const addEventListenerSpy = vi.spyOn(element, 'addEventListener');
       const removeEventListenerSpy = vi.spyOn(element, 'removeEventListener');
 
-      const testController = new ContentEditableController(element, 'test', mockEvents);
+      const testController = new ContentEditableController(element, 'test', 'text', mockEvents);
 
       // Should have added event listeners
       expect(addEventListenerSpy).toHaveBeenCalledWith('focus', expect.any(Function));

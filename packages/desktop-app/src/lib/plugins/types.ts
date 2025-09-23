@@ -10,9 +10,16 @@ import type { NodeViewerProps } from '$lib/types/nodeViewers';
 
 // Base component types - match existing nodeViewers.ts definitions
 export type NodeViewerComponent = Component<NodeViewerProps>;
+export type NodeComponent = Component<NodeViewerProps>; // Individual node components (TaskNode, TextNode, etc.)
 export type NodeReferenceComponent = new (...args: unknown[]) => SvelteComponent;
 
 // Plugin component registration types
+export interface NodeRegistration {
+  component?: NodeComponent;
+  lazyLoad?: () => Promise<{ default: NodeComponent }>;
+  priority?: number;
+}
+
 export interface ViewerRegistration {
   component?: NodeViewerComponent;
   lazyLoad?: () => Promise<{ default: NodeViewerComponent }>;
@@ -31,6 +38,7 @@ export interface SlashCommandDefinition {
   description: string;
   shortcut?: string;
   contentTemplate: string;
+  nodeType?: string; // Target node type when this command is selected
   priority?: number;
 }
 
@@ -49,7 +57,8 @@ export interface PluginDefinition {
   description: string;
   version: string;
   config: NodeTypeConfig;
-  viewer?: ViewerRegistration;
+  node?: NodeRegistration;      // Individual node component (TaskNode, TextNode, etc.)
+  viewer?: ViewerRegistration;  // Rich viewer component (TaskNodeViewer, DatePageViewer, etc.)
   reference?: ReferenceRegistration;
 }
 

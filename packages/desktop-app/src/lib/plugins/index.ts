@@ -9,8 +9,10 @@ export { PluginRegistry, pluginRegistry } from './pluginRegistry';
 export type {
   PluginDefinition,
   NodeViewerComponent,
+  NodeComponent,
   NodeReferenceComponent,
   ViewerRegistration,
+  NodeRegistration,
   ReferenceRegistration,
   SlashCommandDefinition,
   NodeTypeConfig,

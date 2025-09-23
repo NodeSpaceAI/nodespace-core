@@ -62,7 +62,7 @@ describe('Core Plugins Integration', () => {
 
       const taskCommand = taskNodePlugin.config.slashCommands[0];
       expect(taskCommand.shortcut).toBe('[ ]');
-      expect(taskCommand.contentTemplate).toBe('- [ ] ');
+      expect(taskCommand.contentTemplate).toBe('');
     });
 
     it('should have valid aiChatNodePlugin definition', () => {

@@ -12,6 +12,7 @@
 import type {
   PluginDefinition,
   NodeViewerComponent,
+  NodeComponent,
   NodeReferenceComponent,
   SlashCommandDefinition,
   RegistryStats,
@@ -21,6 +22,7 @@ import type {
 export class PluginRegistry {
   private plugins = new Map<string, PluginDefinition>();
   private loadedViewers = new Map<string, NodeViewerComponent>();
+  private loadedNodes = new Map<string, NodeComponent>();
   private loadedReferences = new Map<string, NodeReferenceComponent>();
   private enabledPlugins = new Set<string>();
   private lifecycleEvents: PluginLifecycleEvents = {};
@@ -51,6 +53,7 @@ export class PluginRegistry {
     this.plugins.delete(pluginId);
     this.enabledPlugins.delete(pluginId);
     this.loadedViewers.delete(pluginId);
+    this.loadedNodes.delete(pluginId);
     this.loadedReferences.delete(pluginId);
 
     this.lifecycleEvents.onUnregister?.(pluginId);
@@ -105,6 +108,44 @@ export class PluginRegistry {
     // Use direct component reference
     if (registration.component) {
       this.loadedViewers.set(nodeType, registration.component);
+      return registration.component;
+    }
+
+    return null;
+  }
+
+  /**
+   * Get a node component for a node type
+   * Returns null if no node component is registered (fallback to base node)
+   */
+  async getNodeComponent(nodeType: string): Promise<NodeComponent | null> {
+    // Check if already loaded
+    if (this.loadedNodes.has(nodeType)) {
+      return this.loadedNodes.get(nodeType)!;
+    }
+
+    const plugin = this.plugins.get(nodeType);
+    if (!plugin || !this.enabledPlugins.has(nodeType) || !plugin.node) {
+      return null; // No node component available
+    }
+
+    const registration = plugin.node;
+
+    // Load component if lazy loading
+    if (registration.lazyLoad) {
+      try {
+        const module = await registration.lazyLoad();
+        this.loadedNodes.set(nodeType, module.default);
+        return module.default;
+      } catch (error) {
+        console.warn(`Failed to lazy load node component for ${nodeType}:`, error);
+        return null;
+      }
+    }
+
+    // Use direct component reference
+    if (registration.component) {
+      this.loadedNodes.set(nodeType, registration.component);
       return registration.component;
     }
 
@@ -225,6 +266,14 @@ export class PluginRegistry {
   }
 
   /**
+   * Check if a node component is available for a node type
+   */
+  hasNodeComponent(nodeType: string): boolean {
+    const plugin = this.plugins.get(nodeType);
+    return !!(plugin && this.enabledPlugins.has(nodeType) && plugin.node);
+  }
+
+  /**
    * Check if a reference component is available for a node type
    */
   hasReferenceComponent(nodeType: string): boolean {
@@ -254,6 +303,7 @@ export class PluginRegistry {
     this.plugins.clear();
     this.enabledPlugins.clear();
     this.loadedViewers.clear();
+    this.loadedNodes.clear();
     this.loadedReferences.clear();
   }
 }

@@ -6,11 +6,14 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { ReactiveNodeManager } from '$lib/services/reactiveNodeManager';
-import type { NodeManagerEvents } from '$lib/services/nodeManager';
+import { createReactiveNodeService } from '$lib/services/reactiveNodeService.svelte.js';
+import type {
+  NodeManagerEvents,
+  ReactiveNodeService
+} from '$lib/services/reactiveNodeService.svelte.js';
 
-describe('ReactiveNodeManager - Reactive State Synchronization', () => {
-  let nodeManager: ReactiveNodeManager;
+describe('ReactiveNodeService - Reactive State Synchronization', () => {
+  let nodeManager: ReactiveNodeService;
   let events: NodeManagerEvents;
   let focusRequestedCalls: Array<{ nodeId: string; position?: number }>;
   let nodeCreatedCalls: string[];
@@ -38,7 +41,7 @@ describe('ReactiveNodeManager - Reactive State Synchronization', () => {
       }
     };
 
-    nodeManager = new ReactiveNodeManager(events);
+    nodeManager = createReactiveNodeService(events);
   });
 
   describe('CRITICAL BUG FIX: createNode Reactive State Sync', () => {
@@ -47,12 +50,15 @@ describe('ReactiveNodeManager - Reactive State Synchronization', () => {
       const legacyNodes = [
         {
           id: 'root1',
-          type: 'text',
+          nodeType: 'text',
           content: 'Initial node',
+          depth: 0,
+          parentId: undefined,
+          children: [],
+          expanded: true,
           autoFocus: false,
           inheritHeaderLevel: 0,
-          children: [],
-          expanded: true
+          metadata: {}
         }
       ];
 
@@ -84,22 +90,27 @@ describe('ReactiveNodeManager - Reactive State Synchronization', () => {
       const legacyNodes = [
         {
           id: 'parent1',
-          type: 'text',
+          nodeType: 'text',
           content: 'Parent node',
+          depth: 0,
+          parentId: undefined,
+          children: ['child1'],
+          expanded: true,
           autoFocus: false,
           inheritHeaderLevel: 0,
-          children: [
-            {
-              id: 'child1',
-              type: 'text',
-              content: 'Child node',
-              autoFocus: false,
-              inheritHeaderLevel: 0,
-              children: [],
-              expanded: true
-            }
-          ],
-          expanded: true
+          metadata: {}
+        },
+        {
+          id: 'child1',
+          nodeType: 'text',
+          content: 'Child node',
+          depth: 1,
+          parentId: 'parent1',
+          children: [],
+          expanded: true,
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          metadata: {}
         }
       ];
 
@@ -131,12 +142,15 @@ describe('ReactiveNodeManager - Reactive State Synchronization', () => {
       const legacyNodes = [
         {
           id: 'node1',
-          type: 'text',
+          nodeType: 'text',
           content: 'First node',
+          depth: 0,
+          parentId: undefined,
+          children: [],
+          expanded: true,
           autoFocus: true, // Initially has focus
           inheritHeaderLevel: 0,
-          children: [],
-          expanded: true
+          metadata: {}
         }
       ];
 
@@ -165,12 +179,15 @@ describe('ReactiveNodeManager - Reactive State Synchronization', () => {
       const legacyNodes = [
         {
           id: 'test1',
-          type: 'text',
+          nodeType: 'text',
           content: 'Test node',
+          depth: 0,
+          parentId: undefined,
+          children: [],
+          expanded: true,
           autoFocus: false,
           inheritHeaderLevel: 0,
-          children: [],
-          expanded: true
+          metadata: {}
         }
       ];
 
@@ -201,21 +218,27 @@ describe('ReactiveNodeManager - Reactive State Synchronization', () => {
       const legacyNodes = [
         {
           id: 'node1',
-          type: 'text',
+          nodeType: 'text',
           content: 'First',
+          depth: 0,
+          parentId: undefined,
+          children: [],
+          expanded: true,
           autoFocus: false,
           inheritHeaderLevel: 0,
-          children: [],
-          expanded: true
+          metadata: {}
         },
         {
           id: 'node2',
-          type: 'text',
+          nodeType: 'text',
           content: 'Second',
+          depth: 0,
+          parentId: undefined,
+          children: [],
+          expanded: true,
           autoFocus: false,
           inheritHeaderLevel: 0,
-          children: [],
-          expanded: true
+          metadata: {}
         }
       ];
 
@@ -231,21 +254,27 @@ describe('ReactiveNodeManager - Reactive State Synchronization', () => {
       const legacyNodes = [
         {
           id: 'node1',
-          type: 'text',
+          nodeType: 'text',
           content: 'First',
+          depth: 0,
+          parentId: undefined,
+          children: [],
+          expanded: true,
           autoFocus: false,
           inheritHeaderLevel: 0,
-          children: [],
-          expanded: true
+          metadata: {}
         },
         {
           id: 'node2',
-          type: 'text',
+          nodeType: 'text',
           content: 'Second',
+          depth: 0,
+          parentId: undefined,
+          children: [],
+          expanded: true,
           autoFocus: false,
           inheritHeaderLevel: 0,
-          children: [],
-          expanded: true
+          metadata: {}
         }
       ];
 

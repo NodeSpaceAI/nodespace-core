@@ -10,7 +10,10 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { NodeManager, type NodeManagerEvents } from '$lib/services/nodeManager';
+import {
+  ReactiveNodeService as NodeManager,
+  type NodeManagerEvents
+} from '$lib/services/reactiveNodeService.svelte.js';
 
 describe('NodeManager', () => {
   let nodeManager: NodeManager;

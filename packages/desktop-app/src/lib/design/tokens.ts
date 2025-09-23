@@ -30,7 +30,7 @@ export const processingOpacity = 0.7;
 
 // Get theme-aware node color
 export function getNodeTypeColor(nodeType: NodeType): string {
-  return nodeTypeColors[nodeType];
+  return nodeTypeColors[nodeType as keyof typeof nodeTypeColors] || nodeTypeColors.text;
 }
 
 // Theme switching utility functions

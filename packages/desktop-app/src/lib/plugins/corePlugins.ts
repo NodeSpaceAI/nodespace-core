@@ -75,11 +75,16 @@ export const taskNodePlugin: PluginDefinition = {
         name: 'Task',
         description: 'Create a task with checkbox',
         shortcut: '[ ]',
-        contentTemplate: '- [ ] '
+        contentTemplate: '', // Empty content - task icon shows the state instead
+        nodeType: 'task' // Set node type to 'task' when selected
       }
     ],
     canHaveChildren: true,
     canBeChild: true
+  },
+  node: {
+    lazyLoad: () => import('../design/components/task-node.svelte'),
+    priority: 1
   },
   viewer: {
     lazyLoad: () => import('../components/viewers/task-node-viewer.svelte'),
@@ -126,14 +131,7 @@ export const dateNodePlugin: PluginDefinition = {
   description: 'Date and time node',
   version: '1.0.0',
   config: {
-    slashCommands: [
-      {
-        id: 'date',
-        name: 'Date',
-        description: 'Insert current date',
-        contentTemplate: new Date().toISOString().split('T')[0]
-      }
-    ],
+    slashCommands: [], // Date nodes should not be creatable via slash commands
     canHaveChildren: false,
     canBeChild: true
   },
@@ -192,14 +190,25 @@ export const corePlugins = [
   documentNodePlugin
 ];
 
+// Track if core plugins have been registered to prevent double registration
+let corePluginsRegistered = false;
+
 /**
  * Register all core plugins with the unified registry
  * Replaces the old BasicNodeTypeRegistry initialization
  */
 export function registerCorePlugins(registry: import('./pluginRegistry').PluginRegistry): void {
+  // Prevent double registration
+  if (corePluginsRegistered) {
+    console.log('[UnifiedPluginRegistry] Core plugins already registered, skipping');
+    return;
+  }
+
   for (const plugin of corePlugins) {
     registry.register(plugin);
   }
+
+  corePluginsRegistered = true;
 
   console.log('[UnifiedPluginRegistry] Core plugins registered:', {
     plugins: corePlugins.length,

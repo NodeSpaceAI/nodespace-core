@@ -76,7 +76,12 @@ export interface DecorationUpdateNeededEvent extends BaseEvent {
   namespace: 'interaction';
   nodeId: string;
   decorationType: string;
-  reason: 'content-changed' | 'status-changed' | 'reference-updated' | 'cache-invalidated';
+  reason:
+    | 'content-changed'
+    | 'status-changed'
+    | 'reference-updated'
+    | 'cache-invalidated'
+    | 'nodeType-changed';
   metadata?: Record<string, unknown>;
 }
 
@@ -108,7 +113,7 @@ export interface ReferencesUpdateNeededEvent extends BaseEvent {
   type: 'references:update-needed';
   namespace: 'coordination';
   nodeId: string;
-  updateType: 'content' | 'status' | 'hierarchy' | 'deletion';
+  updateType: 'content' | 'status' | 'hierarchy' | 'deletion' | 'nodeType';
   affectedReferences?: string[];
   metadata?: Record<string, unknown>;
 }
@@ -140,7 +145,7 @@ export interface NodeUpdatedEvent extends BaseEvent {
   type: 'node:updated';
   namespace: 'lifecycle';
   nodeId: string;
-  updateType: 'content' | 'hierarchy' | 'status' | 'metadata';
+  updateType: 'content' | 'hierarchy' | 'status' | 'metadata' | 'nodeType';
   previousValue?: unknown;
   newValue?: unknown;
   metadata?: Record<string, unknown>;

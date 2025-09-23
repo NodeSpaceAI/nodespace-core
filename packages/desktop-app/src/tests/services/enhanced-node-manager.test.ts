@@ -14,7 +14,7 @@
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
 import { EnhancedNodeManager } from '$lib/services/enhancedNodeManager';
-import type { NodeManagerEvents } from '$lib/services/nodeManager';
+import type { NodeManagerEvents } from '$lib/services/reactiveNodeService.svelte.js';
 import { eventBus } from '$lib/services/eventBus';
 
 // Test helper interfaces

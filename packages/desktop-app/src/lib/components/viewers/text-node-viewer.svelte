@@ -108,6 +108,7 @@
   on:outdentNode={(e) => dispatch('outdentNode', e.detail)}
   on:navigateArrow={(e) => dispatch('navigateArrow', e.detail)}
   on:combineWithPrevious={(e) => dispatch('combineWithPrevious', e.detail)}
+  on:slashCommandSelected={(e) => dispatch('slashCommandSelected', e.detail)}
   on:deleteNode={(e) => dispatch('deleteNode', e.detail)}
   on:focus={handleFocus}
   on:blur={handleBlur}
