@@ -175,7 +175,55 @@ function getOpeningMarkers(context: MarkdownContext): string {
  * Split content at position while preserving markdown formatting
  */
 export function splitMarkdownContent(content: string, position: number): MarkdownSplitResult {
-  // Handle edge cases
+  // Check for header syntax first - this takes precedence over edge cases
+  const headerMatch = content.match(/^(#{1,6}\s+)/);
+  if (headerMatch) {
+    const headerPrefix = headerMatch[1]; // e.g., '# ' or '## '
+    const headerPrefixLength = headerPrefix.length;
+
+    if (position <= 0) {
+      // Cursor is at beginning of header (e.g., '|# Header')
+      // Original node should show header syntax to preserve formatting
+      // New node gets the full original content
+      return {
+        beforeContent: headerPrefix,
+        afterContent: content,
+        newNodeCursorPosition: headerPrefixLength
+      };
+    }
+
+    if (position < headerPrefixLength) {
+      // Cursor is within header syntax (e.g., '#|')
+      // Original node should show header syntax to preserve formatting
+      // New node gets the full original content
+      return {
+        beforeContent: headerPrefix,
+        afterContent: content,
+        newNodeCursorPosition: headerPrefixLength
+      };
+    }
+
+    if (position === headerPrefixLength) {
+      // Cursor is right after header syntax (e.g., '# |content')
+      // This works naturally with the splitting logic
+      return {
+        beforeContent: headerPrefix,
+        afterContent: content,
+        newNodeCursorPosition: headerPrefixLength
+      };
+    }
+
+    // Cursor is after header syntax - split normally but preserve header in afterContent
+    const beforeCursor = content.substring(0, position);
+    const afterCursor = content.substring(position);
+    return {
+      beforeContent: beforeCursor,
+      afterContent: headerPrefix + afterCursor,
+      newNodeCursorPosition: headerPrefixLength
+    };
+  }
+
+  // Handle edge cases for non-header content
   if (position <= 0) {
     return {
       beforeContent: '',
@@ -192,7 +240,7 @@ export function splitMarkdownContent(content: string, position: number): Markdow
     };
   }
 
-  // Simple split first
+  // If not a header, handle inline formatting as before
   const beforeCursor = content.substring(0, position);
   const afterCursor = content.substring(position);
 
