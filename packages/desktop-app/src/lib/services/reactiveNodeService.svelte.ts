@@ -86,7 +86,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     content: string = '',
     nodeType: string = 'text',
     headerLevel?: number,
-    insertAtBeginning?: boolean
+    insertAtBeginning?: boolean,
+    originalNodeContent?: string,
+    focusNewNode?: boolean
   ): string {
     const afterNode = findNode(afterNodeId);
     if (!afterNode) {
@@ -114,13 +116,28 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Generate initial content with header syntax if needed
     let initialContent = content;
+    const sourceContent = originalNodeContent || afterNode.content; // Use original content if provided
+
     if (content.trim() === '') {
-      // For empty content, extract and inherit actual header syntax from the original node
-      const headerMatch = afterNode.content.match(/^(#{1,6}\s+)/);
+      // For empty content, extract and inherit actual header syntax from the source content
+      const headerMatch = sourceContent.match(/^(#{1,6}\s+)/);
       if (headerMatch) {
         initialContent = headerMatch[1]; // This includes the # symbols and the space
       }
+    } else {
+      // For non-empty content (e.g., from Enter key splits), check if we should inherit header syntax
+      // This handles the case where pressing Enter after "# |" should create a new node above with "# " syntax
+      const sourceHeaderMatch = sourceContent.match(/^(#{1,6}\s+)/);
+      const contentHeaderMatch = content.match(/^(#{1,6}\s+)/);
+
+      // If the source content has header syntax but the new content doesn't, inherit it
+      if (sourceHeaderMatch && !contentHeaderMatch) {
+        initialContent = sourceHeaderMatch[1] + content;
+      }
     }
+
+    // Determine which node should receive focus based on insertion strategy
+    const shouldFocusNewNode = focusNewNode !== undefined ? focusNewNode : !insertAtBeginning;
 
     const newNode: Node = {
       id: nodeId,
@@ -130,7 +147,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       parentId: newParentId,
       children: [],
       expanded: true,
-      autoFocus: true,
+      autoFocus: shouldFocusNewNode,
       inheritHeaderLevel: headerLevel !== undefined ? headerLevel : afterNode.inheritHeaderLevel,
       metadata: {},
       isPlaceholder: initialContent.trim() === '' || /^#{1,6}\s*$/.test(initialContent.trim())
@@ -237,6 +254,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       metadata: {}
     });
 
+    // Set focus on original node if new node doesn't receive focus
+    if (!shouldFocusNewNode) {
+      _nodes[afterNodeId] = { ..._nodes[afterNodeId], autoFocus: true };
+    }
+
     return nodeId;
   }
 
@@ -244,9 +266,19 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     afterNodeId: string,
     nodeType: string = 'text',
     headerLevel?: number,
-    insertAtBeginning: boolean = false
+    insertAtBeginning: boolean = false,
+    originalNodeContent?: string,
+    focusNewNode?: boolean
   ): string {
-    return createNode(afterNodeId, '', nodeType, headerLevel, insertAtBeginning);
+    return createNode(
+      afterNodeId,
+      '',
+      nodeType,
+      headerLevel,
+      insertAtBeginning,
+      originalNodeContent,
+      focusNewNode
+    );
   }
 
   // Debounce timers for expensive operations
@@ -567,10 +599,13 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       }
     }
 
-    // Update previous node and remove current node atomically
-    // Use the updated node from newNodesRecord (which may have children added) and merge with content update
+    // Update the target node with merged content and disable autoFocus for precise cursor positioning
     const finalPreviousNode = newNodesRecord[previousNodeId] || previousNode;
-    newNodesRecord[previousNodeId] = { ...finalPreviousNode, content: combinedContent };
+    newNodesRecord[previousNodeId] = {
+      ...finalPreviousNode,
+      content: combinedContent,
+      autoFocus: false
+    };
     delete newNodesRecord[currentNodeId];
 
     // Apply atomic changes
@@ -602,6 +637,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (rootIndex >= 0) {
       _rootNodeIds.splice(rootIndex, 1);
     }
+
+    // Prepare for precise cursor positioning
+    clearAllAutoFocus();
 
     // Emit focus request to position cursor at merge point
     events.focusRequested(previousNodeId, mergePosition);

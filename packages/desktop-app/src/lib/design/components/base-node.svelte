@@ -234,6 +234,7 @@
       nodeType: string;
       currentContent?: string;
       newContent?: string;
+      originalContent?: string;
       inheritHeaderLevel?: number;
       cursorAtBeginning?: boolean;
     };

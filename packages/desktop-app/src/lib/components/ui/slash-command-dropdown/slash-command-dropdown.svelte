@@ -86,7 +86,7 @@
   }
 
   function selectCommand(command: SlashCommand) {
-    console.log('🎯 selectCommand called with:', command);
+    console.log('🎯 selectCommand called with:', { id: command.id, name: command.name });
     selectedIndex = commands.indexOf(command);
     dispatch('select', command);
     console.log('🚀 dispatched select event');

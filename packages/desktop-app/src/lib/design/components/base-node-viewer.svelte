@@ -29,10 +29,10 @@
 
   // Focus handling function
   function requestNodeFocus(nodeId: string, position: number) {
-    // Find the node in the visible nodes
+    // Find the target node
     const node = nodeManager.findNode(nodeId);
     if (!node) {
-      console.error(`❌ requestNodeFocus: node ${nodeId} not found`);
+      console.error(`Node ${nodeId} not found for focus request`);
       return;
     }
 
@@ -60,7 +60,7 @@
           }
         }
       } else {
-        console.error(`❌ Could not find contenteditable element for node ${nodeId}`);
+        console.error(`Could not find contenteditable element for node ${nodeId}`);
       }
     }, 10);
   }
@@ -68,20 +68,13 @@
   /**
    * Add appropriate formatting syntax to content based on node type
    * Used when creating new nodes from splits to preserve formatting
+   *
+   * NOTE: Header syntax inheritance is now handled in createNode() in reactiveNodeService.svelte.ts
+   * to avoid duplication and ensure consistent behavior.
    */
-  function addFormattingSyntax(
-    content: string,
-    nodeType: string,
-    inheritHeaderLevel?: number
-  ): string {
-    // For text nodes with header levels, add markdown header syntax
-    if (nodeType === 'text' && inheritHeaderLevel && inheritHeaderLevel > 0) {
-      const headerPrefix = '#'.repeat(inheritHeaderLevel) + ' ';
-      // Add prefix if content is empty or doesn't already have it
-      if (!content || !content.startsWith(headerPrefix.trim())) {
-        return headerPrefix + content;
-      }
-    }
+  function addFormattingSyntax(content: string): string {
+    // Header syntax inheritance is now handled in the createNode function
+    // to ensure consistent behavior and avoid duplication
 
     // Return content as-is if no formatting needed
     if (!content) return content;
@@ -90,7 +83,7 @@
     // Task checkbox syntax ([ ]) is only added when users type it as a shortcut
     // Splitting a task node preserves the visual task state but not the syntax
 
-    // For other node types or if syntax already exists, return as-is
+    // For other node types, return as-is
     return content;
   }
 
@@ -101,8 +94,11 @@
       nodeType: string;
       currentContent?: string;
       newContent?: string;
+      originalContent?: string;
       inheritHeaderLevel?: number;
       cursorAtBeginning?: boolean;
+      insertAtBeginning?: boolean;
+      focusOriginalNode?: boolean;
     }>
   ) {
     const {
@@ -110,22 +106,21 @@
       nodeType,
       currentContent,
       newContent,
+      originalContent,
       inheritHeaderLevel,
-      cursorAtBeginning
+      insertAtBeginning,
+      focusOriginalNode
     } = event.detail;
 
-    // CRITICAL FIX: Add validation to prevent circular reference issues
+    // Validate node creation parameters
     if (!afterNodeId || !nodeType) {
-      console.error('❌ VALIDATION FAILED: Invalid node creation parameters:', {
-        afterNodeId,
-        nodeType
-      });
+      console.error('Invalid node creation parameters:', { afterNodeId, nodeType });
       return;
     }
 
-    // Verify the after node exists before creating
+    // Verify the target node exists
     if (!nodeManager.nodes.has(afterNodeId)) {
-      console.error('❌ VALIDATION FAILED: After node does not exist:', afterNodeId);
+      console.error('Target node does not exist:', afterNodeId);
       return;
     }
 
@@ -144,31 +139,43 @@
         afterNodeId,
         nodeType,
         inheritHeaderLevel,
-        cursorAtBeginning || false
+        insertAtBeginning || false,
+        originalContent,
+        !focusOriginalNode // Focus new node when creating splits, original node when creating above
       );
     } else {
       // Create real node when splitting existing content
       // Add formatting syntax to the new content based on node type and header level
-      const formattedNewContent = addFormattingSyntax(newContent, nodeType, inheritHeaderLevel);
+      const formattedNewContent = addFormattingSyntax(newContent);
 
       newNodeId = nodeManager.createNode(
         afterNodeId,
         formattedNewContent,
         nodeType,
         inheritHeaderLevel,
-        cursorAtBeginning || false
+        insertAtBeginning || false,
+        originalContent,
+        !focusOriginalNode // Focus new node when creating splits, original node when creating above
       );
     }
 
-    // CRITICAL FIX: Validate that node creation was successful
+    // Validate that node creation succeeded
     if (!newNodeId || !nodeManager.nodes.has(newNodeId)) {
-      console.error('❌ NODE CREATION FAILED: Node creation failed for afterNodeId:', afterNodeId);
-      console.error('❌ newNodeId:', newNodeId);
-      console.error(
-        '❌ nodeManager.nodes.has(newNodeId):',
-        newNodeId ? nodeManager.nodes.has(newNodeId) : 'newNodeId is falsy'
-      );
+      console.error('Node creation failed for afterNodeId:', afterNodeId, 'newNodeId:', newNodeId);
       return;
+    }
+
+    // Handle focus direction based on focusOriginalNode parameter
+    if (focusOriginalNode) {
+      // The hierarchy is correct (new node above, original below)
+      // Use the nodeManager's update methods to properly trigger reactivity
+
+      // Use updateNodeContent on original node to trigger focus
+      const originalNode = nodeManager.nodes.get(afterNodeId);
+      if (originalNode) {
+        // Update the original node's content to itself, which should trigger focus
+        nodeManager.updateNodeContent(afterNodeId, originalNode.content);
+      }
     }
 
     // Handle HTML formatting conversion if needed
@@ -185,7 +192,7 @@
     const { nodeId } = event.detail;
 
     try {
-      // CRITICAL FIX: Add error recovery for node operations
+      // Validate node exists before indenting
       if (!nodeManager.nodes.has(nodeId)) {
         console.error('Cannot indent non-existent node:', nodeId);
         return;
@@ -279,7 +286,7 @@
     const { nodeId } = event.detail;
 
     try {
-      // CRITICAL FIX: Add error recovery for node operations
+      // Validate node exists before outdenting
       if (!nodeManager.nodes.has(nodeId)) {
         console.error('Cannot outdent non-existent node:', nodeId);
         return;
@@ -537,7 +544,7 @@
     try {
       const { nodeId, currentContent } = event.detail;
 
-      // CRITICAL FIX: Add error recovery for node operations
+      // Validate node exists before combining
       if (!nodeManager.nodes.has(nodeId)) {
         console.error('Cannot combine non-existent node:', nodeId);
         return;
@@ -575,7 +582,7 @@
     try {
       const { nodeId } = event.detail;
 
-      // CRITICAL FIX: Add error recovery for node operations
+      // Validate node exists before deletion
       if (!nodeManager.nodes.has(nodeId)) {
         console.error('Cannot delete non-existent node:', nodeId);
         return;

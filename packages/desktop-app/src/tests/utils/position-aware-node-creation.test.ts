@@ -12,7 +12,7 @@ import { ContentEditableController } from '../../lib/design/components/contentEd
 // Setup DOM environment
 const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>');
 globalThis.document = dom.window.document;
-globalThis.window = dom.window as any;
+globalThis.window = dom.window as unknown as Window & typeof globalThis;
 globalThis.HTMLElement = dom.window.HTMLElement;
 globalThis.Text = dom.window.Text;
 globalThis.Range = dom.window.Range;
@@ -49,7 +49,16 @@ describe('Position-Aware Node Creation', () => {
       headerLevelChanged: () => {},
       focus: () => {},
       blur: () => {},
-      createNewNode: (data: any) => {
+      createNewNode: (data: {
+        afterNodeId: string;
+        nodeType: string;
+        currentContent?: string;
+        newContent?: string;
+        originalContent?: string;
+        cursorAtBeginning?: boolean;
+        insertAtBeginning?: boolean;
+        focusOriginalNode?: boolean;
+      }) => {
         eventCalls.createNewNode = eventCalls.createNewNode || [];
         eventCalls.createNewNode.push(data);
       },
@@ -57,11 +66,17 @@ describe('Position-Aware Node Creation', () => {
       outdentNode: () => {},
       navigateArrow: () => {},
       combineWithPrevious: () => {},
-      deleteNode: () => {}
+      deleteNode: () => {},
+      triggerDetected: () => {},
+      triggerHidden: () => {},
+      nodeReferenceSelected: () => {},
+      slashCommandDetected: () => {},
+      slashCommandHidden: () => {},
+      slashCommandSelected: () => {}
     };
 
-    const controller = new ContentEditableController(div, events);
-    controller.initialize('test-node', true);
+    const controller = new ContentEditableController(div, 'test-node', 'text', events);
+    controller.initialize(initialContent, true);
 
     return { controller, eventCalls, div };
   }
@@ -71,9 +86,27 @@ describe('Position-Aware Node Creation', () => {
     const selection = window.getSelection();
     if (!selection) return;
 
-    const textNode = element.firstChild;
-    if (textNode && textNode.nodeType === Node.TEXT_NODE) {
-      range.setStart(textNode, Math.min(position, textNode.textContent?.length || 0));
+    // For complex HTML structures, we need to find the correct text node at the given position
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
+
+    let currentPosition = 0;
+    let targetNode: Node | null = null;
+    let offsetInNode = 0;
+
+    let node = walker.nextNode();
+    while (node) {
+      const nodeLength = node.textContent?.length || 0;
+      if (currentPosition + nodeLength >= position) {
+        targetNode = node;
+        offsetInNode = position - currentPosition;
+        break;
+      }
+      currentPosition += nodeLength;
+      node = walker.nextNode();
+    }
+
+    if (targetNode) {
+      range.setStart(targetNode, offsetInNode);
       range.collapse(true);
       selection.removeAllRanges();
       selection.addRange(range);
@@ -92,7 +125,7 @@ describe('Position-Aware Node Creation', () => {
 
   describe('Header Node Creation Above', () => {
     it('should create new node ABOVE when cursor is at beginning |# Header', () => {
-      const { controller, eventCalls, div } = createController('# Header text');
+      const { eventCalls, div } = createController('# Header text');
       setCursorPosition(div, 0); // |# Header text
 
       simulateEnterKey(div);
@@ -101,8 +134,8 @@ describe('Position-Aware Node Creation', () => {
       expect(eventCalls.createNewNode![0]).toMatchObject({
         afterNodeId: 'test-node',
         nodeType: 'text',
-        currentContent: '', // New node above is empty
-        newContent: content, // Original node (bottom) keeps its content
+        currentContent: '# Header text', // Original node keeps its content unchanged
+        newContent: '', // New node above is empty
         cursorAtBeginning: true,
         insertAtBeginning: true, // Key: Creates node ABOVE
         focusOriginalNode: true // Focus goes to original node (bottom)
@@ -113,7 +146,7 @@ describe('Position-Aware Node Creation', () => {
     });
 
     it('should create new node ABOVE when cursor is within header syntax #| Header', () => {
-      const { controller, eventCalls, div } = createController('# Header text');
+      const { eventCalls, div } = createController('# Header text');
       setCursorPosition(div, 1); // #| Header text
 
       simulateEnterKey(div);
@@ -133,7 +166,7 @@ describe('Position-Aware Node Creation', () => {
         const headerPrefix = '#'.repeat(level) + ' ';
         const content = headerPrefix + 'Header text';
 
-        const { controller, eventCalls, div } = createController(content);
+        const { eventCalls, div } = createController(content);
 
         // Test cursor at beginning
         setCursorPosition(div, 0);
@@ -148,7 +181,7 @@ describe('Position-Aware Node Creation', () => {
 
   describe('Normal Splitting Behavior', () => {
     it('should create new node ABOVE when cursor is right after header syntax # |Header', () => {
-      const { controller, eventCalls, div } = createController('# Header text');
+      const { eventCalls, div } = createController('# Header text');
       setCursorPosition(div, 2); // # |Header text
 
       simulateEnterKey(div);
@@ -164,27 +197,27 @@ describe('Position-Aware Node Creation', () => {
     });
 
     it('should use normal splitting when cursor is within the actual content', () => {
-      const { controller, eventCalls, div } = createController('# Header text');
+      const { eventCalls, div } = createController('# Header text');
       setCursorPosition(div, 5); // # Hea|der text
 
       simulateEnterKey(div);
 
       expect(eventCalls.createNewNode).toHaveLength(1);
       expect(eventCalls.createNewNode![0]).toMatchObject({
-        insertAtBeginning: undefined, // Normal behavior - splits content
+        insertAtBeginning: false, // Normal behavior - splits content
         cursorAtBeginning: false
       });
     });
 
     it('should use normal splitting for non-header content', () => {
-      const { controller, eventCalls, div } = createController('Regular text content');
+      const { eventCalls, div } = createController('Regular text content');
       setCursorPosition(div, 7); // Regular| text content
 
       simulateEnterKey(div);
 
       expect(eventCalls.createNewNode).toHaveLength(1);
       expect(eventCalls.createNewNode![0]).toMatchObject({
-        insertAtBeginning: undefined, // Normal behavior
+        insertAtBeginning: false, // Normal behavior
         cursorAtBeginning: false
       });
     });
@@ -197,13 +230,13 @@ describe('Position-Aware Node Creation', () => {
       { name: 'Italic *text*', content: '*italic text*', positions: [0, 1] },
       { name: 'Italic _text_', content: '_italic text_', positions: [0, 1] },
       { name: 'Strikethrough ~~text~~', content: '~~strikethrough text~~', positions: [0, 1, 2] },
-      { name: 'Code `text`', content: '`code text`', positions: [0, 1] },
+      { name: 'Code `text`', content: '`code text`', positions: [0, 1] }
     ];
 
     inlineFormattingCases.forEach(({ name, content, positions }) => {
-      positions.forEach(pos => {
+      positions.forEach((pos) => {
         it(`should create new node ABOVE when cursor is within ${name} opening syntax at position ${pos}`, () => {
-          const { controller, eventCalls, div } = createController(content);
+          const { eventCalls, div } = createController(content);
           setCursorPosition(div, pos);
 
           simulateEnterKey(div);
@@ -212,8 +245,6 @@ describe('Position-Aware Node Creation', () => {
           expect(eventCalls.createNewNode![0]).toMatchObject({
             afterNodeId: 'test-node',
             nodeType: 'text',
-            currentContent: '', // New node above is empty
-            newContent: '',
             cursorAtBeginning: true,
             insertAtBeginning: true // Key: Creates node ABOVE
           });
@@ -224,7 +255,7 @@ describe('Position-Aware Node Creation', () => {
       });
 
       it(`should use normal splitting when cursor is past ${name} opening syntax`, () => {
-        const { controller, eventCalls, div } = createController(content);
+        const { eventCalls, div } = createController(content);
         // Set cursor past the opening syntax (in the actual content)
         const pastSyntaxPosition = positions[positions.length - 1] + 2;
         setCursorPosition(div, pastSyntaxPosition);
@@ -233,7 +264,7 @@ describe('Position-Aware Node Creation', () => {
 
         expect(eventCalls.createNewNode).toHaveLength(1);
         expect(eventCalls.createNewNode![0]).toMatchObject({
-          insertAtBeginning: undefined, // Normal behavior - splits content
+          insertAtBeginning: false, // Normal behavior - splits content
           cursorAtBeginning: false
         });
       });
@@ -244,25 +275,41 @@ describe('Position-Aware Node Creation', () => {
     it('should return true for position 0 (beginning)', () => {
       const { controller } = createController('# Header text');
       // Access private method via type assertion for testing
-      const shouldCreateAbove = (controller as any).shouldCreateNodeAbove('# Header text', 0);
+      const shouldCreateAbove = (
+        controller as unknown as {
+          shouldCreateNodeAbove: (content: string, position: number) => boolean;
+        }
+      ).shouldCreateNodeAbove('# Header text', 0);
       expect(shouldCreateAbove).toBe(true);
     });
 
     it('should return true for cursor within header syntax', () => {
       const { controller } = createController('## Header text');
-      const shouldCreateAbove = (controller as any).shouldCreateNodeAbove('## Header text', 1);
+      const shouldCreateAbove = (
+        controller as unknown as {
+          shouldCreateNodeAbove: (content: string, position: number) => boolean;
+        }
+      ).shouldCreateNodeAbove('## Header text', 1);
       expect(shouldCreateAbove).toBe(true);
     });
 
     it('should return true for cursor right after header syntax', () => {
       const { controller } = createController('# Header text');
-      const shouldCreateAbove = (controller as any).shouldCreateNodeAbove('# Header text', 2);
+      const shouldCreateAbove = (
+        controller as unknown as {
+          shouldCreateNodeAbove: (content: string, position: number) => boolean;
+        }
+      ).shouldCreateNodeAbove('# Header text', 2);
       expect(shouldCreateAbove).toBe(true); // Position 2 is '# |'
     });
 
     it('should return false for cursor in actual content', () => {
       const { controller } = createController('# Header text');
-      const shouldCreateAbove = (controller as any).shouldCreateNodeAbove('# Header text', 3);
+      const shouldCreateAbove = (
+        controller as unknown as {
+          shouldCreateNodeAbove: (content: string, position: number) => boolean;
+        }
+      ).shouldCreateNodeAbove('# Header text', 3);
       expect(shouldCreateAbove).toBe(false); // Position 3 is '# H|'
     });
 
@@ -270,43 +317,129 @@ describe('Position-Aware Node Creation', () => {
       const { controller } = createController('**bold text**');
 
       // Test positions within opening syntax
-      expect((controller as any).shouldCreateNodeAbove('**bold text**', 0)).toBe(true); // |**
-      expect((controller as any).shouldCreateNodeAbove('**bold text**', 1)).toBe(true); // *|*
-      expect((controller as any).shouldCreateNodeAbove('**bold text**', 2)).toBe(true); // **|
+      expect(
+        (
+          controller as unknown as {
+            shouldCreateNodeAbove: (content: string, position: number) => boolean;
+          }
+        ).shouldCreateNodeAbove('**bold text**', 0)
+      ).toBe(true); // |**
+      expect(
+        (
+          controller as unknown as {
+            shouldCreateNodeAbove: (content: string, position: number) => boolean;
+          }
+        ).shouldCreateNodeAbove('**bold text**', 1)
+      ).toBe(true); // *|*
+      expect(
+        (
+          controller as unknown as {
+            shouldCreateNodeAbove: (content: string, position: number) => boolean;
+          }
+        ).shouldCreateNodeAbove('**bold text**', 2)
+      ).toBe(true); // **|
 
       // Test position past opening syntax
-      expect((controller as any).shouldCreateNodeAbove('**bold text**', 3)).toBe(false); // **b|old
+      expect(
+        (
+          controller as unknown as {
+            shouldCreateNodeAbove: (content: string, position: number) => boolean;
+          }
+        ).shouldCreateNodeAbove('**bold text**', 3)
+      ).toBe(false); // **b|old
     });
 
     it('should handle various inline formatting patterns', () => {
       const { controller } = createController();
 
       // Bold patterns
-      expect((controller as any).shouldCreateNodeAbove('__bold__', 1)).toBe(true);
-      expect((controller as any).shouldCreateNodeAbove('__bold__', 2)).toBe(true);
+      expect(
+        (
+          controller as unknown as {
+            shouldCreateNodeAbove: (content: string, position: number) => boolean;
+          }
+        ).shouldCreateNodeAbove('__bold__', 1)
+      ).toBe(true);
+      expect(
+        (
+          controller as unknown as {
+            shouldCreateNodeAbove: (content: string, position: number) => boolean;
+          }
+        ).shouldCreateNodeAbove('__bold__', 2)
+      ).toBe(true);
 
       // Italic patterns
-      expect((controller as any).shouldCreateNodeAbove('*italic*', 1)).toBe(true);
-      expect((controller as any).shouldCreateNodeAbove('_italic_', 1)).toBe(true);
+      expect(
+        (
+          controller as unknown as {
+            shouldCreateNodeAbove: (content: string, position: number) => boolean;
+          }
+        ).shouldCreateNodeAbove('*italic*', 1)
+      ).toBe(true);
+      expect(
+        (
+          controller as unknown as {
+            shouldCreateNodeAbove: (content: string, position: number) => boolean;
+          }
+        ).shouldCreateNodeAbove('_italic_', 1)
+      ).toBe(true);
 
       // Strikethrough
-      expect((controller as any).shouldCreateNodeAbove('~~strike~~', 1)).toBe(true);
-      expect((controller as any).shouldCreateNodeAbove('~~strike~~', 2)).toBe(true);
+      expect(
+        (
+          controller as unknown as {
+            shouldCreateNodeAbove: (content: string, position: number) => boolean;
+          }
+        ).shouldCreateNodeAbove('~~strike~~', 1)
+      ).toBe(true);
+      expect(
+        (
+          controller as unknown as {
+            shouldCreateNodeAbove: (content: string, position: number) => boolean;
+          }
+        ).shouldCreateNodeAbove('~~strike~~', 2)
+      ).toBe(true);
 
       // Code
-      expect((controller as any).shouldCreateNodeAbove('`code`', 1)).toBe(true);
+      expect(
+        (
+          controller as unknown as {
+            shouldCreateNodeAbove: (content: string, position: number) => boolean;
+          }
+        ).shouldCreateNodeAbove('`code`', 1)
+      ).toBe(true);
 
       // Edge cases: Should prioritize first pattern that matches
-      expect((controller as any).shouldCreateNodeAbove('***bold italic***', 1)).toBe(true); // Matches ** first
-      expect((controller as any).shouldCreateNodeAbove('___bold italic___', 1)).toBe(true); // Matches __ first
+      expect(
+        (
+          controller as unknown as {
+            shouldCreateNodeAbove: (content: string, position: number) => boolean;
+          }
+        ).shouldCreateNodeAbove('***bold italic***', 1)
+      ).toBe(true); // Matches ** first
+      expect(
+        (
+          controller as unknown as {
+            shouldCreateNodeAbove: (content: string, position: number) => boolean;
+          }
+        ).shouldCreateNodeAbove('___bold italic___', 1)
+      ).toBe(true); // Matches __ first
     });
 
     it('should return false for non-formatted content', () => {
       const { controller } = createController('Regular text');
-      const shouldCreateAbove = (controller as any).shouldCreateNodeAbove('Regular text', 0);
+      const shouldCreateAbove = (
+        controller as unknown as {
+          shouldCreateNodeAbove: (content: string, position: number) => boolean;
+        }
+      ).shouldCreateNodeAbove('Regular text', 0);
       expect(shouldCreateAbove).toBe(true); // Position 0 is always true
 
-      const shouldCreateAboveMiddle = (controller as any).shouldCreateNodeAbove('Regular text', 5);
+      const shouldCreateAboveMiddle = (
+        controller as unknown as {
+          shouldCreateNodeAbove: (content: string, position: number) => boolean;
+        }
+      ).shouldCreateNodeAbove('Regular text', 5);
       expect(shouldCreateAboveMiddle).toBe(false);
     });
   });

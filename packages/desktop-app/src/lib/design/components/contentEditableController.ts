@@ -822,8 +822,8 @@ export class ContentEditableController {
           this.events.createNewNode({
             afterNodeId: this.nodeId,
             nodeType: this.nodeType,
-            currentContent: '', // New node above starts empty
-            newContent: currentContent, // Original node (bottom) keeps its content
+            currentContent: currentContent, // Original node keeps its content unchanged
+            newContent: '', // New node above starts empty
             originalContent: currentContent,
             cursorAtBeginning: true, // Focus at beginning of bottom node (original node)
             insertAtBeginning: true, // This tells the service to insert BEFORE the current node
@@ -843,7 +843,8 @@ export class ContentEditableController {
             currentContent: splitResult.beforeContent,
             newContent: splitResult.afterContent,
             originalContent: currentContent, // Pass original content before split for inheritance
-            cursorAtBeginning: false
+            cursorAtBeginning: false,
+            insertAtBeginning: false // Normal splitting creates nodes after, not above
           });
         }
         return;
@@ -919,33 +920,13 @@ export class ContentEditableController {
 
     const range = selection.getRangeAt(0);
 
-    // Simplified approach: check if we're at the beginning by examining the DOM structure
-    // For both single-line and multiline content
-    if (range.collapsed) {
-      // Check if we're at the very first position of the first text node
-      const firstChild = this.element.firstChild;
-
-      if (!firstChild) {
-        // Empty element - cursor is at start
-        return true;
-      }
-
-      // If the first child is a text node and cursor is at offset 0 within it
-      if (
-        firstChild.nodeType === Node.TEXT_NODE &&
-        range.startContainer === firstChild &&
-        range.startOffset === 0
-      ) {
-        return true;
-      }
-
-      // If the cursor is directly in the element at offset 0 (before any children)
-      if (range.startContainer === this.element && range.startOffset === 0) {
-        return true;
-      }
+    if (!range.collapsed) {
+      return false; // Not at start if there's a selection
     }
 
-    return false;
+    // Use the same logic as getCurrentColumn to handle complex HTML structures
+    const currentPosition = this.getCurrentColumn();
+    return currentPosition === 0;
   }
 
   private getCurrentColumn(): number {
@@ -1513,7 +1494,7 @@ export class ContentEditableController {
     formatEnd?: number;
     actualMarker?: string;
   } {
-    // CRITICAL FIX: Only apply to actual *** patterns, not nested ** + _ patterns
+    // Validate that selection is within a genuine *** pattern, not nested ** + _ patterns
     // First, check if the selection is actually within a *** pattern
 
     // Look for *** patterns around the selection
@@ -1551,7 +1532,7 @@ export class ContentEditableController {
       return { hasFormatting: false };
     }
 
-    // ADDITIONAL FIX: Verify this is actually a ***text*** pattern, not nested **_text_**
+    // Verify this is a genuine ***text*** pattern, not nested **_text_** combinations
     // Check that the content between markers doesn't have other nested patterns that would conflict
     // Content between triple stars (not used in current logic)
     // const contentBetween = text.substring(tripleStarStart + 3, tripleStarEnd);
@@ -1598,7 +1579,7 @@ export class ContentEditableController {
   /**
    * Get formatting state for a selection, similar to easy-markdown-editor's getState()
    * Returns whether the selection is currently formatted and where the markers are
-   * FIXED: Handles nested formatting properly without interfering with normal operations
+   * Handles nested formatting properly without interfering with normal operations
    */
   private getFormattingState(
     text: string,
@@ -1655,7 +1636,7 @@ export class ContentEditableController {
 
   /**
    * Find formatting boundaries with strict marker type checking
-   * FIXED: Prevents ** from being detected as * markers in sequential operations
+   * Prevents ** from being detected as * markers in sequential operations
    */
   private findFormattingBoundariesStrict(
     text: string,
@@ -1740,7 +1721,7 @@ export class ContentEditableController {
 
   /**
    * Check if a marker at a specific position is valid for the given marker type
-   * CRITICAL: Prevents ** from being detected as * markers
+   * Prevents ** from being incorrectly detected as * markers by checking adjacent characters
    */
   private isValidMarkerAtPosition(text: string, position: number, marker: string): boolean {
     // Check if the text at this position matches the marker
@@ -1879,12 +1860,11 @@ export class ContentEditableController {
 
   /**
    * Check if text is already formatted with the target marker OR equivalent markers
-   * FIXED: Handle double-click selection that includes formatting markers
+   * Handles double-click selection that includes formatting markers
    * When user double-clicks "__bold__", the selection includes underscores and should be toggled off
    */
   private isTextAlreadyFormatted(text: string, targetMarker: string): boolean {
-    // CRITICAL FIX: When user double-clicks "__bold__" and presses Cmd+B,
-    // the selectedText is "__bold__" and targetMarker is "**"
+    // Handle case where user selects "__bold__" and applies different formatting ("**")
     // We need to detect that this text is already bold-formatted (with __ equivalent)
     // and should be toggled OFF, not nested
 
@@ -1935,7 +1915,7 @@ export class ContentEditableController {
 
   /**
    * Remove formatting markers from text based on target marker type or equivalent markers
-   * FIXED: Handle equivalent markers when removing formatting (for double-click scenarios)
+   * Handles equivalent markers when removing formatting (for double-click scenarios)
    */
   private removeFormattingFromText(text: string, targetMarker: string): string {
     // Remove formatting markers that correspond to the target format type
@@ -2614,12 +2594,12 @@ export class ContentEditableController {
 
     // For inline formatting, create above when cursor is within opening syntax at the beginning
     const inlineFormats = [
-      { pattern: /^\*\*/, length: 2 },       // Bold **
-      { pattern: /^__/, length: 2 },         // Bold __
-      { pattern: /^\*(?!\*)/, length: 1 },   // Italic * (not part of **)
-      { pattern: /^_(?!_)/, length: 1 },     // Italic _ (not part of __)
-      { pattern: /^~~/, length: 2 },         // Strikethrough ~~
-      { pattern: /^`/, length: 1 },          // Code `
+      { pattern: /^\*\*/, length: 2 }, // Bold **
+      { pattern: /^__/, length: 2 }, // Bold __
+      { pattern: /^\*(?!\*)/, length: 1 }, // Italic * (not part of **)
+      { pattern: /^_(?!_)/, length: 1 }, // Italic _ (not part of __)
+      { pattern: /^~~/, length: 2 }, // Strikethrough ~~
+      { pattern: /^`/, length: 1 } // Code `
     ];
 
     for (const format of inlineFormats) {

@@ -146,6 +146,16 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       if (headerMatch) {
         initialContent = headerMatch[1]; // This includes the # symbols and the space
       }
+    } else {
+      // For non-empty content (e.g., from Enter key splits), check if we should inherit header syntax
+      // This handles the case where pressing Enter after "# |" should create a new node above with "# " syntax
+      const afterNodeHeaderMatch = afterNode.content.match(/^(#{1,6}\s+)/);
+      const contentHeaderMatch = content.match(/^(#{1,6}\s+)/);
+
+      // If the afterNode has header syntax but the new content doesn't, inherit it
+      if (afterNodeHeaderMatch && !contentHeaderMatch) {
+        initialContent = afterNodeHeaderMatch[1] + content;
+      }
     }
 
     const newNode: Node = {
