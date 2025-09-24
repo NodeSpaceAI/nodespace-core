@@ -8,7 +8,7 @@ import {
   createMockReactiveNodeService,
   type MockReactiveNodeService,
   type NodeManagerEvents
-} from '../mocks/mockReactiveNodeService';
+} from '../mocks/mock-reactive-node-service';
 
 describe('NodeManager + ContentProcessor Integration', () => {
   let nodeManager: MockReactiveNodeService;

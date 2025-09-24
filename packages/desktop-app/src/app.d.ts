@@ -19,9 +19,10 @@ interface ImportMetaEnv {
   readonly BASE_URL: string;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-interface ImportMeta {
-  readonly env: ImportMetaEnv;
+declare global {
+  interface ImportMeta {
+    readonly env: ImportMetaEnv;
+  }
 }
 
 export {};

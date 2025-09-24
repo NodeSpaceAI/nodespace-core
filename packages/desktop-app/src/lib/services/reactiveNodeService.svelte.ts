@@ -209,6 +209,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
 
     events.nodeCreated(nodeId);
+    events.hierarchyChanged();
 
     // Emit EventBus event for integration tests
     eventBus.emit<import('./eventTypes').NodeCreatedEvent>({
@@ -217,6 +218,26 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       source: 'ReactiveNodeService',
       nodeId,
       nodeType,
+      metadata: {}
+    });
+
+    // Also emit hierarchy changed event for integration tests
+    eventBus.emit<import('./eventTypes').HierarchyChangedEvent>({
+      type: 'hierarchy:changed' as const,
+      namespace: 'lifecycle',
+      source: 'ReactiveNodeService',
+      affectedNodes: [nodeId],
+      changeType: 'move', // Using 'move' as the closest fit since node is inserted into hierarchy
+      metadata: {}
+    });
+
+    // Emit cache invalidation event for integration tests
+    eventBus.emit<import('./eventTypes').CacheInvalidateEvent>({
+      type: 'cache:invalidate' as const,
+      namespace: 'coordination',
+      source: 'ReactiveNodeService',
+      cacheKey: `node:${nodeId}`,
+      scope: 'node',
       metadata: {}
     });
 
@@ -540,7 +561,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
             const targetDepth = child.depth;
             const newParentId = childToNewParent.get(childId);
 
-
             // Update child with correct parent but preserve existing depth
             newNodesRecord[childId] = {
               ...child,
@@ -849,6 +869,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       // Toggle the expanded state using assignment-based reactivity
       const newExpandedState = !node.expanded;
       _nodes[nodeId] = { ...node, expanded: newExpandedState };
+
+      // Emit hierarchy changed event since expansion affects visibility
+      events.hierarchyChanged();
 
       return true;
     } catch (error) {
@@ -1188,26 +1211,31 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       Object.keys(_nodes).forEach((id) => delete _nodes[id]);
       _rootNodeIds = [];
 
+      // Filter out invalid entries
+      const validLegacyData = legacyData.filter((node): node is NonNullable<typeof node> =>
+        node !== null && node !== undefined && typeof node === 'object' && 'id' in node && node.id
+      );
+
       // Convert legacy data to new format
-      for (const legacyNode of legacyData) {
+      for (const legacyNode of validLegacyData) {
         const node: Node = {
           id: legacyNode.id,
-          content: legacyNode.content,
+          content: legacyNode.content || '',
           nodeType: legacyNode.type || legacyNode.nodeType || 'text',
           depth: 0, // Will be calculated based on hierarchy
           parentId: undefined, // Will be set based on children relationships
-          children: [...legacyNode.children],
-          expanded: legacyNode.expanded,
-          autoFocus: legacyNode.autoFocus,
-          inheritHeaderLevel: legacyNode.inheritHeaderLevel,
-          metadata: {}
+          children: Array.isArray(legacyNode.children) ? [...legacyNode.children] : [],
+          expanded: legacyNode.expanded ?? true,
+          autoFocus: legacyNode.autoFocus ?? false,
+          inheritHeaderLevel: legacyNode.inheritHeaderLevel ?? 0,
+          metadata: legacyNode.metadata || {}
         };
         _nodes[legacyNode.id] = node;
       }
 
       // Set root nodes (nodes not referenced as children)
-      const allChildIds = new Set(legacyData.flatMap((n) => n.children));
-      _rootNodeIds = legacyData.filter((n) => !allChildIds.has(n.id)).map((n) => n.id);
+      const allChildIds = new Set(validLegacyData.flatMap((n) => Array.isArray(n.children) ? n.children : []));
+      _rootNodeIds = validLegacyData.filter((n) => !allChildIds.has(n.id)).map((n) => n.id);
 
       // Update parent references and depths
       for (const node of Object.values(_nodes)) {
@@ -1222,6 +1250,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
       // Trigger reactivity
       _updateTrigger++;
+
+      // Emit hierarchy changed event since we've rebuilt the entire hierarchy
+      events.hierarchyChanged();
     }
   };
 }

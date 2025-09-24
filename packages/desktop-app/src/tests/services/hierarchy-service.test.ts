@@ -10,21 +10,21 @@
  * - Performance benchmarks for 1,000-10,000 node scenarios
  */
 
-// Mock Svelte 5 runes immediately before any imports
-(globalThis as any).$state = function <T>(initialValue: T): T {
+// Mock Svelte 5 runes immediately before any imports - using proper type assertions
+(globalThis as Record<string, unknown>).$state = function <T>(initialValue: T): T {
   if (typeof initialValue !== 'object' || initialValue === null) {
     return initialValue;
   }
   return initialValue;
 };
 
-(globalThis as any).$derived = {
+(globalThis as Record<string, unknown>).$derived = {
   by: function <T>(getter: () => T): T {
     return getter();
   }
 };
 
-(globalThis as any).$effect = function (fn: () => void | (() => void)): void {
+(globalThis as Record<string, unknown>).$effect = function (fn: () => void | (() => void)): void {
   fn();
 };
 

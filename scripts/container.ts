@@ -99,22 +99,7 @@ async function runContainer(options: { name?: string } = {}): Promise<void> {
   const timestamp = Date.now();
   const containerName = options.name || `${CONTAINER_PREFIX}-${timestamp}`;
 
-  // Get GitHub token and config paths
-  let githubToken = process.env.GITHUB_TOKEN;
-  const homeDir = process.env.HOME;
-
-  // If no GITHUB_TOKEN env var, try to get it from GitHub CLI
-  if (!githubToken) {
-    try {
-      const result = await $`gh auth token`.quiet();
-      if (result.exitCode === 0) {
-        githubToken = result.stdout.toString().trim();
-        console.log("✓ Using GitHub token from CLI authentication");
-      }
-    } catch {
-      console.warn("⚠️  No GitHub authentication found. Container will have limited access.");
-    }
-  }
+  // Fully isolated container - no host token passing
 
   // Get current terminal dimensions
   let terminalCols = "120";
@@ -148,10 +133,7 @@ async function runContainer(options: { name?: string } = {}): Promise<void> {
   dockerCmd.push("-e", `LINES=${terminalLines}`);
   dockerCmd.push("-e", `TERM=xterm-256color`);
 
-  // Add GitHub token if available
-  if (githubToken) {
-    dockerCmd.push("-e", `GITHUB_TOKEN=${githubToken}`);
-  }
+  // No GitHub token - authenticate inside container with 'gh auth login'
 
   // No host directory mappings - fully isolated container
 

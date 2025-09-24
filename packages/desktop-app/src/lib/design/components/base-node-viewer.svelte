@@ -773,8 +773,7 @@
         {:else}
           <!-- Use registered node component from plugin registry -->
           {#if loadedNodes.has(node.nodeType)}
-            <!-- @ts-expect-error Dynamic component loading with proper type assertion -->
-            {@const NodeComponent = loadedNodes.get(node.nodeType)}
+            {@const NodeComponent = loadedNodes.get(node.nodeType) as typeof BaseNode}
             <NodeComponent
               nodeId={node.id}
               nodeType={node.nodeType}

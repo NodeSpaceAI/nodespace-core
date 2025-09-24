@@ -1,25 +1,25 @@
 /**
  * ReactiveNodeManager Test Suite
  *
- * Critical tests for the reactive state synchronization fix
- * Specifically tests Issue #71 where createNode breaks UI updates
+ * Critical tests for reactive state synchronization
+ * Specifically tests Issue #71 where createNode broke UI updates
  */
 
-// Mock Svelte 5 runes immediately before any imports
-(globalThis as any).$state = function <T>(initialValue: T): T {
+// Mock Svelte 5 runes immediately before any imports - using proper type assertions
+(globalThis as Record<string, unknown>).$state = function <T>(initialValue: T): T {
   if (typeof initialValue !== 'object' || initialValue === null) {
     return initialValue;
   }
   return initialValue;
 };
 
-(globalThis as any).$derived = {
+(globalThis as Record<string, unknown>).$derived = {
   by: function <T>(getter: () => T): T {
     return getter();
   }
 };
 
-(globalThis as any).$effect = function (fn: () => void | (() => void)): void {
+(globalThis as Record<string, unknown>).$effect = function (fn: () => void | (() => void)): void {
   fn();
 };
 
@@ -62,7 +62,7 @@ describe('ReactiveNodeService - Reactive State Synchronization', () => {
     nodeManager = createReactiveNodeService(events);
   });
 
-  describe('CRITICAL BUG FIX: createNode Reactive State Sync', () => {
+  describe('createNode Reactive State Synchronization', () => {
     test('createNode updates reactive state properly - single root node', () => {
       // Initialize with one root node (matches BaseNodeViewer)
       const legacyNodes = [

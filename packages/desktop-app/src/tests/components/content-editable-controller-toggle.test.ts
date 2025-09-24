@@ -1,9 +1,9 @@
 /**
- * Test suite for ContentEditableController formatting toggle fixes
+ * Test suite for ContentEditableController formatting toggle behavior
  *
- * This test suite verifies the specific bug fixes for:
- * 1. Nested Format Toggle Failure - selecting inner content from nested formatting
- * 2. Wrong Selection Position Detection - multiple occurrences of same text
+ * This test suite verifies the specific formatting cases for:
+ * 1. Nested Format Toggle - selecting inner content from nested formatting
+ * 2. Selection Position Detection - multiple occurrences of same text
  *
  * Focus: Testing the core logic methods without complex DOM interactions
  */
@@ -11,7 +11,7 @@
 import { describe, it, expect } from 'vitest';
 
 describe('ContentEditableController Toggle Logic', () => {
-  describe('Bug Fix 1: Nested Format Detection', () => {
+  describe('Nested Format Detection', () => {
     it('should detect formatting boundaries around selection correctly', () => {
       // Simulate the logic from getFormattingState and findFormattingBoundaries
       const text = '**_italic_**';
@@ -89,7 +89,7 @@ describe('ContentEditableController Toggle Logic', () => {
     });
   });
 
-  describe('Bug Fix 2: Position-Based Selection Detection', () => {
+  describe('Position-Based Selection Detection', () => {
     it('should use actual selection position instead of indexOf', () => {
       const text = 'bold text and bold text';
       const selectedText = 'bold';
@@ -149,7 +149,7 @@ describe('ContentEditableController Toggle Logic', () => {
     });
   });
 
-  describe('Bug Fix 3: Text-Based vs Position-Based Detection', () => {
+  describe('Text-Based vs Position-Based Detection', () => {
     it('should properly distinguish between text content formatting and position-based formatting', () => {
       const text = '**_italic_**';
       const selectionStart = 2; // "_italic_"
@@ -208,7 +208,7 @@ describe('ContentEditableController Toggle Logic', () => {
     });
   });
 
-  describe('Bug Fix 4: Sequential Keyboard Shortcuts', () => {
+  describe('Sequential Keyboard Shortcuts', () => {
     it('should correctly handle sequential bold + italic formatting', () => {
       // SPECIFIC BUG: text + Cmd+B → **text** + Cmd+I should → ***text*** (not *text*)
 
@@ -398,7 +398,7 @@ describe('ContentEditableController Toggle Logic', () => {
     });
   });
 
-  describe('REGRESSION FIX: Triple Asterisk vs Nested Format Toggle', () => {
+  describe('Triple Asterisk vs Nested Format Toggle', () => {
     it('should handle triple asterisk formatting correctly', () => {
       // CASE 1: ***text*** + Cmd+I should become **text** (remove italic component)
       const text = '***text***';
@@ -445,8 +445,8 @@ describe('ContentEditableController Toggle Logic', () => {
       expect(result.hasFormatting).toBe(false); // Should NOT detect as triple asterisk
     });
 
-    it('should handle nested format toggle after regression fix', () => {
-      // CRITICAL REGRESSION TEST: **_italic_** → select "_italic_" → Cmd+B → "_italic_"
+    it('should handle nested format toggle correctly', () => {
+      // TEST CASE: **_italic_** → select "_italic_" → Cmd+B → "_italic_"
       const text = '**_italic_**';
       const selectionStart = 2;
       const selectionEnd = 10;
