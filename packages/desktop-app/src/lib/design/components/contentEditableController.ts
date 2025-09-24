@@ -2609,6 +2609,26 @@ export class ContentEditableController {
       }
     }
 
+    // For inline formatting, create above when cursor is within opening syntax at the beginning
+    const inlineFormats = [
+      { pattern: /^\*\*/, length: 2 },       // Bold **
+      { pattern: /^__/, length: 2 },         // Bold __
+      { pattern: /^\*(?!\*)/, length: 1 },   // Italic * (not part of **)
+      { pattern: /^_(?!_)/, length: 1 },     // Italic _ (not part of __)
+      { pattern: /^~~/, length: 2 },         // Strikethrough ~~
+      { pattern: /^`/, length: 1 },          // Code `
+    ];
+
+    for (const format of inlineFormats) {
+      if (format.pattern.test(content)) {
+        // Create above if cursor is within the opening syntax
+        // (e.g., `|**`, `*|*`, `**|` for bold)
+        if (position <= format.length) {
+          return true;
+        }
+      }
+    }
+
     // For all other cases, use normal splitting
     return false;
   }

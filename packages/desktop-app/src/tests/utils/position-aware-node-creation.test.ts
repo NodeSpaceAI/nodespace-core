@@ -188,6 +188,56 @@ describe('Position-Aware Node Creation', () => {
     });
   });
 
+  describe('Inline Formatting Node Creation Above', () => {
+    const inlineFormattingCases = [
+      { name: 'Bold **text**', content: '**bold text**', positions: [0, 1, 2] },
+      { name: 'Bold __text__', content: '__bold text__', positions: [0, 1, 2] },
+      { name: 'Italic *text*', content: '*italic text*', positions: [0, 1] },
+      { name: 'Italic _text_', content: '_italic text_', positions: [0, 1] },
+      { name: 'Strikethrough ~~text~~', content: '~~strikethrough text~~', positions: [0, 1, 2] },
+      { name: 'Code `text`', content: '`code text`', positions: [0, 1] },
+    ];
+
+    inlineFormattingCases.forEach(({ name, content, positions }) => {
+      positions.forEach(pos => {
+        it(`should create new node ABOVE when cursor is within ${name} opening syntax at position ${pos}`, () => {
+          const { controller, eventCalls, div } = createController(content);
+          setCursorPosition(div, pos);
+
+          simulateEnterKey(div);
+
+          expect(eventCalls.createNewNode).toHaveLength(1);
+          expect(eventCalls.createNewNode![0]).toMatchObject({
+            afterNodeId: 'test-node',
+            nodeType: 'text',
+            currentContent: '', // New node above is empty
+            newContent: '',
+            cursorAtBeginning: true,
+            insertAtBeginning: true // Key: Creates node ABOVE
+          });
+
+          // Original node content should remain unchanged
+          expect(div.textContent).toBe(content);
+        });
+      });
+
+      it(`should use normal splitting when cursor is past ${name} opening syntax`, () => {
+        const { controller, eventCalls, div } = createController(content);
+        // Set cursor past the opening syntax (in the actual content)
+        const pastSyntaxPosition = positions[positions.length - 1] + 2;
+        setCursorPosition(div, pastSyntaxPosition);
+
+        simulateEnterKey(div);
+
+        expect(eventCalls.createNewNode).toHaveLength(1);
+        expect(eventCalls.createNewNode![0]).toMatchObject({
+          insertAtBeginning: undefined, // Normal behavior - splits content
+          cursorAtBeginning: false
+        });
+      });
+    });
+  });
+
   describe('shouldCreateNodeAbove Logic', () => {
     it('should return true for position 0 (beginning)', () => {
       const { controller } = createController('# Header text');
@@ -214,7 +264,42 @@ describe('Position-Aware Node Creation', () => {
       expect(shouldCreateAbove).toBe(false); // Position 3 is '# H|'
     });
 
-    it('should return false for non-header content', () => {
+    it('should return true for inline formatting at beginning', () => {
+      const { controller } = createController('**bold text**');
+
+      // Test positions within opening syntax
+      expect((controller as any).shouldCreateNodeAbove('**bold text**', 0)).toBe(true); // |**
+      expect((controller as any).shouldCreateNodeAbove('**bold text**', 1)).toBe(true); // *|*
+      expect((controller as any).shouldCreateNodeAbove('**bold text**', 2)).toBe(true); // **|
+
+      // Test position past opening syntax
+      expect((controller as any).shouldCreateNodeAbove('**bold text**', 3)).toBe(false); // **b|old
+    });
+
+    it('should handle various inline formatting patterns', () => {
+      const { controller } = createController();
+
+      // Bold patterns
+      expect((controller as any).shouldCreateNodeAbove('__bold__', 1)).toBe(true);
+      expect((controller as any).shouldCreateNodeAbove('__bold__', 2)).toBe(true);
+
+      // Italic patterns
+      expect((controller as any).shouldCreateNodeAbove('*italic*', 1)).toBe(true);
+      expect((controller as any).shouldCreateNodeAbove('_italic_', 1)).toBe(true);
+
+      // Strikethrough
+      expect((controller as any).shouldCreateNodeAbove('~~strike~~', 1)).toBe(true);
+      expect((controller as any).shouldCreateNodeAbove('~~strike~~', 2)).toBe(true);
+
+      // Code
+      expect((controller as any).shouldCreateNodeAbove('`code`', 1)).toBe(true);
+
+      // Edge cases: Should prioritize first pattern that matches
+      expect((controller as any).shouldCreateNodeAbove('***bold italic***', 1)).toBe(true); // Matches ** first
+      expect((controller as any).shouldCreateNodeAbove('___bold italic___', 1)).toBe(true); // Matches __ first
+    });
+
+    it('should return false for non-formatted content', () => {
       const { controller } = createController('Regular text');
       const shouldCreateAbove = (controller as any).shouldCreateNodeAbove('Regular text', 0);
       expect(shouldCreateAbove).toBe(true); // Position 0 is always true
