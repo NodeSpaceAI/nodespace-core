@@ -37,6 +37,7 @@ interface EventCallRecord {
     originalContent?: string;
     cursorAtBeginning?: boolean;
     insertAtBeginning?: boolean;
+    focusOriginalNode?: boolean;
   }>;
   indentNode?: Array<{ nodeId: string }>;
   outdentNode?: Array<{ nodeId: string }>;

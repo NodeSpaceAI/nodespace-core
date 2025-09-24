@@ -31,6 +31,7 @@ interface EventCallRecord {
     newContent?: string;
     cursorAtBeginning?: boolean;
     insertAtBeginning?: boolean;
+    focusOriginalNode?: boolean;
   }>;
 }
 
@@ -101,9 +102,10 @@ describe('Position-Aware Node Creation', () => {
         afterNodeId: 'test-node',
         nodeType: 'text',
         currentContent: '', // New node above is empty
-        newContent: '',
+        newContent: content, // Original node (bottom) keeps its content
         cursorAtBeginning: true,
-        insertAtBeginning: true // Key: Creates node ABOVE
+        insertAtBeginning: true, // Key: Creates node ABOVE
+        focusOriginalNode: true // Focus goes to original node (bottom)
       });
 
       // Original node content should remain unchanged

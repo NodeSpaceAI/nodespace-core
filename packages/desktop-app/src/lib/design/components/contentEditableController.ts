@@ -24,6 +24,7 @@ export interface ContentEditableEvents {
     originalContent?: string;
     cursorAtBeginning?: boolean;
     insertAtBeginning?: boolean;
+    focusOriginalNode?: boolean;
   }) => void;
   indentNode: (data: { nodeId: string }) => void;
   outdentNode: (data: { nodeId: string }) => void;
@@ -817,14 +818,16 @@ export class ContentEditableController {
 
         if (shouldCreateAbove) {
           // Create new empty node above, preserve original node unchanged
+          // Cursor should focus the original node (now below) after creation
           this.events.createNewNode({
             afterNodeId: this.nodeId,
             nodeType: this.nodeType,
             currentContent: '', // New node above starts empty
-            newContent: '',
+            newContent: currentContent, // Original node (bottom) keeps its content
             originalContent: currentContent,
-            cursorAtBeginning: true,
-            insertAtBeginning: true // This tells the service to insert BEFORE the current node
+            cursorAtBeginning: true, // Focus at beginning of bottom node (original node)
+            insertAtBeginning: true, // This tells the service to insert BEFORE the current node
+            focusOriginalNode: true // Focus the original node (bottom) instead of new node (top)
           });
         } else {
           // Normal splitting behavior for middle/end positions

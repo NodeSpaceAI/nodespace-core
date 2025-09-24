@@ -23,6 +23,7 @@ export interface NodeViewerEventDetails {
     inheritHeaderLevel?: number;
     cursorAtBeginning?: boolean;
     insertAtBeginning?: boolean;
+    focusOriginalNode?: boolean; // When true, focus original node instead of new node
   };
   contentChanged: { content: string };
   indentNode: { nodeId: string };
