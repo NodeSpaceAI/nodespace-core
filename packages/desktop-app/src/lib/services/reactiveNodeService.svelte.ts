@@ -211,10 +211,13 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.nodeCreated(nodeId);
 
     // Emit EventBus event for integration tests
-    eventBus.emit({
+    eventBus.emit<import('./eventTypes').NodeCreatedEvent>({
       type: 'node:created' as const,
+      namespace: 'lifecycle',
+      source: 'ReactiveNodeService',
       nodeId,
-      timestamp: Date.now()
+      nodeType,
+      metadata: {}
     });
 
     return nodeId;
@@ -226,15 +229,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     headerLevel?: number,
     insertAtBeginning: boolean = false
   ): string {
-    return createNode(afterNodeId, '', nodeType, headerLevel, false, insertAtBeginning);
+    return createNode(afterNodeId, '', nodeType, headerLevel, insertAtBeginning);
   }
 
   // Debounce timers for expensive operations
   const debouncedOperations = new Map<
     string,
     {
-      fastTimer?: number;
-      expensiveTimer?: number;
+      fastTimer?: ReturnType<typeof setTimeout>;
+      expensiveTimer?: ReturnType<typeof setTimeout>;
       pendingContent?: string;
     }
   >();
@@ -353,8 +356,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       type: 'node:reference-update-needed' as const,
       namespace: 'content' as const,
       source: serviceName,
+      timestamp: Date.now(),
       nodeId,
-      content
+      content,
+      metadata: {}
     };
     eventBus.emit(referenceUpdateEvent);
   }
@@ -364,9 +369,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       type: 'node:persistence-needed' as const,
       namespace: 'backend' as const,
       source: serviceName,
+      timestamp: Date.now(),
       nodeId,
       content,
-      timestamp: Date.now()
+      metadata: {}
     };
     eventBus.emit(persistenceEvent);
   }
@@ -376,9 +382,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       type: 'node:embedding-needed' as const,
       namespace: 'ai' as const,
       source: serviceName,
+      timestamp: Date.now(),
       nodeId,
       content,
-      timestamp: Date.now()
+      metadata: {}
     };
     eventBus.emit(embeddingEvent);
   }
@@ -388,9 +395,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       type: 'node:reference-propagation-needed' as const,
       namespace: 'references' as const,
       source: serviceName,
+      timestamp: Date.now(),
       nodeId,
       content,
-      timestamp: Date.now()
+      metadata: {}
     };
     eventBus.emit(propagationEvent);
   }
@@ -476,39 +484,68 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           ];
         }
       } else {
-        // Handle sibling merge: children become siblings of the merged node
-        // Find where to insert the children as siblings
-        const parentId = previousNode.parentId;
-        if (parentId) {
-          const parent = newNodesRecord[parentId];
-          if (parent) {
-            // Find position of the previous node in parent's children
-            const previousNodeIndex = parent.children.indexOf(previousNodeId);
-            if (previousNodeIndex !== -1) {
-              // Insert current node's children right after the previous node
-              const beforeChildren = parent.children.slice(0, previousNodeIndex + 1);
-              const afterChildren = parent.children.slice(previousNodeIndex + 1);
-              newNodesRecord[parentId] = {
-                ...parent,
-                children: [...beforeChildren, ...currentNode.children, ...afterChildren]
-              };
-            }
-          }
-        } else {
-          // Previous node is a root node, make children root nodes too
-          _rootNodeIds.push(...currentNode.children);
-        }
+        // Handle sibling merge: children will be assigned to correct parents in the loop below
+        // First, collect the new parent IDs for each child
+        const childToNewParent = new Map();
 
-        // Update children's parent reference and shift them up to sibling level
-        // Children become siblings, so they get the same parent and depth as the merged node
         for (const childId of currentNode.children) {
           const child = newNodesRecord[childId];
           if (child) {
-            // Children shift up to become siblings at the same level as the merged node
+            // Find the correct parent: the node that is one level above the child's current depth
+            const childDepth = child.depth;
+            let newParentId = null;
+
+            // Check if the merged node (previousNode) can be the parent
+            if (previousNode.depth === childDepth - 1) {
+              newParentId = previousNodeId;
+            } else {
+              // Walk up from previousNode to find a node at the appropriate parent depth
+              let currentParentId = previousNode.parentId;
+              while (currentParentId && newNodesRecord[currentParentId]) {
+                const parentNode = newNodesRecord[currentParentId];
+                if (parentNode.depth === childDepth - 1) {
+                  // Found appropriate parent
+                  newParentId = currentParentId;
+                  break;
+                }
+                currentParentId = parentNode.parentId;
+              }
+            }
+
+            childToNewParent.set(childId, newParentId);
+          }
+        }
+
+        // Add children to their new parents' children lists
+        for (const [childId, newParentId] of childToNewParent) {
+          if (newParentId && newNodesRecord[newParentId]) {
+            const newParent = newNodesRecord[newParentId];
+            if (!newParent.children.includes(childId)) {
+              newNodesRecord[newParentId] = {
+                ...newParent,
+                children: [...newParent.children, childId]
+              };
+            }
+          } else {
+            // If no suitable parent found, make it a root node
+            _rootNodeIds.push(childId);
+          }
+        }
+
+        // Update children's parent reference and depth using the parent assignments from above
+        for (const childId of currentNode.children) {
+          const child = newNodesRecord[childId];
+          if (child) {
+            // Children maintain their current depth - they don't change level during merge
+            const targetDepth = child.depth;
+            const newParentId = childToNewParent.get(childId);
+
+
+            // Update child with correct parent but preserve existing depth
             newNodesRecord[childId] = {
               ...child,
-              parentId: previousNode.parentId,
-              depth: previousNode.depth
+              parentId: newParentId,
+              depth: targetDepth
             };
           }
         }
@@ -516,7 +553,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
 
     // Update previous node and remove current node atomically
-    newNodesRecord[previousNodeId] = updatedPreviousNode;
+    // Use the updated node from newNodesRecord (which may have children added) and merge with content update
+    const finalPreviousNode = newNodesRecord[previousNodeId] || previousNode;
+    newNodesRecord[previousNodeId] = { ...finalPreviousNode, content: combinedContent };
     delete newNodesRecord[currentNodeId];
 
     // Apply atomic changes
@@ -790,10 +829,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.nodeDeleted(nodeId);
 
     // Emit EventBus event for integration tests
-    eventBus.emit({
+    eventBus.emit<import('./eventTypes').NodeDeletedEvent>({
       type: 'node:deleted' as const,
+      namespace: 'lifecycle',
+      source: 'ReactiveNodeService',
       nodeId,
-      timestamp: Date.now()
+      metadata: {}
     });
   }
 
@@ -843,10 +884,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Also emit decoration update needed for content updates
     if (updateType === 'content') {
-      eventBus.emit({
+      eventBus.emit<import('./eventTypes').DecorationUpdateNeededEvent>({
         type: 'decoration:update-needed' as const,
+        namespace: 'interaction',
+        source: 'ReactiveNodeService',
         nodeId,
-        timestamp: Date.now()
+        decorationType: 'content',
+        reason: 'content-changed',
+        metadata: {}
       });
     }
   }
@@ -1093,10 +1138,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       return contentProcessor.parseMarkdown(node.content);
     },
 
-    async renderNodeAsHTML(nodeId: string): Promise<string | null> {
+    async renderNodeAsHTML(nodeId: string): Promise<string> {
       const node = findNode(nodeId);
-      if (!node) return null;
-      return await contentProcessor.markdownToDisplay(node.content);
+      if (!node) return '';
+      const result = await contentProcessor.markdownToDisplay(node.content);
+      return result || '';
     },
 
     getNodeHeaderLevel(nodeId: string): number {
@@ -1115,9 +1161,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         .trim();
     },
 
-    updateNodeContentWithProcessing(nodeId: string, content: string): void {
+    updateNodeContentWithProcessing(nodeId: string, content: string): boolean {
+      const node = findNode(nodeId);
+      if (!node) return false;
       updateNodeContent(nodeId, content);
       // The header level is computed dynamically, so no separate update needed
+      return true;
     },
 
     // Add legacy data initialization method for tests
@@ -1131,6 +1180,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         children: string[];
         expanded: boolean;
         autoFocus: boolean;
+        metadata?: Record<string, unknown>;
+        parentId?: string;
       }>
     ): void {
       // Clear existing data
