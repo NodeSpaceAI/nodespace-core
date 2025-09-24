@@ -76,7 +76,7 @@ async function buildImage(useDocker: boolean = true): Promise<void> {
   }
 }
 
-async function runContainer(options: { name?: string } = {}): Promise<void> {
+async function runContainer(options: { name?: string, persistent?: boolean } = {}): Promise<void> {
   const runtime = await detectContainerRuntime();
   if (!runtime.available) {
     console.error("❌ No container runtime available. Please install one of:");
@@ -124,7 +124,8 @@ async function runContainer(options: { name?: string } = {}): Promise<void> {
   // Build container run command
   const cmd = useDocker ? "docker" : "podman";
   const dockerCmd = [
-    cmd, "run", "-it", "--rm",
+    cmd, "run", "-it",
+    ...(options.persistent ? [] : ["--rm"]),
     "--name", containerName,
   ];
 
@@ -184,21 +185,21 @@ async function saveContainer(containerName?: string): Promise<void> {
   const cmd = runtime.runtime !== "Podman" ? "docker" : "podman";
 
   try {
-    // Get running container name if not specified
+    // Get container name if not specified (check both running and stopped)
     let targetContainer = containerName;
     if (!targetContainer) {
-      const result = await $`${cmd} ps --filter name=${CONTAINER_PREFIX} --format "{{.Names}}"`.quiet();
-      const runningContainers = result.stdout.toString().trim().split('\n').filter(name => name);
+      const result = await $`${cmd} ps -a --filter name=${CONTAINER_PREFIX} --format "{{.Names}}"`.quiet();
+      const containers = result.stdout.toString().trim().split('\n').filter(name => name);
 
-      if (runningContainers.length === 0) {
-        console.error("❌ No running NodeSpace containers found to save");
+      if (containers.length === 0) {
+        console.error("❌ No NodeSpace containers found to save");
         return;
-      } else if (runningContainers.length > 1) {
-        console.error("❌ Multiple containers running. Specify which one to save:");
-        runningContainers.forEach(name => console.log(`  ${name}`));
+      } else if (containers.length > 1) {
+        console.error("❌ Multiple containers found. Specify which one to save:");
+        containers.forEach(name => console.log(`  ${name}`));
         return;
       }
-      targetContainer = runningContainers[0];
+      targetContainer = containers[0];
     }
 
     const newImageName = `${CONTAINER_IMAGE}:authenticated`;
@@ -333,6 +334,9 @@ switch (command) {
     break;
   case "run":
     await runContainer();
+    break;
+  case "run:setup":
+    await runContainer({ persistent: true });
     break;
   case "save":
     await saveContainer(process.argv[3]);

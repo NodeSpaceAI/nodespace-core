@@ -189,11 +189,6 @@ describe('EventBus-NodeManager Integration', () => {
   // ========================================================================
 
   describe('Status Change Coordination', () => {
-    it.skip('should coordinate node status changes', () => {
-      // Test skipped - setActiveNode method not implemented in ReactiveNodeService
-      // This test would need a real implementation of active node tracking
-    });
-
     it('should handle expanded/collapsed status changes', () => {
       // Initialize with test data
       nodeManager.initializeFromLegacyData([
@@ -365,16 +360,6 @@ describe('EventBus-NodeManager Integration', () => {
   // ========================================================================
   // Reactive Manager Integration Tests (Skipped - requires Svelte runtime)
   // ========================================================================
-
-  describe('Reactive Manager Integration', () => {
-    it.skip('should update reactive state on EventBus events', () => {
-      // Skipped due to $state not being available in test environment
-    });
-
-    it.skip('should coordinate between EventBus and reactive state', () => {
-      // Skipped due to $state not being available in test environment
-    });
-  });
 
   // ========================================================================
   // Performance Tests

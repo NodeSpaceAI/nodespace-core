@@ -398,16 +398,9 @@ export class ContentProcessor {
    * Uses AST as intermediate representation for accuracy
    */
   public displayToMarkdown(html: string): string {
-    // For now, fall back to text extraction
+    // Use string-based approach for consistency across all environments
     // Future enhancement: Parse HTML → AST → Markdown
-    if (typeof document !== 'undefined') {
-      const tempDiv = document.createElement('div');
-      tempDiv.innerHTML = html;
-      return tempDiv.textContent || '';
-    } else {
-      // Fallback for Node.js/test environment - simple HTML tag removal
-      return html.replace(/<[^>]*>/g, '').trim();
-    }
+    return html.replace(/<[^>]*>/g, '').trim();
   }
 
   // ========================================================================
@@ -1016,20 +1009,14 @@ export class ContentProcessor {
   }
 
   private escapeHtml(text: string): string {
-    // Handle both Node.js and browser environments
-    if (typeof document !== 'undefined') {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
-    } else {
-      // Fallback for Node.js/test environment
-      return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-    }
+    // Always use string-based approach for now due to DOM environment inconsistencies
+    // This ensures consistent behavior across browser, Node.js, and test environments
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   // ============================================================================
@@ -1388,6 +1375,15 @@ export class ContentProcessor {
     // Create placeholder that the hydration system can find and replace
     const displayText = (props.content as string) || context.title || context.content || '';
     return `<span class="ns-component-placeholder" data-component="${componentName}" data-node-type="${nodeType}" data-props="${propsJSON}" data-metadata="${metadataJSON}" data-node-id="${props.nodeId || context.nodeId}" data-hydrate="pending">${this.escapeHtml(displayText)}</span>`;
+  }
+
+  /**
+   * Reset ContentProcessor state for testing
+   * Clears caches and resets dependencies
+   */
+  resetForTesting(): void {
+    this.referenceCache.clear();
+    this.nodeReferenceService = undefined;
   }
 }
 

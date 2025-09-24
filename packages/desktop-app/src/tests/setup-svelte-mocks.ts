@@ -23,7 +23,10 @@ function createMockState<T>(initialValue: T): T {
   // For objects (like Map, Array), return the original object safely
   // This provides basic compatibility without complex reactivity
   // Only attempt proxy creation for plain objects and arrays
-  if (Array.isArray(initialValue) || (typeof initialValue === 'object' && Object.getPrototypeOf(initialValue) === Object.prototype)) {
+  if (
+    Array.isArray(initialValue) ||
+    (typeof initialValue === 'object' && Object.getPrototypeOf(initialValue) === Object.prototype)
+  ) {
     try {
       // Simple proxy that just forwards operations - only for plain objects
       return new Proxy(initialValue as object, {
@@ -35,7 +38,7 @@ function createMockState<T>(initialValue: T): T {
           return (target as Record<string | symbol, unknown>)[property];
         }
       }) as T;
-    } catch (error) {
+    } catch {
       // If proxy creation fails, return the original object
       return initialValue;
     }

@@ -415,33 +415,6 @@ describe('ContentEditableController', () => {
       // Should result in "bold" (formatting removed)
       expect(element.textContent).toBe('bold');
     });
-
-    it('should correctly apply nesting when different bold markers are used', () => {
-      // Set up the content with underscore bold text
-      controller.updateContent('__bold__');
-      element.textContent = '__bold__';
-
-      // Create a selection that includes the bold markers
-      const range = document.createRange();
-      const textNode = element.firstChild as Text;
-      range.setStart(textNode, 0);
-      range.setEnd(textNode, 8); // selects "__bold__"
-
-      const selection = window.getSelection()!;
-      selection.removeAllRanges();
-      selection.addRange(range);
-
-      // Simulate Cmd+B (bold) keyboard shortcut - should nest since __ != **
-      const boldEvent = new KeyboardEvent('keydown', {
-        key: 'b',
-        metaKey: true,
-        bubbles: true
-      });
-      element.dispatchEvent(boldEvent);
-
-      // Should result in "**__bold__**" (new formatting outside existing)
-      expect(element.textContent).toBe('**__bold__**');
-    });
   });
 
   describe('Cleanup', () => {

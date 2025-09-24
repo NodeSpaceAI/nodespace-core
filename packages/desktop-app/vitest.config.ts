@@ -13,7 +13,10 @@ function createMockState<T>(initialValue: T): T {
 
   // For objects, only create Proxy if it's a plain object or array
   // Avoid creating proxies for complex objects that might cause issues
-  if (Array.isArray(initialValue) || (typeof initialValue === 'object' && Object.getPrototypeOf(initialValue) === Object.prototype)) {
+  if (
+    Array.isArray(initialValue) ||
+    (typeof initialValue === 'object' && Object.getPrototypeOf(initialValue) === Object.prototype)
+  ) {
     try {
       return new Proxy(initialValue as object, {
         set(target: object, property: string | symbol, value: unknown): boolean {
