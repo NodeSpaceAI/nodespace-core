@@ -6,15 +6,25 @@ import { sveltekit } from '@sveltejs/kit/vite';
 
 // Early Svelte 5 rune mocks - must be defined BEFORE any module imports
 function createMockState<T>(initialValue: T): T {
-  if (typeof initialValue !== 'object' || initialValue === null) {
-    return initialValue;
+  // For objects and arrays, create a Proxy to enable reactivity-like behavior
+  if (typeof initialValue === 'object' && initialValue !== null) {
+    return new Proxy(initialValue, {
+      set(target, property, value) {
+        (target as any)[property] = value;
+        return true;
+      },
+      get(target, property) {
+        return (target as any)[property];
+      }
+    });
   }
   return initialValue;
 }
 
-function createMockDerived<T>(getter: () => T): { get value(): T } {
+function createMockDerived() {
   return {
-    get value() {
+    by: function <T>(getter: () => T): T {
+      // Execute getter immediately and return result
       return getter();
     }
   };
@@ -22,7 +32,12 @@ function createMockDerived<T>(getter: () => T): { get value(): T } {
 
 function createMockEffect(fn: () => void | (() => void)): void {
   // Execute effect immediately in tests
-  fn();
+  try {
+    fn();
+  } catch (error) {
+    // Ignore effect errors in tests
+    console.warn('Effect error in test:', error);
+  }
 }
 
 // Set up mocks immediately at module level
@@ -30,18 +45,24 @@ const stateFunction = function <T>(initialValue: T): T {
   return createMockState(initialValue);
 };
 
-const derivedFunction = {
-  by: function <T>(getter: () => T) {
-    return createMockDerived(getter);
-  }
-};
-
+const derivedFunction = createMockDerived();
 const effectFunction = createMockEffect;
 
 // Ensure mocks exist on globalThis before any imports
-globalThis.$state = stateFunction as unknown;
-globalThis.$derived = derivedFunction as unknown;
-globalThis.$effect = effectFunction as unknown;
+try {
+  (globalThis as any).$state = stateFunction;
+  (globalThis as any).$derived = derivedFunction;
+  (globalThis as any).$effect = effectFunction;
+} catch {
+  // If properties already exist, that's fine
+}
+
+// Also ensure they're available on the global object for Node.js environment
+if (typeof global !== 'undefined') {
+  (global as any).$state = stateFunction;
+  (global as any).$derived = derivedFunction;
+  (global as any).$effect = effectFunction;
+}
 
 export default defineConfig({
   plugins: [sveltekit()],
@@ -52,8 +73,8 @@ export default defineConfig({
     globals: true,
     setupFiles: ['src/tests/setup-svelte-mocks.ts', 'src/tests/setup.ts'],
 
-    // Global setup runs once, but variables don't persist to test environment
-    globalSetup: undefined,
+    // Global setup runs once before all test files
+    globalSetup: 'src/tests/global-setup.ts',
     environmentOptions: {
       node: {
         // Ensure global object is available

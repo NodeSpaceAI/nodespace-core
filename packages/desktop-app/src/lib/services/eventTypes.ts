@@ -246,6 +246,42 @@ export interface DebugEvent extends BaseEvent {
 }
 
 // ============================================================================
+// Backend/Processing Events (for reactive services)
+// ============================================================================
+
+export interface NodeReferenceUpdateEvent extends BaseEvent {
+  type: 'node:reference-update-needed';
+  namespace: 'content';
+  nodeId: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface NodePersistenceEvent extends BaseEvent {
+  type: 'node:persistence-needed';
+  namespace: 'backend';
+  nodeId: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface NodeEmbeddingEvent extends BaseEvent {
+  type: 'node:embedding-needed';
+  namespace: 'ai';
+  nodeId: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface NodeReferencePropagationEvent extends BaseEvent {
+  type: 'node:reference-propagation-needed';
+  namespace: 'references';
+  nodeId: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
+// ============================================================================
 // Event Union Type
 // ============================================================================
 
@@ -266,6 +302,11 @@ export type NodeSpaceEvent =
   | NodeUpdatedEvent
   | NodeDeletedEvent
   | HierarchyChangedEvent
+  // Backend/Processing Events
+  | NodeReferenceUpdateEvent
+  | NodePersistenceEvent
+  | NodeEmbeddingEvent
+  | NodeReferencePropagationEvent
   // Phase 2+ Events
   | BacklinkDetectedEvent
   | AISuggestionEvent

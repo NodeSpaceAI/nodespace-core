@@ -22,7 +22,7 @@
     );
   }
 
-  const nodeManager = services.nodeManager as unknown;
+  const nodeManager = services.nodeManager;
 
   // Map to store cursor positions during node type changes
   const pendingCursorPositions = new Map<string, number>();
@@ -773,6 +773,7 @@
         {:else}
           <!-- Use registered node component from plugin registry -->
           {#if loadedNodes.has(node.nodeType)}
+            <!-- @ts-expect-error Dynamic component loading with proper type assertion -->
             {@const NodeComponent = loadedNodes.get(node.nodeType)}
             <NodeComponent
               nodeId={node.id}
@@ -787,13 +788,15 @@
               on:indentNode={handleIndentNode}
               on:outdentNode={handleOutdentNode}
               on:navigateArrow={handleArrowNavigation}
-              on:contentChanged={(e) => {
+              on:contentChanged={(e: CustomEvent<{ content: string }>) => {
                 const content = e.detail.content;
 
                 // Update node content (placeholder flag is handled automatically)
                 nodeManager.updateNodeContent(node.id, content);
               }}
-              on:slashCommandSelected={(e) => {
+              on:slashCommandSelected={(
+                e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
+              ) => {
                 // Store cursor position before node type change
                 if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
                   pendingCursorPositions.set(node.id, e.detail.cursorPosition);
@@ -831,13 +834,15 @@
               on:indentNode={handleIndentNode}
               on:outdentNode={handleOutdentNode}
               on:navigateArrow={handleArrowNavigation}
-              on:contentChanged={(e) => {
+              on:contentChanged={(e: CustomEvent<{ content: string }>) => {
                 const content = e.detail.content;
 
                 // Update node content (placeholder flag is handled automatically)
                 nodeManager.updateNodeContent(node.id, content);
               }}
-              on:slashCommandSelected={(e) => {
+              on:slashCommandSelected={(
+                e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
+              ) => {
                 // Store cursor position before node type change
                 if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
                   pendingCursorPositions.set(node.id, e.detail.cursorPosition);

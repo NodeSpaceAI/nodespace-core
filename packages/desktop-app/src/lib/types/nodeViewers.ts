@@ -10,7 +10,7 @@ export interface NodeViewerProps {
   content?: string;
   nodeType?: string;
   inheritHeaderLevel?: number;
-  children?: unknown[];
+  children?: string[];
 }
 
 export interface NodeViewerEventDetails {
@@ -54,5 +54,5 @@ export interface BaseNodeViewer {
   // Optional props
   autoFocus?: boolean;
   inheritHeaderLevel?: number;
-  children?: unknown[];
+  children?: string[];
 }

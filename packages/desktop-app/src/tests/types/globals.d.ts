@@ -44,7 +44,7 @@ declare global {
    * Mock Svelte 5 $derived rune for testing
    */
   var $derived: {
-    by: <T>(getter: () => T) => { get value(): T };
+    by: <T>(getter: () => T) => T;
   };
 
   /**

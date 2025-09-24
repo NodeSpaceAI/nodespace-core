@@ -23,6 +23,33 @@ export interface Node {
   isPlaceholder?: boolean;
 }
 
+// Type guard and interface for legacy node data
+interface LegacyNodeData {
+  id: string;
+  content?: string;
+  nodeType?: string;
+  depth?: number;
+  parentId?: string;
+  children?: unknown[];
+  expanded?: boolean;
+  autoFocus?: boolean;
+  inheritHeaderLevel?: number;
+  metadata?: Record<string, unknown>;
+  mentions?: string[];
+  before_sibling_id?: string;
+  isPlaceholder?: boolean;
+}
+
+// Type guard function to check if unknown data looks like a legacy node
+function isLegacyNodeData(data: unknown): data is LegacyNodeData {
+  return (
+    data !== null &&
+    typeof data === 'object' &&
+    'id' in data &&
+    typeof (data as unknown as { id: unknown }).id === 'string'
+  );
+}
+
 export interface NodeManagerEvents {
   focusRequested: (nodeId: string, position?: number) => void;
   hierarchyChanged: () => void;
@@ -220,8 +247,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   const debouncedOperations = new Map<
     string,
     {
-      fastTimer?: number;
-      expensiveTimer?: number;
+      fastTimer?: ReturnType<typeof setTimeout>;
+      expensiveTimer?: ReturnType<typeof setTimeout>;
       pendingContent?: string;
     }
   >();
@@ -806,60 +833,62 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // First pass: check if this uses flat structure (nodes with children as IDs) or nested structure
     const hasNestedChildren = legacyNodes.some(
       (node) =>
+        isLegacyNodeData(node) &&
         Array.isArray(node.children) &&
         node.children.length > 0 &&
         typeof node.children[0] === 'object' &&
-        node.children[0].id
+        node.children[0] !== null &&
+        'id' in node.children[0]
     );
 
-    if (hasNestedChildren) {
-      // Handle nested structure recursively
-      function processLegacyNode(legacyNode: unknown, parentId?: string, depth: number = 0): void {
-        if (!legacyNode || typeof legacyNode !== 'object' || !legacyNode.id) {
-          return;
-        }
-
-        const node: Node = {
-          id: legacyNode.id,
-          content: legacyNode.content || '',
-          nodeType: legacyNode.nodeType || 'text',
-          depth: depth,
-          parentId: parentId,
-          children: [],
-          expanded: legacyNode.expanded !== false,
-          autoFocus: legacyNode.autoFocus || false,
-          inheritHeaderLevel: legacyNode.inheritHeaderLevel || 0,
-          metadata: legacyNode.metadata || {},
-          mentions: legacyNode.mentions,
-          before_sibling_id: legacyNode.before_sibling_id,
-          isPlaceholder: legacyNode.isPlaceholder || false
-        };
-
-        _nodes[node.id] = node;
-
-        if (!parentId) {
-          _rootNodeIds.push(node.id);
-        }
-
-        if (Array.isArray(legacyNode.children)) {
-          const childIds: string[] = [];
-          for (const childNode of legacyNode.children) {
-            if (childNode && childNode.id) {
-              childIds.push(childNode.id);
-              processLegacyNode(childNode, node.id, depth + 1);
-            }
-          }
-          _nodes[node.id] = { ..._nodes[node.id], children: childIds };
-        }
+    // Handle nested structure recursively
+    const processLegacyNode = (legacyNode: unknown, parentId?: string, depth: number = 0): void => {
+      if (!isLegacyNodeData(legacyNode)) {
+        return;
       }
 
+      const node: Node = {
+        id: legacyNode.id,
+        content: legacyNode.content || '',
+        nodeType: legacyNode.nodeType || 'text',
+        depth: depth,
+        parentId: parentId,
+        children: [],
+        expanded: legacyNode.expanded !== false,
+        autoFocus: legacyNode.autoFocus || false,
+        inheritHeaderLevel: legacyNode.inheritHeaderLevel || 0,
+        metadata: legacyNode.metadata || {},
+        mentions: legacyNode.mentions,
+        before_sibling_id: legacyNode.before_sibling_id,
+        isPlaceholder: legacyNode.isPlaceholder || false
+      };
+
+      _nodes[node.id] = node;
+
+      if (!parentId) {
+        _rootNodeIds.push(node.id);
+      }
+
+      if (Array.isArray(legacyNode.children)) {
+        const childIds: string[] = [];
+        for (const childNode of legacyNode.children) {
+          if (isLegacyNodeData(childNode)) {
+            childIds.push(childNode.id);
+            processLegacyNode(childNode, node.id, depth + 1);
+          }
+        }
+        _nodes[node.id] = { ..._nodes[node.id], children: childIds };
+      }
+    };
+
+    if (hasNestedChildren) {
       for (const legacyNode of legacyNodes) {
         processLegacyNode(legacyNode);
       }
     } else {
       // Handle flat structure - create all nodes first, then establish relationships
       for (const legacyNode of legacyNodes) {
-        if (!legacyNode || typeof legacyNode !== 'object' || !legacyNode.id) {
+        if (!isLegacyNodeData(legacyNode)) {
           continue;
         }
 
@@ -869,7 +898,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           nodeType: legacyNode.nodeType || 'text',
           depth: legacyNode.depth || 0,
           parentId: legacyNode.parentId,
-          children: Array.isArray(legacyNode.children) ? [...legacyNode.children] : [],
+          children: Array.isArray(legacyNode.children)
+            ? [...(legacyNode.children as string[])]
+            : [],
           expanded: legacyNode.expanded !== false,
           autoFocus: legacyNode.autoFocus || false,
           inheritHeaderLevel: legacyNode.inheritHeaderLevel || 0,

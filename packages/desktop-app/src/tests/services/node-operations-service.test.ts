@@ -10,6 +10,24 @@
  * - EventBus integration verification
  */
 
+// Mock Svelte 5 runes immediately before any imports
+(globalThis as any).$state = function <T>(initialValue: T): T {
+  if (typeof initialValue !== 'object' || initialValue === null) {
+    return initialValue;
+  }
+  return initialValue;
+};
+
+(globalThis as any).$derived = {
+  by: function <T>(getter: () => T): T {
+    return getter();
+  }
+};
+
+(globalThis as any).$effect = function (fn: () => void | (() => void)): void {
+  fn();
+};
+
 import { describe, test, expect, beforeEach, vi } from 'vitest';
 import {
   createReactiveNodeService,
@@ -60,7 +78,6 @@ describe('NodeOperationsService', () => {
         autoFocus: false,
         inheritHeaderLevel: 0,
         expanded: true,
-        depth: 0,
         metadata: {},
         children: ['child1']
       },
@@ -71,7 +88,6 @@ describe('NodeOperationsService', () => {
         autoFocus: false,
         inheritHeaderLevel: 0,
         expanded: true,
-        depth: 1,
         metadata: {},
         parentId: 'root1',
         children: []
@@ -83,7 +99,6 @@ describe('NodeOperationsService', () => {
         autoFocus: false,
         inheritHeaderLevel: 0,
         expanded: true,
-        depth: 0,
         metadata: {},
         children: []
       }

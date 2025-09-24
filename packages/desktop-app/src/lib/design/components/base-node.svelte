@@ -53,7 +53,7 @@
     autoFocus?: boolean;
     content?: string;
     headerLevel?: number;
-    children?: unknown[];
+    children?: string[];
     editableConfig?: ContentEditableConfig;
     metadata?: Record<string, unknown>;
   } = $props();

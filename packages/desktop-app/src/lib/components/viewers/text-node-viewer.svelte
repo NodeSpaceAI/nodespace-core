@@ -64,6 +64,11 @@
       nodeId: string;
       currentContent: string;
     };
+    slashCommandSelected: {
+      command: string;
+      nodeType: string;
+      cursorPosition?: number;
+    };
     deleteNode: { nodeId: string };
     focus: void;
     blur: void;

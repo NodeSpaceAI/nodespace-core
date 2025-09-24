@@ -32,6 +32,7 @@
     "container:save": "bun run scripts/container.ts save",
     "container:list": "bun run scripts/container.ts list",
     "container:stop": "bun run scripts/container.ts stop",
+    "container:resize": "bun run scripts/container.ts resize",
     "container:help": "bun run scripts/container.ts"
   },
   "devDependencies": {

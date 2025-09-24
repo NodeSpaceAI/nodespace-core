@@ -5,9 +5,11 @@
 
 // Declare global types for Svelte runes
 declare global {
-  var $state: <T>(initialValue: T) => T;
-  var $derived: { by: <T>(getter: () => T) => T };
-  var $effect: (fn: () => void | (() => void)) => void;
+  interface Window {
+    $state: <T>(initialValue: T) => T;
+    $derived: { by: <T>(getter: () => T) => T };
+    $effect: (fn: () => void | (() => void)) => void;
+  }
 }
 
 // Mock Svelte 5 runes for testing compatibility
@@ -23,14 +25,6 @@ function createMockState<T>(initialValue: T): T {
   return initialValue;
 }
 
-function createMockDerived<T>(getter: () => T): { get value(): T } {
-  return {
-    get value() {
-      return getter();
-    }
-  };
-}
-
 // Mock effect function (used in some reactive code)
 function createMockEffect(fn: () => void | (() => void)): void {
   // Execute effect immediately in tests and ignore cleanup
@@ -42,48 +36,35 @@ function createMockEffect(fn: () => void | (() => void)): void {
 // Mock functions with TypeScript compatibility
 const stateFunction = function <T>(initialValue: T): T {
   return createMockState(initialValue);
-} as unknown;
+};
 
 const derivedFunction = {
   by: function <T>(getter: () => T) {
-    return createMockDerived(getter);
+    // Return the value directly, not an object with a getter
+    return getter();
   }
-} as unknown;
+};
 
-const effectFunction = createMockEffect as unknown;
+const effectFunction = createMockEffect;
 
 // CRITICAL: Set up mocks immediately before any imports can happen
 // Define on globalThis first
-Object.defineProperty(globalThis, '$state', {
-  value: stateFunction,
-  writable: true,
-  configurable: true
-});
-
-Object.defineProperty(globalThis, '$derived', {
-  value: derivedFunction,
-  writable: true,
-  configurable: true
-});
-
-Object.defineProperty(globalThis, '$effect', {
-  value: effectFunction,
-  writable: true,
-  configurable: true
-});
+(globalThis as any).$state = stateFunction;
+(globalThis as any).$derived = derivedFunction;
+(globalThis as any).$effect = effectFunction;
 
 // Also define on global for Node.js compatibility (Vitest environment)
 if (typeof global !== 'undefined') {
-  (global as Record<string, unknown>).$state = stateFunction;
-  (global as Record<string, unknown>).$derived = derivedFunction;
-  (global as Record<string, unknown>).$effect = effectFunction;
+  (global as any).$state = stateFunction;
+  (global as any).$derived = derivedFunction;
+  (global as any).$effect = effectFunction;
 }
 
 // Ensure the mocks are available in window context as well (if DOM environment)
 if (typeof window !== 'undefined') {
-  (window as Record<string, unknown>).$state = stateFunction;
-  (window as Record<string, unknown>).$derived = derivedFunction;
-  (window as Record<string, unknown>).$effect = effectFunction;
+  (window as any).$state = stateFunction;
+  (window as any).$derived = derivedFunction;
+  (window as any).$effect = effectFunction;
 }
 
 // Initialize global plugin registry for all tests

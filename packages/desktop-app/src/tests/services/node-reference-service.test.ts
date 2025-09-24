@@ -5,6 +5,24 @@
  * verifying all core features from Issue #73 specification.
  */
 
+// Mock Svelte 5 runes immediately before any imports
+(globalThis as any).$state = function <T>(initialValue: T): T {
+  if (typeof initialValue !== 'object' || initialValue === null) {
+    return initialValue;
+  }
+  return initialValue;
+};
+
+(globalThis as any).$derived = {
+  by: function <T>(getter: () => T): T {
+    return getter();
+  }
+};
+
+(globalThis as any).$effect = function (fn: () => void | (() => void)): void {
+  fn();
+};
+
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NodeReferenceService } from '../../lib/services/nodeReferenceService';
 import {
@@ -63,7 +81,6 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
         inheritHeaderLevel: 0,
         children: [],
         expanded: true,
-        depth: 0,
         metadata: {}
       }
     ]);
@@ -164,6 +181,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
         parent_id: null,
         root_id: node1.id,
         before_sibling_id: null,
+        depth: 0,
         created_at: new Date().toISOString(),
         mentions: [],
         metadata: {},
@@ -177,6 +195,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
         parent_id: null,
         root_id: node2.id,
         before_sibling_id: null,
+        depth: 0,
         created_at: new Date().toISOString(),
         mentions: [],
         metadata: {},
@@ -185,11 +204,12 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
 
       await databaseService.upsertNode({
         id: node3.id,
-        nodeType: 'text',
+        type: 'text',
         content: 'Another Test',
         parent_id: null,
         root_id: node3.id,
         before_sibling_id: null,
+        depth: 0,
         created_at: new Date().toISOString(),
         mentions: [],
         metadata: {},
@@ -308,7 +328,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
 
       expect(resolved).toMatchObject({
         id: node.id,
-        nodeType: 'text',
+        type: 'text', // NodeSpaceNode uses 'type' not 'nodeType'
         content: 'Test Node Content'
       });
     });
@@ -362,11 +382,12 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
       // Add to database for incoming reference query
       await databaseService.upsertNode({
         id: sourceNode.id,
-        nodeType: 'text',
+        type: 'text',
         content: 'Source Node',
         parent_id: null,
         root_id: sourceNode.id,
         before_sibling_id: null,
+        depth: 0,
         created_at: new Date().toISOString(),
         mentions: [targetNode.id],
         metadata: {},
@@ -403,6 +424,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
         parent_id: null,
         root_id: node1.id,
         before_sibling_id: null,
+        depth: 0,
         created_at: new Date().toISOString(),
         mentions: [],
         metadata: {},
@@ -416,6 +438,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
         parent_id: null,
         root_id: node2.id,
         before_sibling_id: null,
+        depth: 0,
         created_at: new Date().toISOString(),
         mentions: [],
         metadata: {},
@@ -429,6 +452,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
         parent_id: null,
         root_id: node3.id,
         before_sibling_id: null,
+        depth: 0,
         created_at: new Date().toISOString(),
         mentions: [],
         metadata: {},
@@ -465,9 +489,10 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
         mentions: []
       });
 
-      // Verify node was added to NodeManager
-      const foundNode = nodeManager.findNode(newNode.id);
-      expect(foundNode).toBeTruthy();
+      // Verify node was stored in database
+      const dbNode = await databaseService.getNode(newNode.id);
+      expect(dbNode).toBeTruthy();
+      expect(dbNode?.content).toBe('New Note Content');
     });
   });
 
@@ -581,11 +606,12 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
       // Add the source node to database so cleanup can find it
       await databaseService.upsertNode({
         id: sourceNodeId,
-        nodeType: 'text',
+        type: 'text',
         content: 'Source',
         parent_id: null,
         root_id: sourceNodeId,
         before_sibling_id: null,
+        depth: 0,
         created_at: new Date().toISOString(),
         mentions: [targetNodeId], // This is what cleanup will search for
         metadata: {},

@@ -10,6 +10,24 @@
  * - Performance benchmarks for 1,000-10,000 node scenarios
  */
 
+// Mock Svelte 5 runes immediately before any imports
+(globalThis as any).$state = function <T>(initialValue: T): T {
+  if (typeof initialValue !== 'object' || initialValue === null) {
+    return initialValue;
+  }
+  return initialValue;
+};
+
+(globalThis as any).$derived = {
+  by: function <T>(getter: () => T): T {
+    return getter();
+  }
+};
+
+(globalThis as any).$effect = function (fn: () => void | (() => void)): void {
+  fn();
+};
+
 import { describe, test, expect, beforeEach, vi } from 'vitest';
 import {
   createReactiveNodeService,
@@ -25,6 +43,48 @@ interface TestHierarchyNode {
   type: string;
   content: string;
   children: TestHierarchyNode[];
+}
+
+// The test service can handle nested TestHierarchyNode structures directly
+interface FlatNodeData {
+  id: string;
+  type?: string;
+  nodeType?: string;
+  content: string;
+  inheritHeaderLevel: number;
+  children: string[];
+  expanded: boolean;
+  autoFocus: boolean;
+}
+
+// Helper function to flatten nested test data for initializeFromLegacyData
+function flattenTestHierarchy(nodes: TestHierarchyNode[]): FlatNodeData[] {
+  const flatNodes: FlatNodeData[] = [];
+
+  function processNode(node: TestHierarchyNode): void {
+    const childIds = node.children.map((child) => child.id);
+
+    flatNodes.push({
+      id: node.id,
+      type: node.type,
+      content: node.content,
+      inheritHeaderLevel: 0,
+      children: childIds,
+      expanded: true,
+      autoFocus: false
+    });
+
+    // Recursively process children
+    for (const child of node.children) {
+      processNode(child);
+    }
+  }
+
+  for (const rootNode of nodes) {
+    processNode(rootNode);
+  }
+
+  return flatNodes;
 }
 
 describe('HierarchyService', () => {
@@ -56,7 +116,7 @@ describe('HierarchyService', () => {
   describe('Node Depth Calculations', () => {
     test('getNodeDepth returns correct depth for root nodes', () => {
       // Create test hierarchy: root -> child -> grandchild
-      nodeManager.initializeFromLegacyData([
+      const testNodes: TestHierarchyNode[] = [
         {
           id: 'root1',
           type: 'text',
@@ -77,7 +137,9 @@ describe('HierarchyService', () => {
             }
           ]
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy(testNodes));
 
       expect(hierarchyService.getNodeDepth('root1')).toBe(0);
       expect(hierarchyService.getNodeDepth('child1')).toBe(1);
@@ -90,7 +152,7 @@ describe('HierarchyService', () => {
 
     test('getNodeDepth caches results for performance', () => {
       // Create deep hierarchy for cache testing
-      nodeManager.initializeFromLegacyData([
+      const testNodes: TestHierarchyNode[] = [
         {
           id: 'root1',
           type: 'text',
@@ -118,7 +180,9 @@ describe('HierarchyService', () => {
             }
           ]
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy(testNodes));
 
       // First call should cache all depths in the path
       const startTime = performance.now();
@@ -142,8 +206,8 @@ describe('HierarchyService', () => {
 
     test('meets performance target: getNodeDepth max 1ms', () => {
       // Create moderately deep hierarchy
-      const legacyData = createDeepHierarchy(50); // 50 levels deep
-      nodeManager.initializeFromLegacyData([legacyData]);
+      const hierarchyData = createDeepHierarchy(50); // 50 levels deep
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy([hierarchyData]));
 
       // Test performance on deepest node
       const startTime = performance.now();
@@ -161,7 +225,7 @@ describe('HierarchyService', () => {
 
   describe('Children and Descendants', () => {
     test('getChildren returns direct children only', () => {
-      nodeManager.initializeFromLegacyData([
+      const testNodes: TestHierarchyNode[] = [
         {
           id: 'parent',
           type: 'text',
@@ -188,7 +252,9 @@ describe('HierarchyService', () => {
             }
           ]
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy(testNodes));
 
       const children = hierarchyService.getChildren('parent');
       expect(children).toEqual(['child1', 'child2']);
@@ -196,7 +262,7 @@ describe('HierarchyService', () => {
     });
 
     test('getDescendants returns all descendants recursively', () => {
-      nodeManager.initializeFromLegacyData([
+      const testNodes: TestHierarchyNode[] = [
         {
           id: 'root',
           type: 'text',
@@ -229,7 +295,9 @@ describe('HierarchyService', () => {
             }
           ]
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy(testNodes));
 
       const descendants = hierarchyService.getDescendants('root');
       expect(descendants).toEqual(['child1', 'child2', 'grandchild1', 'grandchild2']);
@@ -237,7 +305,7 @@ describe('HierarchyService', () => {
 
     test('meets performance target: getChildren max 5ms', () => {
       // Create node with many children
-      const children = [];
+      const children: TestHierarchyNode[] = [];
       for (let i = 0; i < 1000; i++) {
         children.push({
           id: `child-${i}`,
@@ -247,14 +315,16 @@ describe('HierarchyService', () => {
         });
       }
 
-      nodeManager.initializeFromLegacyData([
+      const testNodes: TestHierarchyNode[] = [
         {
           id: 'parent',
           type: 'text',
           content: 'Parent with many children',
           children
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy(testNodes));
 
       const startTime = performance.now();
       const result = hierarchyService.getChildren('parent');
@@ -271,7 +341,7 @@ describe('HierarchyService', () => {
 
   describe('Sibling Navigation', () => {
     beforeEach(() => {
-      nodeManager.initializeFromLegacyData([
+      const testNodes: TestHierarchyNode[] = [
         {
           id: 'root',
           type: 'text',
@@ -297,7 +367,9 @@ describe('HierarchyService', () => {
             }
           ]
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy(testNodes));
     });
 
     test('getSiblings returns all siblings including self', () => {
@@ -324,20 +396,28 @@ describe('HierarchyService', () => {
     });
 
     test('handles root-level siblings correctly', () => {
-      nodeManager.initializeFromLegacyData([
+      const flatData: FlatNodeData[] = [
         {
           id: 'root1',
           type: 'text',
           content: 'Root 1',
-          children: []
+          children: [],
+          inheritHeaderLevel: 0,
+          expanded: true,
+          autoFocus: false
         },
         {
           id: 'root2',
           type: 'text',
           content: 'Root 2',
-          children: []
+          children: [],
+          inheritHeaderLevel: 0,
+          expanded: true,
+          autoFocus: false
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flatData);
 
       const siblings = hierarchyService.getSiblings('root1');
       expect(siblings).toEqual(['root1', 'root2']);
@@ -345,7 +425,7 @@ describe('HierarchyService', () => {
 
     test('meets performance target: getSiblings max 10ms', () => {
       // Create many siblings
-      const children = [];
+      const children: TestHierarchyNode[] = [];
       for (let i = 0; i < 5000; i++) {
         children.push({
           id: `sibling-${i}`,
@@ -355,14 +435,16 @@ describe('HierarchyService', () => {
         });
       }
 
-      nodeManager.initializeFromLegacyData([
+      const testNodes: TestHierarchyNode[] = [
         {
           id: 'parent',
           type: 'text',
           content: 'Parent',
           children
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy(testNodes));
 
       const startTime = performance.now();
       const siblings = hierarchyService.getSiblings('sibling-2500'); // Middle sibling
@@ -379,7 +461,7 @@ describe('HierarchyService', () => {
 
   describe('Node Path Operations', () => {
     test('getNodePath returns complete path from root', () => {
-      nodeManager.initializeFromLegacyData([
+      const testNodes: TestHierarchyNode[] = [
         {
           id: 'root',
           type: 'text',
@@ -407,7 +489,9 @@ describe('HierarchyService', () => {
             }
           ]
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy(testNodes));
 
       const path = hierarchyService.getNodePath('level3');
 
@@ -417,14 +501,19 @@ describe('HierarchyService', () => {
     });
 
     test('getNodePath handles root nodes correctly', () => {
-      nodeManager.initializeFromLegacyData([
+      const flatData: FlatNodeData[] = [
         {
           id: 'root-only',
           type: 'text',
           content: 'Root only',
-          children: []
+          children: [],
+          inheritHeaderLevel: 0,
+          expanded: true,
+          autoFocus: false
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flatData);
 
       const path = hierarchyService.getNodePath('root-only');
 
@@ -440,7 +529,7 @@ describe('HierarchyService', () => {
 
   describe('Cache Management', () => {
     test('invalidateNodeCache clears relevant caches', () => {
-      nodeManager.initializeFromLegacyData([
+      const testNodes: TestHierarchyNode[] = [
         {
           id: 'parent',
           type: 'text',
@@ -454,7 +543,9 @@ describe('HierarchyService', () => {
             }
           ]
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy(testNodes));
 
       // Populate caches
       hierarchyService.getNodeDepth('child');
@@ -474,7 +565,7 @@ describe('HierarchyService', () => {
     });
 
     test('invalidateAllCaches clears all caches', () => {
-      nodeManager.initializeFromLegacyData([
+      const testNodes: TestHierarchyNode[] = [
         {
           id: 'node1',
           type: 'text',
@@ -488,7 +579,9 @@ describe('HierarchyService', () => {
             }
           ]
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy(testNodes));
 
       // Populate all caches
       hierarchyService.getNodeDepth('node2');
@@ -510,7 +603,7 @@ describe('HierarchyService', () => {
     });
 
     test('getCacheStats provides accurate metrics', () => {
-      nodeManager.initializeFromLegacyData([
+      const testNodes: TestHierarchyNode[] = [
         {
           id: 'parent',
           type: 'text',
@@ -520,7 +613,9 @@ describe('HierarchyService', () => {
             { id: 'child2', type: 'text', content: 'Child 2', children: [] }
           ]
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy(testNodes));
 
       // Make some calls to populate cache and miss stats
       hierarchyService.getNodeDepth('child1'); // Cache miss
@@ -542,14 +637,19 @@ describe('HierarchyService', () => {
 
   describe('EventBus Integration', () => {
     test('responds to node:updated events', async () => {
-      nodeManager.initializeFromLegacyData([
+      const flatData: FlatNodeData[] = [
         {
           id: 'test-node',
           type: 'text',
           content: 'Test node',
-          children: []
+          children: [],
+          inheritHeaderLevel: 0,
+          expanded: true,
+          autoFocus: false
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flatData);
 
       // Populate cache
       hierarchyService.getNodeDepth('test-node');
@@ -577,14 +677,16 @@ describe('HierarchyService', () => {
     });
 
     test('responds to hierarchy:changed events', async () => {
-      nodeManager.initializeFromLegacyData([
+      const testNodes: TestHierarchyNode[] = [
         {
           id: 'node1',
           type: 'text',
           content: 'Node 1',
           children: [{ id: 'node2', type: 'text', content: 'Node 2', children: [] }]
         }
-      ]);
+      ];
+
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy(testNodes));
 
       // Populate caches
       hierarchyService.getNodeDepth('node1');
@@ -615,7 +717,7 @@ describe('HierarchyService', () => {
   describe('Performance Benchmarks', () => {
     test('handles 1,000 node hierarchy efficiently', () => {
       const largeHierarchy = createLargeHierarchy(1000);
-      nodeManager.initializeFromLegacyData([largeHierarchy]);
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy([largeHierarchy]));
 
       const startTime = performance.now();
 
@@ -635,7 +737,7 @@ describe('HierarchyService', () => {
 
     test('handles 10,000 node hierarchy efficiently', () => {
       const veryLargeHierarchy = createLargeHierarchy(10000);
-      nodeManager.initializeFromLegacyData([veryLargeHierarchy]);
+      nodeManager.initializeFromLegacyData(flattenTestHierarchy([veryLargeHierarchy]));
 
       const startTime = performance.now();
 

@@ -127,14 +127,15 @@ export class NodeOperationsService {
       nodeId
     );
 
-    // Prepare base node data
+    // Prepare base node data with proper type conversion
     const baseNodeData: NodeSpaceNode = {
       id: nodeId,
-      type: data.type || existingNode?.nodeType || 'text',
+      type: data.type || (existingNode ? existingNode.nodeType : 'text'),
       content: contentResult.content,
       parent_id: hierarchyResolution.parentId,
       root_id: hierarchyResolution.rootId,
       before_sibling_id: siblingPosition.beforeSiblingId,
+      depth: existingNode?.depth || 0, // Include depth field
       created_at: existingNode ? this.getCreatedAtFromNode(existingNode) : new Date().toISOString(),
       mentions: data.mentions || existingNode?.mentions || [],
       metadata: this.mergeMetadata(
@@ -484,7 +485,7 @@ export class NodeOperationsService {
       id: node.id,
       content: node.content,
       nodeType: node.type,
-      depth: 0, // Will be calculated by hierarchy service
+      depth: node.depth, // Use depth from NodeSpaceNode
       parentId: node.parent_id || undefined,
       children: [], // Will be populated by NodeManager
       expanded: true,
@@ -492,6 +493,25 @@ export class NodeOperationsService {
       inheritHeaderLevel: this.contentProcessor.parseHeaderLevel(node.content),
       metadata: node.metadata,
       mentions: node.mentions
+    };
+  }
+
+  /**
+   * Convert NodeManager format to NodeSpaceNode format
+   */
+  private convertFromNodeManagerFormat(node: Node): NodeSpaceNode {
+    return {
+      id: node.id,
+      type: node.nodeType, // Convert nodeType to type
+      content: node.content,
+      parent_id: node.parentId || null,
+      root_id: 'default-root', // This should be properly calculated in real implementation
+      before_sibling_id: null, // This should be calculated based on sibling order
+      depth: node.depth,
+      created_at: new Date().toISOString(), // Default for new conversions
+      mentions: node.mentions || [],
+      metadata: node.metadata,
+      embedding_vector: null
     };
   }
 

@@ -5,13 +5,13 @@
 
 import { describe, test, expect, beforeEach } from 'vitest';
 import {
-  createReactiveNodeService,
-  ReactiveNodeService as NodeManager,
+  createMockReactiveNodeService,
+  type MockReactiveNodeService,
   type NodeManagerEvents
-} from '../../lib/services/reactiveNodeService.svelte.js';
+} from '../mocks/mockReactiveNodeService';
 
 describe('NodeManager + ContentProcessor Integration', () => {
-  let nodeManager: NodeManager;
+  let nodeManager: MockReactiveNodeService;
   let mockEvents: NodeManagerEvents;
 
   beforeEach(() => {
@@ -21,7 +21,7 @@ describe('NodeManager + ContentProcessor Integration', () => {
       nodeCreated: () => {},
       nodeDeleted: () => {}
     };
-    nodeManager = createReactiveNodeService(mockEvents);
+    nodeManager = createMockReactiveNodeService(mockEvents);
   });
 
   describe('Dual-Representation Methods', () => {

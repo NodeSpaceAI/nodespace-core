@@ -28,6 +28,7 @@ export interface NodeSpaceNode {
   parent_id: string | null;
   root_id: string;
   before_sibling_id: string | null; // Single-pointer sibling ordering
+  depth: number; // Node depth in hierarchy (calculated field)
   created_at: string;
   mentions: string[]; // Array of node IDs this node references (BACKLINK SYSTEM)
   metadata: Record<string, unknown>; // JSON for type-specific properties

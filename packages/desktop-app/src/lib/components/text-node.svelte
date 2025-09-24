@@ -16,7 +16,7 @@
   export let autoFocus: boolean = false;
   export let content: string = '';
   export let inheritHeaderLevel: number = 0;
-  export let children: unknown[] = [];
+  export let children: string[] = [];
 
   // This wrapper directly forwards events from TextNodeViewer
 </script>

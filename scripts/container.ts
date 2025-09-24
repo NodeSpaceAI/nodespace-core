@@ -100,11 +100,40 @@ async function runContainer(options: { name?: string } = {}): Promise<void> {
   const containerName = options.name || `${CONTAINER_PREFIX}-${timestamp}`;
 
   // Get GitHub token and config paths
-  const githubToken = process.env.GITHUB_TOKEN;
+  let githubToken = process.env.GITHUB_TOKEN;
   const homeDir = process.env.HOME;
 
+  // If no GITHUB_TOKEN env var, try to get it from GitHub CLI
   if (!githubToken) {
-    console.warn("⚠️  GITHUB_TOKEN not set. Container won't have GitHub access.");
+    try {
+      const result = await $`gh auth token`.quiet();
+      if (result.exitCode === 0) {
+        githubToken = result.stdout.toString().trim();
+        console.log("✓ Using GitHub token from CLI authentication");
+      }
+    } catch {
+      console.warn("⚠️  No GitHub authentication found. Container will have limited access.");
+    }
+  }
+
+  // Get current terminal dimensions
+  let terminalCols = "120";
+  let terminalLines = "40";
+
+  try {
+    // Try to get actual terminal dimensions from tput
+    const colsResult = await $`tput cols`.quiet();
+    const linesResult = await $`tput lines`.quiet();
+
+    if (colsResult.exitCode === 0 && linesResult.exitCode === 0) {
+      terminalCols = colsResult.stdout.toString().trim();
+      terminalLines = linesResult.stdout.toString().trim();
+      console.log(`📐 Detected terminal size: ${terminalCols}x${terminalLines}`);
+    } else {
+      console.log(`📐 Using default terminal size: ${terminalCols}x${terminalLines}`);
+    }
+  } catch {
+    console.log(`📐 Using fallback terminal size: ${terminalCols}x${terminalLines}`);
   }
 
   // Build container run command
@@ -114,22 +143,17 @@ async function runContainer(options: { name?: string } = {}): Promise<void> {
     "--name", containerName,
   ];
 
+  // Add terminal environment variables
+  dockerCmd.push("-e", `COLUMNS=${terminalCols}`);
+  dockerCmd.push("-e", `LINES=${terminalLines}`);
+  dockerCmd.push("-e", `TERM=xterm-256color`);
+
   // Add GitHub token if available
   if (githubToken) {
     dockerCmd.push("-e", `GITHUB_TOKEN=${githubToken}`);
   }
 
-  // Mount GitHub CLI config if it exists
-  const ghConfigPath = join(homeDir!, ".config", "gh");
-  if (existsSync(ghConfigPath)) {
-    dockerCmd.push("-v", `${ghConfigPath}:/root/.config/gh:ro`);
-  }
-
-  // Mount git config if it exists
-  const gitConfigPath = join(homeDir!, ".gitconfig");
-  if (existsSync(gitConfigPath)) {
-    dockerCmd.push("-v", `${gitConfigPath}:/root/.gitconfig:ro`);
-  }
+  // No host directory mappings - fully isolated container
 
 
   dockerCmd.push(CONTAINER_IMAGE);
@@ -236,24 +260,73 @@ async function stopContainers(containerName?: string): Promise<void> {
   }
 }
 
+async function resizeContainer(containerName?: string, cols?: string, lines?: string): Promise<void> {
+  const runtime = await detectContainerRuntime();
+  if (!runtime.available) {
+    console.error("❌ No container runtime available");
+    return;
+  }
+
+  const cmd = runtime.runtime !== "Podman" ? "docker" : "podman";
+  const targetCols = cols || "120";
+  const targetLines = lines || "40";
+
+  try {
+    // Get running container name if not specified
+    let targetContainer = containerName;
+    if (!targetContainer) {
+      const result = await $`${cmd} ps --filter name=${CONTAINER_PREFIX} --format "{{.Names}}"`.quiet();
+      const runningContainers = result.stdout.toString().trim().split('\n').filter(name => name);
+
+      if (runningContainers.length === 0) {
+        console.error("❌ No running NodeSpace containers found to resize");
+        return;
+      } else if (runningContainers.length > 1) {
+        console.error("❌ Multiple containers running. Specify which one to resize:");
+        runningContainers.forEach(name => console.log(`  ${name}`));
+        return;
+      }
+      targetContainer = runningContainers[0];
+    }
+
+    console.log(`📐 Resizing container ${targetContainer} to ${targetCols}x${targetLines}...`);
+
+    // Execute resize command inside the container
+    await $`${cmd} exec ${targetContainer} bash -c "stty cols ${targetCols} rows ${targetLines} && export COLUMNS=${targetCols} && export LINES=${targetLines} && echo 'Terminal resized to ${targetCols}x${targetLines}'"`;
+
+    console.log(`✅ Container terminal resized successfully!`);
+    console.log(`   Use 'resize_terminal ${targetCols} ${targetLines}' inside the container for future sessions`);
+  } catch (error) {
+    console.error("❌ Failed to resize container terminal:", error);
+  }
+}
+
 function showHelp(): void {
   console.log(`
 🐳 NodeSpace Container Management
 
 Commands:
-  bun run container:build         Build the development container image
-  bun run container:run           Run a new development container
-  bun run container:save [name]   Save running container as authenticated image
-  bun run container:list          List all NodeSpace containers
-  bun run container:stop [name]   Stop container(s)
-  bun run container:help          Show this help
+  bun run container:build              Build the development container image
+  bun run container:run                Run a new development container
+  bun run container:save [name]        Save running container as authenticated image
+  bun run container:list               List all NodeSpace containers
+  bun run container:stop [name]        Stop container(s)
+  bun run container:resize [name] [cols] [lines]  Resize container terminal
+  bun run container:help               Show this help
 
 Examples:
-  bun run container:build                    # Build the image
-  bun run container:run                      # Start new container
-  bun run container:save                     # Save current container with auth
-  bun run container:stop nodespace-dev-123  # Stop specific container
-  bun run container:stop                     # Stop all containers
+  bun run container:build                        # Build the image
+  bun run container:run                          # Start new container (auto-detects terminal size)
+  bun run container:resize                       # Resize current container to 120x40
+  bun run container:resize mycontainer 100 50   # Resize specific container
+  bun run container:save                         # Save current container with auth
+  bun run container:stop nodespace-dev-123      # Stop specific container
+  bun run container:stop                         # Stop all containers
+
+Terminal Sizing:
+  • Container automatically detects host terminal size on startup
+  • If terminal looks wrong, use 'resize_terminal [cols] [rows]' inside container
+  • Or use 'bun run container:resize' from host to fix running container
 
 Workflow for authenticated containers:
   1. bun run container:run                   # Start container
@@ -265,7 +338,7 @@ Each container:
   • Has independent nodespace-core clone
   • Includes all development tools (Rust, Bun, Claude Code, GitHub CLI)
   • Can run simultaneously for parallel development
-  • Automatically passes GitHub credentials from host
+  • Automatically passes GitHub credentials and terminal size from host
 `);
 }
 
@@ -287,6 +360,9 @@ switch (command) {
     break;
   case "stop":
     await stopContainers(process.argv[3]);
+    break;
+  case "resize":
+    await resizeContainer(process.argv[3], process.argv[4], process.argv[5]);
     break;
   case "help":
   case undefined:

@@ -14,20 +14,20 @@
 
   // Import proper types for the services
   import type { ReactiveNodeService } from '$lib/services/reactiveNodeService.svelte';
-  import type { HierarchyService } from '$lib/services/hierarchyService';
-  import type { NodeOperationsService } from '$lib/services/nodeOperationsService';
-  import type { ContentProcessor } from '$lib/services/contentProcessor';
-  import type { MockDatabaseService } from '$lib/services/mockDatabaseService';
-  import type NodeReferenceService from '$lib/services/nodeReferenceService';
+  import type { HierarchyService as HierarchyServiceType } from '$lib/services/hierarchyService';
+  import type { NodeOperationsService as NodeOperationsServiceType } from '$lib/services/nodeOperationsService';
+  import type { ContentProcessor as ContentProcessorType } from '$lib/services/contentProcessor';
+  import type { MockDatabaseService as MockDatabaseServiceType } from '$lib/services/mockDatabaseService';
+  import type NodeReferenceServiceType from '$lib/services/nodeReferenceService';
 
   // Service interface definition with proper types
   export interface NodeServices {
-    nodeReferenceService: NodeReferenceService;
+    nodeReferenceService: NodeReferenceServiceType;
     nodeManager: ReactiveNodeService;
-    hierarchyService: HierarchyService;
-    nodeOperationsService: NodeOperationsService;
-    contentProcessor: ContentProcessor;
-    databaseService: MockDatabaseService;
+    hierarchyService: HierarchyServiceType;
+    nodeOperationsService: NodeOperationsServiceType;
+    contentProcessor: ContentProcessorType;
+    databaseService: MockDatabaseServiceType;
   }
 
   // Context accessor functions
@@ -67,7 +67,7 @@
 
       // Create node manager events
       const nodeManagerEvents = {
-        focusRequested: (nodeId: string, position: number) => {
+        focusRequested: (nodeId: string, position?: number) => {
           // Use DOM API to focus the node directly with cursor positioning
           setTimeout(() => {
             const nodeElement = document.querySelector(
@@ -77,7 +77,7 @@
               nodeElement.focus();
 
               // Set cursor position using proven algorithm from working version
-              if (position >= 0) {
+              if (position !== undefined && position >= 0) {
                 const selection = window.getSelection();
                 if (!selection) return;
 

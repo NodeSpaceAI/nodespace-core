@@ -9,6 +9,24 @@
  * - Reactive state updates
  */
 
+// Mock Svelte 5 runes immediately before any imports
+(globalThis as any).$state = function <T>(initialValue: T): T {
+  if (typeof initialValue !== 'object' || initialValue === null) {
+    return initialValue;
+  }
+  return initialValue;
+};
+
+(globalThis as any).$derived = {
+  by: function <T>(getter: () => T): T {
+    return getter();
+  }
+};
+
+(globalThis as any).$effect = function (fn: () => void | (() => void)): void {
+  fn();
+};
+
 import { describe, test, expect, beforeEach } from 'vitest';
 import {
   createReactiveNodeService,
@@ -126,26 +144,25 @@ describe('NodeManager', () => {
           autoFocus: false,
           inheritHeaderLevel: 0,
           expanded: true,
-          children: [
-            {
-              id: 'child1',
-              nodeType: 'text',
-              content: 'First child',
-              autoFocus: false,
-              inheritHeaderLevel: 0,
-              children: [],
-              expanded: true
-            },
-            {
-              id: 'child2',
-              nodeType: 'text',
-              content: 'Second child',
-              autoFocus: false,
-              inheritHeaderLevel: 0,
-              children: [],
-              expanded: true
-            }
-          ]
+          children: ['child1', 'child2']
+        },
+        {
+          id: 'child1',
+          nodeType: 'text',
+          content: 'First child',
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          children: [],
+          expanded: true
+        },
+        {
+          id: 'child2',
+          nodeType: 'text',
+          content: 'Second child',
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          children: [],
+          expanded: true
         }
       ];
 
@@ -171,37 +188,34 @@ describe('NodeManager', () => {
           autoFocus: false,
           inheritHeaderLevel: 0,
           expanded: true,
-          children: [
-            {
-              id: 'level1',
-              nodeType: 'text',
-              content: 'Level 1',
-              autoFocus: false,
-              inheritHeaderLevel: 0,
-              expanded: true,
-              children: [
-                {
-                  id: 'level2',
-                  nodeType: 'text',
-                  content: 'Level 2',
-                  autoFocus: false,
-                  inheritHeaderLevel: 0,
-                  expanded: true,
-                  children: [
-                    {
-                      id: 'level3',
-                      nodeType: 'text',
-                      content: 'Level 3',
-                      autoFocus: false,
-                      inheritHeaderLevel: 0,
-                      children: [],
-                      expanded: true
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
+          children: ['level1']
+        },
+        {
+          id: 'level1',
+          nodeType: 'text',
+          content: 'Level 1',
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          expanded: true,
+          children: ['level2']
+        },
+        {
+          id: 'level2',
+          nodeType: 'text',
+          content: 'Level 2',
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          expanded: true,
+          children: ['level3']
+        },
+        {
+          id: 'level3',
+          nodeType: 'text',
+          content: 'Level 3',
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          children: [],
+          expanded: true
         }
       ];
 
@@ -229,7 +243,6 @@ describe('NodeManager', () => {
           inheritHeaderLevel: 0,
           children: [],
           expanded: true,
-          depth: 0,
           metadata: {}
         },
         {
@@ -240,7 +253,6 @@ describe('NodeManager', () => {
           inheritHeaderLevel: 0,
           children: [],
           expanded: true,
-          depth: 0,
           metadata: {}
         },
         {
@@ -249,17 +261,16 @@ describe('NodeManager', () => {
           content: 'Third content',
           autoFocus: false,
           inheritHeaderLevel: 0,
-          children: [
-            {
-              id: 'child1',
-              nodeType: 'text',
-              content: 'Child content',
-              autoFocus: false,
-              inheritHeaderLevel: 0,
-              children: [],
-              expanded: true
-            }
-          ],
+          children: ['child1'],
+          expanded: true
+        },
+        {
+          id: 'child1',
+          nodeType: 'text',
+          content: 'Child content',
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          children: [],
           expanded: true
         }
       ];
@@ -361,6 +372,113 @@ describe('NodeManager', () => {
       const child1 = nodeManager.findNode('child1');
       expect(child1?.content).toBe('Child contentAnother child');
       expect(nodeManager.findNode(newChildId)).toBeNull();
+    });
+
+    test('combineNodes maintains proper depth hierarchy for children during cross-depth merge', () => {
+      // Test cross-depth merge where shallow node is merged onto deeper node
+      // Children should maintain proper relative depth and parent assignments
+
+      const depthTestNodes = [
+        // Root node
+        {
+          id: 'root',
+          nodeType: 'text',
+          content: 'Root',
+          depth: 0,
+          parentId: undefined,
+          children: ['features']
+        },
+
+        {
+          id: 'features',
+          nodeType: 'text',
+          content: 'Node A',
+          depth: 1,
+          parentId: 'root',
+          children: ['hierarchical', 'realtime']
+        },
+
+        {
+          id: 'hierarchical',
+          nodeType: 'text',
+          content: 'Node B',
+          depth: 2,
+          parentId: 'features',
+          children: []
+        },
+
+        {
+          id: 'realtime',
+          nodeType: 'text',
+          content: 'Node C (target)',
+          depth: 3,
+          parentId: 'features',
+          children: []
+        },
+
+        // Shallow node to be merged
+        {
+          id: 'formatting',
+          nodeType: 'text',
+          content: 'Source Node',
+          depth: 1,
+          parentId: 'root',
+          children: ['child1', 'child2']
+        },
+
+        {
+          id: 'child1',
+          nodeType: 'text',
+          content: 'Child 1',
+          depth: 2,
+          parentId: 'formatting',
+          children: []
+        },
+        {
+          id: 'child2',
+          nodeType: 'text',
+          content: 'Child 2',
+          depth: 2,
+          parentId: 'formatting',
+          children: []
+        }
+      ];
+
+      // Initialize with complete node objects
+      const completeNodes = depthTestNodes.map((node) => ({
+        ...node,
+        nodeType: node.nodeType || 'text',
+        content: node.content,
+        autoFocus: false,
+        inheritHeaderLevel: 0,
+        expanded: true,
+        metadata: {}
+      }));
+      nodeManager.initializeFromLegacyData(completeNodes);
+
+      // Perform the merge: shallow node onto deeper node
+      nodeManager.combineNodes('formatting', 'realtime');
+
+      // Verify the children preserve their original depth and get correct parent
+      const child1After = nodeManager.findNode('child1');
+      const child2After = nodeManager.findNode('child2');
+
+      expect(child1After?.depth).toBe(1);
+      expect(child2After?.depth).toBe(1);
+      expect(child1After?.parentId).toBe('root');
+      expect(child2After?.parentId).toBe('root');
+
+      // Verify parent now contains the children
+      const rootAfter = nodeManager.findNode('root');
+      expect(rootAfter?.children).toContain('child1');
+      expect(rootAfter?.children).toContain('child2');
+
+      // Verify the source node was deleted
+      expect(nodeManager.findNode('formatting')).toBeNull();
+
+      // Verify the merged content exists in target node
+      const realtimeAfter = nodeManager.findNode('realtime');
+      expect(realtimeAfter?.content).toBe('Node C (target)Source Node');
     });
   });
 
@@ -503,13 +621,13 @@ describe('NodeManager', () => {
       // Indent child1 under parent
       nodeManager.indentNode('child1');
 
-      let visibleNodes = nodeManager.getVisibleNodes();
+      let visibleNodes = nodeManager.visibleNodes;
       expect(visibleNodes.map((n) => n.id)).toEqual(['parent', 'child1', 'child2']);
 
       // Collapse parent
       nodeManager.toggleExpanded('parent');
 
-      visibleNodes = nodeManager.getVisibleNodes();
+      visibleNodes = nodeManager.visibleNodes;
       expect(visibleNodes.map((n) => n.id)).toEqual(['parent', 'child2']);
     });
 
@@ -554,21 +672,16 @@ describe('NodeManager', () => {
           autoFocus: false,
           inheritHeaderLevel: 0,
           expanded: true,
-          depth: 0,
-          metadata: {},
-          children: [
-            {
-              id: 'child1',
-              nodeType: 'text',
-              content: 'Child 1',
-              autoFocus: false,
-              inheritHeaderLevel: 0,
-              children: [],
-              expanded: true,
-              depth: 1,
-              metadata: {}
-            }
-          ]
+          children: ['child1']
+        },
+        {
+          id: 'child1',
+          nodeType: 'text',
+          content: 'Child 1',
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          children: [],
+          expanded: true
         }
       ];
       nodeManager.initializeFromLegacyData(testNodes);
@@ -638,7 +751,7 @@ describe('NodeManager', () => {
       ];
 
       // Should not crash
-      expect(() => nodeManager.initializeFromLegacyData(malformedData as unknown[])).not.toThrow();
+      expect(() => nodeManager.initializeFromLegacyData(malformedData as never[])).not.toThrow();
     });
 
     test('maintains consistency after multiple operations', () => {
@@ -687,7 +800,7 @@ describe('NodeManager', () => {
       nodeManager.outdentNode(newId);
 
       // Verify consistency
-      const visibleNodes = nodeManager.getVisibleNodes();
+      const visibleNodes = nodeManager.visibleNodes;
       for (const node of visibleNodes) {
         if (node.parentId) {
           const parent = nodeManager.findNode(node.parentId);

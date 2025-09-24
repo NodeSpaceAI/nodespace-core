@@ -15,12 +15,14 @@ function createMockState<T>(initialValue: T): T {
   return initialValue;
 }
 
-function createMockDerived<T>(getter: () => T): { get value(): T } {
-  return {
-    get value() {
-      return getter();
-    }
-  };
+function createMockEffect(fn: () => void | (() => void)): void {
+  // Execute effect immediately in tests
+  fn();
+}
+
+function createMockDerived<T>(getter: () => T): T {
+  // Return the value directly, not an object with a getter
+  return getter();
 }
 
 // Define Svelte 5 runes globally
@@ -33,6 +35,8 @@ const derivedFunction = {
     return createMockDerived(getter);
   }
 };
+
+const effectFunction = createMockEffect;
 
 // Global definitions
 Object.defineProperty(globalThis, '$state', {
@@ -47,10 +51,17 @@ Object.defineProperty(globalThis, '$derived', {
   configurable: true
 });
 
+Object.defineProperty(globalThis, '$effect', {
+  value: effectFunction,
+  writable: true,
+  configurable: true
+});
+
 // Also define on global for Node.js compatibility
 if (typeof global !== 'undefined') {
   (global as Record<string, unknown>).$state = stateFunction;
   (global as Record<string, unknown>).$derived = derivedFunction;
+  (global as Record<string, unknown>).$effect = effectFunction;
 }
 
 // Initialize global plugin registry for all tests

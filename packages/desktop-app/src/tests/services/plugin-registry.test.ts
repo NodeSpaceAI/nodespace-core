@@ -19,9 +19,6 @@ const MockReferenceComponent = vi.fn() as unknown as NodeReferenceComponent;
 
 // Mock module import for lazy loading tests
 const mockLazyImport = vi.fn();
-vi.mock('$lib/components/viewers/mock-viewer.svelte', () => ({
-  default: MockViewerComponent
-}));
 
 describe('PluginRegistry - Unified Plugin System', () => {
   let registry: PluginRegistry;

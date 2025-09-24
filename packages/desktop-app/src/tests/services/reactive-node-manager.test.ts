@@ -5,6 +5,24 @@
  * Specifically tests Issue #71 where createNode breaks UI updates
  */
 
+// Mock Svelte 5 runes immediately before any imports
+(globalThis as any).$state = function <T>(initialValue: T): T {
+  if (typeof initialValue !== 'object' || initialValue === null) {
+    return initialValue;
+  }
+  return initialValue;
+};
+
+(globalThis as any).$derived = {
+  by: function <T>(getter: () => T): T {
+    return getter();
+  }
+};
+
+(globalThis as any).$effect = function (fn: () => void | (() => void)): void {
+  fn();
+};
+
 import { describe, test, expect, beforeEach } from 'vitest';
 import { createReactiveNodeService } from '../../lib/services/reactiveNodeService.svelte.js';
 import type {
