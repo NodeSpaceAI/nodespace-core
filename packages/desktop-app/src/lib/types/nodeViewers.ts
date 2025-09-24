@@ -19,8 +19,10 @@ export interface NodeViewerEventDetails {
     nodeType: string;
     currentContent?: string;
     newContent?: string;
+    originalContent?: string;
     inheritHeaderLevel?: number;
     cursorAtBeginning?: boolean;
+    insertAtBeginning?: boolean;
   };
   contentChanged: { content: string };
   indentNode: { nodeId: string };

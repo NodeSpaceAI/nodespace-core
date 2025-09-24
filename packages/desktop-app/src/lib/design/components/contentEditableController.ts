@@ -21,7 +21,9 @@ export interface ContentEditableEvents {
     nodeType: string;
     currentContent?: string;
     newContent?: string;
+    originalContent?: string;
     cursorAtBeginning?: boolean;
+    insertAtBeginning?: boolean;
   }) => void;
   indentNode: (data: { nodeId: string }) => void;
   outdentNode: (data: { nodeId: string }) => void;
@@ -810,20 +812,37 @@ export class ContentEditableController {
           this.recentEnter = false;
         }, 100);
 
-        // Always split content at cursor position, preserving markdown formatting
-        const splitResult = splitMarkdownContent(currentContent, cursorPosition);
+        // Check if we should create new node above (at beginning/syntax area)
+        const shouldCreateAbove = this.shouldCreateNodeAbove(currentContent, cursorPosition);
 
-        // Update current element immediately to show completed syntax
-        this.originalContent = splitResult.beforeContent;
-        this.element.textContent = splitResult.beforeContent;
+        if (shouldCreateAbove) {
+          // Create new empty node above, preserve original node unchanged
+          this.events.createNewNode({
+            afterNodeId: this.nodeId,
+            nodeType: this.nodeType,
+            currentContent: '', // New node above starts empty
+            newContent: '',
+            originalContent: currentContent,
+            cursorAtBeginning: true,
+            insertAtBeginning: true // This tells the service to insert BEFORE the current node
+          });
+        } else {
+          // Normal splitting behavior for middle/end positions
+          const splitResult = splitMarkdownContent(currentContent, cursorPosition);
 
-        this.events.createNewNode({
-          afterNodeId: this.nodeId,
-          nodeType: this.nodeType, // Preserve original node's type
-          currentContent: splitResult.beforeContent,
-          newContent: splitResult.afterContent,
-          cursorAtBeginning: false
-        });
+          // Update current element immediately to show completed syntax
+          this.originalContent = splitResult.beforeContent;
+          this.element.textContent = splitResult.beforeContent;
+
+          this.events.createNewNode({
+            afterNodeId: this.nodeId,
+            nodeType: this.nodeType, // Preserve original node's type
+            currentContent: splitResult.beforeContent,
+            newContent: splitResult.afterContent,
+            originalContent: currentContent, // Pass original content before split for inheritance
+            cursorAtBeginning: false
+          });
+        }
         return;
       }
     }
@@ -2567,5 +2586,30 @@ export class ContentEditableController {
     setTimeout(() => {
       this.restoreCursorPosition(newCursorPos);
     }, 0);
+  }
+
+  /**
+   * Determine if we should create a new node above instead of splitting
+   * This preserves the original node's identity and relationships
+   */
+  private shouldCreateNodeAbove(content: string, position: number): boolean {
+    // Always create above when cursor is at the very beginning
+    if (position <= 0) {
+      return true;
+    }
+
+    // For headers, create above when cursor is within or at the end of the syntax area
+    const headerMatch = content.match(/^(#{1,6}\s+)/);
+    if (headerMatch) {
+      const headerPrefixLength = headerMatch[1].length;
+      // Create above if cursor is within or right after header syntax
+      // (e.g., `|#`, `#|`, `# |`, `## |` - all considered "beginning")
+      if (position <= headerPrefixLength) {
+        return true;
+      }
+    }
+
+    // For all other cases, use normal splitting
+    return false;
   }
 }
