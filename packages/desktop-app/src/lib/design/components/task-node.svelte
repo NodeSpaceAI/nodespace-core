@@ -23,7 +23,7 @@
     nodeId,
     nodeType = 'task',
     autoFocus = false,
-    content = $bindable(''),
+    content = '',
     headerLevel = 0,
     children = [],
     editableConfig = { allowMultiline: true },
@@ -40,6 +40,14 @@
   } = $props();
 
   const dispatch = createEventDispatcher();
+
+  // Internal reactive state - sync with content prop changes like TextNodeViewer
+  let internalContent = $state(content);
+
+  // Sync internalContent when content prop changes externally (e.g., from pattern conversions)
+  $effect(() => {
+    internalContent = content;
+  });
 
   // Task-specific state management - prioritize metadata over content parsing
   let taskState = $state<NodeState>((metadata.taskState as NodeState) || parseTaskState(content));
@@ -144,6 +152,15 @@
   });
 
   /**
+   * Handle content changes and sync with parent
+   */
+  function handleContentChange(event: CustomEvent<{ content: string }>) {
+    const newContent = event.detail.content;
+    internalContent = newContent;
+    dispatch('contentChanged', { content: newContent });
+  }
+
+  /**
    * Forward all other events to parent components
    */
   function forwardEvent<T>(eventName: string) {
@@ -157,14 +174,14 @@
     {nodeId}
     {nodeType}
     {autoFocus}
-    bind:content
+    bind:content={internalContent}
     {headerLevel}
     {children}
     {editableConfig}
     metadata={taskMetadata}
     on:iconClick={handleIconClick}
     on:createNewNode={forwardEvent('createNewNode')}
-    on:contentChanged={forwardEvent('contentChanged')}
+    on:contentChanged={handleContentChange}
     on:headerLevelChanged={forwardEvent('headerLevelChanged')}
     on:indentNode={forwardEvent('indentNode')}
     on:outdentNode={forwardEvent('outdentNode')}
@@ -175,6 +192,7 @@
     on:blur={forwardEvent('blur')}
     on:nodeReferenceSelected={forwardEvent('nodeReferenceSelected')}
     on:slashCommandSelected={forwardEvent('slashCommandSelected')}
+    on:nodeTypeChanged={forwardEvent('nodeTypeChanged')}
   />
 </div>
 

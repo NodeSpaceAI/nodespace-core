@@ -8,6 +8,7 @@
 import ContentProcessor from '$lib/services/contentProcessor';
 import type { TriggerContext } from '$lib/services/nodeReferenceService';
 import type { SlashCommandContext } from '$lib/services/slashCommandService';
+import { SlashCommandService } from '$lib/services/slashCommandService';
 import { splitMarkdownContent } from '$lib/utils/markdownSplitter';
 import { markdownToHtml, htmlToMarkdown } from '$lib/utils/markedConfig';
 
@@ -27,6 +28,11 @@ export interface ContentEditableEvents {
     focusOriginalNode?: boolean;
   }) => void;
   indentNode: (data: { nodeId: string }) => void;
+  directSlashCommand: (data: {
+    command: string;
+    nodeType: string;
+    cursorPosition?: number;
+  }) => void;
   outdentNode: (data: { nodeId: string }) => void;
   navigateArrow: (data: { nodeId: string; direction: 'up' | 'down'; columnHint: number }) => void;
   combineWithPrevious: (data: { nodeId: string; currentContent: string }) => void;
@@ -87,6 +93,18 @@ export class ContentEditableController {
 
   // Track if slash command dropdown is currently active
   private slashCommandDropdownActive: boolean = false;
+  // Track if autocomplete dropdown is currently active
+  private autocompleteDropdownActive: boolean = false;
+  // Prevent pattern detection loops after conversion
+  private skipPatternDetection: boolean = false;
+
+  // Slash command session tracking
+  private slashCommandSession: {
+    active: boolean;
+    startPosition: number;
+    query: string;
+    originalContent: string;
+  } | null = null;
 
   // Bound event handlers for proper cleanup
   private boundHandleFocus = this.handleFocus.bind(this);
@@ -184,6 +202,27 @@ export class ContentEditableController {
     } else {
       this.setFormattedContent(content);
     }
+  }
+
+  /**
+   * Force update content bypassing input guards for pattern conversions
+   */
+  public forceUpdateContent(content: string): void {
+    // Update stored original content
+    this.originalContent = content;
+
+    // Defer the DOM update to avoid conflicts with ongoing input processing
+    // This ensures the content update happens after the current input event completes
+    requestAnimationFrame(() => {
+      if (this.isEditing) {
+        this.setRawMarkdown(content);
+      } else {
+        this.setFormattedContent(content);
+      }
+
+      // Position cursor at the end of the cleaned content
+      this.positionCursorAtEnd();
+    });
   }
 
   /**
@@ -726,7 +765,8 @@ export class ContentEditableController {
         this.events.headerLevelChanged(newHeaderLevel);
       }
 
-      // Check for task shortcut pattern: "[ ]", "[x]", "[~]", "[o]"
+      // Check for patterns - header pattern takes precedence over task pattern
+      this.checkForHeaderPattern(textContent);
       this.checkForTaskShortcut(textContent);
 
       // Apply live formatting while preserving cursor, unless we just had a Shift+Enter or regular Enter
@@ -785,16 +825,29 @@ export class ContentEditableController {
           this.events.headerLevelChanged(newHeaderLevel);
         }, 0);
       }
+
+      // Check if this completes a slash command (e.g., "/task" becomes "/task ")
+      if (this.checkForDirectSlashCommand(currentText, futureText)) {
+        event.preventDefault(); // Prevent the space from being added
+      }
     }
 
     // Enter key handling - distinguish between regular Enter and Shift+Enter
     if (event.key === 'Enter') {
       // If slash command dropdown is active, let it handle the Enter key
       // Check both the state variable and if dropdown is actually visible in DOM
-      const dropdownExists = document.querySelector(
+      const slashDropdownExists = document.querySelector(
         '[role="listbox"][aria-label="Slash command palette"]'
       );
-      if (this.slashCommandDropdownActive || dropdownExists) {
+      const autocompleteDropdownExists = document.querySelector(
+        '[role="listbox"][aria-label="Node reference autocomplete"]'
+      );
+      if (
+        this.slashCommandDropdownActive ||
+        this.autocompleteDropdownActive ||
+        slashDropdownExists ||
+        autocompleteDropdownExists
+      ) {
         return; // Don't preventDefault, let the dropdown handle it
       }
 
@@ -876,6 +929,10 @@ export class ContentEditableController {
 
     // Arrow keys for navigation
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      // If any modal is active, let the modal handle the arrow keys
+      if (this.slashCommandDropdownActive || this.autocompleteDropdownActive) {
+        return;
+      }
       const direction = event.key === 'ArrowUp' ? 'up' : 'down';
 
       // For multiline nodes, only navigate between nodes if at first/last line
@@ -2144,10 +2201,12 @@ export class ContentEditableController {
           });
         }
       } else {
+        this.clearSlashCommandSession();
         this.events.slashCommandHidden();
       }
     } else {
       // Hide slash commands when @ is active
+      this.clearSlashCommandSession();
       this.events.slashCommandHidden();
     }
   }
@@ -2157,25 +2216,75 @@ export class ContentEditableController {
    * Patterns: [ ], [x], [X], [~], [o]
    */
   private checkForTaskShortcut(content: string): void {
-    // Only check if node is not already a task
-    if (this.nodeType === 'task') {
+    // Don't process task patterns if there's a header pattern - header takes precedence
+    const headerPattern = /^(#{1,6})\s/;
+    if (headerPattern.test(content)) {
       return;
     }
 
-    // Check for task shortcut pattern: optional dash, followed by [x/~/o/ ]
-    const taskPattern = /^\s*-?\s*\[(x|X|~|o|\s)\]\s*/;
-    const match = content.match(taskPattern);
+    // Only trigger task conversion when pattern is complete with space after bracket
+    const taskPattern = /^\s*-?\s*\[(x|X|~|o|\s)\]\s+/; // Requires space after bracket
+    const hasTaskPattern = taskPattern.test(content);
 
-    if (match) {
-      // Remove the task syntax from content to get clean content
+    if (this.nodeType === 'task' && !hasTaskPattern) {
+      // Allow task-to-text conversion ONLY for header patterns
+      // Check if user is typing a header pattern
+      const headerPattern = /^(#{1,6})\s/;
+      const hasHeaderPattern = headerPattern.test(content);
+
+      if (hasHeaderPattern) {
+        // Task node with header pattern - convert to text (KEEP header syntax)
+
+        this.events.nodeTypeConversionDetected({
+          nodeId: this.nodeId,
+          newNodeType: 'text',
+          cleanedContent: content // Keep the full content including "# "
+        });
+      }
+      // For non-header content, task nodes stay as tasks (sticky behavior)
+    } else if (this.nodeType !== 'task' && hasTaskPattern) {
+      // Non-task node that now has task pattern - convert to task using slash command flow
       const cleanedContent = content.replace(taskPattern, '').trim();
 
-      // Convert node to task type
+      // Use the exact same pattern as header detection - let event system handle everything
       this.events.nodeTypeConversionDetected({
         nodeId: this.nodeId,
         newNodeType: 'task',
         cleanedContent
       });
+    }
+  }
+
+  /**
+   * Check for header pattern and convert node type if detected
+   * Patterns: # , ## , ###
+   */
+  private checkForHeaderPattern(content: string): void {
+    // Check if content starts with header pattern (# followed by space)
+    const headerPattern = /^(#{1,6})\s/;
+    const match = content.match(headerPattern);
+    const hasHeaderPattern = !!match;
+    const headerLevel = match ? match[1].length : 0;
+
+    // Only convert to text node with header if we're not already in that state
+    if (hasHeaderPattern && (this.nodeType !== 'text' || this.currentHeaderLevel !== headerLevel)) {
+      // For headers, KEEP the syntax visible in the editor
+      const cleanedContent = content; // Keep "# " syntax for proper header formatting
+
+      // Convert to text node and update header level
+      this.events.nodeTypeConversionDetected({
+        nodeId: this.nodeId,
+        newNodeType: 'text',
+        cleanedContent
+      });
+
+      // Also emit header level change
+      this.currentHeaderLevel = headerLevel;
+      this.events.headerLevelChanged(headerLevel);
+    } else if (!hasHeaderPattern && this.nodeType === 'text' && this.currentHeaderLevel > 0) {
+      // Text node that no longer has header pattern - reset to normal text
+      this.currentHeaderLevel = 0;
+      this.events.headerLevelChanged(0);
     }
   }
 
@@ -2522,6 +2631,20 @@ export class ContentEditableController {
       return null; // Query too long for commands
     }
 
+    // Start or update slash command session tracking
+    if (!this.slashCommandSession) {
+      // New session - capture the content before the slash
+      this.slashCommandSession = {
+        active: true,
+        startPosition: lastSlashIndex,
+        query: queryText,
+        originalContent: content
+      };
+    } else {
+      // Update existing session query
+      this.slashCommandSession.query = queryText;
+    }
+
     return {
       trigger: '/',
       query: queryText,
@@ -2542,69 +2665,152 @@ export class ContentEditableController {
   }
 
   /**
+   * Set whether the autocomplete dropdown is currently active
+   * This prevents arrow keys from moving the cursor when autocomplete should handle them
+   */
+  public setAutocompleteDropdownActive(active: boolean): void {
+    this.autocompleteDropdownActive = active;
+  }
+
+  /**
    * Insert slash command content at current cursor position
    */
-  public insertSlashCommand(content: string): void {
+  public insertSlashCommand(
+    content: string,
+    skipCursorPositioning = false,
+    targetNodeType?: string
+  ): void {
     const currentText = this.element.textContent || '';
 
-    // Find the last slash command in the text (since cursor position is unreliable)
-    const lastSlashIndex = currentText.lastIndexOf('/');
-    if (lastSlashIndex === -1) {
-      return;
+    // Use session tracking if available, otherwise fallback to legacy logic
+    if (this.slashCommandSession && this.slashCommandSession.active) {
+      // Session-based replacement - we know exactly what to replace
+      const session = this.slashCommandSession;
+      const replaceStart = session.startPosition;
+      const replaceEnd = session.startPosition + 1 + session.query.length; // "/" + query length
+
+      let beforeSlash = currentText.substring(0, replaceStart);
+      let afterQuery = currentText.substring(replaceEnd);
+
+      // Clean up header syntax if converting from text node to non-text node
+      if (targetNodeType && this.nodeType === 'text' && targetNodeType !== 'text') {
+        const headerPattern = /^(#{1,6})\s+/;
+        // Clean from both beforeSlash and afterQuery since we don't know where the header syntax is
+        beforeSlash = beforeSlash.replace(headerPattern, '').trim();
+        afterQuery = afterQuery.replace(headerPattern, '').trim();
+      }
+
+      const newContent = beforeSlash + content + afterQuery;
+
+      // Clear session after successful replacement
+      this.clearSlashCommandSession();
+
+      // Update content and position cursor
+      this.originalContent = newContent;
+      this.setLiveFormattedContent(newContent);
+      this.events.contentChanged(newContent);
+
+      // Position cursor where the "/" was originally typed
+      let newCursorPos = beforeSlash.length + content.length;
+
+      // Special case: for header content (like "# "), position cursor after the syntax for ready typing
+      const contentHeaderMatch = content.match(/^(#{1,6}\s+)(.*)$/);
+      if (contentHeaderMatch) {
+        // Position cursor after the header syntax (e.g., after "# " in "# content")
+        newCursorPos = beforeSlash.length + contentHeaderMatch[1].length;
+      }
+      // Special case: for empty content (like task conversion), position cursor where "/" was
+      else if (content === '') {
+        newCursorPos = beforeSlash.length;
+      }
+
+      if (!skipCursorPositioning) {
+        setTimeout(() => {
+          this.restoreCursorPosition(newCursorPos);
+        }, 0);
+      }
+    } else {
+      // Fallback to legacy logic for cases without session tracking
+      const lastSlashIndex = currentText.lastIndexOf('/');
+      if (lastSlashIndex === -1) {
+        return;
+      }
+
+      // Simple fallback: only replace the "/" itself
+      const beforeSlash = currentText.substring(0, lastSlashIndex);
+      const afterSlash = currentText.substring(lastSlashIndex + 1);
+      const newContent = beforeSlash + content + afterSlash;
+
+      this.originalContent = newContent;
+      this.setLiveFormattedContent(newContent);
+      this.events.contentChanged(newContent);
+
+      if (!skipCursorPositioning) {
+        setTimeout(() => {
+          // Position cursor where the "/" was originally typed
+          this.restoreCursorPosition(beforeSlash.length + content.length);
+        }, 0);
+      }
+    }
+  }
+
+  /**
+   * Clear slash command session tracking
+   */
+  private clearSlashCommandSession(): void {
+    if (this.slashCommandSession) {
+      this.slashCommandSession = null;
+    }
+  }
+
+  /**
+   * Check if typing a space completes a direct slash command like "/task "
+   * Returns true if a command was executed (so the space should be prevented)
+   */
+  private checkForDirectSlashCommand(_currentText: string, _futureText: string): boolean {
+    // Only check if we have an active slash command session
+    if (!this.slashCommandSession || !this.slashCommandSession.active) {
+      return false;
     }
 
-    // Find the end of the slash command (until space or end of text)
-    const afterSlash = currentText.substring(lastSlashIndex + 1);
-    const spaceIndex = afterSlash.indexOf(' ');
-    const endOffset = spaceIndex === -1 ? afterSlash.length : spaceIndex + 1; // +1 to include the space
+    const session = this.slashCommandSession;
+    const query = session.query;
 
-    // Create a synthetic slash context
-    const slashContext = {
-      startPosition: lastSlashIndex,
-      endPosition: lastSlashIndex + 1 + endOffset, // End after the slash command
-      trigger: '/',
-      query: afterSlash.substring(0, spaceIndex === -1 ? afterSlash.length : spaceIndex),
-      element: this.element,
-      isValid: true,
-      metadata: {}
-    };
+    // Use SlashCommandService to check if this is a valid command
+    const slashCommandService = SlashCommandService.getInstance();
+    const command = slashCommandService.findCommand(query.toLowerCase());
 
-    // Replace the /command with the new content, handling existing header syntax
-    const beforeSlash = currentText.substring(0, slashContext.startPosition);
-    const afterCommand = currentText.substring(slashContext.endPosition);
-
-    // Check if there's existing header syntax that should be replaced
-    // For "/# Hello", we need to detect the "# " part in afterCommand
-    const headerMatch = afterCommand.match(/^(#{1,6}\s*)/);
-
-    let finalBeforeContent = beforeSlash;
-    let finalAfterContent = afterCommand;
-
-    if (headerMatch) {
-      // Replace existing header syntax - remove it from the after content
-      finalAfterContent = afterCommand.replace(/^(#{1,6}\s*)/, '');
+    if (!command) {
+      return false; // Not a known command
     }
 
-    const newContent = finalBeforeContent + content + finalAfterContent;
-
-    // Update content and position cursor after inserted content
-    this.originalContent = newContent;
-    this.setLiveFormattedContent(newContent);
-    this.events.contentChanged(newContent);
-
-    // Position cursor appropriately based on content type
-    let newCursorPos = finalBeforeContent.length + content.length;
-
-    // For header content (# , ## , ### ), position cursor after the syntax for ready typing
-    const contentHeaderMatch = content.match(/^(#{1,6}\s+)(.*)$/);
-    if (contentHeaderMatch) {
-      // Position cursor after the header syntax, before any additional content
-      newCursorPos = finalBeforeContent.length + contentHeaderMatch[1].length;
-    }
-
+    // Use setTimeout to execute after the current event handling
     setTimeout(() => {
-      this.restoreCursorPosition(newCursorPos);
+      // Execute the command properly using SlashCommandService (like the dropdown does)
+      const result = slashCommandService.executeCommand(command);
+
+      // Execute the slash command replacement (skip cursor positioning since parent will handle it)
+      // Pass the target node type so insertSlashCommand can clean header syntax appropriately
+      this.insertSlashCommand(result.content, true, result.nodeType);
+
+      // For slash commands, cursor always goes to beginning (position 0) since commands only work at start
+      const cursorPosition = 0;
+
+      // Hide the slash command dropdown immediately since command is complete
+      this.events.slashCommandHidden();
+
+      // Clear the slash command session since it's complete
+      this.clearSlashCommandSession();
+
+      // Emit the direct slash command event that will be handled by base-node to dispatch to parent
+      this.events.directSlashCommand({
+        command: command.id,
+        nodeType: result.nodeType,
+        cursorPosition: cursorPosition
+      });
     }, 0);
+
+    return true; // Command was executed, prevent space
   }
 
   /**

@@ -57,6 +57,7 @@
     const padding = 16;
     const maxWidth = 360;
     const maxHeight = 300;
+    const spacingFromCursor = 20; // Distance from cursor
 
     let { x, y } = pos;
 
@@ -69,13 +70,18 @@
     }
 
     // Adjust vertical position (show above cursor if not enough space below)
-    if (y + maxHeight > window.innerHeight - padding) {
-      y = y - maxHeight - 20; // Show above cursor
+    const showBelow = y + maxHeight + spacingFromCursor <= window.innerHeight - padding;
+
+    if (showBelow) {
+      // Show below cursor - use top-left corner positioning
+      y = y + spacingFromCursor;
     } else {
-      y = y + 20; // Show below cursor
+      // Show above cursor - use bottom-left corner positioning
+      // Position so the bottom of the modal is spacingFromCursor above the cursor
+      y = y - spacingFromCursor;
     }
 
-    return { x, y };
+    return { x, y, showBelow };
   }
 
   // Smart position calculation
@@ -98,22 +104,26 @@
     switch (event.key) {
       case 'ArrowDown':
         event.preventDefault();
+        event.stopPropagation(); // Prevent cursor movement in background
         selectedIndex = Math.min(selectedIndex + 1, results.length - 1);
         scrollToSelected();
         break;
       case 'ArrowUp':
         event.preventDefault();
+        event.stopPropagation(); // Prevent cursor movement in background
         selectedIndex = Math.max(selectedIndex - 1, 0);
         scrollToSelected();
         break;
       case 'Enter':
         event.preventDefault();
+        event.stopPropagation(); // Prevent creating new node in background
         if (results[selectedIndex]) {
           selectResult(results[selectedIndex]);
         }
         break;
       case 'Escape':
         event.preventDefault();
+        event.stopPropagation(); // Prevent any background actions
         dispatch('close');
         break;
     }
@@ -143,13 +153,17 @@
     bind:this={containerRef}
     style="
       position: fixed;
-      top: {smartPosition.y}px;
+      {smartPosition.showBelow
+      ? `top: ${smartPosition.y}px;`
+      : `bottom: ${window.innerHeight - smartPosition.y}px;`}
       left: {smartPosition.x}px;
       min-width: 300px;
+      max-height: 300px;
       background: hsl(var(--popover));
       border: 1px solid hsl(var(--border));
       border-radius: var(--radius);
       z-index: 1000;
+      overflow-y: auto;
     "
     role="listbox"
     aria-label="Node reference autocomplete"

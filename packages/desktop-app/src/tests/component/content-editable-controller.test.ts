@@ -58,6 +58,11 @@ interface EventCallRecord {
     newNodeType: string;
     cleanedContent: string;
   }>;
+  directSlashCommand?: Array<{
+    command: string;
+    nodeType: string;
+    cursorPosition?: number;
+  }>;
 }
 
 describe('ContentEditableController', () => {
@@ -142,6 +147,10 @@ describe('ContentEditableController', () => {
       nodeTypeConversionDetected: (data) => {
         eventCalls.nodeTypeConversionDetected = eventCalls.nodeTypeConversionDetected || [];
         eventCalls.nodeTypeConversionDetected.push(data);
+      },
+      directSlashCommand: (data) => {
+        eventCalls.directSlashCommand = eventCalls.directSlashCommand || [];
+        eventCalls.directSlashCommand.push(data);
       }
     };
 

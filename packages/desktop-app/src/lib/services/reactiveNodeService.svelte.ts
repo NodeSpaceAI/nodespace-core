@@ -41,8 +41,21 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   // Manual reactivity trigger for debugging
   let _updateTrigger = $state(0);
 
-  // Note: visibleNodes computation moved to getter for test environment compatibility
-  // The $derived.by approach works in production but not in test mocking
+  // REACTIVITY FIX: Properly reactive visibleNodes computation using $derived.by
+  // This ensures the template re-renders when nodes change
+  const _visibleNodes = $derived.by(() => {
+    // Force reactivity by accessing all node IDs and their nodeTypes
+    const allNodes = Object.values(_nodes);
+    // Touch each node's nodeType to track changes
+    for (const node of allNodes) {
+      void node.nodeType; // Access to trigger reactivity
+    }
+    // Touch the _updateTrigger to ensure reactivity when needed
+    void _updateTrigger;
+    // Touch _rootNodeIds to ensure reactivity on root changes
+    void _rootNodeIds;
+    return getVisibleNodesRecursive(_rootNodeIds);
+  });
 
   const serviceName = 'ReactiveNodeService';
 
@@ -325,6 +338,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // IMMEDIATE: Update node type for responsive UI using assignment-based reactivity
     // Also set autoFocus temporarily to restore focus when component switches
     _nodes[nodeId] = { ...node, nodeType, autoFocus: true };
+
+    // REACTIVITY FIX: Trigger reactive computation update
+    _updateTrigger++;
 
     // IMMEDIATE: Emit for immediate UI updates
     emitNodeUpdated(nodeId, 'nodeType', nodeType);
@@ -1266,9 +1282,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       return _activeNodeId;
     },
     get visibleNodes() {
-      // In test environment, $derived.by doesn't work reactively, so compute fresh
-      // In production, this will still use the reactive derived value
-      return getVisibleNodesRecursive(_rootNodeIds);
+      // Return the properly reactive derived value
+      return _visibleNodes;
     },
     get _updateTrigger() {
       return _updateTrigger;

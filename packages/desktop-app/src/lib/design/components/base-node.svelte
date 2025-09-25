@@ -40,7 +40,7 @@
   // Props (Svelte 5 runes syntax) - nodeReferenceService removed
   let {
     nodeId,
-    nodeType = 'text',
+    nodeType = $bindable('text'),
     autoFocus = false,
     content = $bindable(''),
     headerLevel = 0,
@@ -182,8 +182,9 @@
       // Execute the command and get the content to insert
       const result = slashCommandService.executeCommand(command);
 
-      // Insert the command content (e.g., "# " for header 1)
-      controller.insertSlashCommand(result.content);
+      // Insert the command content (skip cursor positioning since parent will handle it)
+      // Pass the target node type so insertSlashCommand can clean header syntax appropriately
+      controller.insertSlashCommand(result.content, true, result.nodeType);
 
       // Don't update nodeType locally - let parent handle it to avoid double re-renders
       // The parent (base-node-viewer) will update nodeType via nodeManager and trigger autoFocus
@@ -208,7 +209,8 @@
     // This will trigger the component switch, so we don't focus here - let autoFocus handle it
     dispatch('slashCommandSelected', {
       command: command.id,
-      nodeType: command.nodeType
+      nodeType: command.nodeType,
+      cursorPosition: 0 // Slash commands always position cursor at beginning
     });
   }
 
@@ -245,9 +247,9 @@
     combineWithPrevious: { nodeId: string; currentContent: string };
     deleteNode: { nodeId: string };
     nodeReferenceSelected: { nodeId: string; nodeTitle: string };
-    slashCommandSelected: { command: string; nodeType: string };
+    slashCommandSelected: { command: string; nodeType: string; cursorPosition?: number };
     iconClick: { nodeId: string; nodeType: string; currentState?: string };
-    nodeTypeChanged: { nodeType: string };
+    nodeTypeChanged: { nodeType: string; cleanedContent?: string };
   }>();
 
   // Controller event handlers
@@ -322,6 +324,16 @@
         // Interface validation passed
       }
     },
+    directSlashCommand: (data: { command: string; nodeType: string; cursorPosition?: number }) => {
+      // Handle direct slash command typing by simulating dropdown selection
+
+      // Emit the same event that dropdown selection emits, including cursor position
+      dispatch('slashCommandSelected', {
+        command: data.command,
+        nodeType: data.nodeType,
+        cursorPosition: data.cursorPosition
+      });
+    },
     // Node Type Conversion Events
     nodeTypeConversionDetected: (data: {
       nodeId: string;
@@ -330,8 +342,11 @@
     }) => {
       // Update content to cleaned version
       dispatch('contentChanged', { content: data.cleanedContent });
-      // Notify parent to convert node type
-      dispatch('nodeTypeChanged', { nodeType: data.newNodeType });
+      // Notify parent to handle the node type change AND cleaned content together
+      dispatch('nodeTypeChanged', {
+        nodeType: data.newNodeType,
+        cleanedContent: data.cleanedContent
+      });
     }
   };
 
@@ -383,6 +398,13 @@
     }
   });
 
+  // Update controller when autocomplete dropdown state changes
+  $effect(() => {
+    if (controller) {
+      controller.setAutocompleteDropdownActive(showAutocomplete);
+    }
+  });
+
   onDestroy(() => {
     if (controller) {
       controller.destroy();
@@ -429,6 +451,12 @@
       .join(' ')
   );
 
+  // REACTIVITY FIX: Create reactive derived state for icon configuration
+  // This ensures template re-renders when nodeType changes
+  const iconConfig = $derived(getIconConfig(nodeType as NodeType));
+  const nodeState = $derived(resolveNodeState(nodeType as NodeType, undefined, metadata));
+  const hasChildren = $derived(children.length > 0);
+
   // Note: Semantic classes handled internally by Icon component
 </script>
 
@@ -442,10 +470,7 @@
     tabindex="0"
     aria-label="Toggle node state"
   >
-    {#if getIconConfig(nodeType as NodeType)}
-      {@const iconConfig = getIconConfig(nodeType as NodeType)}
-      {@const nodeState = resolveNodeState(nodeType as NodeType, undefined, metadata)}
-      {@const hasChildren = children.length > 0}
+    {#if iconConfig}
       <div class={iconConfig.semanticClass}>
         {#snippet iconComponent()}
           {@const IconComponent = iconConfig.component}

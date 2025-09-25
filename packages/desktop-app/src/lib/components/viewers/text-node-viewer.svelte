@@ -70,6 +70,7 @@
       cursorPosition?: number;
     };
     deleteNode: { nodeId: string };
+    nodeTypeChanged: { nodeType: string; cleanedContent?: string };
     focus: void;
     blur: void;
   }>();
@@ -114,6 +115,7 @@
   on:navigateArrow={(e) => dispatch('navigateArrow', e.detail)}
   on:combineWithPrevious={(e) => dispatch('combineWithPrevious', e.detail)}
   on:slashCommandSelected={(e) => dispatch('slashCommandSelected', e.detail)}
+  on:nodeTypeChanged={(e) => dispatch('nodeTypeChanged', e.detail)}
   on:deleteNode={(e) => dispatch('deleteNode', e.detail)}
   on:focus={handleFocus}
   on:blur={handleBlur}

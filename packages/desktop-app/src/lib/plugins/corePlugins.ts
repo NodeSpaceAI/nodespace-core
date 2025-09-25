@@ -26,7 +26,8 @@ export const textNodePlugin: PluginDefinition = {
         id: 'text',
         name: 'Text',
         description: 'Create a text node',
-        contentTemplate: ''
+        contentTemplate: '',
+        nodeType: 'text' // Explicit nodeType for proper visual updates
       },
       {
         id: 'header1',
