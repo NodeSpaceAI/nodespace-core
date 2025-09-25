@@ -123,11 +123,10 @@
     width: 20px;
     height: 20px;
     border-radius: 50%;
-    border: 1px solid hsl(var(--primary));
-    opacity: 0.5;
+    border: 2px solid hsl(var(--primary) / 0.5);
+    box-sizing: border-box;
     position: absolute;
     top: 0;
     left: 0;
-    box-sizing: border-box;
   }
 </style>

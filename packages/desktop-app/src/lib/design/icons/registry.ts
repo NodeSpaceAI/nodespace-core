@@ -83,7 +83,7 @@ class IconRegistry {
       semanticClass: 'task-icon',
       colorVar: 'hsl(var(--node-task, 200 40% 45%))',
       hasState: true,
-      hasRingEffect: false // Tasks use state-specific icons instead of ring effects
+      hasRingEffect: true // Tasks show ring effects when they have children
     });
 
     // AI Chat nodes - square design with "AI" text
