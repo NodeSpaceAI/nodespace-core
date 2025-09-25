@@ -59,7 +59,8 @@ describe('Backspace Merge Behavior', () => {
       nodeReferenceSelected: () => {},
       slashCommandDetected: () => {},
       slashCommandHidden: () => {},
-      slashCommandSelected: () => {}
+      slashCommandSelected: () => {},
+      nodeTypeConversionDetected: () => {}
     };
 
     const controller = new ContentEditableController(div, 'test-node', 'text', events);

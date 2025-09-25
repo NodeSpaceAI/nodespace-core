@@ -23,10 +23,11 @@
     nodeId,
     nodeType = 'task',
     autoFocus = false,
-    content = '',
+    content = $bindable(''),
     headerLevel = 0,
     children = [],
-    editableConfig = { allowMultiline: true }
+    editableConfig = { allowMultiline: true },
+    metadata = {}
   }: {
     nodeId: string;
     nodeType?: string;
@@ -35,12 +36,16 @@
     headerLevel?: number;
     children?: string[];
     editableConfig?: object;
+    metadata?: Record<string, unknown>;
   } = $props();
 
   const dispatch = createEventDispatcher();
 
-  // Task-specific state management
-  let taskState = $state<NodeState>(parseTaskState(content));
+  // Task-specific state management - prioritize metadata over content parsing
+  let taskState = $state<NodeState>((metadata.taskState as NodeState) || parseTaskState(content));
+
+  // Create reactive metadata object
+  let taskMetadata = $derived({ taskState });
 
   /**
    * Parse task state from content
@@ -56,7 +61,7 @@
     }
 
     // Check for in-progress task: [~] or [o]
-    if (/^\s*-?\s*\[~o\]/i.test(trimmed)) {
+    if (/^\s*-?\s*\[~|o\]/i.test(trimmed)) {
       return 'inProgress';
     }
 
@@ -70,33 +75,33 @@
   }
 
   /**
-   * Update task state and content when state changes
+   * Clean content by removing task syntax shortcut markers
+   */
+  function cleanContentForDisplay(content: string): string {
+    return content.replace(/^\s*-?\s*\[[x~o\s]*\]\s*/i, '').trim();
+  }
+
+  /**
+   * Update task state and sync with node manager
    */
   function updateTaskState(newState: NodeState) {
     taskState = newState;
 
-    // Update content to reflect new state
-    let newContent = content;
-
-    // Remove existing task syntax
-    newContent = newContent.replace(/^\s*-?\s*\[[x~o\s]*\]\s*/i, '');
-
-    // Add new task syntax based on state
-    switch (newState) {
-      case 'completed':
-        newContent = `- [x] ${newContent}`;
-        break;
-      case 'inProgress':
-        newContent = `- [~] ${newContent}`;
-        break;
-      case 'pending':
-      default:
-        newContent = `- [ ] ${newContent}`;
-        break;
+    // Clean the content if it has any shortcut syntax from node conversion
+    const cleanedContent = cleanContentForDisplay(content);
+    if (cleanedContent !== content) {
+      content = cleanedContent;
     }
 
-    // Dispatch content change
-    dispatch('contentChanged', { content: newContent.trim() });
+    // Dispatch standard contentChanged event to update node manager
+    dispatch('contentChanged', { content: content });
+
+    // Also dispatch specialized taskStateChanged event
+    dispatch('taskStateChanged', {
+      nodeId,
+      state: newState,
+      content: content
+    });
   }
 
   /**
@@ -126,12 +131,15 @@
   }
 
   /**
-   * Update task state when content changes externally
+   * Update task state when content changes externally (only if content has task syntax)
    */
   $effect(() => {
-    const newState = parseTaskState(content);
-    if (newState !== taskState) {
-      taskState = newState;
+    // Only override state if content actually contains task syntax
+    if (/^\s*-?\s*\[(x|X|~|o|\s)\]/i.test(content.trim())) {
+      const newState = parseTaskState(content);
+      if (newState !== taskState) {
+        taskState = newState;
+      }
     }
   });
 
@@ -143,27 +151,44 @@
   }
 </script>
 
-<!-- Wrap BaseNode with task-specific metadata -->
-<BaseNode
-  {nodeId}
-  {nodeType}
-  {autoFocus}
-  {content}
-  {headerLevel}
-  {children}
-  {editableConfig}
-  metadata={{ taskState }}
-  on:iconClick={handleIconClick}
-  on:createNewNode={forwardEvent('createNewNode')}
-  on:contentChanged={forwardEvent('contentChanged')}
-  on:headerLevelChanged={forwardEvent('headerLevelChanged')}
-  on:indentNode={forwardEvent('indentNode')}
-  on:outdentNode={forwardEvent('outdentNode')}
-  on:navigateArrow={forwardEvent('navigateArrow')}
-  on:combineWithPrevious={forwardEvent('combineWithPrevious')}
-  on:deleteNode={forwardEvent('deleteNode')}
-  on:focus={forwardEvent('focus')}
-  on:blur={forwardEvent('blur')}
-  on:nodeReferenceSelected={forwardEvent('nodeReferenceSelected')}
-  on:slashCommandSelected={forwardEvent('slashCommandSelected')}
-/>
+<!-- Wrap BaseNode with task-specific styling -->
+<div class="task-node-wrapper" class:task-completed={taskState === 'completed'}>
+  <BaseNode
+    {nodeId}
+    {nodeType}
+    {autoFocus}
+    bind:content
+    {headerLevel}
+    {children}
+    {editableConfig}
+    metadata={taskMetadata}
+    on:iconClick={handleIconClick}
+    on:createNewNode={forwardEvent('createNewNode')}
+    on:contentChanged={forwardEvent('contentChanged')}
+    on:headerLevelChanged={forwardEvent('headerLevelChanged')}
+    on:indentNode={forwardEvent('indentNode')}
+    on:outdentNode={forwardEvent('outdentNode')}
+    on:navigateArrow={forwardEvent('navigateArrow')}
+    on:combineWithPrevious={forwardEvent('combineWithPrevious')}
+    on:deleteNode={forwardEvent('deleteNode')}
+    on:focus={forwardEvent('focus')}
+    on:blur={forwardEvent('blur')}
+    on:nodeReferenceSelected={forwardEvent('nodeReferenceSelected')}
+    on:slashCommandSelected={forwardEvent('slashCommandSelected')}
+  />
+</div>
+
+<style>
+  /* Completed task styling following design system */
+  .task-completed {
+    text-decoration: line-through;
+    opacity: 0.7;
+  }
+
+  /* Apply completed styling to the content specifically */
+  .task-completed :global(.node-content),
+  .task-completed :global(.content-editable) {
+    text-decoration: line-through;
+    opacity: 0.7;
+  }
+</style>

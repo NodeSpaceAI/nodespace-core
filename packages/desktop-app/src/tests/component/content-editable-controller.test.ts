@@ -53,6 +53,11 @@ interface EventCallRecord {
   slashCommandDetected?: Array<unknown>;
   slashCommandHidden?: boolean[];
   slashCommandSelected?: Array<unknown>;
+  nodeTypeConversionDetected?: Array<{
+    nodeId: string;
+    newNodeType: string;
+    cleanedContent: string;
+  }>;
 }
 
 describe('ContentEditableController', () => {
@@ -133,6 +138,10 @@ describe('ContentEditableController', () => {
       slashCommandSelected: (data) => {
         eventCalls.slashCommandSelected = eventCalls.slashCommandSelected || [];
         eventCalls.slashCommandSelected.push(data);
+      },
+      nodeTypeConversionDetected: (data) => {
+        eventCalls.nodeTypeConversionDetected = eventCalls.nodeTypeConversionDetected || [];
+        eventCalls.nodeTypeConversionDetected.push(data);
       }
     };
 

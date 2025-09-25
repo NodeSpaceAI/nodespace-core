@@ -1184,7 +1184,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         expanded: true,
         autoFocus: false,
         inheritHeaderLevel: 0,
-        metadata: { completed: true }
+        metadata: { taskState: 'completed' }
       },
       {
         id: 'task-1-subtask',
@@ -1196,7 +1196,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         expanded: true,
         autoFocus: false,
         inheritHeaderLevel: 0,
-        metadata: { completed: false }
+        metadata: { taskState: 'inProgress' }
       },
       {
         id: 'task-2',
@@ -1208,7 +1208,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         expanded: true,
         autoFocus: false,
         inheritHeaderLevel: 0,
-        metadata: { completed: false }
+        metadata: { taskState: 'pending' }
       },
       {
         id: 'task-3',
@@ -1220,7 +1220,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         expanded: true,
         autoFocus: true, // Focus on this task
         inheritHeaderLevel: 0,
-        metadata: { completed: false }
+        metadata: { taskState: 'completed' }
       }
     ];
 

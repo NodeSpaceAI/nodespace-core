@@ -51,6 +51,12 @@ export interface ContentEditableEvents {
       headerLevel?: number;
     };
   }) => void;
+  // Node Type Conversion Events
+  nodeTypeConversionDetected: (data: {
+    nodeId: string;
+    newNodeType: string;
+    cleanedContent: string;
+  }) => void;
 }
 
 export interface ContentEditableConfig {
@@ -719,6 +725,9 @@ export class ContentEditableController {
         this.currentHeaderLevel = newHeaderLevel;
         this.events.headerLevelChanged(newHeaderLevel);
       }
+
+      // Check for task shortcut pattern: "[ ]", "[x]", "[~]", "[o]"
+      this.checkForTaskShortcut(textContent);
 
       // Apply live formatting while preserving cursor, unless we just had a Shift+Enter or regular Enter
       // Also skip formatting for multiline nodes with line breaks to preserve <div><br></div> structure
@@ -2140,6 +2149,33 @@ export class ContentEditableController {
     } else {
       // Hide slash commands when @ is active
       this.events.slashCommandHidden();
+    }
+  }
+
+  /**
+   * Check for task shortcut patterns and convert node type if detected
+   * Patterns: [ ], [x], [X], [~], [o]
+   */
+  private checkForTaskShortcut(content: string): void {
+    // Only check if node is not already a task
+    if (this.nodeType === 'task') {
+      return;
+    }
+
+    // Check for task shortcut pattern: optional dash, followed by [x/~/o/ ]
+    const taskPattern = /^\s*-?\s*\[(x|X|~|o|\s)\]\s*/;
+    const match = content.match(taskPattern);
+
+    if (match) {
+      // Remove the task syntax from content to get clean content
+      const cleanedContent = content.replace(taskPattern, '').trim();
+
+      // Convert node to task type
+      this.events.nodeTypeConversionDetected({
+        nodeId: this.nodeId,
+        newNodeType: 'task',
+        cleanedContent
+      });
     }
   }
 

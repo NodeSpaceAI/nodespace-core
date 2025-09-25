@@ -72,7 +72,8 @@ describe('Position-Aware Node Creation', () => {
       nodeReferenceSelected: () => {},
       slashCommandDetected: () => {},
       slashCommandHidden: () => {},
-      slashCommandSelected: () => {}
+      slashCommandSelected: () => {},
+      nodeTypeConversionDetected: () => {}
     };
 
     const controller = new ContentEditableController(div, 'test-node', 'text', events);

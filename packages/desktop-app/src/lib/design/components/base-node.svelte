@@ -214,12 +214,13 @@
 
   // Handle icon click events (for task state changes, etc.)
   function handleIconClick(event: MouseEvent | KeyboardEvent) {
+    const currentState = resolveNodeState(nodeType as NodeType, undefined, metadata);
     event.stopPropagation(); // Prevent triggering content editable focus
 
     dispatch('iconClick', {
       nodeId: nodeId,
       nodeType: nodeType,
-      currentState: resolveNodeState(nodeType as NodeType, undefined, metadata)
+      currentState: currentState
     });
   }
 
@@ -246,6 +247,7 @@
     nodeReferenceSelected: { nodeId: string; nodeTitle: string };
     slashCommandSelected: { command: string; nodeType: string };
     iconClick: { nodeId: string; nodeType: string; currentState?: string };
+    nodeTypeChanged: { nodeType: string };
   }>();
 
   // Controller event handlers
@@ -319,6 +321,17 @@
       if (data?.command?.content !== undefined) {
         // Interface validation passed
       }
+    },
+    // Node Type Conversion Events
+    nodeTypeConversionDetected: (data: {
+      nodeId: string;
+      newNodeType: string;
+      cleanedContent: string;
+    }) => {
+      // Update content to cleaned version
+      dispatch('contentChanged', { content: data.cleanedContent });
+      // Notify parent to convert node type
+      dispatch('nodeTypeChanged', { nodeType: data.newNodeType });
     }
   };
 

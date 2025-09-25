@@ -10,7 +10,7 @@ import { $ } from "bun";
 import { existsSync } from "fs";
 import { join } from "path";
 
-const CONTAINER_IMAGE = "claude-code-dev";
+const CONTAINER_IMAGE = "claude-code-dev:authenticated";
 const CONTAINER_PREFIX = "nodespace-dev";
 
 interface ContainerInfo {

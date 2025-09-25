@@ -610,35 +610,15 @@
     }
   }
 
-  // Handle icon click events (for task state changes, etc.)
+  // Handle icon click events (for non-task node types)
   function handleIconClick(
     event: CustomEvent<{ nodeId: string; nodeType: string; currentState?: string }>
   ) {
-    const { nodeId, nodeType, currentState } = event.detail;
+    const { nodeType } = event.detail;
 
-    // For task nodes, cycle through states: pending -> inProgress -> completed -> pending
+    // Skip task nodes - let TaskNode component handle its own state management
     if (nodeType === 'task') {
-      let newState: string;
-      switch (currentState) {
-        case 'pending':
-          newState = 'inProgress';
-          break;
-        case 'inProgress':
-          newState = 'completed';
-          break;
-        case 'completed':
-        default:
-          newState = 'pending';
-          break;
-      }
-
-      // Update the node's metadata to store the task state
-      const node = nodeManager.nodes.get(nodeId);
-      if (node) {
-        node.metadata = { ...node.metadata, taskState: newState };
-        // Trigger an event to force reactivity updates
-        nodeManager.updateNodeContent(nodeId, node.content); // This will trigger a syncStores
-      }
+      return;
     }
 
     // For other node types, the click could trigger different behaviors
@@ -651,7 +631,8 @@
 
   // Dynamic component loading - create stable component mapping for both viewers and nodes
   let loadedViewers = $state(new Map<string, unknown>());
-  let loadedNodes = $state(new Map<string, unknown>());
+  // Proper Svelte 5 reactivity: use object instead of Map for reactive tracking
+  let loadedNodes = $state<Record<string, unknown>>({});
 
   // Track focused node for autoFocus after node type changes
   let focusedNodeId = $state<string | null>(null);
@@ -690,18 +671,18 @@
         }
 
         // Load node components
-        if (!loadedNodes.has(nodeType)) {
+        if (!(nodeType in loadedNodes)) {
           try {
             const customNode = await pluginRegistry.getNodeComponent(nodeType);
             if (customNode) {
-              loadedNodes.set(nodeType, customNode);
+              loadedNodes[nodeType] = customNode;
             } else {
               // Fallback to BaseNode for unknown types
-              loadedNodes.set(nodeType, BaseNode);
+              loadedNodes[nodeType] = BaseNode;
             }
           } catch (error) {
             console.error(`💥 Error loading node component for ${nodeType}:`, error);
-            loadedNodes.set(nodeType, BaseNode);
+            loadedNodes[nodeType] = BaseNode;
           }
         }
       }
@@ -778,9 +759,9 @@
             on:deleteNode={handleDeleteNode}
           />
         {:else}
-          <!-- Use registered node component from plugin registry -->
-          {#if loadedNodes.has(node.nodeType)}
-            {@const NodeComponent = loadedNodes.get(node.nodeType) as typeof BaseNode}
+          <!-- Use plugin registry for non-text node types -->
+          {#if node.nodeType in loadedNodes}
+            {@const NodeComponent = loadedNodes[node.nodeType] as typeof BaseNode}
             <NodeComponent
               nodeId={node.id}
               nodeType={node.nodeType}
@@ -796,32 +777,33 @@
               on:navigateArrow={handleArrowNavigation}
               on:contentChanged={(e: CustomEvent<{ content: string }>) => {
                 const content = e.detail.content;
-
                 // Update node content (placeholder flag is handled automatically)
                 nodeManager.updateNodeContent(node.id, content);
+                // Set autoFocus to restore focus after nodeType change
+                focusedNodeId = node.id;
               }}
-              on:slashCommandSelected={(
-                e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
-              ) => {
-                // Store cursor position before node type change
-                if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
-                  pendingCursorPositions.set(node.id, e.detail.cursorPosition);
-                }
-
-                if (node.isPlaceholder) {
-                  // For placeholder nodes, just update the nodeType locally
-                  if ('updatePlaceholderNodeType' in nodeManager) {
-                    (nodeManager as any).updatePlaceholderNodeType(node.id, e.detail.nodeType);
-                  }
-                } else {
-                  // For real nodes, update node type with full persistence
-                  nodeManager.updateNodeType(node.id, e.detail.nodeType);
-                }
-
+              on:headerLevelChanged={() => {
+                // Header level change is handled automatically through content updates
+                // Just restore focus after the change
+                focusedNodeId = node.id;
+              }}
+              on:nodeTypeChanged={(e: CustomEvent<{ nodeType: string }>) => {
+                const nodeType = e.detail.nodeType;
+                // Update node type
+                nodeManager.updateNodeType(node.id, nodeType);
                 // Set autoFocus to restore focus after nodeType change
                 focusedNodeId = node.id;
               }}
               on:iconClick={handleIconClick}
+              on:taskStateChanged={(e) => {
+                const { nodeId, state } = e.detail;
+                const node = nodeManager.nodes.get(nodeId);
+                if (node) {
+                  node.metadata = { ...node.metadata, taskState: state };
+                  // Trigger sync to persist the change
+                  nodeManager.updateNodeContent(nodeId, node.content);
+                }
+              }}
               on:combineWithPrevious={handleCombineWithPrevious}
               on:deleteNode={handleDeleteNode}
             />
@@ -868,6 +850,15 @@
                 focusedNodeId = node.id;
               }}
               on:iconClick={handleIconClick}
+              on:taskStateChanged={(e) => {
+                const { nodeId, state } = e.detail;
+                const node = nodeManager.nodes.get(nodeId);
+                if (node) {
+                  node.metadata = { ...node.metadata, taskState: state };
+                  // Trigger sync to persist the change
+                  nodeManager.updateNodeContent(nodeId, node.content);
+                }
+              }}
               on:combineWithPrevious={handleCombineWithPrevious}
               on:deleteNode={handleDeleteNode}
             />
@@ -877,6 +868,8 @@
     </div>
   {/each}
 </div>
+
+<!-- Template structure fixed -->
 
 <style>
   .node-viewer {
