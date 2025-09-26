@@ -105,7 +105,40 @@ bun run gh:view <issue-number>
 - Build-time plugins: Compile-time extensibility for performance
 - Design system driven: Consistent UI patterns from the start
 
-### 4. Specialized Agent Usage
+### 4. Component Architecture (CRITICAL)
+
+**Established Naming Conventions** (Follow these patterns exactly):
+
+```
+*Node = Individual node components that wrap BaseNode
+*NodeViewer = Page-level viewers that wrap BaseNodeViewer
+```
+
+**✅ Correct Component Hierarchy:**
+- **BaseNode** (`src/lib/design/components/base-node.svelte`) - Abstract core (NEVER use directly)
+- **BaseNodeViewer** (`src/lib/design/components/base-node-viewer.svelte`) - Node collection manager
+- **TextNode** (`src/lib/components/viewers/text-node.svelte`) - Text node wrapper
+- **TaskNode** (`src/lib/design/components/task-node.svelte`) - Task node wrapper
+- **DateNode** (`src/lib/components/viewers/date-node.svelte`) - Date node wrapper
+- **DateNodeViewer** (`src/lib/components/viewers/date-node-viewer.svelte`) - Date page viewer
+
+**❌ DO NOT Create These:**
+- `TextNodeViewer` - BaseNodeViewer is sufficient for text
+- `DatePageViewer` - Should be `DateNodeViewer`
+- Any direct usage of `BaseNode` in application code
+
+**📖 Complete Documentation:**
+- [`/docs/architecture/components/component-architecture-guide.md`](docs/architecture/components/component-architecture-guide.md) - Complete patterns and templates
+- [`/docs/architecture/frontend-architecture.md`](docs/architecture/frontend-architecture.md) - Frontend overview
+
+**When Building New Components:**
+1. **Read the architecture guide first** - Contains templates and patterns
+2. **Determine component type**: Node wrapper or Viewer wrapper?
+3. **Follow naming convention**: `*Node` or `*NodeViewer`
+4. **Use provided templates** from the architecture guide
+5. **Register in plugin system** with correct lazy loading paths
+
+### 5. Specialized Agent Usage
 
 Use the most appropriate specialized sub-agent available for complex tasks. Claude Code will automatically select the best agent based on task context and complexity.
 
