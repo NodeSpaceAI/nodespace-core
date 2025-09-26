@@ -438,6 +438,127 @@ describe('ContentEditableController', () => {
     });
   });
 
+  describe('Bug fixes for multi-line behavior', () => {
+    beforeEach(() => {
+      // Create controller with multiline enabled for these tests
+      controller.destroy();
+      controller = new ContentEditableController(element, 'test-node', 'text', mockEvents, {
+        allowMultiline: true
+      });
+      controller.initialize('', true);
+    });
+
+    it('should not merge nodes when backspacing at start of first line (Bug 1 fix)', () => {
+      // Set up multi-line content with DIV structure
+      element.innerHTML = '<div>First line</div><div>Second line</div>';
+
+      // Position cursor at start of second div
+      const secondDiv = element.children[1] as HTMLElement;
+      const range = document.createRange();
+      range.setStart(secondDiv, 0);
+      range.collapse(true);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Simulate backspace at start of second line
+      const backspaceEvent = new KeyboardEvent('keydown', { key: 'Backspace' });
+      element.dispatchEvent(backspaceEvent);
+
+      // Should not trigger combineWithPrevious since we're at start of first line of this node
+      expect(eventCalls.combineWithPrevious).toBeUndefined();
+    });
+
+    it('should create consistent DIV structure on Shift+Enter (Bug 2 fix)', () => {
+      element.textContent = 'First line content';
+
+      // Position cursor in middle of content
+      const textNode = element.firstChild as Text;
+      const range = document.createRange();
+      range.setStart(textNode, 5); // After "First"
+      range.collapse(true);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Simulate Shift+Enter
+      const shiftEnterEvent = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true
+      });
+      element.dispatchEvent(shiftEnterEvent);
+
+      // Should create consistent DIV structure
+      expect(element.children.length).toBe(2);
+      expect(element.children[0].tagName).toBe('DIV');
+      expect(element.children[1].tagName).toBe('DIV');
+      expect(element.children[0].textContent).toBe('First');
+      expect(element.children[1].textContent).toBe(' line content');
+    });
+
+    it('should preserve line breaks through blur/focus cycles using innerText (Bug 2 fix)', () => {
+      // Set up content with BR tags (simulating browser behavior)
+      element.innerHTML = 'First line<br>Second line';
+
+      // Simulate blur to trigger content conversion
+      element.dispatchEvent(new FocusEvent('blur'));
+
+      // Content should preserve line breaks
+      const content = controller.getMarkdownContent();
+      expect(content).toBe('First line\nSecond line');
+    });
+
+    it('should handle mixed text and DIV structures correctly', () => {
+      // Set up mixed content (text node + DIV)
+      const textNode = document.createTextNode('Text before');
+      const divNode = document.createElement('div');
+      divNode.textContent = 'Text in div';
+      element.appendChild(textNode);
+      element.appendChild(divNode);
+
+      // Should convert to proper newline format
+      const content = controller.getMarkdownContent();
+      expect(content).toBe('Text before\nText in div');
+    });
+  });
+
+  describe('TaskNode multiline prevention (Bug 3 fix)', () => {
+    beforeEach(() => {
+      // Create controller configured as task node (single-line only)
+      controller.destroy();
+      controller = new ContentEditableController(element, 'task-node', 'task', mockEvents, {
+        allowMultiline: false
+      });
+      controller.initialize('Task content', true);
+    });
+
+    it('should not create new lines on Shift+Enter for task nodes', () => {
+      element.textContent = 'Task content';
+
+      // Position cursor in middle
+      const textNode = element.firstChild as Text;
+      const range = document.createRange();
+      range.setStart(textNode, 4);
+      range.collapse(true);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Simulate Shift+Enter on task node
+      const shiftEnterEvent = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true
+      });
+      element.dispatchEvent(shiftEnterEvent);
+
+      // Should not create DIV structure for single-line nodes
+      expect(element.children.length).toBe(0);
+      expect(element.textContent).toBe('Task content');
+    });
+  });
+
   describe('Cleanup', () => {
     it('should properly cleanup event listeners', () => {
       const addEventListenerSpy = vi.spyOn(element, 'addEventListener');

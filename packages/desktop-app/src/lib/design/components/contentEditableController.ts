@@ -644,21 +644,81 @@ export class ContentEditableController {
     const tempDiv = document.createElement('div');
     tempDiv.innerHTML = html;
 
+    // Special case: if we have <br> tags at the top level (not inside <div>s),
+    // use innerText which properly converts <br> to newlines
+    const hasBrTags = html.includes('<br>');
+    const hasDivTags = html.includes('<div>');
+
+    if (hasBrTags && !hasDivTags) {
+      // Remove syntax marker elements before extracting text
+      const syntaxMarkers = tempDiv.querySelectorAll('.code-marker, .quote-marker, .syntax-marker');
+      syntaxMarkers.forEach((marker) => marker.remove());
+      return tempDiv.innerText;
+    }
+
+    // Original logic for <div> structure
+    // Remove syntax marker elements before extracting text
+    const syntaxMarkers = tempDiv.querySelectorAll('.code-marker, .quote-marker, .syntax-marker');
+    syntaxMarkers.forEach((marker) => marker.remove());
     let result = '';
+    let isFirstDiv = true;
 
     // Walk through all child nodes
     for (const node of tempDiv.childNodes) {
       if (node.nodeType === Node.TEXT_NODE) {
         // Text node: add the text content
-        result += node.textContent || '';
+        const textContent = node.textContent || '';
+        result += textContent;
       } else if (node.nodeType === Node.ELEMENT_NODE) {
         const element = node as Element;
         if (element.tagName === 'DIV') {
-          // Div element: represents a new line, add newline + content
-          result += '\n' + (element.textContent || '');
+          // Div element: represents a line
+          // Get the content of this div (could be empty for blank lines)
+          const divContent = this.getTextContentIgnoringSyntax(element);
+
+          // First div doesn't need a newline prefix, subsequent divs do
+          if (isFirstDiv) {
+            result += divContent;
+            isFirstDiv = false;
+          } else {
+            // Add newline for each div, even if empty (preserves blank lines)
+            result += '\n' + divContent;
+          }
         } else {
-          // Other elements: just add their text content
-          result += element.textContent || '';
+          // Other elements: just add their text content (excluding syntax markers)
+          const elementContent = this.getTextContentIgnoringSyntax(element);
+          result += elementContent;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Get text content from an element, ignoring syntax marker elements but preserving line breaks
+   */
+  private getTextContentIgnoringSyntax(element: Element): string {
+    let result = '';
+
+    for (const node of element.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        result += node.textContent || '';
+      } else if (node.nodeType === Node.ELEMENT_NODE) {
+        const childElement = node as Element;
+
+        // Handle <br> tags as newlines
+        if (childElement.tagName === 'BR') {
+          result += '\n';
+        }
+        // Skip syntax marker elements
+        else if (
+          !childElement.classList.contains('code-marker') &&
+          !childElement.classList.contains('quote-marker') &&
+          !childElement.classList.contains('syntax-marker')
+        ) {
+          // Recursively process child elements
+          result += this.getTextContentIgnoringSyntax(childElement);
         }
       }
     }
@@ -852,13 +912,49 @@ export class ContentEditableController {
       }
 
       if (event.shiftKey && this.config.allowMultiline) {
-        // Shift+Enter for multiline nodes: allow default browser behavior (insert newline)
-        // Don't preventDefault() - let the browser handle newline insertion naturally
+        // Shift+Enter for multiline nodes: create consistent DIV structure
+        event.preventDefault(); // Prevent default browser behavior which creates mixed structures
+
+        // Get current content and cursor position
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) return;
+
+        const range = selection.getRangeAt(0);
+        const currentContent = this.element.textContent || '';
+        const cursorPosition = this.getTextOffsetFromElement(
+          range.startContainer,
+          range.startOffset
+        );
+
+        // Split content at cursor position
+        const beforeCursor = currentContent.substring(0, cursorPosition);
+        const afterCursor = currentContent.substring(cursorPosition);
+
+        // Create consistent DIV structure
+        const firstDiv = document.createElement('div');
+        const secondDiv = document.createElement('div');
+
+        firstDiv.textContent = beforeCursor;
+        secondDiv.textContent = afterCursor;
+
+        // Clear the element and add our DIV structure
+        this.element.innerHTML = '';
+        this.element.appendChild(firstDiv);
+        this.element.appendChild(secondDiv);
+
+        // Position cursor at start of second DIV
+        const newRange = document.createRange();
+        const newSelection = window.getSelection();
+        newRange.setStart(secondDiv, 0);
+        newRange.collapse(true);
+        newSelection?.removeAllRanges();
+        newSelection?.addRange(newRange);
+
         // Set flag to prevent live formatting from interfering with the newline
         this.recentShiftEnter = true;
         setTimeout(() => {
           this.recentShiftEnter = false;
-        }, 100); // Clear flag after brief delay
+        }, 100);
         return;
       }
 
@@ -959,6 +1055,17 @@ export class ContentEditableController {
 
     // Backspace at start of node
     if (event.key === 'Backspace' && this.isAtStart()) {
+      // For multi-line nodes, check if we're at the start of the first line or just at the start of a line
+      if (this.config.allowMultiline) {
+        const isAtStartOfFirstLine = this.isAtStartOfFirstLine();
+        if (!isAtStartOfFirstLine) {
+          // We're at the start of a line other than the first line
+          // Allow default backspace behavior to delete the line break
+          return;
+        }
+        // We're at the start of the first line, so combine with previous node
+      }
+
       event.preventDefault();
       const currentContent = this.element.textContent || '';
 
@@ -1109,6 +1216,29 @@ export class ContentEditableController {
 
     // If no div structure found, assume single line (last line)
     return true;
+  }
+
+  private isAtStartOfFirstLine(): boolean {
+    if (!this.config.allowMultiline) return true;
+
+    // First check if we're at the first line
+    if (!this.isAtFirstLine()) {
+      return false;
+    }
+
+    // Then check if we're at the start of that first line
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return false;
+
+    const range = selection.getRangeAt(0);
+    if (!range.collapsed) return false;
+
+    // For the first line, we need to check if we're at position 0 of the entire element
+    const preCaretRange = range.cloneRange();
+    preCaretRange.selectNodeContents(this.element);
+    preCaretRange.setEnd(range.startContainer, range.startOffset);
+
+    return preCaretRange.toString().length === 0;
   }
 
   private restoreCursorPosition(textOffset: number): void {

@@ -231,6 +231,128 @@ describe('ReactiveNodeService - Reactive State Synchronization', () => {
     });
   });
 
+  describe('Bug 4 fix - Collapsed node child transfer', () => {
+    test('should not transfer children from collapsed nodes when creating new nodes', () => {
+      // Set up parent with children in collapsed state
+      const legacyNodes = [
+        {
+          id: 'parent1',
+          nodeType: 'text',
+          content: 'Parent node',
+          depth: 0,
+          parentId: undefined,
+          children: ['child1', 'child2'],
+          expanded: false, // Collapsed - children should not transfer
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          metadata: {}
+        },
+        {
+          id: 'child1',
+          nodeType: 'text',
+          content: 'Child 1',
+          depth: 1,
+          parentId: 'parent1',
+          children: [],
+          expanded: true,
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          metadata: {}
+        },
+        {
+          id: 'child2',
+          nodeType: 'text',
+          content: 'Child 2',
+          depth: 1,
+          parentId: 'parent1',
+          children: [],
+          expanded: true,
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          metadata: {}
+        }
+      ];
+
+      nodeManager.initializeFromLegacyData(legacyNodes);
+
+      // Create new node after collapsed parent
+      const newNodeId = nodeManager.createNode('parent1', 'New node content', 'text');
+
+      // Since parent is collapsed, children should NOT transfer to new node
+      const newNode = nodeManager.findNode(newNodeId);
+      const originalParent = nodeManager.findNode('parent1');
+
+      expect(newNode?.children).toEqual([]); // No children transferred
+      expect(originalParent?.children).toEqual(['child1', 'child2']); // Children stay with original
+
+      // Children should still have original parent
+      const child1 = nodeManager.findNode('child1');
+      const child2 = nodeManager.findNode('child2');
+      expect(child1?.parentId).toBe('parent1');
+      expect(child2?.parentId).toBe('parent1');
+    });
+
+    test('should transfer children from expanded nodes when creating new nodes', () => {
+      // Set up parent with children in expanded state
+      const legacyNodes = [
+        {
+          id: 'parent1',
+          nodeType: 'text',
+          content: 'Parent node',
+          depth: 0,
+          parentId: undefined,
+          children: ['child1', 'child2'],
+          expanded: true, // Expanded - children should transfer
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          metadata: {}
+        },
+        {
+          id: 'child1',
+          nodeType: 'text',
+          content: 'Child 1',
+          depth: 1,
+          parentId: 'parent1',
+          children: [],
+          expanded: true,
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          metadata: {}
+        },
+        {
+          id: 'child2',
+          nodeType: 'text',
+          content: 'Child 2',
+          depth: 1,
+          parentId: 'parent1',
+          children: [],
+          expanded: true,
+          autoFocus: false,
+          inheritHeaderLevel: 0,
+          metadata: {}
+        }
+      ];
+
+      nodeManager.initializeFromLegacyData(legacyNodes);
+
+      // Create new node after expanded parent
+      const newNodeId = nodeManager.createNode('parent1', 'New node content', 'text');
+
+      // Since parent is expanded, children SHOULD transfer to new node
+      const newNode = nodeManager.findNode(newNodeId);
+      const originalParent = nodeManager.findNode('parent1');
+
+      expect(newNode?.children).toEqual(['child1', 'child2']); // Children transferred
+      expect(originalParent?.children).toEqual([]); // Original parent now empty
+
+      // Children should now have new node as parent
+      const child1 = nodeManager.findNode('child1');
+      const child2 = nodeManager.findNode('child2');
+      expect(child1?.parentId).toBe(newNodeId);
+      expect(child2?.parentId).toBe(newNodeId);
+    });
+  });
+
   describe('Other Operations - Regression Tests', () => {
     test('deleteNode still works correctly', () => {
       const legacyNodes = [

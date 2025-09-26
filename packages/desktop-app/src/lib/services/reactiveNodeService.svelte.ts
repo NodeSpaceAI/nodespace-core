@@ -195,8 +195,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       }
     } else {
       // Cursor not at beginning: new node goes AFTER as sibling
-      // Transfer all children from afterNode to the new node
-      if (afterNode.children && afterNode.children.length > 0) {
+      // Transfer children from afterNode to new node ONLY if afterNode is expanded
+      // If collapsed, children should stay with the original node
+      if (afterNode.children && afterNode.children.length > 0 && afterNode.expanded) {
         newNode.children = [...afterNode.children];
         // Update children's parent reference to point to new node
         for (const childId of afterNode.children) {
@@ -208,6 +209,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         // Clear afterNode's children since they now belong to newNode
         _nodes[afterNodeId] = { ...afterNode, children: [] };
       }
+      // If afterNode is collapsed, children stay with original node (no transfer)
 
       // Insert new node as sibling after afterNode
       if (afterNode.parentId) {
