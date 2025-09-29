@@ -1146,11 +1146,10 @@ export class ContentEditableController {
       // For multiline nodes, only navigate between nodes if at first/last line
       if (this.config.allowMultiline) {
         // For up arrow: only navigate if at the beginning of the first line
-        // For down arrow: only navigate if at the end of the last line
-        // These methods already check if we're in the correct line
+        // For down arrow: navigate if at the end of the last line OR at the end of content
         const shouldNavigate =
           (direction === 'up' && this.isAtBeginningOfFirstLine()) ||
-          (direction === 'down' && this.isAtEndOfLastLine());
+          (direction === 'down' && (this.isAtEndOfLastLine() || this.isAtEnd()));
 
         if (!shouldNavigate) {
           // Let the browser handle line-by-line navigation within the multiline node
