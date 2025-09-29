@@ -912,49 +912,13 @@ export class ContentEditableController {
       }
 
       if (event.shiftKey && this.config.allowMultiline) {
-        // Shift+Enter for multiline nodes: create consistent DIV structure
-        event.preventDefault(); // Prevent default browser behavior which creates mixed structures
-
-        // Get current content and cursor position
-        const selection = window.getSelection();
-        if (!selection || selection.rangeCount === 0) return;
-
-        const range = selection.getRangeAt(0);
-        const currentContent = this.element.textContent || '';
-        const cursorPosition = this.getTextOffsetFromElement(
-          range.startContainer,
-          range.startOffset
-        );
-
-        // Split content at cursor position
-        const beforeCursor = currentContent.substring(0, cursorPosition);
-        const afterCursor = currentContent.substring(cursorPosition);
-
-        // Create consistent DIV structure
-        const firstDiv = document.createElement('div');
-        const secondDiv = document.createElement('div');
-
-        firstDiv.textContent = beforeCursor;
-        secondDiv.textContent = afterCursor;
-
-        // Clear the element and add our DIV structure
-        this.element.innerHTML = '';
-        this.element.appendChild(firstDiv);
-        this.element.appendChild(secondDiv);
-
-        // Position cursor at start of second DIV
-        const newRange = document.createRange();
-        const newSelection = window.getSelection();
-        newRange.setStart(secondDiv, 0);
-        newRange.collapse(true);
-        newSelection?.removeAllRanges();
-        newSelection?.addRange(newRange);
-
+        // Shift+Enter for multiline nodes: allow default browser behavior
+        // Don't preventDefault() - let the browser handle newline insertion naturally
         // Set flag to prevent live formatting from interfering with the newline
         this.recentShiftEnter = true;
         setTimeout(() => {
           this.recentShiftEnter = false;
-        }, 100);
+        }, 100); // Clear flag after brief delay
         return;
       }
 
