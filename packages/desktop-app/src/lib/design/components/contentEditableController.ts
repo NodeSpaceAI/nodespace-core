@@ -351,8 +351,7 @@ export class ContentEditableController {
         // Wrap in div structure if we have line breaks
         if (html.includes('</div><div>')) {
           html = '<div>' + html + '</div>';
-          // Clean up empty divs and fix structure
-          html = html.replace('<div></div><div>', '<div>').replace('</div><div></div>', '</div>');
+          // Don't clean up empty divs - they represent blank lines that should be preserved
         }
       } else {
         // During display: convert \n to <br> tags for formatted display
