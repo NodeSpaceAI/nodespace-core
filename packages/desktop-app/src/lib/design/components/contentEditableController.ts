@@ -735,14 +735,14 @@ export class ContentEditableController {
 
     // Walk through all child nodes
     const childNodes = Array.from(tempDiv.childNodes);
+
+    // Process each node
     for (let i = 0; i < childNodes.length; i++) {
       const node = childNodes[i];
-      const isLastNode = i === childNodes.length - 1;
 
       if (node.nodeType === Node.TEXT_NODE) {
         // Text node: decode HTML entities and add the text content
         const textContent = node.textContent || '';
-        // Decode common HTML entities
         const decodedText = textContent.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
         result += decodedText;
       } else if (node.nodeType === Node.ELEMENT_NODE) {
@@ -751,17 +751,13 @@ export class ContentEditableController {
           // Get the content of this div
           const divContent = this.getTextContentIgnoringSyntax(element);
 
-          // Add the content (empty string for empty divs)
-          result += divContent;
-
-          // Add newline after each DIV except the last one
-          // However, if the last DIV is empty (contains only <br>), add a trailing newline
-          if (!isLastNode) {
-            result += '\n';
-          } else if (isLastNode && divContent === '' && element.childNodes.length === 1 && element.firstChild?.nodeName === 'BR') {
-            // Last DIV is an empty line break - preserve as trailing newline
+          // If this is not the first DIV, add a newline before it
+          if (i > 0 && result.length > 0) {
             result += '\n';
           }
+
+          // Add the content
+          result += divContent;
         } else {
           // Other elements: just add their text content (excluding syntax markers)
           const elementContent = this.getTextContentIgnoringSyntax(element);
@@ -1149,11 +1145,20 @@ export class ContentEditableController {
 
       // For multiline nodes, only navigate between nodes if at first/last line
       if (this.config.allowMultiline) {
-        // For up arrow: only navigate if at the beginning of the first line
-        // For down arrow: navigate if at the end of the last line OR at the end of content
-        const shouldNavigate =
-          (direction === 'up' && this.isAtBeginningOfFirstLine()) ||
-          (direction === 'down' && (this.isAtEndOfLastLine() || this.isAtEnd()));
+        let shouldNavigate = false;
+
+        if (direction === 'up') {
+          // Only navigate if at the beginning of the first line
+          shouldNavigate = this.isAtBeginningOfFirstLine();
+        } else {
+          // For down arrow: check if we're at the last line first
+          const isAtLast = this.isAtLastLine();
+          if (isAtLast) {
+            // We're on the last line - check if at the end of it
+            shouldNavigate = this.isAtEnd();
+          }
+          // If not on last line at all, don't navigate (let browser handle)
+        }
 
         if (!shouldNavigate) {
           // Let the browser handle line-by-line navigation within the multiline node
