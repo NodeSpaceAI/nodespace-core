@@ -559,6 +559,183 @@ describe('ContentEditableController', () => {
     });
   });
 
+  describe('Arrow key navigation with leading line breaks (Bug fixes)', () => {
+    let navigateArrowSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      // Reset event calls and create spy
+      eventCalls = {};
+      navigateArrowSpy = vi.fn((data) => {
+        eventCalls.navigateArrow = eventCalls.navigateArrow || [];
+        eventCalls.navigateArrow.push(data);
+      });
+
+      // Replace the navigateArrow handler with our spy
+      mockEvents.navigateArrow = navigateArrowSpy;
+
+      // Create a multiline contenteditable with allowMultiline config
+      element.innerHTML = '<div><br></div><div><br></div><div>Text content</div>';
+      controller = new ContentEditableController(
+        element,
+        'test-node',
+        'text',
+        mockEvents,
+        { allowMultiline: true }
+      );
+    });
+
+    it('should stay within node when arrow up from empty leading lines', () => {
+      // Set cursor in the second empty line (not the first)
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+      const secondEmptyDiv = element.children[1] as Element;
+      range.setStart(secondEmptyDiv, 0);
+      range.setEnd(secondEmptyDiv, 0);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Simulate ArrowUp key
+      const arrowUpEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowUp',
+        bubbles: true
+      });
+      element.dispatchEvent(arrowUpEvent);
+
+      // Should NOT call navigateArrow (stay within node)
+      expect(navigateArrowSpy).not.toHaveBeenCalled();
+    });
+
+    it('should navigate to previous node only from beginning of first line', () => {
+      // Set cursor at the very beginning of the first empty line
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+      const firstEmptyDiv = element.children[0] as Element;
+      range.setStart(firstEmptyDiv, 0);
+      range.setEnd(firstEmptyDiv, 0);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Simulate ArrowUp key
+      const arrowUpEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowUp',
+        bubbles: true
+      });
+      element.dispatchEvent(arrowUpEvent);
+
+      // Should call navigateArrow (go to previous node)
+      expect(navigateArrowSpy).toHaveBeenCalledWith({
+        nodeId: 'test',
+        direction: 'up',
+        columnHint: expect.any(Number)
+      });
+    });
+
+    it('should stay within node when arrow down from content lines', () => {
+      // Set cursor in the middle of the text content line
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+      const textDiv = element.children[2] as Element;
+      const textNode = textDiv.firstChild!;
+      range.setStart(textNode, 5); // Middle of "Text content"
+      range.setEnd(textNode, 5);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Simulate ArrowDown key
+      const arrowDownEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        bubbles: true
+      });
+      element.dispatchEvent(arrowDownEvent);
+
+      // Should NOT call navigateArrow (stay within node)
+      expect(navigateArrowSpy).not.toHaveBeenCalled();
+    });
+
+    it('should navigate to next node only from end of last line', () => {
+      // Set cursor at the very end of the text content line
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+      const textDiv = element.children[2] as Element;
+      const textNode = textDiv.firstChild!;
+      range.setStart(textNode, textNode.textContent!.length);
+      range.setEnd(textNode, textNode.textContent!.length);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Simulate ArrowDown key
+      const arrowDownEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        bubbles: true
+      });
+      element.dispatchEvent(arrowDownEvent);
+
+      // Should call navigateArrow (go to next node)
+      expect(navigateArrowSpy).toHaveBeenCalledWith({
+        nodeId: 'test',
+        direction: 'down',
+        columnHint: expect.any(Number)
+      });
+    });
+
+    it('should handle mixed empty and content lines correctly', () => {
+      // Create structure: empty, content, empty
+      element.innerHTML = '<div><br></div><div>Middle text</div><div><br></div>';
+
+      // Test arrow up from middle content line (should stay within)
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+      const middleDiv = element.children[1] as Element;
+      const textNode = middleDiv.firstChild!;
+      range.setStart(textNode, 0);
+      range.setEnd(textNode, 0);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Clear previous calls
+      vi.clearAllMocks();
+
+      // Simulate ArrowUp key
+      const arrowUpEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowUp',
+        bubbles: true
+      });
+      element.dispatchEvent(arrowUpEvent);
+
+      // Should NOT call navigateArrow (move to first empty line within node)
+      expect(navigateArrowSpy).not.toHaveBeenCalled();
+    });
+
+    it('should correctly identify line boundaries with complex content', () => {
+      // Create structure with formatted content
+      element.innerHTML = '<div><br></div><div><strong>Bold</strong> and normal</div><div>Last line</div>';
+
+      // Test arrow up from beginning of bold content (should stay within)
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+      const secondDiv = element.children[1] as Element;
+      const boldElement = secondDiv.querySelector('strong')!;
+      const textNode = boldElement.firstChild!;
+      range.setStart(textNode, 0);
+      range.setEnd(textNode, 0);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Clear previous calls
+      vi.clearAllMocks();
+
+      // Simulate ArrowUp key
+      const arrowUpEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowUp',
+        bubbles: true
+      });
+      element.dispatchEvent(arrowUpEvent);
+
+      // Should NOT call navigateArrow (should navigate to first empty line within node)
+      expect(navigateArrowSpy).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Cleanup', () => {
     it('should properly cleanup event listeners', () => {
       const addEventListenerSpy = vi.spyOn(element, 'addEventListener');

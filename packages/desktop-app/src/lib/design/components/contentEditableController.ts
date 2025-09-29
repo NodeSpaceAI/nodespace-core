@@ -1265,46 +1265,6 @@ export class ContentEditableController {
     }
   }
 
-  private isAtStartOfContent(): boolean {
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) {
-      return false;
-    }
-
-    const range = selection.getRangeAt(0);
-
-    if (!range.collapsed) {
-      return false; // Not at start if there's a selection
-    }
-
-    // Check if cursor is at the very beginning of the contenteditable element
-    const preCaretRange = range.cloneRange();
-    preCaretRange.selectNodeContents(this.element);
-    preCaretRange.setEnd(range.startContainer, range.startOffset);
-
-    return preCaretRange.toString().length === 0;
-  }
-
-  private isAtEndOfContent(): boolean {
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) {
-      return false;
-    }
-
-    const range = selection.getRangeAt(0);
-
-    if (!range.collapsed) {
-      return false; // Not at end if there's a selection
-    }
-
-    // Check if cursor is at the very end of the contenteditable element
-    const postCaretRange = range.cloneRange();
-    postCaretRange.selectNodeContents(this.element);
-    postCaretRange.setStart(range.endContainer, range.endOffset);
-
-    return postCaretRange.toString().length === 0;
-  }
-
   private isAtBeginningOfFirstLine(): boolean {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) {
