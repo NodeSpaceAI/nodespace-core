@@ -403,11 +403,10 @@ export class ContentEditableController {
     if (this.config.allowMultiline) {
       if (this.isEditing) {
         // During editing: convert \n to <div> structure for native browser editing
-        html = html.replace(/\n/g, '</div><div>');
-        // Wrap in div structure if we have line breaks
-        if (html.includes('</div><div>')) {
-          html = '<div>' + html + '</div>';
-          // Don't clean up empty divs - they represent blank lines that should be preserved
+        // Split by newlines and wrap each part in a div
+        const lines = html.split('\n');
+        if (lines.length > 1) {
+          html = lines.map(line => `<div>${line}</div>`).join('');
         }
       } else {
         // During display: convert \n to <br> tags for formatted display
@@ -726,7 +725,9 @@ export class ContentEditableController {
       // Remove syntax marker elements before extracting text
       const syntaxMarkers = tempDiv.querySelectorAll('.code-marker, .quote-marker, .syntax-marker');
       syntaxMarkers.forEach((marker) => marker.remove());
-      return tempDiv.innerText;
+
+      // Use custom BR to text conversion instead of innerText to avoid extra newlines
+      return this.convertBrToText(tempDiv);
     }
 
     // Original logic for <div> structure
@@ -746,21 +747,45 @@ export class ContentEditableController {
       } else if (node.nodeType === Node.ELEMENT_NODE) {
         const element = node as Element;
         if (element.tagName === 'DIV') {
-          // Div element: represents a line break + new line content
           // Get the content of this div (could be empty for blank lines)
           const divContent = this.getTextContentIgnoringSyntax(element);
+          const isEmpty = divContent === '' || divContent.trim() === '';
 
-          // Only add newline prefix if there's already content in result
-          // This prevents leading newlines when the first element is a DIV
-          if (result.length > 0) {
-            result += '\n' + divContent;
+          if (isEmpty) {
+            // Empty DIV represents a line break - always add newline
+            result += '\n';
           } else {
+            // Content DIV - add content directly (no extra separator)
+            // The leading newlines from empty DIVs are already in result
             result += divContent;
           }
         } else {
           // Other elements: just add their text content (excluding syntax markers)
           const elementContent = this.getTextContentIgnoringSyntax(element);
           result += elementContent;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Convert BR tags to text with precise newline control
+   */
+  private convertBrToText(element: Element): string {
+    let result = '';
+
+    for (const node of element.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        result += node.textContent || '';
+      } else if (node.nodeType === Node.ELEMENT_NODE) {
+        const elem = node as Element;
+        if (elem.tagName === 'BR') {
+          result += '\n';
+        } else {
+          // For other elements, get their text content recursively
+          result += this.convertBrToText(elem);
         }
       }
     }
