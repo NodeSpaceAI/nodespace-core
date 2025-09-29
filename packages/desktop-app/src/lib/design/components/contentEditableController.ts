@@ -347,11 +347,8 @@ export class ContentEditableController {
    * Get current content in markdown format
    */
   public getMarkdownContent(): string {
-    if (this.isEditing) {
-      return this.element.textContent || '';
-    } else {
-      return this.htmlToMarkdown(this.element.innerHTML);
-    }
+    // Always return the stored content which has been properly converted
+    return this.originalContent;
   }
 
   /**
@@ -737,7 +734,11 @@ export class ContentEditableController {
     let result = '';
 
     // Walk through all child nodes
-    for (const node of tempDiv.childNodes) {
+    const childNodes = Array.from(tempDiv.childNodes);
+    for (let i = 0; i < childNodes.length; i++) {
+      const node = childNodes[i];
+      const isLastNode = i === childNodes.length - 1;
+
       if (node.nodeType === Node.TEXT_NODE) {
         // Text node: decode HTML entities and add the text content
         const textContent = node.textContent || '';
@@ -747,17 +748,15 @@ export class ContentEditableController {
       } else if (node.nodeType === Node.ELEMENT_NODE) {
         const element = node as Element;
         if (element.tagName === 'DIV') {
-          // Get the content of this div (could be empty for blank lines)
+          // Get the content of this div
           const divContent = this.getTextContentIgnoringSyntax(element);
-          const isEmpty = divContent === '' || divContent.trim() === '';
 
-          if (isEmpty) {
-            // Empty DIV represents a line break - always add newline
+          // Add the content (empty string for empty divs)
+          result += divContent;
+
+          // Add newline after each DIV except the last one
+          if (!isLastNode) {
             result += '\n';
-          } else {
-            // Content DIV - add content directly (no extra separator)
-            // The leading newlines from empty DIVs are already in result
-            result += divContent;
           }
         } else {
           // Other elements: just add their text content (excluding syntax markers)
