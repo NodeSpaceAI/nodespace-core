@@ -745,6 +745,17 @@ export class ContentEditableController {
     this.isEditing = true;
 
     // Show raw markdown for editing (this changes the DOM)
+    // For multiline nodes, ensure we convert any <br> tags from display mode to proper DIV structure
+    if (this.config.allowMultiline && this.element.innerHTML.includes('<br>')) {
+      // Convert <br> tags back to newlines first, then let setRawMarkdown handle DIV structure
+      const htmlWithBr = this.element.innerHTML;
+      const textWithNewlines = htmlWithBr
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<[^>]*>/g, '') // Remove any other HTML tags
+        .trim();
+      this.originalContent = textWithNewlines;
+    }
+
     this.setRawMarkdown(this.originalContent);
 
     // Apply pre-calculated position
