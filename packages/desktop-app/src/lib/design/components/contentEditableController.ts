@@ -360,6 +360,14 @@ export class ContentEditableController {
     }
 
     this.element.innerHTML = html;
+
+    // Post-processing: ensure empty divs in multiline editing mode have <br> tags for visual rendering
+    if (this.config.allowMultiline && this.isEditing) {
+      const emptyDivs = this.element.querySelectorAll('div:empty');
+      emptyDivs.forEach(div => {
+        div.innerHTML = '<br>';
+      });
+    }
   }
 
   /**
@@ -608,6 +616,16 @@ export class ContentEditableController {
       if (this.config.allowMultiline) {
         // Convert any remaining \n characters to <br> tags for display
         htmlContent = htmlContent.replace(/\n/g, '<br>');
+
+        // Ensure trailing line breaks are visible by adding a non-breaking space after trailing <br> tags
+        if (htmlContent.endsWith('<br>')) {
+          // Count consecutive trailing <br> tags
+          const trailingBrMatch = htmlContent.match(/(<br>)+$/);
+          if (trailingBrMatch) {
+            // Replace the last <br> with <br>&nbsp; to ensure it renders visually
+            htmlContent = htmlContent.slice(0, -4) + '<br>&nbsp;';
+          }
+        }
       }
 
       this.element.innerHTML = htmlContent;
@@ -660,28 +678,28 @@ export class ContentEditableController {
     const syntaxMarkers = tempDiv.querySelectorAll('.code-marker, .quote-marker, .syntax-marker');
     syntaxMarkers.forEach((marker) => marker.remove());
     let result = '';
-    let isFirstDiv = true;
 
     // Walk through all child nodes
     for (const node of tempDiv.childNodes) {
       if (node.nodeType === Node.TEXT_NODE) {
-        // Text node: add the text content
+        // Text node: decode HTML entities and add the text content
         const textContent = node.textContent || '';
-        result += textContent;
+        // Decode common HTML entities
+        const decodedText = textContent.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+        result += decodedText;
       } else if (node.nodeType === Node.ELEMENT_NODE) {
         const element = node as Element;
         if (element.tagName === 'DIV') {
-          // Div element: represents a line
+          // Div element: represents a line break + new line content
           // Get the content of this div (could be empty for blank lines)
           const divContent = this.getTextContentIgnoringSyntax(element);
 
-          // First div doesn't need a newline prefix, subsequent divs do
-          if (isFirstDiv) {
-            result += divContent;
-            isFirstDiv = false;
-          } else {
-            // Add newline for each div, even if empty (preserves blank lines)
+          // Only add newline prefix if there's already content in result
+          // This prevents leading newlines when the first element is a DIV
+          if (result.length > 0) {
             result += '\n' + divContent;
+          } else {
+            result += divContent;
           }
         } else {
           // Other elements: just add their text content (excluding syntax markers)
@@ -695,9 +713,56 @@ export class ContentEditableController {
   }
 
   /**
+   * Convert display mode BR structure to text with newlines for edit mode
+   */
+  private convertBrDisplayToTextWithNewlines(element: Element): string {
+    let result = '';
+
+    // Walk through all child nodes
+    for (const node of element.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        // Text node: decode HTML entities (like &nbsp;) and add the text content
+        const textContent = node.textContent || '';
+        // Decode HTML entities properly
+        const decodedText = textContent.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+        result += decodedText;
+      } else if (node.nodeType === Node.ELEMENT_NODE) {
+        const childElement = node as Element;
+
+        if (childElement.tagName === 'BR') {
+          // BR tag: convert to newline
+          result += '\n';
+        } else {
+          // Other elements: extract text content recursively
+          // This preserves the text but removes HTML formatting (which is correct for edit mode)
+          result += this.getTextContentWithEntitiesDecoded(childElement);
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Get text content from an element with HTML entities properly decoded
+   */
+  private getTextContentWithEntitiesDecoded(element: Element): string {
+    const textContent = element.textContent || '';
+    // Decode HTML entities properly
+    return textContent.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+  }
+
+  /**
    * Get text content from an element, ignoring syntax marker elements but preserving line breaks
    */
   private getTextContentIgnoringSyntax(element: Element): string {
+    // Special case: if this div contains only a <br> tag, return empty string
+    // The DIV processing will handle the newline, so we don't want to double-count it
+    if (element.tagName === 'DIV' && element.childNodes.length === 1 &&
+        element.firstChild?.nodeName === 'BR') {
+      return '';
+    }
+
     let result = '';
 
     for (const node of element.childNodes) {
@@ -745,16 +810,9 @@ export class ContentEditableController {
     this.isEditing = true;
 
     // Show raw markdown for editing (this changes the DOM)
-    // For multiline nodes, ensure we convert any <br> tags from display mode to proper DIV structure
-    if (this.config.allowMultiline && this.element.innerHTML.includes('<br>')) {
-      // Convert <br> tags back to newlines first, then let setRawMarkdown handle DIV structure
-      const htmlWithBr = this.element.innerHTML;
-      const textWithNewlines = htmlWithBr
-        .replace(/<br\s*\/?>/gi, '\n')
-        .replace(/<[^>]*>/g, '') // Remove any other HTML tags
-        .trim();
-      this.originalContent = textWithNewlines;
-    }
+    // For multiline nodes: The reactive system should handle BR->DIV conversion automatically
+    // We just need to ensure originalContent has the correct text with newlines
+    // Don't manually convert - let setRawMarkdown and the reactive system handle it
 
     this.setRawMarkdown(this.originalContent);
 
