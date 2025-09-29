@@ -259,6 +259,34 @@ export class ContentEditableController {
     if (!selection) return;
 
     const range = document.createRange();
+
+    // For multiline content: position cursor in the last line (including empty ones)
+    if (this.config.allowMultiline) {
+      const lineElements = Array.from(this.element.children).filter(
+        child => child.tagName === 'DIV'
+      );
+
+      if (lineElements.length > 0) {
+        const lastLine = lineElements[lineElements.length - 1];
+
+        // Position cursor at the end of the last line
+        if (lastLine.childNodes.length > 0) {
+          // If the last line has content, position after the content
+          range.selectNodeContents(lastLine);
+          range.collapse(false);
+        } else {
+          // If the last line is empty, position inside it
+          range.setStart(lastLine, 0);
+          range.setEnd(lastLine, 0);
+        }
+
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return;
+      }
+    }
+
+    // Fallback for single-line content or no div structure
     range.selectNodeContents(this.element);
     range.collapse(false); // Collapse to end
     selection.removeAllRanges();
@@ -273,6 +301,34 @@ export class ContentEditableController {
     if (!selection) return;
 
     const range = document.createRange();
+
+    // For multiline content: position cursor in the first line
+    if (this.config.allowMultiline) {
+      const lineElements = Array.from(this.element.children).filter(
+        child => child.tagName === 'DIV'
+      );
+
+      if (lineElements.length > 0) {
+        const firstLine = lineElements[0];
+
+        // Position cursor at the beginning of the first line
+        if (firstLine.childNodes.length > 0) {
+          // If the first line has content, position before the content
+          range.selectNodeContents(firstLine);
+          range.collapse(true);
+        } else {
+          // If the first line is empty, position inside it
+          range.setStart(firstLine, 0);
+          range.setEnd(firstLine, 0);
+        }
+
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return;
+      }
+    }
+
+    // Fallback for single-line content or no div structure
     range.selectNodeContents(this.element);
     range.collapse(true); // Collapse to beginning
     selection.removeAllRanges();
@@ -1065,9 +1121,12 @@ export class ContentEditableController {
 
       // For multiline nodes, only navigate between nodes if at first/last line
       if (this.config.allowMultiline) {
+        const isAtFirst = this.isAtFirstLine();
+        const isAtLast = this.isAtLastLine();
+
         const shouldNavigate =
-          (direction === 'up' && this.isAtFirstLine()) ||
-          (direction === 'down' && this.isAtLastLine());
+          (direction === 'up' && isAtFirst) ||
+          (direction === 'down' && isAtLast);
 
         if (!shouldNavigate) {
           // Let the browser handle line-by-line navigation within the multiline node
@@ -1192,6 +1251,78 @@ export class ContentEditableController {
     return textOffset;
   }
 
+  /**
+   * Get the current line index (0-based) for a given range in multiline content
+   * Returns -1 if unable to determine line index
+   */
+  private getCurrentLineIndex(range: Range): number {
+    if (!this.config.allowMultiline) return 0;
+
+    // Get all direct div children (lines) of this contenteditable element
+    const lineElements = Array.from(this.element.children).filter(
+      child => child.tagName === 'DIV'
+    );
+
+    if (lineElements.length === 0) {
+      return -1; // No div structure found
+    }
+
+    // Find which div contains the cursor
+    let currentElement: Node | null = range.startContainer;
+
+    // Walk up to find the containing div
+    while (currentElement && currentElement !== this.element) {
+      if (
+        currentElement.nodeType === Node.ELEMENT_NODE &&
+        (currentElement as Element).tagName === 'DIV' &&
+        currentElement.parentNode === this.element
+      ) {
+        // Found the containing div - return its index
+        return lineElements.indexOf(currentElement as Element);
+      }
+      currentElement = currentElement.parentNode;
+    }
+
+    // Special case: if cursor is directly at a BR element, find its parent div
+    if (range.startContainer.nodeType === Node.ELEMENT_NODE &&
+        (range.startContainer as Element).tagName === 'BR') {
+      const brParent = range.startContainer.parentNode;
+      if (brParent && brParent.nodeType === Node.ELEMENT_NODE &&
+          (brParent as Element).tagName === 'DIV' &&
+          brParent.parentNode === this.element) {
+        return lineElements.indexOf(brParent as Element);
+      }
+    }
+
+    // Special case: if cursor is directly at the contenteditable element itself
+    if (range.startContainer === this.element) {
+      // Check if we're at the very beginning (before first child)
+      if (range.startOffset === 0) {
+        return 0; // First line
+      }
+      // Check if we're at the very end (after last child)
+      if (range.startOffset >= this.element.childNodes.length) {
+        return lineElements.length - 1; // Last line
+      }
+      // Try to determine based on offset - find the child node at the offset
+      let nodeAtOffset = this.element.childNodes[range.startOffset];
+
+      // If the node at offset is a DIV, we're positioned just before it
+      if (nodeAtOffset && nodeAtOffset.nodeType === Node.ELEMENT_NODE &&
+          (nodeAtOffset as Element).tagName === 'DIV') {
+        const index = lineElements.indexOf(nodeAtOffset as Element);
+        return Math.max(0, index - 1); // Position in the previous line
+      }
+
+      // If we're past the last node, we're in the last line
+      if (!nodeAtOffset) {
+        return lineElements.length - 1;
+      }
+    }
+
+    return -1; // Unable to determine
+  }
+
   private isAtFirstLine(): boolean {
     if (!this.config.allowMultiline) return true;
 
@@ -1200,8 +1331,17 @@ export class ContentEditableController {
 
     const range = selection.getRangeAt(0);
 
-    // Check if cursor is within the first div element (first line)
-    // For multiline contenteditable, each line is typically a div
+    // Get the current line index using a more robust approach
+    const currentLineIndex = this.getCurrentLineIndex(range);
+
+    // If we can determine the line index, check if it's 0 (first line)
+    if (currentLineIndex !== -1) {
+      return currentLineIndex === 0;
+    }
+
+    // Fallback to the original approach
+    // Find the containing div for the current cursor position
+    let containingDiv: Element | null = null;
     let currentElement: Node | null = range.startContainer;
 
     // Walk up to find the containing div within our contenteditable
@@ -1211,10 +1351,31 @@ export class ContentEditableController {
         (currentElement as Element).tagName === 'DIV' &&
         currentElement.parentNode === this.element
       ) {
-        // Found the containing div - check if it's the first one
-        return currentElement === this.element.firstElementChild;
+        containingDiv = currentElement as Element;
+        break;
       }
       currentElement = currentElement.parentNode;
+    }
+
+    // If we found a containing div, check if it's the first one
+    if (containingDiv) {
+      return containingDiv === this.element.firstElementChild;
+    }
+
+    // Special handling: if cursor is directly at a BR element, check its parent
+    if (range.startContainer.nodeType === Node.ELEMENT_NODE &&
+        (range.startContainer as Element).tagName === 'BR') {
+      const brParent = range.startContainer.parentNode;
+      if (brParent && brParent.nodeType === Node.ELEMENT_NODE &&
+          (brParent as Element).tagName === 'DIV' &&
+          brParent.parentNode === this.element) {
+        return brParent === this.element.firstElementChild;
+      }
+    }
+
+    // Additional fallback: if cursor is at the very beginning of the element
+    if (range.startContainer === this.element && range.startOffset === 0) {
+      return true;
     }
 
     // If no div structure found, assume single line (first line)
@@ -1229,8 +1390,19 @@ export class ContentEditableController {
 
     const range = selection.getRangeAt(0);
 
+    // Get the current line index using a more robust approach
+    const currentLineIndex = this.getCurrentLineIndex(range);
+
+    // If we can determine the line index, check if it's the last line
+    if (currentLineIndex !== -1) {
+      const lineElements = Array.from(this.element.children).filter(
+        child => child.tagName === 'DIV'
+      );
+      return currentLineIndex === lineElements.length - 1;
+    }
+
+    // Fallback to the original approach
     // Check if cursor is within the last div element (last line)
-    // For multiline contenteditable, each line is typically a div
     let currentElement: Node | null = range.startContainer;
 
     // Walk up to find the containing div within our contenteditable
@@ -1244,6 +1416,17 @@ export class ContentEditableController {
         return currentElement === this.element.lastElementChild;
       }
       currentElement = currentElement.parentNode;
+    }
+
+    // Special case: if cursor is in a BR element, check if the BR is in the last div
+    if (range.startContainer.nodeType === Node.ELEMENT_NODE &&
+        (range.startContainer as Element).tagName === 'BR') {
+      const brParent = range.startContainer.parentNode;
+      if (brParent && brParent.nodeType === Node.ELEMENT_NODE &&
+          (brParent as Element).tagName === 'DIV' &&
+          brParent.parentNode === this.element) {
+        return brParent === this.element.lastElementChild;
+      }
     }
 
     // If no div structure found, assume single line (last line)
