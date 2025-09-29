@@ -1149,9 +1149,12 @@ export class ContentEditableController {
         const isAtFirst = this.isAtFirstLine();
         const isAtLast = this.isAtLastLine();
 
+        // For up arrow: only navigate if at first line AND at the beginning of that line
+        // For down arrow: only navigate if at last line AND at the end of that line
+        // Special handling for empty lines to prevent jumping between nodes
         const shouldNavigate =
-          (direction === 'up' && isAtFirst) ||
-          (direction === 'down' && isAtLast);
+          (direction === 'up' && isAtFirst && this.isAtBeginningOfFirstLine()) ||
+          (direction === 'down' && isAtLast && this.isAtEndOfLastLine());
 
         if (!shouldNavigate) {
           // Let the browser handle line-by-line navigation within the multiline node
@@ -1216,6 +1219,184 @@ export class ContentEditableController {
     // Use the same logic as getCurrentColumn to handle complex HTML structures
     const currentPosition = this.getCurrentColumn();
     return currentPosition === 0;
+  }
+
+  private isAtEnd(): boolean {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      return false;
+    }
+
+    const range = selection.getRangeAt(0);
+
+    if (!range.collapsed) {
+      return false; // Not at end if there's a selection
+    }
+
+    // For multiline content, check if we're at the end of the last line
+    if (this.config.allowMultiline) {
+      // Check if we're on the last line
+      if (!this.isAtLastLine()) {
+        return false;
+      }
+
+      // Then check if we're at the end of that last line
+      const currentLineIndex = this.getCurrentLineIndex(range);
+      if (currentLineIndex === -1) return false;
+
+      const lineElements = Array.from(this.element.children).filter(
+        child => child.tagName === 'DIV'
+      );
+      const lastLineElement = lineElements[currentLineIndex];
+
+      if (!lastLineElement) return false;
+
+      // Create range for the entire last line and compare positions
+      const lineRange = document.createRange();
+      lineRange.selectNodeContents(lastLineElement);
+
+      return range.startOffset === lineRange.endOffset &&
+             range.startContainer === lineRange.endContainer;
+    } else {
+      // For single-line content, check if we're at the end of the entire element
+      const textContent = this.element.textContent || '';
+      const currentPosition = this.getCurrentColumn();
+      return currentPosition === textContent.length;
+    }
+  }
+
+  private isAtStartOfContent(): boolean {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      return false;
+    }
+
+    const range = selection.getRangeAt(0);
+
+    if (!range.collapsed) {
+      return false; // Not at start if there's a selection
+    }
+
+    // Check if cursor is at the very beginning of the contenteditable element
+    const preCaretRange = range.cloneRange();
+    preCaretRange.selectNodeContents(this.element);
+    preCaretRange.setEnd(range.startContainer, range.startOffset);
+
+    return preCaretRange.toString().length === 0;
+  }
+
+  private isAtEndOfContent(): boolean {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      return false;
+    }
+
+    const range = selection.getRangeAt(0);
+
+    if (!range.collapsed) {
+      return false; // Not at end if there's a selection
+    }
+
+    // Check if cursor is at the very end of the contenteditable element
+    const postCaretRange = range.cloneRange();
+    postCaretRange.selectNodeContents(this.element);
+    postCaretRange.setStart(range.endContainer, range.endOffset);
+
+    return postCaretRange.toString().length === 0;
+  }
+
+  private isAtBeginningOfFirstLine(): boolean {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      return false;
+    }
+
+    const range = selection.getRangeAt(0);
+
+    if (!range.collapsed) {
+      return false; // Not at beginning if there's a selection
+    }
+
+    // For multiline content, check if we're at the beginning of the first line
+    const lineElements = Array.from(this.element.children).filter(
+      child => child.tagName === 'DIV'
+    );
+
+    if (lineElements.length === 0) {
+      return this.isAtStart();
+    }
+
+    const firstLine = lineElements[0];
+
+    // Check if cursor is in the first line
+    let currentElement: Node | null = range.startContainer;
+    let isInFirstLine = false;
+
+    while (currentElement && currentElement !== this.element) {
+      if (currentElement === firstLine) {
+        isInFirstLine = true;
+        break;
+      }
+      currentElement = currentElement.parentNode;
+    }
+
+    if (!isInFirstLine) {
+      return false;
+    }
+
+    // Check if we're at the beginning of this first line
+    const lineRange = document.createRange();
+    lineRange.selectNodeContents(firstLine);
+    lineRange.setEnd(range.startContainer, range.startOffset);
+
+    return lineRange.toString().length === 0;
+  }
+
+  private isAtEndOfLastLine(): boolean {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      return false;
+    }
+
+    const range = selection.getRangeAt(0);
+
+    if (!range.collapsed) {
+      return false; // Not at end if there's a selection
+    }
+
+    // For multiline content, check if we're at the end of the last line
+    const lineElements = Array.from(this.element.children).filter(
+      child => child.tagName === 'DIV'
+    );
+
+    if (lineElements.length === 0) {
+      return this.isAtEnd();
+    }
+
+    const lastLine = lineElements[lineElements.length - 1];
+
+    // Check if cursor is in the last line
+    let currentElement: Node | null = range.startContainer;
+    let isInLastLine = false;
+
+    while (currentElement && currentElement !== this.element) {
+      if (currentElement === lastLine) {
+        isInLastLine = true;
+        break;
+      }
+      currentElement = currentElement.parentNode;
+    }
+
+    if (!isInLastLine) {
+      return false;
+    }
+
+    // Check if we're at the end of this last line
+    const lineRange = document.createRange();
+    lineRange.selectNodeContents(lastLine);
+    lineRange.setStart(range.startContainer, range.startOffset);
+
+    return lineRange.toString().length === 0;
   }
 
   private getCurrentColumn(): number {

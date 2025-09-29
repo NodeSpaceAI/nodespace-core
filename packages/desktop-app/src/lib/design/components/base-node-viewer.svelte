@@ -482,7 +482,31 @@
 
         targetPosition = lastLineStart + Math.min(logicalColumn, lastLine.length);
       } else {
-        // Entering from top: convert visual columnHint to logical position
+        // Entering from top: position at the beginning of the first line (including empty lines)
+        if (isMultiline) {
+          // For multiline content, position cursor at the beginning of the first line
+          const selection = window.getSelection();
+          if (selection) {
+            const range = document.createRange();
+            const lineElements = Array.from(targetElement.children).filter(
+              child => child.tagName === 'DIV'
+            );
+
+            if (lineElements.length > 0) {
+              const firstLine = lineElements[0];
+
+              // Position cursor at the beginning of the first line (including empty ones)
+              range.setStart(firstLine, 0);
+              range.setEnd(firstLine, 0);
+
+              selection.removeAllRanges();
+              selection.addRange(range);
+              return; // Skip the setCursorAtPosition call below
+            }
+          }
+        }
+
+        // Fallback: use original character-based positioning for single-line content
         const firstLine = lines[0] || '';
 
         // Apply same fixed assumptions as MinimalBaseNode
