@@ -1283,17 +1283,6 @@ export class ContentEditableController {
       currentElement = currentElement.parentNode;
     }
 
-    // Special case: if cursor is directly at a BR element, find its parent div
-    if (range.startContainer.nodeType === Node.ELEMENT_NODE &&
-        (range.startContainer as Element).tagName === 'BR') {
-      const brParent = range.startContainer.parentNode;
-      if (brParent && brParent.nodeType === Node.ELEMENT_NODE &&
-          (brParent as Element).tagName === 'DIV' &&
-          brParent.parentNode === this.element) {
-        return lineElements.indexOf(brParent as Element);
-      }
-    }
-
     // Special case: if cursor is directly at the contenteditable element itself
     if (range.startContainer === this.element) {
       // Check if we're at the very beginning (before first child)
@@ -1304,19 +1293,11 @@ export class ContentEditableController {
       if (range.startOffset >= this.element.childNodes.length) {
         return lineElements.length - 1; // Last line
       }
-      // Try to determine based on offset - find the child node at the offset
-      let nodeAtOffset = this.element.childNodes[range.startOffset];
-
-      // If the node at offset is a DIV, we're positioned just before it
-      if (nodeAtOffset && nodeAtOffset.nodeType === Node.ELEMENT_NODE &&
-          (nodeAtOffset as Element).tagName === 'DIV') {
-        const index = lineElements.indexOf(nodeAtOffset as Element);
-        return Math.max(0, index - 1); // Position in the previous line
-      }
-
-      // If we're past the last node, we're in the last line
-      if (!nodeAtOffset) {
-        return lineElements.length - 1;
+      // Try to determine based on offset
+      const childAtOffset = this.element.childNodes[range.startOffset];
+      if (childAtOffset && childAtOffset.nodeType === Node.ELEMENT_NODE) {
+        const index = lineElements.indexOf(childAtOffset as Element);
+        return index >= 0 ? index : -1;
       }
     }
 
@@ -2941,7 +2922,39 @@ export class ContentEditableController {
    * Set cursor position to a specific character index
    */
   public setCursorPosition(characterIndex: number): void {
+    // For multiline content: if positioning at end, use enhanced positioning
+    if (this.config.allowMultiline) {
+      const textContent = this.element.textContent || '';
+
+      // If trying to position at or beyond the end of text content
+      if (characterIndex >= textContent.length) {
+        this.positionCursorAtEnd();
+        return;
+      }
+
+      // If positioning at the beginning
+      if (characterIndex === 0) {
+        this.positionCursorAtBeginning();
+        return;
+      }
+    }
+
+    // Fallback to character-based positioning
     this.restoreCursorPosition(characterIndex);
+  }
+
+  /**
+   * Position cursor at the end of content, respecting multiline structure (public API)
+   */
+  public setCursorAtEnd(): void {
+    this.positionCursorAtEnd();
+  }
+
+  /**
+   * Position cursor at the beginning of content, respecting multiline structure (public API)
+   */
+  public setCursorAtBeginning(): void {
+    this.positionCursorAtBeginning();
   }
 
   /**

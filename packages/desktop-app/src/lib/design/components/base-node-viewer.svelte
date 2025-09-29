@@ -414,20 +414,47 @@
       let targetPosition: number;
 
       if (direction === 'up') {
-        // Entering from bottom: convert visual columnHint to logical position
-        const lastLine = lines[lines.length - 1] || '';
+        // Entering from bottom: use multiline-aware positioning at end
+        if (isMultiline) {
+          // For multiline content, position cursor at the true end including empty lines
+          const selection = window.getSelection();
+          if (selection) {
+            const range = document.createRange();
+            const lineElements = Array.from(targetElement.children).filter(
+              child => child.tagName === 'DIV'
+            );
 
-        // Calculate position of last line start
+            if (lineElements.length > 0) {
+              const lastLine = lineElements[lineElements.length - 1];
+
+              // Position cursor at the end of the last line (including empty ones)
+              if (lastLine.childNodes.length > 0) {
+                // If the last line has content, position after the content
+                range.selectNodeContents(lastLine);
+                range.collapse(false);
+              } else {
+                // If the last line is empty, position inside it
+                range.setStart(lastLine, 0);
+                range.setEnd(lastLine, 0);
+              }
+
+              selection.removeAllRanges();
+              selection.addRange(range);
+              return; // Skip the setCursorAtPosition call below
+            }
+          }
+        }
+
+        // Fallback: use original character-based positioning for single-line content
+        const lastLine = lines[lines.length - 1] || '';
         let lastLineStart: number;
         if (isMultiline && lines.length > 1) {
-          // For multiline, sum up all previous lines
           lastLineStart = lines.slice(0, -1).reduce((sum, line) => sum + line.length, 0);
         } else {
           lastLineStart = content.length - lastLine.length;
         }
 
         // Apply same fixed assumptions as MinimalBaseNode
-        // Get hierarchy level for target node
         let hierarchyLevel = 0;
         let element = targetElement.closest('.node-container');
         while (element && element.parentElement) {
@@ -437,7 +464,6 @@
           element = element.parentElement.closest('.node-container');
         }
 
-        // Get font scaling for target node
         let fontScaling = 1.0;
         const nsContainer = targetElement.closest('.ns-node-container');
         if (nsContainer) {
@@ -447,11 +473,9 @@
           else if (nsContainer.classList.contains('text-node--h4')) fontScaling = 1.125;
         }
 
-        // Convert visual columnHint back to logical position
         const indentationOffset = hierarchyLevel * 4;
         let logicalColumn = Math.max(0, columnHint - indentationOffset);
 
-        // Adjust for font scaling (reverse the scaling)
         if (fontScaling !== 1.0) {
           logicalColumn = Math.round(logicalColumn / fontScaling);
         }
