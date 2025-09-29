@@ -1146,15 +1146,12 @@ export class ContentEditableController {
 
       // For multiline nodes, only navigate between nodes if at first/last line
       if (this.config.allowMultiline) {
-        const isAtFirst = this.isAtFirstLine();
-        const isAtLast = this.isAtLastLine();
-
-        // For up arrow: only navigate if at first line AND at the beginning of that line
-        // For down arrow: only navigate if at last line AND at the end of that line
-        // Special handling for empty lines to prevent jumping between nodes
+        // For up arrow: only navigate if at the beginning of the first line
+        // For down arrow: only navigate if at the end of the last line
+        // These methods already check if we're in the correct line
         const shouldNavigate =
-          (direction === 'up' && isAtFirst && this.isAtBeginningOfFirstLine()) ||
-          (direction === 'down' && isAtLast && this.isAtEndOfLastLine());
+          (direction === 'up' && this.isAtBeginningOfFirstLine()) ||
+          (direction === 'down' && this.isAtEndOfLastLine());
 
         if (!shouldNavigate) {
           // Let the browser handle line-by-line navigation within the multiline node
@@ -1431,6 +1428,16 @@ export class ContentEditableController {
 
     if (lineElements.length === 0) {
       return -1; // No div structure found
+    }
+
+    // First check if range.startContainer is itself one of the line divs
+    if (range.startContainer.nodeType === Node.ELEMENT_NODE &&
+        (range.startContainer as Element).tagName === 'DIV' &&
+        range.startContainer.parentNode === this.element) {
+      const index = lineElements.indexOf(range.startContainer as Element);
+      if (index !== -1) {
+        return index;
+      }
     }
 
     // Find which div contains the cursor
