@@ -755,7 +755,11 @@ export class ContentEditableController {
           result += divContent;
 
           // Add newline after each DIV except the last one
+          // However, if the last DIV is empty (contains only <br>), add a trailing newline
           if (!isLastNode) {
+            result += '\n';
+          } else if (isLastNode && divContent === '' && element.childNodes.length === 1 && element.firstChild?.nodeName === 'BR') {
+            // Last DIV is an empty line break - preserve as trailing newline
             result += '\n';
           }
         } else {
