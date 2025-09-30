@@ -1147,18 +1147,14 @@ export class ContentEditableController {
       let shouldNavigate = false;
 
       if (this.config.allowMultiline) {
-        // For multiline nodes, only navigate between nodes if at first/last line
+        // For multiline nodes, navigate between nodes when on first/last line
+        // preserving horizontal position (columnHint)
         if (direction === 'up') {
-          // Only navigate if at the beginning of the first line
-          shouldNavigate = this.isAtBeginningOfFirstLine();
+          // Navigate if on the first line (regardless of horizontal position)
+          shouldNavigate = this.isAtFirstLine();
         } else {
-          // For down arrow: check if we're at the last line first
-          const isAtLast = this.isAtLastLine();
-          if (isAtLast) {
-            // We're on the last line - check if at the end of it
-            shouldNavigate = this.isAtEnd();
-          }
-          // If not on last line at all, don't navigate (let browser handle)
+          // Navigate if on the last line (regardless of horizontal position)
+          shouldNavigate = this.isAtLastLine();
         }
 
         if (!shouldNavigate) {
@@ -1167,17 +1163,9 @@ export class ContentEditableController {
           return;
         }
       } else {
-        // For single-line nodes, check position before navigating
-        if (direction === 'up') {
-          shouldNavigate = this.isAtStart();
-        } else {
-          shouldNavigate = this.isAtEnd();
-        }
-
-        if (!shouldNavigate) {
-          // Not at the boundary, don't navigate between nodes
-          return;
-        }
+        // For single-line nodes, always navigate on arrow up/down
+        // (there's only one line, so we're always on first/last line)
+        shouldNavigate = true;
       }
 
       // Navigate between nodes

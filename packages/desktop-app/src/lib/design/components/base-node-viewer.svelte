@@ -414,35 +414,48 @@
       let targetPosition: number;
 
       if (direction === 'up') {
-        // Entering from bottom: use multiline-aware positioning at end
+        // Entering from bottom: position at columnHint on the last line
         if (isMultiline) {
-          // For multiline content, position cursor at the true end including empty lines
-          const selection = window.getSelection();
-          if (selection) {
-            const range = document.createRange();
-            const lineElements = Array.from(targetElement.children).filter(
-              child => child.tagName === 'DIV'
-            );
-
-            if (lineElements.length > 0) {
-              const lastLine = lineElements[lineElements.length - 1];
-
-              // Position cursor at the end of the last line (including empty ones)
-              if (lastLine.childNodes.length > 0) {
-                // If the last line has content, position after the content
-                range.selectNodeContents(lastLine);
-                range.collapse(false);
-              } else {
-                // If the last line is empty, position inside it
-                range.setStart(lastLine, 0);
-                range.setEnd(lastLine, 0);
-              }
-
-              selection.removeAllRanges();
-              selection.addRange(range);
-              return; // Skip the setCursorAtPosition call below
-            }
+          // For multiline content, position cursor at columnHint on last line
+          const lastLine = lines[lines.length - 1] || '';
+          let lastLineStart: number;
+          if (lines.length > 1) {
+            lastLineStart = lines.slice(0, -1).reduce((sum, line) => sum + line.length, 0);
+          } else {
+            lastLineStart = 0;
           }
+
+          // Apply same fixed assumptions as MinimalBaseNode
+          let hierarchyLevel = 0;
+          let element = targetElement.closest('.node-container');
+          while (element && element.parentElement) {
+            if (element.parentElement.classList.contains('node-children')) {
+              hierarchyLevel++;
+            }
+            element = element.parentElement.closest('.node-container');
+          }
+
+          let fontScaling = 1.0;
+          const nsContainer = targetElement.closest('.ns-node-container');
+          if (nsContainer) {
+            if (nsContainer.classList.contains('text-node--h1')) fontScaling = 2.0;
+            else if (nsContainer.classList.contains('text-node--h2')) fontScaling = 1.5;
+            else if (nsContainer.classList.contains('text-node--h3')) fontScaling = 1.25;
+            else if (nsContainer.classList.contains('text-node--h4')) fontScaling = 1.125;
+          }
+
+          const indentationOffset = hierarchyLevel * 4;
+          let logicalColumn = Math.max(0, columnHint - indentationOffset);
+
+          if (fontScaling !== 1.0) {
+            logicalColumn = Math.round(logicalColumn / fontScaling);
+          }
+
+          targetPosition = lastLineStart + Math.min(logicalColumn, lastLine.length);
+
+          // Now actually set the cursor position
+          setCursorAtPosition(targetElement, targetPosition);
+          return;
         }
 
         // Fallback: use original character-based positioning for single-line content
@@ -482,28 +495,42 @@
 
         targetPosition = lastLineStart + Math.min(logicalColumn, lastLine.length);
       } else {
-        // Entering from top: position at the beginning of the first line (including empty lines)
+        // Entering from top: position at columnHint on the first line
         if (isMultiline) {
-          // For multiline content, position cursor at the beginning of the first line
-          const selection = window.getSelection();
-          if (selection) {
-            const range = document.createRange();
-            const lineElements = Array.from(targetElement.children).filter(
-              child => child.tagName === 'DIV'
-            );
+          // For multiline content, position cursor at columnHint on first line
+          const firstLine = lines[0] || '';
 
-            if (lineElements.length > 0) {
-              const firstLine = lineElements[0];
-
-              // Position cursor at the beginning of the first line (including empty ones)
-              range.setStart(firstLine, 0);
-              range.setEnd(firstLine, 0);
-
-              selection.removeAllRanges();
-              selection.addRange(range);
-              return; // Skip the setCursorAtPosition call below
+          // Apply same fixed assumptions as MinimalBaseNode
+          let hierarchyLevel = 0;
+          let element = targetElement.closest('.node-container');
+          while (element && element.parentElement) {
+            if (element.parentElement.classList.contains('node-children')) {
+              hierarchyLevel++;
             }
+            element = element.parentElement.closest('.node-container');
           }
+
+          let fontScaling = 1.0;
+          const nsContainer = targetElement.closest('.ns-node-container');
+          if (nsContainer) {
+            if (nsContainer.classList.contains('text-node--h1')) fontScaling = 2.0;
+            else if (nsContainer.classList.contains('text-node--h2')) fontScaling = 1.5;
+            else if (nsContainer.classList.contains('text-node--h3')) fontScaling = 1.25;
+            else if (nsContainer.classList.contains('text-node--h4')) fontScaling = 1.125;
+          }
+
+          const indentationOffset = hierarchyLevel * 4;
+          let logicalColumn = Math.max(0, columnHint - indentationOffset);
+
+          if (fontScaling !== 1.0) {
+            logicalColumn = Math.round(logicalColumn / fontScaling);
+          }
+
+          targetPosition = Math.min(logicalColumn, firstLine.length);
+
+          // Now actually set the cursor position
+          setCursorAtPosition(targetElement, targetPosition);
+          return;
         }
 
         // Fallback: use original character-based positioning for single-line content
