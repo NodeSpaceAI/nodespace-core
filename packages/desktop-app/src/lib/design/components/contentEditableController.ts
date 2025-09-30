@@ -34,7 +34,7 @@ export interface ContentEditableEvents {
     cursorPosition?: number;
   }) => void;
   outdentNode: (data: { nodeId: string }) => void;
-  navigateArrow: (data: { nodeId: string; direction: 'up' | 'down'; columnHint: number }) => void;
+  navigateArrow: (data: { nodeId: string; direction: 'up' | 'down'; pixelOffset: number }) => void;
   combineWithPrevious: (data: { nodeId: string; currentContent: string }) => void;
   deleteNode: (data: { nodeId: string }) => void;
   // @ Trigger System Events
@@ -1170,11 +1170,21 @@ export class ContentEditableController {
 
       // Navigate between nodes
       event.preventDefault(); // Prevent browser from handling this
-      const columnHint = this.getCurrentColumn();
+      const pixelOffset = this.getCurrentPixelOffset();
+
+      console.log('[NAVIGATION TEST] Exiting node:', {
+        nodeId: this.nodeId,
+        direction,
+        pixelOffset,
+        elementLeft: this.element.getBoundingClientRect().left,
+        containerLeft: this.element.closest('.node-container')?.getBoundingClientRect().left,
+        rootLeft: (this.element.closest('.base-node-viewer') || document.body).getBoundingClientRect().left
+      });
+
       this.events.navigateArrow({
         nodeId: this.nodeId,
         direction,
-        columnHint
+        pixelOffset
       });
       return;
     }
@@ -1392,45 +1402,57 @@ export class ContentEditableController {
     return lineRange.toString().length === 0;
   }
 
-  private getCurrentColumn(): number {
+  /**
+   * Get current cursor position as pixel offset from root container.
+   * This eliminates character width conversion issues with proportional fonts.
+   */
+  private getCurrentPixelOffset(): number {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return 0;
 
     const range = selection.getRangeAt(0);
 
-    // For multiline content, calculate column position within the current line
-    if (this.config.allowMultiline) {
-      // Find the containing div (line) element
-      let currentElement: Node | null = range.startContainer;
-      let lineElement: Element | null = null;
+    try {
+      // Measure where cursor is currently
+      const cursorRange = document.createRange();
+      cursorRange.setStart(range.startContainer, range.startOffset);
+      cursorRange.setEnd(range.startContainer, range.startOffset);
 
-      while (currentElement && currentElement !== this.element) {
-        if (
-          currentElement.nodeType === Node.ELEMENT_NODE &&
-          (currentElement as Element).tagName === 'DIV' &&
-          currentElement.parentNode === this.element
-        ) {
-          lineElement = currentElement as Element;
-          break;
-        }
-        currentElement = currentElement.parentNode;
+      // Check if getBoundingClientRect is available (not in jsdom tests)
+      if (typeof cursorRange.getBoundingClientRect !== 'function') {
+        console.log('[getCurrentPixelOffset] getBoundingClientRect not available (test environment)');
+        return 0;
       }
 
-      if (lineElement) {
-        // Calculate position within this line element
-        const lineRange = document.createRange();
-        lineRange.selectNodeContents(lineElement);
-        lineRange.setEnd(range.startContainer, range.startOffset);
-        return lineRange.toString().length;
+      const cursorRect = cursorRange.getBoundingClientRect();
+
+      // Get root container for absolute positioning
+      const rootContainer = this.element.closest('.base-node-viewer') ||
+                           this.element.closest('.node-viewer-container') ||
+                           document.body;
+      const rootRect = rootContainer.getBoundingClientRect();
+
+      const pixelOffset = cursorRect.left - rootRect.left;
+
+      console.log('[getCurrentPixelOffset] pixelOffset:', Math.round(pixelOffset));
+      return pixelOffset;
+    } catch (e) {
+      console.warn('[getCurrentPixelOffset] Error measuring pixel offset:', e);
+      return 0;
+    }
+  }
+
+  private getFirstTextNode(element: HTMLElement): Text | null {
+    for (const node of element.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) {
+        return node as Text;
+      }
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const found = this.getFirstTextNode(node as HTMLElement);
+        if (found) return found;
       }
     }
-
-    // For single-line content, calculate from start of element
-    const preCaretRange = range.cloneRange();
-    preCaretRange.selectNodeContents(this.element);
-    preCaretRange.setEnd(range.startContainer, range.startOffset);
-
-    return preCaretRange.toString().length;
+    return null;
   }
 
   private getTextOffsetFromElement(node: Node, offset: number): number {

@@ -631,7 +631,7 @@ describe('ContentEditableController', () => {
       expect(navigateArrowSpy).toHaveBeenCalledWith({
         nodeId: 'test-node',
         direction: 'up',
-        columnHint: expect.any(Number)
+        pixelOffset: expect.any(Number)
       });
     });
 
@@ -679,7 +679,7 @@ describe('ContentEditableController', () => {
       expect(navigateArrowSpy).toHaveBeenCalledWith({
         nodeId: 'test-node',
         direction: 'down',
-        columnHint: expect.any(Number)
+        pixelOffset: expect.any(Number)
       });
     });
 

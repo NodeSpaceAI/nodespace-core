@@ -340,10 +340,10 @@
     event: CustomEvent<{
       nodeId: string;
       direction: 'up' | 'down';
-      columnHint: number;
+      pixelOffset: number;
     }>
   ) {
-    const { nodeId, direction, columnHint } = event.detail;
+    const { nodeId, direction, pixelOffset } = event.detail;
 
     // Get visible nodes from NodeManager
     const currentVisibleNodes = nodeManager.visibleNodes;
@@ -363,7 +363,7 @@
 
       if (acceptsNavigation) {
         // Found a node that accepts navigation - try to enter it
-        const success = enterNodeAtPosition(candidateNode.id, direction, columnHint);
+        const success = enterNodeAtPosition(candidateNode.id, direction, pixelOffset);
         if (success) return;
       }
 
@@ -372,11 +372,116 @@
     }
   }
 
+  /**
+   * Get the pixel offset where text starts in an element (measuring indentation).
+   * Returns the left edge of the first text character relative to root container.
+   */
+  function getTextStartPixelOffset(targetElement: HTMLElement): number {
+    try {
+      const firstTextNode = getFirstTextNode(targetElement);
+      if (!firstTextNode) return 0;
+
+      const tempRange = document.createRange();
+      tempRange.setStart(firstTextNode, 0);
+      tempRange.setEnd(firstTextNode, 0);
+      const rangeRect = tempRange.getBoundingClientRect();
+
+      const rootContainer = targetElement.closest('.base-node-viewer') ||
+                           targetElement.closest('.node-viewer-container') ||
+                           document.body;
+      const rootRect = rootContainer.getBoundingClientRect();
+
+      return rangeRect.left - rootRect.left;
+    } catch (e) {
+      console.warn('[Navigation] Error measuring text start:', e);
+      return 0;
+    }
+  }
+
+  // Helper to find first text node
+  function getFirstTextNode(element: HTMLElement): Text | null {
+    for (const node of element.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) {
+        return node as Text;
+      }
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const found = getFirstTextNode(node as HTMLElement);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Position cursor at a target pixel offset within a line by iterating through characters.
+   * This works correctly with proportional fonts without needing character width conversion.
+   */
+  function setCursorAtPixelOffset(element: HTMLElement, lineElement: Element, targetPixelOffset: number) {
+    const rootContainer = element.closest('.base-node-viewer') ||
+                         element.closest('.node-viewer-container') ||
+                         document.body;
+    const rootRect = rootContainer.getBoundingClientRect();
+
+    const textNodes = getTextNodes(lineElement as HTMLElement);
+    if (textNodes.length === 0) {
+      // Empty line - position at start
+      const selection = window.getSelection();
+      if (selection) {
+        const range = document.createRange();
+        range.selectNodeContents(lineElement);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      return;
+    }
+
+    // Binary search through character positions to find closest to target pixel offset
+    let bestOffset = 0;
+    let bestDistance = Infinity;
+
+    for (const textNode of textNodes) {
+      const textContent = textNode.textContent || '';
+      for (let i = 0; i <= textContent.length; i++) {
+        try {
+          const testRange = document.createRange();
+          testRange.setStart(textNode, i);
+          testRange.setEnd(textNode, i);
+          const testRect = testRange.getBoundingClientRect();
+          const currentPixel = testRect.left - rootRect.left;
+          const distance = Math.abs(currentPixel - targetPixelOffset);
+
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestOffset = i;
+            // Save the node for later use
+            (setCursorAtPixelOffset as any).bestNode = textNode;
+          }
+
+          // Early exit if we've gone past the target
+          if (currentPixel > targetPixelOffset) break;
+        } catch (e) {
+          // Skip invalid positions
+        }
+      }
+    }
+
+    // Set cursor at best position
+    const selection = window.getSelection();
+    if (selection && (setCursorAtPixelOffset as any).bestNode) {
+      const range = document.createRange();
+      range.setStart((setCursorAtPixelOffset as any).bestNode, bestOffset);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  }
+
   // Enter a node using its entry methods or fallback positioning
   function enterNodeAtPosition(
     targetNodeId: string,
     direction: 'up' | 'down',
-    columnHint: number
+    pixelOffset: number
   ): boolean {
     // Try component-level navigation methods first (future enhancement)
     // const nodeComponent = getNodeComponent(targetNodeId);
@@ -386,191 +491,35 @@
     //     : nodeComponent.navigationMethods.enterFromTop(columnHint);
     // }
 
-    // Fallback: direct DOM entry point positioning
+    // Pixel-based positioning - works correctly with proportional fonts
     setTimeout(() => {
       const targetElement = document.getElementById(`contenteditable-${targetNodeId}`);
       if (!targetElement) return;
 
       targetElement.focus();
 
-      // Entry point logic: nodes define where cursor should land when entered
-      const content = targetElement.textContent || '';
+      // Check if multiline or single-line
+      const divElements = targetElement.querySelectorAll(':scope > div');
+      const isMultiline = divElements.length > 0;
 
-      // Helper function to get line information for multiline contenteditable
-      function getLineInfo(element: HTMLElement) {
-        const divElements = element.querySelectorAll(':scope > div');
-        if (divElements.length > 0) {
-          // Multiline content with div structure
-          const lines = Array.from(divElements).map((div) => div.textContent || '');
-          return { lines, isMultiline: true };
-        } else {
-          // Single line or fallback
-          const lines = content.split('\n');
-          return { lines, isMultiline: false };
-        }
-      }
+      console.log('[NAVIGATION TEST] Entering node:', {
+        targetNodeId,
+        direction,
+        pixelOffset,
+        isMultiline
+      });
 
-      const { lines, isMultiline } = getLineInfo(targetElement);
-      let targetPosition: number;
+      if (isMultiline) {
+        // For multiline: position cursor at pixelOffset within the first/last line
+        const lineElement = direction === 'up'
+          ? divElements[divElements.length - 1]  // Last line when entering from bottom
+          : divElements[0];                       // First line when entering from top
 
-      if (direction === 'up') {
-        // Entering from bottom: position at columnHint on the last line
-        if (isMultiline) {
-          // For multiline content, position cursor at columnHint on last line
-          const lastLine = lines[lines.length - 1] || '';
-          let lastLineStart: number;
-          if (lines.length > 1) {
-            lastLineStart = lines.slice(0, -1).reduce((sum, line) => sum + line.length, 0);
-          } else {
-            lastLineStart = 0;
-          }
-
-          // Apply same fixed assumptions as MinimalBaseNode
-          let hierarchyLevel = 0;
-          let element = targetElement.closest('.node-container');
-          while (element && element.parentElement) {
-            if (element.parentElement.classList.contains('node-children')) {
-              hierarchyLevel++;
-            }
-            element = element.parentElement.closest('.node-container');
-          }
-
-          let fontScaling = 1.0;
-          const nsContainer = targetElement.closest('.ns-node-container');
-          if (nsContainer) {
-            if (nsContainer.classList.contains('text-node--h1')) fontScaling = 2.0;
-            else if (nsContainer.classList.contains('text-node--h2')) fontScaling = 1.5;
-            else if (nsContainer.classList.contains('text-node--h3')) fontScaling = 1.25;
-            else if (nsContainer.classList.contains('text-node--h4')) fontScaling = 1.125;
-          }
-
-          const indentationOffset = hierarchyLevel * 4;
-          let logicalColumn = Math.max(0, columnHint - indentationOffset);
-
-          if (fontScaling !== 1.0) {
-            logicalColumn = Math.round(logicalColumn / fontScaling);
-          }
-
-          targetPosition = lastLineStart + Math.min(logicalColumn, lastLine.length);
-
-          // Now actually set the cursor position
-          setCursorAtPosition(targetElement, targetPosition);
-          return;
-        }
-
-        // Fallback: use original character-based positioning for single-line content
-        const lastLine = lines[lines.length - 1] || '';
-        let lastLineStart: number;
-        if (isMultiline && lines.length > 1) {
-          lastLineStart = lines.slice(0, -1).reduce((sum, line) => sum + line.length, 0);
-        } else {
-          lastLineStart = content.length - lastLine.length;
-        }
-
-        // Apply same fixed assumptions as MinimalBaseNode
-        let hierarchyLevel = 0;
-        let element = targetElement.closest('.node-container');
-        while (element && element.parentElement) {
-          if (element.parentElement.classList.contains('node-children')) {
-            hierarchyLevel++;
-          }
-          element = element.parentElement.closest('.node-container');
-        }
-
-        let fontScaling = 1.0;
-        const nsContainer = targetElement.closest('.ns-node-container');
-        if (nsContainer) {
-          if (nsContainer.classList.contains('text-node--h1')) fontScaling = 2.0;
-          else if (nsContainer.classList.contains('text-node--h2')) fontScaling = 1.5;
-          else if (nsContainer.classList.contains('text-node--h3')) fontScaling = 1.25;
-          else if (nsContainer.classList.contains('text-node--h4')) fontScaling = 1.125;
-        }
-
-        const indentationOffset = hierarchyLevel * 4;
-        let logicalColumn = Math.max(0, columnHint - indentationOffset);
-
-        if (fontScaling !== 1.0) {
-          logicalColumn = Math.round(logicalColumn / fontScaling);
-        }
-
-        targetPosition = lastLineStart + Math.min(logicalColumn, lastLine.length);
+        setCursorAtPixelOffset(targetElement, lineElement, pixelOffset);
       } else {
-        // Entering from top: position at columnHint on the first line
-        if (isMultiline) {
-          // For multiline content, position cursor at columnHint on first line
-          const firstLine = lines[0] || '';
-
-          // Apply same fixed assumptions as MinimalBaseNode
-          let hierarchyLevel = 0;
-          let element = targetElement.closest('.node-container');
-          while (element && element.parentElement) {
-            if (element.parentElement.classList.contains('node-children')) {
-              hierarchyLevel++;
-            }
-            element = element.parentElement.closest('.node-container');
-          }
-
-          let fontScaling = 1.0;
-          const nsContainer = targetElement.closest('.ns-node-container');
-          if (nsContainer) {
-            if (nsContainer.classList.contains('text-node--h1')) fontScaling = 2.0;
-            else if (nsContainer.classList.contains('text-node--h2')) fontScaling = 1.5;
-            else if (nsContainer.classList.contains('text-node--h3')) fontScaling = 1.25;
-            else if (nsContainer.classList.contains('text-node--h4')) fontScaling = 1.125;
-          }
-
-          const indentationOffset = hierarchyLevel * 4;
-          let logicalColumn = Math.max(0, columnHint - indentationOffset);
-
-          if (fontScaling !== 1.0) {
-            logicalColumn = Math.round(logicalColumn / fontScaling);
-          }
-
-          targetPosition = Math.min(logicalColumn, firstLine.length);
-
-          // Now actually set the cursor position
-          setCursorAtPosition(targetElement, targetPosition);
-          return;
-        }
-
-        // Fallback: use original character-based positioning for single-line content
-        const firstLine = lines[0] || '';
-
-        // Apply same fixed assumptions as MinimalBaseNode
-        // Get hierarchy level for target node
-        let hierarchyLevel = 0;
-        let element = targetElement.closest('.node-container');
-        while (element && element.parentElement) {
-          if (element.parentElement.classList.contains('node-children')) {
-            hierarchyLevel++;
-          }
-          element = element.parentElement.closest('.node-container');
-        }
-
-        // Get font scaling for target node
-        let fontScaling = 1.0;
-        const nsContainer = targetElement.closest('.ns-node-container');
-        if (nsContainer) {
-          if (nsContainer.classList.contains('text-node--h1')) fontScaling = 2.0;
-          else if (nsContainer.classList.contains('text-node--h2')) fontScaling = 1.5;
-          else if (nsContainer.classList.contains('text-node--h3')) fontScaling = 1.25;
-          else if (nsContainer.classList.contains('text-node--h4')) fontScaling = 1.125;
-        }
-
-        // Convert visual columnHint back to logical position
-        const indentationOffset = hierarchyLevel * 4;
-        let logicalColumn = Math.max(0, columnHint - indentationOffset);
-
-        // Adjust for font scaling (reverse the scaling)
-        if (fontScaling !== 1.0) {
-          logicalColumn = Math.round(logicalColumn / fontScaling);
-        }
-
-        targetPosition = Math.min(logicalColumn, firstLine.length);
+        // For single-line: position cursor at pixelOffset within the single line
+        setCursorAtPixelOffset(targetElement, targetElement, pixelOffset);
       }
-
-      // Set cursor at entry point
-      setCursorAtPosition(targetElement, targetPosition);
     }, 0);
 
     return true;
