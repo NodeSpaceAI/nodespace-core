@@ -1382,7 +1382,25 @@ export class ContentEditableController {
       return false;
     }
 
-    // Check if we're at the beginning of this first line
+    // Check if there's text content before the first DIV
+    // If yes, the first DIV is NOT the first line - the text before it is
+    const firstDivIndex = Array.from(this.element.childNodes).indexOf(firstLine as ChildNode);
+    let hasTextBeforeFirstDiv = false;
+
+    for (let i = 0; i < firstDivIndex; i++) {
+      const node = this.element.childNodes[i];
+      if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) {
+        hasTextBeforeFirstDiv = true;
+        break;
+      }
+    }
+
+    if (hasTextBeforeFirstDiv) {
+      // There's text before this DIV, so we're NOT at the beginning of the first line
+      return false;
+    }
+
+    // No text before first DIV - check if we're at the beginning of this first DIV
     const lineRange = document.createRange();
     lineRange.selectNodeContents(firstLine);
     lineRange.setEnd(range.startContainer, range.startOffset);
