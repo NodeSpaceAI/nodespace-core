@@ -1326,7 +1326,19 @@ export class ContentEditableController {
     );
 
     if (lineElements.length === 0) {
-      return this.isAtStart();
+      // No DIV structure yet - check if there are line breaks in the content
+      const textContent = this.element.textContent || '';
+      if (!textContent.includes('\n')) {
+        // Single-line content - use isAtStart
+        return this.isAtStart();
+      }
+      // Has line breaks but no DIV structure yet - check cursor position in text
+      const preCaretRange = range.cloneRange();
+      preCaretRange.selectNodeContents(this.element);
+      preCaretRange.setEnd(range.startContainer, range.startOffset);
+      const textBeforeCursor = preCaretRange.toString();
+      // At beginning of first line if no text before cursor OR only whitespace before first newline
+      return textBeforeCursor.length === 0 || !textBeforeCursor.includes('\n');
     }
 
     const firstLine = lineElements[0];
@@ -1373,7 +1385,19 @@ export class ContentEditableController {
     );
 
     if (lineElements.length === 0) {
-      return this.isAtEnd();
+      // No DIV structure yet - check if there are line breaks in the content
+      const textContent = this.element.textContent || '';
+      if (!textContent.includes('\n')) {
+        // Single-line content - use isAtEnd
+        return this.isAtEnd();
+      }
+      // Has line breaks but no DIV structure yet - check cursor position in text
+      const postCaretRange = range.cloneRange();
+      postCaretRange.selectNodeContents(this.element);
+      postCaretRange.setStart(range.startContainer, range.startOffset);
+      const textAfterCursor = postCaretRange.toString();
+      // At end of last line if no text after cursor OR no newline after cursor
+      return textAfterCursor.length === 0 || !textAfterCursor.includes('\n');
     }
 
     const lastLine = lineElements[lineElements.length - 1];
