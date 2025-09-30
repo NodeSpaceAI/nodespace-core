@@ -113,20 +113,14 @@
 
   /* Main content area */
   .main-content {
-    overflow: auto;
+    overflow: hidden; /* Don't scroll here - let child components handle it */
     position: relative;
     background: hsl(var(--content-background));
     transition: margin-left 0.3s ease;
     flex: 1;
-    min-height: 0;
-  }
-
-  /* Ensure proper scrolling behavior */
-  .main-content {
-    /* Allow content to scroll independently */
+    min-height: 0; /* Critical for flex children to scroll properly */
     display: flex;
     flex-direction: column;
-    min-height: 100vh;
   }
 
   /* Responsive behavior for smaller screens */

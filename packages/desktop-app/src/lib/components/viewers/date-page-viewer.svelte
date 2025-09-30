@@ -74,57 +74,49 @@
 <!-- Keyboard event listener -->
 <svelte:window on:keydown={handleKeydown} />
 
-<div class="date-page-viewer">
-  <!-- Date Navigation Header - matches original +page.svelte design -->
-  <div class="date-header">
-    <div class="date-nav-container">
-      <div class="date-display">
-        <Icon
-          name="calendar"
-          size={20}
-          color="hsl(var(--muted-foreground))"
-          className="calendar-icon"
-        />
-        <h1
-          style="font-size: 2rem; font-weight: 500; color: hsl(var(--muted-foreground)); margin: 0;"
-        >
-          {formattedDate}
-        </h1>
-      </div>
+<NodeServiceContext>
+  <BaseNodeViewer>
+    {#snippet header()}
+      <!-- Date Navigation Header -->
+      <div class="date-header">
+        <div class="date-nav-container">
+          <div class="date-display">
+            <Icon
+              name="calendar"
+              size={20}
+              color="hsl(var(--muted-foreground))"
+              className="calendar-icon"
+            />
+            <h1
+              style="font-size: 2rem; font-weight: 500; color: hsl(var(--muted-foreground)); margin: 0;"
+            >
+              {formattedDate}
+            </h1>
+          </div>
 
-      <div class="date-nav-buttons">
-        <button class="date-nav-btn" onclick={() => navigateDate('prev')} aria-label="Previous day">
-          <Icon name="chevronRight" size={16} color="currentColor" className="rotate-left" />
-        </button>
-        <button class="date-nav-btn" onclick={() => navigateDate('next')} aria-label="Next day">
-          <Icon name="chevronRight" size={16} color="currentColor" />
-        </button>
+          <div class="date-nav-buttons">
+            <button
+              class="date-nav-btn"
+              onclick={() => navigateDate('prev')}
+              aria-label="Previous day"
+            >
+              <Icon name="chevronRight" size={16} color="currentColor" className="rotate-left" />
+            </button>
+            <button class="date-nav-btn" onclick={() => navigateDate('next')} aria-label="Next day">
+              <Icon name="chevronRight" size={16} color="currentColor" />
+            </button>
+          </div>
+        </div>
       </div>
-    </div>
-  </div>
-
-  <!-- Node Content Area -->
-  <div class="node-content-area">
-    <NodeServiceContext>
-      <BaseNodeViewer />
-    </NodeServiceContext>
-  </div>
-</div>
+    {/snippet}
+  </BaseNodeViewer>
+</NodeServiceContext>
 
 <style>
-  .date-page-viewer {
-    /* Full height container for the entire date viewer */
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    width: 100%;
-  }
-
-  /* Date header styling - matches original +page.svelte design exactly */
+  /* Date Navigation Header Styling */
   .date-header {
     border-bottom: 1px solid hsl(var(--border));
     background: hsl(var(--background));
-    flex-shrink: 0;
   }
 
   .date-nav-container {
@@ -163,16 +155,6 @@
   .date-nav-btn:hover {
     background: hsl(var(--muted));
     color: hsl(var(--foreground));
-  }
-
-  .node-content-area {
-    /* Container for the BaseNodeViewer - takes remaining space */
-    flex: 1;
-    overflow: auto;
-    display: flex;
-    flex-direction: column;
-    /* Add proper padding for node tree spacing - matches original editor-area */
-    padding: 1.5rem;
   }
 
   /* Calendar icon styling */

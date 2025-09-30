@@ -13,6 +13,10 @@
   import BaseNode from '$lib/design/components/base-node.svelte';
   import TextNodeViewer from '$lib/components/viewers/text-node-viewer.svelte';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
+  import type { Snippet } from 'svelte';
+
+  // Props
+  let { header }: { header?: Snippet } = $props();
 
   // Get nodeManager from shared context
   const services = getNodeServices();
@@ -660,144 +664,88 @@
   });
 </script>
 
-<!-- Node viewer content -->
-<div class="node-viewer">
-  {#each nodeManager.visibleNodes as node (node.id)}
-    <div
-      class="node-container"
-      data-has-children={node.children?.length > 0}
-      style="margin-left: {(node.depth || 0) * 2.5}rem"
-    >
-      <div class="node-content-wrapper">
-        <!-- Chevron for parent nodes using design system approach -->
-        {#if node.children && node.children.length > 0}
-          <button
-            class="chevron-icon"
-            class:expanded={node.expanded}
-            onclick={() => handleToggleExpanded(node.id)}
-            onkeydown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                handleToggleExpanded(node.id);
-              }
-            }}
-            aria-label={node.expanded ? 'Collapse node' : 'Expand node'}
-            aria-expanded={node.expanded}
-          >
-            <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
-              <path d="M6 3l5 5-5 5-1-1 4-4-4-4 1-1z" />
-            </svg>
-          </button>
-        {/if}
+<!-- Base Node Viewer: Header + Scrollable Children Area -->
+<div class="base-node-viewer">
+  <!-- Header Section (can be customized via snippet) -->
+  {#if header}
+    <div class="viewer-header">
+      {@render header()}
+    </div>
+  {/if}
 
-        <!-- Node viewer with stable component references -->
-        {#if node.nodeType === 'text'}
-          {#key `${node.id}-${node.nodeType}`}
-            <TextNodeViewer
-              nodeId={node.id}
-              nodeType={node.nodeType}
-              autoFocus={node.autoFocus || node.id === focusedNodeId}
-              content={node.content}
-              inheritHeaderLevel={node.inheritHeaderLevel || 0}
-              children={node.children}
-              on:createNewNode={handleCreateNewNode}
-              on:indentNode={handleIndentNode}
-              on:outdentNode={handleOutdentNode}
-              on:navigateArrow={handleArrowNavigation}
-              on:contentChanged={(e) => {
-                const content = e.detail.content;
-
-                // Update node content (placeholder flag is handled automatically)
-                nodeManager.updateNodeContent(node.id, content);
-              }}
-              on:slashCommandSelected={(e) => {
-                if (node.isPlaceholder) {
-                  // For placeholder nodes, just update the nodeType locally
-                  if ('updatePlaceholderNodeType' in nodeManager) {
-                    (nodeManager as any).updatePlaceholderNodeType(node.id, e.detail.nodeType);
-                  }
-                } else {
-                  // For real nodes, update node type with full persistence
-                  nodeManager.updateNodeType(node.id, e.detail.nodeType);
+  <!-- Scrollable Node Content Area (children structure) -->
+  <div class="node-content-area">
+    {#each nodeManager.visibleNodes as node (node.id)}
+      <div
+        class="node-container"
+        data-has-children={node.children?.length > 0}
+        style="margin-left: {(node.depth || 0) * 2.5}rem"
+      >
+        <div class="node-content-wrapper">
+          <!-- Chevron for parent nodes using design system approach -->
+          {#if node.children && node.children.length > 0}
+            <button
+              class="chevron-icon"
+              class:expanded={node.expanded}
+              onclick={() => handleToggleExpanded(node.id)}
+              onkeydown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  handleToggleExpanded(node.id);
                 }
-
-                // Set autoFocus to restore focus after nodeType change
-                focusedNodeId = node.id;
               }}
-              on:nodeTypeChanged={(
-                e: CustomEvent<{ nodeType: string; cleanedContent?: string }>
-              ) => {
-                const newNodeType = e.detail.nodeType;
-                const cleanedContent = e.detail.cleanedContent;
-                const targetNode = nodeManager.nodes.get(node.id);
-                if (targetNode) {
-                  // Update both the node manager and local state
-                  targetNode.nodeType = newNodeType;
+              aria-label={node.expanded ? 'Collapse node' : 'Expand node'}
+              aria-expanded={node.expanded}
+            >
+              <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6 3l5 5-5 5-1-1 4-4-4-4 1-1z" />
+              </svg>
+            </button>
+          {/if}
 
-                  // If cleanedContent is provided, update the node content too
-                  if (cleanedContent !== undefined) {
-                    // Use requestAnimationFrame to ensure the update happens after component mounting
-                    requestAnimationFrame(() => {
-                      // Use proper node manager method to trigger reactivity
-                      nodeManager.updateNodeContent(node.id, cleanedContent);
-                    });
-                  }
-
-                  // Clean up task-specific metadata when converting to text
-                  if (newNodeType === 'text' && targetNode.metadata.taskState) {
-                    const { taskState, ...cleanMetadata } = targetNode.metadata;
-                    void taskState; // Intentionally unused - extracted to remove from metadata
-                    targetNode.metadata = { ...cleanMetadata, _forceUpdate: Date.now() };
-                  } else {
-                    targetNode.metadata = { ...targetNode.metadata, _forceUpdate: Date.now() };
-                  }
-                  nodeManager.updateNodeContent(targetNode.id, targetNode.content);
-                }
-                focusedNodeId = node.id;
-              }}
-              on:combineWithPrevious={handleCombineWithPrevious}
-              on:deleteNode={handleDeleteNode}
-            />
-          {/key}
-        {:else}
-          <!-- Use plugin registry for non-text node types with key for re-rendering -->
-          {#if node.nodeType in loadedNodes}
+          <!-- Node viewer with stable component references -->
+          {#if node.nodeType === 'text'}
             {#key `${node.id}-${node.nodeType}`}
-              {@const NodeComponent = loadedNodes[node.nodeType] as typeof BaseNode}
-              <NodeComponent
+              <TextNodeViewer
                 nodeId={node.id}
                 nodeType={node.nodeType}
                 autoFocus={node.autoFocus || node.id === focusedNodeId}
                 content={node.content}
-                headerLevel={node.inheritHeaderLevel || 0}
+                inheritHeaderLevel={node.inheritHeaderLevel || 0}
                 children={node.children}
-                metadata={node.metadata || {}}
-                editableConfig={{ allowMultiline: true }}
                 on:createNewNode={handleCreateNewNode}
                 on:indentNode={handleIndentNode}
                 on:outdentNode={handleOutdentNode}
                 on:navigateArrow={handleArrowNavigation}
-                on:contentChanged={(e: CustomEvent<{ content: string }>) => {
+                on:contentChanged={(e) => {
                   const content = e.detail.content;
+
                   // Update node content (placeholder flag is handled automatically)
                   nodeManager.updateNodeContent(node.id, content);
-                  // Set autoFocus to restore focus after nodeType change
-                  focusedNodeId = node.id;
                 }}
-                on:headerLevelChanged={() => {
-                  // Header level change is handled automatically through content updates
-                  // Just restore focus after the change
+                on:slashCommandSelected={(e) => {
+                  if (node.isPlaceholder) {
+                    // For placeholder nodes, just update the nodeType locally
+                    if ('updatePlaceholderNodeType' in nodeManager) {
+                      (nodeManager as any).updatePlaceholderNodeType(node.id, e.detail.nodeType);
+                    }
+                  } else {
+                    // For real nodes, update node type with full persistence
+                    nodeManager.updateNodeType(node.id, e.detail.nodeType);
+                  }
+
+                  // Set autoFocus to restore focus after nodeType change
                   focusedNodeId = node.id;
                 }}
                 on:nodeTypeChanged={(
                   e: CustomEvent<{ nodeType: string; cleanedContent?: string }>
                 ) => {
-                  const nodeType = e.detail.nodeType;
+                  const newNodeType = e.detail.nodeType;
                   const cleanedContent = e.detail.cleanedContent;
                   const targetNode = nodeManager.nodes.get(node.id);
                   if (targetNode) {
-                    // Update the node type
-                    targetNode.nodeType = nodeType;
+                    // Update both the node manager and local state
+                    targetNode.nodeType = newNodeType;
 
                     // If cleanedContent is provided, update the node content too
                     if (cleanedContent !== undefined) {
@@ -808,131 +756,215 @@
                       });
                     }
 
-                    // CRITICAL: Clean up type-specific metadata when changing node types
-                    if (nodeType === 'text' && targetNode.metadata.taskState) {
-                      // When converting from task to text, remove task-specific metadata
+                    // Clean up task-specific metadata when converting to text
+                    if (newNodeType === 'text' && targetNode.metadata.taskState) {
                       const { taskState, ...cleanMetadata } = targetNode.metadata;
                       void taskState; // Intentionally unused - extracted to remove from metadata
                       targetNode.metadata = { ...cleanMetadata, _forceUpdate: Date.now() };
                     } else {
-                      // For other conversions, just force update
                       targetNode.metadata = { ...targetNode.metadata, _forceUpdate: Date.now() };
                     }
-
-                    // Use the working sync mechanism from taskStateChanged
                     nodeManager.updateNodeContent(targetNode.id, targetNode.content);
                   }
-                  // Set autoFocus to restore focus after nodeType change
                   focusedNodeId = node.id;
-                }}
-                on:slashCommandSelected={(
-                  e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
-                ) => {
-                  // Store cursor position before node type change
-                  if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
-                    pendingCursorPositions.set(node.id, e.detail.cursorPosition);
-                  }
-
-                  if (node.isPlaceholder) {
-                    // For placeholder nodes, just update the nodeType locally
-                    if ('updatePlaceholderNodeType' in nodeManager) {
-                      (nodeManager as any).updatePlaceholderNodeType(node.id, e.detail.nodeType);
-                    }
-                  } else {
-                    // For real nodes, update node type with full persistence
-                    nodeManager.updateNodeType(node.id, e.detail.nodeType);
-                  }
-
-                  // Set autoFocus to restore focus after nodeType change
-                  focusedNodeId = node.id;
-                }}
-                on:iconClick={handleIconClick}
-                on:taskStateChanged={(e) => {
-                  const { nodeId, state } = e.detail;
-                  const node = nodeManager.nodes.get(nodeId);
-                  if (node) {
-                    node.metadata = { ...node.metadata, taskState: state };
-                    // Trigger sync to persist the change
-                    nodeManager.updateNodeContent(nodeId, node.content);
-                  }
                 }}
                 on:combineWithPrevious={handleCombineWithPrevious}
                 on:deleteNode={handleDeleteNode}
               />
             {/key}
           {:else}
-            <!-- Final fallback to BaseNode with key for re-rendering -->
-            {#key `${node.id}-${node.nodeType}`}
-              <BaseNode
-                nodeId={node.id}
-                nodeType={node.nodeType}
-                autoFocus={node.autoFocus || node.id === focusedNodeId}
-                content={node.content}
-                headerLevel={node.inheritHeaderLevel || 0}
-                children={node.children}
-                metadata={node.metadata || {}}
-                editableConfig={{ allowMultiline: true }}
-                on:createNewNode={handleCreateNewNode}
-                on:indentNode={handleIndentNode}
-                on:outdentNode={handleOutdentNode}
-                on:navigateArrow={handleArrowNavigation}
-                on:contentChanged={(e: CustomEvent<{ content: string }>) => {
-                  const content = e.detail.content;
+            <!-- Use plugin registry for non-text node types with key for re-rendering -->
+            {#if node.nodeType in loadedNodes}
+              {#key `${node.id}-${node.nodeType}`}
+                {@const NodeComponent = loadedNodes[node.nodeType] as typeof BaseNode}
+                <NodeComponent
+                  nodeId={node.id}
+                  nodeType={node.nodeType}
+                  autoFocus={node.autoFocus || node.id === focusedNodeId}
+                  content={node.content}
+                  headerLevel={node.inheritHeaderLevel || 0}
+                  children={node.children}
+                  metadata={node.metadata || {}}
+                  editableConfig={{ allowMultiline: true }}
+                  on:createNewNode={handleCreateNewNode}
+                  on:indentNode={handleIndentNode}
+                  on:outdentNode={handleOutdentNode}
+                  on:navigateArrow={handleArrowNavigation}
+                  on:contentChanged={(e: CustomEvent<{ content: string }>) => {
+                    const content = e.detail.content;
+                    // Update node content (placeholder flag is handled automatically)
+                    nodeManager.updateNodeContent(node.id, content);
+                    // Set autoFocus to restore focus after nodeType change
+                    focusedNodeId = node.id;
+                  }}
+                  on:headerLevelChanged={() => {
+                    // Header level change is handled automatically through content updates
+                    // Just restore focus after the change
+                    focusedNodeId = node.id;
+                  }}
+                  on:nodeTypeChanged={(
+                    e: CustomEvent<{ nodeType: string; cleanedContent?: string }>
+                  ) => {
+                    const nodeType = e.detail.nodeType;
+                    const cleanedContent = e.detail.cleanedContent;
+                    const targetNode = nodeManager.nodes.get(node.id);
+                    if (targetNode) {
+                      // Update the node type
+                      targetNode.nodeType = nodeType;
 
-                  // Update node content (placeholder flag is handled automatically)
-                  nodeManager.updateNodeContent(node.id, content);
-                }}
-                on:slashCommandSelected={(
-                  e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
-                ) => {
-                  // Store cursor position before node type change
-                  if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
-                    pendingCursorPositions.set(node.id, e.detail.cursorPosition);
-                  }
+                      // If cleanedContent is provided, update the node content too
+                      if (cleanedContent !== undefined) {
+                        // Use requestAnimationFrame to ensure the update happens after component mounting
+                        requestAnimationFrame(() => {
+                          // Use proper node manager method to trigger reactivity
+                          nodeManager.updateNodeContent(node.id, cleanedContent);
+                        });
+                      }
 
-                  if (node.isPlaceholder) {
-                    // For placeholder nodes, just update the nodeType locally
-                    if ('updatePlaceholderNodeType' in nodeManager) {
-                      (nodeManager as any).updatePlaceholderNodeType(node.id, e.detail.nodeType);
+                      // CRITICAL: Clean up type-specific metadata when changing node types
+                      if (nodeType === 'text' && targetNode.metadata.taskState) {
+                        // When converting from task to text, remove task-specific metadata
+                        const { taskState, ...cleanMetadata } = targetNode.metadata;
+                        void taskState; // Intentionally unused - extracted to remove from metadata
+                        targetNode.metadata = { ...cleanMetadata, _forceUpdate: Date.now() };
+                      } else {
+                        // For other conversions, just force update
+                        targetNode.metadata = { ...targetNode.metadata, _forceUpdate: Date.now() };
+                      }
+
+                      // Use the working sync mechanism from taskStateChanged
+                      nodeManager.updateNodeContent(targetNode.id, targetNode.content);
                     }
-                  } else {
-                    // For real nodes, update node type with full persistence
-                    nodeManager.updateNodeType(node.id, e.detail.nodeType);
-                  }
+                    // Set autoFocus to restore focus after nodeType change
+                    focusedNodeId = node.id;
+                  }}
+                  on:slashCommandSelected={(
+                    e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
+                  ) => {
+                    // Store cursor position before node type change
+                    if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
+                      pendingCursorPositions.set(node.id, e.detail.cursorPosition);
+                    }
 
-                  // Set autoFocus to restore focus after nodeType change
-                  focusedNodeId = node.id;
-                }}
-                on:iconClick={handleIconClick}
-                on:taskStateChanged={(e) => {
-                  const { nodeId, state } = e.detail;
-                  const node = nodeManager.nodes.get(nodeId);
-                  if (node) {
-                    node.metadata = { ...node.metadata, taskState: state };
-                    // Trigger sync to persist the change
-                    nodeManager.updateNodeContent(nodeId, node.content);
-                  }
-                }}
-                on:combineWithPrevious={handleCombineWithPrevious}
-                on:deleteNode={handleDeleteNode}
-              />
-            {/key}
+                    if (node.isPlaceholder) {
+                      // For placeholder nodes, just update the nodeType locally
+                      if ('updatePlaceholderNodeType' in nodeManager) {
+                        (nodeManager as any).updatePlaceholderNodeType(node.id, e.detail.nodeType);
+                      }
+                    } else {
+                      // For real nodes, update node type with full persistence
+                      nodeManager.updateNodeType(node.id, e.detail.nodeType);
+                    }
+
+                    // Set autoFocus to restore focus after nodeType change
+                    focusedNodeId = node.id;
+                  }}
+                  on:iconClick={handleIconClick}
+                  on:taskStateChanged={(e) => {
+                    const { nodeId, state } = e.detail;
+                    const node = nodeManager.nodes.get(nodeId);
+                    if (node) {
+                      node.metadata = { ...node.metadata, taskState: state };
+                      // Trigger sync to persist the change
+                      nodeManager.updateNodeContent(nodeId, node.content);
+                    }
+                  }}
+                  on:combineWithPrevious={handleCombineWithPrevious}
+                  on:deleteNode={handleDeleteNode}
+                />
+              {/key}
+            {:else}
+              <!-- Final fallback to BaseNode with key for re-rendering -->
+              {#key `${node.id}-${node.nodeType}`}
+                <BaseNode
+                  nodeId={node.id}
+                  nodeType={node.nodeType}
+                  autoFocus={node.autoFocus || node.id === focusedNodeId}
+                  content={node.content}
+                  headerLevel={node.inheritHeaderLevel || 0}
+                  children={node.children}
+                  metadata={node.metadata || {}}
+                  editableConfig={{ allowMultiline: true }}
+                  on:createNewNode={handleCreateNewNode}
+                  on:indentNode={handleIndentNode}
+                  on:outdentNode={handleOutdentNode}
+                  on:navigateArrow={handleArrowNavigation}
+                  on:contentChanged={(e: CustomEvent<{ content: string }>) => {
+                    const content = e.detail.content;
+
+                    // Update node content (placeholder flag is handled automatically)
+                    nodeManager.updateNodeContent(node.id, content);
+                  }}
+                  on:slashCommandSelected={(
+                    e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
+                  ) => {
+                    // Store cursor position before node type change
+                    if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
+                      pendingCursorPositions.set(node.id, e.detail.cursorPosition);
+                    }
+
+                    if (node.isPlaceholder) {
+                      // For placeholder nodes, just update the nodeType locally
+                      if ('updatePlaceholderNodeType' in nodeManager) {
+                        (nodeManager as any).updatePlaceholderNodeType(node.id, e.detail.nodeType);
+                      }
+                    } else {
+                      // For real nodes, update node type with full persistence
+                      nodeManager.updateNodeType(node.id, e.detail.nodeType);
+                    }
+
+                    // Set autoFocus to restore focus after nodeType change
+                    focusedNodeId = node.id;
+                  }}
+                  on:iconClick={handleIconClick}
+                  on:taskStateChanged={(e) => {
+                    const { nodeId, state } = e.detail;
+                    const node = nodeManager.nodes.get(nodeId);
+                    if (node) {
+                      node.metadata = { ...node.metadata, taskState: state };
+                      // Trigger sync to persist the change
+                      nodeManager.updateNodeContent(nodeId, node.content);
+                    }
+                  }}
+                  on:combineWithPrevious={handleCombineWithPrevious}
+                  on:deleteNode={handleDeleteNode}
+                />
+              {/key}
+            {/if}
           {/if}
-        {/if}
+        </div>
       </div>
-    </div>
-  {/each}
+    {/each}
+  </div>
 </div>
 
 <!-- Template structure fixed -->
 
 <style>
-  .node-viewer {
-    /* Container for nodes - document-like spacing */
+  /* Base container - full height layout */
+  .base-node-viewer {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+  }
+
+  /* Header section - fixed at top, doesn't scroll */
+  .viewer-header {
+    flex-shrink: 0;
+  }
+
+  /* Scrollable node content area for children structure */
+  .node-content-area {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0; /* Critical for flex scrolling */
+    padding: 1.5rem;
+    padding-bottom: 3rem; /* Extra bottom padding to see last line fully */
     display: flex;
     flex-direction: column;
     gap: 0; /* 0px gap - all spacing from node padding for 8px total */
-    /* No left padding - match patterns.html exactly */
 
     /* Dynamic Circle Positioning System - All values configurable from here */
     --circle-offset: 22px; /* Circle center distance from container left edge - reserves space for chevrons */

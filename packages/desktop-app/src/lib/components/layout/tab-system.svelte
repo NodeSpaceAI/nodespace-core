@@ -214,6 +214,15 @@
     min-height: 0;
     background-color: hsl(var(--content-background));
     /* Remove top border to allow seamless connection with active tab */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* Let children handle scrolling */
+  }
+
+  /* Ensure content fills the tab content area */
+  .tab-content > :global(*) {
+    flex: 1;
+    min-height: 0;
   }
 
   /* Responsive behavior */
