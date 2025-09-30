@@ -1147,20 +1147,29 @@ export class ContentEditableController {
       let shouldNavigate = false;
 
       if (this.config.allowMultiline) {
-        // For multiline nodes, navigate between nodes when on first/last line
-        // preserving horizontal position (columnHint)
-        if (direction === 'up') {
-          // Navigate if on the first line (regardless of horizontal position)
-          shouldNavigate = this.isAtFirstLine();
-        } else {
-          // Navigate if on the last line (regardless of horizontal position)
-          shouldNavigate = this.isAtLastLine();
-        }
+        // Check if the node actually has multiple lines (DIVs exist)
+        const lineElements = Array.from(this.element.children).filter(
+          child => child.tagName === 'DIV'
+        );
+        const hasMultipleLines = lineElements.length > 0;
 
-        if (!shouldNavigate) {
-          // Let the browser handle line-by-line navigation within the multiline node
-          // Don't prevent default - let browser handle within-node navigation
-          return;
+        if (hasMultipleLines) {
+          // For nodes with actual multiple lines, navigate when on first/last line
+          // This creates seamless vertical navigation like a single document
+          if (direction === 'up') {
+            shouldNavigate = this.isAtFirstLine();
+          } else {
+            shouldNavigate = this.isAtLastLine();
+          }
+
+          if (!shouldNavigate) {
+            // Not on first/last line - let browser handle line-by-line navigation
+            return;
+          }
+        } else {
+          // Node supports multiline but currently has only single line
+          // Allow navigation from anywhere (like single-line nodes)
+          shouldNavigate = true;
         }
       } else {
         // For single-line nodes, always navigate on arrow up/down
@@ -1236,6 +1245,47 @@ export class ContentEditableController {
     // Use the same logic as getCurrentColumn to handle complex HTML structures
     const currentPosition = this.getCurrentColumn();
     return currentPosition === 0;
+  }
+
+  private getCurrentColumn(): number {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return 0;
+
+    const range = selection.getRangeAt(0);
+
+    // For multiline content, calculate column position within the current line
+    if (this.config.allowMultiline) {
+      // Find the containing div (line) element
+      let currentElement: Node | null = range.startContainer;
+      let lineElement: Element | null = null;
+
+      while (currentElement && currentElement !== this.element) {
+        if (
+          currentElement.nodeType === Node.ELEMENT_NODE &&
+          (currentElement as Element).tagName === 'DIV' &&
+          currentElement.parentNode === this.element
+        ) {
+          lineElement = currentElement as Element;
+          break;
+        }
+        currentElement = currentElement.parentNode;
+      }
+
+      if (lineElement) {
+        // Calculate position within this line element
+        const lineRange = document.createRange();
+        lineRange.selectNodeContents(lineElement);
+        lineRange.setEnd(range.startContainer, range.startOffset);
+        return lineRange.toString().length;
+      }
+    }
+
+    // For single-line content, calculate from start of element
+    const preCaretRange = range.cloneRange();
+    preCaretRange.selectNodeContents(this.element);
+    preCaretRange.setEnd(range.startContainer, range.startOffset);
+
+    return preCaretRange.toString().length;
   }
 
   private isAtEnd(): boolean {
@@ -1571,13 +1621,45 @@ export class ContentEditableController {
       return -1; // No div structure found
     }
 
+    // Check if there's text content before the first DIV
+    // If so, that text is line 0, and DIVs start at line 1
+    const firstDiv = lineElements[0];
+    const divIndex = Array.from(this.element.childNodes).indexOf(firstDiv as ChildNode);
+    let hasTextBeforeFirstDiv = false;
+
+    for (let i = 0; i < divIndex; i++) {
+      const node = this.element.childNodes[i];
+      if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) {
+        hasTextBeforeFirstDiv = true;
+        break;
+      }
+    }
+
+    // Check if cursor is in the text before the first DIV
+    if (hasTextBeforeFirstDiv) {
+      let currentNode: Node | null = range.startContainer;
+
+      // Walk up to find if we're in a text node that's a direct child of this.element
+      while (currentNode && currentNode !== this.element) {
+        if (currentNode.nodeType === Node.TEXT_NODE && currentNode.parentNode === this.element) {
+          // This is a direct child text node - check if it's before the first DIV
+          const nodeIndex = Array.from(this.element.childNodes).indexOf(currentNode as ChildNode);
+          if (nodeIndex !== -1 && nodeIndex < divIndex) {
+            return 0; // Cursor is in line 0 (the text before first DIV)
+          }
+        }
+        currentNode = currentNode.parentNode;
+      }
+    }
+
     // First check if range.startContainer is itself one of the line divs
     if (range.startContainer.nodeType === Node.ELEMENT_NODE &&
         (range.startContainer as Element).tagName === 'DIV' &&
         range.startContainer.parentNode === this.element) {
       const index = lineElements.indexOf(range.startContainer as Element);
       if (index !== -1) {
-        return index;
+        // Adjust index if there's text before first DIV
+        return hasTextBeforeFirstDiv ? index + 1 : index;
       }
     }
 
@@ -1591,8 +1673,9 @@ export class ContentEditableController {
         (currentElement as Element).tagName === 'DIV' &&
         currentElement.parentNode === this.element
       ) {
-        // Found the containing div - return its index
-        return lineElements.indexOf(currentElement as Element);
+        // Found the containing div - return its index (adjusted if text before first DIV)
+        const index = lineElements.indexOf(currentElement as Element);
+        return hasTextBeforeFirstDiv ? index + 1 : index;
       }
       currentElement = currentElement.parentNode;
     }

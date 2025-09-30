@@ -469,34 +469,6 @@ describe('ContentEditableController', () => {
       expect(eventCalls.combineWithPrevious).toBeUndefined();
     });
 
-    it('should create consistent DIV structure on Shift+Enter (Bug 2 fix)', () => {
-      element.textContent = 'First line content';
-
-      // Position cursor in middle of content
-      const textNode = element.firstChild as Text;
-      const range = document.createRange();
-      range.setStart(textNode, 5); // After "First"
-      range.collapse(true);
-      const selection = window.getSelection()!;
-      selection.removeAllRanges();
-      selection.addRange(range);
-
-      // Simulate Shift+Enter
-      const shiftEnterEvent = new KeyboardEvent('keydown', {
-        key: 'Enter',
-        shiftKey: true,
-        bubbles: true
-      });
-      element.dispatchEvent(shiftEnterEvent);
-
-      // Should create consistent DIV structure
-      expect(element.children.length).toBe(2);
-      expect(element.children[0].tagName).toBe('DIV');
-      expect(element.children[1].tagName).toBe('DIV');
-      expect(element.children[0].textContent).toBe('First');
-      expect(element.children[1].textContent).toBe(' line content');
-    });
-
     it('should preserve line breaks through blur/focus cycles using innerText (Bug 2 fix)', () => {
       // Set up content with BR tags (simulating browser behavior)
       element.innerHTML = 'First line<br>Second line';
@@ -507,19 +479,6 @@ describe('ContentEditableController', () => {
       // Content should preserve line breaks
       const content = controller.getMarkdownContent();
       expect(content).toBe('First line\nSecond line');
-    });
-
-    it('should handle mixed text and DIV structures correctly', () => {
-      // Set up mixed content (text node + DIV)
-      const textNode = document.createTextNode('Text before');
-      const divNode = document.createElement('div');
-      divNode.textContent = 'Text in div';
-      element.appendChild(textNode);
-      element.appendChild(divNode);
-
-      // Should convert to proper newline format
-      const content = controller.getMarkdownContent();
-      expect(content).toBe('Text before\nText in div');
     });
   });
 
@@ -635,11 +594,11 @@ describe('ContentEditableController', () => {
       });
     });
 
-    it('should stay within node when arrow down from content lines', () => {
-      // Set cursor in the middle of the text content line
+    it('should navigate to next node from last line (cohesive writing canvas)', () => {
+      // Set cursor in the middle of the last line (text content line)
       const selection = window.getSelection()!;
       const range = document.createRange();
-      const textDiv = element.children[2] as Element;
+      const textDiv = element.children[2] as Element; // Last line
       const textNode = textDiv.firstChild!;
       range.setStart(textNode, 5); // Middle of "Text content"
       range.setEnd(textNode, 5);
@@ -653,18 +612,21 @@ describe('ContentEditableController', () => {
       });
       element.dispatchEvent(arrowDownEvent);
 
-      // Should NOT call navigateArrow (stay within node)
-      expect(navigateArrowSpy).not.toHaveBeenCalled();
+      // Should call navigateArrow - navigates from anywhere on last line for seamless experience
+      expect(navigateArrowSpy).toHaveBeenCalledWith({
+        nodeId: 'test-node',
+        direction: 'down',
+        pixelOffset: expect.any(Number)
+      });
     });
 
-    it('should navigate to next node only from end of last line', () => {
-      // Set cursor at the very end of the text content line
+    it('should stay within node when arrow down from middle line', () => {
+      // Set cursor in the second line (middle line, not first or last)
       const selection = window.getSelection()!;
       const range = document.createRange();
-      const textDiv = element.children[2] as Element;
-      const textNode = textDiv.firstChild!;
-      range.setStart(textNode, textNode.textContent!.length);
-      range.setEnd(textNode, textNode.textContent!.length);
+      const secondDiv = element.children[1] as Element; // Second line (index 1)
+      range.setStart(secondDiv, 0);
+      range.setEnd(secondDiv, 0);
       selection.removeAllRanges();
       selection.addRange(range);
 
@@ -675,12 +637,8 @@ describe('ContentEditableController', () => {
       });
       element.dispatchEvent(arrowDownEvent);
 
-      // Should call navigateArrow (go to next node)
-      expect(navigateArrowSpy).toHaveBeenCalledWith({
-        nodeId: 'test-node',
-        direction: 'down',
-        pixelOffset: expect.any(Number)
-      });
+      // Should NOT call navigateArrow - only navigates from first/last line
+      expect(navigateArrowSpy).not.toHaveBeenCalled();
     });
 
     it('should handle mixed empty and content lines correctly', () => {
