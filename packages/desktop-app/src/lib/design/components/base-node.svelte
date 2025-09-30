@@ -243,7 +243,7 @@
     };
     indentNode: { nodeId: string };
     outdentNode: { nodeId: string };
-    navigateArrow: { nodeId: string; direction: 'up' | 'down'; columnHint: number };
+    navigateArrow: { nodeId: string; direction: 'up' | 'down'; pixelOffset: number };
     combineWithPrevious: { nodeId: string; currentContent: string };
     deleteNode: { nodeId: string };
     nodeReferenceSelected: { nodeId: string; nodeTitle: string };

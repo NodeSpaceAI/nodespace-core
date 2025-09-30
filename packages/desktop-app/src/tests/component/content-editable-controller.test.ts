@@ -41,7 +41,7 @@ interface EventCallRecord {
   }>;
   indentNode?: Array<{ nodeId: string }>;
   outdentNode?: Array<{ nodeId: string }>;
-  navigateArrow?: Array<{ nodeId: string; direction: 'up' | 'down'; columnHint: number }>;
+  navigateArrow?: Array<{ nodeId: string; direction: 'up' | 'down'; pixelOffset: number }>;
   combineWithPrevious?: Array<{ nodeId: string; currentContent: string }>;
   deleteNode?: Array<{ nodeId: string }>;
   triggerDetected?: Array<{
@@ -539,13 +539,9 @@ describe('ContentEditableController', () => {
 
       // Create a multiline contenteditable with allowMultiline config
       element.innerHTML = '<div><br></div><div><br></div><div>Text content</div>';
-      controller = new ContentEditableController(
-        element,
-        'test-node',
-        'text',
-        mockEvents,
-        { allowMultiline: true }
-      );
+      controller = new ContentEditableController(element, 'test-node', 'text', mockEvents, {
+        allowMultiline: true
+      });
     });
 
     it('should stay within node when arrow up from empty leading lines', () => {
@@ -671,7 +667,8 @@ describe('ContentEditableController', () => {
 
     it('should correctly identify line boundaries with complex content', () => {
       // Create structure with formatted content
-      element.innerHTML = '<div><br></div><div><strong>Bold</strong> and normal</div><div>Last line</div>';
+      element.innerHTML =
+        '<div><br></div><div><strong>Bold</strong> and normal</div><div>Last line</div>';
 
       // Test arrow up from beginning of bold content (should stay within)
       const selection = window.getSelection()!;
@@ -695,6 +692,159 @@ describe('ContentEditableController', () => {
       element.dispatchEvent(arrowUpEvent);
 
       // Should NOT call navigateArrow (should navigate to first empty line within node)
+      expect(navigateArrowSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Shift+Enter Navigation (Regression Tests)', () => {
+    let navigateArrowSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      // Destroy previous controller to avoid multiple event listeners
+      if (controller) {
+        controller.destroy();
+      }
+
+      // Reset event calls and create spy
+      eventCalls = {};
+      navigateArrowSpy = vi.fn((data) => {
+        eventCalls.navigateArrow = eventCalls.navigateArrow || [];
+        eventCalls.navigateArrow.push(data);
+      });
+
+      // Replace the navigateArrow handler with our spy
+      mockEvents.navigateArrow = navigateArrowSpy;
+
+      // Create a multiline contenteditable with allowMultiline config
+      controller = new ContentEditableController(element, 'test-node', 'text', mockEvents, {
+        allowMultiline: true
+      });
+    });
+
+    it('should navigate within multiline content after Shift+Enter, not jump to next node', () => {
+      // Simulate "Some text" with Shift+Enter creating "Some \ntext" (text before DIV + DIV)
+      // This is the browser structure immediately after Shift+Enter
+      const textNode = document.createTextNode('Some ');
+      const divElement = document.createElement('div');
+      divElement.textContent = 'text';
+      element.appendChild(textNode);
+      element.appendChild(divElement);
+
+      // Position cursor at beginning of text before DIV (line 0): "|Some "
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+      range.setStart(textNode, 0);
+      range.setEnd(textNode, 0);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      vi.clearAllMocks();
+
+      // Arrow down should move to the DIV (line 1), NOT navigate to next node
+      const arrowDownEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        bubbles: true
+      });
+      element.dispatchEvent(arrowDownEvent);
+
+      // Should NOT call navigateArrow because we're on line 0 (not last line)
+      expect(navigateArrowSpy).not.toHaveBeenCalled();
+    });
+
+    it('should navigate to next node when on last line of multiline content', () => {
+      // Simulate "Some text" with Shift+Enter creating "Some \ntext"
+      const textNode = document.createTextNode('Some ');
+      const divElement = document.createElement('div');
+      divElement.textContent = 'text';
+      element.appendChild(textNode);
+      element.appendChild(divElement);
+
+      // Position cursor in the DIV (line 1 - last line): "Some \n|text"
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+      const divTextNode = divElement.firstChild!;
+      range.setStart(divTextNode, 0);
+      range.setEnd(divTextNode, 0);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      vi.clearAllMocks();
+
+      // Arrow down from last line should navigate to next node
+      const arrowDownEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        bubbles: true
+      });
+      element.dispatchEvent(arrowDownEvent);
+
+      // Should call navigateArrow because we're on the last line
+      expect(navigateArrowSpy).toHaveBeenCalledWith({
+        nodeId: 'test-node',
+        direction: 'down',
+        pixelOffset: 0
+      });
+    });
+
+    it('should navigate to previous node when on first line of multiline content', () => {
+      // Simulate "Some text" with Shift+Enter creating "Some \ntext"
+      const textNode = document.createTextNode('Some ');
+      const divElement = document.createElement('div');
+      divElement.textContent = 'text';
+      element.appendChild(textNode);
+      element.appendChild(divElement);
+
+      // Position cursor at beginning of text before DIV (line 0): "|Some "
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+      range.setStart(textNode, 0);
+      range.setEnd(textNode, 0);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      vi.clearAllMocks();
+
+      // Arrow up from first line should navigate to previous node
+      const arrowUpEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowUp',
+        bubbles: true
+      });
+      element.dispatchEvent(arrowUpEvent);
+
+      // Should call navigateArrow because we're on the first line
+      expect(navigateArrowSpy).toHaveBeenCalledWith({
+        nodeId: 'test-node',
+        direction: 'up',
+        pixelOffset: 0
+      });
+    });
+
+    it('should not navigate to previous node when on second line (DIV) of multiline content', () => {
+      // Simulate "Some text" with Shift+Enter creating "Some \ntext"
+      const textNode = document.createTextNode('Some ');
+      const divElement = document.createElement('div');
+      divElement.textContent = 'text';
+      element.appendChild(textNode);
+      element.appendChild(divElement);
+
+      // Position cursor in the DIV (line 1): "Some \n|text"
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+      const divTextNode = divElement.firstChild!;
+      range.setStart(divTextNode, 0);
+      range.setEnd(divTextNode, 0);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      vi.clearAllMocks();
+
+      // Arrow up should move within node (to line 0), NOT navigate to previous node
+      const arrowUpEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowUp',
+        bubbles: true
+      });
+      element.dispatchEvent(arrowUpEvent);
+
+      // Should NOT call navigateArrow because we're not on first line
       expect(navigateArrowSpy).not.toHaveBeenCalled();
     });
   });

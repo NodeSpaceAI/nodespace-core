@@ -58,7 +58,7 @@
     navigateArrow: {
       nodeId: string;
       direction: 'up' | 'down';
-      columnHint: number;
+      pixelOffset: number;
     };
     combineWithPrevious: {
       nodeId: string;

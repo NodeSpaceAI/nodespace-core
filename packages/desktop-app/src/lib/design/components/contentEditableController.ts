@@ -263,7 +263,7 @@ export class ContentEditableController {
     // For multiline content: position cursor in the last line (including empty ones)
     if (this.config.allowMultiline) {
       const lineElements = Array.from(this.element.children).filter(
-        child => child.tagName === 'DIV'
+        (child) => child.tagName === 'DIV'
       );
 
       if (lineElements.length > 0) {
@@ -305,7 +305,7 @@ export class ContentEditableController {
     // For multiline content: position cursor in the first line
     if (this.config.allowMultiline) {
       const lineElements = Array.from(this.element.children).filter(
-        child => child.tagName === 'DIV'
+        (child) => child.tagName === 'DIV'
       );
 
       if (lineElements.length > 0) {
@@ -403,7 +403,7 @@ export class ContentEditableController {
         // Split by newlines and wrap each part in a div
         const lines = html.split('\n');
         if (lines.length > 1) {
-          html = lines.map(line => `<div>${line}</div>`).join('');
+          html = lines.map((line) => `<div>${line}</div>`).join('');
         }
       } else {
         // During display: convert \n to <br> tags for formatted display
@@ -416,7 +416,7 @@ export class ContentEditableController {
     // Post-processing: ensure empty divs in multiline editing mode have <br> tags for visual rendering
     if (this.config.allowMultiline && this.isEditing) {
       const emptyDivs = this.element.querySelectorAll('div:empty');
-      emptyDivs.forEach(div => {
+      emptyDivs.forEach((div) => {
         div.innerHTML = '<br>';
       });
     }
@@ -743,7 +743,11 @@ export class ContentEditableController {
       if (node.nodeType === Node.TEXT_NODE) {
         // Text node: decode HTML entities and add the text content
         const textContent = node.textContent || '';
-        const decodedText = textContent.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+        const decodedText = textContent
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>');
         result += decodedText;
       } else if (node.nodeType === Node.ELEMENT_NODE) {
         const element = node as Element;
@@ -804,7 +808,11 @@ export class ContentEditableController {
         // Text node: decode HTML entities (like &nbsp;) and add the text content
         const textContent = node.textContent || '';
         // Decode HTML entities properly
-        const decodedText = textContent.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+        const decodedText = textContent
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>');
         result += decodedText;
       } else if (node.nodeType === Node.ELEMENT_NODE) {
         const childElement = node as Element;
@@ -829,7 +837,11 @@ export class ContentEditableController {
   private getTextContentWithEntitiesDecoded(element: Element): string {
     const textContent = element.textContent || '';
     // Decode HTML entities properly
-    return textContent.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+    return textContent
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>');
   }
 
   /**
@@ -838,8 +850,11 @@ export class ContentEditableController {
   private getTextContentIgnoringSyntax(element: Element): string {
     // Special case: if this div contains only a <br> tag, return empty string
     // The DIV processing will handle the newline, so we don't want to double-count it
-    if (element.tagName === 'DIV' && element.childNodes.length === 1 &&
-        element.firstChild?.nodeName === 'BR') {
+    if (
+      element.tagName === 'DIV' &&
+      element.childNodes.length === 1 &&
+      element.firstChild?.nodeName === 'BR'
+    ) {
       return '';
     }
 
@@ -1149,7 +1164,7 @@ export class ContentEditableController {
       if (this.config.allowMultiline) {
         // Check if the node actually has multiple lines (DIVs exist)
         const lineElements = Array.from(this.element.children).filter(
-          child => child.tagName === 'DIV'
+          (child) => child.tagName === 'DIV'
         );
         const hasMultipleLines = lineElements.length > 0;
 
@@ -1178,17 +1193,8 @@ export class ContentEditableController {
       }
 
       // Navigate between nodes
-      event.preventDefault(); // Prevent browser from handling this
+      event.preventDefault();
       const pixelOffset = this.getCurrentPixelOffset();
-
-      console.log('[NAVIGATION TEST] Exiting node:', {
-        nodeId: this.nodeId,
-        direction,
-        pixelOffset,
-        elementLeft: this.element.getBoundingClientRect().left,
-        containerLeft: this.element.closest('.node-container')?.getBoundingClientRect().left,
-        rootLeft: (this.element.closest('.base-node-viewer') || document.body).getBoundingClientRect().left
-      });
 
       this.events.navigateArrow({
         nodeId: this.nodeId,
@@ -1321,23 +1327,19 @@ export class ContentEditableController {
         if (currentLineIndex === -1) return false;
 
         const lineElements = Array.from(this.element.children).filter(
-          child => child.tagName === 'DIV'
+          (child) => child.tagName === 'DIV'
         );
         const lastLineElement = lineElements[currentLineIndex];
         if (!lastLineElement) return false;
 
         // Check if our text node is the last text-containing node in the line
-        const walker = document.createTreeWalker(
-          lastLineElement,
-          NodeFilter.SHOW_TEXT,
-          {
-            acceptNode: (node) => {
-              // Skip empty text nodes and whitespace-only nodes
-              const text = node.textContent || '';
-              return text.trim().length > 0 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
-            }
+        const walker = document.createTreeWalker(lastLineElement, NodeFilter.SHOW_TEXT, {
+          acceptNode: (node) => {
+            // Skip empty text nodes and whitespace-only nodes
+            const text = node.textContent || '';
+            return text.trim().length > 0 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
           }
-        );
+        });
 
         let lastTextNode: Node | null = null;
         while (walker.nextNode()) {
@@ -1372,7 +1374,7 @@ export class ContentEditableController {
 
     // For multiline content, check if we're at the beginning of the first line
     const lineElements = Array.from(this.element.children).filter(
-      child => child.tagName === 'DIV'
+      (child) => child.tagName === 'DIV'
     );
 
     if (lineElements.length === 0) {
@@ -1392,18 +1394,17 @@ export class ContentEditableController {
     }
 
     // Has DIV children - this is multiline content
-    // First line could be a text node before the first DIV, or the first DIV itself
-    const firstChild = this.element.childNodes[0];
-
     // Check if cursor is before any DIV (in leading text node)
     let currentElement: Node | null = range.startContainer;
     let isBeforeDivs = true;
 
     // Walk up to find if we're inside a DIV
     while (currentElement && currentElement !== this.element) {
-      if (currentElement.nodeType === Node.ELEMENT_NODE &&
-          (currentElement as Element).tagName === 'DIV' &&
-          currentElement.parentNode === this.element) {
+      if (
+        currentElement.nodeType === Node.ELEMENT_NODE &&
+        (currentElement as Element).tagName === 'DIV' &&
+        currentElement.parentNode === this.element
+      ) {
         isBeforeDivs = false;
         break;
       }
@@ -1434,23 +1435,20 @@ export class ContentEditableController {
 
     // Check if there's text content before the first DIV
     // If yes, the first DIV is NOT the first line - the text before it is
-    const firstDivIndex = Array.from(this.element.childNodes).indexOf(firstLine as ChildNode);
+    const childNodes = Array.from(this.element.childNodes);
+    const firstDivIndex = childNodes.findIndex((node) => node === firstLine);
     let hasTextBeforeFirstDiv = false;
 
     for (let i = 0; i < firstDivIndex; i++) {
       const node = this.element.childNodes[i];
       if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) {
         hasTextBeforeFirstDiv = true;
-        console.log('[isAtBeginningOfFirstLine] Found text before DIV:', node.textContent?.trim());
         break;
       }
     }
 
-    console.log('[isAtBeginningOfFirstLine] hasTextBeforeFirstDiv:', hasTextBeforeFirstDiv, 'firstDivIndex:', firstDivIndex);
-
     if (hasTextBeforeFirstDiv) {
       // There's text before this DIV, so we're NOT at the beginning of the first line
-      console.log('[isAtBeginningOfFirstLine] Returning FALSE - not at beginning because text exists before DIV');
       return false;
     }
 
@@ -1476,7 +1474,7 @@ export class ContentEditableController {
 
     // For multiline content, check if we're at the end of the last line
     const lineElements = Array.from(this.element.children).filter(
-      child => child.tagName === 'DIV'
+      (child) => child.tagName === 'DIV'
     );
 
     if (lineElements.length === 0) {
@@ -1514,10 +1512,9 @@ export class ContentEditableController {
     if (!isInLastLine) {
       // Not in the last DIV - check if we're in trailing text after all DIVs
       // If cursor is after all DIVs (in trailing text), we're at end of last line
-      const lastChildIndex = Array.from(this.element.childNodes).indexOf(
-        range.startContainer as ChildNode
-      );
-      const lastDivIndex = Array.from(this.element.childNodes).indexOf(lastLine as ChildNode);
+      const childNodes = Array.from(this.element.childNodes);
+      const lastChildIndex = childNodes.findIndex((node) => node === range.startContainer);
+      const lastDivIndex = childNodes.findIndex((node) => node === lastLine);
 
       if (lastChildIndex > lastDivIndex) {
         // Cursor is in text after the last DIV - check if at end
@@ -1553,21 +1550,19 @@ export class ContentEditableController {
 
       // Check if getBoundingClientRect is available (not in jsdom tests)
       if (typeof cursorRange.getBoundingClientRect !== 'function') {
-        console.log('[getCurrentPixelOffset] getBoundingClientRect not available (test environment)');
         return 0;
       }
 
       const cursorRect = cursorRange.getBoundingClientRect();
 
       // Get root container for absolute positioning
-      const rootContainer = this.element.closest('.base-node-viewer') ||
-                           this.element.closest('.node-viewer-container') ||
-                           document.body;
+      const rootContainer =
+        this.element.closest('.base-node-viewer') ||
+        this.element.closest('.node-viewer-container') ||
+        document.body;
       const rootRect = rootContainer.getBoundingClientRect();
 
       const pixelOffset = cursorRect.left - rootRect.left;
-
-      console.log('[getCurrentPixelOffset] pixelOffset:', Math.round(pixelOffset));
       return pixelOffset;
     } catch (e) {
       console.warn('[getCurrentPixelOffset] Error measuring pixel offset:', e);
@@ -1614,7 +1609,7 @@ export class ContentEditableController {
 
     // Get all direct div children (lines) of this contenteditable element
     const lineElements = Array.from(this.element.children).filter(
-      child => child.tagName === 'DIV'
+      (child) => child.tagName === 'DIV'
     );
 
     if (lineElements.length === 0) {
@@ -1624,7 +1619,8 @@ export class ContentEditableController {
     // Check if there's text content before the first DIV
     // If so, that text is line 0, and DIVs start at line 1
     const firstDiv = lineElements[0];
-    const divIndex = Array.from(this.element.childNodes).indexOf(firstDiv as ChildNode);
+    const childNodesArray = Array.from(this.element.childNodes);
+    const divIndex = childNodesArray.findIndex((node) => node === firstDiv);
     let hasTextBeforeFirstDiv = false;
 
     for (let i = 0; i < divIndex; i++) {
@@ -1643,7 +1639,8 @@ export class ContentEditableController {
       while (currentNode && currentNode !== this.element) {
         if (currentNode.nodeType === Node.TEXT_NODE && currentNode.parentNode === this.element) {
           // This is a direct child text node - check if it's before the first DIV
-          const nodeIndex = Array.from(this.element.childNodes).indexOf(currentNode as ChildNode);
+          const childNodes = Array.from(this.element.childNodes);
+          const nodeIndex = childNodes.findIndex((node) => node === currentNode);
           if (nodeIndex !== -1 && nodeIndex < divIndex) {
             return 0; // Cursor is in line 0 (the text before first DIV)
           }
@@ -1653,9 +1650,11 @@ export class ContentEditableController {
     }
 
     // First check if range.startContainer is itself one of the line divs
-    if (range.startContainer.nodeType === Node.ELEMENT_NODE &&
-        (range.startContainer as Element).tagName === 'DIV' &&
-        range.startContainer.parentNode === this.element) {
+    if (
+      range.startContainer.nodeType === Node.ELEMENT_NODE &&
+      (range.startContainer as Element).tagName === 'DIV' &&
+      range.startContainer.parentNode === this.element
+    ) {
       const index = lineElements.indexOf(range.startContainer as Element);
       if (index !== -1) {
         // Adjust index if there's text before first DIV
@@ -1738,7 +1737,8 @@ export class ContentEditableController {
     // If we found a containing div, check if it's the first line
     if (containingDiv) {
       // Check if there's text content before this DIV
-      const divIndex = Array.from(this.element.childNodes).indexOf(containingDiv as ChildNode);
+      const childNodesForDiv = Array.from(this.element.childNodes);
+      const divIndex = childNodesForDiv.findIndex((node) => node === containingDiv);
       for (let i = 0; i < divIndex; i++) {
         const node = this.element.childNodes[i];
         if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) {
@@ -1751,12 +1751,17 @@ export class ContentEditableController {
     }
 
     // Special handling: if cursor is directly at a BR element, check its parent
-    if (range.startContainer.nodeType === Node.ELEMENT_NODE &&
-        (range.startContainer as Element).tagName === 'BR') {
+    if (
+      range.startContainer.nodeType === Node.ELEMENT_NODE &&
+      (range.startContainer as Element).tagName === 'BR'
+    ) {
       const brParent = range.startContainer.parentNode;
-      if (brParent && brParent.nodeType === Node.ELEMENT_NODE &&
-          (brParent as Element).tagName === 'DIV' &&
-          brParent.parentNode === this.element) {
+      if (
+        brParent &&
+        brParent.nodeType === Node.ELEMENT_NODE &&
+        (brParent as Element).tagName === 'DIV' &&
+        brParent.parentNode === this.element
+      ) {
         return brParent === this.element.firstElementChild;
       }
     }
@@ -1784,9 +1789,30 @@ export class ContentEditableController {
     // If we can determine the line index, check if it's the last line
     if (currentLineIndex !== -1) {
       const lineElements = Array.from(this.element.children).filter(
-        child => child.tagName === 'DIV'
+        (child) => child.tagName === 'DIV'
       );
-      return currentLineIndex === lineElements.length - 1;
+
+      // Check if there's text before the first DIV
+      let hasTextBeforeFirstDiv = false;
+      if (lineElements.length > 0) {
+        const firstDiv = lineElements[0];
+        const childNodesForLastLine = Array.from(this.element.childNodes);
+        const divIndex = childNodesForLastLine.findIndex((node) => node === firstDiv);
+        for (let i = 0; i < divIndex; i++) {
+          const node = this.element.childNodes[i];
+          if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) {
+            hasTextBeforeFirstDiv = true;
+            break;
+          }
+        }
+      }
+
+      // Calculate actual last line index
+      // If there's text before first DIV, that's line 0, and DIVs start at line 1
+      // So last line is: (number of DIVs - 1) + 1 offset = number of DIVs
+      const lastLineIndex = hasTextBeforeFirstDiv ? lineElements.length : lineElements.length - 1;
+
+      return currentLineIndex === lastLineIndex;
     }
 
     // Fallback to the original approach
@@ -1807,12 +1833,17 @@ export class ContentEditableController {
     }
 
     // Special case: if cursor is in a BR element, check if the BR is in the last div
-    if (range.startContainer.nodeType === Node.ELEMENT_NODE &&
-        (range.startContainer as Element).tagName === 'BR') {
+    if (
+      range.startContainer.nodeType === Node.ELEMENT_NODE &&
+      (range.startContainer as Element).tagName === 'BR'
+    ) {
       const brParent = range.startContainer.parentNode;
-      if (brParent && brParent.nodeType === Node.ELEMENT_NODE &&
-          (brParent as Element).tagName === 'DIV' &&
-          brParent.parentNode === this.element) {
+      if (
+        brParent &&
+        brParent.nodeType === Node.ELEMENT_NODE &&
+        (brParent as Element).tagName === 'DIV' &&
+        brParent.parentNode === this.element
+      ) {
         return brParent === this.element.lastElementChild;
       }
     }

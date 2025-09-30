@@ -373,53 +373,18 @@
   }
 
   /**
-   * Get the pixel offset where text starts in an element (measuring indentation).
-   * Returns the left edge of the first text character relative to root container.
-   */
-  function getTextStartPixelOffset(targetElement: HTMLElement): number {
-    try {
-      const firstTextNode = getFirstTextNode(targetElement);
-      if (!firstTextNode) return 0;
-
-      const tempRange = document.createRange();
-      tempRange.setStart(firstTextNode, 0);
-      tempRange.setEnd(firstTextNode, 0);
-      const rangeRect = tempRange.getBoundingClientRect();
-
-      const rootContainer = targetElement.closest('.base-node-viewer') ||
-                           targetElement.closest('.node-viewer-container') ||
-                           document.body;
-      const rootRect = rootContainer.getBoundingClientRect();
-
-      return rangeRect.left - rootRect.left;
-    } catch (e) {
-      console.warn('[Navigation] Error measuring text start:', e);
-      return 0;
-    }
-  }
-
-  // Helper to find first text node
-  function getFirstTextNode(element: HTMLElement): Text | null {
-    for (const node of element.childNodes) {
-      if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) {
-        return node as Text;
-      }
-      if (node.nodeType === Node.ELEMENT_NODE) {
-        const found = getFirstTextNode(node as HTMLElement);
-        if (found) return found;
-      }
-    }
-    return null;
-  }
-
-  /**
    * Position cursor at a target pixel offset within a line by iterating through characters.
    * This works correctly with proportional fonts without needing character width conversion.
    */
-  function setCursorAtPixelOffset(element: HTMLElement, lineElement: Element, targetPixelOffset: number) {
-    const rootContainer = element.closest('.base-node-viewer') ||
-                         element.closest('.node-viewer-container') ||
-                         document.body;
+  function setCursorAtPixelOffset(
+    element: HTMLElement,
+    lineElement: Element,
+    targetPixelOffset: number
+  ) {
+    const rootContainer =
+      element.closest('.base-node-viewer') ||
+      element.closest('.node-viewer-container') ||
+      document.body;
     const rootRect = rootContainer.getBoundingClientRect();
 
     const textNodes = getTextNodes(lineElement as HTMLElement);
@@ -455,12 +420,12 @@
             bestDistance = distance;
             bestOffset = i;
             // Save the node for later use
-            (setCursorAtPixelOffset as any).bestNode = textNode;
+            (setCursorAtPixelOffset as { bestNode?: Text }).bestNode = textNode;
           }
 
           // Early exit if we've gone past the target
           if (currentPixel > targetPixelOffset) break;
-        } catch (e) {
+        } catch {
           // Skip invalid positions
         }
       }
@@ -468,9 +433,9 @@
 
     // Set cursor at best position
     const selection = window.getSelection();
-    if (selection && (setCursorAtPixelOffset as any).bestNode) {
+    if (selection && (setCursorAtPixelOffset as { bestNode?: Text }).bestNode) {
       const range = document.createRange();
-      range.setStart((setCursorAtPixelOffset as any).bestNode, bestOffset);
+      range.setStart((setCursorAtPixelOffset as { bestNode?: Text }).bestNode!, bestOffset);
       range.collapse(true);
       selection.removeAllRanges();
       selection.addRange(range);
@@ -511,9 +476,10 @@
 
       if (isMultiline) {
         // For multiline: position cursor at pixelOffset within the first/last line
-        const lineElement = direction === 'up'
-          ? divElements[divElements.length - 1]  // Last line when entering from bottom
-          : divElements[0];                       // First line when entering from top
+        const lineElement =
+          direction === 'up'
+            ? divElements[divElements.length - 1] // Last line when entering from bottom
+            : divElements[0]; // First line when entering from top
 
         setCursorAtPixelOffset(targetElement, lineElement, pixelOffset);
       } else {
@@ -526,39 +492,6 @@
   }
 
   // Utility to set cursor position in any contenteditable element
-  function setCursorAtPosition(element: HTMLElement, position: number): void {
-    const selection = window.getSelection();
-    if (!selection) return;
-
-    try {
-      const range = document.createRange();
-      const textNodes = getTextNodes(element);
-
-      let currentOffset = 0;
-      for (const textNode of textNodes) {
-        const nodeLength = textNode.textContent?.length || 0;
-        if (currentOffset + nodeLength >= position) {
-          range.setStart(textNode, Math.max(0, position - currentOffset));
-          range.collapse(true);
-          selection.removeAllRanges();
-          selection.addRange(range);
-          return;
-        }
-        currentOffset += nodeLength;
-      }
-
-      // Position beyond content - place at end
-      if (textNodes.length > 0) {
-        const lastNode = textNodes[textNodes.length - 1];
-        range.setStart(lastNode, lastNode.textContent?.length || 0);
-        range.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(range);
-      }
-    } catch {
-      // Cursor positioning failed silently
-    }
-  }
 
   // Handle combining current node with previous node (Backspace at start of node)
   // CLEAN DELEGATION: All logic handled by NodeManager
