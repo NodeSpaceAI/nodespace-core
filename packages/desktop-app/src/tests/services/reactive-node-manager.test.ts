@@ -5,23 +5,19 @@
  * Specifically tests Issue #71 where createNode broke UI updates
  */
 
-// Mock Svelte 5 runes immediately before any imports - using proper type assertions
-(globalThis as Record<string, unknown>).$state = function <T>(initialValue: T): T {
-  if (typeof initialValue !== 'object' || initialValue === null) {
-    return initialValue;
-  }
-  return initialValue;
-};
+// Mock Svelte 5 runes immediately before any imports
+import {
+  createStateMock,
+  createDerivedMock,
+  createEffectMock,
+  clearDerivedComputations
+} from '../utils/svelte-runes-mock.js';
 
+(globalThis as Record<string, unknown>).$state = createStateMock;
 (globalThis as Record<string, unknown>).$derived = {
-  by: function <T>(getter: () => T): T {
-    return getter();
-  }
+  by: createDerivedMock
 };
-
-(globalThis as Record<string, unknown>).$effect = function (fn: () => void | (() => void)): void {
-  fn();
-};
+(globalThis as Record<string, unknown>).$effect = createEffectMock;
 
 import { describe, test, expect, beforeEach } from 'vitest';
 import { createReactiveNodeService } from '../../lib/services/reactiveNodeService.svelte.js';
@@ -38,6 +34,9 @@ describe('ReactiveNodeService - Reactive State Synchronization', () => {
   let nodeDeletedCalls: string[];
 
   beforeEach(() => {
+    // Clear reactive computations from previous tests
+    clearDerivedComputations();
+
     // Reset event tracking
     focusRequestedCalls = [];
     nodeCreatedCalls = [];

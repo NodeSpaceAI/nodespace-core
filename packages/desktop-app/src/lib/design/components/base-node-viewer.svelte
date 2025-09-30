@@ -381,11 +381,9 @@
     lineElement: Element,
     targetPixelOffset: number
   ) {
-    const rootContainer =
-      element.closest('.base-node-viewer') ||
-      element.closest('.node-viewer-container') ||
-      document.body;
-    const rootRect = rootContainer.getBoundingClientRect();
+    // Calculate offset relative to the element's left edge, not the root container
+    // This ensures the horizontal position is preserved when navigating between nodes
+    const elementRect = element.getBoundingClientRect();
 
     const textNodes = getTextNodes(lineElement as HTMLElement);
     if (textNodes.length === 0) {
@@ -413,7 +411,7 @@
           testRange.setStart(textNode, i);
           testRange.setEnd(textNode, i);
           const testRect = testRange.getBoundingClientRect();
-          const currentPixel = testRect.left - rootRect.left;
+          const currentPixel = testRect.left - elementRect.left;
           const distance = Math.abs(currentPixel - targetPixelOffset);
 
           if (distance < bestDistance) {
@@ -461,31 +459,44 @@
       const targetElement = document.getElementById(`contenteditable-${targetNodeId}`);
       if (!targetElement) return;
 
+      // Prepare the controller for arrow navigation to prevent content update
+      const controller = (
+        targetElement as unknown as {
+          _contentEditableController?: { prepareForArrowNavigation?: () => void };
+        }
+      )._contentEditableController;
+      if (controller && typeof controller.prepareForArrowNavigation === 'function') {
+        controller.prepareForArrowNavigation();
+      }
+
+      // Hide caret during navigation to prevent visible cursor bounce
+      targetElement.style.caretColor = 'transparent';
+
       targetElement.focus();
 
-      // Check if multiline or single-line
-      const divElements = targetElement.querySelectorAll(':scope > div');
-      const isMultiline = divElements.length > 0;
+      // Wait for DOM to update after focus (transition to editing mode creates DIV structure)
+      // Increased delay to ensure setRawMarkdown() completes and DIVs are created
+      setTimeout(() => {
+        // Check if multiline or single-line
+        const divElements = targetElement.querySelectorAll(':scope > div');
+        const isMultiline = divElements.length > 0;
 
-      console.log('[NAVIGATION TEST] Entering node:', {
-        targetNodeId,
-        direction,
-        pixelOffset,
-        isMultiline
-      });
+        if (isMultiline) {
+          // For multiline: position cursor at pixelOffset within the first/last line
+          const lineElement =
+            direction === 'up'
+              ? divElements[divElements.length - 1] // Last line when entering from bottom
+              : divElements[0]; // First line when entering from top
 
-      if (isMultiline) {
-        // For multiline: position cursor at pixelOffset within the first/last line
-        const lineElement =
-          direction === 'up'
-            ? divElements[divElements.length - 1] // Last line when entering from bottom
-            : divElements[0]; // First line when entering from top
+          setCursorAtPixelOffset(targetElement, lineElement, pixelOffset);
+        } else {
+          // For single-line: position cursor at pixelOffset within the single line
+          setCursorAtPixelOffset(targetElement, targetElement, pixelOffset);
+        }
 
-        setCursorAtPixelOffset(targetElement, lineElement, pixelOffset);
-      } else {
-        // For single-line: position cursor at pixelOffset within the single line
-        setCursorAtPixelOffset(targetElement, targetElement, pixelOffset);
-      }
+        // Show caret after positioning is complete
+        targetElement.style.caretColor = '';
+      }, 20); // Delay for setRawMarkdown() to complete and create DIV structure
     }, 0);
 
     return true;

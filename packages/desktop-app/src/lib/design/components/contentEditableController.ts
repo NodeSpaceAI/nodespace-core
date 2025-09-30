@@ -91,6 +91,12 @@ export class ContentEditableController {
   // Track recent Enter to avoid interfering with node creation
   private recentEnter: boolean = false;
 
+  // Track if this node was just created to allow layout to settle
+  private justCreated: boolean = false;
+
+  // Track if we're being focused via arrow navigation (to prevent cursor jumping)
+  private focusedViaArrowNavigation: boolean = false;
+
   // Track if slash command dropdown is currently active
   private slashCommandDropdownActive: boolean = false;
   // Track if autocomplete dropdown is currently active
@@ -149,6 +155,13 @@ export class ContentEditableController {
     if (autoFocus) {
       this.isEditing = true;
       this.setRawMarkdown(content);
+
+      // Mark as just created to allow layout to settle before arrow navigation
+      this.justCreated = true;
+      setTimeout(() => {
+        this.justCreated = false;
+      }, 50); // 50ms should be enough for layout to settle
+
       this.focus();
 
       // Position cursor after header syntax for new header nodes
@@ -223,6 +236,14 @@ export class ContentEditableController {
       // Position cursor at the end of the cleaned content
       this.positionCursorAtEnd();
     });
+  }
+
+  /**
+   * Mark that this element is about to be focused via arrow navigation
+   * This prevents handleFocus from updating content and resetting cursor
+   */
+  public prepareForArrowNavigation(): void {
+    this.focusedViaArrowNavigation = true;
   }
 
   /**
@@ -890,12 +911,25 @@ export class ContentEditableController {
   // ============================================================================
 
   private handleFocus(): void {
+    // If already editing, don't update content (this would reset cursor position)
+    if (this.isEditing) {
+      this.events.focus();
+      return;
+    }
+
+    // If focused via arrow navigation, we still need to convert to editing mode
+    // but we won't restore cursor position (arrow navigation handles that)
+    const viaArrowNav = this.focusedViaArrowNavigation;
+    if (viaArrowNav) {
+      this.focusedViaArrowNavigation = false; // Clear flag immediately
+    }
+
     // Get formatted content before showing raw markdown for position calculation
     const formattedContent = this.element.innerHTML;
     let calculatedMarkdownPosition: number | null = null;
 
-    // Pre-calculate position BEFORE showing syntax (if not already editing)
-    if (!this.wasEditing && this.pendingClickPosition) {
+    // Pre-calculate position BEFORE showing syntax (if not already editing and not via arrow nav)
+    if (!this.wasEditing && this.pendingClickPosition && !viaArrowNav) {
       calculatedMarkdownPosition = this.calculateMarkdownPositionFromClick(
         this.pendingClickPosition,
         formattedContent
@@ -911,8 +945,8 @@ export class ContentEditableController {
 
     this.setRawMarkdown(this.originalContent);
 
-    // Apply pre-calculated position
-    if (calculatedMarkdownPosition !== null) {
+    // Apply pre-calculated position (but not if via arrow navigation - that handles its own positioning)
+    if (calculatedMarkdownPosition !== null && !viaArrowNav) {
       setTimeout(() => {
         this.restoreCursorPosition(calculatedMarkdownPosition);
       }, 0);
@@ -1089,7 +1123,13 @@ export class ContentEditableController {
         // Regular Enter: create new node with smart text splitting
         event.preventDefault();
 
-        const currentContent = this.element.textContent || '';
+        // For multiline nodes, preserve line breaks when getting content
+        let currentContent: string;
+        if (this.config.allowMultiline) {
+          currentContent = this.convertHtmlToTextWithNewlines(this.element.innerHTML);
+        } else {
+          currentContent = this.element.textContent || '';
+        }
         const cursorPosition = this.getCurrentColumn();
 
         // Set flag to prevent cursor restoration during node creation
@@ -1152,6 +1192,11 @@ export class ContentEditableController {
 
     // Arrow keys for navigation
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      // If node was just created, wait for layout to settle before allowing navigation
+      if (this.justCreated) {
+        return;
+      }
+
       // If any modal is active, let the modal handle the arrow keys
       if (this.slashCommandDropdownActive || this.autocompleteDropdownActive) {
         return;
@@ -1259,34 +1304,8 @@ export class ContentEditableController {
 
     const range = selection.getRangeAt(0);
 
-    // For multiline content, calculate column position within the current line
-    if (this.config.allowMultiline) {
-      // Find the containing div (line) element
-      let currentElement: Node | null = range.startContainer;
-      let lineElement: Element | null = null;
-
-      while (currentElement && currentElement !== this.element) {
-        if (
-          currentElement.nodeType === Node.ELEMENT_NODE &&
-          (currentElement as Element).tagName === 'DIV' &&
-          currentElement.parentNode === this.element
-        ) {
-          lineElement = currentElement as Element;
-          break;
-        }
-        currentElement = currentElement.parentNode;
-      }
-
-      if (lineElement) {
-        // Calculate position within this line element
-        const lineRange = document.createRange();
-        lineRange.selectNodeContents(lineElement);
-        lineRange.setEnd(range.startContainer, range.startOffset);
-        return lineRange.toString().length;
-      }
-    }
-
-    // For single-line content, calculate from start of element
+    // Always calculate from start of element for absolute position
+    // This is needed for splitting content correctly in multiline nodes
     const preCaretRange = range.cloneRange();
     preCaretRange.selectNodeContents(this.element);
     preCaretRange.setEnd(range.startContainer, range.startOffset);
@@ -1555,14 +1574,11 @@ export class ContentEditableController {
 
       const cursorRect = cursorRange.getBoundingClientRect();
 
-      // Get root container for absolute positioning
-      const rootContainer =
-        this.element.closest('.base-node-viewer') ||
-        this.element.closest('.node-viewer-container') ||
-        document.body;
-      const rootRect = rootContainer.getBoundingClientRect();
+      // Calculate offset relative to this element's left edge, not the root container
+      // This ensures the horizontal position is preserved when navigating between nodes
+      const elementRect = this.element.getBoundingClientRect();
 
-      const pixelOffset = cursorRect.left - rootRect.left;
+      const pixelOffset = cursorRect.left - elementRect.left;
       return pixelOffset;
     } catch (e) {
       console.warn('[getCurrentPixelOffset] Error measuring pixel offset:', e);
