@@ -1162,11 +1162,13 @@ export class ContentEditableController {
 
         if (!shouldNavigate) {
           // Let the browser handle line-by-line navigation within the multiline node
+          // Don't prevent default - let browser handle within-node navigation
           return;
         }
       }
 
       // Navigate between nodes
+      event.preventDefault(); // Prevent browser from handling this
       const columnHint = this.getCurrentColumn();
       this.events.navigateArrow({
         nodeId: this.nodeId,
@@ -1245,22 +1247,48 @@ export class ContentEditableController {
       }
 
       // Then check if we're at the end of that last line
-      const currentLineIndex = this.getCurrentLineIndex(range);
-      if (currentLineIndex === -1) return false;
+      // We do this by checking if we're at the end of the text node we're in
+      if (range.startContainer.nodeType === Node.TEXT_NODE) {
+        const textNode = range.startContainer as Text;
+        // Check if cursor is at the end of this text node
+        if (range.startOffset < textNode.length) {
+          return false; // Not at end of text node
+        }
 
-      const lineElements = Array.from(this.element.children).filter(
-        child => child.tagName === 'DIV'
-      );
-      const lastLineElement = lineElements[currentLineIndex];
+        // We're at the end of a text node - check if there are any more text nodes after this one
+        const currentLineIndex = this.getCurrentLineIndex(range);
+        if (currentLineIndex === -1) return false;
 
-      if (!lastLineElement) return false;
+        const lineElements = Array.from(this.element.children).filter(
+          child => child.tagName === 'DIV'
+        );
+        const lastLineElement = lineElements[currentLineIndex];
+        if (!lastLineElement) return false;
 
-      // Create range for the entire last line and compare positions
-      const lineRange = document.createRange();
-      lineRange.selectNodeContents(lastLineElement);
+        // Check if our text node is the last text-containing node in the line
+        const walker = document.createTreeWalker(
+          lastLineElement,
+          NodeFilter.SHOW_TEXT,
+          {
+            acceptNode: (node) => {
+              // Skip empty text nodes and whitespace-only nodes
+              const text = node.textContent || '';
+              return text.trim().length > 0 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+            }
+          }
+        );
 
-      return range.startOffset === lineRange.endOffset &&
-             range.startContainer === lineRange.endContainer;
+        let lastTextNode: Node | null = null;
+        while (walker.nextNode()) {
+          lastTextNode = walker.currentNode;
+        }
+
+        // We're at the end if our text node is the last text node
+        return textNode === lastTextNode;
+      } else {
+        // Cursor is not in a text node - check if we're at the end of an empty line
+        return range.startOffset >= range.startContainer.childNodes.length;
+      }
     } else {
       // For single-line content, check if we're at the end of the entire element
       const textContent = this.element.textContent || '';

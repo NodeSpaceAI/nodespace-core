@@ -563,6 +563,11 @@ describe('ContentEditableController', () => {
     let navigateArrowSpy: ReturnType<typeof vi.fn>;
 
     beforeEach(() => {
+      // Destroy previous controller to avoid multiple event listeners
+      if (controller) {
+        controller.destroy();
+      }
+
       // Reset event calls and create spy
       eventCalls = {};
       navigateArrowSpy = vi.fn((data) => {
@@ -624,7 +629,7 @@ describe('ContentEditableController', () => {
 
       // Should call navigateArrow (go to previous node)
       expect(navigateArrowSpy).toHaveBeenCalledWith({
-        nodeId: 'test',
+        nodeId: 'test-node',
         direction: 'up',
         columnHint: expect.any(Number)
       });
@@ -672,7 +677,7 @@ describe('ContentEditableController', () => {
 
       // Should call navigateArrow (go to next node)
       expect(navigateArrowSpy).toHaveBeenCalledWith({
-        nodeId: 'test',
+        nodeId: 'test-node',
         direction: 'down',
         columnHint: expect.any(Number)
       });
