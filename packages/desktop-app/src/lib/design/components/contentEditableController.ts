@@ -1391,12 +1391,16 @@ export class ContentEditableController {
       const node = this.element.childNodes[i];
       if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) {
         hasTextBeforeFirstDiv = true;
+        console.log('[isAtBeginningOfFirstLine] Found text before DIV:', node.textContent?.trim());
         break;
       }
     }
 
+    console.log('[isAtBeginningOfFirstLine] hasTextBeforeFirstDiv:', hasTextBeforeFirstDiv, 'firstDivIndex:', firstDivIndex);
+
     if (hasTextBeforeFirstDiv) {
       // There's text before this DIV, so we're NOT at the beginning of the first line
+      console.log('[isAtBeginningOfFirstLine] Returning FALSE - not at beginning because text exists before DIV');
       return false;
     }
 
@@ -1648,8 +1652,18 @@ export class ContentEditableController {
       currentElement = currentElement.parentNode;
     }
 
-    // If we found a containing div, check if it's the first one
+    // If we found a containing div, check if it's the first line
     if (containingDiv) {
+      // Check if there's text content before this DIV
+      const divIndex = Array.from(this.element.childNodes).indexOf(containingDiv as ChildNode);
+      for (let i = 0; i < divIndex; i++) {
+        const node = this.element.childNodes[i];
+        if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) {
+          // There's text before this DIV, so this DIV is NOT the first line
+          return false;
+        }
+      }
+      // No text before this DIV - it IS the first line
       return containingDiv === this.element.firstElementChild;
     }
 
