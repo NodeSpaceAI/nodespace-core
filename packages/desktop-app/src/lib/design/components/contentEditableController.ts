@@ -1341,10 +1341,33 @@ export class ContentEditableController {
       return textBeforeCursor.length === 0 || !textBeforeCursor.includes('\n');
     }
 
-    const firstLine = lineElements[0];
+    // Has DIV children - this is multiline content
+    // First line could be a text node before the first DIV, or the first DIV itself
+    const firstChild = this.element.childNodes[0];
 
-    // Check if cursor is in the first line
+    // Check if cursor is before any DIV (in leading text node)
     let currentElement: Node | null = range.startContainer;
+    let isBeforeDivs = true;
+
+    // Walk up to find if we're inside a DIV
+    while (currentElement && currentElement !== this.element) {
+      if (currentElement.nodeType === Node.ELEMENT_NODE &&
+          (currentElement as Element).tagName === 'DIV' &&
+          currentElement.parentNode === this.element) {
+        isBeforeDivs = false;
+        break;
+      }
+      currentElement = currentElement.parentNode;
+    }
+
+    if (isBeforeDivs) {
+      // Cursor is in text before any DIVs - check if at start of that text
+      return this.isAtStart();
+    }
+
+    // Cursor is inside a DIV - check if it's the first DIV and we're at its start
+    const firstLine = lineElements[0];
+    currentElement = range.startContainer;
     let isInFirstLine = false;
 
     while (currentElement && currentElement !== this.element) {
@@ -1400,9 +1423,11 @@ export class ContentEditableController {
       return textAfterCursor.length === 0 || !textAfterCursor.includes('\n');
     }
 
+    // Has DIV children - this is multiline content
+    // Last line is always the last DIV (trailing text after DIVs would be in a new line)
     const lastLine = lineElements[lineElements.length - 1];
 
-    // Check if cursor is in the last line
+    // Check if cursor is inside the last DIV
     let currentElement: Node | null = range.startContainer;
     let isInLastLine = false;
 
@@ -1415,6 +1440,18 @@ export class ContentEditableController {
     }
 
     if (!isInLastLine) {
+      // Not in the last DIV - check if we're in trailing text after all DIVs
+      // If cursor is after all DIVs (in trailing text), we're at end of last line
+      const lastChildIndex = Array.from(this.element.childNodes).indexOf(
+        range.startContainer as ChildNode
+      );
+      const lastDivIndex = Array.from(this.element.childNodes).indexOf(lastLine as ChildNode);
+
+      if (lastChildIndex > lastDivIndex) {
+        // Cursor is in text after the last DIV - check if at end
+        return this.isAtEnd();
+      }
+
       return false;
     }
 
