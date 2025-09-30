@@ -1143,10 +1143,11 @@ export class ContentEditableController {
       }
       const direction = event.key === 'ArrowUp' ? 'up' : 'down';
 
-      // For multiline nodes, only navigate between nodes if at first/last line
-      if (this.config.allowMultiline) {
-        let shouldNavigate = false;
+      // Determine if we should navigate between nodes
+      let shouldNavigate = false;
 
+      if (this.config.allowMultiline) {
+        // For multiline nodes, only navigate between nodes if at first/last line
         if (direction === 'up') {
           // Only navigate if at the beginning of the first line
           shouldNavigate = this.isAtBeginningOfFirstLine();
@@ -1163,6 +1164,18 @@ export class ContentEditableController {
         if (!shouldNavigate) {
           // Let the browser handle line-by-line navigation within the multiline node
           // Don't prevent default - let browser handle within-node navigation
+          return;
+        }
+      } else {
+        // For single-line nodes, check position before navigating
+        if (direction === 'up') {
+          shouldNavigate = this.isAtStart();
+        } else {
+          shouldNavigate = this.isAtEnd();
+        }
+
+        if (!shouldNavigate) {
+          // Not at the boundary, don't navigate between nodes
           return;
         }
       }
