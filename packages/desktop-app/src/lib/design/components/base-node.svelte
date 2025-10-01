@@ -641,31 +641,43 @@
   .node--h1 {
     --font-size: 2rem;
     --line-height: 1.2;
+    /* Line box center: 0.25rem + (fontSize × line-height / 2) = 0.25rem + 1.2rem */
+    --icon-vertical-position: calc(0.25rem + (2rem * 1.2 / 2));
   }
 
   .node--h2 {
     --font-size: 1.5rem;
     --line-height: 1.3;
+    /* Line box center: 0.25rem + (1.5rem × 1.3 / 2) = 0.25rem + 0.975rem */
+    --icon-vertical-position: calc(0.25rem + (1.5rem * 1.3 / 2));
   }
 
   .node--h3 {
     --font-size: 1.25rem;
     --line-height: 1.4;
+    /* Line box center: 0.25rem + (1.25rem × 1.4 / 2) = 0.25rem + 0.875rem */
+    --icon-vertical-position: calc(0.25rem + (1.25rem * 1.4 / 2));
   }
 
   .node--h4 {
     --font-size: 1.125rem;
     --line-height: 1.4;
+    /* Line box center: 0.25rem + (1.125rem × 1.4 / 2) = 0.25rem + 0.7875rem */
+    --icon-vertical-position: calc(0.25rem + (1.125rem * 1.4 / 2));
   }
 
   .node--h5 {
     --font-size: 1rem;
     --line-height: 1.4;
+    /* Line box center: 0.25rem + (1rem × 1.4 / 2) = 0.25rem + 0.7rem */
+    --icon-vertical-position: calc(0.25rem + (1rem * 1.4 / 2));
   }
 
   .node--h6 {
     --font-size: 0.875rem;
     --line-height: 1.4;
+    /* Line box center: 0.25rem + (0.875rem × 1.4 / 2) = 0.25rem + 0.6125rem */
+    --icon-vertical-position: calc(0.25rem + (0.875rem * 1.4 / 2));
   }
 
   /* Header empty state - ensure proper height */

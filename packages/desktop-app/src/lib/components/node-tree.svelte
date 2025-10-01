@@ -160,26 +160,18 @@
   }
 
   .ns-node-tree__expand-btn {
-    position: absolute !important;
-    /* DRASTIC TEST: Move way to the right to see if it moves at all */
-    left: 200px !important;
-    top: 0px !important;
-    transform: none !important;
-    /* Make it bright red and huge */
-    width: 50px !important;
-    height: 50px !important;
-    background: red !important;
-    color: white !important;
-    border: 3px solid yellow !important;
+    width: 20px;
+    height: 20px;
     padding: 0;
+    background: transparent;
+    border: none;
     border-radius: var(--ns-radius-sm, 0.25rem);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
     transition: all var(--ns-duration-fast, 0.15s) var(--ns-easing-easeInOut, ease-in-out);
-    font-size: 20px !important;
-    z-index: 1000 !important; /* Ensure chevron appears above content */
+    color: var(--ns-color-text-secondary);
   }
 
   .ns-node-tree__expand-btn:hover {

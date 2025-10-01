@@ -1123,34 +1123,40 @@
     --font-size: 1rem;
   }
 
-  /* Inherit font-size and line-height from nested BaseNode header classes */
+  /* Inherit font-size, line-height, and icon positioning from nested BaseNode header classes */
   .node-content-wrapper:has(:global(.node--h1)) {
     --font-size: 2rem;
     --line-height: 1.2;
+    --icon-vertical-position: calc(0.25rem + (2rem * 1.2 / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h2)) {
     --font-size: 1.5rem;
     --line-height: 1.3;
+    --icon-vertical-position: calc(0.25rem + (1.5rem * 1.3 / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h3)) {
     --font-size: 1.25rem;
     --line-height: 1.4;
+    --icon-vertical-position: calc(0.25rem + (1.25rem * 1.4 / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h4)) {
     --font-size: 1.125rem;
     --line-height: 1.4;
+    --icon-vertical-position: calc(0.25rem + (1.125rem * 1.4 / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h5)) {
     --font-size: 1rem;
     --line-height: 1.4;
+    --icon-vertical-position: calc(0.25rem + (1rem * 1.4 / 2));
   }
 
   .node-content-wrapper:has(:global(.node--h6)) {
     --font-size: 0.875rem;
     --line-height: 1.4;
+    --icon-vertical-position: calc(0.25rem + (0.875rem * 1.4 / 2));
   }
 </style>
