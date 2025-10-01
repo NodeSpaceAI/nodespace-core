@@ -203,12 +203,10 @@
   /* Completed task styling following design system */
   .task-completed {
     text-decoration: line-through;
-    opacity: 0.7;
   }
 
   /* Apply completed styling to the content specifically */
-  .task-completed :global(.node-content),
-  .task-completed :global(.content-editable) {
+  .task-completed :global(.node__content) {
     text-decoration: line-through;
     opacity: 0.7;
   }
