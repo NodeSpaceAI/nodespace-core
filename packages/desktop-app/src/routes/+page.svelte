@@ -1,5 +1,5 @@
 <script lang="ts">
-  import DatePageViewer from '$lib/components/viewers/date-page-viewer.svelte';
+  import DateNodeViewer from '$lib/components/viewers/date-node-viewer.svelte';
   import { toggleTheme } from '$lib/design/theme.js';
   import { tabState } from '$lib/stores/navigation.js';
 
@@ -19,7 +19,7 @@
 <svelte:window on:keydown={handleKeydown} />
 
 {#if activeTabId === 'today'}
-  <DatePageViewer tabId="today" />
+  <DateNodeViewer tabId="today" />
 {:else}
   <!-- Placeholder content for other tabs -->
   <div class="placeholder-content">

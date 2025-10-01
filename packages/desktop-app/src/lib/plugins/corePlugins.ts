@@ -125,19 +125,19 @@ export const aiChatNodePlugin: PluginDefinition = {
   }
 };
 
-// Additional core node types for reference system
+// Date node - exists implicitly for all dates, cannot be created via slash commands
 export const dateNodePlugin: PluginDefinition = {
   id: 'date',
   name: 'Date Node',
-  description: 'Date and time node',
+  description: 'Date and time node (not creatable - exists for all dates)',
   version: '1.0.0',
   config: {
-    slashCommands: [],
-    canHaveChildren: false,
+    slashCommands: [], // No slash commands - date nodes exist implicitly
+    canHaveChildren: true,
     canBeChild: true
   },
-  viewer: {
-    lazyLoad: () => import('../components/viewers/date-node-viewer.svelte'),
+  node: {
+    lazyLoad: () => import('../design/components/date-node.svelte'),
     priority: 1
   },
   reference: {
