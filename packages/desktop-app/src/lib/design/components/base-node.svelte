@@ -177,14 +177,20 @@
   // Slash command event handlers
   function handleSlashCommandSelect(event: CustomEvent<SlashCommand>) {
     const command = event.detail;
+    let calculatedCursorPosition = 0;
 
     if (controller) {
       // Execute the command and get the content to insert
       const result = slashCommandService.executeCommand(command);
 
-      // Insert the command content (skip cursor positioning since parent will handle it)
+      // Insert the command content and get the calculated cursor position
+      // Skip cursor positioning here since the component will re-render and we'll position via requestNodeFocus
       // Pass the target node type so insertSlashCommand can clean header syntax appropriately
-      controller.insertSlashCommand(result.content, true, result.nodeType);
+      calculatedCursorPosition = controller.insertSlashCommand(
+        result.content,
+        true,
+        result.nodeType
+      );
 
       // Don't update nodeType locally - let parent handle it to avoid double re-renders
       // The parent (base-node-viewer) will update nodeType via nodeManager and trigger autoFocus
@@ -210,7 +216,7 @@
     dispatch('slashCommandSelected', {
       command: command.id,
       nodeType: command.nodeType,
-      cursorPosition: 0 // Slash commands always position cursor at beginning
+      cursorPosition: calculatedCursorPosition // Use the calculated position from controller
     });
   }
 

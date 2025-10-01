@@ -31,7 +31,7 @@
   // Map to store cursor positions during node type changes
   const pendingCursorPositions = new Map<string, number>();
 
-  // Focus handling function
+  // Focus handling function with proper cursor positioning using tree walker
   function requestNodeFocus(nodeId: string, position: number) {
     // Find the target node
     const node = nodeManager.findNode(nodeId);
@@ -48,20 +48,40 @@
       if (nodeElement) {
         nodeElement.focus();
 
-        // Set cursor position
+        // Set cursor position using tree walker (same approach as controller)
         if (position >= 0) {
-          const range = document.createRange();
           const selection = window.getSelection();
+          if (!selection) return;
 
-          // Find the text node and set cursor position
-          if (nodeElement.firstChild && nodeElement.firstChild.nodeType === Node.TEXT_NODE) {
-            const textNode = nodeElement.firstChild;
-            const actualPosition = Math.min(position, textNode.textContent?.length || 0);
-            range.setStart(textNode, actualPosition);
-            range.setEnd(textNode, actualPosition);
-            selection?.removeAllRanges();
-            selection?.addRange(range);
+          // Use tree walker to find the correct text node and offset
+          const walker = document.createTreeWalker(nodeElement, NodeFilter.SHOW_TEXT, null);
+
+          let currentOffset = 0;
+          let currentNode;
+
+          while ((currentNode = walker.nextNode())) {
+            const nodeLength = currentNode.textContent?.length || 0;
+
+            if (currentOffset + nodeLength >= position) {
+              const range = document.createRange();
+              const offsetInNode = position - currentOffset;
+              range.setStart(currentNode, Math.min(offsetInNode, nodeLength));
+              range.setEnd(currentNode, Math.min(offsetInNode, nodeLength));
+
+              selection.removeAllRanges();
+              selection.addRange(range);
+              return;
+            }
+
+            currentOffset += nodeLength;
           }
+
+          // If we didn't find the position, position at the end
+          const range = document.createRange();
+          range.selectNodeContents(nodeElement);
+          range.collapse(false);
+          selection.removeAllRanges();
+          selection.addRange(range);
         }
       } else {
         console.error(`Could not find contenteditable element for node ${nodeId}`);
@@ -612,6 +632,19 @@
   // Clear focusedNodeId after a delay to prevent permanent focus
   $effect(() => {
     if (focusedNodeId) {
+      // Check if there's a pending cursor position for this node
+      const pendingPosition = pendingCursorPositions.get(focusedNodeId);
+      if (pendingPosition !== undefined) {
+        // Use requestNodeFocus to position cursor precisely
+        // This bypasses autoFocus to avoid conflicts
+        requestNodeFocus(focusedNodeId, pendingPosition);
+        // Clear the pending position
+        pendingCursorPositions.delete(focusedNodeId);
+        // Clear focusedNodeId immediately since we've handled the focus
+        focusedNodeId = null;
+        return;
+      }
+
       const timeoutId = setTimeout(() => {
         focusedNodeId = null;
       }, 100); // Clear after 100ms to allow autoFocus to trigger
@@ -709,7 +742,8 @@
               <TextNodeViewer
                 nodeId={node.id}
                 nodeType={node.nodeType}
-                autoFocus={node.autoFocus || node.id === focusedNodeId}
+                autoFocus={(node.autoFocus || node.id === focusedNodeId) &&
+                  !pendingCursorPositions.has(node.id)}
                 content={node.content}
                 inheritHeaderLevel={node.inheritHeaderLevel || 0}
                 children={node.children}
@@ -723,7 +757,14 @@
                   // Update node content (placeholder flag is handled automatically)
                   nodeManager.updateNodeContent(node.id, content);
                 }}
-                on:slashCommandSelected={(e) => {
+                on:slashCommandSelected={(
+                  e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
+                ) => {
+                  // Store cursor position before node type change
+                  if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
+                    pendingCursorPositions.set(node.id, e.detail.cursorPosition);
+                  }
+
                   if (node.isPlaceholder) {
                     // For placeholder nodes, just update the nodeType locally
                     if ('updatePlaceholderNodeType' in nodeManager) {
@@ -780,7 +821,8 @@
                 <NodeComponent
                   nodeId={node.id}
                   nodeType={node.nodeType}
-                  autoFocus={node.autoFocus || node.id === focusedNodeId}
+                  autoFocus={(node.autoFocus || node.id === focusedNodeId) &&
+                    !pendingCursorPositions.has(node.id)}
                   content={node.content}
                   headerLevel={node.inheritHeaderLevel || 0}
                   children={node.children}
@@ -879,7 +921,8 @@
                 <BaseNode
                   nodeId={node.id}
                   nodeType={node.nodeType}
-                  autoFocus={node.autoFocus || node.id === focusedNodeId}
+                  autoFocus={(node.autoFocus || node.id === focusedNodeId) &&
+                    !pendingCursorPositions.has(node.id)}
                   content={node.content}
                   headerLevel={node.inheritHeaderLevel || 0}
                   children={node.children}

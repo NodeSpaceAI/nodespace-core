@@ -3486,13 +3486,15 @@ export class ContentEditableController {
 
   /**
    * Insert slash command content at current cursor position
+   * Returns the calculated cursor position for use by parent components
    */
   public insertSlashCommand(
     content: string,
     skipCursorPositioning = false,
     targetNodeType?: string
-  ): void {
+  ): number {
     const currentText = this.element.textContent || '';
+    let calculatedCursorPos = 0;
 
     // Use session tracking if available, otherwise fallback to legacy logic
     if (this.slashCommandSession && this.slashCommandSession.active) {
@@ -3536,6 +3538,8 @@ export class ContentEditableController {
         newCursorPos = beforeSlash.length;
       }
 
+      calculatedCursorPos = newCursorPos;
+
       if (!skipCursorPositioning) {
         setTimeout(() => {
           this.restoreCursorPosition(newCursorPos);
@@ -3545,7 +3549,7 @@ export class ContentEditableController {
       // Fallback to legacy logic for cases without session tracking
       const lastSlashIndex = currentText.lastIndexOf('/');
       if (lastSlashIndex === -1) {
-        return;
+        return 0;
       }
 
       // Simple fallback: only replace the "/" itself
@@ -3557,13 +3561,18 @@ export class ContentEditableController {
       this.setLiveFormattedContent(newContent);
       this.events.contentChanged(newContent);
 
+      const newCursorPos = beforeSlash.length + content.length;
+      calculatedCursorPos = newCursorPos;
+
       if (!skipCursorPositioning) {
         setTimeout(() => {
           // Position cursor where the "/" was originally typed
-          this.restoreCursorPosition(beforeSlash.length + content.length);
+          this.restoreCursorPosition(newCursorPos);
         }, 0);
       }
     }
+
+    return calculatedCursorPos;
   }
 
   /**
