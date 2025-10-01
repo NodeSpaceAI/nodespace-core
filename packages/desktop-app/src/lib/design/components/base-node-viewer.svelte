@@ -1015,6 +1015,11 @@
     --circle-text-gap: 8px; /* Gap between circle edge and text content */
     --node-indent: 2.5rem; /* Indentation distance between parent and child levels */
 
+    /* Default font values for positioning calculations */
+    --font-size: 1rem;
+    --line-height: 1.6;
+    /* Note: --icon-vertical-position is defined globally in app.css */
+
     /* NodeSpace Extension Colors - Subtle Tint System (Scheme 3) */
     --node-text: 200 40% 45%; /* Blue-gray for all nodes (Scheme 3) */
     --node-task: 200 40% 45%; /* Blue-gray for all nodes (Scheme 3) */
@@ -1078,8 +1083,8 @@
     left: calc(
       -1 * var(--node-indent) / 2 + var(--circle-offset)
     ); /* Halfway back to parent + parent circle offset */
-    /* Use same CSS-first positioning as circles: containerPaddingPx + (lineHeightPx / 2) */
-    top: calc(0.25rem + (var(--font-size) * var(--line-height) / 2));
+    /* Use shared CSS variable from .node - single source of truth for vertical positioning */
+    top: var(--icon-vertical-position);
     transform: translate(-50%, -50%); /* Center icon on coordinates, same as circles */
     z-index: 999; /* Very high z-index to ensure clickability over all other elements */
   }

@@ -540,40 +540,39 @@
       var(--circle-offset, 26px) + var(--circle-diameter, 20px) + var(--circle-text-gap, 8px)
     ); /* Dynamic: circle position + circle width + gap */
     width: 100%;
-    /* 
+    /*
       Circle positioning system using CSS-first dynamic calculation
-      
+
       MATHEMATICAL FOUNDATION:
       The circle needs to be positioned at the visual center of the first line of text.
-      
-      Formula: containerPaddingPx + (lineHeightPx / 2)
-      - containerPaddingPx = 0.25rem (top padding of .node container)  
-      - lineHeightPx = font-size × line-height multiplier
-      
+
+      Formula: containerPaddingPx + (fontSize × 0.75)
+      - containerPaddingPx = 0.25rem (top padding of .node container)
+      - 0.75 coefficient empirically calibrated for optical text center
+
       DERIVATION:
-      1. Text baseline starts at container top + padding (0.25rem)
-      2. Line height creates vertical space around text
-      3. Visual center is at baseline + (line-height / 2)
-      4. Therefore: top = 0.25rem + (line-height-px / 2)
-      
+      1. Line-height creates vertical space above/below text (descenders/ascenders)
+      2. Visual center of text is 75% of font-size from container top
+      3. This accounts for typical font metrics (baseline, x-height, cap-height)
+      4. Works consistently across different line-heights and font sizes
+
       BROWSER COMPATIBILITY:
       - CSS custom properties: IE 11+ (95%+ browser support)
-      - CSS calc(): IE 9+ (98%+ browser support) 
+      - CSS calc(): IE 9+ (98%+ browser support)
       - Graceful fallback to 1.05rem for older browsers
     */
 
     /* Default values for normal text - dynamic font-responsive alignment */
     --line-height: 1.6;
     --font-size: 1rem;
+    /* Note: --icon-vertical-position is defined globally in app.css */
   }
 
   .node__indicator {
     position: absolute;
     left: var(--circle-offset, 26px); /* Dynamic circle positioning */
-    /* Fallback positioning for older browsers that don't support CSS custom properties */
-    top: 1.05rem; /* Approximates normal text center: 0.25rem padding + (1rem * 1.6 / 2) */
-    /* CSS-first dynamic positioning using proven formula: containerPaddingPx + (lineHeightPx / 2) */
-    top: calc(0.25rem + (var(--font-size) * var(--line-height) / 2));
+    /* Use shared CSS variable for vertical position - single source of truth */
+    top: var(--icon-vertical-position);
     transform: translate(-50%, -50%); /* Center icon on coordinates */
     width: var(--circle-diameter, 20px); /* Dynamic circle size */
     height: var(--circle-diameter, 20px); /* Dynamic circle size */

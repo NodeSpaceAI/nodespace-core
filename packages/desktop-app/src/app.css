@@ -54,6 +54,12 @@
     --inactive-tab-background: 200 12% 80%; /* Inactive tab background */
     --active-tab-background: 0 0% 99%; /* Active tab matches content */
     --content-background: 0 0% 99%; /* Background color for main content */
+
+    /* Icon Positioning System - Single source of truth */
+    /* Used by node indicators and chevrons for consistent vertical alignment */
+    /* Formula: containerPaddingPx + (fontSize × 0.75) */
+    /* The 0.75 coefficient is empirically calibrated for optical text center */
+    --icon-vertical-position: calc(0.25rem + (var(--font-size, 1rem) * 0.75));
   }
 
   .dark {
