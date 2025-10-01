@@ -87,7 +87,10 @@ export function getDateTabTitle(date: Date): string {
   } else if (targetDate.getTime() === yesterdayNormalized.getTime()) {
     return 'Yesterday';
   } else {
-    // Format as YYYY-MM-DD
-    return targetDate.toISOString().split('T')[0];
+    // Format as YYYY-MM-DD using local timezone (not UTC)
+    const year = targetDate.getFullYear();
+    const month = String(targetDate.getMonth() + 1).padStart(2, '0');
+    const day = String(targetDate.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 }
