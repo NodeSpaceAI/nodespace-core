@@ -80,9 +80,9 @@ describe('Core Plugins Integration', () => {
       expect(dateNodePlugin.id).toBe('date');
       expect(dateNodePlugin.name).toBe('Date Node');
       expect(dateNodePlugin.config.slashCommands).toHaveLength(0);
-      expect(dateNodePlugin.viewer).toBeDefined();
+      expect(dateNodePlugin.node).toBeDefined(); // DateNode is a node component, not a viewer
       expect(dateNodePlugin.reference).toBeDefined();
-      // Date nodes do not have slash commands - they are created through other mechanisms
+      // Date nodes do not have slash commands - they exist implicitly for all dates
     });
 
     it('should have valid reference-only plugins', () => {
@@ -142,7 +142,7 @@ describe('Core Plugins Integration', () => {
         expect.objectContaining({
           plugins: 6,
           slashCommands: expect.any(Number),
-          viewers: 4, // text, task, ai-chat, date
+          viewers: 3, // text, task, ai-chat (date is a node, not a viewer)
           references: 6 // all plugins have references
         })
       );
@@ -183,8 +183,8 @@ describe('Core Plugins Integration', () => {
     });
 
     it('should resolve viewer components for plugins with viewers', async () => {
-      // Test plugins with viewers
-      const viewerPlugins = ['text', 'task', 'ai-chat', 'date'];
+      // Test plugins with viewers (date is a node component, not a viewer)
+      const viewerPlugins = ['text', 'task', 'ai-chat'];
 
       for (const pluginId of viewerPlugins) {
         expect(registry.hasViewer(pluginId)).toBe(true);
@@ -389,8 +389,8 @@ describe('Core Plugins Integration', () => {
     it('should maintain all functionality from old ViewerRegistry', () => {
       registerCorePlugins(registry);
 
-      // Verify all original ViewerRegistry types have viewers
-      const expectedViewerTypes = ['text', 'date', 'task', 'ai-chat'];
+      // Verify all original ViewerRegistry types have viewers (date is now a node, not a viewer)
+      const expectedViewerTypes = ['text', 'task', 'ai-chat'];
 
       for (const viewerType of expectedViewerTypes) {
         expect(registry.hasViewer(viewerType)).toBe(true);
