@@ -846,12 +846,7 @@ mod tests {
         let registry = NodeBehaviorRegistry::new();
 
         // Valid text node
-        let text_node = Node::new(
-            "text".to_string(),
-            "Hello".to_string(),
-            None,
-            json!({}),
-        );
+        let text_node = Node::new("text".to_string(), "Hello".to_string(), None, json!({}));
         assert!(registry.validate_node(&text_node).is_ok());
 
         // Valid task node
@@ -915,10 +910,7 @@ mod tests {
         let err2 = ProcessingError::InvalidFormat("format".to_string());
         let err3 = ProcessingError::TransformationError("transform".to_string());
 
-        assert_eq!(
-            format!("{}", err1),
-            "Content processing failed: test"
-        );
+        assert_eq!(format!("{}", err1), "Content processing failed: test");
         assert_eq!(format!("{}", err2), "Invalid content format: format");
         assert_eq!(
             format!("{}", err3),
@@ -942,12 +934,7 @@ mod tests {
         assert!(behavior.can_have_children());
         assert!(behavior.supports_markdown());
 
-        let node = Node::new(
-            "text".to_string(),
-            "Test".to_string(),
-            None,
-            json!({}),
-        );
+        let node = Node::new("text".to_string(), "Test".to_string(), None, json!({}));
         assert!(behavior.validate(&node).is_ok());
     }
 }

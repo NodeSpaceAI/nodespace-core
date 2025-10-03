@@ -10,3 +10,9 @@
 //! The database layer uses the Pure JSON schema approach where all entity
 //! data is stored in the `properties` field, eliminating the need for
 //! ALTER TABLE operations on user machines.
+
+mod database;
+mod error;
+
+pub use database::DatabaseService;
+pub use error::DatabaseError;

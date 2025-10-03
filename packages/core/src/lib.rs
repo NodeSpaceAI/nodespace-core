@@ -29,6 +29,7 @@ pub use behaviors::{
     DateNodeBehavior, NodeBehavior, NodeBehaviorRegistry, ProcessingError, TaskNodeBehavior,
     TextNodeBehavior,
 };
+pub use db::{DatabaseError, DatabaseService};
 pub use models::{
     FilterOperator, Node, NodeFilter, NodeUpdate, OrderBy, PropertyFilter, ValidationError,
 };

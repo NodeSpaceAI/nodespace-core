@@ -429,10 +429,8 @@ impl Node {
 
     /// Merge properties with existing properties (shallow merge)
     pub fn merge_properties(&mut self, updates: serde_json::Value) {
-        if let (Some(existing), Some(new)) = (
-            self.properties.as_object_mut(),
-            updates.as_object(),
-        ) {
+        if let (Some(existing), Some(new)) = (self.properties.as_object_mut(), updates.as_object())
+        {
             for (key, value) in new {
                 existing.insert(key.clone(), value.clone());
             }
@@ -1012,12 +1010,7 @@ mod tests {
 
     #[test]
     fn test_node_validation_circular_parent() {
-        let mut node = Node::new(
-            "text".to_string(),
-            "Test".to_string(),
-            None,
-            json!({}),
-        );
+        let mut node = Node::new("text".to_string(), "Test".to_string(), None, json!({}));
         // Set parent_id to self (circular reference)
         node.parent_id = Some(node.id.clone());
 
@@ -1029,12 +1022,7 @@ mod tests {
 
     #[test]
     fn test_node_validation_circular_root() {
-        let mut node = Node::new(
-            "text".to_string(),
-            "Test".to_string(),
-            None,
-            json!({}),
-        );
+        let mut node = Node::new("text".to_string(), "Test".to_string(), None, json!({}));
         // Set root_id to self (circular reference)
         node.root_id = Some(node.id.clone());
 
@@ -1046,12 +1034,7 @@ mod tests {
 
     #[test]
     fn test_node_validation_circular_sibling() {
-        let mut node = Node::new(
-            "text".to_string(),
-            "Test".to_string(),
-            None,
-            json!({}),
-        );
+        let mut node = Node::new("text".to_string(), "Test".to_string(), None, json!({}));
         // Set before_sibling_id to self (circular reference)
         node.before_sibling_id = Some(node.id.clone());
 
@@ -1095,12 +1078,7 @@ mod tests {
 
     #[test]
     fn test_node_content_update() {
-        let mut node = Node::new(
-            "text".to_string(),
-            "Original".to_string(),
-            None,
-            json!({}),
-        );
+        let mut node = Node::new("text".to_string(), "Original".to_string(), None, json!({}));
         let original_modified = node.modified_at;
 
         node.set_content("Updated".to_string());
@@ -1308,11 +1286,8 @@ mod tests {
     #[test]
     fn test_property_filter_invalid_paths() {
         // Missing $ prefix
-        let filter = PropertyFilter::new(
-            "status".to_string(),
-            FilterOperator::Equals,
-            json!("done"),
-        );
+        let filter =
+            PropertyFilter::new("status".to_string(), FilterOperator::Equals, json!("done"));
         assert!(filter.is_err());
         assert!(matches!(filter, Err(ValidationError::InvalidProperties(_))));
 
@@ -1333,11 +1308,7 @@ mod tests {
         assert!(filter.is_err());
 
         // Empty path after $
-        let filter = PropertyFilter::new(
-            "$.".to_string(),
-            FilterOperator::Equals,
-            json!("done"),
-        );
+        let filter = PropertyFilter::new("$.".to_string(), FilterOperator::Equals, json!("done"));
         assert!(filter.is_err());
     }
 

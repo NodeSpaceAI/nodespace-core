@@ -15,13 +15,13 @@ Analyze the following outputs to understand the scope and content of the changes
 !`git status`
 
 **FILES MODIFIED:**
-!`git diff --name-only origin/HEAD...`
+!`git diff --name-only origin/main...HEAD`
 
 **COMMITS:**
-!`git log --no-decorate origin/HEAD...`
+!`git log --no-decorate origin/main...HEAD`
 
 **DIFF CONTENT:**
-!`git diff --merge-base origin/HEAD`
+!`git diff origin/main...HEAD`
 
 Review the complete diff above. This contains all code changes in the PR.
 
@@ -34,6 +34,8 @@ Review the complete diff above. This contains all code changes in the PR.
 ## Your Task
 
 **OBJECTIVE:** Launch the **pragmatic-code-reviewer** agent using the Task tool to comprehensively review the complete diff above. The agent should perform the code review and reply back to you with the completed code review report. Your final reply to the user must contain the markdown report and nothing else.
+
+**CRITICAL: The pragmatic-code-reviewer agent MUST NOT merge the PR.** The agent's sole responsibility is to provide the code review report. Merging is a separate decision that the user will make after reviewing the findings.
 
 The pragmatic-code-reviewer agent should perform a comprehensive code review focusing on:
 
@@ -81,3 +83,7 @@ The pragmatic-code-reviewer agent should perform a comprehensive code review foc
 ## Output Guidelines
 
 Provide specific, actionable feedback. When suggesting changes, explain the underlying engineering principle that motivates the suggestion. Be constructive and concise.
+
+## Critical Constraints
+
+**DO NOT MERGE THE PR.** The reviewer agent's job ends with providing the review report. Do not run `gh pr merge`, `git merge`, or any other merge commands. The user will decide whether and when to merge based on the review findings.
