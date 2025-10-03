@@ -72,8 +72,9 @@ packages/*/data/
 *.sst
 .fastembed_cache/
 
-# ML Models and caches (too large for git)
-models/
+# ML Models and caches (too large for git) - but allow src/models/ (Rust source code)
+/models/
+**/ml_models/
 *.onnx
 *.bin
 *.safetensors

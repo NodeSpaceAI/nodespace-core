@@ -24,7 +24,7 @@ pub mod mcp;
 pub mod models;
 pub mod services;
 
-// Re-exports will be added as modules are implemented
-// pub use behaviors::*;
-// pub use models::*;
-// pub use services::*;
+// Re-exports
+pub use models::{
+    FilterOperator, Node, NodeFilter, NodeUpdate, OrderBy, PropertyFilter, ValidationError,
+};
