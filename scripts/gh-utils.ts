@@ -243,8 +243,8 @@ class NodeSpaceGitHubManager {
 
     try {
       console.log("Checking linting and formatting...");
-      // Use the existing quality command from nodespace-app
-      const qualityResult = await $`bun run --cwd nodespace-app quality:fix`;
+      // Use the existing quality command
+      const qualityResult = await $`bun run quality:fix`;
       console.log(qualityResult.text());
       
       console.log("✅ Quality checks passed!");
@@ -262,7 +262,7 @@ class NodeSpaceGitHubManager {
     console.log(`📝 Creating PR for issue #${issueNumber}...\n`);
 
     // Remind about quality checks
-    console.log("⚠️  Ensure you've run: bun run --cwd nodespace-app quality:fix");
+    console.log("⚠️  Ensure you've run: bun run quality:fix");
 
     try {
       // Get issue details for PR
@@ -477,7 +477,7 @@ async function main() {
 
 📝 PR Management:
   bun run scripts/gh-utils.ts pr:create 45     # Create PR workflow
-  bun run --cwd nodespace-app quality:fix      # Run quality checks
+  bun run quality:fix                          # Run quality checks
 
 📊 Available Statuses:
   ${Object.keys(manager["statusOptions"]).map(s => `"${s}"`).join(", ")}

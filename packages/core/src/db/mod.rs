@@ -13,6 +13,8 @@
 
 mod database;
 mod error;
+mod index_manager;
 
 pub use database::DatabaseService;
 pub use error::DatabaseError;
+pub use index_manager::IndexManager;
