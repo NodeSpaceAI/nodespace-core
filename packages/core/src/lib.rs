@@ -25,6 +25,10 @@ pub mod models;
 pub mod services;
 
 // Re-exports
+pub use behaviors::{
+    DateNodeBehavior, NodeBehavior, NodeBehaviorRegistry, ProcessingError, TaskNodeBehavior,
+    TextNodeBehavior,
+};
 pub use models::{
     FilterOperator, Node, NodeFilter, NodeUpdate, OrderBy, PropertyFilter, ValidationError,
 };

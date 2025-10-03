@@ -33,9 +33,9 @@ Review the complete diff above. This contains all code changes in the PR.
 
 ## Your Task
 
-**OBJECTIVE:** Use the **pragmatic-code-reviewer** agent to comprehensively review the complete diff above, and reply back to the user with the completed code review report. Your final reply must contain the markdown report and nothing else.
+**OBJECTIVE:** Launch the **pragmatic-code-reviewer** agent using the Task tool to comprehensively review the complete diff above. The agent should perform the code review and reply back to you with the completed code review report. Your final reply to the user must contain the markdown report and nothing else.
 
-Perform a comprehensive code review focusing on:
+The pragmatic-code-reviewer agent should perform a comprehensive code review focusing on:
 
 1. **Requirements Validation** (if issue found):
    - Does the code implement ALL acceptance criteria from the GitHub issue?
