@@ -33,3 +33,4 @@ pub use db::{DatabaseError, DatabaseService};
 pub use models::{
     FilterOperator, Node, NodeFilter, NodeUpdate, OrderBy, PropertyFilter, ValidationError,
 };
+pub use services::{NodeService, NodeServiceError};

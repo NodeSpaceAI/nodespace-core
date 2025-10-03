@@ -198,14 +198,20 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    - Test thoroughly with mock data and services (temporarily, transitioning to real services soon)
    - Ensure feature works independently and provides user value
 
-5. **Create PR with Comprehensive Review**
+5. **Run Quality Checks & Create PR**
    ```bash
+   # ⚠️ MANDATORY: Run quality:fix before creating PR
+   bun run quality:fix
+
+   # If quality:fix made changes, commit them
    git add .
-   git commit -m "Implement feature (addresses #<number>)"
+   git commit -m "Fix linting and formatting"
+
+   # Create PR (MUST be run from repository root)
    git push -u origin feature/issue-<number>-brief-description
-   # ⚠️ MUST be run from repository root
    bun run gh:pr <number>
    ```
+   **CRITICAL**: Always run `bun run quality:fix` before creating a PR to catch lint/format issues.
    Automatically updates project status to "Ready for Review"
 
 6. **Conduct Code Review**
@@ -215,6 +221,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 
 **TodoWrite Tool Users - UPDATED:**
 - Your **FIRST todo item** must be: "Complete startup sequence: git status, branch strategy, create branch, assign issue (bun run gh:assign N '@me'), update status (bun run gh:status N 'In Progress'), select subagent"
+- Your **LAST todo items** must include: "Run quality:fix and commit changes" and "Create PR"
 - All GitHub operations now use **bun commands** (no Claude Code approval prompts)
 - Do NOT break the startup sequence into separate todo items
 - Only after completing the startup sequence should you add implementation todos
@@ -285,8 +292,11 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 - [ ] All acceptance criteria completed and checked off
 - [ ] Comprehensive testing with mock services
 - [ ] Code follows project standards
+- [ ] **Run `bun run quality:fix` and commit any changes**
 
 **PR and Review:**
+- [ ] Run `bun run quality:fix` one final time
+- [ ] Commit any linting/formatting fixes
 - [ ] Created PR with proper title and description
 - [ ] Updated GitHub project status using CLI: In Progress → Ready for Review
 - [ ] Used appropriate subagent for code review if needed

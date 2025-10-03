@@ -670,7 +670,7 @@ mod tests {
         assert!(json["fields"].is_array());
 
         let fields = json["fields"].as_array().unwrap();
-        assert!(fields.len() > 0);
+        assert!(!fields.is_empty());
 
         // Verify ALL fields have required properties (not just the first)
         for field in fields {
