@@ -995,6 +995,17 @@
   /* Header section - fixed at top, doesn't scroll */
   .viewer-header {
     flex-shrink: 0;
+    padding: 1rem;
+    border-bottom: 1px solid hsl(var(--border));
+    background: hsl(var(--background));
+  }
+
+  /* Default header content styling - large, prominent titles */
+  .viewer-header :global(h1) {
+    font-size: 2rem;
+    font-weight: 500;
+    color: hsl(var(--muted-foreground));
+    margin: 0;
   }
 
   /* Scrollable node content area for children structure */

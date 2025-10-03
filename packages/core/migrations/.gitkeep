@@ -1,0 +1,4 @@
+# SQL Migration Files
+#
+# This directory will contain SQL migration files for schema evolution.
+# Migrations will be applied in order using a migration tool.

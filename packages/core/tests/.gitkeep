@@ -1,0 +1,5 @@
+# Integration Tests
+#
+# This directory will contain integration tests for the core business logic layer.
+# Tests will verify end-to-end functionality of services, database operations,
+# and the behavior system.

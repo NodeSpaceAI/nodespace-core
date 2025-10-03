@@ -1,10 +1,8 @@
-/**
- * Simple Rust testing examples for NodeSpace
- * Demonstrates practical testing without over-complexity
- */
+//! Simple Rust testing examples for NodeSpace
+//! Demonstrates practical testing without over-complexity
 
 #[cfg(test)]
-mod tests {
+mod nodespace_tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // Simple counter for unique IDs in tests
@@ -71,7 +69,7 @@ mod tests {
     #[test]
     fn test_node_creation() {
         let node = SimpleNode::new("Test content".to_string(), "text".to_string());
-        
+
         assert_eq!(node.content, "Test content");
         assert_eq!(node.node_type, "text");
         assert!(node.id.starts_with("node-"));
@@ -81,7 +79,7 @@ mod tests {
     fn test_node_validation_success() {
         let node = SimpleNode::new("Valid content".to_string(), "text".to_string());
         let result = node.validate();
-        
+
         assert!(result.is_ok());
     }
 
@@ -89,7 +87,7 @@ mod tests {
     fn test_node_validation_empty_content() {
         let node = SimpleNode::new("".to_string(), "text".to_string());
         let result = node.validate();
-        
+
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Content cannot be empty");
     }
@@ -98,7 +96,7 @@ mod tests {
     fn test_node_validation_invalid_type() {
         let node = SimpleNode::new("Valid content".to_string(), "invalid".to_string());
         let result = node.validate();
-        
+
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Invalid node type");
     }
@@ -109,11 +107,11 @@ mod tests {
         let mut store = SimpleMockStore::new();
         let node = SimpleNode::new("Test content".to_string(), "text".to_string());
         let node_id = node.id.clone();
-        
+
         let save_result = store.save(node);
         assert!(save_result.is_ok());
         assert_eq!(save_result.unwrap(), node_id);
-        
+
         let loaded = store.load(&node_id);
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().content, "Test content");
@@ -123,7 +121,7 @@ mod tests {
     fn test_store_validation_error() {
         let mut store = SimpleMockStore::new();
         let invalid_node = SimpleNode::new("".to_string(), "text".to_string());
-        
+
         let result = store.save(invalid_node);
         assert!(result.is_err());
         assert_eq!(store.count(), 0);
@@ -132,13 +130,13 @@ mod tests {
     #[test]
     fn test_store_multiple_nodes() {
         let mut store = SimpleMockStore::new();
-        
+
         let node1 = SimpleNode::new("First node".to_string(), "text".to_string());
         let node2 = SimpleNode::new("Second node".to_string(), "task".to_string());
-        
+
         store.save(node1).unwrap();
         store.save(node2).unwrap();
-        
+
         assert_eq!(store.count(), 2);
     }
 
@@ -174,7 +172,10 @@ mod tests {
     fn test_greet_command_special_characters() {
         let result = greet("Test User & Co.");
 
-        assert_eq!(result, "Hello, Test User & Co.! You've been greeted from Rust!");
+        assert_eq!(
+            result,
+            "Hello, Test User & Co.! You've been greeted from Rust!"
+        );
     }
 
     #[test]
@@ -217,14 +218,22 @@ mod tests {
 
         for node_type in valid_types {
             let node = SimpleNode::new("Valid content".to_string(), node_type.to_string());
-            assert!(node.validate().is_ok(), "Node type '{}' should be valid", node_type);
+            assert!(
+                node.validate().is_ok(),
+                "Node type '{}' should be valid",
+                node_type
+            );
         }
 
         let invalid_types = ["invalid", "TEXT", "ai_chat", ""];
 
         for node_type in invalid_types {
             let node = SimpleNode::new("Valid content".to_string(), node_type.to_string());
-            assert!(node.validate().is_err(), "Node type '{}' should be invalid", node_type);
+            assert!(
+                node.validate().is_err(),
+                "Node type '{}' should be invalid",
+                node_type
+            );
         }
     }
 

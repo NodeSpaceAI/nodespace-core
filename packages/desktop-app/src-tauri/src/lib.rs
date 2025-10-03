@@ -15,7 +15,7 @@ mod tests;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    use tauri::{menu::*, Manager, Emitter};
+    use tauri::{menu::*, Emitter, Manager};
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -25,35 +25,33 @@ pub fn run() {
                 .id("toggle_sidebar")
                 .accelerator("CmdOrCtrl+B")
                 .build(app)?;
-            
+
             let quit = MenuItemBuilder::new("Quit")
                 .id("quit")
                 .accelerator("CmdOrCtrl+Q")
                 .build(app)?;
-            
+
             // Create submenus
             let view_menu = SubmenuBuilder::new(app, "View")
                 .items(&[&toggle_sidebar])
                 .build()?;
-                
-            let file_menu = SubmenuBuilder::new(app, "File")
-                .items(&[&quit])
-                .build()?;
-            
+
+            let file_menu = SubmenuBuilder::new(app, "File").items(&[&quit]).build()?;
+
             // Create main menu
             let menu = MenuBuilder::new(app)
                 .items(&[&file_menu, &view_menu])
                 .build()?;
-            
+
             // Set the menu
             app.set_menu(menu)?;
-            
+
             Ok(())
         })
         .on_menu_event(|app, event| {
             let toggle_sidebar_id = MenuId::new("toggle_sidebar");
             let quit_id = MenuId::new("quit");
-            
+
             if *event.id() == toggle_sidebar_id {
                 // Emit an event to the frontend
                 if let Some(window) = app.get_webview_window("main") {

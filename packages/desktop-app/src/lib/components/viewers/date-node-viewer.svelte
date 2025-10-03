@@ -84,35 +84,29 @@
 <NodeServiceContext>
   <BaseNodeViewer>
     {#snippet header()}
-      <!-- Date Navigation Header -->
-      <div class="date-header">
-        <div class="date-nav-container">
-          <div class="date-display">
-            <Icon
-              name="calendar"
-              size={20}
-              color="hsl(var(--muted-foreground))"
-              className="calendar-icon"
-            />
-            <h1
-              style="font-size: 2rem; font-weight: 500; color: hsl(var(--muted-foreground)); margin: 0;"
-            >
-              {formattedDate}
-            </h1>
-          </div>
+      <!-- Date Navigation Header - inherits base styling from BaseNodeViewer -->
+      <div class="date-nav-container">
+        <div class="date-display">
+          <Icon
+            name="calendar"
+            size={24}
+            color="hsl(var(--muted-foreground))"
+            className="calendar-icon"
+          />
+          <h1>{formattedDate}</h1>
+        </div>
 
-          <div class="date-nav-buttons">
-            <button
-              class="date-nav-btn"
-              onclick={() => navigateDate('prev')}
-              aria-label="Previous day"
-            >
-              <Icon name="chevronRight" size={16} color="currentColor" className="rotate-left" />
-            </button>
-            <button class="date-nav-btn" onclick={() => navigateDate('next')} aria-label="Next day">
-              <Icon name="chevronRight" size={16} color="currentColor" />
-            </button>
-          </div>
+        <div class="date-nav-buttons">
+          <button
+            class="date-nav-btn"
+            onclick={() => navigateDate('prev')}
+            aria-label="Previous day"
+          >
+            <Icon name="chevronRight" size={16} color="currentColor" className="rotate-left" />
+          </button>
+          <button class="date-nav-btn" onclick={() => navigateDate('next')} aria-label="Next day">
+            <Icon name="chevronRight" size={16} color="currentColor" />
+          </button>
         </div>
       </div>
     {/snippet}
@@ -120,17 +114,11 @@
 </NodeServiceContext>
 
 <style>
-  /* Date Navigation Header Styling */
-  .date-header {
-    border-bottom: 1px solid hsl(var(--border));
-    background: hsl(var(--background));
-  }
-
+  /* Date-specific navigation styles - base header styling comes from BaseNodeViewer */
   .date-nav-container {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 1rem;
   }
 
   .date-display {

@@ -1,8 +1,15 @@
 [workspace]
 members = [
+    "packages/core",
     "packages/desktop-app/src-tauri"
 ]
 resolver = "2"
+
+[workspace.package]
+authors = ["NodeSpace Team"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/malibio/nodespace-core"
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -11,6 +18,13 @@ tokio = { version = "1.0", features = ["full"] }
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
+thiserror = "1.0"
+async-trait = "0.1"
+libsql = "0.6"
+
+# Dev dependencies (shared via workspace inheritance)
+tokio-test = "0.4"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [profile.release]
 panic = "abort"
