@@ -1,3 +1,6 @@
+// Tauri commands module
+mod commands;
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -19,6 +22,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Create menu items
             let toggle_sidebar = MenuItemBuilder::new("Toggle Sidebar")
@@ -62,7 +66,17 @@ pub fn run() {
                 std::process::exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![greet, toggle_sidebar])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            toggle_sidebar,
+            commands::db::initialize_database,
+            commands::db::select_db_location,
+            commands::nodes::create_node,
+            commands::nodes::get_node,
+            commands::nodes::update_node,
+            commands::nodes::delete_node,
+            commands::nodes::get_children,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
