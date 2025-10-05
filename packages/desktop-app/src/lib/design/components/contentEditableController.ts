@@ -1304,8 +1304,125 @@ export class ContentEditableController {
 
     const range = selection.getRangeAt(0);
 
-    // Always calculate from start of element for absolute position
-    // This is needed for splitting content correctly in multiline nodes
+    // For multiline nodes, we need to calculate position in the same way we extract content
+    // (using convertHtmlToTextWithNewlines which adds \n between DIVs)
+    if (this.config.allowMultiline) {
+      let position = 0;
+      const targetContainer = range.startContainer;
+      const targetOffset = range.startOffset;
+      let found = false;
+
+      // Special case: if the target is the element itself, use the offset as child node index
+      if (targetContainer === this.element) {
+        // The cursor is positioned between child nodes
+        // targetOffset indicates which child node the cursor is before
+        const childNodes = Array.from(this.element.childNodes);
+
+        for (let i = 0; i < targetOffset && i < childNodes.length; i++) {
+          const node = childNodes[i];
+
+          if (node.nodeType === Node.TEXT_NODE) {
+            position += (node.textContent || '').length;
+          } else if (node.nodeType === Node.ELEMENT_NODE) {
+            const element = node as Element;
+            if (element.tagName === 'DIV') {
+              // Add newline before this DIV (if not the first one)
+              if (i > 0 && position > 0) {
+                position += 1;
+              }
+              const divContent = this.getTextContentIgnoringSyntax(element);
+              position += divContent.length;
+            }
+          }
+        }
+
+        return position;
+      }
+
+      // Walk through child nodes the same way convertHtmlToTextWithNewlines does
+      const childNodes = Array.from(this.element.childNodes);
+
+      for (let i = 0; i < childNodes.length && !found; i++) {
+        const node = childNodes[i];
+
+        if (node.nodeType === Node.TEXT_NODE) {
+          // Text node
+          if (node === targetContainer) {
+            // Found the target - add the offset within this text node
+            position += targetOffset;
+            found = true;
+          } else {
+            // Add the full length of this text node
+            position += (node.textContent || '').length;
+          }
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          const element = node as Element;
+          if (element.tagName === 'DIV') {
+            // Add newline before this DIV (if not the first one)
+            if (i > 0 && position > 0) {
+              position += 1; // For the \n character
+            }
+
+            // Check if target is inside this DIV or IS this DIV
+            if (element.contains(targetContainer) || element === targetContainer) {
+              // If the target IS the DIV element itself (cursor at end of DIV)
+              if (element === targetContainer) {
+                // Add the full content of this DIV and the offset
+                const divContent = this.getTextContentIgnoringSyntax(element);
+                position += divContent.length;
+                // targetOffset when container is the DIV represents child node index
+                // For cursor at end, we've already added all content, so we're done
+                found = true;
+              } else {
+                // Target is inside this DIV - walk through child nodes
+                // Must mirror getTextContentIgnoringSyntax logic to handle BR elements
+                for (const childNode of Array.from(element.childNodes)) {
+                  if (found) break;
+
+                  if (childNode.nodeType === Node.TEXT_NODE) {
+                    if (childNode === targetContainer) {
+                      position += targetOffset;
+                      found = true;
+                    } else {
+                      position += (childNode.textContent || '').length;
+                    }
+                  } else if (childNode.nodeType === Node.ELEMENT_NODE) {
+                    const childElement = childNode as Element;
+                    if (childElement.tagName === 'BR') {
+                      // BR elements count as newline characters (must match getTextContentIgnoringSyntax)
+                      position += 1;
+                    } else {
+                      // For other nested elements, check if target is inside
+                      if (
+                        childElement.contains(targetContainer) ||
+                        childElement === targetContainer
+                      ) {
+                        // Target is in a nested element - recursively get its content
+                        const nestedContent = this.getTextContentIgnoringSyntax(childElement);
+                        position += nestedContent.length;
+                        found = true; // Approximation: assume cursor at end of nested element
+                      } else {
+                        // Add full content of this nested element
+                        const nestedContent = this.getTextContentIgnoringSyntax(childElement);
+                        position += nestedContent.length;
+                      }
+                    }
+                  }
+                }
+              }
+            } else {
+              // Add the full content of this DIV
+              const divContent = this.getTextContentIgnoringSyntax(element);
+              position += divContent.length;
+            }
+          }
+        }
+      }
+
+      return position;
+    }
+
+    // For single-line nodes, use the simpler DOM range method
     const preCaretRange = range.cloneRange();
     preCaretRange.selectNodeContents(this.element);
     preCaretRange.setEnd(range.startContainer, range.startOffset);
