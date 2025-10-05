@@ -194,6 +194,8 @@ export default [
       'svelte/no-unused-svelte-ignore': 'error',
       'svelte/no-at-html-tags': 'warn',
       'svelte/valid-compile': 'error',
+      // Allow underscore-prefixed parameters in type signatures (type-only parameters)
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       // File naming conventions for Svelte components (kebab-case)
       'unicorn/filename-case': ['error', {
         cases: {

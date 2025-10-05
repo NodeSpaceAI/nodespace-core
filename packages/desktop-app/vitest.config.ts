@@ -3,7 +3,12 @@
 /// <reference types="./src/tests/types/vitest-env.d.ts" />
 import { defineConfig } from 'vitest/config';
 import { sveltekit } from '@sveltejs/kit/vite';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { injectRuneMocks } from './src/tests/vite-plugin-inject-runes';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Early Svelte 5 rune mocks - must be defined BEFORE any module imports
 function createMockState<T>(initialValue: T): T {
@@ -113,8 +118,38 @@ if (typeof globalThis !== 'undefined' && 'global' in globalThis) {
 export default defineConfig({
   plugins: [
     injectRuneMocks(), // MUST run first - injects globals
-    sveltekit()
+    // Use svelte plugin directly in test mode to control preprocessing
+    // Use sveltekit plugin in dev/build mode for full SvelteKit features
+    process.env.VITEST
+      ? svelte({
+          hot: false,
+          // Skip all preprocessing in test environment to avoid PostCSS/Happy-DOM conflicts
+          // Components will be compiled with raw styles (no PostCSS)
+          preprocess: [],
+          compilerOptions: {
+            // Generate client-side code (not SSR) to enable $effect and other client-only runes
+            generate: 'client'
+          }
+        })
+      : sveltekit()
   ],
+
+  // Configure path aliases for test environment (needed when using svelte plugin instead of sveltekit)
+  resolve: process.env.VITEST
+    ? {
+        alias: {
+          $lib: path.resolve(__dirname, 'src/lib'),
+          $app: path.resolve(__dirname, 'node_modules/@sveltejs/kit/src/runtime/app')
+        },
+        // Force browser conditions to load client-side Svelte runtime
+        conditions: ['browser', 'import']
+      }
+    : undefined,
+
+  // Disable CSS preprocessing in tests to prevent PostCSS/Happy-DOM incompatibility
+  css: {
+    postcss: false
+  },
 
   test: {
     include: ['src/tests/**/*.{test,spec}.{js,ts}'],

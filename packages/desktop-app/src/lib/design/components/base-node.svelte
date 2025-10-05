@@ -153,9 +153,7 @@
   });
 
   // Autocomplete event handlers
-  function handleAutocompleteSelect(event: CustomEvent<NodeResult>) {
-    const result = event.detail;
-
+  function handleAutocompleteSelect(result: NodeResult) {
     if (controller) {
       // Insert node reference in markdown link format: [nodeTitle](nodespace://nodeId)
       // This replaces the @ trigger text with the proper reference format
@@ -516,8 +514,8 @@
     results={autocompleteResults}
     loading={autocompleteLoading}
     visible={showAutocomplete}
-    on:select={handleAutocompleteSelect}
-    on:close={handleAutocompleteClose}
+    onselect={handleAutocompleteSelect}
+    onclose={handleAutocompleteClose}
   />
 {/if}
 
