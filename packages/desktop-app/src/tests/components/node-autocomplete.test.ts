@@ -824,28 +824,8 @@ describe('NodeAutocomplete', () => {
       const newPosition = listbox.style.left;
       expect(newPosition).not.toBe(initialPosition);
     });
-  });
 
-  describe('Smart Positioning', () => {
-    it('should position autocomplete at specified coordinates', () => {
-      render(NodeAutocomplete, {
-        props: {
-          visible: true,
-          position: { x: 300, y: 200 },
-          query: 'test',
-          results: mockResults,
-          loading: false
-        }
-      });
-
-      const listbox = screen.getByRole('listbox');
-
-      // Should be positioned near the specified coordinates
-      // Note: Smart positioning may adjust these based on viewport
-      expect(listbox.style.position).toBe('fixed');
-    });
-
-    it('should render with fixed positioning', () => {
+    it('should handle rapid keyboard events', async () => {
       render(NodeAutocomplete, {
         props: {
           visible: true,
@@ -856,8 +836,183 @@ describe('NodeAutocomplete', () => {
         }
       });
 
+      // Dispatch rapid sequential keyboard events
+      document.dispatchEvent(createKeyboardEvent('ArrowDown'));
+      document.dispatchEvent(createKeyboardEvent('ArrowDown'));
+      document.dispatchEvent(createKeyboardEvent('ArrowUp'));
+      document.dispatchEvent(createKeyboardEvent('ArrowDown'));
+
+      await waitForEffects();
+
+      const options = screen.getAllByRole('option');
+
+      // Final state: should be at third item (0 → 1 → 2 → 1 → 2)
+      expect(options[0]).toHaveAttribute('aria-selected', 'false');
+      expect(options[1]).toHaveAttribute('aria-selected', 'false');
+      expect(options[2]).toHaveAttribute('aria-selected', 'true');
+    });
+  });
+
+  describe('Smart Positioning - Viewport Edge Detection', () => {
+    beforeEach(() => {
+      // Mock window dimensions for viewport calculations
+      Object.defineProperty(window, 'innerWidth', {
+        writable: true,
+        configurable: true,
+        value: 1024
+      });
+      Object.defineProperty(window, 'innerHeight', {
+        writable: true,
+        configurable: true,
+        value: 768
+      });
+    });
+
+    it('should position below cursor when space available', () => {
+      render(NodeAutocomplete, {
+        props: {
+          visible: true,
+          position: { x: 100, y: 100 }, // Plenty of space below
+          query: 'test',
+          results: mockResults,
+          loading: false
+        }
+      });
+
       const listbox = screen.getByRole('listbox');
-      expect(listbox.style.position).toBe('fixed');
+      const style = listbox.style;
+
+      // Should use top positioning (positioned below cursor)
+      expect(style.top).toBeTruthy();
+      expect(style.bottom).toBeFalsy();
+
+      // Should be offset from cursor position by spacingFromCursor (20px)
+      const topValue = parseInt(style.top);
+      expect(topValue).toBeGreaterThan(100); // Below cursor Y position
+      expect(topValue).toBeLessThanOrEqual(120); // Within spacing range
+    });
+
+    it('should position above cursor when insufficient space below', () => {
+      render(NodeAutocomplete, {
+        props: {
+          visible: true,
+          position: { x: 100, y: 700 }, // Near bottom, insufficient space below
+          query: 'test',
+          results: mockResults,
+          loading: false
+        }
+      });
+
+      const listbox = screen.getByRole('listbox');
+      const style = listbox.style;
+
+      // Should use bottom positioning (positioned above cursor)
+      expect(style.bottom).toBeTruthy();
+      expect(style.top).toBeFalsy();
+
+      // Bottom value should position modal above cursor
+      const bottomValue = parseInt(style.bottom);
+      expect(bottomValue).toBeGreaterThan(0);
+    });
+
+    it('should prevent horizontal viewport overflow', () => {
+      render(NodeAutocomplete, {
+        props: {
+          visible: true,
+          position: { x: 1000, y: 100 }, // Near right edge
+          query: 'test',
+          results: mockResults,
+          loading: false
+        }
+      });
+
+      const listbox = screen.getByRole('listbox');
+      const style = listbox.style;
+      const leftValue = parseInt(style.left);
+
+      // Component max-width is 360px, padding is 16px
+      // Left position should be adjusted to keep modal within viewport
+      expect(leftValue + 360).toBeLessThanOrEqual(1024 + 16); // Within viewport with padding tolerance
+    });
+
+    it('should handle corner positioning edge case', () => {
+      render(NodeAutocomplete, {
+        props: {
+          visible: true,
+          position: { x: 1000, y: 700 }, // Bottom-right corner
+          query: 'test',
+          results: mockResults,
+          loading: false
+        }
+      });
+
+      const listbox = screen.getByRole('listbox');
+      const style = listbox.style;
+
+      // Should adjust both horizontal and vertical positioning
+      const leftValue = parseInt(style.left);
+
+      // Horizontal: should be adjusted to fit within viewport
+      expect(leftValue + 360).toBeLessThanOrEqual(1024 + 16);
+
+      // Vertical: should use bottom positioning
+      expect(style.bottom).toBeTruthy();
+    });
+  });
+
+  describe('Scroll Behavior', () => {
+    it('should scroll selected item into view on navigation', async () => {
+      render(NodeAutocomplete, {
+        props: {
+          visible: true,
+          position: defaultPosition,
+          query: 'test',
+          results: mockResults,
+          loading: false
+        }
+      });
+
+      const options = screen.getAllByRole('option');
+
+      // Spy on scrollIntoView for all option elements
+      const scrollSpies = options.map((option) => {
+        const spy = vi.fn();
+        option.scrollIntoView = spy;
+        return spy;
+      });
+
+      // Navigate down to second item
+      document.dispatchEvent(createKeyboardEvent('ArrowDown'));
+      await waitForEffects();
+
+      // Second item should be scrolled into view
+      expect(scrollSpies[1]).toHaveBeenCalled();
+    });
+
+    it('should use smooth scroll behavior', async () => {
+      render(NodeAutocomplete, {
+        props: {
+          visible: true,
+          position: defaultPosition,
+          query: 'test',
+          results: mockResults,
+          loading: false
+        }
+      });
+
+      const options = screen.getAllByRole('option');
+      const scrollSpy = vi.fn();
+      options[1].scrollIntoView = scrollSpy;
+
+      // Navigate down
+      document.dispatchEvent(createKeyboardEvent('ArrowDown'));
+      await waitForEffects();
+
+      // Should be called with smooth behavior
+      expect(scrollSpy).toHaveBeenCalledWith({
+        block: 'nearest',
+        behavior: 'smooth'
+      });
     });
   });
 });
