@@ -39,9 +39,45 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   const serviceName = 'ReactiveNodeService';
   const contentProcessor = ContentProcessor.getInstance();
 
+  // Performance optimization: Cache sorted children to avoid O(n) sorting on every render
+  // Invalidate cache only when hierarchy changes (child added/removed/reordered)
+  const _sortedChildrenCache = new Map<
+    string | null,
+    {
+      childIds: string[]; // Original unsorted child IDs (for comparison)
+      sorted: string[]; // Cached sorted result
+    }
+  >();
+
+  // Helper function to check if two arrays contain the same elements in the same order
+  function arraysEqual(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+
+  // Helper function to invalidate sorted children cache for a parent
+  function invalidateSortedChildrenCache(parentId: string | null): void {
+    _sortedChildrenCache.delete(parentId);
+  }
+
   // Helper function to sort children according to beforeSiblingId linked list
-  function sortChildrenByBeforeSiblingId(childIds: string[]): string[] {
+  // CRITICAL: This ensures nodes appear in correct visual order, not insertion order
+  // Performance: Uses memoization to avoid O(n) sorting on every render
+  function sortChildrenByBeforeSiblingId(childIds: string[], parentId?: string | null): string[] {
     if (childIds.length === 0) return [];
+
+    // Check cache first - O(1) lookup
+    const cacheKey = parentId ?? null;
+    const cached = _sortedChildrenCache.get(cacheKey);
+    if (cached && arraysEqual(cached.childIds, childIds)) {
+      // Cache hit: return pre-sorted result without recomputing
+      return cached.sorted;
+    }
+
+    // Cache miss: perform sorting (O(n) operation)
 
     // Build a map of beforeSiblingId -> nodeId for quick lookup
     const beforeSiblingMap = new Map<string | null, string>();
@@ -52,32 +88,77 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       }
     }
 
-    // Find the first child (the one with no beforeSiblingId or whose beforeSiblingId is not in this sibling set)
-    let firstChildId: string | null = null;
+    // Find ALL candidates for first child to detect data corruption
+    const firstChildCandidates: string[] = [];
     for (const childId of childIds) {
       const child = _nodes[childId];
       if (child) {
         // A node is first if its beforeSiblingId is null or not in the sibling set
         if (child.beforeSiblingId === null || !childIds.includes(child.beforeSiblingId)) {
-          firstChildId = childId;
-          break;
+          firstChildCandidates.push(childId);
         }
       }
     }
 
-    if (!firstChildId) {
-      // Fallback: return unsorted if we can't find a first child
+    // Validate linked list integrity: should have exactly one first child
+    if (firstChildCandidates.length === 0) {
+      console.error(`[ReactiveNodeService] Cannot determine first child - returning unsorted`, {
+        parentId: parentId || 'root',
+        childCount: childIds.length,
+        childPointers: childIds.map((id) => ({
+          id,
+          beforeSiblingId: _nodes[id]?.beforeSiblingId
+        }))
+      });
       return childIds;
     }
+
+    if (firstChildCandidates.length > 1) {
+      console.error(
+        `[ReactiveNodeService] Multiple first children detected - data corruption in beforeSiblingId chain`,
+        {
+          parentId: parentId || 'root',
+          candidates: firstChildCandidates,
+          childPointers: childIds.map((id) => ({
+            id,
+            beforeSiblingId: _nodes[id]?.beforeSiblingId
+          }))
+        }
+      );
+      // Use first candidate but log the issue
+    }
+
+    const firstChildId = firstChildCandidates[0];
 
     // Build sorted list by following the linked list
     const sorted: string[] = [];
     let currentId: string | null = firstChildId;
     const visited = new Set<string>();
 
+    // Safety: Stop if we've visited all children (prevents infinite loop on corrupted data)
     while (currentId && visited.size < childIds.length) {
       if (visited.has(currentId)) {
-        // Circular reference detected, break
+        // Circular reference detected - this is a data integrity violation
+        console.error(
+          `[ReactiveNodeService] Circular reference detected in beforeSiblingId chain`,
+          {
+            parentId: parentId || 'root',
+            circularNodeId: currentId,
+            visitedNodes: Array.from(visited),
+            allChildIds: childIds,
+            chainSoFar: sorted
+          }
+        );
+
+        eventBus.emit<import('./eventTypes').CacheInvalidateEvent>({
+          type: 'cache:invalidate',
+          namespace: 'coordination',
+          source: serviceName,
+          cacheKey: 'all',
+          scope: 'global',
+          reason: 'circular-reference-detected'
+        });
+
         break;
       }
       visited.add(currentId);
@@ -88,12 +169,34 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       currentId = nextId || null;
     }
 
-    // Add any remaining children that weren't in the linked list
+    // Add any remaining children that weren't in the linked list (orphaned nodes)
+    const orphanedNodes: string[] = [];
     for (const childId of childIds) {
       if (!visited.has(childId)) {
+        orphanedNodes.push(childId);
         sorted.push(childId);
       }
     }
+
+    if (orphanedNodes.length > 0) {
+      console.warn(
+        `[ReactiveNodeService] Found orphaned nodes not in beforeSiblingId chain - appending to end`,
+        {
+          parentId: parentId || 'root',
+          orphanedNodes,
+          orphanedPointers: orphanedNodes.map((id) => ({
+            id,
+            beforeSiblingId: _nodes[id]?.beforeSiblingId
+          }))
+        }
+      );
+    }
+
+    // Cache the sorted result for future renders (performance optimization)
+    _sortedChildrenCache.set(cacheKey, {
+      childIds: [...childIds], // Clone to avoid mutation issues
+      sorted
+    });
 
     return sorted;
   }
@@ -124,7 +227,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           .map((n) => n.id);
 
         // Sort children according to beforeSiblingId linked list
-        const children = sortChildrenByBeforeSiblingId(childIds);
+        const children = sortChildrenByBeforeSiblingId(childIds, nodeId);
 
         // Merge Node with UI state for components
         result.push({
@@ -165,7 +268,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         .filter((n) => n.parentId === _viewParentId)
         .map((n) => n.id);
       // Sort children according to beforeSiblingId linked list
-      viewRoots = sortChildrenByBeforeSiblingId(childIds);
+      viewRoots = sortChildrenByBeforeSiblingId(childIds, _viewParentId);
     } else {
       viewRoots = _rootNodeIds;
     }
@@ -341,6 +444,13 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         ];
         _updateTrigger++;
       }
+    }
+
+    // Invalidate sorted children cache for parent (hierarchy changed)
+    invalidateSortedChildrenCache(newParentId);
+    // If children were transferred to new node, invalidate that cache too
+    if (!insertAtBeginning && afterUIState.expanded) {
+      invalidateSortedChildrenCache(nodeId);
     }
 
     events.nodeCreated(nodeId);
@@ -698,6 +808,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       _rootNodeIds.splice(nodeIndex, 1);
     }
 
+    // Invalidate sorted children cache for both old and new parents
+    invalidateSortedChildrenCache(node.parentId); // Old parent
+    invalidateSortedChildrenCache(prevSiblingId); // New parent
+
     events.hierarchyChanged();
     _updateTrigger++;
 
@@ -748,6 +862,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       _rootNodeIds.splice(parentIndex + 1, 0, nodeId);
     }
 
+    // Invalidate sorted children cache for both old and new parents
+    invalidateSortedChildrenCache(node.parentId); // Old parent
+    invalidateSortedChildrenCache(newParentId); // New parent
+
     events.hierarchyChanged();
     _updateTrigger++;
 
@@ -791,6 +909,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (rootIndex >= 0) {
       _rootNodeIds.splice(rootIndex, 1);
     }
+
+    // Invalidate sorted children cache for parent (node removed, children promoted)
+    invalidateSortedChildrenCache(node.parentId);
+    // Also invalidate cache for the deleted node itself (in case it's still referenced)
+    invalidateSortedChildrenCache(nodeId);
 
     events.nodeDeleted(nodeId);
     events.hierarchyChanged();
