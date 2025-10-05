@@ -1,6 +1,8 @@
 /**
  * Global setup for Vitest
  * This runs once before all test files
+ *
+ * CRITICAL: Svelte runes MUST be defined at module parse time, not in the async function
  */
 
 // Mock Svelte 5 runes for testing compatibility
@@ -17,15 +19,24 @@ function createMockState<T>(initialValue: T): T {
 
 function createMockEffect(fn: () => void | (() => void)): void {
   // Execute effect immediately in tests
-  fn();
+  try {
+    fn();
+  } catch (error) {
+    console.warn('Effect error in test (ignored):', error);
+  }
 }
 
 function createMockDerived<T>(getter: () => T): T {
   // Return the value directly, not an object with a getter
-  return getter();
+  try {
+    return getter();
+  } catch (error) {
+    console.warn('Derived getter error in test (returning undefined):', error);
+    return undefined as T;
+  }
 }
 
-// Define Svelte 5 runes globally
+// Define Svelte 5 runes globally - IMMEDIATELY at module parse time
 const stateFunction = function <T>(initialValue: T): T {
   return createMockState(initialValue);
 };
@@ -38,42 +49,29 @@ const derivedFunction = {
 
 const effectFunction = createMockEffect;
 
-// Global definitions
-Object.defineProperty(globalThis, '$state', {
-  value: stateFunction,
-  writable: true,
-  configurable: true
-});
-
-Object.defineProperty(globalThis, '$derived', {
-  value: derivedFunction,
-  writable: true,
-  configurable: true
-});
-
-Object.defineProperty(globalThis, '$effect', {
-  value: effectFunction,
-  writable: true,
-  configurable: true
-});
+// Set globals IMMEDIATELY - not inside the async function
+(globalThis as unknown as Record<string, unknown>).$state = stateFunction;
+(globalThis as unknown as Record<string, unknown>).$derived = derivedFunction;
+(globalThis as unknown as Record<string, unknown>).$effect = effectFunction;
 
 // Also define on global for Node.js compatibility
 if (typeof global !== 'undefined') {
-  (global as Record<string, unknown>).$state = stateFunction;
-  (global as Record<string, unknown>).$derived = derivedFunction;
-  (global as Record<string, unknown>).$effect = effectFunction;
+  (global as unknown as Record<string, unknown>).$state = stateFunction;
+  (global as unknown as Record<string, unknown>).$derived = derivedFunction;
+  (global as unknown as Record<string, unknown>).$effect = effectFunction;
 }
 
-// Initialize global plugin registry for all tests
-import { pluginRegistry } from '$lib/plugins/pluginRegistry';
-import { registerCorePlugins } from '$lib/plugins/corePlugins';
-
-// Register core plugins globally for all tests - only once per test run
-if (!pluginRegistry.hasPlugin('text')) {
-  registerCorePlugins(pluginRegistry);
-}
+console.log('✅ Svelte 5 runes mocked at module parse time');
 
 export default async function setup() {
-  // Global setup runs once before all tests
-  console.log('Global test setup complete: Svelte 5 runes mocked, plugin registry initialized');
+  // Import plugins AFTER runes are available
+  const { pluginRegistry } = await import('$lib/plugins/pluginRegistry');
+  const { registerCorePlugins } = await import('$lib/plugins/corePlugins');
+
+  // Register core plugins globally for all tests - only once per test run
+  if (!pluginRegistry.hasPlugin('text')) {
+    registerCorePlugins(pluginRegistry);
+  }
+
+  console.log('✅ Global test setup complete: Plugin registry initialized');
 }

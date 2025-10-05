@@ -3,6 +3,7 @@
 /// <reference types="./src/tests/types/vitest-env.d.ts" />
 import { defineConfig } from 'vitest/config';
 import { sveltekit } from '@sveltejs/kit/vite';
+import { injectRuneMocks } from './src/tests/vite-plugin-inject-runes';
 
 // Early Svelte 5 rune mocks - must be defined BEFORE any module imports
 function createMockState<T>(initialValue: T): T {
@@ -110,7 +111,10 @@ if (typeof globalThis !== 'undefined' && 'global' in globalThis) {
 }
 
 export default defineConfig({
-  plugins: [sveltekit()],
+  plugins: [
+    injectRuneMocks(), // MUST run first - injects globals
+    sveltekit()
+  ],
 
   test: {
     include: ['src/tests/**/*.{test,spec}.{js,ts}'],

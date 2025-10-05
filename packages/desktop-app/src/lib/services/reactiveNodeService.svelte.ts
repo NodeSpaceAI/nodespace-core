@@ -36,31 +36,67 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   // Manual reactivity trigger for debugging
   let _updateTrigger = $state(0);
 
-  // REACTIVITY FIX: Properly reactive visibleNodes computation using $derived.by
-  const _visibleNodes = $derived.by(() => {
-    const allNodes = Object.values(_nodes);
-    for (const node of allNodes) {
-      void node.nodeType;
-    }
-    void _updateTrigger;
-    void _rootNodeIds;
-    void _viewParentId;
-
-    // Determine which nodes are "roots" for this view
-    // If viewParentId is set, roots are nodes with parent_id === viewParentId
-    // If viewParentId is null, roots are nodes with no parent_id
-    const viewRoots =
-      _viewParentId !== null
-        ? Object.values(_nodes)
-            .filter((n) => n.parentId === _viewParentId)
-            .map((n) => n.id)
-        : _rootNodeIds;
-
-    return getVisibleNodesRecursive(viewRoots);
-  });
-
   const serviceName = 'ReactiveNodeService';
   const contentProcessor = ContentProcessor.getInstance();
+
+  // Helper function to sort children according to beforeSiblingId linked list
+  function sortChildrenByBeforeSiblingId(childIds: string[]): string[] {
+    if (childIds.length === 0) return [];
+
+    // Build a map of beforeSiblingId -> nodeId for quick lookup
+    const beforeSiblingMap = new Map<string | null, string>();
+    for (const childId of childIds) {
+      const child = _nodes[childId];
+      if (child) {
+        beforeSiblingMap.set(child.beforeSiblingId, childId);
+      }
+    }
+
+    // Find the first child (the one with no beforeSiblingId or whose beforeSiblingId is not in this sibling set)
+    let firstChildId: string | null = null;
+    for (const childId of childIds) {
+      const child = _nodes[childId];
+      if (child) {
+        // A node is first if its beforeSiblingId is null or not in the sibling set
+        if (child.beforeSiblingId === null || !childIds.includes(child.beforeSiblingId)) {
+          firstChildId = childId;
+          break;
+        }
+      }
+    }
+
+    if (!firstChildId) {
+      // Fallback: return unsorted if we can't find a first child
+      return childIds;
+    }
+
+    // Build sorted list by following the linked list
+    const sorted: string[] = [];
+    let currentId: string | null = firstChildId;
+    const visited = new Set<string>();
+
+    while (currentId && visited.size < childIds.length) {
+      if (visited.has(currentId)) {
+        // Circular reference detected, break
+        break;
+      }
+      visited.add(currentId);
+      sorted.push(currentId);
+
+      // Find next sibling (the one whose beforeSiblingId points to currentId)
+      const nextId = beforeSiblingMap.get(currentId);
+      currentId = nextId || null;
+    }
+
+    // Add any remaining children that weren't in the linked list
+    for (const childId of childIds) {
+      if (!visited.has(childId)) {
+        sorted.push(childId);
+      }
+    }
+
+    return sorted;
+  }
 
   function getVisibleNodesRecursive(nodeIds: string[]): (Node & {
     depth: number;
@@ -83,9 +119,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       const node = _nodes[nodeId];
       const uiState = _uiState[nodeId];
       if (node) {
-        const children = Object.values(_nodes)
+        const childIds = Object.values(_nodes)
           .filter((n) => n.parentId === nodeId)
           .map((n) => n.id);
+
+        // Sort children according to beforeSiblingId linked list
+        const children = sortChildrenByBeforeSiblingId(childIds);
 
         // Merge Node with UI state for components
         result.push({
@@ -106,6 +145,33 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     return result;
   }
+
+  // REACTIVITY FIX: Properly reactive visibleNodes computation using $derived.by
+  const _visibleNodes = $derived.by(() => {
+    const allNodes = Object.values(_nodes);
+    for (const node of allNodes) {
+      void node.nodeType;
+    }
+    void _updateTrigger;
+    void _rootNodeIds;
+    void _viewParentId;
+
+    // Determine which nodes are "roots" for this view
+    // If viewParentId is set, roots are nodes with parent_id === viewParentId
+    // If viewParentId is null, roots are nodes with no parent_id
+    let viewRoots: string[];
+    if (_viewParentId !== null) {
+      const childIds = Object.values(_nodes)
+        .filter((n) => n.parentId === _viewParentId)
+        .map((n) => n.id);
+      // Sort children according to beforeSiblingId linked list
+      viewRoots = sortChildrenByBeforeSiblingId(childIds);
+    } else {
+      viewRoots = _rootNodeIds;
+    }
+
+    return getVisibleNodesRecursive(viewRoots);
+  });
 
   function findNode(nodeId: string): Node | null {
     return _nodes[nodeId] || null;
