@@ -344,6 +344,133 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     });
   });
 
+  describe('Event Emission Verification', () => {
+    it('should emit event data through DOM on selection (Svelte 5 pattern)', async () => {
+      const user = createUserEvents();
+
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
+      });
+
+      const editor = container.querySelector('[contenteditable="true"]');
+
+      // Type "@" and select
+      await user.click(editor!);
+      await user.keyboard('@');
+      await waitForEffects();
+
+      await waitFor(() => {
+        expect(screen.getByRole('listbox')).toBeInTheDocument();
+      });
+
+      await user.keyboard('{Enter}');
+      await waitForEffects();
+
+      // In Svelte 5, we verify the event's effect on DOM rather than catching the event directly
+      // The reference should be inserted, which proves the event chain worked
+      await waitFor(() => {
+        const content = editor!.textContent || '';
+        expect(content).toMatch(/\[.+\]\(nodespace:\/\/.+\)/);
+      });
+
+      // Verify the inserted reference contains valid data structure
+      const content = editor!.textContent || '';
+      const match = content.match(/\[(.+)\]\(nodespace:\/\/(.+)\)/);
+      expect(match).toBeTruthy();
+
+      const insertedTitle = match![1];
+      const insertedId = match![2];
+
+      // Verify data integrity - this proves the event carried correct data
+      expect(insertedTitle).toBeTruthy();
+      expect(insertedTitle.length).toBeGreaterThan(0);
+      expect(insertedId).toBeTruthy();
+      expect(insertedId).toMatch(/^mock-node-\d+$/); // Matches mock data format
+    });
+
+    it('should NOT emit event when Escape pressed (no DOM mutation)', async () => {
+      const user = createUserEvents();
+
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
+      });
+
+      const editor = container.querySelector('[contenteditable="true"]');
+
+      // Type "@" then Escape
+      await user.click(editor!);
+      await user.keyboard('@');
+      await waitForEffects();
+
+      await waitFor(() => {
+        expect(screen.getByRole('listbox')).toBeInTheDocument();
+      });
+
+      await user.keyboard('{Escape}');
+      await waitForEffects();
+
+      // Give time for any events to fire
+      await waitForEffects(100);
+
+      // Verify no reference was inserted (event wasn't fired)
+      const content = editor!.textContent || '';
+      expect(content).not.toMatch(/\[.+\]\(nodespace:\/\/.+\)/);
+      expect(content).toBe('@'); // Only the @ character should remain
+    });
+
+    it('should emit event with nodeId matching selected option', async () => {
+      const user = createUserEvents();
+
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
+      });
+
+      const editor = container.querySelector('[contenteditable="true"]');
+
+      // Type "@" and select
+      await user.click(editor!);
+      await user.keyboard('@');
+      await waitForEffects();
+
+      await waitFor(() => {
+        expect(screen.getByRole('listbox')).toBeInTheDocument();
+      });
+
+      // Get the first option's text to verify correlation later
+      const firstOption = screen.getAllByRole('option')[0];
+      const optionText = firstOption.textContent || '';
+
+      await user.keyboard('{Enter}');
+      await waitForEffects();
+
+      // Verify event data by checking DOM mutation
+      await waitFor(() => {
+        const content = editor!.textContent || '';
+        expect(content).toMatch(/\[.+\]\(nodespace:\/\/.+\)/);
+      });
+
+      const content = editor!.textContent || '';
+      const match = content.match(/\[(.+)\]\(nodespace:\/\/(.+)\)/);
+      expect(match).toBeTruthy();
+
+      const insertedTitle = match![1];
+      const insertedId = match![2];
+
+      // Verify the event carried correct data by checking inserted values
+      expect(insertedId).toMatch(/^mock-node-\d+$/);
+      expect(optionText).toContain(insertedTitle); // Title matches what was selected
+    });
+  });
+
   describe('Component Event Integration', () => {
     it('should insert reference with correct nodeId when selection made', async () => {
       const user = createUserEvents();

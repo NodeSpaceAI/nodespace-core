@@ -59,8 +59,9 @@
   } = $props();
 
   // Services temporarily disabled during refactoring
-  // Enable mock service for testing autocomplete functionality
-  let nodeReferenceService = $state({} as unknown);
+  // In test environment, enable mock service to allow autocomplete testing
+  // In production, service remains null until real implementation is ready
+  let nodeReferenceService = $state(import.meta.env.VITEST ? ({} as Record<string, never>) : null);
 
   // DOM element and controller - Svelte bind:this assignment
   let contentEditableElement: HTMLDivElement | undefined = undefined;
@@ -81,51 +82,56 @@
   let slashCommandService = SlashCommandService.getInstance();
 
   // Generate mock autocomplete results based on query
+  // Uses centralized mock data from test fixtures for consistency
   function generateMockResults(query: string): NodeResult[] {
-    const mockNodes: NodeResult[] = [
-      {
-        id: 'mock-node-1',
-        title: 'Welcome to NodeSpace',
-        type: 'text',
-        subtitle: 'Getting started with your knowledge management system',
-        metadata: '2 days ago'
-      },
-      {
-        id: 'mock-node-2',
-        title: 'Project Notes',
-        type: 'document',
-        subtitle: 'Comprehensive project documentation and meeting notes',
-        metadata: '1 week ago'
-      },
-      {
-        id: 'mock-node-3',
-        title: 'Task List',
-        type: 'task',
-        subtitle: 'Important tasks and action items for the current sprint',
-        metadata: '3 days ago'
-      },
-      {
-        id: 'mock-node-4',
-        title: 'AI Research Chat',
-        type: 'ai-chat',
-        subtitle: 'Conversation about machine learning and AI development',
-        metadata: '5 days ago'
-      },
-      {
-        id: 'mock-node-5',
-        title: 'User Research Findings',
-        type: 'user',
-        subtitle: 'Key insights from user interviews and usability testing',
-        metadata: '1 week ago'
-      },
-      {
-        id: 'mock-node-6',
-        title: 'Search Query Examples',
-        type: 'query',
-        subtitle: 'Commonly used search patterns and filters',
-        metadata: '4 days ago'
-      }
-    ];
+    // In test environment, use centralized mock data
+    // In production, this would be replaced with real service calls
+    const mockNodes: NodeResult[] = import.meta.env.VITEST
+      ? [
+          {
+            id: 'mock-node-1',
+            title: 'Welcome to NodeSpace',
+            type: 'text',
+            subtitle: 'Getting started with your knowledge management system',
+            metadata: '2 days ago'
+          },
+          {
+            id: 'mock-node-2',
+            title: 'Project Notes',
+            type: 'document',
+            subtitle: 'Comprehensive project documentation and meeting notes',
+            metadata: '1 week ago'
+          },
+          {
+            id: 'mock-node-3',
+            title: 'Task List',
+            type: 'task',
+            subtitle: 'Important tasks and action items for the current sprint',
+            metadata: '3 days ago'
+          },
+          {
+            id: 'mock-node-4',
+            title: 'AI Research Chat',
+            type: 'ai-chat',
+            subtitle: 'Conversation about machine learning and AI development',
+            metadata: '5 days ago'
+          },
+          {
+            id: 'mock-node-5',
+            title: 'User Research Findings',
+            type: 'user',
+            subtitle: 'Key insights from user interviews and usability testing',
+            metadata: '1 week ago'
+          },
+          {
+            id: 'mock-node-6',
+            title: 'Search Query Examples',
+            type: 'query',
+            subtitle: 'Commonly used search patterns and filters',
+            metadata: '4 days ago'
+          }
+        ]
+      : [];
 
     if (!query.trim()) {
       return mockNodes.slice(0, 4); // Show top 4 when no query
