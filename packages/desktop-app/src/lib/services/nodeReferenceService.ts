@@ -20,7 +20,7 @@
  * - NodeManager/EnhancedNodeManager: Node data access and manipulation
  * - HierarchyService: Efficient node hierarchy operations
  * - NodeOperationsService: Advanced node operations and mentions management
- * - MockDatabaseService: Bidirectional reference storage via mentions array
+ * - TauriNodeService: Bidirectional reference storage via mentions array with native backend queries
  * - ContentProcessor: Enhanced @ trigger content processing
  */
 
@@ -31,100 +31,6 @@ import type { HierarchyService } from './hierarchyService';
 import type { NodeOperationsService } from './nodeOperationsService';
 import type { Node } from '$lib/types';
 import type { TauriNodeService } from './tauriNodeService';
-
-// ============================================================================
-// Database Service Adapter
-// ============================================================================
-
-/**
- * DatabaseServiceAdapter - Wraps TauriNodeService with missing methods
- *
- * TauriNodeService doesn't yet have queryNodes and upsertNode methods.
- * This adapter provides those capabilities using the existing methods.
- */
-class DatabaseServiceAdapter {
-  constructor(private tauri: TauriNodeService) {}
-
-  /**
-   * Query nodes with various filters
-   * Currently implements basic functionality - will be expanded when Tauri backend supports it
-   */
-  async queryNodes(query: {
-    id?: string;
-    mentioned_by?: string;
-    content_contains?: string;
-    type?: string;
-    limit?: number;
-  }): Promise<Node[]> {
-    // For id-based queries, use getNode
-    if (query.id) {
-      const node = await this.tauri.getNode(query.id);
-      return node ? [node] : [];
-    }
-
-    // Check if tauri service has queryNodes method (for MockTauriNodeService in tests)
-    if ('queryNodes' in this.tauri && typeof this.tauri.queryNodes === 'function') {
-      type QueryNodesMethod = (q: {
-        id?: string;
-        mentioned_by?: string;
-        content_contains?: string;
-        type?: string;
-        limit?: number;
-      }) => Promise<Node[]>;
-      return await (this.tauri as unknown as { queryNodes: QueryNodesMethod }).queryNodes(query);
-    }
-
-    // For other queries, we need to implement via getChildren or return empty
-    // This is a temporary solution - proper implementation would query via backend
-    console.warn('queryNodes: Advanced queries not yet implemented on TauriNodeService', query);
-    return [];
-  }
-
-  /**
-   * Upsert node (create or update)
-   * Uses getNode to check existence, then creates or updates accordingly
-   */
-  async upsertNode(node: Node): Promise<Node> {
-    try {
-      const existing = await this.tauri.getNode(node.id);
-
-      if (existing) {
-        // Update existing node
-        // Note: NodeUpdate doesn't include mentions - those are managed separately
-        await this.tauri.updateNode(node.id, {
-          content: node.content,
-          parentId: node.parentId,
-          beforeSiblingId: node.beforeSiblingId,
-          properties: node.properties
-        });
-        return { ...node, modifiedAt: new Date().toISOString() };
-      } else {
-        // Create new node
-        await this.tauri.createNode({
-          id: node.id,
-          nodeType: node.nodeType,
-          content: node.content,
-          parentId: node.parentId,
-          originNodeId: node.originNodeId,
-          beforeSiblingId: node.beforeSiblingId,
-          mentions: node.mentions,
-          properties: node.properties
-        });
-        return node;
-      }
-    } catch (error) {
-      console.error('DatabaseServiceAdapter: upsertNode failed', { error, nodeId: node.id });
-      throw error;
-    }
-  }
-
-  /**
-   * Proxy getNode from TauriNodeService
-   */
-  async getNode(id: string): Promise<Node | null> {
-    return this.tauri.getNode(id);
-  }
-}
 
 // ============================================================================
 // Core Types and Interfaces
@@ -206,7 +112,7 @@ export class NodeReferenceService {
   private nodeManager: NodeManager;
   private hierarchyService: HierarchyService;
   private nodeOperationsService: NodeOperationsService;
-  private databaseService: DatabaseServiceAdapter;
+  private databaseService: TauriNodeService;
   private contentProcessor: ContentProcessor;
   private readonly serviceName = 'NodeReferenceService';
 
@@ -249,7 +155,7 @@ export class NodeReferenceService {
     this.nodeManager = nodeManager;
     this.hierarchyService = hierarchyService;
     this.nodeOperationsService = nodeOperationsService;
-    this.databaseService = new DatabaseServiceAdapter(databaseService);
+    this.databaseService = databaseService;
     this.contentProcessor = contentProcessor || ContentProcessor.getInstance();
 
     this.setupEventBusIntegration();
@@ -734,7 +640,7 @@ export class NodeReferenceService {
     try {
       // Use database service to find nodes that mention this node
       const referencingNodes = await this.databaseService.queryNodes({
-        mentioned_by: nodeId
+        mentionedBy: nodeId
       });
 
       return referencingNodes.map((node: Node) => ({
@@ -778,8 +684,8 @@ export class NodeReferenceService {
     try {
       // Use database service for efficient querying
       const results = await this.databaseService.queryNodes({
-        content_contains: query,
-        type: nodeType,
+        contentContains: query,
+        nodeType: nodeType,
         limit: this.autocompleteConfig.maxSuggestions * 3 // Get more for better filtering
       });
 
@@ -801,15 +707,13 @@ export class NodeReferenceService {
       const nodeId = this.generateNodeId();
 
       // Create Node with proper type structure
-      const finalNodeData: Node = {
+      const finalNodeData = {
         id: nodeId,
         nodeType: nodeType,
         content: content,
         parentId: null, // Root node
         originNodeId: nodeId,
         beforeSiblingId: null,
-        createdAt: new Date().toISOString(),
-        modifiedAt: new Date().toISOString(),
         mentions: [],
         properties: {
           createdBy: 'NodeReferenceService',
@@ -817,8 +721,15 @@ export class NodeReferenceService {
         }
       };
 
-      // Store directly in database service via adapter
-      const createdNode = await this.databaseService.upsertNode(finalNodeData);
+      // Create node directly using TauriNodeService
+      await this.databaseService.createNode(finalNodeData);
+
+      // Build the complete Node object for return
+      const createdNode: Node = {
+        ...finalNodeData,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString()
+      };
 
       // In a full implementation, the node would be automatically
       // synchronized with the NodeManager via database change events.
@@ -1174,7 +1085,7 @@ export class NodeReferenceService {
     try {
       // Find all nodes that reference the deleted node
       const referencingNodes = await this.databaseService.queryNodes({
-        mentioned_by: deletedNodeId
+        mentionedBy: deletedNodeId
       });
 
       // Remove references to deleted node from database and in-memory nodes

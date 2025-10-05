@@ -31,6 +31,7 @@ pub use behaviors::{
 };
 pub use db::{DatabaseError, DatabaseService};
 pub use models::{
-    FilterOperator, Node, NodeFilter, NodeUpdate, OrderBy, PropertyFilter, ValidationError,
+    FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter,
+    ValidationError,
 };
 pub use services::{NodeService, NodeServiceError};

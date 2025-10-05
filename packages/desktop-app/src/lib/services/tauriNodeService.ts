@@ -233,6 +233,53 @@ export class TauriNodeService {
   }
 
   /**
+   * Query nodes with flexible filtering
+   *
+   * Supports queries by:
+   * - id (exact match)
+   * - mentionedBy (finds nodes that mention the specified node ID)
+   * - contentContains (case-insensitive substring search)
+   * - nodeType (filter by type)
+   * - limit (maximum results to return)
+   *
+   * Query priority: id > mentionedBy > contentContains > nodeType
+   *
+   * @param query - Query parameters (all fields optional)
+   * @returns Array of matching nodes (empty if no matches)
+   * @throws NodeOperationError if operation fails
+   *
+   * @example
+   * // Find nodes that mention a specific node (backlinks)
+   * const backlinks = await service.queryNodes({ mentionedBy: 'node-123', limit: 50 });
+   *
+   * @example
+   * // Search by content
+   * const results = await service.queryNodes({ contentContains: 'project', nodeType: 'text' });
+   *
+   * @example
+   * // Get specific node
+   * const nodes = await service.queryNodes({ id: 'node-123' });
+   */
+  async queryNodes(query: {
+    id?: string;
+    mentionedBy?: string;
+    contentContains?: string;
+    nodeType?: string;
+    limit?: number;
+  }): Promise<Node[]> {
+    this.ensureInitialized();
+
+    try {
+      const nodes = await universalInvoke<Node[]>('query_nodes_simple', { query });
+      return nodes;
+    } catch (error) {
+      const err = toError(error);
+      console.error('[TauriNodeService] Failed to query nodes:', query, err);
+      throw new NodeOperationError(err.message, JSON.stringify(query), 'queryNodes');
+    }
+  }
+
+  /**
    * Save a node with parent creation - unified upsert operation
    *
    * Ensures parent exists, then creates or updates the node in a single transaction.

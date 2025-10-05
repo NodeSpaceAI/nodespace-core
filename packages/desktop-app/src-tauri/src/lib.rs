@@ -77,6 +77,7 @@ pub fn run() {
             commands::nodes::delete_node,
             commands::nodes::get_children,
             commands::nodes::get_nodes_by_origin_id,
+            commands::nodes::query_nodes_simple,
             commands::nodes::save_node_with_parent,
         ])
         .run(tauri::generate_context!())

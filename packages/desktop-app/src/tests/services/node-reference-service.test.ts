@@ -136,9 +136,9 @@ class MockTauriNodeService {
 
   async queryNodes(query: {
     id?: string;
-    content_contains?: string;
-    type?: string;
-    mentioned_by?: string;
+    contentContains?: string;
+    nodeType?: string;
+    mentionedBy?: string;
     limit?: number;
   }): Promise<Node[]> {
     let results = Array.from(nodeStore.values());
@@ -150,19 +150,19 @@ class MockTauriNodeService {
     }
 
     // Filter by content
-    if (query.content_contains) {
-      const lowerQuery = query.content_contains.toLowerCase();
+    if (query.contentContains) {
+      const lowerQuery = query.contentContains.toLowerCase();
       results = results.filter((node) => node.content.toLowerCase().includes(lowerQuery));
     }
 
     // Filter by type
-    if (query.type) {
-      results = results.filter((node) => node.nodeType === query.type);
+    if (query.nodeType) {
+      results = results.filter((node) => node.nodeType === query.nodeType);
     }
 
     // Filter by mentions (with type guard)
-    if (query.mentioned_by) {
-      const mentionedBy = query.mentioned_by; // Capture in const for type narrowing
+    if (query.mentionedBy) {
+      const mentionedBy = query.mentionedBy; // Capture in const for type narrowing
       results = results.filter((node) => node.mentions?.includes(mentionedBy));
     }
 

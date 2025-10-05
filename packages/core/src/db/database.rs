@@ -272,6 +272,23 @@ impl DatabaseService {
             ))
         })?;
 
+        // Index on mentions array in properties JSON (for mentioned_by queries)
+        // This helps SQLite optimize queries that use JSON_EACH on properties.mentions
+        // Note: SQLite doesn't directly index JSON arrays, but this index on the extracted
+        // mentions field helps the query planner. For better performance at scale, consider
+        // migrating to the node_mentions table.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_properties_mentions ON nodes(json_extract(properties, '$.mentions'))",
+            (),
+        )
+        .await
+        .map_err(|e| {
+            DatabaseError::sql_execution(format!(
+                "Failed to create index 'idx_properties_mentions': {}",
+                e
+            ))
+        })?;
+
         // Indexes for node_mentions (bidirectional queries)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mentions_source ON node_mentions(node_id)",

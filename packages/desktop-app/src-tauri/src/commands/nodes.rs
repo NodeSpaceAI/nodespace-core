@@ -1,7 +1,7 @@
 //! Node CRUD operation commands for Text, Task, and Date nodes
 
 use chrono::Utc;
-use nodespace_core::{Node, NodeService, NodeServiceError, NodeUpdate};
+use nodespace_core::{Node, NodeQuery, NodeService, NodeServiceError, NodeUpdate};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -123,6 +123,8 @@ pub async fn create_node(
         modified_at: now, // Placeholder - DB will use its own timestamp
         properties: node.properties,
         embedding_vector: node.embedding_vector,
+        mentions: Vec::new(),     // Empty on create - populated separately
+        mentioned_by: Vec::new(), // Empty on create - computed from database
     };
 
     service.create_node(full_node).await.map_err(Into::into)
@@ -292,6 +294,55 @@ pub async fn get_nodes_by_origin_id(
         .get_nodes_by_origin_id(&origin_node_id)
         .await
         .map_err(Into::into)
+}
+
+/// Query nodes with flexible filtering
+///
+/// Supports queries by:
+/// - ID (exact match)
+/// - mentioned_by (finds nodes that mention the specified node ID)
+/// - content_contains (case-insensitive substring search)
+/// - node_type (filter by type)
+/// - limit (maximum results to return)
+///
+/// # Arguments
+/// * `service` - Node service instance from Tauri state
+/// * `query` - Query parameters (all fields optional)
+///
+/// # Returns
+/// * `Ok(Vec<Node>)` - Matching nodes (empty if no matches)
+/// * `Err(CommandError)` - Error with details if operation fails
+///
+/// # Query Priority
+/// The query uses priority-based selection - first matching field determines query type:
+/// 1. ID query (exact match, returns 0 or 1 result)
+/// 2. mentioned_by query (finds backlinks)
+/// 3. content_contains query (can be combined with node_type)
+/// 4. node_type query (type filter only)
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// // Find nodes that mention a specific node (backlinks)
+/// const backlinks = await invoke('query_nodes_simple', {
+///   query: { mentionedBy: 'node-123', limit: 50 }
+/// });
+///
+/// // Search by content
+/// const results = await invoke('query_nodes_simple', {
+///   query: { contentContains: 'project', nodeType: 'text' }
+/// });
+///
+/// // Get specific node
+/// const node = await invoke('query_nodes_simple', {
+///   query: { id: 'node-123' }
+/// });
+/// ```
+#[tauri::command]
+pub async fn query_nodes_simple(
+    service: State<'_, NodeService>,
+    query: NodeQuery,
+) -> Result<Vec<Node>, CommandError> {
+    service.query_nodes_simple(query).await.map_err(Into::into)
 }
 
 /// Save a node with automatic parent creation - unified upsert operation
