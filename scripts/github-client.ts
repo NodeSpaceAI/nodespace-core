@@ -124,33 +124,43 @@ export class GitHubClient {
   }
 
   /**
-   * Get project items using GraphQL API (no pagination loops needed)
+   * Get project items using GraphQL API with pagination
    */
   async getProjectItems(): Promise<ProjectItem[]> {
-    const query = `
-      query GetProjectItems($owner: String!, $projectNumber: Int!) {
-        user(login: $owner) {
-          projectV2(number: $projectNumber) {
-            items(first: 100) {
-              nodes {
-                id
-                content {
-                  ... on Issue {
-                    number
-                    title
-                  }
+    const allItems: ProjectItem[] = [];
+    let hasNextPage = true;
+    let cursor: string | null = null;
+
+    while (hasNextPage) {
+      const query = `
+        query GetProjectItems($owner: String!, $projectNumber: Int!, $cursor: String) {
+          user(login: $owner) {
+            projectV2(number: $projectNumber) {
+              items(first: 100, after: $cursor) {
+                pageInfo {
+                  hasNextPage
+                  endCursor
                 }
-                fieldValues(first: 10) {
-                  nodes {
-                    ... on ProjectV2ItemFieldSingleSelectValue {
-                      field {
-                        ... on ProjectV2SingleSelectField {
-                          id
-                          name
+                nodes {
+                  id
+                  content {
+                    ... on Issue {
+                      number
+                      title
+                    }
+                  }
+                  fieldValues(first: 10) {
+                    nodes {
+                      ... on ProjectV2ItemFieldSingleSelectValue {
+                        field {
+                          ... on ProjectV2SingleSelectField {
+                            id
+                            name
+                          }
                         }
+                        value: name
+                        optionId: id
                       }
-                      value: name
-                      optionId: id
                     }
                   }
                 }
@@ -158,25 +168,37 @@ export class GitHubClient {
             }
           }
         }
-      }
-    `;
+      `;
 
-    const response = await this.octokit.graphql<{
-      user: {
-        projectV2: {
-          items: {
-            nodes: ProjectItem[];
+      const response = await this.octokit.graphql<{
+        user: {
+          projectV2: {
+            items: {
+              pageInfo: {
+                hasNextPage: boolean;
+                endCursor: string | null;
+              };
+              nodes: ProjectItem[];
+            };
           };
         };
-      };
-    }>(query, {
-      owner: this.owner,
-      projectNumber: this.projectNumber,
-    });
+      }>(query, {
+        owner: this.owner,
+        projectNumber: this.projectNumber,
+        cursor,
+      });
 
-    return response.user.projectV2.items.nodes.filter(
-      item => item.content?.number // Only return items that are issues
-    );
+      const items = response.user.projectV2.items.nodes.filter(
+        item => item.content?.number // Only return items that are issues
+      );
+
+      allItems.push(...items);
+
+      hasNextPage = response.user.projectV2.items.pageInfo.hasNextPage;
+      cursor = response.user.projectV2.items.pageInfo.endCursor;
+    }
+
+    return allItems;
   }
 
   /**
