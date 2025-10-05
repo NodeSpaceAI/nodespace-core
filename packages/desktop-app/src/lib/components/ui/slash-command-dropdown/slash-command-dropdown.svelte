@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher, onMount } from 'svelte';
+  import { onMount } from 'svelte';
   import type { SlashCommand } from '$lib/services/slashCommandService';
 
   // Props
@@ -8,16 +8,13 @@
   export let commands: SlashCommand[] = [];
   export let loading: boolean = false;
   export let visible: boolean = false;
+  export let onselect: ((_command: SlashCommand) => void) | undefined = undefined;
+  export let onclose: (() => void) | undefined = undefined;
 
   // State
   let selectedIndex: number = 0;
   let containerRef: HTMLElement | undefined = undefined;
   let itemRefs: HTMLElement[] = [];
-
-  const dispatch = createEventDispatcher<{
-    select: SlashCommand;
-    close: void;
-  }>();
 
   // Smart positioning to avoid viewport edges
   function getSmartPosition(pos: { x: number; y: number }) {
@@ -91,14 +88,14 @@
       case 'Escape':
         event.preventDefault();
         event.stopPropagation(); // Prevent any background actions
-        dispatch('close');
+        onclose?.();
         break;
     }
   }
 
   function selectCommand(command: SlashCommand) {
     selectedIndex = commands.indexOf(command);
-    dispatch('select', command);
+    onselect?.(command);
   }
 
   // Reset selection when commands change
