@@ -16,8 +16,26 @@ use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::DatabaseService;
 use crate::models::{Node, NodeFilter, NodeUpdate, OrderBy};
 use crate::services::error::NodeServiceError;
-use chrono::Utc;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use std::sync::Arc;
+
+/// Parse timestamp from database - handles both SQLite and RFC3339 formats
+fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, String> {
+    // Try SQLite format first: "YYYY-MM-DD HH:MM:SS"
+    if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Ok(naive.and_utc());
+    }
+
+    // Try RFC3339 format (for old data): "YYYY-MM-DDTHH:MM:SSZ"
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+
+    Err(format!(
+        "Unable to parse timestamp '{}' as SQLite or RFC3339 format",
+        s
+    ))
+}
 
 /// Core service for node CRUD and hierarchy operations
 ///
@@ -104,7 +122,7 @@ impl NodeService {
     /// Returns error if:
     /// - Node validation fails
     /// - Parent node doesn't exist (if parent_id is set)
-    /// - Root node doesn't exist (if root_id is set)
+    /// - Root node doesn't exist (if origin_node_id is set)
     /// - Database insertion fails
     ///
     /// # Examples
@@ -141,32 +159,31 @@ impl NodeService {
             }
         }
 
-        // Validate root exists if root_id is set
-        if let Some(ref root_id) = node.root_id {
-            let root_exists = self.node_exists(root_id).await?;
+        // Validate root exists if origin_node_id is set
+        if let Some(ref origin_node_id) = node.origin_node_id {
+            let root_exists = self.node_exists(origin_node_id).await?;
             if !root_exists {
-                return Err(NodeServiceError::invalid_root(root_id));
+                return Err(NodeServiceError::invalid_root(origin_node_id));
             }
         }
 
         // Insert into database
+        // Database defaults handle created_at and modified_at timestamps automatically
         let conn = self.db.connect()?;
 
         let properties_json = serde_json::to_string(&node.properties)
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
         conn.execute(
-            "INSERT INTO nodes (id, node_type, content, parent_id, root_id, before_sibling_id, created_at, modified_at, properties, embedding_vector)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO nodes (id, node_type, content, parent_id, origin_node_id, before_sibling_id, properties, embedding_vector)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 node.id.as_str(),
                 node.node_type.as_str(),
                 node.content.as_str(),
                 node.parent_id.as_deref(),
-                node.root_id.as_deref(),
+                node.origin_node_id.as_deref(),
                 node.before_sibling_id.as_deref(),
-                node.created_at.to_rfc3339().as_str(),
-                node.modified_at.to_rfc3339().as_str(),
                 properties_json.as_str(),
                 node.embedding_vector.as_deref(),
             ),
@@ -208,7 +225,7 @@ impl NodeService {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, node_type, content, parent_id, root_id, before_sibling_id,
+                "SELECT id, node_type, content, parent_id, origin_node_id, before_sibling_id,
                         created_at, modified_at, properties, embedding_vector
                  FROM nodes WHERE id = ?",
             )
@@ -295,8 +312,8 @@ impl NodeService {
             updated.parent_id = parent_id;
         }
 
-        if let Some(root_id) = update.root_id {
-            updated.root_id = root_id;
+        if let Some(origin_node_id) = update.origin_node_id {
+            updated.origin_node_id = origin_node_id;
         }
 
         if let Some(before_sibling_id) = update.before_sibling_id {
@@ -311,25 +328,22 @@ impl NodeService {
             updated.embedding_vector = embedding_vector;
         }
 
-        updated.modified_at = Utc::now();
-
         // Validate updated node
         self.behaviors.validate_node(&updated)?;
 
-        // Execute update
+        // Execute update - database will auto-update modified_at via trigger or default
         let conn = self.db.connect()?;
         let properties_json = serde_json::to_string(&updated.properties)
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
         conn.execute(
-            "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, root_id = ?, before_sibling_id = ?, modified_at = ?, properties = ?, embedding_vector = ? WHERE id = ?",
+            "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, origin_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ? WHERE id = ?",
             (
                 updated.node_type.as_str(),
                 updated.content.as_str(),
                 updated.parent_id.as_deref(),
-                updated.root_id.as_deref(),
+                updated.origin_node_id.as_deref(),
                 updated.before_sibling_id.as_deref(),
-                updated.modified_at.to_rfc3339().as_str(),
                 properties_json.as_str(),
                 updated.embedding_vector.as_deref(),
                 id,
@@ -414,12 +428,116 @@ impl NodeService {
             .with_parent_id(parent_id.to_string())
             .with_order_by(OrderBy::CreatedAsc);
 
+        let mut children = self.query_nodes(filter).await?;
+
+        // Sort children by sibling linked list (before_sibling_id)
+        // This reconstructs the proper order independent of creation time
+        self.sort_by_sibling_order(&mut children);
+
+        Ok(children)
+    }
+
+    /// Bulk fetch all nodes belonging to an origin node (viewer/page)
+    ///
+    /// This is the efficient way to load a complete document tree:
+    /// 1. Single database query fetches all nodes with the same origin_node_id
+    /// 2. In-memory hierarchy reconstruction using parent_id and before_sibling_id
+    ///
+    /// This avoids making multiple queries for each level of the tree.
+    ///
+    /// # Arguments
+    ///
+    /// * `origin_node_id` - The ID of the origin node (e.g., date page ID)
+    ///
+    /// # Returns
+    ///
+    /// Vector of all nodes that belong to this origin, unsorted.
+    /// Caller should use `sort_by_sibling_order()` or build a tree structure.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+    /// # let service = NodeService::new(db).await?;
+    /// // Fetch all nodes for a date page
+    /// let nodes = service.get_nodes_by_origin_id("2025-10-05").await?;
+    /// println!("Found {} nodes in this document", nodes.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_nodes_by_origin_id(
+        &self,
+        origin_node_id: &str,
+    ) -> Result<Vec<Node>, NodeServiceError> {
+        let filter = NodeFilter::new().with_origin_node_id(origin_node_id.to_string());
+
         self.query_nodes(filter).await
+    }
+
+    /// Sort nodes by their sibling linked list order
+    ///
+    /// Nodes use before_sibling_id to form a linked list:
+    /// - before_sibling_id = None means it's the first node
+    /// - before_sibling_id = Some(id) means it comes after node with that id
+    ///
+    /// This function reconstructs the proper order by following the chain.
+    fn sort_by_sibling_order(&self, nodes: &mut Vec<Node>) {
+        if nodes.is_empty() {
+            return;
+        }
+
+        // Build a map of id -> node for quick lookup
+        let mut node_map: std::collections::HashMap<String, Node> =
+            nodes.drain(..).map(|n| (n.id.clone(), n)).collect();
+
+        // Find the first node (before_sibling_id is None)
+        let first_node = node_map
+            .values()
+            .find(|n| n.before_sibling_id.is_none())
+            .cloned();
+
+        if let Some(first) = first_node {
+            let mut ordered = vec![first.clone()];
+            node_map.remove(&first.id);
+
+            // Follow the chain: find nodes that have before_sibling_id = current node's id
+            while !node_map.is_empty() {
+                let current_id = ordered.last().unwrap().id.clone();
+
+                // Find the next node in the chain
+                let next = node_map
+                    .values()
+                    .find(|n| n.before_sibling_id.as_ref() == Some(&current_id))
+                    .cloned();
+
+                if let Some(next_node) = next {
+                    let next_id = next_node.id.clone();
+                    ordered.push(next_node);
+                    node_map.remove(&next_id);
+                } else {
+                    // Chain broken or multiple chains - append remaining nodes by creation time
+                    let mut remaining: Vec<Node> = node_map.values().cloned().collect();
+                    remaining.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+                    ordered.extend(remaining);
+                    break;
+                }
+            }
+
+            *nodes = ordered;
+        } else {
+            // No node with before_sibling_id = None found
+            // Fall back to creation time ordering
+            nodes.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        }
     }
 
     /// Move a node to a new parent
     ///
-    /// Updates the parent_id and root_id of a node, maintaining hierarchy consistency.
+    /// Updates the parent_id and origin_node_id of a node, maintaining hierarchy consistency.
     ///
     /// # Arguments
     ///
@@ -478,22 +596,22 @@ impl NodeService {
             }
         }
 
-        // Determine new root_id
-        let new_root_id = match new_parent {
+        // Determine new origin_node_id
+        let new_origin_node_id = match new_parent {
             Some(parent_id) => {
-                // Get parent's root_id, or use parent as root if it's a root node
+                // Get parent's origin_node_id, or use parent as root if it's a root node
                 let parent = self
                     .get_node(parent_id)
                     .await?
                     .ok_or_else(|| NodeServiceError::invalid_parent(parent_id))?;
-                parent.root_id.or(Some(parent_id.to_string()))
+                parent.origin_node_id.or(Some(parent_id.to_string()))
             }
             None => None, // Node becomes a root
         };
 
         let update = NodeUpdate {
             parent_id: Some(new_parent.map(String::from)),
-            root_id: Some(new_root_id),
+            origin_node_id: Some(new_origin_node_id),
             ..Default::default()
         };
 
@@ -609,7 +727,7 @@ impl NodeService {
                 .unwrap_or_default();
 
             let query = format!(
-                "SELECT id, node_type, content, parent_id, root_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes WHERE node_type = ?{}{}",
+                "SELECT id, node_type, content, parent_id, origin_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes WHERE node_type = ?{}{}",
                 order_clause, limit_clause
             );
 
@@ -647,7 +765,7 @@ impl NodeService {
                 .unwrap_or_default();
 
             let query = format!(
-                "SELECT id, node_type, content, parent_id, root_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes WHERE parent_id = ?{}{}",
+                "SELECT id, node_type, content, parent_id, origin_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes WHERE parent_id = ?{}{}",
                 order_clause, limit_clause
             );
 
@@ -656,6 +774,44 @@ impl NodeService {
             })?;
 
             let mut rows = stmt.query([parent_id.as_str()]).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
+            })?;
+
+            let mut nodes = Vec::new();
+            while let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            {
+                nodes.push(self.row_to_node(row)?);
+            }
+
+            return Ok(nodes);
+        } else if let Some(ref origin_node_id) = filter.origin_node_id {
+            // Query by origin_node_id (bulk fetch optimization)
+            let order_clause = match filter.order_by {
+                Some(OrderBy::CreatedAsc) => " ORDER BY created_at ASC",
+                Some(OrderBy::CreatedDesc) => " ORDER BY created_at DESC",
+                Some(OrderBy::ModifiedAsc) => " ORDER BY modified_at ASC",
+                Some(OrderBy::ModifiedDesc) => " ORDER BY modified_at DESC",
+                _ => "",
+            };
+
+            let limit_clause = filter
+                .limit
+                .map(|l| format!(" LIMIT {}", l))
+                .unwrap_or_default();
+
+            let query = format!(
+                "SELECT id, node_type, content, parent_id, origin_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes WHERE origin_node_id = ?{}{}",
+                order_clause, limit_clause
+            );
+
+            let mut stmt = conn.prepare(&query).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
+            })?;
+
+            let mut rows = stmt.query([origin_node_id.as_str()]).await.map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
             })?;
 
@@ -686,7 +842,7 @@ impl NodeService {
             .unwrap_or_default();
 
         let query = format!(
-            "SELECT id, node_type, content, parent_id, root_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes{}{}",
+            "SELECT id, node_type, content, parent_id, origin_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes{}{}",
             order_clause, limit_clause
         );
 
@@ -828,22 +984,21 @@ impl NodeService {
         let mut ids = Vec::new();
 
         // Insert all nodes
+        // Database defaults handle created_at and modified_at timestamps automatically
         for node in &nodes {
             let properties_json = serde_json::to_string(&node.properties)
                 .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
             let result = conn.execute(
-                "INSERT INTO nodes (id, node_type, content, parent_id, root_id, before_sibling_id, created_at, modified_at, properties, embedding_vector)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO nodes (id, node_type, content, parent_id, origin_node_id, before_sibling_id, properties, embedding_vector)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     node.id.as_str(),
                     node.node_type.as_str(),
                     node.content.as_str(),
                     node.parent_id.as_deref(),
-                    node.root_id.as_deref(),
+                    node.origin_node_id.as_deref(),
                     node.before_sibling_id.as_deref(),
-                    node.created_at.to_rfc3339().as_str(),
-                    node.modified_at.to_rfc3339().as_str(),
                     properties_json.as_str(),
                     node.embedding_vector.as_deref(),
                 ),
@@ -938,8 +1093,8 @@ impl NodeService {
                 updated.parent_id = parent_id;
             }
 
-            if let Some(root_id) = update.root_id {
-                updated.root_id = root_id;
+            if let Some(origin_node_id) = update.origin_node_id {
+                updated.origin_node_id = origin_node_id;
             }
 
             if let Some(before_sibling_id) = update.before_sibling_id {
@@ -965,19 +1120,18 @@ impl NodeService {
                 )));
             }
 
-            // Execute update in transaction
+            // Execute update in transaction - database auto-updates modified_at
             let properties_json = serde_json::to_string(&updated.properties)
                 .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
             let result = conn.execute(
-                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, root_id = ?, before_sibling_id = ?, modified_at = ?, properties = ?, embedding_vector = ? WHERE id = ?",
+                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, origin_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ? WHERE id = ?",
                 (
                     updated.node_type.as_str(),
                     updated.content.as_str(),
                     updated.parent_id.as_deref(),
-                    updated.root_id.as_deref(),
+                    updated.origin_node_id.as_deref(),
                     updated.before_sibling_id.as_deref(),
-                    updated.modified_at.to_rfc3339().as_str(),
                     properties_json.as_str(),
                     updated.embedding_vector.as_deref(),
                     id.as_str(),
@@ -1067,6 +1221,82 @@ impl NodeService {
         Ok(())
     }
 
+    /// Upsert a node with automatic parent creation - single transaction
+    ///
+    /// Creates parent node if it doesn't exist, then upserts the child node.
+    /// All operations happen in a single transaction to prevent database locking.
+    ///
+    /// # Arguments
+    /// * `node_id` - ID of the node to upsert
+    /// * `content` - Node content
+    /// * `node_type` - Type of node (text, task, date)
+    /// * `parent_id` - Parent node ID (will be created as date node if missing)
+    ///
+    /// # Returns
+    /// * `Ok(())` - Operation successful
+    /// * `Err(NodeServiceError)` - If transaction fails
+    pub async fn upsert_node_with_parent(
+        &self,
+        node_id: &str,
+        content: &str,
+        node_type: &str,
+        parent_id: &str,
+        origin_node_id: &str,
+        before_sibling_id: Option<&str>,
+    ) -> Result<(), NodeServiceError> {
+        let conn = self.db.connect_with_timeout().await?;
+
+        // Use DEFERRED transaction for better concurrency with WAL mode
+        // Lock is only acquired when first write occurs, not at BEGIN
+        conn.execute("BEGIN DEFERRED", ()).await.map_err(|e| {
+            NodeServiceError::transaction_failed(format!("Failed to begin transaction: {}", e))
+        })?;
+
+        // Use INSERT OR IGNORE for parent - won't error if already exists
+        let parent_result = conn.execute(
+            "INSERT OR IGNORE INTO nodes (id, node_type, content, parent_id, origin_node_id, before_sibling_id, properties, embedding_vector)
+             VALUES (?, 'date', ?, NULL, NULL, NULL, '{}', NULL)",
+            (parent_id, parent_id)
+        ).await;
+
+        if let Err(e) = parent_result {
+            let _rollback = conn.execute("ROLLBACK", ()).await;
+            return Err(NodeServiceError::query_failed(format!(
+                "Failed to ensure parent exists: {}",
+                e
+            )));
+        }
+
+        // Use INSERT ... ON CONFLICT for node - upsert in single operation
+        let node_result = conn.execute(
+            "INSERT INTO nodes (id, node_type, content, parent_id, origin_node_id, before_sibling_id, properties, embedding_vector)
+             VALUES (?, ?, ?, ?, ?, ?, '{}', NULL)
+             ON CONFLICT(id) DO UPDATE SET
+                content = excluded.content,
+                parent_id = excluded.parent_id,
+                origin_node_id = excluded.origin_node_id,
+                before_sibling_id = excluded.before_sibling_id,
+                modified_at = CURRENT_TIMESTAMP",
+            (node_id, node_type, content, parent_id, origin_node_id, before_sibling_id)
+        ).await;
+
+        if let Err(e) = node_result {
+            let _rollback = conn.execute("ROLLBACK", ()).await;
+            return Err(NodeServiceError::query_failed(format!(
+                "Failed to upsert node: {}",
+                e
+            )));
+        }
+
+        // Commit transaction
+        conn.execute("COMMIT", ()).await.map_err(|e| {
+            std::mem::drop(conn.execute("ROLLBACK", ()));
+            NodeServiceError::transaction_failed(format!("Failed to commit transaction: {}", e))
+        })?;
+
+        Ok(())
+    }
+
     // Helper methods
 
     /// Convert a database row to a Node
@@ -1083,7 +1313,7 @@ impl NodeService {
         let parent_id: Option<String> = row
             .get(3)
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-        let root_id: Option<String> = row
+        let origin_node_id: Option<String> = row
             .get(4)
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
         let before_sibling_id: Option<String> = row
@@ -1107,24 +1337,27 @@ impl NodeService {
                 NodeServiceError::serialization_error(format!("Failed to parse properties: {}", e))
             })?;
 
-        let created_at = chrono::DateTime::parse_from_rfc3339(&created_at)
-            .map_err(|e| {
-                NodeServiceError::serialization_error(format!("Failed to parse created_at: {}", e))
-            })?
-            .with_timezone(&Utc);
+        // Parse timestamps - handle both SQLite format and RFC3339 (for migration)
+        let created_at = parse_timestamp(&created_at).map_err(|e| {
+            NodeServiceError::serialization_error(format!(
+                "Failed to parse created_at '{}': {}",
+                created_at, e
+            ))
+        })?;
 
-        let modified_at = chrono::DateTime::parse_from_rfc3339(&modified_at)
-            .map_err(|e| {
-                NodeServiceError::serialization_error(format!("Failed to parse modified_at: {}", e))
-            })?
-            .with_timezone(&Utc);
+        let modified_at = parse_timestamp(&modified_at).map_err(|e| {
+            NodeServiceError::serialization_error(format!(
+                "Failed to parse modified_at '{}': {}",
+                modified_at, e
+            ))
+        })?;
 
         Ok(Node {
             id,
             node_type,
             content,
             parent_id,
-            root_id,
+            origin_node_id,
             before_sibling_id,
             created_at,
             modified_at,
@@ -1271,16 +1504,19 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         let root = Node::new("text".to_string(), "Root".to_string(), None, json!({}));
-        let root_id = service.create_node(root).await.unwrap();
+        let origin_node_id = service.create_node(root).await.unwrap();
 
         let node = Node::new("text".to_string(), "Node".to_string(), None, json!({}));
         let node_id = service.create_node(node).await.unwrap();
 
-        service.move_node(&node_id, Some(&root_id)).await.unwrap();
+        service
+            .move_node(&node_id, Some(&origin_node_id))
+            .await
+            .unwrap();
 
         let moved = service.get_node(&node_id).await.unwrap().unwrap();
-        assert_eq!(moved.parent_id, Some(root_id.clone()));
-        assert_eq!(moved.root_id, Some(root_id));
+        assert_eq!(moved.parent_id, Some(origin_node_id.clone()));
+        assert_eq!(moved.origin_node_id, Some(origin_node_id));
     }
 
     #[tokio::test]
@@ -1480,5 +1716,88 @@ mod tests {
         // Verify that valid node was NOT created (transaction rolled back)
         let check = service.get_node(&valid_node.id).await.unwrap();
         assert!(check.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_nodes_by_origin_id() {
+        let (service, _temp) = create_test_service().await;
+
+        // Create a date node (acts as origin)
+        let date_node = Node::new_with_id(
+            "2025-10-05".to_string(),
+            "date".to_string(),
+            "2025-10-05".to_string(),
+            None,
+            json!({}),
+        );
+        service.create_node(date_node.clone()).await.unwrap();
+
+        // Create children with origin_node_id pointing to the date
+        let child1 = Node::new_with_root(
+            "text".to_string(),
+            "Child 1".to_string(),
+            Some("2025-10-05".to_string()),
+            Some("2025-10-05".to_string()),
+            json!({}),
+        );
+        let child2 = Node::new_with_root(
+            "text".to_string(),
+            "Child 2".to_string(),
+            Some("2025-10-05".to_string()),
+            Some("2025-10-05".to_string()),
+            json!({}),
+        );
+        let child3 = Node::new_with_root(
+            "task".to_string(),
+            "Child 3".to_string(),
+            Some("2025-10-05".to_string()),
+            Some("2025-10-05".to_string()),
+            json!({"status": "pending"}),
+        );
+
+        service.create_node(child1.clone()).await.unwrap();
+        service.create_node(child2.clone()).await.unwrap();
+        service.create_node(child3.clone()).await.unwrap();
+
+        // Create a different date node with a child (should not be returned)
+        let other_date = Node::new_with_id(
+            "2025-10-06".to_string(),
+            "date".to_string(),
+            "2025-10-06".to_string(),
+            None,
+            json!({}),
+        );
+        service.create_node(other_date.clone()).await.unwrap();
+
+        let other_child = Node::new_with_root(
+            "text".to_string(),
+            "Other child".to_string(),
+            Some("2025-10-06".to_string()),
+            Some("2025-10-06".to_string()),
+            json!({}),
+        );
+        service.create_node(other_child).await.unwrap();
+
+        // Bulk fetch should return only the 3 children with origin_node_id = "2025-10-05"
+        let nodes = service.get_nodes_by_origin_id("2025-10-05").await.unwrap();
+
+        assert_eq!(nodes.len(), 3, "Should return exactly 3 nodes");
+        assert!(
+            nodes
+                .iter()
+                .all(|n| n.origin_node_id == Some("2025-10-05".to_string())),
+            "All nodes should have origin_node_id = '2025-10-05'"
+        );
+
+        // Verify it returns different node types
+        let node_types: Vec<&str> = nodes.iter().map(|n| n.node_type.as_str()).collect();
+        assert!(node_types.contains(&"text"), "Should contain text nodes");
+        assert!(node_types.contains(&"task"), "Should contain task node");
+
+        // Verify the other date's child is not included
+        assert!(
+            !nodes.iter().any(|n| n.content == "Other child"),
+            "Should not return children from other origins"
+        );
     }
 }

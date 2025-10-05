@@ -26,10 +26,105 @@
 
 import { eventBus } from './eventBus';
 import { ContentProcessor } from './contentProcessor';
-import type { ReactiveNodeService as NodeManager, Node } from './reactiveNodeService.svelte.ts';
+import type { ReactiveNodeService as NodeManager } from './reactiveNodeService.svelte.ts';
 import type { HierarchyService } from './hierarchyService';
 import type { NodeOperationsService } from './nodeOperationsService';
-import type { MockDatabaseService, NodeSpaceNode } from './mockDatabaseService';
+import type { Node } from '$lib/types';
+import type { TauriNodeService } from './tauriNodeService';
+
+// ============================================================================
+// Database Service Adapter
+// ============================================================================
+
+/**
+ * DatabaseServiceAdapter - Wraps TauriNodeService with missing methods
+ *
+ * TauriNodeService doesn't yet have queryNodes and upsertNode methods.
+ * This adapter provides those capabilities using the existing methods.
+ */
+class DatabaseServiceAdapter {
+  constructor(private tauri: TauriNodeService) {}
+
+  /**
+   * Query nodes with various filters
+   * Currently implements basic functionality - will be expanded when Tauri backend supports it
+   */
+  async queryNodes(query: {
+    id?: string;
+    mentioned_by?: string;
+    content_contains?: string;
+    type?: string;
+    limit?: number;
+  }): Promise<Node[]> {
+    // For id-based queries, use getNode
+    if (query.id) {
+      const node = await this.tauri.getNode(query.id);
+      return node ? [node] : [];
+    }
+
+    // Check if tauri service has queryNodes method (for MockTauriNodeService in tests)
+    if ('queryNodes' in this.tauri && typeof this.tauri.queryNodes === 'function') {
+      type QueryNodesMethod = (q: {
+        id?: string;
+        mentioned_by?: string;
+        content_contains?: string;
+        type?: string;
+        limit?: number;
+      }) => Promise<Node[]>;
+      return await (this.tauri as unknown as { queryNodes: QueryNodesMethod }).queryNodes(query);
+    }
+
+    // For other queries, we need to implement via getChildren or return empty
+    // This is a temporary solution - proper implementation would query via backend
+    console.warn('queryNodes: Advanced queries not yet implemented on TauriNodeService', query);
+    return [];
+  }
+
+  /**
+   * Upsert node (create or update)
+   * Uses getNode to check existence, then creates or updates accordingly
+   */
+  async upsertNode(node: Node): Promise<Node> {
+    try {
+      const existing = await this.tauri.getNode(node.id);
+
+      if (existing) {
+        // Update existing node
+        // Note: NodeUpdate doesn't include mentions - those are managed separately
+        await this.tauri.updateNode(node.id, {
+          content: node.content,
+          parentId: node.parentId,
+          beforeSiblingId: node.beforeSiblingId,
+          properties: node.properties
+        });
+        return { ...node, modifiedAt: new Date().toISOString() };
+      } else {
+        // Create new node
+        await this.tauri.createNode({
+          id: node.id,
+          nodeType: node.nodeType,
+          content: node.content,
+          parentId: node.parentId,
+          originNodeId: node.originNodeId,
+          beforeSiblingId: node.beforeSiblingId,
+          mentions: node.mentions,
+          properties: node.properties
+        });
+        return node;
+      }
+    } catch (error) {
+      console.error('DatabaseServiceAdapter: upsertNode failed', { error, nodeId: node.id });
+      throw error;
+    }
+  }
+
+  /**
+   * Proxy getNode from TauriNodeService
+   */
+  async getNode(id: string): Promise<Node | null> {
+    return this.tauri.getNode(id);
+  }
+}
 
 // ============================================================================
 // Core Types and Interfaces
@@ -111,14 +206,14 @@ export class NodeReferenceService {
   private nodeManager: NodeManager;
   private hierarchyService: HierarchyService;
   private nodeOperationsService: NodeOperationsService;
-  private databaseService: MockDatabaseService;
+  private databaseService: DatabaseServiceAdapter;
   private contentProcessor: ContentProcessor;
   private readonly serviceName = 'NodeReferenceService';
 
   // Caching for performance (following Phase 1 patterns)
   private suggestionCache = new Map<string, { result: AutocompleteResult; timestamp: number }>();
   private uriCache = new Map<string, NodeReference>();
-  private searchCache = new Map<string, NodeSpaceNode[]>();
+  private searchCache = new Map<string, Node[]>();
   private mentionsCache = new Map<string, string[]>(); // nodeId -> array of mentioned nodeIds
   private readonly cacheTimeout = 30000; // 30 seconds
 
@@ -148,13 +243,13 @@ export class NodeReferenceService {
     nodeManager: NodeManager,
     hierarchyService: HierarchyService,
     nodeOperationsService: NodeOperationsService,
-    databaseService: MockDatabaseService,
+    databaseService: TauriNodeService,
     contentProcessor?: ContentProcessor
   ) {
     this.nodeManager = nodeManager;
     this.hierarchyService = hierarchyService;
     this.nodeOperationsService = nodeOperationsService;
-    this.databaseService = databaseService;
+    this.databaseService = new DatabaseServiceAdapter(databaseService);
     this.contentProcessor = contentProcessor || ContentProcessor.getInstance();
 
     this.setupEventBusIntegration();
@@ -469,7 +564,7 @@ export class NodeReferenceService {
   /**
    * Resolve nodespace:// URI to actual node
    */
-  public async resolveNodespaceURI(uri: string): Promise<NodeSpaceNode | null> {
+  public async resolveNodespaceURI(uri: string): Promise<Node | null> {
     const startTime = performance.now();
     this.performanceMetrics.totalURIResolutions++;
 
@@ -482,24 +577,10 @@ export class NodeReferenceService {
       // Try to find node in NodeManager first
       const managerNode = this.nodeManager.findNode(reference.nodeId);
       if (managerNode) {
-        // Found in NodeManager, convert to NodeSpaceNode format
-        const nodeSpaceNode: NodeSpaceNode = {
-          id: managerNode.id,
-          type: managerNode.nodeType,
-          content: managerNode.content,
-          parent_id: managerNode.parentId || null,
-          root_id: this.findRootId(managerNode.id),
-          before_sibling_id: null,
-          depth: managerNode.depth,
-          created_at: new Date().toISOString(),
-          mentions: [],
-          metadata: managerNode.metadata,
-          embedding_vector: null
-        };
-
+        // Found in NodeManager - it's already a Node
         this.performanceMetrics.avgURIResolutionTime =
           (this.performanceMetrics.avgURIResolutionTime + (performance.now() - startTime)) / 2;
-        return nodeSpaceNode;
+        return managerNode;
       }
 
       // If not found in NodeManager, try database (for test scenarios)
@@ -593,7 +674,7 @@ export class NodeReferenceService {
 
       // Remove reference if present in either location
       if (currentMentions.includes(targetId) || inMemoryMentions.includes(targetId)) {
-        const updatedMentions = currentMentions.filter((id) => id !== targetId);
+        const updatedMentions = currentMentions.filter((id: string) => id !== targetId);
 
         // Update both database and in-memory representation
         await this.nodeOperationsService.updateNodeMentions(sourceId, updatedMentions);
@@ -656,11 +737,11 @@ export class NodeReferenceService {
         mentioned_by: nodeId
       });
 
-      return referencingNodes.map((node) => ({
+      return referencingNodes.map((node: Node) => ({
         nodeId: node.id,
         uri: this.createNodespaceURI(node.id),
-        title: this.extractNodeTitleFromSpaceNode(node),
-        nodeType: node.type,
+        title: this.extractNodeTitleFromNode(node),
+        nodeType: node.nodeType,
         isValid: true,
         lastResolved: Date.now(),
         metadata: { type: 'incoming' }
@@ -681,7 +762,7 @@ export class NodeReferenceService {
   /**
    * Search nodes with fuzzy matching and filtering
    */
-  public async searchNodes(query: string, nodeType?: string): Promise<NodeSpaceNode[]> {
+  public async searchNodes(query: string, nodeType?: string): Promise<Node[]> {
     if (!query || query.length < this.autocompleteConfig.minQueryLength) {
       return [];
     }
@@ -715,36 +796,28 @@ export class NodeReferenceService {
   /**
    * Create new node with specified type and content
    */
-  public async createNode(nodeType: string, content: string): Promise<NodeSpaceNode> {
+  public async createNode(nodeType: string, content: string): Promise<Node> {
     try {
       const nodeId = this.generateNodeId();
 
-      // For testing scenarios, bypass NodeManager and create node directly
-      // This ensures consistent ID generation for tests
-      const managerNodeId = nodeId; // Use our generated ID directly
-
-      // Use NodeOperationsService for consistent node creation with database
-      const nodeData: Partial<NodeSpaceNode> = {
-        id: managerNodeId, // Use the ID that was actually created
-        type: nodeType,
+      // Create Node with proper type structure
+      const finalNodeData: Node = {
+        id: nodeId,
+        nodeType: nodeType,
         content: content,
-        parent_id: null, // Root node
-        root_id: managerNodeId,
-        before_sibling_id: null,
+        parentId: null, // Root node
+        originNodeId: nodeId,
+        beforeSiblingId: null,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
         mentions: [],
-        metadata: {
+        properties: {
           createdBy: 'NodeReferenceService',
           createdAt: Date.now()
-        },
-        embedding_vector: null
+        }
       };
 
-      // Store directly in database service since NodeOperationsService doesn't persist to database
-      const finalNodeData: NodeSpaceNode = {
-        ...nodeData,
-        created_at: new Date().toISOString()
-      } as NodeSpaceNode;
-
+      // Store directly in database service via adapter
       const createdNode = await this.databaseService.upsertNode(finalNodeData);
 
       // In a full implementation, the node would be automatically
@@ -757,7 +830,7 @@ export class NodeReferenceService {
         namespace: 'lifecycle',
         source: this.serviceName,
         timestamp: Date.now(),
-        nodeId: managerNodeId,
+        nodeId: nodeId,
         nodeType,
         metadata: { createdViaReference: true }
       };
@@ -936,8 +1009,8 @@ export class NodeReferenceService {
     return textContent.length;
   }
 
-  private async createNodeSuggestion(node: NodeSpaceNode, query: string): Promise<NodeSuggestion> {
-    const title = this.extractNodeTitleFromSpaceNode(node);
+  private async createNodeSuggestion(node: Node, query: string): Promise<NodeSuggestion> {
+    const title = this.extractNodeTitleFromNode(node);
     const relevanceScore = this.calculateRelevanceScore(node, query);
     const matchPositions = this.findMatchPositions(title, query);
     const hierarchy = await this.getNodeHierarchy(node.id);
@@ -946,20 +1019,20 @@ export class NodeReferenceService {
       nodeId: node.id,
       title,
       content: node.content.substring(0, 200), // Truncate for performance
-      nodeType: node.type,
+      nodeType: node.nodeType,
       relevanceScore,
       matchType: title.toLowerCase().includes(query.toLowerCase()) ? 'title' : 'content',
       matchPositions,
       hierarchy,
       metadata: {
-        parentId: node.parent_id,
+        parentId: node.parentId,
         hasChildren: false // Would need to calculate
       }
     };
   }
 
-  private calculateRelevanceScore(node: NodeSpaceNode, query: string): number {
-    const title = this.extractNodeTitleFromSpaceNode(node);
+  private calculateRelevanceScore(node: Node, query: string): number {
+    const title = this.extractNodeTitleFromNode(node);
     const content = node.content;
     const queryLower = query.toLowerCase();
     const titleLower = title.toLowerCase();
@@ -982,7 +1055,7 @@ export class NodeReferenceService {
     }
 
     // Boost score for exact node type matches
-    if (node.type.toLowerCase().includes(queryLower)) {
+    if (node.nodeType && node.nodeType.toLowerCase().includes(queryLower)) {
       score += 0.2;
     }
 
@@ -1015,7 +1088,7 @@ export class NodeReferenceService {
     }
   }
 
-  private extractNodeTitle(node: Node | NodeSpaceNode): string {
+  private extractNodeTitle(node: Node): string {
     if (!node.content) return 'Untitled';
 
     // Try to extract title from content
@@ -1032,7 +1105,7 @@ export class NodeReferenceService {
     return firstLine.substring(0, 100) || 'Untitled';
   }
 
-  private extractNodeTitleFromSpaceNode(node: NodeSpaceNode): string {
+  private extractNodeTitleFromNode(node: Node): string {
     if (!node.content) return 'Untitled';
 
     const lines = node.content.split('\n');
@@ -1106,7 +1179,7 @@ export class NodeReferenceService {
 
       // Remove references to deleted node from database and in-memory nodes
       for (const node of referencingNodes) {
-        const updatedMentions = node.mentions.filter((id) => id !== deletedNodeId);
+        const updatedMentions = (node.mentions || []).filter((id: string) => id !== deletedNodeId);
 
         // Update database
         await this.nodeOperationsService.updateNodeMentions(node.id, updatedMentions);

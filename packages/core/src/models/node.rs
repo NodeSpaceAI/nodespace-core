@@ -72,7 +72,7 @@ pub enum ValidationError {
 /// - `node_type`: Type identifier (e.g., "text", "task", "person", "date", "schema")
 /// - `content`: Primary content/text of the node
 /// - `parent_id`: Optional reference to parent node (creation context)
-/// - `root_id`: Optional reference to root document (NULL means this node IS root)
+/// - `origin_node_id`: Optional reference to root document (NULL means this node IS root)
 /// - `before_sibling_id`: Optional reference for sibling ordering
 /// - `created_at`: Timestamp when node was created
 /// - `modified_at`: Timestamp when node was last modified
@@ -115,6 +115,7 @@ pub enum ValidationError {
 /// );
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Node {
     /// Unique identifier (UUID or deterministic like YYYY-MM-DD for dates)
     pub id: String,
@@ -129,7 +130,7 @@ pub struct Node {
     pub parent_id: Option<String>,
 
     /// Root document ID (NULL means this node IS root/page)
-    pub root_id: Option<String>,
+    pub origin_node_id: Option<String>,
 
     /// Sibling ordering reference (single-pointer linked list)
     pub before_sibling_id: Option<String>,
@@ -158,11 +159,11 @@ impl Node {
     /// * `parent_id` - Optional parent node reference (creation context)
     /// * `properties` - JSON object with entity-specific fields
     ///
-    /// # Note on `root_id`
+    /// # Note on `origin_node_id`
     ///
-    /// This constructor sets `root_id = parent_id`, which is correct for:
-    /// - Root nodes: `parent_id = None` → `root_id = None` (node IS root)
-    /// - Direct children of root: `parent_id = Some(root)` → `root_id = Some(root)`
+    /// This constructor sets `origin_node_id = parent_id`, which is correct for:
+    /// - Root nodes: `parent_id = None` → `origin_node_id = None` (node IS root)
+    /// - Direct children of root: `parent_id = Some(root)` → `origin_node_id = Some(root)`
     ///
     /// For nested hierarchies (child of child), you should use `new_with_root()`
     /// to explicitly specify the root document ID.
@@ -197,17 +198,17 @@ impl Node {
         let now = Utc::now();
         let id = Uuid::new_v4().to_string();
 
-        // IMPORTANT: root_id defaults to parent_id for simple hierarchies.
+        // IMPORTANT: origin_node_id defaults to parent_id for simple hierarchies.
         // This is correct for root nodes and direct children of root.
         // For nested hierarchies, use new_with_root() instead.
-        let root_id = parent_id.clone();
+        let origin_node_id = parent_id.clone();
 
         Self {
             id,
             node_type,
             content,
             parent_id,
-            root_id,
+            origin_node_id,
             before_sibling_id: None,
             created_at: now,
             modified_at: now,
@@ -216,7 +217,7 @@ impl Node {
         }
     }
 
-    /// Create a new Node with auto-generated UUID and explicit root_id
+    /// Create a new Node with auto-generated UUID and explicit origin_node_id
     ///
     /// Use this constructor for nested hierarchies where the root document
     /// is different from the immediate parent.
@@ -226,7 +227,7 @@ impl Node {
     /// * `node_type` - Type identifier (e.g., "text", "task")
     /// * `content` - Primary content/text
     /// * `parent_id` - Optional parent node reference (creation context)
-    /// * `root_id` - Optional root document reference (NULL = this node IS root)
+    /// * `origin_node_id` - Optional root document reference (NULL = this node IS root)
     /// * `properties` - JSON object with entity-specific fields
     ///
     /// # Examples
@@ -235,14 +236,14 @@ impl Node {
     /// # use nodespace_core::models::Node;
     /// # use serde_json::json;
     /// // Create nested hierarchy: root -> child -> grandchild
-    /// let root_id = "root-uuid".to_string();
+    /// let origin_node_id = "root-uuid".to_string();
     /// let child_id = "child-uuid".to_string();
     ///
     /// let grandchild = Node::new_with_root(
     ///     "text".to_string(),
     ///     "Grandchild content".to_string(),
     ///     Some(child_id),           // Parent is the child
-    ///     Some(root_id.clone()),    // Root is the root document
+    ///     Some(origin_node_id.clone()),    // Root is the root document
     ///     json!({}),
     /// );
     /// ```
@@ -250,7 +251,7 @@ impl Node {
         node_type: String,
         content: String,
         parent_id: Option<String>,
-        root_id: Option<String>,
+        origin_node_id: Option<String>,
         properties: serde_json::Value,
     ) -> Self {
         let now = Utc::now();
@@ -261,7 +262,7 @@ impl Node {
             node_type,
             content,
             parent_id,
-            root_id,
+            origin_node_id,
             before_sibling_id: None,
             created_at: now,
             modified_at: now,
@@ -280,9 +281,9 @@ impl Node {
     /// * `parent_id` - Optional parent node reference
     /// * `properties` - JSON object with entity-specific fields
     ///
-    /// # Note on `root_id`
+    /// # Note on `origin_node_id`
     ///
-    /// Like `new()`, this sets `root_id = parent_id`. For explicit root_id
+    /// Like `new()`, this sets `origin_node_id = parent_id`. For explicit origin_node_id
     /// control, construct the Node directly using struct initialization.
     ///
     /// # Examples
@@ -306,14 +307,14 @@ impl Node {
         properties: serde_json::Value,
     ) -> Self {
         let now = Utc::now();
-        let root_id = parent_id.clone();
+        let origin_node_id = parent_id.clone();
 
         Self {
             id,
             node_type,
             content,
             parent_id,
-            root_id,
+            origin_node_id,
             before_sibling_id: None,
             created_at: now,
             modified_at: now,
@@ -374,8 +375,8 @@ impl Node {
             }
         }
 
-        if let Some(root_id) = &self.root_id {
-            if root_id == &self.id {
+        if let Some(origin_node_id) = &self.origin_node_id {
+            if origin_node_id == &self.id {
                 return Err(ValidationError::InvalidRoot(
                     "Node cannot be its own root".to_string(),
                 ));
@@ -393,7 +394,7 @@ impl Node {
         Ok(())
     }
 
-    /// Check if this node is a root node (no parent or root_id is None)
+    /// Check if this node is a root node (no parent or origin_node_id is None)
     ///
     /// # Examples
     ///
@@ -412,7 +413,7 @@ impl Node {
     /// assert!(!child.is_root());
     /// ```
     pub fn is_root(&self) -> bool {
-        self.root_id.is_none()
+        self.origin_node_id.is_none()
     }
 
     /// Update the node's content
@@ -452,7 +453,7 @@ impl Node {
 ///
 /// # Double-Option Pattern for Nullable Fields
 ///
-/// Fields like `parent_id`, `root_id`, `before_sibling_id`, and `embedding_vector`
+/// Fields like `parent_id`, `origin_node_id`, `before_sibling_id`, and `embedding_vector`
 /// use a double-`Option` pattern to distinguish between three states:
 ///
 /// - `None`: Don't change this field (omit from update)
@@ -489,6 +490,7 @@ impl Node {
 /// };
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NodeUpdate {
     /// Update node type
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -510,11 +512,11 @@ pub struct NodeUpdate {
     /// Update root reference
     ///
     /// Uses double-Option pattern:
-    /// - `None`: Don't change root_id
-    /// - `Some(None)`: Set root_id to NULL (this node becomes root)
-    /// - `Some(Some(id))`: Set root_id to the specified ID
+    /// - `None`: Don't change origin_node_id
+    /// - `Some(None)`: Set origin_node_id to NULL (this node becomes root)
+    /// - `Some(Some(id))`: Set origin_node_id to the specified ID
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub root_id: Option<Option<String>>,
+    pub origin_node_id: Option<Option<String>>,
 
     /// Update sibling ordering
     ///
@@ -568,7 +570,7 @@ impl NodeUpdate {
         self.node_type.is_none()
             && self.content.is_none()
             && self.parent_id.is_none()
-            && self.root_id.is_none()
+            && self.origin_node_id.is_none()
             && self.before_sibling_id.is_none()
             && self.properties.is_none()
             && self.embedding_vector.is_none()
@@ -769,6 +771,7 @@ pub enum OrderBy {
 ///     .with_limit(10);
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NodeFilter {
     /// Filter by node type
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -780,7 +783,7 @@ pub struct NodeFilter {
 
     /// Filter by root ID
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub root_id: Option<String>,
+    pub origin_node_id: Option<String>,
 
     /// Filter by specific IDs
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -846,8 +849,8 @@ impl NodeFilter {
     }
 
     /// Filter by root ID
-    pub fn with_root_id(mut self, root_id: String) -> Self {
-        self.root_id = Some(root_id);
+    pub fn with_origin_node_id(mut self, origin_node_id: String) -> Self {
+        self.origin_node_id = Some(origin_node_id);
         self
     }
 
@@ -1023,8 +1026,8 @@ mod tests {
     #[test]
     fn test_node_validation_circular_root() {
         let mut node = Node::new("text".to_string(), "Test".to_string(), None, json!({}));
-        // Set root_id to self (circular reference)
-        node.root_id = Some(node.id.clone());
+        // Set origin_node_id to self (circular reference)
+        node.origin_node_id = Some(node.id.clone());
 
         assert!(matches!(
             node.validate(),
@@ -1060,19 +1063,19 @@ mod tests {
 
     #[test]
     fn test_node_new_with_root() {
-        let root_id = "root-123".to_string();
+        let origin_node_id = "root-123".to_string();
         let parent_id = "parent-456".to_string();
 
         let node = Node::new_with_root(
             "text".to_string(),
             "Grandchild".to_string(),
             Some(parent_id.clone()),
-            Some(root_id.clone()),
+            Some(origin_node_id.clone()),
             json!({}),
         );
 
         assert_eq!(node.parent_id, Some(parent_id));
-        assert_eq!(node.root_id, Some(root_id));
+        assert_eq!(node.origin_node_id, Some(origin_node_id));
         assert!(!node.is_root());
     }
 

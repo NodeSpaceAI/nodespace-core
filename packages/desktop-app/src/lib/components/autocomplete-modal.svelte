@@ -40,7 +40,7 @@
   import Separator from '$lib/components/ui/separator/separator.svelte';
   import Icon, { type IconName } from '$lib/design/icons';
   import type { AutocompleteResult, NodeSuggestion } from '$lib/services/nodeReferenceService';
-  import type { NodeSpaceNode } from '$lib/services/mockDatabaseService';
+  import type { Node } from '$lib/types';
 
   // ============================================================================
   // Component Props & Types
@@ -54,7 +54,7 @@
 
   // Event dispatcher
   const dispatch = createEventDispatcher<{
-    nodeSelect: { node: NodeSpaceNode | NewNodeRequest };
+    nodeSelect: { node: Node | NewNodeRequest };
     close: void;
   }>();
 
@@ -185,7 +185,7 @@
           nodeId: node.id,
           title: extractNodeTitle(node.content),
           content: node.content.substring(0, 200),
-          nodeType: node.type,
+          nodeType: node.nodeType || 'text',
           relevanceScore: 0.5,
           matchType: 'title',
           matchPositions: [],

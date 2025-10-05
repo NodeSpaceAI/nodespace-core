@@ -26,10 +26,11 @@ export interface NewNodeRequest {
 }
 
 // Re-export types from services
-export type {
-  TextNodeData,
-  TextSaveResult,
-  HierarchicalTextNode
-} from '$lib/services/mockTextService';
+// Temporarily commented out - mockTextService deleted in Phase 1
+// export type {
+//   TextNodeData,
+//   TextSaveResult,
+//   HierarchicalTextNode
+// } from '$lib/services/mockTextService';
 
 export type { MarkdownOptions } from '$lib/services/markdownUtils';

@@ -4,6 +4,7 @@
   import NavigationSidebar from './navigation-sidebar.svelte';
   import TabSystem from './tab-system.svelte';
   import ThemeProvider from '$lib/design/components/theme-provider.svelte';
+  import NodeServiceContext from '$lib/contexts/node-service-context.svelte';
   import { initializeTheme } from '$lib/design/theme';
   import { layoutState, toggleSidebar } from '$lib/stores/layout';
   import { registerCorePlugins } from '$lib/plugins/corePlugins';
@@ -60,26 +61,28 @@
 -->
 
 <ThemeProvider>
-  <div
-    class="app-shell"
-    class:sidebar-collapsed={isCollapsed}
-    class:sidebar-expanded={!isCollapsed}
-    role="application"
-    aria-label="NodeSpace Application"
-  >
-    <!-- Navigation Sidebar -->
-    <NavigationSidebar />
+  <NodeServiceContext>
+    <div
+      class="app-shell"
+      class:sidebar-collapsed={isCollapsed}
+      class:sidebar-expanded={!isCollapsed}
+      role="application"
+      aria-label="NodeSpace Application"
+    >
+      <!-- Navigation Sidebar -->
+      <NavigationSidebar />
 
-    <!-- Tab System - positioned to span both tabs and content grid areas -->
-    <div class="tab-system-wrapper">
-      <TabSystem let:activeTab>
-        <!-- Main Content Area -->
-        <main class="main-content">
-          <slot {activeTab} />
-        </main>
-      </TabSystem>
+      <!-- Tab System - positioned to span both tabs and content grid areas -->
+      <div class="tab-system-wrapper">
+        <TabSystem let:activeTab>
+          <!-- Main Content Area -->
+          <main class="main-content">
+            <slot {activeTab} />
+          </main>
+        </TabSystem>
+      </div>
     </div>
-  </div>
+  </NodeServiceContext>
 </ThemeProvider>
 
 <style>

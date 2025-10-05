@@ -10,6 +10,28 @@ import {
   type NodeManagerEvents
 } from '../mocks/mock-reactive-node-service';
 
+// Helper to create unified Node objects for tests
+function createNode(
+  id: string,
+  content: string,
+  nodeType: string = 'text',
+  parentId: string | null = null,
+  properties: Record<string, unknown> = {}
+) {
+  return {
+    id,
+    nodeType: nodeType,
+    content,
+    parentId: parentId,
+    originNodeId: null,
+    beforeSiblingId: null,
+    createdAt: new Date().toISOString(),
+    modifiedAt: new Date().toISOString(),
+    mentions: [] as string[],
+    properties
+  };
+}
+
 describe('NodeManager + ContentProcessor Integration', () => {
   let nodeManager: MockReactiveNodeService;
   let mockEvents: NodeManagerEvents;
@@ -27,17 +49,14 @@ describe('NodeManager + ContentProcessor Integration', () => {
   describe('Dual-Representation Methods', () => {
     test('parseNodeContent should parse markdown content to AST', () => {
       // Initialize with test data including our target node
-      nodeManager.initializeFromLegacyData([
+      nodeManager.initializeNodes(
+        [createNode('test-node', '# Test Header\n\nSome **bold** text')],
         {
-          id: 'test-node',
-          type: 'text',
-          content: '# Test Header\n\nSome **bold** text',
-          inheritHeaderLevel: 0,
-          children: [],
           expanded: true,
-          autoFocus: false
+          autoFocus: false,
+          inheritHeaderLevel: 0
         }
-      ]);
+      );
 
       // Parse the content
       const ast = nodeManager.parseNodeContent('test-node');
@@ -49,17 +68,11 @@ describe('NodeManager + ContentProcessor Integration', () => {
 
     test('renderNodeAsHTML should convert markdown to HTML', async () => {
       // Initialize with test data
-      nodeManager.initializeFromLegacyData([
-        {
-          id: 'html-test-node',
-          type: 'text',
-          content: '**Bold text** with *italics*',
-          inheritHeaderLevel: 0,
-          children: [],
-          expanded: true,
-          autoFocus: false
-        }
-      ]);
+      nodeManager.initializeNodes([createNode('html-test-node', '**Bold text** with *italics*')], {
+        expanded: true,
+        autoFocus: false,
+        inheritHeaderLevel: 0
+      });
 
       // Render as HTML
       const html = await nodeManager.renderNodeAsHTML('html-test-node');
@@ -69,35 +82,18 @@ describe('NodeManager + ContentProcessor Integration', () => {
     });
 
     test('getNodeHeaderLevel should detect header levels', () => {
-      nodeManager.initializeFromLegacyData([
+      nodeManager.initializeNodes(
+        [
+          createNode('h1-node', '# Header 1'),
+          createNode('h2-node', '## Header 2'),
+          createNode('text-node', 'Regular text')
+        ],
         {
-          id: 'h1-node',
-          type: 'text',
-          content: '# Header 1',
-          inheritHeaderLevel: 0,
-          children: [],
           expanded: true,
-          autoFocus: false
-        },
-        {
-          id: 'h2-node',
-          type: 'text',
-          content: '## Header 2',
-          inheritHeaderLevel: 0,
-          children: [],
-          expanded: true,
-          autoFocus: false
-        },
-        {
-          id: 'text-node',
-          type: 'text',
-          content: 'Regular text',
-          inheritHeaderLevel: 0,
-          children: [],
-          expanded: true,
-          autoFocus: false
+          autoFocus: false,
+          inheritHeaderLevel: 0
         }
-      ]);
+      );
 
       expect(nodeManager.getNodeHeaderLevel('h1-node')).toBe(1);
       expect(nodeManager.getNodeHeaderLevel('h2-node')).toBe(2);
@@ -105,17 +101,11 @@ describe('NodeManager + ContentProcessor Integration', () => {
     });
 
     test('getNodeDisplayText should strip markdown syntax', () => {
-      nodeManager.initializeFromLegacyData([
-        {
-          id: 'header-node',
-          type: 'text',
-          content: '## This is a header',
-          inheritHeaderLevel: 0,
-          children: [],
-          expanded: true,
-          autoFocus: false
-        }
-      ]);
+      nodeManager.initializeNodes([createNode('header-node', '## This is a header')], {
+        expanded: true,
+        autoFocus: false,
+        inheritHeaderLevel: 0
+      });
 
       const displayText = nodeManager.getNodeDisplayText('header-node');
 
@@ -123,17 +113,11 @@ describe('NodeManager + ContentProcessor Integration', () => {
     });
 
     test('updateNodeContentWithProcessing should update content and header level', () => {
-      nodeManager.initializeFromLegacyData([
-        {
-          id: 'update-test-node',
-          type: 'text',
-          content: 'Regular text',
-          inheritHeaderLevel: 0,
-          children: [],
-          expanded: true,
-          autoFocus: false
-        }
-      ]);
+      nodeManager.initializeNodes([createNode('update-test-node', 'Regular text')], {
+        expanded: true,
+        autoFocus: false,
+        inheritHeaderLevel: 0
+      });
 
       // Update to header content
       const success = nodeManager.updateNodeContentWithProcessing(
@@ -160,17 +144,11 @@ This is a paragraph with **bold** and *italic* text.
 
 \`code block\``;
 
-      nodeManager.initializeFromLegacyData([
-        {
-          id: 'complex-node',
-          type: 'text',
-          content: complexContent,
-          inheritHeaderLevel: 0,
-          children: [],
-          expanded: true,
-          autoFocus: false
-        }
-      ]);
+      nodeManager.initializeNodes([createNode('complex-node', complexContent)], {
+        expanded: true,
+        autoFocus: false,
+        inheritHeaderLevel: 0
+      });
 
       // Test parsing
       const ast = nodeManager.parseNodeContent('complex-node');
@@ -216,18 +194,14 @@ This is a paragraph with **bold** and *italic* text.
               ? `**Bold text ${i}** with *italic*`
               : `Regular paragraph text for node ${i}`;
 
-        testNodes.push({
-          id: `perf-node-${i}`,
-          type: 'text',
-          content: content,
-          inheritHeaderLevel: 0,
-          children: [],
-          expanded: true,
-          autoFocus: false
-        });
+        testNodes.push(createNode(`perf-node-${i}`, content));
       }
 
-      nodeManager.initializeFromLegacyData(testNodes);
+      nodeManager.initializeNodes(testNodes, {
+        expanded: true,
+        autoFocus: false,
+        inheritHeaderLevel: 0
+      });
       const nodes = testNodes.map((n) => n.id);
 
       const startTime = performance.now();

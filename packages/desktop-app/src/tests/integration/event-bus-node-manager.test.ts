@@ -35,6 +35,28 @@ import { eventBus } from '../../lib/services/eventBus';
 import type { NodeManagerEvents } from '../../lib/services/reactiveNodeService.svelte.js';
 import type { NodeSpaceEvent } from '../../lib/services/eventTypes';
 
+// Helper to create unified Node objects for tests
+function createNode(
+  id: string,
+  content: string,
+  nodeType: string = 'text',
+  parentId: string | null = null,
+  properties: Record<string, unknown> = {}
+) {
+  return {
+    id,
+    nodeType: nodeType,
+    content,
+    parentId: parentId,
+    originNodeId: null,
+    beforeSiblingId: null,
+    createdAt: new Date().toISOString(),
+    modifiedAt: new Date().toISOString(),
+    mentions: [] as string[],
+    properties
+  };
+}
+
 describe('EventBus-NodeManager Integration', () => {
   let nodeManager: NodeManager;
   let mockEvents: NodeManagerEvents;
@@ -74,17 +96,11 @@ describe('EventBus-NodeManager Integration', () => {
   describe('Basic Integration', () => {
     it('should emit events when nodes are created', () => {
       // Create initial node data
-      nodeManager.initializeFromLegacyData([
-        {
-          id: 'root1',
-          content: 'Root node',
-          type: 'text',
-          children: [],
-          inheritHeaderLevel: 0,
-          expanded: true,
-          autoFocus: false
-        }
-      ]);
+      nodeManager.initializeNodes([createNode('root1', 'Root node')], {
+        inheritHeaderLevel: 0,
+        expanded: true,
+        autoFocus: false
+      });
 
       // Clear initial events
       eventLog.length = 0;
@@ -106,17 +122,11 @@ describe('EventBus-NodeManager Integration', () => {
 
     it('should emit events when node content is updated', () => {
       // Initialize with test data
-      nodeManager.initializeFromLegacyData([
-        {
-          id: 'node1',
-          content: 'Original content',
-          type: 'text',
-          children: [],
-          inheritHeaderLevel: 0,
-          expanded: true,
-          autoFocus: false
-        }
-      ]);
+      nodeManager.initializeNodes([createNode('node1', 'Original content')], {
+        inheritHeaderLevel: 0,
+        expanded: true,
+        autoFocus: false
+      });
 
       eventLog.length = 0;
 
@@ -141,26 +151,17 @@ describe('EventBus-NodeManager Integration', () => {
 
     it('should emit events when nodes are deleted', () => {
       // Initialize with test data
-      nodeManager.initializeFromLegacyData([
+      nodeManager.initializeNodes(
+        [
+          createNode('parent1', 'Parent node'),
+          createNode('child1', 'Child node', 'text', 'parent1')
+        ],
         {
-          id: 'parent1',
-          content: 'Parent node',
-          type: 'text',
-          inheritHeaderLevel: 0,
-          expanded: true,
-          autoFocus: false,
-          children: ['child1']
-        },
-        {
-          id: 'child1',
-          content: 'Child node',
-          type: 'text',
-          children: [],
           inheritHeaderLevel: 0,
           expanded: true,
           autoFocus: false
         }
-      ]);
+      );
 
       eventLog.length = 0;
 
@@ -191,17 +192,11 @@ describe('EventBus-NodeManager Integration', () => {
   describe('Status Change Coordination', () => {
     it('should handle expanded/collapsed status changes', () => {
       // Initialize with test data
-      nodeManager.initializeFromLegacyData([
-        {
-          id: 'node1',
-          content: 'Test node',
-          type: 'text',
-          expanded: true,
-          children: [],
-          inheritHeaderLevel: 0,
-          autoFocus: false
-        }
-      ]);
+      nodeManager.initializeNodes([createNode('node1', 'Test node')], {
+        expanded: true,
+        inheritHeaderLevel: 0,
+        autoFocus: false
+      });
 
       eventLog.length = 0;
 
@@ -226,17 +221,11 @@ describe('EventBus-NodeManager Integration', () => {
   describe('Cache Invalidation Coordination', () => {
     it('should emit cache invalidation events on node operations', () => {
       // Initialize with test data
-      nodeManager.initializeFromLegacyData([
-        {
-          id: 'node1',
-          content: 'Test node',
-          type: 'text',
-          children: [],
-          inheritHeaderLevel: 0,
-          expanded: true,
-          autoFocus: false
-        }
-      ]);
+      nodeManager.initializeNodes([createNode('node1', 'Test node')], {
+        inheritHeaderLevel: 0,
+        expanded: true,
+        autoFocus: false
+      });
 
       eventLog.length = 0;
 
@@ -252,17 +241,11 @@ describe('EventBus-NodeManager Integration', () => {
 
     it('should handle global cache invalidation on deletions', () => {
       // Initialize with test data
-      nodeManager.initializeFromLegacyData([
-        {
-          id: 'node1',
-          content: 'Test node',
-          type: 'text',
-          children: [],
-          inheritHeaderLevel: 0,
-          expanded: true,
-          autoFocus: false
-        }
-      ]);
+      nodeManager.initializeNodes([createNode('node1', 'Test node')], {
+        inheritHeaderLevel: 0,
+        expanded: true,
+        autoFocus: false
+      });
 
       eventLog.length = 0;
 
@@ -283,26 +266,11 @@ describe('EventBus-NodeManager Integration', () => {
   describe('Hierarchy Change Coordination', () => {
     it('should coordinate indent operations', () => {
       // Initialize with test data
-      nodeManager.initializeFromLegacyData([
-        {
-          id: 'node1',
-          content: 'Node 1',
-          type: 'text',
-          children: [],
-          inheritHeaderLevel: 0,
-          expanded: true,
-          autoFocus: false
-        },
-        {
-          id: 'node2',
-          content: 'Node 2',
-          type: 'text',
-          children: [],
-          inheritHeaderLevel: 0,
-          expanded: true,
-          autoFocus: false
-        }
-      ]);
+      nodeManager.initializeNodes([createNode('node1', 'Node 1'), createNode('node2', 'Node 2')], {
+        inheritHeaderLevel: 0,
+        expanded: true,
+        autoFocus: false
+      });
 
       eventLog.length = 0;
 
@@ -323,26 +291,14 @@ describe('EventBus-NodeManager Integration', () => {
 
     it('should coordinate outdent operations', () => {
       // Initialize with nested data
-      nodeManager.initializeFromLegacyData([
+      nodeManager.initializeNodes(
+        [createNode('parent', 'Parent'), createNode('child', 'Child', 'text', 'parent')],
         {
-          id: 'parent',
-          content: 'Parent',
-          type: 'text',
-          inheritHeaderLevel: 0,
-          expanded: true,
-          autoFocus: false,
-          children: ['child']
-        },
-        {
-          id: 'child',
-          content: 'Child',
-          type: 'text',
-          children: [],
           inheritHeaderLevel: 0,
           expanded: true,
           autoFocus: false
         }
-      ]);
+      );
 
       eventLog.length = 0;
 
@@ -368,17 +324,13 @@ describe('EventBus-NodeManager Integration', () => {
   describe('Performance Integration', () => {
     it('should handle high-frequency node updates efficiently', () => {
       // Initialize with multiple nodes
-      const testNodes = Array.from({ length: 10 }, (_, i) => ({
-        id: `node${i}`,
-        content: `Node ${i}`,
-        type: 'text',
-        children: [],
+      const testNodes = Array.from({ length: 10 }, (_, i) => createNode(`node${i}`, `Node ${i}`));
+
+      nodeManager.initializeNodes(testNodes, {
         inheritHeaderLevel: 0,
         expanded: true,
         autoFocus: false
-      }));
-
-      nodeManager.initializeFromLegacyData(testNodes);
+      });
       eventLog.length = 0;
 
       const startTime = performance.now();
@@ -413,17 +365,13 @@ describe('EventBus-NodeManager Integration', () => {
       });
 
       // Initialize nodes
-      const testNodes = Array.from({ length: 5 }, (_, i) => ({
-        id: `node${i}`,
-        content: `Node ${i}`,
-        type: 'text',
-        children: [],
+      const testNodes = Array.from({ length: 5 }, (_, i) => createNode(`node${i}`, `Node ${i}`));
+
+      nodeManager.initializeNodes(testNodes, {
         inheritHeaderLevel: 0,
         expanded: true,
         autoFocus: false
-      }));
-
-      nodeManager.initializeFromLegacyData(testNodes);
+      });
       eventLog.length = 0;
 
       // Toggle multiple nodes quickly to test status events
@@ -458,17 +406,11 @@ describe('EventBus-NodeManager Integration', () => {
       eventBus.subscribe('node:updated', normalHandler);
 
       // Initialize node
-      nodeManager.initializeFromLegacyData([
-        {
-          id: 'node1',
-          content: 'Test node',
-          type: 'text',
-          children: [],
-          inheritHeaderLevel: 0,
-          expanded: true,
-          autoFocus: false
-        }
-      ]);
+      nodeManager.initializeNodes([createNode('node1', 'Test node')], {
+        inheritHeaderLevel: 0,
+        expanded: true,
+        autoFocus: false
+      });
 
       eventLog.length = 0;
 
@@ -487,17 +429,11 @@ describe('EventBus-NodeManager Integration', () => {
 
     it('should maintain consistency after network-like failures', () => {
       // Simulate intermittent failures by temporarily disabling EventBus
-      nodeManager.initializeFromLegacyData([
-        {
-          id: 'node1',
-          content: 'Test node',
-          type: 'text',
-          children: [],
-          inheritHeaderLevel: 0,
-          expanded: true,
-          autoFocus: false
-        }
-      ]);
+      nodeManager.initializeNodes([createNode('node1', 'Test node')], {
+        inheritHeaderLevel: 0,
+        expanded: true,
+        autoFocus: false
+      });
 
       eventLog.length = 0;
 

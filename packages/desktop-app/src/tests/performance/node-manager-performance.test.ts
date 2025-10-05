@@ -13,6 +13,28 @@ import {
 } from '../../lib/services/reactiveNodeService.svelte.js';
 import type { NodeManagerEvents } from '../../lib/services/reactiveNodeService.svelte.js';
 
+// Helper to create unified Node format
+function createNode(
+  id: string,
+  content: string,
+  nodeType: string = 'text',
+  parentId: string | null = null,
+  properties: Record<string, unknown> = {}
+) {
+  return {
+    id,
+    nodeType: nodeType,
+    content,
+    parentId: parentId,
+    originNodeId: null,
+    beforeSiblingId: null,
+    createdAt: new Date().toISOString(),
+    modifiedAt: new Date().toISOString(),
+    mentions: [] as string[],
+    properties
+  };
+}
+
 describe('NodeManager Performance Tests', () => {
   let nodeManager: NodeManager;
   let mockEvents: NodeManagerEvents;
@@ -30,41 +52,17 @@ describe('NodeManager Performance Tests', () => {
   // Generate large dataset for performance testing
   const generateLargeNodeDataset = (nodeCount: number) => {
     const nodes = [];
-    const childrenMap = new Map<string, string[]>();
 
-    // Initialize children map
-    for (let i = 0; i < nodeCount; i++) {
-      childrenMap.set(`node-${i}`, []);
-    }
-
-    // Build parent-child relationships and populate children arrays
+    // Build parent-child relationships
     for (let i = 0; i < nodeCount; i++) {
       const nodeId = `node-${i}`;
       // Create a simpler hierarchy: every 10 nodes form a group under a parent
       const parentIndex = Math.floor(i / 10) * 10;
-      const parentId = i > 0 && i !== parentIndex ? `node-${parentIndex}` : undefined;
+      const parentId = i > 0 && i !== parentIndex ? `node-${parentIndex}` : null;
 
-      if (parentId && childrenMap.has(parentId)) {
-        childrenMap.get(parentId)!.push(nodeId);
-      }
-
-      nodes.push({
-        id: nodeId,
-        content: `Content for node ${i}`,
-        nodeType: 'text',
-        depth: 0, // Will be calculated by initializeFromLegacyData
-        parentId: undefined, // Will be calculated by initializeFromLegacyData
-        children: childrenMap.get(nodeId) || [],
-        expanded: true,
-        autoFocus: false,
-        inheritHeaderLevel: 0,
-        metadata: { created: Date.now() }
-      });
-    }
-
-    // Set children arrays on nodes
-    for (const node of nodes) {
-      node.children = childrenMap.get(node.id) || [];
+      nodes.push(
+        createNode(nodeId, `Content for node ${i}`, 'text', parentId, { created: Date.now() })
+      );
     }
 
     return nodes;
@@ -74,7 +72,7 @@ describe('NodeManager Performance Tests', () => {
     const largeDataset = generateLargeNodeDataset(1000);
 
     const startTime = performance.now();
-    nodeManager.initializeFromLegacyData(largeDataset);
+    nodeManager.initializeNodes(largeDataset);
     const endTime = performance.now();
 
     const duration = endTime - startTime;
@@ -87,7 +85,7 @@ describe('NodeManager Performance Tests', () => {
 
   test('node lookup performance with 1000+ nodes (< 1ms)', () => {
     const largeDataset = generateLargeNodeDataset(1500);
-    nodeManager.initializeFromLegacyData(largeDataset);
+    nodeManager.initializeNodes(largeDataset);
 
     const startTime = performance.now();
     for (let i = 0; i < 100; i++) {
@@ -105,7 +103,7 @@ describe('NodeManager Performance Tests', () => {
 
   test('combineNodes performance with large document (< 100ms)', () => {
     const largeDataset = generateLargeNodeDataset(2000);
-    nodeManager.initializeFromLegacyData(largeDataset);
+    nodeManager.initializeNodes(largeDataset);
 
     const startTime = performance.now();
 
@@ -133,7 +131,7 @@ describe('NodeManager Performance Tests', () => {
 
   test('hierarchy operations scale efficiently (< 50ms for 100 operations)', () => {
     const largeDataset = generateLargeNodeDataset(1000);
-    nodeManager.initializeFromLegacyData(largeDataset);
+    nodeManager.initializeNodes(largeDataset);
 
     const startTime = performance.now();
 
@@ -157,21 +155,15 @@ describe('NodeManager Performance Tests', () => {
     // Create deeply nested structure
     const nestedDataset = [];
     for (let i = 0; i < 1000; i++) {
-      nestedDataset.push({
-        id: `node-${i}`,
-        content: `Content ${i}`,
-        nodeType: 'text',
-        depth: Math.floor(i / 50), // Create 20 levels deep
-        parentId: i > 0 ? `node-${i - 1}` : undefined,
-        children: i < 999 ? [`node-${i + 1}`] : [],
-        expanded: Math.random() > 0.3, // 70% expanded
-        autoFocus: false,
-        inheritHeaderLevel: 0,
-        metadata: {}
-      });
+      const parentId = i > 0 ? `node-${i - 1}` : null;
+      nestedDataset.push(createNode(`node-${i}`, `Content ${i}`, 'text', parentId));
     }
 
-    nodeManager.initializeFromLegacyData(nestedDataset);
+    nodeManager.initializeNodes(nestedDataset, {
+      expanded: true, // Most expanded for visibility test
+      autoFocus: false,
+      inheritHeaderLevel: 0
+    });
 
     const startTime = performance.now();
     // Trigger visibility getter to measure performance
@@ -194,7 +186,7 @@ describe('NodeManager Performance Tests', () => {
     // Perform many operations
     for (let cycle = 0; cycle < 10; cycle++) {
       const dataset = generateLargeNodeDataset(500);
-      nodeManager.initializeFromLegacyData(dataset);
+      nodeManager.initializeNodes(dataset);
 
       // Perform various operations
       for (let i = 1; i < 50; i++) {
@@ -213,7 +205,7 @@ describe('NodeManager Performance Tests', () => {
 
   test('concurrent operations performance', () => {
     const largeDataset = generateLargeNodeDataset(1000);
-    nodeManager.initializeFromLegacyData(largeDataset);
+    nodeManager.initializeNodes(largeDataset);
 
     const startTime = performance.now();
 

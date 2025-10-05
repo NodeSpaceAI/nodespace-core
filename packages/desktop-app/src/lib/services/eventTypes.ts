@@ -164,7 +164,7 @@ export interface HierarchyChangedEvent extends BaseEvent {
   type: 'hierarchy:changed';
   namespace: 'lifecycle';
   affectedNodes: string[];
-  changeType: 'indent' | 'outdent' | 'move' | 'expand' | 'collapse';
+  changeType: 'indent' | 'outdent' | 'move' | 'expand' | 'collapse' | 'create' | 'delete';
   metadata?: Record<string, unknown>;
 }
 

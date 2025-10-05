@@ -5,6 +5,9 @@
   - Date navigation header with professional styling
   - Previous/next day functionality
   - Keyboard support for arrow key navigation
+  - Database integration for persistent daily journal entries
+  - Lazy date node creation when first child is added
+  - Debounced saving (500ms) for user input
   - Seamless integration with existing BaseNodeViewer
   - Clean date formatting (e.g., "September 7, 2025")
 
@@ -15,7 +18,6 @@
   import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import Icon from '$lib/design/icons/icon.svelte';
   import { updateTabTitle, getDateTabTitle } from '$lib/stores/navigation.js';
-  import NodeServiceContext from '$lib/contexts/node-service-context.svelte';
 
   // Props using Svelte 5 runes mode
   let { tabId = 'today' }: { tabId?: string } = $props();
@@ -35,6 +37,11 @@
       month: 'long',
       day: 'numeric'
     })
+  );
+
+  // Derive current date ID from currentDate (using local timezone, not UTC)
+  const currentDateId = $derived(
+    `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`
   );
 
   // Update tab title when date changes using Svelte 5 $effect
@@ -81,37 +88,31 @@
 <!-- Keyboard event listener -->
 <svelte:window on:keydown={handleKeydown} />
 
-<NodeServiceContext>
-  <BaseNodeViewer>
-    {#snippet header()}
-      <!-- Date Navigation Header - inherits base styling from BaseNodeViewer -->
-      <div class="date-nav-container">
-        <div class="date-display">
-          <Icon
-            name="calendar"
-            size={24}
-            color="hsl(var(--muted-foreground))"
-            className="calendar-icon"
-          />
-          <h1>{formattedDate}</h1>
-        </div>
-
-        <div class="date-nav-buttons">
-          <button
-            class="date-nav-btn"
-            onclick={() => navigateDate('prev')}
-            aria-label="Previous day"
-          >
-            <Icon name="chevronRight" size={16} color="currentColor" className="rotate-left" />
-          </button>
-          <button class="date-nav-btn" onclick={() => navigateDate('next')} aria-label="Next day">
-            <Icon name="chevronRight" size={16} color="currentColor" />
-          </button>
-        </div>
+<BaseNodeViewer parentId={currentDateId}>
+  {#snippet header()}
+    <!-- Date Navigation Header - inherits base styling from BaseNodeViewer -->
+    <div class="date-nav-container">
+      <div class="date-display">
+        <Icon
+          name="calendar"
+          size={24}
+          color="hsl(var(--muted-foreground))"
+          className="calendar-icon"
+        />
+        <h1>{formattedDate}</h1>
       </div>
-    {/snippet}
-  </BaseNodeViewer>
-</NodeServiceContext>
+
+      <div class="date-nav-buttons">
+        <button class="date-nav-btn" onclick={() => navigateDate('prev')} aria-label="Previous day">
+          <Icon name="chevronRight" size={16} color="currentColor" className="rotate-left" />
+        </button>
+        <button class="date-nav-btn" onclick={() => navigateDate('next')} aria-label="Next day">
+          <Icon name="chevronRight" size={16} color="currentColor" />
+        </button>
+      </div>
+    </div>
+  {/snippet}
+</BaseNodeViewer>
 
 <style>
   /* Date-specific navigation styles - base header styling comes from BaseNodeViewer */

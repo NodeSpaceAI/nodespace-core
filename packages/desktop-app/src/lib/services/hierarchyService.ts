@@ -19,8 +19,8 @@
  */
 
 import { eventBus } from './eventBus';
-import type { ReactiveNodeService as NodeManager, Node } from './reactiveNodeService.svelte.ts';
-// import type { NodeSpaceNode } from './mockDatabaseService';
+import type { ReactiveNodeService as NodeManager } from './reactiveNodeService.svelte.ts';
+import type { Node } from '$lib/types';
 
 // ============================================================================
 // Core Types
@@ -153,8 +153,9 @@ export class HierarchyService {
       return [];
     }
 
-    // Get children from NodeManager
-    const children = [...node.children];
+    // Get children from all nodes with this parent_id
+    const allNodes = Array.from(this.nodeManager.nodes.values());
+    const children = allNodes.filter((n) => n.parentId === nodeId).map((n) => n.id);
 
     // Cache the result
     this.cache.childrenCache.set(nodeId, children);
@@ -205,7 +206,7 @@ export class HierarchyService {
       nodeIds.unshift(currentId);
       depths.unshift(this.getNodeDepth(currentId));
 
-      currentId = currentNode.parentId;
+      currentId = currentNode.parentId || undefined;
     }
 
     return {
@@ -374,8 +375,8 @@ export class HierarchyService {
     nodes: Array<{
       id: string;
       node: Node;
-      parent_id: string | null;
-      before_sibling_id: string | null;
+      parentId: string | null;
+      beforeSiblingId: string | null;
       depth: number;
       children_count: number;
     }>;
@@ -395,8 +396,8 @@ export class HierarchyService {
       return {
         id: nodeId,
         node: node,
-        parent_id: node.parentId || null,
-        before_sibling_id: node.before_sibling_id || null, // For client-side ordering
+        parentId: node.parentId || null,
+        beforeSiblingId: node.beforeSiblingId || null, // For client-side ordering
         depth: this.getNodeDepth(nodeId),
         children_count: children.length
       };
@@ -546,19 +547,29 @@ export class HierarchyService {
     const descendants: string[] = [];
     const node = this.nodeManager.findNode(nodeId);
 
-    if (!node || !node.children.length) {
+    if (!node) {
       return descendants;
     }
 
-    const toProcess = [...node.children];
+    // Get children manually from all nodes
+    const allNodes = Array.from(this.nodeManager.nodes.values());
+    const children = allNodes.filter((n) => n.parentId === nodeId).map((n) => n.id);
+
+    if (children.length === 0) {
+      return descendants;
+    }
+
+    const toProcess = [...children];
 
     while (toProcess.length > 0) {
       const currentId = toProcess.shift()!;
       descendants.push(currentId);
 
-      const currentNode = this.nodeManager.findNode(currentId);
-      if (currentNode?.children.length) {
-        toProcess.push(...currentNode.children);
+      // Get children of current node
+      const currentChildren = allNodes.filter((n) => n.parentId === currentId).map((n) => n.id);
+
+      if (currentChildren.length > 0) {
+        toProcess.push(...currentChildren);
       }
     }
 

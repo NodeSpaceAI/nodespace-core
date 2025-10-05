@@ -1,17 +1,34 @@
 //! Node CRUD operation commands for Text, Task, and Date nodes
 
+use chrono::Utc;
 use nodespace_core::{Node, NodeService, NodeServiceError, NodeUpdate};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 /// Allowed node types for initial E2E testing
 const ALLOWED_NODE_TYPES: &[&str] = &["text", "task", "date"];
+
+/// Input for creating a node - timestamps generated server-side
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateNodeInput {
+    pub id: String,
+    pub node_type: String,
+    pub content: String,
+    pub parent_id: Option<String>,
+    pub origin_node_id: Option<String>,
+    pub before_sibling_id: Option<String>,
+    pub properties: serde_json::Value,
+    #[serde(default)]
+    pub embedding_vector: Option<Vec<u8>>,
+}
 
 /// Structured error type for Tauri commands
 ///
 /// Provides better observability and debugging by including error codes
 /// and optional details alongside user-facing messages.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CommandError {
     /// User-facing error message
     pub message: String,
@@ -87,11 +104,28 @@ fn validate_node_type(node_type: &str) -> Result<(), CommandError> {
 #[tauri::command]
 pub async fn create_node(
     service: State<'_, NodeService>,
-    node: Node,
+    node: CreateNodeInput,
 ) -> Result<String, CommandError> {
     validate_node_type(&node.node_type)?;
 
-    service.create_node(node).await.map_err(Into::into)
+    // Database will auto-generate timestamps via DEFAULT CURRENT_TIMESTAMP
+    // We still need to provide placeholder timestamps for the Node struct
+    let now = Utc::now();
+
+    let full_node = Node {
+        id: node.id,
+        node_type: node.node_type,
+        content: node.content,
+        parent_id: node.parent_id,
+        origin_node_id: node.origin_node_id,
+        before_sibling_id: node.before_sibling_id,
+        created_at: now,  // Placeholder - DB will use its own timestamp
+        modified_at: now, // Placeholder - DB will use its own timestamp
+        properties: node.properties,
+        embedding_vector: node.embedding_vector,
+    };
+
+    service.create_node(full_node).await.map_err(Into::into)
 }
 
 /// Get a node by ID
@@ -226,6 +260,96 @@ pub async fn get_children(
     parent_id: String,
 ) -> Result<Vec<Node>, CommandError> {
     service.get_children(&parent_id).await.map_err(Into::into)
+}
+
+/// Bulk fetch all nodes belonging to an origin node (viewer/page)
+///
+/// This is the efficient way to load a complete document tree:
+/// - Single database query fetches all nodes with the same origin_node_id
+/// - In-memory hierarchy reconstruction using parent_id and before_sibling_id
+///
+/// # Arguments
+/// * `service` - Node service instance from Tauri state
+/// * `origin_node_id` - ID of the origin node (e.g., date page ID)
+///
+/// # Returns
+/// * `Ok(Vec<Node>)` - All nodes belonging to this origin
+/// * `Err(CommandError)` - Error with details if operation fails
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// const nodes = await invoke('get_nodes_by_origin_id', {
+///   originNodeId: '2025-10-05'
+/// });
+/// console.log(`Loaded ${nodes.length} nodes for this date`);
+/// ```
+#[tauri::command]
+pub async fn get_nodes_by_origin_id(
+    service: State<'_, NodeService>,
+    origin_node_id: String,
+) -> Result<Vec<Node>, CommandError> {
+    service
+        .get_nodes_by_origin_id(&origin_node_id)
+        .await
+        .map_err(Into::into)
+}
+
+/// Save a node with automatic parent creation - unified upsert operation
+///
+/// Ensures the parent node exists (creates if needed), then upserts the node.
+/// All operations happen in a single database transaction to prevent locking issues.
+///
+/// # Arguments
+/// * `service` - Node service instance from Tauri state
+/// * `node_id` - ID of the node to save
+/// * `content` - Node content
+/// * `node_type` - Type of the node (text, task, date)
+/// * `parent_id` - ID of the parent node (will be created if doesn't exist)
+///
+/// # Returns
+/// * `Ok(())` - Save successful
+/// * `Err(CommandError)` - Error with details if operation fails
+///
+/// # Errors
+/// Returns error if:
+/// - Node type is not one of: text, task, date
+/// - Database operation fails
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// await invoke('save_node_with_parent', {
+///   nodeId: 'node-123',
+///   content: 'Updated content',
+///   nodeType: 'text',
+///   parentId: '2025-10-05',
+///   originNodeId: '2025-10-05',
+///   beforeSiblingId: null
+/// });
+/// ```
+#[tauri::command]
+pub async fn save_node_with_parent(
+    service: State<'_, NodeService>,
+    node_id: String,
+    content: String,
+    node_type: String,
+    parent_id: String,
+    origin_node_id: String,
+    before_sibling_id: Option<String>,
+) -> Result<(), CommandError> {
+    validate_node_type(&node_type)?;
+
+    // Use single-transaction upsert method
+    service
+        .upsert_node_with_parent(
+            &node_id,
+            &content,
+            &node_type,
+            &parent_id,
+            &origin_node_id,
+            before_sibling_id.as_deref(),
+        )
+        .await
+        .map_err(Into::into)
 }
 
 #[cfg(test)]

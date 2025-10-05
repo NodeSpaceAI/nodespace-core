@@ -6,7 +6,7 @@
   requiring manual service passing through props.
 -->
 
-<script lang="ts" context="module">
+<script lang="ts" module>
   import { getContext, setContext } from 'svelte';
 
   // Context key for service access
@@ -17,7 +17,7 @@
   import type { HierarchyService as HierarchyServiceType } from '$lib/services/hierarchyService';
   import type { NodeOperationsService as NodeOperationsServiceType } from '$lib/services/nodeOperationsService';
   import type { ContentProcessor as ContentProcessorType } from '$lib/services/contentProcessor';
-  import type { MockDatabaseService as MockDatabaseServiceType } from '$lib/services/mockDatabaseService';
+  import type { TauriNodeService as TauriNodeServiceType } from '$lib/services/tauriNodeService';
   import type NodeReferenceServiceType from '$lib/services/nodeReferenceService';
 
   // Service interface definition with proper types
@@ -27,43 +27,60 @@
     hierarchyService: HierarchyServiceType;
     nodeOperationsService: NodeOperationsServiceType;
     contentProcessor: ContentProcessorType;
-    databaseService: MockDatabaseServiceType;
+    databaseService: TauriNodeServiceType;
   }
 
   // Context accessor functions
   export function getNodeServices(): NodeServices | null {
-    return getContext(NODE_SERVICE_CONTEXT_KEY) || null;
+    const ctx = getContext<{ services: NodeServices | null }>(NODE_SERVICE_CONTEXT_KEY);
+    return ctx?.services || null;
   }
 
-  export function setNodeServices(services: NodeServices): void {
-    setContext(NODE_SERVICE_CONTEXT_KEY, services);
+  function setNodeServicesContext(servicesRef: { services: NodeServices | null }): void {
+    setContext(NODE_SERVICE_CONTEXT_KEY, servicesRef);
   }
 </script>
 
 <script lang="ts">
   import { onMount } from 'svelte';
+  import type { Snippet } from 'svelte';
 
   // Service imports
   import NodeReferenceService from '$lib/services/nodeReferenceService';
   import { createReactiveNodeService } from '$lib/services/reactiveNodeService.svelte';
   import { HierarchyService } from '$lib/services/hierarchyService';
   import { NodeOperationsService } from '$lib/services/nodeOperationsService';
-  import { MockDatabaseService } from '$lib/services/mockDatabaseService';
+  import { tauriNodeService } from '$lib/services/tauriNodeService';
   import { ContentProcessor } from '$lib/services/contentProcessor';
 
-  // Props - external reference only for service configuration
-  export const initializationMode: 'full' | 'mock' = 'mock';
+  // Props
+  let {
+    children
+  }: {
+    children: Snippet;
+  } = $props();
 
-  // Services state
-  let services: NodeServices | null = null;
-  let servicesInitialized = false;
-  let initializationError: string | null = null;
+  // Services state - wrapped in object so context can hold reference
+  const servicesContainer = $state<{ services: NodeServices | null }>({ services: null });
+  let servicesInitialized = $state(false);
+  let initializationError = $state<string | null>(null);
+
+  // Set context immediately with container reference (required by Svelte)
+  setNodeServicesContext(servicesContainer);
 
   // Initialize services on mount
   onMount(async () => {
     try {
-      // Initialize services in dependency order
-      const databaseService = new MockDatabaseService();
+      // Try to initialize database (may fail in web mode)
+      try {
+        await tauriNodeService.initializeDatabase();
+      } catch (dbError) {
+        console.warn(
+          '[NodeServiceContext] Database unavailable, continuing without persistence:',
+          dbError
+        );
+        // Continue - services will work in memory-only mode
+      }
 
       // Create node manager events
       const nodeManagerEvents = {
@@ -128,8 +145,7 @@
 
       const nodeManager = createReactiveNodeService(nodeManagerEvents);
 
-      // Initialize with demo data
-      nodeManager.initializeWithRichDemoData();
+      // No more demo data initialization - we'll load from real database
 
       const hierarchyService = new HierarchyService(nodeManager);
       const contentProcessor = ContentProcessor.getInstance();
@@ -143,22 +159,20 @@
         nodeManager,
         hierarchyService,
         nodeOperationsService,
-        databaseService,
+        tauriNodeService,
         contentProcessor
       );
 
-      // Create service bundle
-      services = {
+      // Create service bundle and update reactive state
+      // (context was already set at component init with the container reference)
+      servicesContainer.services = {
         nodeReferenceService,
         nodeManager,
         hierarchyService,
         nodeOperationsService,
         contentProcessor,
-        databaseService
+        databaseService: tauriNodeService
       };
-
-      // Set context for child components
-      setNodeServices(services);
 
       servicesInitialized = true;
     } catch (error) {
@@ -170,7 +184,7 @@
 
 <!-- Service Provider Component -->
 {#if servicesInitialized}
-  <slot />
+  {@render children()}
 {:else if initializationError}
   <div class="p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
     <p class="text-destructive font-medium">Service Initialization Error</p>

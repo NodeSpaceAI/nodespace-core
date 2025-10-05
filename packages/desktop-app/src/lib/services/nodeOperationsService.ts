@@ -15,9 +15,9 @@
 
 import { eventBus } from './eventBus';
 import { ContentProcessor } from './contentProcessor';
-import type { ReactiveNodeService as NodeManager, Node } from './reactiveNodeService.svelte.ts';
+import type { ReactiveNodeService as NodeManager } from './reactiveNodeService.svelte.ts';
 import type { HierarchyService } from './hierarchyService';
-import type { NodeSpaceNode } from './mockDatabaseService';
+import type { Node } from '$lib/types';
 
 // ============================================================================
 // Core Types
@@ -83,9 +83,9 @@ export class NodeOperationsService {
    */
   async upsertNode(
     nodeId: string,
-    data: Partial<NodeSpaceNode>,
+    data: Partial<Node>,
     options: UpsertNodeOptions = {}
-  ): Promise<NodeSpaceNode> {
+  ): Promise<Node> {
     const existingNode = this.nodeManager.findNode(nodeId);
     const isUpdate = !!existingNode;
 
@@ -114,56 +114,53 @@ export class NodeOperationsService {
 
     // Resolve parent and root
     const hierarchyResolution = await this.resolveParentAndRoot(
-      data.parent_id,
-      data.root_id,
+      data.parentId || undefined,
+      data.originNodeId || undefined,
       nodeId,
       opts.preserveHierarchy && !!existingNode
     );
 
     // Handle sibling positioning
     const siblingPosition = await this.handleSiblingPositioning(
-      data.before_sibling_id,
+      data.beforeSiblingId,
       hierarchyResolution.parentId,
       nodeId
     );
 
-    // Prepare base node data with proper type conversion
-    const baseNodeData: NodeSpaceNode = {
+    // Prepare base node data
+    // IMPORTANT: Preserve existing mentions unless explicitly provided in data
+    const baseNodeData: Node = {
       id: nodeId,
-      type: data.type || (existingNode ? existingNode.nodeType : 'text'),
+      nodeType: data.nodeType || (existingNode ? existingNode.nodeType : 'text'),
       content: contentResult.content,
-      parent_id: hierarchyResolution.parentId,
-      root_id: hierarchyResolution.rootId,
-      before_sibling_id: siblingPosition.beforeSiblingId,
-      depth: existingNode?.depth || 0, // Include depth field
-      created_at: existingNode ? this.getCreatedAtFromNode(existingNode) : new Date().toISOString(),
-      mentions: data.mentions || existingNode?.mentions || [],
-      metadata: this.mergeMetadata(
+      parentId: hierarchyResolution.parentId,
+      originNodeId: hierarchyResolution.rootId,
+      beforeSiblingId: siblingPosition.beforeSiblingId,
+      createdAt: existingNode
+        ? (existingNode.properties?.createdAt as string) ||
+          existingNode.createdAt ||
+          new Date().toISOString()
+        : new Date().toISOString(),
+      modifiedAt: new Date().toISOString(),
+      mentions: data.mentions !== undefined ? data.mentions : existingNode?.mentions || [],
+      properties: this.mergeMetadata(
         existingNode,
-        data.metadata,
+        data.properties,
         contentResult.metadata,
         opts.preserveMetadata
       ),
-      embedding_vector: data.embedding_vector || null
+      embeddingVector: data.embeddingVector || null
     };
 
-    // Convert to NodeManager format and store
-    const nodeManagerNode = this.convertToNodeManagerFormat(baseNodeData);
-
     if (isUpdate) {
-      // Update existing node
-      this.nodeManager.updateNodeContent(nodeId, nodeManagerNode.content);
+      // Update existing node using proper methods
+      this.nodeManager.updateNodeContent(nodeId, baseNodeData.content);
+      this.nodeManager.updateNodeType(nodeId, baseNodeData.nodeType);
+      this.nodeManager.updateNodeProperties(nodeId, baseNodeData.properties);
 
-      // Update other properties
-      const node = this.nodeManager.findNode(nodeId);
-      if (node) {
-        node.nodeType = nodeManagerNode.nodeType;
-        node.metadata = nodeManagerNode.metadata;
-        // Update mentions after node exists
-        if (opts.updateMentions && baseNodeData.mentions.length > 0) {
-          node.mentions = baseNodeData.mentions;
-          await this.updateNodeMentions(nodeId, baseNodeData.mentions);
-        }
+      // Update mentions after node exists
+      if (opts.updateMentions && baseNodeData.mentions && baseNodeData.mentions.length > 0) {
+        await this.updateNodeMentions(nodeId, baseNodeData.mentions);
       }
     } else {
       // For new nodes, we simulate creation since NodeManager doesn't expose direct creation API
@@ -171,7 +168,7 @@ export class NodeOperationsService {
       this.emitNodeOperationEvent('upsert', nodeId, baseNodeData, { isUpdate });
 
       // Update mentions if requested (only for existing nodes in tests)
-      if (opts.updateMentions && baseNodeData.mentions.length > 0) {
+      if (opts.updateMentions && baseNodeData.mentions && baseNodeData.mentions.length > 0) {
         // Try to update mentions, but don't fail if node doesn't exist yet
         try {
           await this.updateNodeMentions(nodeId, baseNodeData.mentions);
@@ -202,8 +199,8 @@ export class NodeOperationsService {
     const toAdd = newMentions.filter((id) => !oldMentionsSet.has(id));
     const toRemove = oldMentions.filter((id) => !newMentionsSet.has(id));
 
-    // Update the mentions on this node
-    existingNode.mentions = [...newMentions];
+    // Update the mentions on this node using the proper method
+    this.nodeManager.updateNodeMentions(nodeId, newMentions);
 
     // Update bidirectional consistency
     for (const mentionedId of toAdd) {
@@ -234,7 +231,7 @@ export class NodeOperationsService {
   /**
    * Extract content string with multiple fallback strategies
    */
-  extractContentString(data: Partial<NodeSpaceNode>): ContentExtractionResult {
+  extractContentString(data: Partial<Node>): ContentExtractionResult {
     let content = '';
     let extractedType: string | null = null;
     let confidence = 1.0;
@@ -247,9 +244,9 @@ export class NodeOperationsService {
       extractedType = this.inferContentType(content);
       confidence = 1.0;
     }
-    // Strategy 2: Extract from metadata
-    else if (data.metadata && typeof data.metadata === 'object') {
-      const result = this.extractContentFromMetadata(data.metadata);
+    // Strategy 2: Extract from properties
+    else if (data.properties && Object.keys(data.properties).length > 0) {
+      const result = this.extractContentFromMetadata(data.properties);
       if (result.content) {
         content = result.content;
         extractedType = result.type;
@@ -258,21 +255,24 @@ export class NodeOperationsService {
         metadata = result.preservedMetadata;
       }
     }
+
     // Strategy 3: Type-specific defaults
-    else if (data.type) {
-      const defaults = this.getTypeDefaults(data.type);
-      content = defaults.content;
-      extractedType = data.type;
-      confidence = 0.5;
-      fallbackUsed = true;
-      metadata = defaults.metadata;
-    }
-    // Strategy 4: Last resort - empty text node
-    else {
-      content = '';
-      extractedType = 'text';
-      confidence = 0.1;
-      fallbackUsed = true;
+    if (!content) {
+      const nodeType = data.nodeType || '';
+      if (nodeType) {
+        const defaults = this.getTypeDefaults(nodeType);
+        content = defaults.content;
+        extractedType = nodeType;
+        confidence = 0.5;
+        fallbackUsed = true;
+        metadata = defaults.metadata;
+      } else {
+        // Strategy 4: Last resort - empty text node
+        content = '';
+        extractedType = 'text';
+        confidence = 0.1;
+        fallbackUsed = true;
+      }
     }
 
     return {
@@ -288,7 +288,7 @@ export class NodeOperationsService {
    * Extract content with rich context information
    * Provides additional context about the content structure and formatting
    */
-  extractContentWithContext(data: Partial<NodeSpaceNode>): {
+  extractContentWithContext(data: Partial<Node>): {
     content: string;
     ast: unknown;
     wikiLinks: unknown[];
@@ -351,7 +351,7 @@ export class NodeOperationsService {
       const existingNode = this.nodeManager.findNode(nodeId);
       if (existingNode) {
         return {
-          parentId: existingNode.parentId || null,
+          parentId: existingNode.parentId,
           rootId: this.findNodeRootId(existingNode),
           strategy: 'explicit',
           confidence: 0.9
@@ -460,8 +460,8 @@ export class NodeOperationsService {
     let merged: Record<string, unknown> = {};
 
     // Start with existing metadata if preserving
-    if (preserve && existingNode?.metadata) {
-      merged = { ...existingNode.metadata };
+    if (preserve && existingNode?.properties) {
+      merged = { ...existingNode.properties };
     }
 
     // Add extracted metadata (from content analysis)
@@ -475,44 +475,6 @@ export class NodeOperationsService {
     }
 
     return merged;
-  }
-
-  /**
-   * Convert NodeSpaceNode format to NodeManager format
-   */
-  private convertToNodeManagerFormat(node: NodeSpaceNode): Node {
-    return {
-      id: node.id,
-      content: node.content,
-      nodeType: node.type,
-      depth: node.depth, // Use depth from NodeSpaceNode
-      parentId: node.parent_id || undefined,
-      children: [], // Will be populated by NodeManager
-      expanded: true,
-      autoFocus: false,
-      inheritHeaderLevel: this.contentProcessor.parseHeaderLevel(node.content),
-      metadata: node.metadata,
-      mentions: node.mentions
-    };
-  }
-
-  /**
-   * Convert NodeManager format to NodeSpaceNode format
-   */
-  private convertFromNodeManagerFormat(node: Node): NodeSpaceNode {
-    return {
-      id: node.id,
-      type: node.nodeType, // Convert nodeType to type
-      content: node.content,
-      parent_id: node.parentId || null,
-      root_id: 'default-root', // This should be properly calculated in real implementation
-      before_sibling_id: null, // This should be calculated based on sibling order
-      depth: node.depth,
-      created_at: new Date().toISOString(), // Default for new conversions
-      mentions: node.mentions || [],
-      metadata: node.metadata,
-      embedding_vector: null
-    };
   }
 
   /**
@@ -670,15 +632,6 @@ export class NodeOperationsService {
       current = parent;
     }
     return current.id;
-  }
-
-  /**
-   * Get created_at timestamp from existing node
-   */
-  private getCreatedAtFromNode(node: Node): string {
-    // NodeManager nodes don't have created_at, so we'll use current time
-    // In full implementation, this would be stored in metadata or database
-    return (node.metadata?.created_at as string) || new Date().toISOString();
   }
 
   /**

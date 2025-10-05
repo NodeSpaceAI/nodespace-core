@@ -18,7 +18,7 @@ export interface Node {
   inheritHeaderLevel: number;
   metadata: Record<string, unknown>;
   mentions?: string[];
-  before_sibling_id?: string;
+  beforeSiblingId?: string;
   isPlaceholder?: boolean;
 }
 
@@ -200,55 +200,80 @@ export function createMockReactiveNodeService(events: NodeManagerEvents) {
       return true;
     },
 
-    // Initialize from legacy data
-    initializeFromLegacyData(
-      legacyData: Array<{
+    // Initialize nodes with UI state options
+    initializeNodes(
+      nodes: Array<{
         id: string;
-        type?: string;
-        nodeType?: string;
+        nodeType: string;
         content: string;
-        inheritHeaderLevel: number;
-        children: string[];
-        expanded: boolean;
-        autoFocus: boolean;
-        metadata?: Record<string, unknown>;
-        parentId?: string;
-      }>
+        parentId: string | null;
+        originNodeId: string | null;
+        beforeSiblingId: string | null;
+        createdAt: string;
+        modifiedAt: string;
+        mentions: string[];
+        properties: Record<string, unknown>;
+      }>,
+      options?: {
+        expanded?: boolean;
+        autoFocus?: boolean;
+        inheritHeaderLevel?: number;
+      }
     ): void {
       // Clear existing data
       Object.keys(_nodes).forEach((id) => delete _nodes[id]);
       _rootNodeIds = [];
 
-      // Convert legacy data to new format
-      for (const legacyNode of legacyData) {
+      const defaultOptions = {
+        expanded: options?.expanded ?? true,
+        autoFocus: options?.autoFocus ?? false,
+        inheritHeaderLevel: options?.inheritHeaderLevel ?? 0
+      };
+
+      // Convert unified format to internal format
+      for (const unifiedNode of nodes) {
         const node: Node = {
-          id: legacyNode.id,
-          content: legacyNode.content,
-          nodeType: legacyNode.type || legacyNode.nodeType || 'text',
+          id: unifiedNode.id,
+          content: unifiedNode.content,
+          nodeType: unifiedNode.nodeType,
           depth: 0, // Will be calculated based on hierarchy
-          parentId: undefined, // Will be set based on children relationships
-          children: [...legacyNode.children],
-          expanded: legacyNode.expanded,
-          autoFocus: legacyNode.autoFocus,
-          inheritHeaderLevel: legacyNode.inheritHeaderLevel,
-          metadata: {}
+          parentId: unifiedNode.parentId || undefined,
+          children: [], // Will be computed from parent_id relationships
+          expanded: defaultOptions.expanded,
+          autoFocus: defaultOptions.autoFocus,
+          inheritHeaderLevel: defaultOptions.inheritHeaderLevel,
+          metadata: unifiedNode.properties,
+          mentions: unifiedNode.mentions,
+          beforeSiblingId: unifiedNode.beforeSiblingId || undefined
         };
-        _nodes[legacyNode.id] = node;
+        _nodes[unifiedNode.id] = node;
       }
 
-      // Set root nodes (nodes not referenced as children)
-      const allChildIds = new Set(legacyData.flatMap((n) => n.children));
-      _rootNodeIds = legacyData.filter((n) => !allChildIds.has(n.id)).map((n) => n.id);
-
-      // Update parent references and depths
+      // Compute children arrays from parent_id relationships
       for (const node of Object.values(_nodes)) {
-        for (const childId of node.children) {
-          const child = _nodes[childId];
-          if (child) {
-            child.parentId = node.id;
-            child.depth = node.depth + 1;
+        node.children = [];
+      }
+      for (const node of Object.values(_nodes)) {
+        if (node.parentId && _nodes[node.parentId]) {
+          _nodes[node.parentId].children.push(node.id);
+        }
+      }
+
+      // Set root nodes (nodes without parents)
+      _rootNodeIds = nodes.filter((n) => !n.parentId).map((n) => n.id);
+
+      // Calculate depths based on parent hierarchy
+      const calculateDepth = (nodeId: string, depth: number = 0): void => {
+        const node = _nodes[nodeId];
+        if (node) {
+          node.depth = depth;
+          for (const childId of node.children) {
+            calculateDepth(childId, depth + 1);
           }
         }
+      };
+      for (const rootId of _rootNodeIds) {
+        calculateDepth(rootId, 0);
       }
 
       // Trigger reactivity

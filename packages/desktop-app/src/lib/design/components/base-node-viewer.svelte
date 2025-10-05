@@ -7,7 +7,7 @@
 -->
 
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
   import { pluginRegistry } from '$lib/components/viewers/index';
   import BaseNode from '$lib/design/components/base-node.svelte';
@@ -16,7 +16,13 @@
   import type { Snippet } from 'svelte';
 
   // Props
-  let { header }: { header?: Snippet } = $props();
+  let {
+    header,
+    parentId = null
+  }: {
+    header?: Snippet;
+    parentId?: string | null;
+  } = $props();
 
   // Get nodeManager from shared context
   const services = getNodeServices();
@@ -27,9 +33,204 @@
   }
 
   const nodeManager = services.nodeManager;
+  const { databaseService } = services;
 
   // Map to store cursor positions during node type changes
   const pendingCursorPositions = new Map<string, number>();
+
+  // Simple debounce map - one timeout per node
+  const saveTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+
+  // Track last saved content to detect actual changes
+  const lastSavedContent = new Map<string, string>();
+
+  // Set view context and load children when parentId changes
+  $effect(() => {
+    nodeManager.setViewParentId(parentId);
+
+    if (parentId) {
+      loadChildrenForParent(parentId);
+    }
+  });
+
+  // Simple persistence: watch nodes, debounce saves
+  // Only save nodes when content actually changes
+  $effect(() => {
+    if (!parentId) return;
+
+    const nodes = nodeManager.visibleNodes;
+
+    for (const node of nodes) {
+      // Skip placeholder nodes
+      if (node.isPlaceholder) {
+        continue;
+      }
+
+      // Only save if content has changed since last save
+      const lastContent = lastSavedContent.get(node.id);
+      if (node.content.trim() && node.content !== lastContent) {
+        debounceSave(node.id, node.content, node.nodeType);
+      }
+    }
+  });
+
+  async function loadChildrenForParent(parentId: string) {
+    try {
+      // Use bulk fetch for efficiency - single query gets all nodes for this origin
+      const allNodes = await databaseService.getNodesByOriginId(parentId);
+
+      // Clear content tracking
+      lastSavedContent.clear();
+
+      // Check if we have any nodes at all (including nested children)
+      if (allNodes.length === 0) {
+        // No nodes - create placeholder
+        const placeholderId = globalThis.crypto.randomUUID();
+        nodeManager.initializeNodes(
+          [
+            {
+              id: placeholderId,
+              nodeType: 'text',
+              content: '',
+              parentId: parentId,
+              originNodeId: parentId,
+              beforeSiblingId: null,
+              createdAt: new Date().toISOString(),
+              modifiedAt: new Date().toISOString(),
+              properties: {}
+            }
+          ],
+          {
+            expanded: true,
+            autoFocus: true,
+            inheritHeaderLevel: 0
+          }
+        );
+      } else {
+        // Track initial content of ALL loaded nodes
+        // This enables efficient nested node loading without additional queries
+        allNodes.forEach((node) => lastSavedContent.set(node.id, node.content));
+
+        // Initialize with ALL nodes - visibleNodes will build the hierarchy
+        // based on parentId relationships and the viewParentId context
+        nodeManager.initializeNodes(allNodes, {
+          expanded: true,
+          autoFocus: false,
+          inheritHeaderLevel: 0
+        });
+      }
+    } catch (error) {
+      console.error('[BaseNodeViewer] Failed to load children for parent:', parentId, error);
+    }
+  }
+
+  /**
+   * Recursively ensure all placeholder ancestors are persisted before saving a node
+   * This handles the case where a user creates nested placeholder nodes, then fills in
+   * a child before filling in the parent.
+   */
+  async function ensureAncestorsPersisted(nodeId: string): Promise<void> {
+    const node = nodeManager.findNode(nodeId);
+    if (!node || !node.parentId) return;
+
+    const parent = nodeManager.findNode(node.parentId);
+    if (!parent) return;
+
+    // Check if parent is a placeholder by looking at visibleNodes which includes UI state
+    const parentVisibleNode = nodeManager.visibleNodes.find((n) => n.id === parent.id);
+    const isParentPlaceholder = parentVisibleNode?.isPlaceholder || false;
+
+    // If parent is a placeholder, we need to persist it first
+    if (isParentPlaceholder) {
+      // Recursively ensure parent's ancestors are persisted
+      await ensureAncestorsPersisted(parent.id);
+
+      // Persist the placeholder parent with empty content
+      // This creates a real node in the database that child nodes can reference
+      await databaseService.saveNodeWithParent(parent.id, {
+        content: '', // Empty content for placeholder
+        nodeType: parent.nodeType,
+        parentId: parent.parentId || parentId!,
+        originNodeId: parent.originNodeId || parentId!,
+        beforeSiblingId: parent.beforeSiblingId
+      });
+
+      // Mark as persisted by updating lastSavedContent
+      lastSavedContent.set(parent.id, '');
+    }
+  }
+
+  function debounceSave(nodeId: string, content: string, nodeType: string) {
+    if (!parentId) return;
+
+    // Clear existing timeout
+    const existing = saveTimeouts.get(nodeId);
+    if (existing) clearTimeout(existing);
+
+    // Debounce 500ms
+    const timeout = setTimeout(async () => {
+      try {
+        const node = nodeManager.findNode(nodeId);
+
+        // Ensure all placeholder ancestors are persisted first
+        await ensureAncestorsPersisted(nodeId);
+
+        await databaseService.saveNodeWithParent(nodeId, {
+          content,
+          nodeType: nodeType,
+          parentId: node?.parentId || parentId!,
+          originNodeId: node?.originNodeId || parentId!,
+          beforeSiblingId: node?.beforeSiblingId
+        });
+
+        // Update last saved content to prevent redundant saves
+        lastSavedContent.set(nodeId, content);
+      } catch (error) {
+        console.error('[BaseNodeViewer] Failed to save node:', nodeId, error);
+      }
+      saveTimeouts.delete(nodeId);
+    }, 500);
+
+    saveTimeouts.set(nodeId, timeout);
+  }
+
+  /**
+   * Save hierarchy changes (parent_id, before_sibling_id) after indent/outdent operations
+   * Updates immediately without debouncing since these are explicit user actions
+   *
+   * Uses upsert to handle both existing nodes and newly created nodes that may not be in DB yet
+   * Skips placeholder nodes - they should not be persisted yet
+   */
+  async function saveHierarchyChange(nodeId: string) {
+    if (!parentId) return;
+
+    try {
+      const node = nodeManager.findNode(nodeId);
+      if (!node) {
+        console.error('[BaseNodeViewer] Cannot save hierarchy - node not found:', nodeId);
+        return;
+      }
+
+      // Check if node is a placeholder by looking at visibleNodes which includes UI state
+      const visibleNode = nodeManager.visibleNodes.find((n) => n.id === nodeId);
+      const isPlaceholder = visibleNode?.isPlaceholder || false;
+
+      // Skip placeholder nodes - they should not be persisted yet
+      if (isPlaceholder) {
+        return;
+      }
+
+      await databaseService.saveNodeWithParent(nodeId, {
+        content: node.content,
+        nodeType: node.nodeType,
+        parentId: node.parentId || parentId,
+        originNodeId: node.originNodeId || parentId,
+        beforeSiblingId: node.beforeSiblingId
+      });
+    } catch (error) {
+      console.error('[BaseNodeViewer] Failed to save hierarchy change:', nodeId, error);
+    }
+  }
 
   // Focus handling function with proper cursor positioning using tree walker
   function requestNodeFocus(nodeId: string, position: number) {
@@ -212,7 +413,7 @@
   }
 
   // Handle indenting nodes (Tab key)
-  function handleIndentNode(event: CustomEvent<{ nodeId: string }>) {
+  async function handleIndentNode(event: CustomEvent<{ nodeId: string }>) {
     const { nodeId } = event.detail;
 
     try {
@@ -229,6 +430,9 @@
       const success = nodeManager.indentNode(nodeId);
 
       if (success) {
+        // Persist hierarchy change - AWAIT to ensure it completes
+        await saveHierarchyChange(nodeId);
+
         // Restore cursor position after DOM update
         setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
       }
@@ -306,7 +510,7 @@
   }
 
   // Handle outdenting nodes (Shift+Tab key)
-  function handleOutdentNode(event: CustomEvent<{ nodeId: string }>) {
+  async function handleOutdentNode(event: CustomEvent<{ nodeId: string }>) {
     const { nodeId } = event.detail;
 
     try {
@@ -323,6 +527,9 @@
       const success = nodeManager.outdentNode(nodeId);
 
       if (success) {
+        // Persist hierarchy change - AWAIT to ensure it completes
+        await saveHierarchyChange(nodeId);
+
         // Restore cursor position after DOM update
         setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
       }
@@ -695,6 +902,15 @@
 
     await preloadComponents();
   });
+
+  // Clean up pending timeouts on component unmount to prevent memory leaks
+  onDestroy(() => {
+    // Clear all pending debounce timeouts
+    for (const timeout of saveTimeouts.values()) {
+      clearTimeout(timeout);
+    }
+    saveTimeouts.clear();
+  });
 </script>
 
 <!-- Base Node Viewer: Header + Scrollable Children Area -->
@@ -797,13 +1013,16 @@
                       });
                     }
 
-                    // Clean up task-specific metadata when converting to text
-                    if (newNodeType === 'text' && targetNode.metadata.taskState) {
-                      const { taskState, ...cleanMetadata } = targetNode.metadata;
-                      void taskState; // Intentionally unused - extracted to remove from metadata
-                      targetNode.metadata = { ...cleanMetadata, _forceUpdate: Date.now() };
+                    // Clean up task-specific properties when converting to text
+                    if (newNodeType === 'text' && targetNode.properties.taskState) {
+                      const { taskState, ...cleanProperties } = targetNode.properties;
+                      void taskState; // Intentionally unused - extracted to remove from properties
+                      targetNode.properties = { ...cleanProperties, _forceUpdate: Date.now() };
                     } else {
-                      targetNode.metadata = { ...targetNode.metadata, _forceUpdate: Date.now() };
+                      targetNode.properties = {
+                        ...targetNode.properties,
+                        _forceUpdate: Date.now()
+                      };
                     }
                     nodeManager.updateNodeContent(targetNode.id, targetNode.content);
                   }
@@ -826,7 +1045,7 @@
                   content={node.content}
                   headerLevel={node.inheritHeaderLevel || 0}
                   children={node.children}
-                  metadata={node.metadata || {}}
+                  metadata={node.properties || {}}
                   editableConfig={{ allowMultiline: true }}
                   on:createNewNode={handleCreateNewNode}
                   on:indentNode={handleIndentNode}
@@ -863,15 +1082,18 @@
                         });
                       }
 
-                      // CRITICAL: Clean up type-specific metadata when changing node types
-                      if (nodeType === 'text' && targetNode.metadata.taskState) {
-                        // When converting from task to text, remove task-specific metadata
-                        const { taskState, ...cleanMetadata } = targetNode.metadata;
-                        void taskState; // Intentionally unused - extracted to remove from metadata
-                        targetNode.metadata = { ...cleanMetadata, _forceUpdate: Date.now() };
+                      // CRITICAL: Clean up type-specific properties when changing node types
+                      if (nodeType === 'text' && targetNode.properties.taskState) {
+                        // When converting from task to text, remove task-specific properties
+                        const { taskState, ...cleanProperties } = targetNode.properties;
+                        void taskState; // Intentionally unused - extracted to remove from properties
+                        targetNode.properties = { ...cleanProperties, _forceUpdate: Date.now() };
                       } else {
                         // For other conversions, just force update
-                        targetNode.metadata = { ...targetNode.metadata, _forceUpdate: Date.now() };
+                        targetNode.properties = {
+                          ...targetNode.properties,
+                          _forceUpdate: Date.now()
+                        };
                       }
 
                       // Use the working sync mechanism from taskStateChanged
@@ -906,7 +1128,7 @@
                     const { nodeId, state } = e.detail;
                     const node = nodeManager.nodes.get(nodeId);
                     if (node) {
-                      node.metadata = { ...node.metadata, taskState: state };
+                      node.properties = { ...node.properties, taskState: state };
                       // Trigger sync to persist the change
                       nodeManager.updateNodeContent(nodeId, node.content);
                     }
@@ -926,7 +1148,7 @@
                   content={node.content}
                   headerLevel={node.inheritHeaderLevel || 0}
                   children={node.children}
-                  metadata={node.metadata || {}}
+                  metadata={node.properties || {}}
                   editableConfig={{ allowMultiline: true }}
                   on:createNewNode={handleCreateNewNode}
                   on:indentNode={handleIndentNode}
@@ -964,7 +1186,7 @@
                     const { nodeId, state } = e.detail;
                     const node = nodeManager.nodes.get(nodeId);
                     if (node) {
-                      node.metadata = { ...node.metadata, taskState: state };
+                      node.properties = { ...node.properties, taskState: state };
                       // Trigger sync to persist the change
                       nodeManager.updateNodeContent(nodeId, node.content);
                     }
