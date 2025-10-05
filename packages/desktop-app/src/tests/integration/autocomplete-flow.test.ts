@@ -17,8 +17,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/svelte';
-import { renderComponent, createUserEvents, waitForEffects } from '../components/svelte-test-utils';
+import { render, screen, waitFor } from '@testing-library/svelte';
+import { createUserEvents, waitForEffects } from '../components/svelte-test-utils';
 import BaseNode from '$lib/design/components/base-node.svelte';
 
 describe('Node Reference Autocomplete - Complete Flow', () => {
@@ -31,13 +31,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should show autocomplete when @ typed', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: '',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -59,13 +57,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should show autocomplete when @ typed after space', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: 'Some text ',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: 'Some text ',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -86,13 +82,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should NOT show autocomplete when @ typed mid-word', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: 'email',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: 'email',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -114,13 +108,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should show all results when @ typed with no query', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: '',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -143,13 +135,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should filter results as user types query', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: '',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -180,13 +170,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should show empty state when no matches found', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: '',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -218,13 +206,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should insert reference when Enter pressed', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: '',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -253,13 +239,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should insert reference when result clicked', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: '',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -291,13 +275,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should close autocomplete on Escape without inserting', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: 'Before ',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: 'Before ',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -330,13 +312,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should update query as user continues typing', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: '',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -368,13 +348,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should insert reference with correct nodeId when selection made', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: '',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -408,13 +386,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should NOT insert reference when autocomplete closed via Escape', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: '',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -440,13 +416,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should insert reference with correct title and nodeId', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: '',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -492,13 +466,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should maintain editor focus while autocomplete is open', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: '',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -521,13 +493,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should return focus to editor after selection', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: '',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -555,13 +525,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should insert reference in correct markdown format', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: '',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
@@ -597,13 +565,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
     it('should preserve existing content around insertion', async () => {
       const user = createUserEvents();
 
-      const { container } = renderComponent(BaseNode, {
-        props: {
-          nodeId: 'test-node',
-          nodeType: 'text',
-          content: 'Before ',
-          autoFocus: true
-        }
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: 'Before ',
+        autoFocus: true
       });
 
       const editor = container.querySelector('[contenteditable="true"]');
