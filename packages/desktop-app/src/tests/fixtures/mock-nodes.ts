@@ -28,3 +28,56 @@ export const sampleAIChatNode: MockNodeData = {
 };
 
 export const sampleNodes: MockNodeData[] = [sampleTextNode, sampleTaskNode, sampleAIChatNode];
+
+/**
+ * Node result type for autocomplete testing
+ */
+export interface NodeResult {
+  id: string;
+  title: string;
+  type: string;
+  subtitle: string;
+  metadata: string;
+}
+
+/**
+ * Mock nodes for autocomplete testing
+ * Used across component and integration tests for consistency
+ */
+export const MOCK_AUTOCOMPLETE_NODES: NodeResult[] = [
+  {
+    id: 'node-1',
+    title: 'Test Node',
+    type: 'text',
+    subtitle: 'Sample',
+    metadata: '1 day ago'
+  },
+  {
+    id: 'node-2',
+    title: 'Testing Guide',
+    type: 'document',
+    subtitle: 'Docs',
+    metadata: '2 days ago'
+  },
+  {
+    id: 'node-3',
+    title: 'Task Example',
+    type: 'task',
+    subtitle: 'Todo',
+    metadata: 'Today'
+  },
+  {
+    id: 'node-4',
+    title: 'Another Test',
+    type: 'text',
+    subtitle: 'Sample',
+    metadata: '3 days ago'
+  },
+  {
+    id: 'node-5',
+    title: 'Project Documentation',
+    type: 'document',
+    subtitle: 'Docs',
+    metadata: '1 week ago'
+  }
+];

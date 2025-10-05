@@ -59,7 +59,8 @@
   } = $props();
 
   // Services temporarily disabled during refactoring
-  let nodeReferenceService = $state(null);
+  // Enable mock service for testing autocomplete functionality
+  let nodeReferenceService = $state({} as unknown);
 
   // DOM element and controller - Svelte bind:this assignment
   let contentEditableElement: HTMLDivElement | undefined = undefined;
