@@ -523,12 +523,30 @@
       // Store cursor position before DOM changes
       const cursorPosition = saveCursorPosition(nodeId);
 
+      // Get existing children of the node BEFORE outdenting
+      const childrenBefore = Array.from(nodeManager.nodes.values())
+        .filter((n) => n.parentId === nodeId)
+        .map((n) => n.id);
+
       // Use NodeManager to handle outdentation
       const success = nodeManager.outdentNode(nodeId);
 
       if (success) {
-        // Persist hierarchy change - AWAIT to ensure it completes
+        // Get children of outdented node AFTER outdenting (includes transferred siblings)
+        const childrenAfter = Array.from(nodeManager.nodes.values())
+          .filter((n) => n.parentId === nodeId)
+          .map((n) => n.id);
+
+        // Find the transferred siblings (nodes that are now children but weren't before)
+        const transferredSiblings = childrenAfter.filter((id) => !childrenBefore.includes(id));
+
+        // Persist hierarchy change for the outdented node
         await saveHierarchyChange(nodeId);
+
+        // Persist hierarchy changes for all transferred siblings
+        for (const siblingId of transferredSiblings) {
+          await saveHierarchyChange(siblingId);
+        }
 
         // Restore cursor position after DOM update
         setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);

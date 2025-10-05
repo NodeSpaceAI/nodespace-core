@@ -381,6 +381,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       isPlaceholder
     });
 
+    // Find next sibling BEFORE adding new node to prevent interference
+    const siblings = Object.values(_nodes).filter((n) => n.parentId === newParentId);
+    const nextSibling = !insertAtBeginning
+      ? siblings.find((n) => n.beforeSiblingId === afterNodeId)
+      : null;
+
     _nodes[nodeId] = newNode;
     _uiState[nodeId] = newUIState;
 
@@ -392,6 +398,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         beforeSiblingId: nodeId,
         modifiedAt: new Date().toISOString()
       };
+    } else {
+      // New node inserted after afterNode - update next sibling to point to new node
+      if (nextSibling) {
+        _nodes[nextSibling.id] = {
+          ...nextSibling,
+          beforeSiblingId: nodeId,
+          modifiedAt: new Date().toISOString()
+        };
+      }
     }
 
     // Bug 4 fix: Transfer children from expanded nodes
@@ -765,28 +780,66 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     return cleaned.trim();
   }
 
+  /**
+   * Removes a node from its current sibling chain by updating the next sibling's beforeSiblingId.
+   * This prevents orphaned nodes when a node is moved (indent/outdent) or deleted.
+   *
+   * @param nodeId - The node being removed from its current parent
+   */
+  function removeFromSiblingChain(nodeId: string): void {
+    const node = _nodes[nodeId];
+    if (!node) return;
+
+    // Find the next sibling (the node that points to this one via beforeSiblingId)
+    const siblings = Object.values(_nodes).filter((n) => n.parentId === node.parentId);
+    const nextSibling = siblings.find((n) => n.beforeSiblingId === nodeId);
+
+    if (nextSibling) {
+      // Update next sibling to point to our predecessor, "splicing us out" of the chain
+      _nodes[nextSibling.id] = {
+        ...nextSibling,
+        beforeSiblingId: node.beforeSiblingId,
+        modifiedAt: new Date().toISOString()
+      };
+    }
+  }
+
   function indentNode(nodeId: string): boolean {
     const node = _nodes[nodeId];
     if (!node) return false;
 
+    // Get SORTED siblings according to beforeSiblingId chain
     let siblings: string[];
-    let nodeIndex: number;
-
     if (node.parentId) {
-      siblings = Object.values(_nodes)
+      const unsortedSiblings = Object.values(_nodes)
         .filter((n) => n.parentId === node.parentId)
         .map((n) => n.id);
-      nodeIndex = siblings.indexOf(nodeId);
+      siblings = sortChildrenByBeforeSiblingId(unsortedSiblings, node.parentId);
     } else {
-      siblings = _rootNodeIds;
-      nodeIndex = siblings.indexOf(nodeId);
+      siblings = sortChildrenByBeforeSiblingId(_rootNodeIds, null);
     }
 
-    if (nodeIndex === 0) return false;
+    const nodeIndex = siblings.indexOf(nodeId);
+    if (nodeIndex <= 0) return false; // Can't indent first child or if not found
 
     const prevSiblingId = siblings[nodeIndex - 1];
     const prevSibling = _nodes[prevSiblingId];
     if (!prevSibling) return false;
+
+    // Remove node from current sibling chain BEFORE changing parent
+    removeFromSiblingChain(nodeId);
+
+    // Find the last child of the new parent to insert after
+    const existingChildren = Object.values(_nodes)
+      .filter((n) => n.parentId === prevSiblingId)
+      .map((n) => n.id);
+
+    let beforeSiblingId: string | null = null;
+    if (existingChildren.length > 0) {
+      // Get sorted children and append after the last one
+      const sortedChildren = sortChildrenByBeforeSiblingId(existingChildren, prevSiblingId);
+      beforeSiblingId = sortedChildren[sortedChildren.length - 1]; // Insert after last child
+    }
 
     const uiState = _uiState[nodeId];
     const prevSiblingUIState = _uiState[prevSiblingId];
@@ -794,7 +847,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     _nodes[nodeId] = {
       ...node,
       parentId: prevSiblingId,
-      beforeSiblingId: null, // Becomes first child of new parent
+      beforeSiblingId: beforeSiblingId, // Insert after last existing child (or null if no children)
       modifiedAt: new Date().toISOString()
     };
     _uiState[nodeId] = { ...uiState, depth: (prevSiblingUIState?.depth || 0) + 1 };
@@ -802,10 +855,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Recalculate depths for all descendants
     updateDescendantDepths(nodeId);
 
-    if (node.parentId) {
-      // Remove from old parent's children list
-    } else {
-      _rootNodeIds.splice(nodeIndex, 1);
+    // If node was a root node, remove from _rootNodeIds array
+    if (!node.parentId) {
+      const rootIndex = _rootNodeIds.indexOf(nodeId);
+      if (rootIndex >= 0) {
+        _rootNodeIds.splice(rootIndex, 1);
+      }
     }
 
     // Invalidate sorted children cache for both old and new parents
@@ -842,6 +897,19 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const parent = _nodes[node.parentId];
     if (!parent) return false;
 
+    const oldParentId = node.parentId;
+
+    // Find siblings that come after this node (they will become children)
+    const siblings = Object.values(_nodes)
+      .filter((n) => n.parentId === oldParentId)
+      .map((n) => n.id);
+    const sortedSiblings = sortChildrenByBeforeSiblingId(siblings, oldParentId);
+    const nodeIndex = sortedSiblings.indexOf(nodeId);
+    const siblingsBelow = nodeIndex >= 0 ? sortedSiblings.slice(nodeIndex + 1) : [];
+
+    // Remove node from current sibling chain BEFORE changing parent
+    removeFromSiblingChain(nodeId);
+
     const newParentId = parent.parentId || null;
     const uiState = _uiState[nodeId];
     const newDepth = newParentId ? (_uiState[newParentId]?.depth || 0) + 1 : 0;
@@ -854,6 +922,25 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     };
     _uiState[nodeId] = { ...uiState, depth: newDepth };
 
+    // Transfer siblings below the outdented node as its children
+    for (const siblingId of siblingsBelow) {
+      const sibling = _nodes[siblingId];
+      if (sibling) {
+        _nodes[siblingId] = {
+          ...sibling,
+          parentId: nodeId,
+          modifiedAt: new Date().toISOString()
+        };
+        // Update depth for transferred sibling
+        const siblingUIState = _uiState[siblingId];
+        if (siblingUIState) {
+          _uiState[siblingId] = { ...siblingUIState, depth: newDepth + 1 };
+        }
+        // Recalculate depths for descendants of transferred sibling
+        updateDescendantDepths(siblingId);
+      }
+    }
+
     // Recalculate depths for all descendants
     updateDescendantDepths(nodeId);
 
@@ -862,9 +949,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       _rootNodeIds.splice(parentIndex + 1, 0, nodeId);
     }
 
-    // Invalidate sorted children cache for both old and new parents
-    invalidateSortedChildrenCache(node.parentId); // Old parent
+    // Invalidate sorted children cache for old parent, new parent, and outdented node
+    invalidateSortedChildrenCache(oldParentId); // Old parent
     invalidateSortedChildrenCache(newParentId); // New parent
+    invalidateSortedChildrenCache(nodeId); // Outdented node (now has new children)
 
     events.hierarchyChanged();
     _updateTrigger++;
@@ -885,6 +973,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (!node) return;
 
     cleanupDebouncedOperations(nodeId);
+
+    // Remove node from sibling chain BEFORE deletion to prevent orphans
+    removeFromSiblingChain(nodeId);
 
     // Promote children
     const children = Object.values(_nodes)
