@@ -446,4 +446,4 @@ if (import.meta.main) {
   main();
 }
 
-export { ReviewManager, type ReviewReport, type ReviewFinding };
+export type { ReviewReport, ReviewFinding };
