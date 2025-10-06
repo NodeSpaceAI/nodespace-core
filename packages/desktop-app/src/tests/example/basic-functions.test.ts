@@ -2,9 +2,8 @@
  * Basic function testing example for NodeSpace
  * Demonstrates simple testing without component complexity
  */
-import { describe, it, expect, beforeEach } from 'vitest';
-import { SimpleMockStore, createTestNode } from '../utils/test-utils';
-import { sampleTextNode } from '../fixtures/mock-nodes';
+import { describe, it, expect } from 'vitest';
+import { createTestNode, MOCK_TEXT_NODE } from '../helpers';
 
 describe('Basic Function Testing', () => {
   describe('Test Data Creation', () => {
@@ -12,87 +11,45 @@ describe('Basic Function Testing', () => {
       const node = createTestNode();
 
       expect(node.content).toBe('Test content');
-      expect(node.type).toBe('text');
-      expect(node.id).toContain('test-');
+      expect(node.nodeType).toBe('text');
+      expect(node.id).toContain('test-node-');
     });
 
     it('creates test node with overrides', () => {
       const node = createTestNode({
         content: 'Custom content',
-        type: 'task'
+        nodeType: 'task'
       });
 
       expect(node.content).toBe('Custom content');
-      expect(node.type).toBe('task');
-    });
-  });
-
-  describe('Mock Store Operations', () => {
-    let store: SimpleMockStore;
-
-    beforeEach(() => {
-      SimpleMockStore.resetInstance();
-      store = SimpleMockStore.getInstance();
-    });
-
-    it('saves and loads nodes', async () => {
-      const testNode = createTestNode({ content: 'Saved content' });
-
-      const savedId = await store.save(testNode);
-      expect(savedId).toBe(testNode.id);
-
-      const loaded = await store.load(testNode.id);
-      expect(loaded?.content).toBe('Saved content');
-    });
-
-    it('returns null for non-existent node', async () => {
-      const result = await store.load('non-existent-id');
-      expect(result).toBeNull();
-    });
-
-    it('tracks all saved nodes', async () => {
-      await store.save(createTestNode({ content: 'First' }));
-      await store.save(createTestNode({ content: 'Second' }));
-
-      const allNodes = store.getAll();
-      expect(allNodes).toHaveLength(2);
-
-      const contents = allNodes.map((n) => n.content);
-      expect(contents).toContain('First');
-      expect(contents).toContain('Second');
-    });
-
-    it('clears all nodes', async () => {
-      await store.save(createTestNode());
-      expect(store.getAll()).toHaveLength(1);
-
-      store.clear();
-      expect(store.getAll()).toHaveLength(0);
+      expect(node.nodeType).toBe('task');
     });
   });
 
   describe('Sample Data Validation', () => {
     it('has valid sample text node', () => {
-      expect(sampleTextNode.id).toBe('sample-text-1');
-      expect(sampleTextNode.type).toBe('text');
-      expect(sampleTextNode.content).toBe('This is a sample text node for testing.');
+      expect(MOCK_TEXT_NODE.id).toBe('mock-text-1');
+      expect(MOCK_TEXT_NODE.nodeType).toBe('text');
+      expect(MOCK_TEXT_NODE.content).toBe('This is a sample text node for testing.');
     });
 
     it('sample node has valid timestamps', () => {
-      expect(sampleTextNode.createdAt).toBeInstanceOf(Date);
-      expect(sampleTextNode.updatedAt).toBeInstanceOf(Date);
-      expect(sampleTextNode.updatedAt.getTime()).toBeGreaterThanOrEqual(
-        sampleTextNode.createdAt.getTime()
-      );
+      // Timestamps are ISO strings in the new format
+      expect(MOCK_TEXT_NODE.createdAt).toBeTruthy();
+      expect(MOCK_TEXT_NODE.modifiedAt).toBeTruthy();
+      expect(new Date(MOCK_TEXT_NODE.createdAt).getTime()).toBeGreaterThan(0);
+      expect(new Date(MOCK_TEXT_NODE.modifiedAt).getTime()).toBeGreaterThan(0);
     });
   });
 
   describe('Node Content Validation', () => {
     it('validates node content is not empty', () => {
+      // Empty string is now preserved with ?? operator
       const emptyNode = createTestNode({ content: '' });
-      expect(emptyNode.content).toBe('');
+      expect(emptyNode.content).toBe(''); // Empty string preserved
 
       const validNode = createTestNode({ content: 'Valid content' });
+      expect(validNode.content).toBe('Valid content');
       expect(validNode.content.length).toBeGreaterThan(0);
     });
 
@@ -100,8 +57,8 @@ describe('Basic Function Testing', () => {
       const validTypes = ['text', 'task', 'ai-chat'];
 
       validTypes.forEach((type) => {
-        const node = createTestNode({ type: type as 'text' | 'task' | 'ai-chat' });
-        expect(validTypes).toContain(node.type);
+        const node = createTestNode({ nodeType: type });
+        expect(validTypes).toContain(node.nodeType);
       });
     });
   });

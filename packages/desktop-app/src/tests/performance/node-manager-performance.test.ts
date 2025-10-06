@@ -12,28 +12,7 @@ import {
   ReactiveNodeService as NodeManager
 } from '../../lib/services/reactiveNodeService.svelte.js';
 import type { NodeManagerEvents } from '../../lib/services/reactiveNodeService.svelte.js';
-
-// Helper to create unified Node format
-function createNode(
-  id: string,
-  content: string,
-  nodeType: string = 'text',
-  parentId: string | null = null,
-  properties: Record<string, unknown> = {}
-) {
-  return {
-    id,
-    nodeType: nodeType,
-    content,
-    parentId: parentId,
-    originNodeId: null,
-    beforeSiblingId: null,
-    createdAt: new Date().toISOString(),
-    modifiedAt: new Date().toISOString(),
-    mentions: [] as string[],
-    properties
-  };
-}
+import { createTestNode } from '../helpers';
 
 describe('NodeManager Performance Tests', () => {
   let nodeManager: NodeManager;
@@ -61,7 +40,9 @@ describe('NodeManager Performance Tests', () => {
       const parentId = i > 0 && i !== parentIndex ? `node-${parentIndex}` : null;
 
       nodes.push(
-        createNode(nodeId, `Content for node ${i}`, 'text', parentId, { created: Date.now() })
+        createTestNode(nodeId, `Content for node ${i}`, 'text', parentId, {
+          createdAt: new Date().toISOString()
+        })
       );
     }
 
@@ -156,7 +137,7 @@ describe('NodeManager Performance Tests', () => {
     const nestedDataset = [];
     for (let i = 0; i < 1000; i++) {
       const parentId = i > 0 ? `node-${i - 1}` : null;
-      nestedDataset.push(createNode(`node-${i}`, `Content ${i}`, 'text', parentId));
+      nestedDataset.push(createTestNode(`node-${i}`, `Content ${i}`, 'text', parentId));
     }
 
     nodeManager.initializeNodes(nestedDataset, {

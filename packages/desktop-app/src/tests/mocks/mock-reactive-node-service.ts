@@ -72,6 +72,12 @@ export function createMockReactiveNodeService(events: NodeManagerEvents) {
     }
   }
 
+  /**
+   * Create a node via the mock service (internal service API, not a test helper)
+   *
+   * This is part of the mock ReactiveNodeService interface.
+   * For creating test data, use createTestNode() from @tests/helpers instead.
+   */
   function createNode(
     afterNodeId: string,
     content: string = '',
@@ -202,18 +208,7 @@ export function createMockReactiveNodeService(events: NodeManagerEvents) {
 
     // Initialize nodes with UI state options
     initializeNodes(
-      nodes: Array<{
-        id: string;
-        nodeType: string;
-        content: string;
-        parentId: string | null;
-        originNodeId: string | null;
-        beforeSiblingId: string | null;
-        createdAt: string;
-        modifiedAt: string;
-        mentions: string[];
-        properties: Record<string, unknown>;
-      }>,
+      nodes: Array<import('$lib/types/node').Node>,
       options?: {
         expanded?: boolean;
         autoFocus?: boolean;

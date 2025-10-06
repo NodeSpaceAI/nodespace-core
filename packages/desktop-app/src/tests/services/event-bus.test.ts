@@ -16,6 +16,7 @@ import type {
   EventFilter,
   DecorationClickedEvent
 } from '../../lib/services/eventTypes';
+import { waitForEffects } from '../helpers';
 
 // Helper functions for creating typed test events
 const createNodeStatusEvent = (
@@ -248,7 +249,7 @@ describe('EventBus', () => {
       expect(handler).not.toHaveBeenCalled();
 
       // Wait for debounce delay
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await waitForEffects(100);
 
       // Should be called only once with the last event
       expect(handler).toHaveBeenCalledTimes(1);
@@ -286,7 +287,7 @@ describe('EventBus', () => {
       eventBus.emit(createNodeStatusEvent({ nodeId: 'node3', status: 'editing' }));
 
       // Wait for batch processing
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await waitForEffects(100);
 
       // All events should have been processed
       expect(handler).toHaveBeenCalledTimes(3);
@@ -408,7 +409,7 @@ describe('EventBus', () => {
       eventBus.emit(createNodeStatusEvent());
 
       // Wait for async processing
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await waitForEffects(10);
 
       expect(normalHandler).toHaveBeenCalled();
     });

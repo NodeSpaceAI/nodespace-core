@@ -3,24 +3,25 @@
  * Tests complete workflows across multiple components and systems
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { SimpleMockStore, createTestNode, type MockNodeData } from '../utils/test-utils';
+import { createTestNode, waitForEffects } from '../helpers';
+import type { Node } from '$lib/types/node';
 
 // Mock API layer for integration testing
 class MockNodeAPI {
-  constructor(private dataStore: SimpleMockStore) {}
+  private nodes = new Map<string, Node>();
 
-  async createNode(nodeData: { content: string; type: 'text' | 'task' | 'ai-chat' }) {
+  async createNode(nodeData: { content: string; nodeType: 'text' | 'task' | 'ai-chat' }) {
     const node = createTestNode({
       content: nodeData.content,
-      type: nodeData.type
+      nodeType: nodeData.nodeType
     });
 
-    await this.dataStore.save(node);
+    this.nodes.set(node.id, node);
     return node;
   }
 
   async updateNode(id: string, updates: { content?: string }) {
-    const existing = await this.dataStore.load(id);
+    const existing = this.nodes.get(id);
     if (!existing) {
       throw new Error(`Node ${id} not found`);
     }
@@ -28,53 +29,56 @@ class MockNodeAPI {
     const updated = {
       ...existing,
       ...updates,
-      updatedAt: new Date()
+      modifiedAt: new Date().toISOString()
     };
 
-    await this.dataStore.save(updated);
+    this.nodes.set(id, updated);
     return updated;
   }
 
   async deleteNode(id: string): Promise<boolean> {
-    const existing = await this.dataStore.load(id);
+    const existing = this.nodes.get(id);
     if (!existing) {
       return false;
     }
 
-    // Mock deletion by removing from store
-    const allNodes = this.dataStore.getAll();
-    this.dataStore.clear();
-    allNodes.filter((n) => n.id !== id).forEach((n) => this.dataStore.save(n));
-
+    this.nodes.delete(id);
     return true;
   }
 
   async searchNodes(query: string) {
-    const allNodes = this.dataStore.getAll();
-    return allNodes.filter((node) => node.content.toLowerCase().includes(query.toLowerCase()));
+    const allNodes = Array.from(this.nodes.values());
+    return allNodes.filter((node: Node) =>
+      node.content.toLowerCase().includes(query.toLowerCase())
+    );
   }
 
-  async getNodesByType(type: string) {
-    const allNodes = this.dataStore.getAll();
-    return allNodes.filter((node) => node.type === type);
+  async getNodesByType(nodeType: string) {
+    const allNodes = Array.from(this.nodes.values());
+    return allNodes.filter((node: Node) => node.nodeType === nodeType);
+  }
+
+  getAll() {
+    return Array.from(this.nodes.values());
+  }
+
+  clear() {
+    this.nodes.clear();
   }
 }
 
 // Mock NodeManager that orchestrates the workflow
 class MockNodeManager {
-  constructor(
-    private api: MockNodeAPI,
-    private dataStore: SimpleMockStore
-  ) {}
+  constructor(private api: MockNodeAPI) {}
 
-  async createAndSaveNode(content: string, type: 'text' | 'task' | 'ai-chat' = 'text') {
+  async createAndSaveNode(content: string, nodeType: 'text' | 'task' | 'ai-chat' = 'text') {
     // Validate input
     if (!content.trim()) {
       throw new Error('Content cannot be empty');
     }
 
     // Create node via API
-    const node = await this.api.createNode({ content, type });
+    const node = await this.api.createNode({ content, nodeType });
 
     // Simulate additional processing
     await this.processNode(node);
@@ -98,7 +102,8 @@ class MockNodeManager {
 
   async deleteNodeAndCleanup(id: string) {
     // Simulate cleanup operations
-    const node = await this.dataStore.load(id);
+    const allNodes = this.api.getAll();
+    const node = allNodes.find((n: Node) => n.id === id);
     if (node) {
       // Log operation (in real app, might update audit log)
       console.log(`Deleting node: ${node.id} - ${node.content.substring(0, 50)}`);
@@ -118,9 +123,9 @@ class MockNodeManager {
     return results;
   }
 
-  private async processNode(node: MockNodeData) {
+  private async processNode(node: Node) {
     // Simulate processing delay
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitForEffects(10);
 
     // Simulate node processing (e.g., extracting metadata, indexing, etc.)
     return node;
@@ -128,15 +133,12 @@ class MockNodeManager {
 }
 
 describe('Node Management Integration Tests', () => {
-  let dataStore: SimpleMockStore;
   let api: MockNodeAPI;
   let nodeManager: MockNodeManager;
 
   beforeEach(() => {
-    SimpleMockStore.resetInstance();
-    dataStore = SimpleMockStore.getInstance();
-    api = new MockNodeAPI(dataStore);
-    nodeManager = new MockNodeManager(api, dataStore);
+    api = new MockNodeAPI();
+    nodeManager = new MockNodeManager(api);
   });
 
   describe('Complete Node Lifecycle', () => {
@@ -147,7 +149,8 @@ describe('Node Management Integration Tests', () => {
       expect(created.id).toBeTruthy();
 
       // Read
-      const retrieved = await dataStore.load(created.id);
+      const allNodes = api.getAll();
+      const retrieved = allNodes.find((n: Node) => n.id === created.id);
       expect(retrieved).toBeTruthy();
       expect(retrieved!.content).toBe('Initial content');
 
@@ -161,8 +164,8 @@ describe('Node Management Integration Tests', () => {
       expect(deleted).toBe(true);
 
       // Verify deletion
-      const afterDelete = await dataStore.load(created.id);
-      expect(afterDelete).toBeNull();
+      const afterDelete = api.getAll().find((n: Node) => n.id === created.id);
+      expect(afterDelete).toBeUndefined();
     });
 
     it('handles node creation with validation', async () => {
@@ -190,7 +193,7 @@ describe('Node Management Integration Tests', () => {
       expect(created[2].content).toBe('Third note');
 
       // Verify all nodes are in store
-      const allNodes = dataStore.getAll();
+      const allNodes = api.getAll();
       expect(allNodes).toHaveLength(3);
     });
 
@@ -206,8 +209,8 @@ describe('Node Management Integration Tests', () => {
       // Search for 'notes'
       const notesResults = await api.searchNodes('notes');
       expect(notesResults).toHaveLength(2);
-      expect(notesResults.some((n) => n.content.includes('Meeting notes'))).toBe(true);
-      expect(notesResults.some((n) => n.content.includes('Notes about'))).toBe(true);
+      expect(notesResults.some((n: Node) => n.content.includes('Meeting notes'))).toBe(true);
+      expect(notesResults.some((n: Node) => n.content.includes('Notes about'))).toBe(true);
 
       // Search for 'project'
       const projectResults = await api.searchNodes('project');
@@ -221,15 +224,15 @@ describe('Node Management Integration Tests', () => {
 
     it('filters nodes by type', async () => {
       // Create mixed node types
-      await api.createNode({ content: 'Text note', type: 'text' });
-      await api.createNode({ content: 'Complete project', type: 'task' });
-      await api.createNode({ content: 'Another text note', type: 'text' });
-      await api.createNode({ content: 'Help with coding', type: 'ai-chat' });
+      await api.createNode({ content: 'Text note', nodeType: 'text' });
+      await api.createNode({ content: 'Complete project', nodeType: 'task' });
+      await api.createNode({ content: 'Another text note', nodeType: 'text' });
+      await api.createNode({ content: 'Help with coding', nodeType: 'ai-chat' });
 
       // Filter by type
       const textNodes = await api.getNodesByType('text');
       expect(textNodes).toHaveLength(2);
-      expect(textNodes.every((n) => n.type === 'text')).toBe(true);
+      expect(textNodes.every((n: Node) => n.nodeType === 'text')).toBe(true);
 
       const taskNodes = await api.getNodesByType('task');
       expect(taskNodes).toHaveLength(1);
@@ -261,7 +264,7 @@ describe('Node Management Integration Tests', () => {
       await expect(nodeManager.editNode(node.id, '')).rejects.toThrow('Content cannot be empty');
 
       // Verify node content unchanged
-      const unchanged = await dataStore.load(node.id);
+      const unchanged = api.getAll().find((n: Node) => n.id === node.id);
       expect(unchanged!.content).toBe('Original content');
     });
 
@@ -275,12 +278,12 @@ describe('Node Management Integration Tests', () => {
       expect(results).toHaveLength(5);
 
       // All nodes should have unique IDs
-      const ids = results.map((n) => n.id);
+      const ids = results.map((n: Node) => n.id);
       const uniqueIds = new Set(ids);
       expect(uniqueIds.size).toBe(5);
 
       // All nodes should be in store
-      const allNodes = dataStore.getAll();
+      const allNodes = api.getAll();
       expect(allNodes).toHaveLength(5);
     });
   });
@@ -298,16 +301,16 @@ describe('Node Management Integration Tests', () => {
       await nodeManager.deleteNodeAndCleanup(nodes[1].id);
 
       // Verify final state
-      const allNodes = dataStore.getAll();
+      const allNodes = api.getAll();
       expect(allNodes).toHaveLength(2);
 
-      const node1 = await dataStore.load(nodes[0].id);
+      const node1 = allNodes.find((n: Node) => n.id === nodes[0].id);
       expect(node1!.content).toBe('Updated Node 1');
 
-      const node2 = await dataStore.load(nodes[1].id);
-      expect(node2).toBeNull();
+      const node2 = allNodes.find((n: Node) => n.id === nodes[1].id);
+      expect(node2).toBeUndefined();
 
-      const node3 = await dataStore.load(nodes[2].id);
+      const node3 = allNodes.find((n: Node) => n.id === nodes[2].id);
       expect(node3!.content).toBe('Updated Node 3');
     });
 
@@ -316,16 +319,16 @@ describe('Node Management Integration Tests', () => {
 
       // Create node
       const created = await nodeManager.createAndSaveNode('Timestamp test');
-      expect(created.createdAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
-      expect(created.updatedAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
+      expect(new Date(created.createdAt).getTime()).toBeGreaterThanOrEqual(before.getTime());
+      expect(new Date(created.modifiedAt).getTime()).toBeGreaterThanOrEqual(before.getTime());
 
       // Wait a bit then update
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await waitForEffects(50);
       const updateBefore = new Date();
 
       const updated = await nodeManager.editNode(created.id, 'Updated content');
-      expect(updated.createdAt.getTime()).toBe(created.createdAt.getTime()); // Should not change
-      expect(updated.updatedAt.getTime()).toBeGreaterThanOrEqual(updateBefore.getTime()); // Should be updated
+      expect(new Date(updated.createdAt).getTime()).toBe(new Date(created.createdAt).getTime()); // Should not change
+      expect(new Date(updated.modifiedAt).getTime()).toBeGreaterThanOrEqual(updateBefore.getTime()); // Should be updated
     });
   });
 
@@ -352,13 +355,16 @@ describe('Node Management Integration Tests', () => {
 
     it('memory usage remains reasonable', () => {
       // This is a simplified check - in real apps you might use memory profiling
-      const initialNodes = dataStore.getAll().length;
-      expect(initialNodes).toBe(0);
+      // Each test starts with a fresh API instance, so create some nodes first
+      const contents = Array.from({ length: 50 }, (_, i) => `Memory test node ${i + 1}`);
+      contents.forEach((content) => api.createNode({ content, nodeType: 'text' }));
 
-      // The previous test created 100 nodes, verify they can be garbage collected
-      SimpleMockStore.resetInstance();
-      const newStore = SimpleMockStore.getInstance();
-      expect(newStore.getAll()).toHaveLength(0);
+      const initialNodes = api.getAll().length;
+      expect(initialNodes).toBe(50); // Should have the nodes we just created
+
+      // Clear the API to verify cleanup
+      api.clear();
+      expect(api.getAll()).toHaveLength(0);
     });
   });
 });

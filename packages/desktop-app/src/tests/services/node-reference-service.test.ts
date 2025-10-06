@@ -35,28 +35,7 @@ import { ContentProcessor } from '../../lib/services/contentProcessor';
 import { eventBus } from '../../lib/services/eventBus';
 import type { ReferencesUpdateNeededEvent, NodeDeletedEvent } from '../../lib/services/eventTypes';
 import type { Node } from '../../lib/types/node';
-
-// Helper to create unified Node objects for tests
-function createNode(
-  id: string,
-  content: string,
-  nodeType: string = 'text',
-  parentId: string | null = null,
-  properties: Record<string, unknown> = {}
-) {
-  return {
-    id,
-    nodeType: nodeType,
-    content,
-    parentId: parentId,
-    originNodeId: null,
-    beforeSiblingId: null,
-    createdAt: new Date().toISOString(),
-    modifiedAt: new Date().toISOString(),
-    mentions: [] as string[],
-    properties
-  };
-}
+import { createTestNode, waitForEffects } from '../helpers';
 
 // Mock document for test environment
 Object.defineProperty(global, 'document', {
@@ -211,7 +190,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
     nodeManager = createReactiveNodeService(mockEvents);
 
     // Initialize with a root node so other nodes can be created after it
-    nodeManager.initializeNodes([createNode('root', 'Root node')], {
+    nodeManager.initializeNodes([createTestNode('root', 'Root node')], {
       autoFocus: false,
       inheritHeaderLevel: 0,
       expanded: true
@@ -750,7 +729,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
       } as Omit<NodeDeletedEvent, 'timestamp'>);
 
       // Give time for cleanup to process
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await waitForEffects(50);
 
       // References to deleted node should be cleaned up
       outgoing = nodeReferenceService.getOutgoingReferences(sourceNodeId);

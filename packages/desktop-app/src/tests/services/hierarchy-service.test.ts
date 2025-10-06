@@ -28,7 +28,7 @@
   fn();
 };
 
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach } from 'vitest';
 import {
   createReactiveNodeService,
   ReactiveNodeService as NodeManager,
@@ -36,28 +36,7 @@ import {
 } from '../../lib/services/reactiveNodeService.svelte.js';
 import { HierarchyService } from '../../lib/services/hierarchyService';
 import { eventBus } from '../../lib/services/eventBus';
-
-// Helper to create unified Node objects for tests
-function createNode(
-  id: string,
-  content: string,
-  nodeType: string = 'text',
-  parentId: string | null = null,
-  properties: Record<string, unknown> = {}
-) {
-  return {
-    id,
-    nodeType: nodeType,
-    content,
-    parentId: parentId,
-    originNodeId: null,
-    beforeSiblingId: null,
-    createdAt: new Date().toISOString(),
-    modifiedAt: new Date().toISOString(),
-    mentions: [] as string[],
-    properties
-  };
-}
+import { createTestNode, createMockNodeManagerEvents, waitForEffects } from '../helpers';
 
 // Test helper interfaces
 interface TestHierarchyNode {
@@ -69,10 +48,17 @@ interface TestHierarchyNode {
 
 // Helper function to flatten nested test data for initializeNodes
 function flattenTestHierarchy(nodes: TestHierarchyNode[]) {
-  const flatNodes: ReturnType<typeof createNode>[] = [];
+  const flatNodes: ReturnType<typeof createTestNode>[] = [];
 
   function processNode(node: TestHierarchyNode, parentId: string | null = null): void {
-    flatNodes.push(createNode(node.id, node.content, node.type, parentId));
+    flatNodes.push(
+      createTestNode({
+        id: node.id,
+        content: node.content,
+        nodeType: node.type,
+        parentId: parentId
+      })
+    );
 
     // Recursively process children with this node as parent
     for (const child of node.children) {
@@ -97,12 +83,7 @@ describe('HierarchyService', () => {
     eventBus.reset();
 
     // Create mock events
-    events = {
-      focusRequested: vi.fn(),
-      hierarchyChanged: vi.fn(),
-      nodeCreated: vi.fn(),
-      nodeDeleted: vi.fn()
-    };
+    events = createMockNodeManagerEvents();
 
     // Initialize services
     nodeManager = createReactiveNodeService(events);
@@ -424,11 +405,17 @@ describe('HierarchyService', () => {
     });
 
     test('handles root-level siblings correctly', () => {
-      nodeManager.initializeNodes([createNode('root1', 'Root 1'), createNode('root2', 'Root 2')], {
-        expanded: true,
-        autoFocus: false,
-        inheritHeaderLevel: 0
-      });
+      nodeManager.initializeNodes(
+        [
+          createTestNode({ id: 'root1', content: 'Root 1' }),
+          createTestNode({ id: 'root2', content: 'Root 2' })
+        ],
+        {
+          expanded: true,
+          autoFocus: false,
+          inheritHeaderLevel: 0
+        }
+      );
 
       const siblings = hierarchyService.getSiblings('root1');
       expect(siblings).toEqual(['root1', 'root2']);
@@ -520,7 +507,7 @@ describe('HierarchyService', () => {
     });
 
     test('getNodePath handles root nodes correctly', () => {
-      nodeManager.initializeNodes([createNode('root-only', 'Root only')], {
+      nodeManager.initializeNodes([createTestNode({ id: 'root-only', content: 'Root only' })], {
         expanded: true,
         autoFocus: false,
         inheritHeaderLevel: 0
@@ -660,7 +647,7 @@ describe('HierarchyService', () => {
 
   describe('EventBus Integration', () => {
     test('responds to node:updated events', async () => {
-      nodeManager.initializeNodes([createNode('test-node', 'Test node')], {
+      nodeManager.initializeNodes([createTestNode('test-node', 'Test node')], {
         expanded: true,
         autoFocus: false,
         inheritHeaderLevel: 0
@@ -683,7 +670,7 @@ describe('HierarchyService', () => {
       });
 
       // Allow event processing
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await waitForEffects(10);
 
       // Cache should be invalidated
       stats = hierarchyService.getCacheStats();
@@ -721,7 +708,7 @@ describe('HierarchyService', () => {
       });
 
       // Allow event processing
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await waitForEffects(10);
 
       // Caches for affected nodes should be invalidated
       // This is verified by the service responding to the event

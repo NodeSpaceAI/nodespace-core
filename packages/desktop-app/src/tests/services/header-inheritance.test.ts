@@ -29,43 +29,18 @@ import {
   createReactiveNodeService,
   type NodeManagerEvents
 } from '$lib/services/reactiveNodeService.svelte';
-
-// Helper to create unified Node format
-function createNode(
-  id: string,
-  content: string,
-  nodeType: string = 'text',
-  parentId: string | null = null
-) {
-  return {
-    id,
-    nodeType: nodeType,
-    content,
-    parentId: parentId,
-    originNodeId: null,
-    beforeSiblingId: null,
-    createdAt: new Date().toISOString(),
-    modifiedAt: new Date().toISOString(),
-    mentions: [] as string[],
-    properties: {}
-  };
-}
+import { createTestNode, createMockNodeManagerEvents } from '../helpers';
 
 describe('Header Syntax Inheritance Fix', () => {
   let nodeService: ReturnType<typeof createReactiveNodeService>;
   let mockEvents: NodeManagerEvents;
 
   beforeEach(() => {
-    mockEvents = {
-      focusRequested: () => {},
-      hierarchyChanged: () => {},
-      nodeCreated: () => {},
-      nodeDeleted: () => {}
-    };
+    mockEvents = createMockNodeManagerEvents();
     nodeService = createReactiveNodeService(mockEvents);
 
     // Initialize with basic structure to have nodes to work with
-    nodeService.initializeNodes([createNode('root-node', 'Root node')], {
+    nodeService.initializeNodes([createTestNode({ id: 'root-node', content: 'Root node' })], {
       expanded: true,
       autoFocus: false,
       inheritHeaderLevel: 0

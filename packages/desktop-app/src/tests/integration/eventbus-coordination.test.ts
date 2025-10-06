@@ -38,8 +38,7 @@ import {
   isDecorationClickedEvent,
   isHierarchyChangedEvent
 } from '../utils/type-guards';
-import { createNode } from '../fixtures/mock-nodes';
-import { waitForEffects } from '../components/svelte-test-utils';
+import { waitForEffects, createTestNode } from '../helpers';
 import {
   ASYNC_HANDLER_TIMEOUT_MS,
   ASYNC_ERROR_PROPAGATION_TIMEOUT_MS
@@ -87,7 +86,7 @@ describe('EventBus Multi-Service Coordination', () => {
       const handler3 = vi.fn();
 
       // Initialize with root node first
-      nodeManager.initializeNodes([createNode('root-1', 'Root node')], {
+      nodeManager.initializeNodes([createTestNode('root-1', 'Root node')], {
         inheritHeaderLevel: 0,
         expanded: true,
         autoFocus: false
@@ -143,7 +142,7 @@ describe('EventBus Multi-Service Coordination', () => {
       });
 
       // Initialize node and update content to trigger events
-      nodeManager.initializeNodes([createNode('node-1', 'Original')], {
+      nodeManager.initializeNodes([createTestNode('node-1', 'Original')], {
         inheritHeaderLevel: 0,
         expanded: true,
         autoFocus: false
@@ -227,7 +226,7 @@ describe('EventBus Multi-Service Coordination', () => {
       const wildcardEvents: NodeSpaceEvent[] = [];
 
       // Initialize node first
-      nodeManager.initializeNodes([createNode('node-1', 'Test')], {
+      nodeManager.initializeNodes([createTestNode('node-1', 'Test')], {
         inheritHeaderLevel: 0,
         expanded: true,
         autoFocus: false
@@ -261,7 +260,7 @@ describe('EventBus Multi-Service Coordination', () => {
       eventBus.subscribe('decoration:update-needed', decorationHandler);
 
       // Initialize node
-      nodeManager.initializeNodes([createNode('node-1', 'Original content')], {
+      nodeManager.initializeNodes([createTestNode('node-1', 'Original content')], {
         inheritHeaderLevel: 0,
         expanded: true,
         autoFocus: false
@@ -287,7 +286,10 @@ describe('EventBus Multi-Service Coordination', () => {
 
       // Initialize nodes
       nodeManager.initializeNodes(
-        [createNode('parent-1', 'Parent'), createNode('child-1', 'Child', 'text', 'parent-1')],
+        [
+          createTestNode('parent-1', 'Parent'),
+          createTestNode('child-1', 'Child', 'text', 'parent-1')
+        ],
         {
           inheritHeaderLevel: 0,
           expanded: true,
@@ -352,7 +354,7 @@ describe('EventBus Multi-Service Coordination', () => {
       eventBus.subscribe('references:update-needed', referenceHandler);
 
       // Initialize node
-      nodeManager.initializeNodes([createNode('node-1', 'Original content')], {
+      nodeManager.initializeNodes([createTestNode('node-1', 'Original content')], {
         inheritHeaderLevel: 0,
         expanded: true,
         autoFocus: false
@@ -379,7 +381,7 @@ describe('EventBus Multi-Service Coordination', () => {
       eventBus.subscribe('hierarchy:changed', hierarchyHandler);
 
       // Initialize nodes
-      nodeManager.initializeNodes([createNode('node-1', 'Node 1')], {
+      nodeManager.initializeNodes([createTestNode('node-1', 'Node 1')], {
         inheritHeaderLevel: 0,
         expanded: true,
         autoFocus: false
@@ -652,7 +654,7 @@ describe('EventBus Multi-Service Coordination', () => {
         throw new Error('Async handler failed');
       });
       const asyncSuccessHandler = vi.fn(async (_event: NodeUpdatedEvent) => {
-        await new Promise((resolve) => setTimeout(resolve, ASYNC_HANDLER_TIMEOUT_MS));
+        await waitForEffects(ASYNC_HANDLER_TIMEOUT_MS);
       });
 
       eventBus.subscribe('node:updated', asyncErrorHandler);

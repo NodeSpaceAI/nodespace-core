@@ -17,6 +17,7 @@ import type {
   NodeUpdatedEvent,
   CacheInvalidateEvent
 } from '../../lib/services/eventTypes';
+import { waitForEffects } from '../helpers';
 
 describe('EventBus Performance', () => {
   let eventBus: EventBus;
@@ -218,7 +219,7 @@ describe('EventBus Performance', () => {
       const emitTime = performance.now() - startTime;
 
       // Wait for batch processing
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await waitForEffects(100);
 
       // Batching should improve emit performance
       expect(emitTime).toBeLessThan(50);
@@ -311,7 +312,7 @@ describe('EventBus Performance', () => {
       expect(handlerCallCount).toBe(0);
 
       // Wait for debounce
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await waitForEffects(100);
 
       // Should only be called once due to debouncing
       expect(handlerCallCount).toBe(1);
@@ -502,7 +503,7 @@ describe('EventBus Performance', () => {
         durations.push(endTime - startTime);
 
         // Small delay between iterations
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        await waitForEffects(10);
       }
 
       // Performance should remain consistent across iterations

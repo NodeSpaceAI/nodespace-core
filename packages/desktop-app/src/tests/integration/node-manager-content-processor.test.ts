@@ -4,33 +4,12 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
+import { createTestNode } from '../helpers';
 import {
   createMockReactiveNodeService,
   type MockReactiveNodeService,
   type NodeManagerEvents
 } from '../mocks/mock-reactive-node-service';
-
-// Helper to create unified Node objects for tests
-function createNode(
-  id: string,
-  content: string,
-  nodeType: string = 'text',
-  parentId: string | null = null,
-  properties: Record<string, unknown> = {}
-) {
-  return {
-    id,
-    nodeType: nodeType,
-    content,
-    parentId: parentId,
-    originNodeId: null,
-    beforeSiblingId: null,
-    createdAt: new Date().toISOString(),
-    modifiedAt: new Date().toISOString(),
-    mentions: [] as string[],
-    properties
-  };
-}
 
 describe('NodeManager + ContentProcessor Integration', () => {
   let nodeManager: MockReactiveNodeService;
@@ -50,7 +29,7 @@ describe('NodeManager + ContentProcessor Integration', () => {
     test('parseNodeContent should parse markdown content to AST', () => {
       // Initialize with test data including our target node
       nodeManager.initializeNodes(
-        [createNode('test-node', '# Test Header\n\nSome **bold** text')],
+        [createTestNode('test-node', '# Test Header\n\nSome **bold** text')],
         {
           expanded: true,
           autoFocus: false,
@@ -68,11 +47,14 @@ describe('NodeManager + ContentProcessor Integration', () => {
 
     test('renderNodeAsHTML should convert markdown to HTML', async () => {
       // Initialize with test data
-      nodeManager.initializeNodes([createNode('html-test-node', '**Bold text** with *italics*')], {
-        expanded: true,
-        autoFocus: false,
-        inheritHeaderLevel: 0
-      });
+      nodeManager.initializeNodes(
+        [createTestNode('html-test-node', '**Bold text** with *italics*')],
+        {
+          expanded: true,
+          autoFocus: false,
+          inheritHeaderLevel: 0
+        }
+      );
 
       // Render as HTML
       const html = await nodeManager.renderNodeAsHTML('html-test-node');
@@ -84,9 +66,9 @@ describe('NodeManager + ContentProcessor Integration', () => {
     test('getNodeHeaderLevel should detect header levels', () => {
       nodeManager.initializeNodes(
         [
-          createNode('h1-node', '# Header 1'),
-          createNode('h2-node', '## Header 2'),
-          createNode('text-node', 'Regular text')
+          createTestNode('h1-node', '# Header 1'),
+          createTestNode('h2-node', '## Header 2'),
+          createTestNode('text-node', 'Regular text')
         ],
         {
           expanded: true,
@@ -101,7 +83,7 @@ describe('NodeManager + ContentProcessor Integration', () => {
     });
 
     test('getNodeDisplayText should strip markdown syntax', () => {
-      nodeManager.initializeNodes([createNode('header-node', '## This is a header')], {
+      nodeManager.initializeNodes([createTestNode('header-node', '## This is a header')], {
         expanded: true,
         autoFocus: false,
         inheritHeaderLevel: 0
@@ -113,7 +95,7 @@ describe('NodeManager + ContentProcessor Integration', () => {
     });
 
     test('updateNodeContentWithProcessing should update content and header level', () => {
-      nodeManager.initializeNodes([createNode('update-test-node', 'Regular text')], {
+      nodeManager.initializeNodes([createTestNode('update-test-node', 'Regular text')], {
         expanded: true,
         autoFocus: false,
         inheritHeaderLevel: 0
@@ -144,7 +126,7 @@ This is a paragraph with **bold** and *italic* text.
 
 \`code block\``;
 
-      nodeManager.initializeNodes([createNode('complex-node', complexContent)], {
+      nodeManager.initializeNodes([createTestNode('complex-node', complexContent)], {
         expanded: true,
         autoFocus: false,
         inheritHeaderLevel: 0
@@ -194,7 +176,7 @@ This is a paragraph with **bold** and *italic* text.
               ? `**Bold text ${i}** with *italic*`
               : `Regular paragraph text for node ${i}`;
 
-        testNodes.push(createNode(`perf-node-${i}`, content));
+        testNodes.push(createTestNode(`perf-node-${i}`, content));
       }
 
       nodeManager.initializeNodes(testNodes, {

@@ -29,28 +29,7 @@ import {
   type ReactiveNodeService as NodeManager,
   type NodeManagerEvents
 } from '../../lib/services/reactiveNodeService.svelte.js';
-
-// Helper to create unified Node format from test data
-function createNode(
-  id: string,
-  content: string,
-  nodeType: string = 'text',
-  parentId: string | null = null,
-  properties: Record<string, unknown> = {}
-) {
-  return {
-    id,
-    nodeType: nodeType,
-    content,
-    parentId: parentId,
-    originNodeId: null,
-    beforeSiblingId: null,
-    createdAt: new Date().toISOString(),
-    modifiedAt: new Date().toISOString(),
-    mentions: [] as string[],
-    properties
-  };
-}
+import { createTestNode, createMockNodeManagerEvents } from '../helpers';
 
 describe('NodeManager', () => {
   let nodeManager: NodeManager;
@@ -70,19 +49,24 @@ describe('NodeManager', () => {
     nodeCreatedCalls = [];
     nodeDeletedCalls = [];
 
-    // Create mock events
+    // Create mock events with custom tracking
+    const mockEvents = createMockNodeManagerEvents();
     events = {
       focusRequested: (nodeId: string, position?: number) => {
         focusRequestedCalls.push({ nodeId, position });
+        mockEvents.focusRequested(nodeId, position);
       },
       hierarchyChanged: () => {
         hierarchyChangedCalls++;
+        mockEvents.hierarchyChanged();
       },
       nodeCreated: (nodeId: string) => {
         nodeCreatedCalls.push(nodeId);
+        mockEvents.nodeCreated(nodeId);
       },
       nodeDeleted: (nodeId: string) => {
         nodeDeletedCalls.push(nodeId);
+        mockEvents.nodeDeleted(nodeId);
       }
     };
 
@@ -93,10 +77,10 @@ describe('NodeManager', () => {
     beforeEach(() => {
       // Setup test nodes for combination tests
       const testNodes = [
-        createNode('node1', 'First content'),
-        createNode('node2', 'Second content'),
-        createNode('node3', 'Third content'),
-        createNode('child1', 'Child content', 'text', 'node3')
+        createTestNode({ id: 'node1', content: 'First content' }),
+        createTestNode({ id: 'node2', content: 'Second content' }),
+        createTestNode({ id: 'node3', content: 'Third content' }),
+        createTestNode({ id: 'child1', content: 'Child content', parentId: 'node3' })
       ];
       nodeManager.initializeNodes(testNodes, {
         expanded: true,
@@ -207,13 +191,13 @@ describe('NodeManager', () => {
       // Children should maintain proper relative depth and parent assignments
 
       const depthTestNodes = [
-        createNode('root', 'Root'),
-        createNode('features', 'Node A', 'text', 'root'),
-        createNode('hierarchical', 'Node B', 'text', 'features'),
-        createNode('realtime', 'Node C (target)', 'text', 'features'),
-        createNode('formatting', 'Source Node', 'text', 'root'),
-        createNode('child1', 'Child 1', 'text', 'formatting'),
-        createNode('child2', 'Child 2', 'text', 'formatting')
+        createTestNode({ id: 'root', content: 'Root' }),
+        createTestNode({ id: 'features', content: 'Node A', parentId: 'root' }),
+        createTestNode({ id: 'hierarchical', content: 'Node B', parentId: 'features' }),
+        createTestNode({ id: 'realtime', content: 'Node C (target)', parentId: 'features' }),
+        createTestNode({ id: 'formatting', content: 'Source Node', parentId: 'root' }),
+        createTestNode({ id: 'child1', content: 'Child 1', parentId: 'formatting' }),
+        createTestNode({ id: 'child2', content: 'Child 2', parentId: 'formatting' })
       ];
 
       nodeManager.initializeNodes(depthTestNodes, {
@@ -252,7 +236,7 @@ describe('NodeManager', () => {
 
   describe('Core Operations', () => {
     beforeEach(() => {
-      const testNodes = [createNode('node1', 'Test content')];
+      const testNodes = [createTestNode({ id: 'node1', content: 'Test content' })];
       nodeManager.initializeNodes(testNodes, {
         expanded: true,
         autoFocus: false,
@@ -309,9 +293,9 @@ describe('NodeManager', () => {
   describe('Hierarchy Operations', () => {
     beforeEach(() => {
       const testNodes = [
-        createNode('parent', 'Parent'),
-        createNode('child1', 'Child 1'),
-        createNode('child2', 'Child 2')
+        createTestNode({ id: 'parent', content: 'Parent' }),
+        createTestNode({ id: 'child1', content: 'Child 1' }),
+        createTestNode({ id: 'child2', content: 'Child 2' })
       ];
       nodeManager.initializeNodes(testNodes, {
         expanded: true,
@@ -407,8 +391,8 @@ describe('NodeManager', () => {
   describe('Reactive State Management', () => {
     test('visibleNodes getter updates reactively', () => {
       const testNodes = [
-        createNode('node1', 'Node 1'),
-        createNode('child1', 'Child 1', 'text', 'node1')
+        createTestNode({ id: 'node1', content: 'Node 1' }),
+        createTestNode({ id: 'child1', content: 'Child 1', parentId: 'node1' })
       ];
       nodeManager.initializeNodes(testNodes, {
         expanded: true,
@@ -429,7 +413,7 @@ describe('NodeManager', () => {
     });
 
     test('node map updates preserve reactivity', () => {
-      const testNodes = [createNode('test', 'Test')];
+      const testNodes = [createTestNode({ id: 'test', content: 'Test' })];
       nodeManager.initializeNodes(testNodes, {
         expanded: true,
         autoFocus: false,
@@ -469,7 +453,7 @@ describe('NodeManager', () => {
       // Note: With typed interfaces, malformed data shouldn't compile
       // This test now validates that proper error handling exists
       const partialData = [
-        createNode('incomplete', '') // Empty content is valid
+        createTestNode({ id: 'incomplete', content: '' }) // Empty content is valid
       ];
 
       // Should not crash with minimal valid data
@@ -477,7 +461,11 @@ describe('NodeManager', () => {
     });
 
     test('maintains consistency after multiple operations', () => {
-      const testNodes = [createNode('a', 'A'), createNode('b', 'B'), createNode('c', 'C')];
+      const testNodes = [
+        createTestNode({ id: 'a', content: 'A' }),
+        createTestNode({ id: 'b', content: 'B' }),
+        createTestNode({ id: 'c', content: 'C' })
+      ];
       nodeManager.initializeNodes(testNodes, {
         expanded: true,
         autoFocus: false,

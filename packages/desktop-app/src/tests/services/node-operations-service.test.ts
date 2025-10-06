@@ -39,28 +39,7 @@ import { NodeOperationsService } from '../../lib/services/nodeOperationsService'
 import { ContentProcessor } from '../../lib/services/contentProcessor';
 import { eventBus } from '../../lib/services/eventBus';
 import type { Node } from '$lib/types';
-
-// Helper to create unified Node objects for tests
-function createNode(
-  id: string,
-  content: string,
-  nodeType: string = 'text',
-  parentId: string | null = null,
-  properties: Record<string, unknown> = {}
-) {
-  return {
-    id,
-    nodeType: nodeType,
-    content,
-    parentId: parentId,
-    originNodeId: null,
-    beforeSiblingId: null,
-    createdAt: new Date().toISOString(),
-    modifiedAt: new Date().toISOString(),
-    mentions: [] as string[],
-    properties
-  };
-}
+import { createTestNode, waitForEffects } from '../helpers';
 
 describe('NodeOperationsService', () => {
   let nodeManager: NodeManager;
@@ -94,9 +73,9 @@ describe('NodeOperationsService', () => {
     // Set up basic test data
     nodeManager.initializeNodes(
       [
-        createNode('root1', 'Root node 1'),
-        createNode('child1', 'Child node 1', 'text', 'root1'),
-        createNode('root2', 'Root node 2')
+        createTestNode('root1', 'Root node 1'),
+        createTestNode('child1', 'Child node 1', 'text', 'root1'),
+        createTestNode('root2', 'Root node 2')
       ],
       {
         autoFocus: false,
@@ -571,7 +550,7 @@ const x = 42;
       });
 
       // Allow event processing
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await waitForEffects(10);
 
       // The service should have processed the content for mentions
       // This is verified by the service not throwing errors during processing

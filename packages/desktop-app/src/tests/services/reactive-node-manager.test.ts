@@ -25,28 +25,7 @@ import type {
   NodeManagerEvents,
   ReactiveNodeService
 } from '../../lib/services/reactiveNodeService.svelte.js';
-
-// Helper to create unified Node objects for tests
-function createNode(
-  id: string,
-  content: string,
-  nodeType: string = 'text',
-  parentId: string | null = null,
-  properties: Record<string, unknown> = {}
-) {
-  return {
-    id,
-    nodeType: nodeType,
-    content,
-    parentId: parentId,
-    originNodeId: null,
-    beforeSiblingId: null,
-    createdAt: new Date().toISOString(),
-    modifiedAt: new Date().toISOString(),
-    mentions: [] as string[],
-    properties
-  };
-}
+import { createTestNode, createMockNodeManagerEvents } from '../helpers';
 
 describe('ReactiveNodeService - Reactive State Synchronization', () => {
   let nodeManager: ReactiveNodeService;
@@ -64,19 +43,24 @@ describe('ReactiveNodeService - Reactive State Synchronization', () => {
     nodeCreatedCalls = [];
     nodeDeletedCalls = [];
 
-    // Create mock events
+    // Create mock events with custom tracking
+    const mockEvents = createMockNodeManagerEvents();
     events = {
       focusRequested: (nodeId: string, position?: number) => {
         focusRequestedCalls.push({ nodeId, position });
+        mockEvents.focusRequested(nodeId, position);
       },
       hierarchyChanged: () => {
         // Track hierarchy changes
+        mockEvents.hierarchyChanged();
       },
       nodeCreated: (nodeId: string) => {
         nodeCreatedCalls.push(nodeId);
+        mockEvents.nodeCreated(nodeId);
       },
       nodeDeleted: (nodeId: string) => {
         nodeDeletedCalls.push(nodeId);
+        mockEvents.nodeDeleted(nodeId);
       }
     };
 
@@ -86,7 +70,7 @@ describe('ReactiveNodeService - Reactive State Synchronization', () => {
   describe('createNode Reactive State Synchronization', () => {
     test('createNode updates reactive state properly - single root node', () => {
       // Initialize with one root node (matches BaseNodeViewer)
-      nodeManager.initializeNodes([createNode('root1', 'Initial node')], {
+      nodeManager.initializeNodes([createTestNode({ id: 'root1', content: 'Initial node' })], {
         expanded: true,
         autoFocus: false,
         inheritHeaderLevel: 0
@@ -117,8 +101,13 @@ describe('ReactiveNodeService - Reactive State Synchronization', () => {
       // Initialize with parent-child structure
       nodeManager.initializeNodes(
         [
-          createNode('parent1', 'Parent node'),
-          createNode('child1', 'Child node', 'text', 'parent1')
+          createTestNode({ id: 'parent1', content: 'Parent node' }),
+          createTestNode({
+            id: 'child1',
+            content: 'Child node',
+            nodeType: 'text',
+            parentId: 'parent1'
+          })
         ],
         {
           expanded: true,
@@ -151,7 +140,7 @@ describe('ReactiveNodeService - Reactive State Synchronization', () => {
     });
 
     test('createNode maintains autoFocus state correctly', () => {
-      nodeManager.initializeNodes([createNode('node1', 'First node')], {
+      nodeManager.initializeNodes([createTestNode({ id: 'node1', content: 'First node' })], {
         expanded: true,
         autoFocus: true, // Initially has focus
         inheritHeaderLevel: 0
@@ -177,7 +166,7 @@ describe('ReactiveNodeService - Reactive State Synchronization', () => {
     });
 
     test('reactive state matches base class state after createNode', () => {
-      nodeManager.initializeNodes([createNode('test1', 'Test node')], {
+      nodeManager.initializeNodes([createTestNode({ id: 'test1', content: 'Test node' })], {
         expanded: true,
         autoFocus: false,
         inheritHeaderLevel: 0
@@ -208,9 +197,19 @@ describe('ReactiveNodeService - Reactive State Synchronization', () => {
       // Set up parent with children in collapsed state
       nodeManager.initializeNodes(
         [
-          createNode('parent1', 'Parent node'),
-          createNode('child1', 'Child 1', 'text', 'parent1'),
-          createNode('child2', 'Child 2', 'text', 'parent1')
+          createTestNode({ id: 'parent1', content: 'Parent node' }),
+          createTestNode({
+            id: 'child1',
+            content: 'Child 1',
+            nodeType: 'text',
+            parentId: 'parent1'
+          }),
+          createTestNode({
+            id: 'child2',
+            content: 'Child 2',
+            nodeType: 'text',
+            parentId: 'parent1'
+          })
         ],
         {
           expanded: false, // Collapsed - children should not transfer
@@ -242,9 +241,19 @@ describe('ReactiveNodeService - Reactive State Synchronization', () => {
       // Set up parent with children in expanded state
       nodeManager.initializeNodes(
         [
-          createNode('parent1', 'Parent node'),
-          createNode('child1', 'Child 1', 'text', 'parent1'),
-          createNode('child2', 'Child 2', 'text', 'parent1')
+          createTestNode({ id: 'parent1', content: 'Parent node' }),
+          createTestNode({
+            id: 'child1',
+            content: 'Child 1',
+            nodeType: 'text',
+            parentId: 'parent1'
+          }),
+          createTestNode({
+            id: 'child2',
+            content: 'Child 2',
+            nodeType: 'text',
+            parentId: 'parent1'
+          })
         ],
         {
           expanded: true, // Expanded - children should transfer
@@ -275,11 +284,17 @@ describe('ReactiveNodeService - Reactive State Synchronization', () => {
 
   describe('Other Operations - Regression Tests', () => {
     test('deleteNode still works correctly', () => {
-      nodeManager.initializeNodes([createNode('node1', 'First'), createNode('node2', 'Second')], {
-        expanded: true,
-        autoFocus: false,
-        inheritHeaderLevel: 0
-      });
+      nodeManager.initializeNodes(
+        [
+          createTestNode({ id: 'node1', content: 'First' }),
+          createTestNode({ id: 'node2', content: 'Second' })
+        ],
+        {
+          expanded: true,
+          autoFocus: false,
+          inheritHeaderLevel: 0
+        }
+      );
       expect(nodeManager.visibleNodes).toHaveLength(2);
 
       nodeManager.deleteNode('node1');
@@ -288,11 +303,17 @@ describe('ReactiveNodeService - Reactive State Synchronization', () => {
     });
 
     test('indentNode still works correctly', () => {
-      nodeManager.initializeNodes([createNode('node1', 'First'), createNode('node2', 'Second')], {
-        expanded: true,
-        autoFocus: false,
-        inheritHeaderLevel: 0
-      });
+      nodeManager.initializeNodes(
+        [
+          createTestNode({ id: 'node1', content: 'First' }),
+          createTestNode({ id: 'node2', content: 'Second' })
+        ],
+        {
+          expanded: true,
+          autoFocus: false,
+          inheritHeaderLevel: 0
+        }
+      );
 
       const success = nodeManager.indentNode('node2');
       expect(success).toBe(true);

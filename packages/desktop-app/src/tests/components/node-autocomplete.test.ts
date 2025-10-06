@@ -13,8 +13,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import NodeAutocomplete from '$lib/components/ui/node-autocomplete/node-autocomplete.svelte';
-import { createKeyboardEvent, waitForEffects, getAriaAttributes } from './svelte-test-utils';
+import { createKeyboardEvent, getAriaAttributes } from '../helpers';
 import type { NodeType } from '$lib/design/icons';
+import { waitForEffects, MOCK_AUTOCOMPLETE_RESULTS } from '../helpers';
 
 // Test data types
 interface NodeResult {
@@ -26,12 +27,8 @@ interface NodeResult {
 }
 
 describe('NodeAutocomplete', () => {
-  // Mock data
-  const mockResults: NodeResult[] = [
-    { id: 'node-1', title: 'First Node', type: 'text' },
-    { id: 'node-2', title: 'Second Node', type: 'task', subtitle: 'A task node' },
-    { id: 'node-3', title: 'Third Node', type: 'document', metadata: 'Additional info' }
-  ];
+  // Use unified mock data
+  const mockResults = MOCK_AUTOCOMPLETE_RESULTS.slice(0, 3);
 
   const defaultPosition = { x: 100, y: 100 };
 

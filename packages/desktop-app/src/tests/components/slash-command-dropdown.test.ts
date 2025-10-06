@@ -17,39 +17,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import SlashCommandDropdown from '$lib/components/ui/slash-command-dropdown/slash-command-dropdown.svelte';
-import { createKeyboardEvent, waitForEffects, getAriaAttributes } from './svelte-test-utils';
+import { createKeyboardEvent, getAriaAttributes } from '../helpers';
 import type { SlashCommand } from '$lib/services/slashCommandService';
+import { waitForEffects, MOCK_SLASH_COMMANDS } from '../helpers';
 
 describe('SlashCommandDropdown', () => {
-  // Mock data
-  const mockCommands: SlashCommand[] = [
-    {
-      id: 'header1',
-      name: 'Heading 1',
-      description: 'Large heading',
-      nodeType: 'text',
-      icon: 'text',
-      shortcut: '/h1',
-      headerLevel: 1
-    },
-    {
-      id: 'header2',
-      name: 'Heading 2',
-      description: 'Medium heading',
-      nodeType: 'text',
-      icon: 'text',
-      shortcut: '/h2',
-      headerLevel: 2
-    },
-    {
-      id: 'task',
-      name: 'Task',
-      description: 'Create a task',
-      nodeType: 'task',
-      icon: 'task',
-      shortcut: '/task'
-    }
-  ];
+  // Use unified mock data
+  const mockCommands = MOCK_SLASH_COMMANDS.slice(0, 3);
 
   const defaultPosition = { x: 100, y: 100 };
 

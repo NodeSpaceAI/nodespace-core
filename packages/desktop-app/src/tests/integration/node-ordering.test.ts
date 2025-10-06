@@ -30,7 +30,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createReactiveNodeService } from '$lib/services/reactiveNodeService.svelte';
-import type { Node } from '$lib/types';
+import { createTestNode } from '../helpers';
 
 describe('Node Ordering Integration Tests', () => {
   let nodeService: ReturnType<typeof createReactiveNodeService>;
@@ -45,21 +45,6 @@ describe('Node Ordering Integration Tests', () => {
   beforeEach(() => {
     nodeService = createReactiveNodeService(mockEvents);
   });
-
-  function createNode(id: string, content: string, parentId: string | null = null): Node {
-    return {
-      id,
-      nodeType: 'text',
-      content,
-      parentId,
-      originNodeId: parentId || id,
-      beforeSiblingId: null,
-      createdAt: new Date().toISOString(),
-      modifiedAt: new Date().toISOString(),
-      properties: {},
-      mentions: []
-    };
-  }
 
   // Helper to get sorted children by traversing beforeSiblingId linked list
   function getSortedChildren(parentId: string | null): string[] {
@@ -106,9 +91,10 @@ describe('Node Ordering Integration Tests', () => {
   describe('insertAtBeginning=true Visual Order', () => {
     it('should render new node ABOVE when pressing Enter at beginning', () => {
       // Initialize with two root nodes - node2 comes after node1
-      const node1 = createNode('node1', 'First node');
-      const node2 = createNode('node2', 'Second node');
-      node2.beforeSiblingId = 'node1'; // node2 comes after node1
+      const node1 = createTestNode('node1', 'First node');
+      const node2 = createTestNode('node2', 'Second node', 'text', null, {
+        beforeSiblingId: 'node1'
+      });
 
       nodeService.initializeNodes([node1, node2], {
         inheritHeaderLevel: 0,
@@ -133,7 +119,7 @@ describe('Node Ordering Integration Tests', () => {
 
     it('should maintain correct order with multiple insertAtBeginning operations', () => {
       // Start with a single root node
-      nodeService.initializeNodes([createNode('root', 'Root')], {
+      nodeService.initializeNodes([createTestNode('root', 'Root')], {
         inheritHeaderLevel: 0,
         expanded: true,
         autoFocus: false
@@ -152,7 +138,7 @@ describe('Node Ordering Integration Tests', () => {
     });
 
     it('should handle header nodes with insertAtBeginning correctly', () => {
-      nodeService.initializeNodes([createNode('header', '# My Header')], {
+      nodeService.initializeNodes([createTestNode('header', '# My Header')], {
         inheritHeaderLevel: 0,
         expanded: true,
         autoFocus: false
@@ -169,11 +155,14 @@ describe('Node Ordering Integration Tests', () => {
 
   describe('Normal Splitting (insertAtBeginning=false) Visual Order', () => {
     it('should render new node AFTER when splitting content in middle', () => {
-      nodeService.initializeNodes([createNode('node1', 'First'), createNode('node2', 'Second')], {
-        inheritHeaderLevel: 0,
-        expanded: true,
-        autoFocus: false
-      });
+      nodeService.initializeNodes(
+        [createTestNode('node1', 'First'), createTestNode('node2', 'Second')],
+        {
+          inheritHeaderLevel: 0,
+          expanded: true,
+          autoFocus: false
+        }
+      );
 
       // Create node after node1 (normal split, insertAtBeginning=false)
       const newNodeId = nodeService.createNode('node1', 'New content', 'text', undefined, false);
@@ -191,11 +180,11 @@ describe('Node Ordering Integration Tests', () => {
 
   describe('Nested Node Ordering', () => {
     it('should maintain correct order for child nodes', () => {
-      const parent = createNode('parent', 'Parent');
-      const child1 = createNode('child1', 'Child 1', 'parent');
-      const child2 = createNode('child2', 'Child 2', 'parent');
-
-      child2.beforeSiblingId = 'child1'; // child2 comes after child1
+      const parent = createTestNode('parent', 'Parent');
+      const child1 = createTestNode('child1', 'Child 1', 'text', 'parent');
+      const child2 = createTestNode('child2', 'Child 2', 'text', 'parent', {
+        beforeSiblingId: 'child1'
+      });
 
       nodeService.initializeNodes([parent, child1, child2], {
         inheritHeaderLevel: 0,
@@ -210,8 +199,8 @@ describe('Node Ordering Integration Tests', () => {
     });
 
     it('should handle insertAtBeginning for child nodes', () => {
-      const parent = createNode('parent', 'Parent');
-      const child1 = createNode('child1', 'Child 1', 'parent');
+      const parent = createTestNode('parent', 'Parent');
+      const child1 = createTestNode('child1', 'Child 1', 'text', 'parent');
 
       nodeService.initializeNodes([parent, child1], {
         inheritHeaderLevel: 0,
@@ -230,12 +219,12 @@ describe('Node Ordering Integration Tests', () => {
 
     it('should maintain deep hierarchy ordering correctly', () => {
       // Create a 3-level hierarchy
-      const root = createNode('root', 'Root');
-      const child = createNode('child', 'Child', 'root');
-      const grandchild1 = createNode('gc1', 'Grandchild 1', 'child');
-      const grandchild2 = createNode('gc2', 'Grandchild 2', 'child');
-
-      grandchild2.beforeSiblingId = 'gc1';
+      const root = createTestNode('root', 'Root');
+      const child = createTestNode('child', 'Child', 'text', 'root');
+      const grandchild1 = createTestNode('gc1', 'Grandchild 1', 'text', 'child');
+      const grandchild2 = createTestNode('gc2', 'Grandchild 2', 'text', 'child', {
+        beforeSiblingId: 'gc1'
+      });
 
       nodeService.initializeNodes([root, child, grandchild1, grandchild2], {
         inheritHeaderLevel: 0,
@@ -256,7 +245,7 @@ describe('Node Ordering Integration Tests', () => {
 
   describe('Mixed Operations', () => {
     it('should handle mix of insertAtBeginning and normal splits', () => {
-      nodeService.initializeNodes([createNode('node1', 'Node 1')], {
+      nodeService.initializeNodes([createTestNode('node1', 'Node 1')], {
         inheritHeaderLevel: 0,
         expanded: true,
         autoFocus: false
@@ -279,12 +268,11 @@ describe('Node Ordering Integration Tests', () => {
 
   describe('Data Corruption Resilience', () => {
     it('should handle orphaned nodes gracefully', () => {
-      const node1 = createNode('node1', 'Node 1');
-      const node2 = createNode('node2', 'Node 2');
-      const orphan = createNode('orphan', 'Orphan');
-
-      // Create orphaned node: its beforeSiblingId points to non-existent node
-      orphan.beforeSiblingId = 'non-existent';
+      const node1 = createTestNode('node1', 'Node 1');
+      const node2 = createTestNode('node2', 'Node 2');
+      const orphan = createTestNode('orphan', 'Orphan', 'text', null, {
+        beforeSiblingId: 'non-existent'
+      });
 
       nodeService.initializeNodes([node1, node2, orphan], {
         inheritHeaderLevel: 0,
@@ -299,12 +287,12 @@ describe('Node Ordering Integration Tests', () => {
     });
 
     it('should handle circular references without infinite loop', () => {
-      const node1 = createNode('node1', 'Node 1');
-      const node2 = createNode('node2', 'Node 2');
-
-      // Create circular reference: node1 -> node2 -> node1
-      node2.beforeSiblingId = 'node1';
-      node1.beforeSiblingId = 'node2';
+      const node1 = createTestNode('node1', 'Node 1', 'text', null, {
+        beforeSiblingId: 'node2'
+      });
+      const node2 = createTestNode('node2', 'Node 2', 'text', null, {
+        beforeSiblingId: 'node1'
+      });
 
       // This should not throw or hang
       expect(() => {
