@@ -64,6 +64,33 @@ if (typeof global !== 'undefined') {
 console.log('✅ Svelte 5 runes mocked at module parse time');
 
 export default async function setup() {
+  // CRITICAL: Validate test environment FIRST
+  // Ensure we're running with vitest, not bun test
+  if (!process.env.VITEST) {
+    console.error(`
+╔═══════════════════════════════════════════════════════════════╗
+║                    ⚠️  INCORRECT TEST COMMAND ⚠️               ║
+╟───────────────────────────────────────────────────────────────╢
+║                                                               ║
+║  DO NOT use: bun test                                         ║
+║                                                               ║
+║  This command doesn't support Happy-DOM environment           ║
+║  configuration and will cause tests to fail!                  ║
+║                                                               ║
+║  ✅ CORRECT COMMANDS:                                         ║
+║     • bunx vitest run                                         ║
+║     • bun run test                                            ║
+║                                                               ║
+║  Why? Vitest is configured with Happy-DOM in vitest.config.ts ║
+║  Bun's native test runner doesn't read this configuration.    ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+`);
+    throw new Error(
+      "Invalid test environment: Use 'bunx vitest run' or 'bun run test' instead of 'bun test'"
+    );
+  }
+
   // Import plugins AFTER runes are available
   const { pluginRegistry } = await import('$lib/plugins/pluginRegistry');
   const { registerCorePlugins } = await import('$lib/plugins/corePlugins');

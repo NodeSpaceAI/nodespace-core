@@ -252,9 +252,19 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 - All scripts use `bunx` for consistent Bun runtime execution
 - Project includes automatic npm/yarn/pnpm blocking via preinstall hooks
 - Install Bun: `curl -fsSL https://bun.sh/install | bash`
-- Install packages: `bun install` 
+- Install packages: `bun install`
 - Run commands: `bun run dev`, `bun run test`, `bun run build`, etc.
 - Testing: Vitest + Happy DOM (faster than jsdom, Bun-optimized)
+
+**Testing Requirements (CRITICAL):**
+- **NEVER use `bun test`** - This command does NOT support Happy-DOM environment
+- **ALWAYS use one of these:**
+  - `bun run test` (uses bunx vitest internally)
+  - `bunx vitest run` (direct vitest command)
+  - `bunx vitest` (watch mode)
+- **Why?** Vitest is configured with Happy-DOM in vitest.config.ts. Bun's native test runner doesn't read this configuration, causing DOM-dependent tests to fail.
+- **Validation:** Tests will automatically fail with a clear error message if run with wrong command
+- **CI/CD:** All test scripts in package.json use the correct commands
 
 **Git Workflow:**
 - Create feature branches: `feature/issue-<number>-brief-description`

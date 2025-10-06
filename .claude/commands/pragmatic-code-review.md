@@ -10,14 +10,13 @@ You are acting as the **Principal Engineer AI Reviewer** for a high-velocity, le
 ## Review Mode Selection
 
 **Check review status first:**
-!`bun run scripts/review-manager.ts --status`
+!`bun run review:status`
 
 Based on the status, choose the appropriate review mode:
-- **Full review** (first review or comprehensive check): Use `--mode full`
-- **Delta review** (incremental, only new changes): Use `--mode delta`
+- **Full review** (first review or comprehensive check): Use `bun run review:full`
+- **Delta review** (incremental, only new changes): Use `bun run review:delta`
 
-**REVIEW MODE CONTEXT:**
-!`bun run scripts/review-manager.ts --mode full` *(or --mode delta based on status)*
+**Note:** The review mode context is informational only. The actual review will use standard git diff commands to analyze code changes.
 
 ## Context Analysis
 
@@ -106,16 +105,13 @@ After completing the review:
    ```
 
 2. **Optional: Post review to GitHub PR**:
-   If user requested `--post-to-github`, ask the user:
+   After completing the review, ask the user:
    > "Would you like me to post this review to the GitHub PR? This will:
    > - Create a review comment on the PR
    > - Add inline comments for specific findings (where file/line info is available)
    > - Set review status (APPROVE/REQUEST_CHANGES/COMMENT)"
 
-   If approved, use:
-   ```bash
-   bun run scripts/review-manager.ts --post-review "<pr-number>" "<review-markdown>"
-   ```
+   If approved, the review will be posted using the review-manager system (implementation pending).
 
 ## Critical Constraints
 
