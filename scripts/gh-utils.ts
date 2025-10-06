@@ -336,19 +336,66 @@ async function main() {
       }
 
       case "issues:create": {
-        const title = args[1];
-        const body = args[2] || "";
-        const labelsStr = args[3];
-        const assigneesStr = args[4];
-        
+        // Support both positional args and named flags
+        let title: string | undefined;
+        let body: string = "";
+        let labels: string[] | undefined;
+        let assignees: string[] | undefined;
+
+        // Check if using named flags or positional args
+        const hasNamedFlags = args.some(arg => arg.startsWith("--"));
+
+        if (hasNamedFlags) {
+          // Named flags mode
+          const titleIndex = args.indexOf("--title");
+          const bodyIndex = args.indexOf("--body");
+          const bodyFileIndex = args.indexOf("--body-file");
+          const labelsIndex = args.indexOf("--labels");
+          const assigneesIndex = args.indexOf("--assignees");
+
+          if (titleIndex !== -1 && args[titleIndex + 1]) {
+            title = args[titleIndex + 1];
+          }
+
+          if (bodyIndex !== -1 && args[bodyIndex + 1]) {
+            body = args[bodyIndex + 1];
+          } else if (bodyFileIndex !== -1 && args[bodyFileIndex + 1]) {
+            // Read body from file
+            const bodyFilePath = args[bodyFileIndex + 1];
+            try {
+              body = await Bun.file(bodyFilePath).text();
+            } catch (error) {
+              console.error(`❌ Failed to read body file: ${error.message}`);
+              process.exit(1);
+            }
+          }
+
+          if (labelsIndex !== -1 && args[labelsIndex + 1]) {
+            labels = args[labelsIndex + 1].split(",").map(l => l.trim());
+          }
+
+          if (assigneesIndex !== -1 && args[assigneesIndex + 1]) {
+            assignees = args[assigneesIndex + 1].split(",").map(a => a.replace("@", "").trim());
+          }
+        } else {
+          // Positional args mode (backward compatibility)
+          title = args[1];
+          body = args[2] || "";
+          const labelsStr = args[3];
+          const assigneesStr = args[4];
+
+          labels = labelsStr ? labelsStr.split(",").map(l => l.trim()) : undefined;
+          assignees = assigneesStr ? assigneesStr.split(",").map(a => a.replace("@", "").trim()) : undefined;
+        }
+
         if (!title) {
-          console.error('Usage: bun run gh:create "Issue Title" "Issue body" "label1,label2" "user1,user2"');
+          console.error('Usage:');
+          console.error('  Named flags:   bun run gh:create --title "Title" --body "Body" --labels "label1,label2"');
+          console.error('  With file:     bun run gh:create --title "Title" --body-file /path/to/body.md --labels "label1,label2"');
+          console.error('  Positional:    bun run gh:create "Issue Title" "Issue body" "label1,label2" "user1,user2"');
           process.exit(1);
         }
-        
-        const labels = labelsStr ? labelsStr.split(",").map(l => l.trim()) : undefined;
-        const assignees = assigneesStr ? assigneesStr.split(",").map(a => a.replace("@", "").trim()) : undefined;
-        
+
         await manager.createIssue(title, body, labels, assignees);
         break;
       }
@@ -458,7 +505,8 @@ async function main() {
 🚀 NodeSpace GitHub Project Manager
 
 📋 Issue Management:
-  bun run gh:create "Title" "Body" "labels" "assignees"  # Create issue
+  bun run gh:create --title "Title" --body "Body" --labels "label1,label2"  # Create issue
+  bun run gh:create --title "Title" --body-file /path/to/body.md --labels "label1,label2"  # Create from file
   bun run gh:edit 45 --title "New Title"      # Edit issue title
   bun run gh:edit 45 --body "New body"        # Edit issue body
   bun run gh:edit 45 --labels "tag1,tag2"     # Update labels

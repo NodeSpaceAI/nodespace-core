@@ -32,14 +32,18 @@ import {
   isNodeCreatedEvent,
   isNodeUpdatedEvent,
   isDecorationUpdateNeededEvent,
-  isReferencesUpdateNeededEvent
+  isReferencesUpdateNeededEvent,
+  isCacheInvalidateEvent,
+  isNodeStatusChangedEvent,
+  isDecorationClickedEvent,
+  isHierarchyChangedEvent
 } from '../utils/type-guards';
 import { createNode } from '../fixtures/mock-nodes';
 import { waitForEffects } from '../components/svelte-test-utils';
-
-// Timeout constants for async operations
-const ASYNC_HANDLER_TIMEOUT_MS = 10;
-const ASYNC_ERROR_PROPAGATION_TIMEOUT_MS = 20;
+import {
+  ASYNC_HANDLER_TIMEOUT_MS,
+  ASYNC_ERROR_PROPAGATION_TIMEOUT_MS
+} from '../utils/test-constants';
 
 describe('EventBus Multi-Service Coordination', () => {
   let nodeManager: NodeManager;
@@ -205,12 +209,18 @@ describe('EventBus Multi-Service Coordination', () => {
         reason: 'content-changed'
       });
 
-      // Verify isolation
+      // Verify isolation using type guards
       expect(coordinationEvents.length).toBe(1);
-      expect(coordinationEvents[0].type).toBe('cache:invalidate');
+      expect(isCacheInvalidateEvent(coordinationEvents[0])).toBe(true);
+      if (isCacheInvalidateEvent(coordinationEvents[0])) {
+        expect(coordinationEvents[0].namespace).toBe('coordination');
+      }
 
       expect(interactionEvents.length).toBe(1);
-      expect(interactionEvents[0].type).toBe('decoration:update-needed');
+      expect(isDecorationUpdateNeededEvent(interactionEvents[0])).toBe(true);
+      if (isDecorationUpdateNeededEvent(interactionEvents[0])) {
+        expect(interactionEvents[0].namespace).toBe('interaction');
+      }
     });
 
     it('should deliver all events to wildcard subscribers', () => {
@@ -290,12 +300,17 @@ describe('EventBus Multi-Service Coordination', () => {
       // Delete node
       nodeManager.deleteNode('child-1');
 
-      // Verify cache invalidation was triggered
+      // Verify cache invalidation was triggered using type guards
       expect(cacheHandler).toHaveBeenCalled();
       const cacheEvents = cacheHandler.mock.calls.map((call) => call[0]);
-      expect(
-        cacheEvents.some((e) => e.type === 'cache:invalidate' && e.reason === 'node-deleted')
-      ).toBe(true);
+      const deletionEvent = cacheEvents.find(
+        (e) => isCacheInvalidateEvent(e) && e.reason === 'node-deleted'
+      );
+      expect(deletionEvent).toBeDefined();
+      if (deletionEvent && isCacheInvalidateEvent(deletionEvent)) {
+        expect(deletionEvent.type).toBe('cache:invalidate');
+        expect(deletionEvent.namespace).toBe('coordination');
+      }
     });
 
     it('should notify all watchers on status change', () => {
@@ -317,10 +332,19 @@ describe('EventBus Multi-Service Coordination', () => {
         previousStatus: 'active'
       });
 
-      // All three watchers should be notified
+      // All three watchers should be notified with correct event using type guards
       expect(statusHandler1).toHaveBeenCalledTimes(1);
       expect(statusHandler2).toHaveBeenCalledTimes(1);
       expect(statusHandler3).toHaveBeenCalledTimes(1);
+
+      const event1 = statusHandler1.mock.calls[0][0];
+      expect(isNodeStatusChangedEvent(event1)).toBe(true);
+      if (isNodeStatusChangedEvent(event1)) {
+        expect(event1.nodeId).toBe('node-1');
+        expect(event1.status).toBe('collapsed');
+        expect(event1.previousStatus).toBe('active');
+        expect(event1.namespace).toBe('coordination');
+      }
     });
 
     it('should cascade reference updates correctly', () => {
@@ -366,9 +390,14 @@ describe('EventBus Multi-Service Coordination', () => {
       // Create child node - changes hierarchy
       nodeManager.createNode('node-1', 'Child node');
 
-      // Verify hierarchy change event was emitted
+      // Verify hierarchy change event was emitted using type guards
       expect(hierarchyHandler).toHaveBeenCalled();
-      expect(hierarchyHandler.mock.calls[0][0].type).toBe('hierarchy:changed');
+      const event = hierarchyHandler.mock.calls[0][0];
+      expect(isHierarchyChangedEvent(event)).toBe(true);
+      if (isHierarchyChangedEvent(event)) {
+        expect(event.type).toBe('hierarchy:changed');
+        expect(event.namespace).toBe('lifecycle');
+      }
     });
   });
 
@@ -438,15 +467,24 @@ describe('EventBus Multi-Service Coordination', () => {
         nodeType: 'text'
       });
 
-      // Verify filtering
+      // Verify filtering using type guards
       expect(coordinationEvents.length).toBe(1);
-      expect(coordinationEvents[0].namespace).toBe('coordination');
+      expect(isCacheInvalidateEvent(coordinationEvents[0])).toBe(true);
+      if (isCacheInvalidateEvent(coordinationEvents[0])) {
+        expect(coordinationEvents[0].namespace).toBe('coordination');
+      }
 
       expect(interactionEvents.length).toBe(1);
-      expect(interactionEvents[0].namespace).toBe('interaction');
+      expect(isDecorationClickedEvent(interactionEvents[0])).toBe(true);
+      if (isDecorationClickedEvent(interactionEvents[0])) {
+        expect(interactionEvents[0].namespace).toBe('interaction');
+      }
 
       expect(lifecycleEvents.length).toBe(1);
-      expect(lifecycleEvents[0].namespace).toBe('lifecycle');
+      expect(isNodeCreatedEvent(lifecycleEvents[0])).toBe(true);
+      if (isNodeCreatedEvent(lifecycleEvents[0])) {
+        expect(lifecycleEvents[0].namespace).toBe('lifecycle');
+      }
     });
 
     it('should filter events by source', () => {
@@ -489,12 +527,18 @@ describe('EventBus Multi-Service Coordination', () => {
         nodeType: 'text'
       });
 
-      // Verify source filtering
+      // Verify source filtering using type guards
       expect(nodeManagerEvents.length).toBe(1);
-      expect(nodeManagerEvents[0].source).toBe('ReactiveNodeService');
+      expect(isNodeCreatedEvent(nodeManagerEvents[0])).toBe(true);
+      if (isNodeCreatedEvent(nodeManagerEvents[0])) {
+        expect(nodeManagerEvents[0].source).toBe('ReactiveNodeService');
+      }
 
       expect(otherEvents.length).toBe(1);
-      expect(otherEvents[0].source).toBe('OtherSource');
+      expect(isNodeCreatedEvent(otherEvents[0])).toBe(true);
+      if (isNodeCreatedEvent(otherEvents[0])) {
+        expect(otherEvents[0].source).toBe('OtherSource');
+      }
     });
 
     it('should filter events by nodeId', () => {
@@ -581,9 +625,16 @@ describe('EventBus Multi-Service Coordination', () => {
         nodeType: 'text'
       });
 
-      // Both handlers should have been called
+      // Both handlers should have been called with correct event using type guards
       expect(errorHandler).toHaveBeenCalled();
       expect(successHandler).toHaveBeenCalled();
+
+      const event = successHandler.mock.calls[0][0];
+      expect(isNodeCreatedEvent(event)).toBe(true);
+      if (isNodeCreatedEvent(event)) {
+        expect(event.nodeId).toBe('test');
+        expect(event.nodeType).toBe('text');
+      }
 
       // Error should have been logged
       expect(consoleErrorSpy).toHaveBeenCalledWith(
@@ -597,10 +648,10 @@ describe('EventBus Multi-Service Coordination', () => {
     });
 
     it('should handle async subscriber errors gracefully', async () => {
-      const asyncErrorHandler = vi.fn(async () => {
+      const asyncErrorHandler = vi.fn(async (_event: NodeUpdatedEvent) => {
         throw new Error('Async handler failed');
       });
-      const asyncSuccessHandler = vi.fn(async () => {
+      const asyncSuccessHandler = vi.fn(async (_event: NodeUpdatedEvent) => {
         await new Promise((resolve) => setTimeout(resolve, ASYNC_HANDLER_TIMEOUT_MS));
       });
 
@@ -621,9 +672,16 @@ describe('EventBus Multi-Service Coordination', () => {
       // Wait for async handlers to complete and errors to propagate
       await waitForEffects(ASYNC_ERROR_PROPAGATION_TIMEOUT_MS);
 
-      // Both handlers should have been called
+      // Both handlers should have been called with correct event using type guards
       expect(asyncErrorHandler).toHaveBeenCalled();
       expect(asyncSuccessHandler).toHaveBeenCalled();
+
+      const event = asyncSuccessHandler.mock.calls[0][0];
+      expect(isNodeUpdatedEvent(event)).toBe(true);
+      if (isNodeUpdatedEvent(event)) {
+        expect(event.nodeId).toBe('test');
+        expect(event.updateType).toBe('content');
+      }
 
       // Async error should have been logged
       expect(consoleErrorSpy).toHaveBeenCalledWith(
