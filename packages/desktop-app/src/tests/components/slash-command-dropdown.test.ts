@@ -135,7 +135,7 @@ describe('SlashCommandDropdown', () => {
       expect(options).toHaveLength(3);
       expect(screen.getByText('Heading 1')).toBeInTheDocument();
       expect(screen.getByText('Heading 2')).toBeInTheDocument();
-      expect(screen.getByText('Task')).toBeInTheDocument();
+      expect(screen.getByText('Heading 3')).toBeInTheDocument();
     });
   });
 

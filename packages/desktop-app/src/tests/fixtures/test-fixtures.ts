@@ -159,21 +159,21 @@ export interface NodeResult {
 export const MOCK_AUTOCOMPLETE_RESULTS: NodeResult[] = [
   {
     id: 'node-1',
-    title: 'Test Node',
+    title: 'First Node',
     type: 'text',
     subtitle: 'Sample',
     metadata: '1 day ago'
   },
   {
     id: 'node-2',
-    title: 'Testing Guide',
+    title: 'Second Node',
     type: 'document',
     subtitle: 'Docs',
     metadata: '2 days ago'
   },
   {
     id: 'node-3',
-    title: 'Task Example',
+    title: 'Third Node',
     type: 'task',
     subtitle: 'Todo',
     metadata: 'Today'

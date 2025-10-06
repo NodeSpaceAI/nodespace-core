@@ -92,9 +92,11 @@ const effectFunction = createMockEffect;
 // CRITICAL: Set up mocks immediately before any imports can happen
 // Define on globalThis first - using type assertion to avoid conflicts with Svelte's full runtime types
 try {
-  if (!globalThis.$state) (globalThis as Record<string, unknown>).$state = stateFunction;
-  if (!globalThis.$derived) (globalThis as Record<string, unknown>).$derived = derivedFunction;
-  if (!globalThis.$effect) (globalThis as Record<string, unknown>).$effect = effectFunction;
+  // Use Object.hasOwn to check property existence without triggering Svelte getters
+  const globalObj = globalThis as Record<string, unknown>;
+  if (!Object.hasOwn(globalObj, '$state')) globalObj.$state = stateFunction;
+  if (!Object.hasOwn(globalObj, '$derived')) globalObj.$derived = derivedFunction;
+  if (!Object.hasOwn(globalObj, '$effect')) globalObj.$effect = effectFunction;
 } catch (error) {
   console.warn('Warning setting up globalThis Svelte rune mocks:', error);
 }
@@ -102,9 +104,10 @@ try {
 // Also define on global for Node.js compatibility (Vitest environment)
 if (typeof global !== 'undefined') {
   try {
-    if (!global.$state) (global as Record<string, unknown>).$state = stateFunction;
-    if (!global.$derived) (global as Record<string, unknown>).$derived = derivedFunction;
-    if (!global.$effect) (global as Record<string, unknown>).$effect = effectFunction;
+    const globalNodeObj = global as Record<string, unknown>;
+    if (!Object.hasOwn(globalNodeObj, '$state')) globalNodeObj.$state = stateFunction;
+    if (!Object.hasOwn(globalNodeObj, '$derived')) globalNodeObj.$derived = derivedFunction;
+    if (!Object.hasOwn(globalNodeObj, '$effect')) globalNodeObj.$effect = effectFunction;
   } catch (error) {
     console.warn('Warning setting up Node.js global Svelte rune mocks:', error);
   }
@@ -113,9 +116,10 @@ if (typeof global !== 'undefined') {
 // Ensure the mocks are available in window context as well (if DOM environment)
 if (typeof window !== 'undefined') {
   try {
-    if (!window.$state) (window as unknown as Record<string, unknown>).$state = stateFunction;
-    if (!window.$derived) (window as unknown as Record<string, unknown>).$derived = derivedFunction;
-    if (!window.$effect) (window as unknown as Record<string, unknown>).$effect = effectFunction;
+    const windowObj = window as unknown as Record<string, unknown>;
+    if (!Object.hasOwn(windowObj, '$state')) windowObj.$state = stateFunction;
+    if (!Object.hasOwn(windowObj, '$derived')) windowObj.$derived = derivedFunction;
+    if (!Object.hasOwn(windowObj, '$effect')) windowObj.$effect = effectFunction;
   } catch (error) {
     console.warn('Warning setting up window Svelte rune mocks:', error);
   }
