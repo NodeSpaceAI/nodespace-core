@@ -3,6 +3,43 @@
  */
 import type { MockNodeData } from '../utils/test-utils';
 
+/**
+ * Helper to create unified Node objects for integration tests
+ *
+ * Creates a complete node object with all required fields for testing
+ * with ReactiveNodeService and EventBus integration tests.
+ *
+ * @param id - Unique node identifier
+ * @param content - Node content text
+ * @param nodeType - Type of node (default: 'text')
+ * @param parentId - Parent node ID (default: null for root nodes)
+ * @param properties - Additional node properties
+ * @param originNodeId - Origin node ID (defaults to parentId if not specified)
+ * @returns Complete node object ready for initializeNodes()
+ */
+export function createNode(
+  id: string,
+  content: string,
+  nodeType: string = 'text',
+  parentId: string | null = null,
+  properties: Record<string, unknown> = {},
+  originNodeId?: string | null
+) {
+  const now = new Date().toISOString();
+  return {
+    id,
+    nodeType,
+    content,
+    parentId,
+    originNodeId: originNodeId ?? parentId,
+    beforeSiblingId: null,
+    children: [],
+    createdAt: now,
+    modifiedAt: now,
+    properties
+  };
+}
+
 export const sampleTextNode: MockNodeData = {
   id: 'sample-text-1',
   type: 'text',
