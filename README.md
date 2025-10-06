@@ -186,9 +186,14 @@ bun run tauri:build
 bun run dev
 
 # Run tests
-bun run test              # Frontend tests with Vitest + Happy DOM
+bun run test              # Frontend tests with Vitest + Happy DOM (run from repo root)
 cd packages/desktop-app/src-tauri && cargo test  # Rust backend tests
 ```
+
+**⚠️ IMPORTANT: Test Command Usage**
+- ✅ **Correct**: `bun run test` - Uses Vitest with Happy-DOM environment configuration
+- ❌ **Incorrect**: `bun test` - Bun's native test runner doesn't support Happy-DOM, tests will fail
+- The `bun run test` command works from repository root and automatically runs tests in `packages/desktop-app/`
 
 ### Testing Philosophy
 NodeSpace uses modern, fast testing with Bun runtime:
@@ -197,6 +202,7 @@ NodeSpace uses modern, fast testing with Bun runtime:
 - **Runtime**: Bun-only (Node.js not required)
 - **Coverage**: 80% frontend, comprehensive integration testing
 - **Performance**: Bun's speed + Happy DOM = 10x faster test execution
+- **Command**: Always use `bun run test`, never `bun test` (see note above)
 
 ### Recommended IDE Setup
 

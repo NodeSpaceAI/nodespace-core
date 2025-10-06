@@ -105,7 +105,7 @@ describe('NodeManager Performance Tests', () => {
     // Issue performance warning if approaching limit
     if (duration > 80) {
       console.warn(
-        `⚠️  Performance Warning: combineNodes taking ${duration.toFixed(2)}ms (approaching 50ms limit)`
+        `⚠️  Performance Warning: combineNodes taking ${duration.toFixed(2)}ms (approaching 100ms limit)`
       );
     }
   });
