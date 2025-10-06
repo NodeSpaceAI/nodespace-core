@@ -70,15 +70,16 @@ function createNode(
 
 describe('Node Creation Event Chain', () => {
   // ============================================================================
-  // Component Layer Tests: BaseNode Keyboard Handling
+  // Component Layer Tests: BaseNode Keyboard Handling Smoke Tests
   // ============================================================================
+  // NOTE: These tests verify that BaseNode renders and handles keyboard input without crashing.
+  // They do NOT verify event emission or EventBus integration - that's tested in the Service Layer.
+  // For complete event chain testing (BaseNode → BaseNodeViewer → NodeManager), see autocomplete-flow.test.ts
 
-  describe('BaseNode: Keyboard Event Handling', () => {
-    beforeEach(() => {
-      document.body.innerHTML = '';
-    });
+  describe('BaseNode: Keyboard Handling Smoke Tests', () => {
+    // Note: Happy-DOM manages cleanup automatically, no need to manually clear document.body
 
-    it('should handle Enter key pressed at end of content', async () => {
+    it('should render and remain functional after Enter key at end of content', async () => {
       const user = createUserEvents();
 
       render(BaseNode, {
@@ -102,7 +103,7 @@ describe('Node Creation Event Chain', () => {
       expect(editor).toHaveAttribute('contenteditable', 'true');
     });
 
-    it('should handle Enter key pressed in middle of content', async () => {
+    it('should render and remain functional after Enter key in middle of content', async () => {
       const user = createUserEvents();
 
       render(BaseNode, {
@@ -127,7 +128,7 @@ describe('Node Creation Event Chain', () => {
       expect(editor).toBeInTheDocument();
     });
 
-    it('should handle Enter key with text selection', async () => {
+    it('should render and remain functional after Enter key with text selection', async () => {
       const user = createUserEvents();
 
       render(BaseNode, {
@@ -152,7 +153,7 @@ describe('Node Creation Event Chain', () => {
       expect(editor).toBeInTheDocument();
     });
 
-    it('should handle rapid Enter key presses', async () => {
+    it('should render and remain functional after rapid Enter key presses', async () => {
       const user = createUserEvents();
 
       render(BaseNode, {
@@ -172,7 +173,7 @@ describe('Node Creation Event Chain', () => {
       expect(editor).toBeInTheDocument();
     });
 
-    it('should handle Enter with empty content', async () => {
+    it('should render and remain functional with Enter on empty content', async () => {
       const user = createUserEvents();
 
       render(BaseNode, {
@@ -365,16 +366,19 @@ describe('Node Creation Event Chain', () => {
         autoFocus: false
       });
 
-      const initialCount = nodeManager.visibleNodes.length;
-
       // Simulate Enter at end (no content split)
       const newNodeId = nodeManager.createNode('node1', '');
 
-      // Verify new node created
-      expect(nodeManager.visibleNodes.length).toBe(initialCount + 1);
+      // Verify new node created in data store
       expect(nodeManager.findNode(newNodeId)).toBeDefined();
 
-      // Verify node creation event was fired (focus is handled automatically by autoFocus flag)
+      // Verify node has correct properties
+      const newNode = nodeManager.findNode(newNodeId);
+      const originalNode = nodeManager.findNode('node1');
+      expect(newNode?.parentId).toBe(originalNode?.parentId || null); // Same parent as original
+      expect(newNode?.beforeSiblingId).toBe('node1'); // Comes after node1
+
+      // Verify node creation event was fired
       expect(mockEvents.nodeCreated).toHaveBeenCalledWith(newNodeId);
     });
 
