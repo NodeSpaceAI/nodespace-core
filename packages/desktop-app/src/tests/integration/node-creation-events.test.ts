@@ -11,7 +11,7 @@
  * 5. UI updates → new node appears in DOM
  * 6. Backend sync → Tauri persists node
  *
- * ## Test Coverage (21 tests total)
+ * ## Test Coverage (24 tests total)
  *
  * ### Service Layer Tests (10 tests) ✅
  * - **EventBus Integration (5 tests)**: Event emission, ordering, data verification
@@ -28,45 +28,19 @@
  * - Rapid creation concurrency
  * - Special character handling
  *
- * ### Component Layer Tests (5 tests) ⏭️ SKIPPED
- * - BaseNode keyboard handling (DOM environment limitations)
+ * ### Component Layer Tests (5 tests) ✅
+ * - BaseNode keyboard handling smoke tests
  *
- * ### UI Verification Tests (3 tests) ⏭️ SKIPPED
- * - DOM updates and focus management (requires E2E framework)
+ * ### UI Verification Tests (3 tests) ✅
+ * - DOM updates and focus management
  *
- * ## Limitations
- * DOM-dependent tests are skipped due to test environment constraints.
- * These require a full browser environment and should be moved to E2E test suite.
+ * ## Test Runner Requirements
+ * ⚠️ IMPORTANT: These tests MUST be run using `bunx vitest run` (or `bun run test`).
+ * DO NOT use `bun test` directly - it doesn't support the Happy-DOM environment configuration
+ * required for DOM-dependent tests.
  *
  * @see Issue #158
  */
-
-// Mock Svelte 5 runes immediately before any imports - required for reactiveNodeService.svelte.ts
-(globalThis as Record<string, unknown>).$state = function <T>(initialValue: T): T {
-  if (typeof initialValue !== 'object' || initialValue === null) {
-    return initialValue;
-  }
-  return initialValue;
-};
-
-(globalThis as Record<string, unknown>).$derived = {
-  by: function <T>(getter: () => T): T {
-    try {
-      return getter();
-    } catch (error) {
-      console.warn('Derived getter error in test:', error);
-      return undefined as T;
-    }
-  }
-};
-
-(globalThis as Record<string, unknown>).$effect = function (fn: () => void | (() => void)): void {
-  try {
-    fn();
-  } catch (error) {
-    console.warn('Effect error in test:', error);
-  }
-};
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
@@ -480,7 +454,6 @@ describe('Node Creation Event Chain', () => {
   // They test that BaseNode components render correctly with split content and focus management.
 
   describe('UI Updates: Complete Event Chain', () => {
-
     beforeEach(() => {
       // Clean up DOM between tests
       document.body.innerHTML = '';
