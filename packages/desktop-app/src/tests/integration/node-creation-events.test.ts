@@ -80,8 +80,6 @@ describe('Node Creation Event Chain', () => {
     // Note: Happy-DOM manages cleanup automatically, no need to manually clear document.body
 
     it('should render and remain functional after Enter key at end of content', async () => {
-      const user = createUserEvents();
-
       render(BaseNode, {
         nodeId: 'test-node',
         nodeType: 'text',
@@ -89,6 +87,7 @@ describe('Node Creation Event Chain', () => {
         autoFocus: true
       });
 
+      const user = createUserEvents();
       const editor = document.querySelector('[contenteditable="true"]');
       expect(editor).toBeInTheDocument();
 
@@ -104,8 +103,6 @@ describe('Node Creation Event Chain', () => {
     });
 
     it('should render and remain functional after Enter key in middle of content', async () => {
-      const user = createUserEvents();
-
       render(BaseNode, {
         nodeId: 'test-node',
         nodeType: 'text',
@@ -113,6 +110,7 @@ describe('Node Creation Event Chain', () => {
         autoFocus: true
       });
 
+      const user = createUserEvents();
       const editor = document.querySelector('[contenteditable="true"]');
 
       // Position cursor in middle (after "Hello ")
@@ -129,8 +127,6 @@ describe('Node Creation Event Chain', () => {
     });
 
     it('should render and remain functional after Enter key with text selection', async () => {
-      const user = createUserEvents();
-
       render(BaseNode, {
         nodeId: 'test-node',
         nodeType: 'text',
@@ -138,6 +134,7 @@ describe('Node Creation Event Chain', () => {
         autoFocus: true
       });
 
+      const user = createUserEvents();
       const editor = document.querySelector('[contenteditable="true"]');
 
       // Select text and press Enter
@@ -154,8 +151,6 @@ describe('Node Creation Event Chain', () => {
     });
 
     it('should render and remain functional after rapid Enter key presses', async () => {
-      const user = createUserEvents();
-
       render(BaseNode, {
         nodeId: 'test-node',
         nodeType: 'text',
@@ -163,6 +158,7 @@ describe('Node Creation Event Chain', () => {
         autoFocus: true
       });
 
+      const user = createUserEvents();
       const editor = document.querySelector('[contenteditable="true"]');
 
       await user.click(editor!);
@@ -174,8 +170,6 @@ describe('Node Creation Event Chain', () => {
     });
 
     it('should render and remain functional with Enter on empty content', async () => {
-      const user = createUserEvents();
-
       render(BaseNode, {
         nodeId: 'test-node',
         nodeType: 'text',
@@ -183,6 +177,7 @@ describe('Node Creation Event Chain', () => {
         autoFocus: true
       });
 
+      const user = createUserEvents();
       const editor = document.querySelector('[contenteditable="true"]');
 
       await user.click(editor!);
@@ -440,6 +435,51 @@ describe('Node Creation Event Chain', () => {
 
       // Verify hierarchy changed events fired
       expect(mockEvents.hierarchyChanged).toHaveBeenCalled();
+    });
+  });
+
+  // ============================================================================
+  // UI Verification Tests: Complete Event Chain with DOM Updates
+  // ============================================================================
+  // These tests verify the complete user-visible behavior: BaseNode → BaseNodeViewer → NodeManager → UI updates
+  //
+  // NOTE: These tests are currently skipped as placeholders for future implementation.
+  // They require setting up BaseNodeViewer with proper NodeServiceContext, which involves:
+  // 1. Creating a ReactiveNodeService instance
+  // 2. Wrapping BaseNodeViewer in NodeServiceContext.Provider
+  // 3. Initializing with test nodes
+  // 4. Simulating user interaction (Enter key)
+  // 5. Verifying DOM updates (new nodes appear, content split correctly, focus management)
+  //
+  // The current test suite already validates:
+  // - BaseNode keyboard handling (5 smoke tests passing)
+  // - NodeManager event emission (5 tests passing)
+  // - Integration behavior (4 tests passing)
+  // - Performance (1 test passing)
+  //
+  // These UI verification tests would add end-to-end coverage of the complete visual update flow.
+
+  describe('UI Updates: Complete Event Chain', () => {
+    it.skip('should display new node in DOM after Enter at end', async () => {
+      // TODO: Implement BaseNodeViewer test setup
+      // Render BaseNodeViewer with one node
+      // Simulate Enter key at end
+      // Verify: 2 contenteditable elements now exist in DOM
+    });
+
+    it.skip('should split content visually when Enter in middle', async () => {
+      // TODO: Implement BaseNodeViewer test setup
+      // Render BaseNodeViewer with one node containing "Hello World"
+      // Position cursor after "Hello "
+      // Simulate Enter key
+      // Verify: First node contains "Hello ", second node contains "World"
+    });
+
+    it.skip('should move focus to new node after creation', async () => {
+      // TODO: Implement BaseNodeViewer test setup
+      // Render BaseNodeViewer with one node
+      // Simulate Enter key
+      // Verify: document.activeElement is the new node's editor
     });
   });
 
