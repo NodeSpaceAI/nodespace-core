@@ -107,9 +107,8 @@ describe('Node Creation Event Chain', () => {
   // ============================================================================
   // NOTE: These tests verify that BaseNode renders and handles keyboard input without crashing.
   // They do NOT verify event emission or EventBus integration - that's tested in the Service Layer below.
-  // SKIPPED: DOM environment issues prevent these tests from running. Service layer tests provide coverage.
 
-  describe.skip('BaseNode: Keyboard Handling Smoke Tests', () => {
+  describe('BaseNode: Keyboard Handling Smoke Tests', () => {
     beforeEach(() => {
       // Clean up DOM between tests
       document.body.innerHTML = '';
@@ -477,21 +476,10 @@ describe('Node Creation Event Chain', () => {
   // ============================================================================
   // UI Verification Tests: Complete Event Chain with DOM Updates
   // ============================================================================
-  // NOTE: These tests are currently skipped due to DOM initialization issues in the test environment.
-  //
-  // These would test the complete user-visible behavior:
-  // 1. User types in BaseNode (contenteditable)
-  // 2. BaseNode emits 'createNewNode' event
-  // 3. BaseNodeViewer catches event and calls NodeManager.createNode()
-  // 4. NodeManager updates internal state and emits EventBus events
-  // 5. BaseNodeViewer re-renders with new node visible in DOM
-  //
-  // This level of testing is better suited for E2E tests with a properly configured browser environment.
-  // The core event chain functionality is thoroughly tested in the Service Layer and Integration tests above.
+  // NOTE: These tests verify UI rendering behavior after node creation.
+  // They test that BaseNode components render correctly with split content and focus management.
 
-  describe.skip('UI Updates: Complete Event Chain', () => {
-    // Full BaseNodeViewer integration requires complex context setup and proper DOM initialization.
-    // These tests are placeholders for future E2E test suite.
+  describe('UI Updates: Complete Event Chain', () => {
 
     beforeEach(() => {
       // Clean up DOM between tests
