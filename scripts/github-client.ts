@@ -473,6 +473,156 @@ export class GitHubClient {
   }
 
   /**
+   * Get PR number for current branch
+   */
+  async getPRForBranch(branch?: string): Promise<number | null> {
+    const currentBranch = branch || this.getCurrentBranch();
+
+    try {
+      const { data: prs } = await this.octokit.rest.pulls.list({
+        owner: this.owner,
+        repo: this.repo,
+        head: `${this.owner}:${currentBranch}`,
+        state: "open"
+      });
+
+      return prs.length > 0 ? prs[0].number : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Create a PR review with comments (no shell commands)
+   */
+  async createPRReview(
+    prNumber: number,
+    body: string,
+    event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT" = "COMMENT",
+    comments?: Array<{
+      path: string;
+      line: number;
+      body: string;
+    }>
+  ): Promise<{ id: number; url: string }> {
+    const params: any = {
+      owner: this.owner,
+      repo: this.repo,
+      pull_number: prNumber,
+      body,
+      event
+    };
+
+    // Add inline comments if provided
+    if (comments && comments.length > 0) {
+      params.comments = comments.map(c => ({
+        path: c.path,
+        line: c.line,
+        body: c.body
+      }));
+    }
+
+    const response = await this.octokit.rest.pulls.createReview(params);
+
+    return {
+      id: response.data.id,
+      url: response.data.html_url
+    };
+  }
+
+  /**
+   * Add a single review comment to a PR
+   */
+  async addPRComment(
+    prNumber: number,
+    body: string,
+    commitId?: string,
+    path?: string,
+    line?: number
+  ): Promise<{ id: number; url: string }> {
+    if (path && line && commitId) {
+      // Inline comment on specific line
+      const response = await this.octokit.rest.pulls.createReviewComment({
+        owner: this.owner,
+        repo: this.repo,
+        pull_number: prNumber,
+        body,
+        commit_id: commitId,
+        path,
+        line
+      });
+
+      return {
+        id: response.data.id,
+        url: response.data.html_url
+      };
+    } else {
+      // General PR comment
+      const response = await this.octokit.rest.issues.createComment({
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: prNumber,
+        body
+      });
+
+      return {
+        id: response.data.id,
+        url: response.data.html_url
+      };
+    }
+  }
+
+  /**
+   * Get existing reviews for a PR
+   */
+  async getPRReviews(prNumber: number): Promise<Array<{
+    id: number;
+    user: string;
+    state: string;
+    body: string;
+    submitted_at: string;
+  }>> {
+    const { data: reviews } = await this.octokit.rest.pulls.listReviews({
+      owner: this.owner,
+      repo: this.repo,
+      pull_number: prNumber
+    });
+
+    return reviews.map(r => ({
+      id: r.id,
+      user: r.user?.login || "unknown",
+      state: r.state,
+      body: r.body || "",
+      submitted_at: r.submitted_at || ""
+    }));
+  }
+
+  /**
+   * Get PR details including commit SHA
+   */
+  async getPRDetails(prNumber: number): Promise<{
+    number: number;
+    title: string;
+    head_sha: string;
+    base: string;
+    head: string;
+  }> {
+    const { data: pr } = await this.octokit.rest.pulls.get({
+      owner: this.owner,
+      repo: this.repo,
+      pull_number: prNumber
+    });
+
+    return {
+      number: pr.number,
+      title: pr.title,
+      head_sha: pr.head.sha,
+      base: pr.base.ref,
+      head: pr.head.ref
+    };
+  }
+
+  /**
    * Get current git branch (no shell commands - reads .git directly)
    */
   getCurrentBranch(): string {
@@ -486,7 +636,7 @@ export class GitHubClient {
       if (headContent.startsWith("ref: refs/heads/")) {
         return headContent.replace("ref: refs/heads/", "");
       }
-      
+
       // Detached HEAD state
       return headContent.substring(0, 7);
     } catch (error) {
