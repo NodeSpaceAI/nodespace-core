@@ -13,6 +13,7 @@
   import BaseNode from '$lib/design/components/base-node.svelte';
   import TextNodeViewer from '$lib/components/viewers/text-node-viewer.svelte';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
+  import { queueDatabaseWrite } from '$lib/utils/databaseWriteQueue';
   import type { Snippet } from 'svelte';
 
   // Props
@@ -126,44 +127,6 @@
     string,
     { parentId: string | null; beforeSiblingId: string | null }
   >();
-
-  // CRITICAL: Global database write queue to prevent SQLite "database is locked" errors
-  // ALL database writes must go through this queue to ensure serialization
-  // SQLite only allows one write transaction at a time
-  let pendingDatabaseWritePromise: Promise<void> | null = null;
-
-  /**
-   * Queue a database write operation to ensure it doesn't overlap with other writes
-   * This prevents SQLite "database is locked" errors by serializing all writes
-   */
-  async function queueDatabaseWrite<T>(operation: () => Promise<T>): Promise<T> {
-    const previousPromise = pendingDatabaseWritePromise;
-
-    // Create a new promise that waits for the previous operation before running ours
-    let resolveOurPromise: () => void;
-    pendingDatabaseWritePromise = new Promise<void>((resolve) => {
-      resolveOurPromise = resolve;
-    });
-
-    // Wait for previous operation to complete
-    if (previousPromise) {
-      try {
-        await previousPromise;
-      } catch {
-        // Ignore errors from previous operations
-      }
-    }
-
-    // Now execute our operation
-    try {
-      const result = await operation();
-      resolveOurPromise!();
-      return result;
-    } catch (error) {
-      resolveOurPromise!();
-      throw error;
-    }
-  }
 
   $effect.pre(() => {
     if (!parentId) return;
