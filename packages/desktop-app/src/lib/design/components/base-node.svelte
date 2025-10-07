@@ -390,6 +390,13 @@
     }
   });
 
+  // Update controller config when editableConfig prop changes
+  $effect(() => {
+    if (controller && editableConfig) {
+      controller.updateConfig(editableConfig);
+    }
+  });
+
   // Focus programmatically when autoFocus changes
   $effect(() => {
     if (controller && autoFocus) {

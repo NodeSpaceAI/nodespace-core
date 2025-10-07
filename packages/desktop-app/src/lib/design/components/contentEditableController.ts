@@ -145,6 +145,14 @@ export class ContentEditableController {
   }
 
   /**
+   * Update controller configuration
+   * Used when config needs to change dynamically (e.g., header level changes)
+   */
+  public updateConfig(config: Partial<ContentEditableConfig>): void {
+    this.config = { ...this.config, ...config };
+  }
+
+  /**
    * Initialize content with dual-representation support
    */
   public initialize(content: string, autoFocus: boolean = false): void {
