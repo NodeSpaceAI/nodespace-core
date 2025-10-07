@@ -44,6 +44,9 @@
   // Track last saved content to detect actual changes
   const lastSavedContent = new Map<string, string>();
 
+  // Time to wait for setRawMarkdown() to complete and create DIV structure
+  const DOM_STRUCTURE_SETTLE_DELAY_MS = 20;
+
   // Set view context and load children when parentId changes
   $effect(() => {
     nodeManager.setViewParentId(parentId);
@@ -652,17 +655,13 @@
 
   /**
    * Position cursor at a target pixel offset within a line by iterating through characters.
-   * This works correctly with proportional fonts without needing character width conversion.
+   * Uses viewport-relative positioning to maintain horizontal position across nodes with different font sizes.
    */
   function setCursorAtPixelOffset(
     element: HTMLElement,
     lineElement: Element,
     targetPixelOffset: number
   ) {
-    // Calculate offset relative to the element's left edge, not the root container
-    // This ensures the horizontal position is preserved when navigating between nodes
-    const elementRect = element.getBoundingClientRect();
-
     const textNodes = getTextNodes(lineElement as HTMLElement);
     if (textNodes.length === 0) {
       // Empty line - position at start
@@ -677,9 +676,11 @@
       return;
     }
 
-    // Binary search through character positions to find closest to target pixel offset
+    // Linear search through character positions to find closest to target pixel offset
+    // Target is viewport-relative (including scroll offset), so compare with testRect.left + scrollX
     let bestOffset = 0;
     let bestDistance = Infinity;
+    let bestNode: Text | null = null;
 
     for (const textNode of textNodes) {
       const textContent = textNode.textContent || '';
@@ -689,14 +690,13 @@
           testRange.setStart(textNode, i);
           testRange.setEnd(textNode, i);
           const testRect = testRange.getBoundingClientRect();
-          const currentPixel = testRect.left - elementRect.left;
+          const currentPixel = testRect.left + window.scrollX;
           const distance = Math.abs(currentPixel - targetPixelOffset);
 
           if (distance < bestDistance) {
             bestDistance = distance;
             bestOffset = i;
-            // Save the node for later use
-            (setCursorAtPixelOffset as { bestNode?: Text }).bestNode = textNode;
+            bestNode = textNode;
           }
 
           // Early exit if we've gone past the target
@@ -709,12 +709,28 @@
 
     // Set cursor at best position
     const selection = window.getSelection();
-    if (selection && (setCursorAtPixelOffset as { bestNode?: Text }).bestNode) {
+    if (selection && bestNode) {
       const range = document.createRange();
-      range.setStart((setCursorAtPixelOffset as { bestNode?: Text }).bestNode!, bestOffset);
+      range.setStart(bestNode, bestOffset);
       range.collapse(true);
       selection.removeAllRanges();
       selection.addRange(range);
+    } else if (selection) {
+      // Defensive fallback: ensure lineElement is valid before using it
+      if (lineElement && lineElement.nodeType === Node.ELEMENT_NODE) {
+        const range = document.createRange();
+        range.selectNodeContents(lineElement);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      } else {
+        // Ultimate fallback: position at element start if lineElement is invalid
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
     }
   }
 
@@ -774,7 +790,7 @@
 
         // Show caret after positioning is complete
         targetElement.style.caretColor = '';
-      }, 20); // Delay for setRawMarkdown() to complete and create DIV structure
+      }, DOM_STRUCTURE_SETTLE_DELAY_MS);
     }, 0);
 
     return true;

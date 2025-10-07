@@ -70,6 +70,11 @@ export interface ContentEditableConfig {
 }
 
 export class ContentEditableController {
+  // Syntax detection patterns for cursor positioning
+  private static readonly HEADER_PATTERN = /^(#{1,6})\s/;
+  private static readonly CHECKBOX_PATTERN = /^\[\s*[x\s]\s*\]\s/i;
+  private static readonly QUOTE_PATTERN = /^>\s/;
+
   private element: HTMLDivElement;
   private nodeId: string;
   private nodeType: string;
@@ -1109,13 +1114,23 @@ export class ContentEditableController {
       }
 
       if (event.shiftKey && this.config.allowMultiline) {
-        // Shift+Enter for multiline nodes: allow default browser behavior
-        // Don't preventDefault() - let the browser handle newline insertion naturally
-        // Set flag to prevent live formatting from interfering with the newline
+        // Shift+Enter for multiline nodes: insert line break and position cursor correctly
+        event.preventDefault();
+
+        // Allow browser to insert the line break via execCommand
+        document.execCommand('insertLineBreak');
+
+        // Set flag to prevent live formatting from interfering with the newline structure
         this.recentShiftEnter = true;
         setTimeout(() => {
           this.recentShiftEnter = false;
-        }, 100); // Clear flag after brief delay
+        }, 100);
+
+        // Position cursor after any syntax on the new line
+        setTimeout(() => {
+          this.positionCursorAfterSyntax();
+        }, 0);
+
         return;
       }
 
@@ -1669,8 +1684,8 @@ export class ContentEditableController {
   }
 
   /**
-   * Get current cursor position as pixel offset from root container.
-   * This eliminates character width conversion issues with proportional fonts.
+   * Get current cursor position as pixel offset from viewport.
+   * This allows proper horizontal positioning across nodes with different font sizes.
    */
   private getCurrentPixelOffset(): number {
     const selection = window.getSelection();
@@ -1691,12 +1706,10 @@ export class ContentEditableController {
 
       const cursorRect = cursorRange.getBoundingClientRect();
 
-      // Calculate offset relative to this element's left edge, not the root container
-      // This ensures the horizontal position is preserved when navigating between nodes
-      const elementRect = this.element.getBoundingClientRect();
-
-      const pixelOffset = cursorRect.left - elementRect.left;
-      return pixelOffset;
+      // Return absolute pixel position including horizontal scroll offset
+      // This maintains horizontal position when navigating between nodes with different font sizes
+      // and accounts for viewport scroll state
+      return cursorRect.left + window.scrollX;
     } catch (e) {
       console.warn('[getCurrentPixelOffset] Error measuring pixel offset:', e);
       return 0;
@@ -3526,6 +3539,90 @@ export class ContentEditableController {
    */
   public setCursorAtBeginning(): void {
     this.positionCursorAtBeginning();
+  }
+
+  /**
+   * Position cursor after syntax on current line (for Shift+Enter)
+   * Handles header syntax (## ), task checkboxes ([ ] ), etc.
+   */
+  private positionCursorAfterSyntax(): void {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+
+    const range = selection.getRangeAt(0);
+
+    // Find the line element containing the cursor
+    let lineElement: Element | null = null;
+    let currentNode: Node | null = range.startContainer;
+
+    // Walk up to find the containing DIV (line)
+    while (currentNode && currentNode !== this.element) {
+      if (
+        currentNode.nodeType === Node.ELEMENT_NODE &&
+        (currentNode as Element).tagName === 'DIV' &&
+        currentNode.parentNode === this.element
+      ) {
+        lineElement = currentNode as Element;
+        break;
+      }
+      currentNode = currentNode.parentNode;
+    }
+
+    // If not in a DIV, we're in the top-level element (single line or before first DIV)
+    if (!lineElement) {
+      lineElement = this.element;
+    }
+
+    // Get the text content of the current line
+    const lineText = lineElement.textContent || '';
+
+    // Calculate syntax length based on node type and content
+    let syntaxLength = 0;
+
+    // Check for header syntax (## , ### , etc.)
+    const headerMatch = lineText.match(ContentEditableController.HEADER_PATTERN);
+    if (headerMatch) {
+      syntaxLength = headerMatch[0].length; // Length of "## " or "### " etc.
+    }
+    // Check for task checkbox syntax ([ ] , [x] , etc.)
+    else {
+      const checkboxMatch = lineText.match(ContentEditableController.CHECKBOX_PATTERN);
+      if (checkboxMatch) {
+        syntaxLength = checkboxMatch[0].length; // Length of "[ ] " or "[x] "
+      }
+      // Check for quote syntax (> )
+      else if (ContentEditableController.QUOTE_PATTERN.test(lineText)) {
+        syntaxLength = 2; // Length of "> "
+      }
+    }
+
+    // If there's syntax, position cursor after it
+    if (syntaxLength > 0) {
+      // Use tree walker to find the correct text node and offset
+      const walker = document.createTreeWalker(lineElement, NodeFilter.SHOW_TEXT, null);
+      let currentOffset = 0;
+      let textNode = walker.nextNode() as Text | null;
+
+      while (textNode) {
+        const nodeLength = textNode.textContent?.length || 0;
+
+        if (currentOffset + nodeLength >= syntaxLength) {
+          // Found the target text node
+          const offsetInNode = syntaxLength - currentOffset;
+          const newRange = document.createRange();
+          newRange.setStart(textNode, Math.min(offsetInNode, nodeLength));
+          newRange.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(newRange);
+          return;
+        }
+
+        currentOffset += nodeLength;
+        textNode = walker.nextNode() as Text | null;
+      }
+    }
+
+    // If no syntax or positioning failed, cursor stays where it is (beginning of line)
   }
 
   /**
