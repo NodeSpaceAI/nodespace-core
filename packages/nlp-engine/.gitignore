@@ -1,0 +1,9 @@
+
+# NLP Engine model files (large binary files)
+packages/nlp-engine/models/**/*.onnx
+packages/nlp-engine/models/**/*.bin
+packages/nlp-engine/models/**/*.safetensors
+packages/nlp-engine/models/**/vocab.txt
+packages/nlp-engine/models/**/config.json
+packages/nlp-engine/models/**/tokenizer_config.json
+packages/nlp-engine/models/**/special_tokens_map.json

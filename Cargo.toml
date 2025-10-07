@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "packages/core",
+    "packages/nlp-engine",
     "packages/desktop-app/src-tauri"
 ]
 resolver = "2"
@@ -22,6 +23,7 @@ thiserror = "1.0"
 async-trait = "0.1"
 libsql = "0.6"
 nodespace-core = { path = "packages/core" }
+nodespace-nlp-engine = { path = "packages/nlp-engine" }
 
 # Dev dependencies (shared via workspace inheritance)
 tokio-test = "0.4"

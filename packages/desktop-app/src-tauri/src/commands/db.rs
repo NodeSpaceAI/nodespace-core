@@ -126,7 +126,6 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
         .map_err(|e| format!("Failed to initialize database: {}", e))?;
 
     let node_service = NodeService::new(db_service.clone())
-        .await
         .map_err(|e| format!("Failed to initialize node service: {}", e))?;
 
     app.manage(db_service);
@@ -184,10 +183,64 @@ pub async fn select_db_location(app: AppHandle) -> Result<String, String> {
     Ok(db_path.to_string_lossy().to_string())
 }
 
+/// Migrate database from old platform-specific location to ~/.nodespace/
+///
+/// Automatically moves existing database from:
+/// - macOS: ~/Library/Application Support/com.nodespace.app/nodespace.db
+/// - Windows: %APPDATA%/com.nodespace.app/nodespace.db
+/// - Linux: ~/.config/com.nodespace.app/nodespace.db
+///
+/// To new unified location:
+/// - All platforms: ~/.nodespace/database/nodespace.db
+///
+/// This migration happens transparently on first run after update.
+async fn migrate_database_if_needed(app: &AppHandle) -> Result<(), String> {
+    let old_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get old app data directory: {}", e))?
+        .join("nodespace.db");
+
+    if !old_path.exists() {
+        return Ok(()); // Nothing to migrate
+    }
+
+    let home_dir = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
+
+    let new_path = home_dir
+        .join(".nodespace")
+        .join("database")
+        .join("nodespace.db");
+
+    if new_path.exists() {
+        return Ok(()); // Already migrated
+    }
+
+    // Create new directory
+    if let Some(parent) = new_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Failed to create new database directory: {}", e))?;
+    }
+
+    // Copy database to new location
+    fs::copy(&old_path, &new_path)
+        .await
+        .map_err(|e| format!("Failed to migrate database: {}", e))?;
+
+    // Save new preference
+    save_db_path_preference(app, new_path.as_path()).await?;
+
+    tracing::info!("Migrated database from {:?} to {:?}", old_path, new_path);
+
+    Ok(())
+}
+
 /// Initialize database with saved preference or default path
 ///
 /// Checks for previously saved database location preference. If found,
-/// uses that path. Otherwise, falls back to platform-specific app data directory.
+/// uses that path. Otherwise, uses unified ~/.nodespace/database/ location
+/// across all platforms.
 ///
 /// This command should be called during application startup before any
 /// database operations are attempted.
@@ -199,26 +252,42 @@ pub async fn select_db_location(app: AppHandle) -> Result<String, String> {
 /// * `Ok(String)` - Path to the initialized database file
 /// * `Err(String)` - Error if initialization fails
 ///
-/// # Default Locations
-/// - macOS: ~/Library/Application Support/com.nodespace.app/nodespace.db
-/// - Windows: %APPDATA%/com.nodespace.app/nodespace.db
-/// - Linux: ~/.config/com.nodespace.app/nodespace.db
+/// # Default Location (New Unified Path)
+/// - All platforms: ~/.nodespace/database/nodespace.db
+///
+/// # Migration
+/// Automatically migrates existing databases from old platform-specific
+/// locations on first run.
 ///
 /// # Errors
 /// Returns error if:
 /// - Database services are already initialized
-/// - Cannot determine app data directory
+/// - Cannot determine home directory
 /// - Database initialization fails
 #[tauri::command]
 pub async fn initialize_database(app: AppHandle) -> Result<String, String> {
+    // Attempt migration from old location
+    migrate_database_if_needed(&app).await?;
+
     let db_path = if let Some(saved) = load_db_path_preference(&app).await? {
         saved
     } else {
-        app.path()
-            .app_data_dir()
-            .map_err(|e| format!("Failed to get app data directory: {}", e))?
+        // Use unified ~/.nodespace/database/ location
+        let home_dir =
+            dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
+
+        home_dir
+            .join(".nodespace")
+            .join("database")
             .join("nodespace.db")
     };
+
+    // Ensure database directory exists
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Failed to create database directory: {}", e))?;
+    }
 
     // Initialize services
     init_services(&app, db_path.clone()).await?;

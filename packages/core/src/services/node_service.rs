@@ -51,7 +51,7 @@ fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, String> {
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let db = DatabaseService::new(PathBuf::from("./data/test.db")).await?;
-///     let service = NodeService::new(db).await?;
+///     let service = NodeService::new(db)?;
 ///
 ///     let node = Node::new(
 ///         "text".to_string(),
@@ -93,11 +93,11 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let db = DatabaseService::new(PathBuf::from("./data/test.db")).await?;
-    /// let service = NodeService::new(db).await?;
+    /// let service = NodeService::new(db)?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn new(db: DatabaseService) -> Result<Self, NodeServiceError> {
+    pub fn new(db: DatabaseService) -> Result<Self, NodeServiceError> {
         Ok(Self {
             db: Arc::new(db),
             behaviors: Arc::new(NodeBehaviorRegistry::new()),
@@ -136,7 +136,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// let node = Node::new(
     ///     "text".to_string(),
     ///     "My note".to_string(),
@@ -213,7 +213,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// if let Some(node) = service.get_node("node-id-123").await? {
     ///     println!("Found: {}", node.content);
     /// }
@@ -278,7 +278,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// let update = NodeUpdate::new()
     ///     .with_content("Updated content".to_string());
     /// service.update_node("node-id", update).await?;
@@ -377,7 +377,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// service.delete_node("node-id-123").await?;
     /// # Ok(())
     /// # }
@@ -418,7 +418,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// let children = service.get_children("parent-id").await?;
     /// println!("Found {} children", children.len());
     /// # Ok(())
@@ -463,7 +463,7 @@ impl NodeService {
     /// # use std::path::PathBuf;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// // Fetch all nodes for a date page
     /// let nodes = service.get_nodes_by_origin_id("2025-10-05").await?;
     /// println!("Found {} nodes in this document", nodes.len());
@@ -561,7 +561,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// // Move node under new parent
     /// service.move_node("node-id", Some("new-parent-id")).await?;
     ///
@@ -637,7 +637,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// // Position node before sibling
     /// service.reorder_siblings("node-id", Some("sibling-id")).await?;
     ///
@@ -698,7 +698,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// let filter = NodeFilter::new()
     ///     .with_node_type("task".to_string())
     ///     .with_limit(10);
@@ -891,7 +891,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// // Query by ID
     /// let query = NodeQuery::by_id("node-123".to_string());
     /// let nodes = service.query_nodes_simple(query).await?;
@@ -1171,7 +1171,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// let nodes = vec![
     ///     Node::new("text".to_string(), "Note 1".to_string(), None, json!({})),
     ///     Node::new("text".to_string(), "Note 2".to_string(), None, json!({})),
@@ -1264,7 +1264,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// let updates = vec![
     ///     ("node-1".to_string(), NodeUpdate::new().with_content("Updated 1".to_string())),
     ///     ("node-2".to_string(), NodeUpdate::new().with_content("Updated 2".to_string())),
@@ -1395,7 +1395,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// let ids = vec!["node-1".to_string(), "node-2".to_string()];
     /// service.bulk_delete(ids).await?;
     /// # Ok(())
@@ -1669,7 +1669,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// service.add_mention("node-123", "node-456").await?;
     /// # Ok(())
     /// # }
@@ -1718,7 +1718,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// service.remove_mention("node-123", "node-456").await?;
     /// # Ok(())
     /// # }
@@ -1759,7 +1759,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// let mentions = service.get_mentions("node-123").await?;
     /// # Ok(())
     /// # }
@@ -1812,7 +1812,7 @@ impl NodeService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
-    /// # let service = NodeService::new(db).await?;
+    /// # let service = NodeService::new(db)?;
     /// let backlinks = service.get_mentioned_by("node-456").await?;
     /// # Ok(())
     /// # }
@@ -1860,7 +1860,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
         let db = DatabaseService::new(db_path).await.unwrap();
-        let service = NodeService::new(db).await.unwrap();
+        let service = NodeService::new(db).unwrap();
         (service, temp_dir)
     }
 

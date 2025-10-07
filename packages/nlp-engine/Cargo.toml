@@ -1,0 +1,42 @@
+[package]
+name = "nodespace-nlp-engine"
+version = "0.1.0"
+description = "NodeSpace unified vector embedding service using Candle + ONNX"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Candle dependencies for ONNX embedding (feature-gated)
+# Using crates.io version for stability
+candle-core = { version = "0.9", features = ["metal"], optional = true }
+candle-nn = { version = "0.9", optional = true }
+candle-onnx = { version = "0.9", optional = true }
+tokenizers = { version = "0.15", default-features = false, features = ["onig"], optional = true }
+
+# Caching layer
+lru = "0.12"
+
+# Workspace dependencies
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = "0.1"
+
+# Path utilities
+dirs = "5.0"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+criterion = { workspace = true }
+tempfile = "3.0"
+futures = "0.3"
+
+[features]
+default = ["embedding-service"]
+embedding-service = ["candle-core", "candle-nn", "candle-onnx", "tokenizers"]

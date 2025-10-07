@@ -1,0 +1,6 @@
+# Ignore all model files (large binaries, downloaded during build)
+models/**/*
+
+# Keep the directory structure
+!models/
+!models/.gitkeep

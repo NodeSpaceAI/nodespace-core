@@ -71,6 +71,7 @@ pub fn run() {
             toggle_sidebar,
             commands::db::initialize_database,
             commands::db::select_db_location,
+            commands::models::ensure_models_installed,
             commands::nodes::create_node,
             commands::nodes::get_node,
             commands::nodes::update_node,
