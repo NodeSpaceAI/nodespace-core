@@ -1,19 +1,30 @@
 #!/usr/bin/env bun
 /**
- * Download ML models for bundling with the application
- * This script is run during CI/CD build process, not by end users
+ * Download ML models for development or bundling with the application
+ *
+ * Usage:
+ *   bun run download:models          # Download to ~/.nodespace/models/ (development)
+ *   bun run download:models --bundle # Download to resources/ (CI/CD build)
  */
 
 import { $ } from "bun";
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
+import { homedir } from "os";
 
-const MODELS_DIR = "packages/desktop-app/src-tauri/resources/models";
 const MODEL_NAME = "BAAI-bge-small-en-v1.5";
+
+// Determine target directory based on --bundle flag
+const isBundleMode = process.argv.includes("--bundle");
+const MODELS_DIR = isBundleMode
+  ? "packages/desktop-app/src-tauri/resources/models"
+  : join(homedir(), ".nodespace", "models");
 const MODEL_PATH = join(MODELS_DIR, MODEL_NAME);
 
 async function downloadModels() {
-  console.log("📦 Downloading embedding models for bundling...");
+  const modeLabel = isBundleMode ? "bundling" : "development";
+  console.log(`📦 Downloading embedding models for ${modeLabel}...`);
+  console.log(`📁 Target directory: ${MODELS_DIR}`);
 
   // Create models directory
   mkdirSync(MODELS_DIR, { recursive: true });
