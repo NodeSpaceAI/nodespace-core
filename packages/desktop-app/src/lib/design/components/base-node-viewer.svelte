@@ -74,6 +74,35 @@
     }
   });
 
+  // Track node IDs to detect deletions
+  // Use a regular variable, not $state, to avoid infinite loops
+  let previousNodeIds = new Set<string>();
+
+  $effect(() => {
+    if (!parentId) return;
+
+    const currentNodeIds = new Set(nodeManager.visibleNodes.map((n) => n.id));
+
+    // Skip the first run (when previousNodeIds is empty)
+    if (previousNodeIds.size > 0) {
+      // Detect deleted nodes by comparing with previous state
+      for (const prevId of previousNodeIds) {
+        if (!currentNodeIds.has(prevId) && !nodeManager.findNode(prevId)) {
+          // Node was deleted - persist deletion to database
+          databaseService.deleteNode(prevId).catch((error) => {
+            console.error('[BaseNodeViewer] Failed to delete node from database:', prevId, error);
+          });
+        }
+      }
+    }
+
+    // Update previous state (mutate the Set instead of replacing it)
+    previousNodeIds.clear();
+    for (const id of currentNodeIds) {
+      previousNodeIds.add(id);
+    }
+  });
+
   async function loadChildrenForParent(parentId: string) {
     try {
       // Use bulk fetch for efficiency - single query gets all nodes for this origin
