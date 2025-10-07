@@ -89,13 +89,26 @@
     // Skip the first run (when previousNodeIds is empty)
     if (previousNodeIds.size > 0) {
       // Detect deleted nodes by comparing with previous state
+      const deletedNodeIds: string[] = [];
       for (const prevId of previousNodeIds) {
         if (!currentNodeIds.has(prevId) && !nodeManager.findNode(prevId)) {
-          // Node was deleted - persist deletion to database
-          databaseService.deleteNode(prevId).catch((error) => {
-            console.error('[BaseNodeViewer] Failed to delete node from database:', prevId, error);
-          });
+          deletedNodeIds.push(prevId);
         }
+      }
+
+      // Delete nodes through the global write queue
+      // The queue ensures deletions happen after any pending structural updates
+      if (deletedNodeIds.length > 0) {
+        (async () => {
+          // Safe to delete nodes - queue ensures proper ordering
+          for (const nodeId of deletedNodeIds) {
+            try {
+              await queueDatabaseWrite(() => databaseService.deleteNode(nodeId));
+            } catch (error) {
+              console.error('[BaseNodeViewer] Failed to delete node from database:', nodeId, error);
+            }
+          }
+        })();
       }
     }
 
@@ -103,6 +116,127 @@
     previousNodeIds.clear();
     for (const id of currentNodeIds) {
       previousNodeIds.add(id);
+    }
+  });
+
+  // Track structural changes (parentId, beforeSiblingId) and persist to database
+  // This is critical for operations like node deletion that reassign children
+  // Using $effect.pre to ensure this runs BEFORE the deletion watcher
+  let previousStructure = new Map<
+    string,
+    { parentId: string | null; beforeSiblingId: string | null }
+  >();
+
+  // CRITICAL: Global database write queue to prevent SQLite "database is locked" errors
+  // ALL database writes must go through this queue to ensure serialization
+  // SQLite only allows one write transaction at a time
+  let pendingDatabaseWritePromise: Promise<void> | null = null;
+
+  /**
+   * Queue a database write operation to ensure it doesn't overlap with other writes
+   * This prevents SQLite "database is locked" errors by serializing all writes
+   */
+  async function queueDatabaseWrite<T>(operation: () => Promise<T>): Promise<T> {
+    const previousPromise = pendingDatabaseWritePromise;
+
+    // Create a new promise that waits for the previous operation before running ours
+    let resolveOurPromise: () => void;
+    pendingDatabaseWritePromise = new Promise<void>((resolve) => {
+      resolveOurPromise = resolve;
+    });
+
+    // Wait for previous operation to complete
+    if (previousPromise) {
+      try {
+        await previousPromise;
+      } catch {
+        // Ignore errors from previous operations
+      }
+    }
+
+    // Now execute our operation
+    try {
+      const result = await operation();
+      resolveOurPromise!();
+      return result;
+    } catch (error) {
+      resolveOurPromise!();
+      throw error;
+    }
+  }
+
+  $effect.pre(() => {
+    if (!parentId) return;
+
+    const visibleNodes = nodeManager.visibleNodes;
+
+    // Collect all structural changes first
+    const updates: Array<{
+      nodeId: string;
+      parentId: string | null;
+      beforeSiblingId: string | null;
+    }> = [];
+
+    for (const node of visibleNodes) {
+      // Skip placeholder nodes
+      if (node.isPlaceholder) {
+        continue;
+      }
+
+      const currentStructure = {
+        parentId: node.parentId,
+        beforeSiblingId: node.beforeSiblingId
+      };
+
+      const prevStructure = previousStructure.get(node.id);
+
+      if (
+        prevStructure &&
+        (prevStructure.parentId !== currentStructure.parentId ||
+          prevStructure.beforeSiblingId !== currentStructure.beforeSiblingId)
+      ) {
+        // Structural change detected - queue for persistence
+        updates.push({
+          nodeId: node.id,
+          parentId: node.parentId,
+          beforeSiblingId: node.beforeSiblingId
+        });
+      }
+
+      // Update tracking
+      previousStructure.set(node.id, currentStructure);
+    }
+
+    // Persist updates sequentially to avoid SQLite "database is locked" errors
+    // All writes go through the global queue to ensure serialization
+    if (updates.length > 0) {
+      // Process updates asynchronously - queue ensures proper serialization
+      (async () => {
+        for (const update of updates) {
+          try {
+            await queueDatabaseWrite(() =>
+              databaseService.updateNode(update.nodeId, {
+                parentId: update.parentId,
+                beforeSiblingId: update.beforeSiblingId
+              })
+            );
+          } catch (error) {
+            console.error(
+              '[BaseNodeViewer] Failed to persist structural change:',
+              update.nodeId,
+              error
+            );
+          }
+        }
+      })();
+    }
+
+    // Clean up tracking for nodes that no longer exist
+    const currentNodeIds = new Set(visibleNodes.map((n) => n.id));
+    for (const [nodeId] of previousStructure) {
+      if (!currentNodeIds.has(nodeId)) {
+        previousStructure.delete(nodeId);
+      }
     }
   });
 
@@ -179,13 +313,15 @@
 
       // Persist the placeholder parent with empty content
       // This creates a real node in the database that child nodes can reference
-      await databaseService.saveNodeWithParent(parent.id, {
-        content: '', // Empty content for placeholder
-        nodeType: parent.nodeType,
-        parentId: parent.parentId || parentId!,
-        originNodeId: parent.originNodeId || parentId!,
-        beforeSiblingId: parent.beforeSiblingId
-      });
+      await queueDatabaseWrite(() =>
+        databaseService.saveNodeWithParent(parent.id, {
+          content: '', // Empty content for placeholder
+          nodeType: parent.nodeType,
+          parentId: parent.parentId || parentId!,
+          originNodeId: parent.originNodeId || parentId!,
+          beforeSiblingId: parent.beforeSiblingId
+        })
+      );
 
       // Mark as persisted by updating lastSavedContent
       lastSavedContent.set(parent.id, '');
@@ -207,13 +343,15 @@
         // Ensure all placeholder ancestors are persisted first
         await ensureAncestorsPersisted(nodeId);
 
-        await databaseService.saveNodeWithParent(nodeId, {
-          content,
-          nodeType: nodeType,
-          parentId: node?.parentId || parentId!,
-          originNodeId: node?.originNodeId || parentId!,
-          beforeSiblingId: node?.beforeSiblingId
-        });
+        await queueDatabaseWrite(() =>
+          databaseService.saveNodeWithParent(nodeId, {
+            content,
+            nodeType: nodeType,
+            parentId: node?.parentId || parentId!,
+            originNodeId: node?.originNodeId || parentId!,
+            beforeSiblingId: node?.beforeSiblingId
+          })
+        );
 
         // Update last saved content to prevent redundant saves
         lastSavedContent.set(nodeId, content);
@@ -252,13 +390,15 @@
         return;
       }
 
-      await databaseService.saveNodeWithParent(nodeId, {
-        content: node.content,
-        nodeType: node.nodeType,
-        parentId: node.parentId || parentId,
-        originNodeId: node.originNodeId || parentId,
-        beforeSiblingId: node.beforeSiblingId
-      });
+      await queueDatabaseWrite(() =>
+        databaseService.saveNodeWithParent(nodeId, {
+          content: node.content,
+          nodeType: node.nodeType,
+          parentId: node.parentId || parentId,
+          originNodeId: node.originNodeId || parentId,
+          beforeSiblingId: node.beforeSiblingId
+        })
+      );
     } catch (error) {
       console.error('[BaseNodeViewer] Failed to save hierarchy change:', nodeId, error);
     }
