@@ -760,6 +760,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       }
     }
 
+    // Remove node from sibling chain BEFORE deletion to prevent orphans
+    removeFromSiblingChain(currentNodeId);
+
     delete _nodes[currentNodeId];
     delete _uiState[currentNodeId];
 
@@ -768,8 +771,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       _rootNodeIds.splice(rootIndex, 1);
     }
 
+    // Invalidate sorted children cache for parent (node removed, children promoted)
+    invalidateSortedChildrenCache(currentNode.parentId);
+    // Also invalidate cache for the deleted node itself (in case it's still referenced)
+    invalidateSortedChildrenCache(currentNodeId);
+
     clearAllAutoFocus();
     events.focusRequested(previousNodeId, mergePosition);
+    events.nodeDeleted(currentNodeId);
     events.hierarchyChanged();
   }
 

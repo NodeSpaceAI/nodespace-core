@@ -232,6 +232,122 @@ describe('NodeManager', () => {
       const realtimeAfter = nodeManager.findNode('realtime');
       expect(realtimeAfter?.content).toBe('Node C (target)Source Node');
     });
+
+    test('combineNodes fires nodeDeleted event for database cleanup', () => {
+      // Reset event tracking
+      nodeDeletedCalls.length = 0;
+
+      // Perform combination
+      nodeManager.combineNodes('node2', 'node1');
+
+      // Verify nodeDeleted event was fired
+      expect(nodeDeletedCalls).toContain('node2');
+      expect(nodeDeletedCalls).toHaveLength(1);
+
+      // Verify node was actually removed from memory
+      expect(nodeManager.findNode('node2')).toBeNull();
+    });
+
+    test('combineNodes maintains sibling chain integrity', () => {
+      // Setup: node1 -> node2 -> node3 (linked list via beforeSiblingId)
+      const testNodes = [
+        createTestNode({ id: 'node1', content: 'First', beforeSiblingId: null }),
+        createTestNode({ id: 'node2', content: 'Second', beforeSiblingId: 'node1' }),
+        createTestNode({ id: 'node3', content: 'Third', beforeSiblingId: 'node2' })
+      ];
+
+      nodeManager.initializeNodes(testNodes, {
+        expanded: true,
+        autoFocus: false,
+        inheritHeaderLevel: 0
+      });
+
+      // Combine node2 into node1 (removes node2 from chain)
+      nodeManager.combineNodes('node2', 'node1');
+
+      // Verify node3's beforeSiblingId was updated to skip deleted node2
+      const node3 = nodeManager.findNode('node3');
+      expect(node3?.beforeSiblingId).toBe('node1');
+
+      // Verify the linked list is intact (no orphaned nodes)
+      const visibleNodes = nodeManager.visibleNodes;
+      const nodeIds = visibleNodes.map((n) => n.id);
+      expect(nodeIds).toEqual(['node1', 'node3']);
+    });
+
+    test('combineNodes handles middle node in sibling chain', () => {
+      // Setup: A -> B -> C -> D (combine B into A)
+      const testNodes = [
+        createTestNode({ id: 'a', content: 'A', beforeSiblingId: null }),
+        createTestNode({ id: 'b', content: 'B', beforeSiblingId: 'a' }),
+        createTestNode({ id: 'c', content: 'C', beforeSiblingId: 'b' }),
+        createTestNode({ id: 'd', content: 'D', beforeSiblingId: 'c' })
+      ];
+
+      nodeManager.initializeNodes(testNodes, {
+        expanded: true,
+        autoFocus: false,
+        inheritHeaderLevel: 0
+      });
+
+      // Combine B into A (removes B)
+      nodeManager.combineNodes('b', 'a');
+
+      // Verify C now points to A (skipping deleted B)
+      const nodeC = nodeManager.findNode('c');
+      expect(nodeC?.beforeSiblingId).toBe('a');
+
+      // Verify D still points to C (unchanged)
+      const nodeD = nodeManager.findNode('d');
+      expect(nodeD?.beforeSiblingId).toBe('c');
+
+      // Verify visible order is correct: A, C, D
+      const visibleNodes = nodeManager.visibleNodes;
+      const nodeIds = visibleNodes.map((n) => n.id);
+      expect(nodeIds).toEqual(['a', 'c', 'd']);
+
+      // Verify content was combined
+      const nodeA = nodeManager.findNode('a');
+      expect(nodeA?.content).toBe('AB');
+    });
+
+    test('combineNodes with children maintains both sibling chain and child hierarchy', () => {
+      // Complex case: node with children in a sibling chain
+      const testNodes = [
+        createTestNode({ id: 'parent1', content: 'Parent 1', beforeSiblingId: null }),
+        createTestNode({ id: 'parent2', content: 'Parent 2', beforeSiblingId: 'parent1' }),
+        createTestNode({ id: 'parent3', content: 'Parent 3', beforeSiblingId: 'parent2' }),
+        createTestNode({ id: 'child1', content: 'Child 1', parentId: 'parent2' }),
+        createTestNode({ id: 'child2', content: 'Child 2', parentId: 'parent2' })
+      ];
+
+      nodeManager.initializeNodes(testNodes, {
+        expanded: true,
+        autoFocus: false,
+        inheritHeaderLevel: 0
+      });
+
+      // Combine parent2 into parent1 (should transfer children and update sibling chain)
+      nodeManager.combineNodes('parent2', 'parent1');
+
+      // Verify sibling chain: parent3 now points to parent1
+      const parent3 = nodeManager.findNode('parent3');
+      expect(parent3?.beforeSiblingId).toBe('parent1');
+
+      // Verify children were transferred to parent1
+      const child1 = nodeManager.findNode('child1');
+      const child2 = nodeManager.findNode('child2');
+      expect(child1?.parentId).toBe('parent1');
+      expect(child2?.parentId).toBe('parent1');
+
+      // Verify parent1 shows children in visibleNodes
+      const parent1Visible = nodeManager.visibleNodes.find((n) => n.id === 'parent1');
+      expect(parent1Visible?.children).toContain('child1');
+      expect(parent1Visible?.children).toContain('child2');
+
+      // Verify nodeDeleted was called
+      expect(nodeDeletedCalls).toContain('parent2');
+    });
   });
 
   describe('Core Operations', () => {
