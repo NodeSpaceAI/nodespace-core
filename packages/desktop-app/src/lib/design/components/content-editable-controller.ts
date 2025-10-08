@@ -1793,12 +1793,10 @@ export class ContentEditableController {
 
       const cursorRect = cursorRange.getBoundingClientRect();
 
-      // Calculate offset relative to this element's left edge, not the root container
-      // This ensures the horizontal position is preserved when navigating between nodes
-      const elementRect = this.element.getBoundingClientRect();
-
-      const pixelOffset = cursorRect.left - elementRect.left;
-      return pixelOffset;
+      // Return absolute pixel position including horizontal scroll offset
+      // This maintains horizontal position when navigating between nodes with different font sizes
+      // and accounts for viewport scroll state
+      return cursorRect.left + window.scrollX;
     } catch (e) {
       console.warn('[getCurrentPixelOffset] Error measuring pixel offset:', e);
       return 0;
