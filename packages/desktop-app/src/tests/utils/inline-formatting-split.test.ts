@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { splitMarkdownContent } from '../../lib/utils/markdownSplitter';
+import { splitMarkdownContent } from '../../lib/utils/markdown-splitter';
 
 describe('Inline Formatting Split', () => {
   describe('Bold formatting (**text**)', () => {
