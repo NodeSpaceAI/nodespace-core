@@ -707,7 +707,8 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn query_nodes(&self, filter: NodeFilter) -> Result<Vec<Node>, NodeServiceError> {
-        let conn = self.db.connect()?;
+        // Use connection with busy timeout for better concurrency handling
+        let conn = self.db.connect_with_timeout().await?;
 
         // For simple queries, we'll use specific patterns. Complex dynamic queries need a query builder
         // For this implementation, we'll handle the most common cases
@@ -910,7 +911,9 @@ impl NodeService {
         &self,
         query: crate::models::NodeQuery,
     ) -> Result<Vec<Node>, NodeServiceError> {
-        let conn = self.db.connect()?;
+        // Use connection with busy timeout to prevent immediate failure on lock contention
+        // This is especially important for queries that might run concurrently with deletes
+        let conn = self.db.connect_with_timeout().await?;
 
         // Priority 1: Query by ID (exact match)
         if let Some(ref id) = query.id {

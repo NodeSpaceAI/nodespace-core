@@ -866,13 +866,13 @@ export class NodeReferenceService {
       this.invalidateNodeCaches(nodeEvent.nodeId);
     });
 
-    // Listen for node deletion to clean up references
+    // Listen for node deletion to invalidate caches
+    // Note: No cleanup needed - database CASCADE deletes handle node_mentions automatically
     eventBus.subscribe('node:deleted', (event) => {
       const nodeEvent = event as import('./event-types').NodeDeletedEvent;
-      // Use setTimeout to ensure this runs asynchronously
-      setTimeout(() => {
-        this.cleanupDeletedNodeReferences(nodeEvent.nodeId);
-      }, 0);
+      // Just invalidate caches for the deleted node
+      this.invalidateNodeCaches(nodeEvent.nodeId);
+      this.mentionsCache.delete(nodeEvent.nodeId);
     });
 
     // Listen for hierarchy changes
@@ -1081,6 +1081,20 @@ export class NodeReferenceService {
     }
   }
 
+  /**
+   * DEPRECATED: This function is no longer called automatically.
+   *
+   * Database CASCADE deletes (ON DELETE CASCADE in node_mentions table) handle
+   * cleanup automatically when a node is deleted. This function caused a race
+   * condition where it tried to query the database while delete transaction
+   * was still active, resulting in "database is locked" errors.
+   *
+   * Kept for potential manual cleanup scenarios, but should not be called
+   * automatically on node:deleted events.
+   *
+   * @deprecated Use database CASCADE deletes instead
+   * @see Issue #190
+   */
   private async cleanupDeletedNodeReferences(deletedNodeId: string): Promise<void> {
     try {
       // Find all nodes that reference the deleted node
