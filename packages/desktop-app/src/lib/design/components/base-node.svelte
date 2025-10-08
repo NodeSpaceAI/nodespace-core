@@ -180,8 +180,7 @@
   }
 
   // Slash command event handlers
-  function handleSlashCommandSelect(event: CustomEvent<SlashCommand>) {
-    const command = event.detail;
+  function handleSlashCommandSelect(command: SlashCommand) {
     let calculatedCursorPosition = 0;
 
     if (controller) {
@@ -540,8 +539,8 @@
   commands={slashCommands}
   loading={false}
   visible={showSlashCommands}
-  on:select={handleSlashCommandSelect}
-  on:close={handleSlashCommandClose}
+  onselect={handleSlashCommandSelect}
+  onclose={handleSlashCommandClose}
 />
 
 <style>
