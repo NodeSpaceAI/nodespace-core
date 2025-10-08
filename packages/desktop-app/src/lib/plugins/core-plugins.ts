@@ -195,7 +195,7 @@ export const corePlugins = [
  * Register all core plugins with the unified registry
  * Replaces the old BasicNodeTypeRegistry initialization
  */
-export function registerCorePlugins(registry: import('./pluginRegistry').PluginRegistry): void {
+export function registerCorePlugins(registry: import('./plugin-registry').PluginRegistry): void {
   // Check if plugins are already registered in this specific registry instance
   if (registry.hasPlugin('text')) {
     return; // Already registered in this registry
@@ -220,7 +220,7 @@ export function registerCorePlugins(registry: import('./pluginRegistry').PluginR
  * External developers will use this to register plugins like WhiteBoardNode
  */
 export function registerExternalPlugin(
-  registry: import('./pluginRegistry').PluginRegistry,
+  registry: import('./plugin-registry').PluginRegistry,
   plugin: PluginDefinition
 ): void {
   registry.register(plugin);

@@ -2,11 +2,11 @@
  * Base interface that all node viewers should implement
  * This ensures consistent event handling and prop structure
  *
- * NOTE: For component props, use NodeViewerProps from $lib/types/nodeViewers.js
+ * NOTE: For component props, use NodeViewerProps from "./node-viewers.js
  * This interface is for documentation and implementation guidance only.
  */
 
-import type { NodeViewerEventDetails, NodeViewerProps } from '$lib/types/nodeViewers.js';
+import type { NodeViewerEventDetails, NodeViewerProps } from '../../types/node-viewers';
 
 export interface BaseNodeViewerInterface {
   // Props - use NodeViewerProps in actual components

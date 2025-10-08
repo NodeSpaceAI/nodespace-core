@@ -20,7 +20,7 @@ import type {
   EventSubscriptionOptions,
   BatchedEvent,
   BatchingConfig
-} from './eventTypes';
+} from './event-types';
 
 // ============================================================================
 // Event Bus Implementation
@@ -495,7 +495,7 @@ export class EventBus {
     }
 
     // Emit batch completed event for subscribers who care about batching
-    const debugEvent: import('./eventTypes').DebugEvent = {
+    const debugEvent: import('./event-types').DebugEvent = {
       type: 'debug:log',
       namespace: 'debug',
       source: 'EventBus',

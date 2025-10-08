@@ -13,12 +13,12 @@
   const NODE_SERVICE_CONTEXT_KEY = Symbol('nodeServices');
 
   // Import proper types for the services
-  import type { ReactiveNodeService } from '$lib/services/reactiveNodeService.svelte';
-  import type { HierarchyService as HierarchyServiceType } from '$lib/services/hierarchyService';
-  import type { NodeOperationsService as NodeOperationsServiceType } from '$lib/services/nodeOperationsService';
-  import type { ContentProcessor as ContentProcessorType } from '$lib/services/contentProcessor';
-  import type { TauriNodeService as TauriNodeServiceType } from '$lib/services/tauriNodeService';
-  import type NodeReferenceServiceType from '$lib/services/nodeReferenceService';
+  import type { ReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
+  import type { HierarchyService as HierarchyServiceType } from '$lib/services/hierarchy-service';
+  import type { NodeOperationsService as NodeOperationsServiceType } from '$lib/services/node-operations-service';
+  import type { ContentProcessor as ContentProcessorType } from '$lib/services/content-processor';
+  import type { TauriNodeService as TauriNodeServiceType } from '$lib/services/tauri-node-service';
+  import type NodeReferenceServiceType from '$lib/services/node-reference-service';
 
   // Service interface definition with proper types
   export interface NodeServices {
@@ -46,12 +46,12 @@
   import type { Snippet } from 'svelte';
 
   // Service imports
-  import NodeReferenceService from '$lib/services/nodeReferenceService';
-  import { createReactiveNodeService } from '$lib/services/reactiveNodeService.svelte';
-  import { HierarchyService } from '$lib/services/hierarchyService';
-  import { NodeOperationsService } from '$lib/services/nodeOperationsService';
-  import { tauriNodeService } from '$lib/services/tauriNodeService';
-  import { ContentProcessor } from '$lib/services/contentProcessor';
+  import NodeReferenceService from '$lib/services/node-reference-service';
+  import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
+  import { HierarchyService } from '$lib/services/hierarchy-service';
+  import { NodeOperationsService } from '$lib/services/node-operations-service';
+  import { tauriNodeService } from '$lib/services/tauri-node-service';
+  import { ContentProcessor } from '$lib/services/content-processor';
 
   // Props
   let {

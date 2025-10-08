@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { ContentEditableController } from '../../lib/design/components/contentEditableController';
+import { ContentEditableController } from '../../lib/design/components/content-editable-controller';
 
 // Setup DOM environment
 const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>');

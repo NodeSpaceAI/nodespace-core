@@ -5,7 +5,7 @@
  * This replaces the old fragmented registry system.
  */
 
-export { PluginRegistry, pluginRegistry } from './pluginRegistry';
+export { PluginRegistry, pluginRegistry } from './plugin-registry';
 export type {
   PluginDefinition,
   NodeViewerComponent,

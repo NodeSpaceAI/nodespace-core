@@ -9,7 +9,7 @@
  *
  * Usage:
  * ```typescript
- * import { queueDatabaseWrite, getQueueDepth } from '$lib/utils/databaseWriteQueue';
+ * import { queueDatabaseWrite, getQueueDepth } from '$lib/utils/database-write-queue';
  *
  * // Queue a database operation
  * await queueDatabaseWrite(() => databaseService.updateNode(nodeId, updates));

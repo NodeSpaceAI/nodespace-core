@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { PluginRegistry } from '$lib/plugins/pluginRegistry';
+import { PluginRegistry } from '$lib/plugins/plugin-registry';
 import type {
   PluginDefinition,
   NodeViewerComponent,

@@ -24,13 +24,13 @@
  * - ContentProcessor: Enhanced @ trigger content processing
  */
 
-import { eventBus } from './eventBus';
-import { ContentProcessor } from './contentProcessor';
-import type { ReactiveNodeService as NodeManager } from './reactiveNodeService.svelte.ts';
-import type { HierarchyService } from './hierarchyService';
-import type { NodeOperationsService } from './nodeOperationsService';
+import { eventBus } from './event-bus';
+import { ContentProcessor } from './content-processor';
+import type { ReactiveNodeService as NodeManager } from './reactive-node-service.svelte';
+import type { HierarchyService } from './hierarchy-service';
+import type { NodeOperationsService } from './node-operations-service';
 import type { Node } from '$lib/types';
-import type { TauriNodeService } from './tauriNodeService';
+import type { TauriNodeService } from './tauri-node-service';
 
 // ============================================================================
 // Core Types and Interfaces
@@ -736,7 +736,7 @@ export class NodeReferenceService {
       // For this testing phase, we focus on database storage.
 
       // Emit node creation event
-      const nodeCreatedEvent: import('./eventTypes').NodeCreatedEvent = {
+      const nodeCreatedEvent: import('./event-types').NodeCreatedEvent = {
         type: 'node:created',
         namespace: 'lifecycle',
         source: this.serviceName,
@@ -774,7 +774,7 @@ export class NodeReferenceService {
 
       // Emit events for detected @ references
       for (const link of atLinks) {
-        const referenceResolvedEvent: import('./eventTypes').ReferenceResolutionEvent = {
+        const referenceResolvedEvent: import('./event-types').ReferenceResolutionEvent = {
           type: 'reference:resolved',
           namespace: 'coordination',
           source: this.serviceName,
@@ -862,13 +862,13 @@ export class NodeReferenceService {
   private setupEventBusIntegration(): void {
     // Listen for node updates to invalidate caches
     eventBus.subscribe('node:updated', (event) => {
-      const nodeEvent = event as import('./eventTypes').NodeUpdatedEvent;
+      const nodeEvent = event as import('./event-types').NodeUpdatedEvent;
       this.invalidateNodeCaches(nodeEvent.nodeId);
     });
 
     // Listen for node deletion to clean up references
     eventBus.subscribe('node:deleted', (event) => {
-      const nodeEvent = event as import('./eventTypes').NodeDeletedEvent;
+      const nodeEvent = event as import('./event-types').NodeDeletedEvent;
       // Use setTimeout to ensure this runs asynchronously
       setTimeout(() => {
         this.cleanupDeletedNodeReferences(nodeEvent.nodeId);
@@ -1051,7 +1051,7 @@ export class NodeReferenceService {
     sourceId: string,
     targetId: string
   ): void {
-    const referencesUpdateEvent: import('./eventTypes').ReferencesUpdateNeededEvent = {
+    const referencesUpdateEvent: import('./event-types').ReferencesUpdateNeededEvent = {
       type: 'references:update-needed',
       namespace: 'coordination',
       source: this.serviceName,

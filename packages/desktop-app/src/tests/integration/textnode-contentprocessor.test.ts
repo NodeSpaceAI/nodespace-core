@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { contentProcessor } from '../../lib/services/contentProcessor.js';
+import { contentProcessor } from '../../lib/services/content-processor.js';
 
 describe('TextNode + ContentProcessor Integration', () => {
   describe('Header Processing Integration', () => {

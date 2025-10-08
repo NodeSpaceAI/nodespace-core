@@ -50,10 +50,10 @@ import BaseNode from '$lib/design/components/base-node.svelte';
 import {
   createReactiveNodeService,
   type ReactiveNodeService as NodeManager
-} from '$lib/services/reactiveNodeService.svelte';
-import type { NodeManagerEvents } from '$lib/services/reactiveNodeService.svelte';
-import { eventBus } from '$lib/services/eventBus';
-import type { NodeSpaceEvent } from '$lib/services/eventTypes';
+} from '$lib/services/reactive-node-service.svelte';
+import type { NodeManagerEvents } from '$lib/services/reactive-node-service.svelte';
+import { eventBus } from '$lib/services/event-bus';
+import type { NodeSpaceEvent } from '$lib/services/event-types';
 import { createTestNode } from '../helpers';
 
 describe('Node Creation Event Chain', () => {

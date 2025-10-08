@@ -13,7 +13,7 @@ import {
   type ParagraphNode,
   type ASTNode,
   type WikiLinkNode
-} from '../../lib/services/contentProcessor.js';
+} from '../../lib/services/content-processor.js';
 
 describe('ContentProcessor', () => {
   let processor: ContentProcessor;

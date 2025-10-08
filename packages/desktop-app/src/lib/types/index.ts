@@ -13,4 +13,4 @@ export type { CommandError } from './errors';
 export { isCommandError, toError, DatabaseInitializationError, NodeOperationError } from './errors';
 
 // Re-export existing types for convenience
-export type { NodeViewerProps } from './nodeViewers';
+export type { NodeViewerProps } from './node-viewers';

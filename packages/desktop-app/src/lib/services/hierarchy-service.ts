@@ -18,8 +18,8 @@
  * - Reactive updates for UI synchronization
  */
 
-import { eventBus } from './eventBus';
-import type { ReactiveNodeService as NodeManager } from './reactiveNodeService.svelte.ts';
+import { eventBus } from './event-bus';
+import type { ReactiveNodeService as NodeManager } from './reactive-node-service.svelte';
 import type { Node } from '$lib/types';
 
 // ============================================================================
@@ -350,7 +350,7 @@ export class HierarchyService {
     const computeTime = performance.now() - startTime;
 
     // Emit performance event
-    eventBus.emit<import('./eventTypes').DebugEvent>({
+    eventBus.emit<import('./event-types').DebugEvent>({
       type: 'debug:log',
       namespace: 'debug',
       source: this.serviceName,
@@ -483,7 +483,7 @@ export class HierarchyService {
   private setupEventBusIntegration(): void {
     // Listen for node updates to invalidate relevant caches
     eventBus.subscribe('node:updated', (event) => {
-      const nodeEvent = event as import('./eventTypes').NodeUpdatedEvent;
+      const nodeEvent = event as import('./event-types').NodeUpdatedEvent;
       if (nodeEvent.updateType === 'hierarchy') {
         // Hierarchy changes affect multiple nodes, invalidate broadly
         this.invalidateNodeCache(nodeEvent.nodeId);
@@ -498,7 +498,7 @@ export class HierarchyService {
 
     // Listen for hierarchy changes
     eventBus.subscribe('hierarchy:changed', (event) => {
-      const hierarchyEvent = event as import('./eventTypes').HierarchyChangedEvent;
+      const hierarchyEvent = event as import('./event-types').HierarchyChangedEvent;
 
       // Invalidate cache for all affected nodes
       for (const nodeId of hierarchyEvent.affectedNodes) {
@@ -508,7 +508,7 @@ export class HierarchyService {
 
     // Listen for node creation/deletion
     eventBus.subscribe('node:created', (event) => {
-      const nodeEvent = event as import('./eventTypes').NodeCreatedEvent;
+      const nodeEvent = event as import('./event-types').NodeCreatedEvent;
 
       // Invalidate parent's children cache
       if (nodeEvent.parentId) {
@@ -520,7 +520,7 @@ export class HierarchyService {
     });
 
     eventBus.subscribe('node:deleted', (event) => {
-      const nodeEvent = event as import('./eventTypes').NodeDeletedEvent;
+      const nodeEvent = event as import('./event-types').NodeDeletedEvent;
 
       // Remove from all caches
       this.invalidateNodeCache(nodeEvent.nodeId);

@@ -92,8 +92,8 @@ export default async function setup() {
   }
 
   // Import plugins AFTER runes are available
-  const { pluginRegistry } = await import('$lib/plugins/pluginRegistry');
-  const { registerCorePlugins } = await import('$lib/plugins/corePlugins');
+  const { pluginRegistry } = await import('$lib/plugins/plugin-registry');
+  const { registerCorePlugins } = await import('$lib/plugins/core-plugins');
 
   // Register core plugins globally for all tests - only once per test run
   if (!pluginRegistry.hasPlugin('text')) {

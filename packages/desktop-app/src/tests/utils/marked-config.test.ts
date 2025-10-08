@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { markdownToHtml, htmlToMarkdown } from '$lib/utils/markedConfig.js';
+import { markdownToHtml, htmlToMarkdown } from '$lib/utils/marked-config.js';
 
 describe('marked.js Integration', () => {
   describe('Edge cases that custom parser failed on', () => {

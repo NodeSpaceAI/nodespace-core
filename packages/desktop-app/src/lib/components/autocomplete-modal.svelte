@@ -16,7 +16,7 @@
 -->
 
 <script context="module" lang="ts">
-  import type { NodeReferenceService } from '$lib/services/nodeReferenceService';
+  import type { NodeReferenceService } from '$lib/services/node-reference-service';
 
   export interface AutocompleteModalProps {
     visible: boolean;
@@ -39,7 +39,7 @@
   import Badge from '$lib/components/ui/badge/badge.svelte';
   import Separator from '$lib/components/ui/separator/separator.svelte';
   import Icon, { type IconName } from '$lib/design/icons';
-  import type { AutocompleteResult, NodeSuggestion } from '$lib/services/nodeReferenceService';
+  import type { AutocompleteResult, NodeSuggestion } from '$lib/services/node-reference-service';
   import type { Node } from '$lib/types';
 
   // ============================================================================

@@ -24,16 +24,16 @@
 };
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { NodeReferenceService } from '../../lib/services/nodeReferenceService';
+import { NodeReferenceService } from '../../lib/services/node-reference-service';
 import {
   createReactiveNodeService,
   type ReactiveNodeService as NodeManager
-} from '../../lib/services/reactiveNodeService.svelte.js';
-import { HierarchyService } from '../../lib/services/hierarchyService';
-import { NodeOperationsService } from '../../lib/services/nodeOperationsService';
-import { ContentProcessor } from '../../lib/services/contentProcessor';
-import { eventBus } from '../../lib/services/eventBus';
-import type { ReferencesUpdateNeededEvent, NodeDeletedEvent } from '../../lib/services/eventTypes';
+} from '../../lib/services/reactive-node-service.svelte.js';
+import { HierarchyService } from '../../lib/services/hierarchy-service';
+import { NodeOperationsService } from '../../lib/services/node-operations-service';
+import { ContentProcessor } from '../../lib/services/content-processor';
+import { eventBus } from '../../lib/services/event-bus';
+import type { ReferencesUpdateNeededEvent, NodeDeletedEvent } from '../../lib/services/event-types';
 import type { Node } from '../../lib/types/node';
 import { createTestNode, waitForEffects } from '../helpers';
 
@@ -219,7 +219,7 @@ describe('NodeReferenceService - Universal Node Reference System', () => {
       nodeManager,
       hierarchyService,
       nodeOperationsService,
-      databaseService as unknown as import('../../lib/services/tauriNodeService').TauriNodeService,
+      databaseService as unknown as import('../../lib/services/tauri-node-service').TauriNodeService,
       contentProcessor
     );
   });

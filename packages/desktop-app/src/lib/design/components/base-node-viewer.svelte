@@ -13,7 +13,7 @@
   import BaseNode from '$lib/design/components/base-node.svelte';
   import TextNodeViewer from '$lib/components/viewers/text-node-viewer.svelte';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
-  import { queueDatabaseWrite } from '$lib/utils/databaseWriteQueue';
+  import { queueDatabaseWrite } from '$lib/utils/database-write-queue';
   import type { Snippet } from 'svelte';
 
   // Props
@@ -559,7 +559,7 @@
           }
 
           // Emit event for error notification (UI can show toast/banner)
-          import('$lib/services/eventBus').then(({ eventBus }) => {
+          import('$lib/services/event-bus').then(({ eventBus }) => {
             // Determine failure reason based on what failed
             let failureReason:
               | 'timeout'

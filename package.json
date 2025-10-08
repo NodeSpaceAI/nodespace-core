@@ -9,6 +9,8 @@
   ],
   "scripts": {
     "preinstall": "node enforce-bun.js",
+    "postinstall": "bun run setup:git-hooks",
+    "setup:git-hooks": "bun run scripts/setup-git-hooks.ts",
     "dev": "bun run --cwd packages/desktop-app dev",
     "build": "bun run --cwd packages/desktop-app build",
     "test": "bun run --cwd packages/desktop-app test",

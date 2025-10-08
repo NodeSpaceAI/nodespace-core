@@ -12,13 +12,13 @@
  * - Foundation for advanced interaction patterns
  */
 
-import { eventBus } from './eventBus';
+import { eventBus } from './event-bus';
 import type {
   DecorationClickedEvent,
   DecorationHoverEvent,
   NodeStatusChangedEvent,
   CacheInvalidateEvent
-} from './eventTypes';
+} from './event-types';
 
 // ============================================================================
 // Types and Interfaces
@@ -82,22 +82,22 @@ export class DecorationCoordinator {
 
     // Listen for node status changes to update decorations
     eventBus.subscribe('node:status-changed', (event) => {
-      this.handleNodeStatusChanged(event as import('./eventTypes').NodeStatusChangedEvent);
+      this.handleNodeStatusChanged(event as import('./event-types').NodeStatusChangedEvent);
     });
 
     // Listen for cache invalidation to refresh decorations
     eventBus.subscribe('cache:invalidate', (event) => {
-      this.handleCacheInvalidation(event as import('./eventTypes').CacheInvalidateEvent);
+      this.handleCacheInvalidation(event as import('./event-types').CacheInvalidateEvent);
     });
 
     // Listen for decoration click events
     eventBus.subscribe('decoration:clicked', (event) => {
-      this.handleDecorationClicked(event as import('./eventTypes').DecorationClickedEvent);
+      this.handleDecorationClicked(event as import('./event-types').DecorationClickedEvent);
     });
 
     // Listen for decoration hover events
     eventBus.subscribe('decoration:hover', (event) => {
-      this.handleDecorationHover(event as import('./eventTypes').DecorationHoverEvent);
+      this.handleDecorationHover(event as import('./event-types').DecorationHoverEvent);
     });
   }
 
@@ -311,7 +311,7 @@ export class DecorationCoordinator {
       domEvent.preventDefault();
       domEvent.stopPropagation();
 
-      const clickEvent: Omit<import('./eventTypes').DecorationClickedEvent, 'timestamp'> = {
+      const clickEvent: Omit<import('./event-types').DecorationClickedEvent, 'timestamp'> = {
         type: 'decoration:clicked',
         namespace: 'interaction',
         source: this.serviceName,
@@ -326,7 +326,7 @@ export class DecorationCoordinator {
 
     // Hover listeners
     const mouseEnterHandler = (_domEvent: MouseEvent) => {
-      const hoverEvent: Omit<import('./eventTypes').DecorationHoverEvent, 'timestamp'> = {
+      const hoverEvent: Omit<import('./event-types').DecorationHoverEvent, 'timestamp'> = {
         type: 'decoration:hover',
         namespace: 'interaction',
         source: this.serviceName,
@@ -340,7 +340,7 @@ export class DecorationCoordinator {
     };
 
     const mouseLeaveHandler = (_domEvent: MouseEvent) => {
-      const hoverEvent: Omit<import('./eventTypes').DecorationHoverEvent, 'timestamp'> = {
+      const hoverEvent: Omit<import('./event-types').DecorationHoverEvent, 'timestamp'> = {
         type: 'decoration:hover',
         namespace: 'interaction',
         source: this.serviceName,

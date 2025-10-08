@@ -28,7 +28,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   createReactiveNodeService,
   type NodeManagerEvents
-} from '$lib/services/reactiveNodeService.svelte';
+} from '$lib/services/reactive-node-service.svelte';
 import { createTestNode, createMockNodeManagerEvents } from '../helpers';
 
 describe('Header Syntax Inheritance Fix', () => {

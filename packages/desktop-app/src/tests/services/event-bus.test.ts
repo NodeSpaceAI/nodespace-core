@@ -10,12 +10,12 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { EventBus } from '../../lib/services/eventBus';
+import { EventBus } from '../../lib/services/event-bus';
 import type {
   NodeStatusChangedEvent,
   EventFilter,
   DecorationClickedEvent
-} from '../../lib/services/eventTypes';
+} from '../../lib/services/event-types';
 import { waitForEffects } from '../helpers';
 
 // Helper functions for creating typed test events

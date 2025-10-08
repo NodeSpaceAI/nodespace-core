@@ -11,8 +11,8 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { ContentProcessor } from './contentProcessor';
-import { eventBus } from './eventBus';
+import { ContentProcessor } from './content-processor';
+import { eventBus } from './event-bus';
 import type { Node, NodeUIState } from '$lib/types';
 import { createDefaultUIState } from '$lib/types';
 
@@ -150,7 +150,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           }
         );
 
-        eventBus.emit<import('./eventTypes').CacheInvalidateEvent>({
+        eventBus.emit<import('./event-types').CacheInvalidateEvent>({
           type: 'cache:invalidate',
           namespace: 'coordination',
           source: serviceName,
@@ -471,7 +471,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.nodeCreated(nodeId);
     events.hierarchyChanged();
 
-    eventBus.emit<import('./eventTypes').NodeCreatedEvent>({
+    eventBus.emit<import('./event-types').NodeCreatedEvent>({
       type: 'node:created',
       namespace: 'lifecycle',
       source: serviceName,
@@ -480,7 +480,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       metadata: {}
     });
 
-    eventBus.emit<import('./eventTypes').HierarchyChangedEvent>({
+    eventBus.emit<import('./event-types').HierarchyChangedEvent>({
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: serviceName,
@@ -488,7 +488,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       affectedNodes: [nodeId]
     });
 
-    eventBus.emit<import('./eventTypes').CacheInvalidateEvent>({
+    eventBus.emit<import('./event-types').CacheInvalidateEvent>({
       type: 'cache:invalidate',
       namespace: 'coordination',
       source: serviceName,
@@ -663,7 +663,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function emitReferenceUpdateNeeded(nodeId: string): void {
-    eventBus.emit<import('./eventTypes').ReferencesUpdateNeededEvent>({
+    eventBus.emit<import('./event-types').ReferencesUpdateNeededEvent>({
       type: 'references:update-needed',
       namespace: 'coordination',
       source: serviceName,
@@ -674,7 +674,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function emitExpensivePersistenceNeeded(nodeId: string, content: string): void {
-    eventBus.emit<import('./eventTypes').NodePersistenceEvent>({
+    eventBus.emit<import('./event-types').NodePersistenceEvent>({
       type: 'node:persistence-needed',
       namespace: 'backend',
       source: serviceName,
@@ -685,7 +685,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function emitVectorEmbeddingNeeded(nodeId: string, content: string): void {
-    eventBus.emit<import('./eventTypes').NodeEmbeddingEvent>({
+    eventBus.emit<import('./event-types').NodeEmbeddingEvent>({
       type: 'node:embedding-needed',
       namespace: 'ai',
       source: serviceName,
@@ -696,7 +696,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function emitReferencePropagatationNeeded(nodeId: string, content: string): void {
-    eventBus.emit<import('./eventTypes').NodeReferencePropagationEvent>({
+    eventBus.emit<import('./event-types').NodeReferencePropagationEvent>({
       type: 'node:reference-propagation-needed',
       namespace: 'references',
       source: serviceName,
@@ -936,7 +936,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.hierarchyChanged();
     _updateTrigger++;
 
-    eventBus.emit<import('./eventTypes').HierarchyChangedEvent>({
+    eventBus.emit<import('./event-types').HierarchyChangedEvent>({
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: serviceName,
@@ -944,7 +944,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       affectedNodes: [nodeId]
     });
 
-    eventBus.emit<import('./eventTypes').ReferencesUpdateNeededEvent>({
+    eventBus.emit<import('./event-types').ReferencesUpdateNeededEvent>({
       type: 'references:update-needed',
       namespace: 'coordination',
       source: serviceName,
@@ -1092,7 +1092,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.hierarchyChanged();
     _updateTrigger++;
 
-    eventBus.emit<import('./eventTypes').HierarchyChangedEvent>({
+    eventBus.emit<import('./event-types').HierarchyChangedEvent>({
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: serviceName,
@@ -1145,7 +1145,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.hierarchyChanged();
     _updateTrigger++;
 
-    eventBus.emit<import('./eventTypes').NodeDeletedEvent>({
+    eventBus.emit<import('./event-types').NodeDeletedEvent>({
       type: 'node:deleted',
       namespace: 'lifecycle',
       source: serviceName,
@@ -1153,7 +1153,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       parentId: node.parentId || undefined
     });
 
-    eventBus.emit<import('./eventTypes').HierarchyChangedEvent>({
+    eventBus.emit<import('./event-types').HierarchyChangedEvent>({
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: serviceName,
@@ -1161,7 +1161,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       affectedNodes: [nodeId, ...children]
     });
 
-    eventBus.emit<import('./eventTypes').CacheInvalidateEvent>({
+    eventBus.emit<import('./event-types').CacheInvalidateEvent>({
       type: 'cache:invalidate',
       namespace: 'coordination',
       source: serviceName,
@@ -1170,7 +1170,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       reason: 'node-deleted'
     });
 
-    eventBus.emit<import('./eventTypes').ReferencesUpdateNeededEvent>({
+    eventBus.emit<import('./event-types').ReferencesUpdateNeededEvent>({
       type: 'references:update-needed',
       namespace: 'coordination',
       source: serviceName,
@@ -1191,11 +1191,13 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       events.hierarchyChanged();
       _updateTrigger++;
 
-      const status: import('./eventTypes').NodeStatus = newExpandedState ? 'expanded' : 'collapsed';
-      const changeType: import('./eventTypes').HierarchyChangedEvent['changeType'] =
+      const status: import('./event-types').NodeStatus = newExpandedState
+        ? 'expanded'
+        : 'collapsed';
+      const changeType: import('./event-types').HierarchyChangedEvent['changeType'] =
         newExpandedState ? 'expand' : 'collapse';
 
-      eventBus.emit<import('./eventTypes').NodeStatusChangedEvent>({
+      eventBus.emit<import('./event-types').NodeStatusChangedEvent>({
         type: 'node:status-changed',
         namespace: 'coordination',
         source: serviceName,
@@ -1203,7 +1205,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         status
       });
 
-      eventBus.emit<import('./eventTypes').HierarchyChangedEvent>({
+      eventBus.emit<import('./event-types').HierarchyChangedEvent>({
         type: 'hierarchy:changed',
         namespace: 'lifecycle',
         source: serviceName,
@@ -1228,17 +1230,17 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function emitNodeUpdated(nodeId: string, updateType: string, newValue: unknown): void {
-    eventBus.emit<import('./eventTypes').NodeUpdatedEvent>({
+    eventBus.emit<import('./event-types').NodeUpdatedEvent>({
       type: 'node:updated',
       namespace: 'lifecycle',
       source: serviceName,
       nodeId,
-      updateType: updateType as import('./eventTypes').NodeUpdatedEvent['updateType'],
+      updateType: updateType as import('./event-types').NodeUpdatedEvent['updateType'],
       newValue
     });
 
     if (updateType === 'content') {
-      eventBus.emit<import('./eventTypes').DecorationUpdateNeededEvent>({
+      eventBus.emit<import('./event-types').DecorationUpdateNeededEvent>({
         type: 'decoration:update-needed',
         namespace: 'interaction',
         source: serviceName,
@@ -1248,7 +1250,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         metadata: {}
       });
 
-      eventBus.emit<import('./eventTypes').CacheInvalidateEvent>({
+      eventBus.emit<import('./event-types').CacheInvalidateEvent>({
         type: 'cache:invalidate',
         namespace: 'coordination',
         source: serviceName,

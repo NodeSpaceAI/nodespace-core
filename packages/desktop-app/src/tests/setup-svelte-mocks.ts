@@ -126,8 +126,8 @@ if (typeof window !== 'undefined') {
 }
 
 // Initialize global plugin registry for all tests
-import { pluginRegistry } from '$lib/plugins/pluginRegistry';
-import { registerCorePlugins } from '$lib/plugins/corePlugins';
+import { pluginRegistry } from '$lib/plugins/plugin-registry';
+import { registerCorePlugins } from '$lib/plugins/core-plugins';
 
 // Register core plugins globally for all tests - only once per test run
 if (!pluginRegistry.hasPlugin('text')) {

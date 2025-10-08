@@ -29,7 +29,7 @@
 };
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createReactiveNodeService } from '$lib/services/reactiveNodeService.svelte';
+import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { createTestNode } from '../helpers';
 
 describe('Node Ordering Integration Tests', () => {

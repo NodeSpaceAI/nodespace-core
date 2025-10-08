@@ -77,7 +77,7 @@ export default [
       // File naming conventions for TypeScript files
       'unicorn/filename-case': ['error', {
         cases: {
-          camelCase: true
+          kebabCase: true
         },
         ignore: [
           // Ignore index files and files with specific patterns
@@ -122,10 +122,10 @@ export default [
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
       'no-console': process.env.NODE_ENV === 'production' ? 'error' : 'off',
-      // File naming conventions for Svelte TypeScript files (camelCase)
+      // File naming conventions for Svelte TypeScript files (kebab-case)
       'unicorn/filename-case': ['error', {
         cases: {
-          camelCase: true
+          kebabCase: true
         }
       }]
     }

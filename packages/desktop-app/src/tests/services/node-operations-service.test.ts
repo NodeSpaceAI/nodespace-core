@@ -33,11 +33,11 @@ import {
   createReactiveNodeService,
   type ReactiveNodeService as NodeManager,
   type NodeManagerEvents
-} from '../../lib/services/reactiveNodeService.svelte.js';
-import { HierarchyService } from '../../lib/services/hierarchyService';
-import { NodeOperationsService } from '../../lib/services/nodeOperationsService';
-import { ContentProcessor } from '../../lib/services/contentProcessor';
-import { eventBus } from '../../lib/services/eventBus';
+} from '../../lib/services/reactive-node-service.svelte.js';
+import { HierarchyService } from '../../lib/services/hierarchy-service';
+import { NodeOperationsService } from '../../lib/services/node-operations-service';
+import { ContentProcessor } from '../../lib/services/content-processor';
+import { eventBus } from '../../lib/services/event-bus';
 import type { Node } from '$lib/types';
 import { createTestNode, waitForEffects } from '../helpers';
 
@@ -539,7 +539,7 @@ const x = 42;
       }
 
       // Simulate content update that should trigger mention processing
-      eventBus.emit<import('../../lib/services/eventTypes').NodeUpdatedEvent>({
+      eventBus.emit<import('../../lib/services/event-types').NodeUpdatedEvent>({
         type: 'node:updated',
         namespace: 'lifecycle',
         source: 'test',

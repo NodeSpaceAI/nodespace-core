@@ -37,12 +37,12 @@ export type { IconName } from './types';
 // Export individual icon paths for direct usage if needed
 export { textIcon } from './ui/text';
 export { circleIcon } from './ui/circle';
-export { circleRingIcon } from './ui/circleRing';
-export { chevronRightIcon } from './ui/chevronRight';
-export { taskCompleteIcon } from './ui/taskComplete';
-export { taskIncompleteIcon } from './ui/taskIncomplete';
-export { taskInProgressIcon } from './ui/taskInProgress';
-export { aiSquareIcon } from './ui/aiSquare';
+export { circleRingIcon } from './ui/circle-ring';
+export { chevronRightIcon } from './ui/chevron-right';
+export { taskCompleteIcon } from './ui/task-complete';
+export { taskIncompleteIcon } from './ui/task-incomplete';
+export { taskInProgressIcon } from './ui/task-in-progress';
+export { aiSquareIcon } from './ui/ai-square';
 export { calendarIcon } from './ui/calendar';
 
 /**

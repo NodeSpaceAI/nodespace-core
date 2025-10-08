@@ -30,10 +30,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   createReactiveNodeService,
   ReactiveNodeService as NodeManager
-} from '../../lib/services/reactiveNodeService.svelte.js';
-import { eventBus } from '../../lib/services/eventBus';
-import type { NodeManagerEvents } from '../../lib/services/reactiveNodeService.svelte.js';
-import type { NodeSpaceEvent } from '../../lib/services/eventTypes';
+} from '../../lib/services/reactive-node-service.svelte.js';
+import { eventBus } from '../../lib/services/event-bus';
+import type { NodeManagerEvents } from '../../lib/services/reactive-node-service.svelte.js';
+import type { NodeSpaceEvent } from '../../lib/services/event-types';
 import { createTestNode, waitForEffects } from '../helpers';
 
 describe('EventBus-NodeManager Integration', () => {

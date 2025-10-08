@@ -33,9 +33,9 @@ import {
   createReactiveNodeService,
   ReactiveNodeService as NodeManager,
   type NodeManagerEvents
-} from '../../lib/services/reactiveNodeService.svelte.js';
-import { HierarchyService } from '../../lib/services/hierarchyService';
-import { eventBus } from '../../lib/services/eventBus';
+} from '../../lib/services/reactive-node-service.svelte.js';
+import { HierarchyService } from '../../lib/services/hierarchy-service';
+import { eventBus } from '../../lib/services/event-bus';
 import { createTestNode, createMockNodeManagerEvents, waitForEffects } from '../helpers';
 
 // Test helper interfaces
@@ -661,7 +661,7 @@ describe('HierarchyService', () => {
       void initialCacheSize; // Used for cache size verification
 
       // Emit hierarchy update event
-      eventBus.emit<import('../../lib/services/eventTypes').NodeUpdatedEvent>({
+      eventBus.emit<import('../../lib/services/event-types').NodeUpdatedEvent>({
         type: 'node:updated',
         namespace: 'lifecycle',
         source: 'test',
@@ -699,7 +699,7 @@ describe('HierarchyService', () => {
       hierarchyService.getNodeDepth('node2');
 
       // Emit hierarchy changed event
-      eventBus.emit<import('../../lib/services/eventTypes').HierarchyChangedEvent>({
+      eventBus.emit<import('../../lib/services/event-types').HierarchyChangedEvent>({
         type: 'hierarchy:changed',
         namespace: 'lifecycle',
         source: 'test',

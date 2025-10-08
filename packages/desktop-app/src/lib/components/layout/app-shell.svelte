@@ -7,7 +7,7 @@
   import NodeServiceContext from '$lib/contexts/node-service-context.svelte';
   import { initializeTheme } from '$lib/design/theme';
   import { layoutState, toggleSidebar } from '$lib/stores/layout';
-  import { registerCorePlugins } from '$lib/plugins/corePlugins';
+  import { registerCorePlugins } from '$lib/plugins/core-plugins';
   import { pluginRegistry } from '$lib/plugins/index';
 
   // TypeScript compatibility for Tauri window check

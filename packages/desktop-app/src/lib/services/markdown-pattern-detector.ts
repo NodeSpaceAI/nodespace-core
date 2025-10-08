@@ -9,7 +9,7 @@ import type {
   MarkdownPattern,
   PatternDetectionResult,
   MarkdownPatternType
-} from '$lib/types/markdownPatterns';
+} from '../types/markdown-patterns';
 
 export class MarkdownPatternDetector {
   private static instance: MarkdownPatternDetector;

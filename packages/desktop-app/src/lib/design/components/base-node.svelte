@@ -26,15 +26,15 @@
     ContentEditableController,
     type ContentEditableEvents,
     type ContentEditableConfig
-  } from './contentEditableController.js';
+  } from './content-editable-controller.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
   import { SlashCommandDropdown } from '$lib/components/ui/slash-command-dropdown';
   import {
     SlashCommandService,
     type SlashCommand,
     type SlashCommandContext
-  } from '$lib/services/slashCommandService';
-  import type { TriggerContext } from '$lib/services/nodeReferenceService';
+  } from '$lib/services/slash-command-service';
+  import type { TriggerContext } from '$lib/services/node-reference-service';
   import { getIconConfig, resolveNodeState, type NodeType } from '$lib/design/icons/registry';
 
   // Props (Svelte 5 runes syntax) - nodeReferenceService removed

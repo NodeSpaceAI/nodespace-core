@@ -28,7 +28,7 @@ import {
   createReactiveNodeService,
   type ReactiveNodeService as NodeManager,
   type NodeManagerEvents
-} from '../../lib/services/reactiveNodeService.svelte.js';
+} from '../../lib/services/reactive-node-service.svelte.js';
 import { createTestNode, createMockNodeManagerEvents } from '../helpers';
 
 describe('NodeManager', () => {

@@ -16,9 +16,9 @@ import {
   createReactiveNodeService,
   type ReactiveNodeService as NodeManager,
   type NodeManagerEvents
-} from '../../lib/services/reactiveNodeService.svelte.js';
-import { eventBus } from '../../lib/services/eventBus';
-import { DecorationCoordinator } from '../../lib/services/decorationCoordinator';
+} from '../../lib/services/reactive-node-service.svelte.js';
+import { eventBus } from '../../lib/services/event-bus';
+import { DecorationCoordinator } from '../../lib/services/decoration-coordinator';
 import type {
   NodeSpaceEvent,
   CacheInvalidateEvent,
@@ -27,7 +27,7 @@ import type {
   NodeCreatedEvent,
   NodeUpdatedEvent,
   NodeStatusChangedEvent
-} from '../../lib/services/eventTypes';
+} from '../../lib/services/event-types';
 import {
   isNodeCreatedEvent,
   isNodeUpdatedEvent,

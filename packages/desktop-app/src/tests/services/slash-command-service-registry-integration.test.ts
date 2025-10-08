@@ -6,9 +6,9 @@
  */
 
 import { expect, describe, it, beforeEach } from 'vitest';
-import { SlashCommandService } from '../../lib/services/slashCommandService.js';
+import { SlashCommandService } from '../../lib/services/slash-command-service.js';
 import { pluginRegistry } from '$lib/plugins/index';
-import { registerCorePlugins } from '$lib/plugins/corePlugins';
+import { registerCorePlugins } from '$lib/plugins/core-plugins';
 
 describe('SlashCommandService Registry Integration', () => {
   let service: SlashCommandService;

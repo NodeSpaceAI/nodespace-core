@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { PluginRegistry } from '$lib/plugins/pluginRegistry';
+import { PluginRegistry } from '$lib/plugins/plugin-registry';
 import {
   textNodePlugin,
   taskNodePlugin,
@@ -19,7 +19,7 @@ import {
   corePlugins,
   registerCorePlugins,
   registerExternalPlugin
-} from '$lib/plugins/corePlugins';
+} from '$lib/plugins/core-plugins';
 import type { NodeViewerComponent, NodeReferenceComponent } from '$lib/plugins/types';
 
 describe('Core Plugins Integration', () => {

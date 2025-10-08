@@ -12,7 +12,7 @@
   import { createEventDispatcher } from 'svelte';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import Icon, { type IconName } from '$lib/design/icons/icon.svelte';
-  import type { NodeViewerProps } from '$lib/types/nodeViewers.js';
+  import type { NodeViewerProps } from '../../types/node-viewers';
 
   // Props following the NodeViewer interface
   let {

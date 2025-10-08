@@ -17,7 +17,7 @@ import type {
   DecorationHoverEvent,
   HierarchyChangedEvent,
   ReferencesUpdateNeededEvent
-} from '../../lib/services/eventTypes';
+} from '../../lib/services/event-types';
 
 export function isNodeCreatedEvent(event: NodeSpaceEvent): event is NodeCreatedEvent {
   return (

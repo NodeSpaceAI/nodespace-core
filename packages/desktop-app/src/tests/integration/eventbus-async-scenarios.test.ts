@@ -11,9 +11,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { eventBus } from '../../lib/services/eventBus';
+import { eventBus } from '../../lib/services/event-bus';
 import { waitForEffects } from '../helpers';
-import type { NodeUpdatedEvent, NodeCreatedEvent } from '../../lib/services/eventTypes';
+import type { NodeUpdatedEvent, NodeCreatedEvent } from '../../lib/services/event-types';
 
 // Test timing constants for maintainability and consistency
 const ASYNC_HANDLER_DELAY = 100;

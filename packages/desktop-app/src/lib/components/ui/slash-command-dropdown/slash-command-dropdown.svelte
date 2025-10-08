@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { SlashCommand } from '$lib/services/slashCommandService';
+  import type { SlashCommand } from '$lib/services/slash-command-service';
 
   // Props
   export let position: { x: number; y: number } = { x: 0, y: 0 };

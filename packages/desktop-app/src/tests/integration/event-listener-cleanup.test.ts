@@ -18,7 +18,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render } from '@testing-library/svelte';
 import NodeAutocomplete from '$lib/components/ui/node-autocomplete/node-autocomplete.svelte';
 import SlashCommandDropdown from '$lib/components/ui/slash-command-dropdown/slash-command-dropdown.svelte';
-import { eventBus } from '$lib/services/eventBus';
+import { eventBus } from '$lib/services/event-bus';
 
 // ============================================================================
 // Helper Functions

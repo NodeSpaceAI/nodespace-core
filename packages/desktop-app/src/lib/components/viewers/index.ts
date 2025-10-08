@@ -7,8 +7,8 @@
 
 // Import the unified plugin system
 import { pluginRegistry } from '$lib/plugins/index';
-import { registerCorePlugins } from '$lib/plugins/corePlugins';
-import type { NodeViewerComponent, ViewerRegistration } from '$lib/types/nodeViewers.js';
+import { registerCorePlugins } from '$lib/plugins/core-plugins';
+import type { NodeViewerComponent, ViewerRegistration } from '../../types/node-viewers';
 
 /**
  * Legacy ViewerRegistry class - forwards to unified plugin system

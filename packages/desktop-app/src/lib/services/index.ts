@@ -8,33 +8,33 @@
 // ============================================================================
 // Node Management
 // ============================================================================
-export * from './reactiveNodeService.svelte.js';
-export * from './nodeOperationsService';
-export * from './hierarchyService';
+export * from './reactive-node-service.svelte.js';
+export * from './node-operations-service';
+export * from './hierarchy-service';
 
 // ============================================================================
 // Event System and Coordination
 // ============================================================================
-export * from './eventBus';
-export * from './eventTypes';
-export * from './cacheCoordinator';
-export * from './decorationCoordinator';
+export * from './event-bus';
+export * from './event-types';
+export * from './cache-coordinator';
+export * from './decoration-coordinator';
 
 // ============================================================================
 // Node Reference System - Phase 2.1 & 2.2
 // ============================================================================
-export * from './nodeReferenceService';
-export * from './baseNodeDecoration';
+export * from './node-reference-service';
+export * from './base-node-decoration';
 
 // ============================================================================
 // Content Processing
 // ============================================================================
-export * from './contentProcessor';
-export * from './markdownPatternDetector';
-export * from './markdownUtils';
-export * from './wysiwygProcessor';
+export * from './content-processor';
+export * from './markdown-pattern-detector';
+export * from './markdown-utils';
+export * from './wysiwyg-processor';
 
 // ============================================================================
 // Performance and Monitoring
 // ============================================================================
-export * from './performanceMonitor';
+export * from './performance-monitor';

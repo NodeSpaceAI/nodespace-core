@@ -5,12 +5,12 @@
  * Separates DOM manipulation from Svelte reactive logic to eliminate race conditions
  */
 
-import ContentProcessor from '$lib/services/contentProcessor';
-import type { TriggerContext } from '$lib/services/nodeReferenceService';
-import type { SlashCommandContext } from '$lib/services/slashCommandService';
-import { SlashCommandService } from '$lib/services/slashCommandService';
-import { splitMarkdownContent } from '$lib/utils/markdownSplitter';
-import { markdownToHtml, htmlToMarkdown } from '$lib/utils/markedConfig';
+import ContentProcessor from '$lib/services/content-processor';
+import type { TriggerContext } from '$lib/services/node-reference-service';
+import type { SlashCommandContext } from '$lib/services/slash-command-service';
+import { SlashCommandService } from '$lib/services/slash-command-service';
+import { splitMarkdownContent } from '$lib/utils/markdown-splitter';
+import { markdownToHtml, htmlToMarkdown } from '$lib/utils/marked-config';
 
 export interface ContentEditableEvents {
   contentChanged: (content: string) => void;

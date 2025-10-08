@@ -6,8 +6,11 @@
  */
 
 import { describe, it, expect, beforeEach, vi, type MockedFunction } from 'vitest';
-import { contentProcessor, type ParagraphNode } from '../../lib/services/contentProcessor';
-import type { NodeReferenceService, NodeReference } from '../../lib/services/nodeReferenceService';
+import { contentProcessor, type ParagraphNode } from '../../lib/services/content-processor';
+import type {
+  NodeReferenceService,
+  NodeReference
+} from '../../lib/services/node-reference-service';
 
 // Mock NodeReferenceService
 const mockNodeReferenceService = {

@@ -10,8 +10,8 @@ import { describe, test, expect, beforeEach } from 'vitest';
 import {
   createReactiveNodeService,
   ReactiveNodeService as NodeManager
-} from '../../lib/services/reactiveNodeService.svelte.js';
-import type { NodeManagerEvents } from '../../lib/services/reactiveNodeService.svelte.js';
+} from '../../lib/services/reactive-node-service.svelte.js';
+import type { NodeManagerEvents } from '../../lib/services/reactive-node-service.svelte.js';
 import { createTestNode } from '../helpers';
 
 describe('NodeManager Performance Tests', () => {

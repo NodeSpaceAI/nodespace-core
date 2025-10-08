@@ -19,8 +19,8 @@
 import { tick } from 'svelte';
 import { vi, type MockInstance } from 'vitest';
 import type { Node, NodeUIState } from '$lib/types/node';
-import { eventBus } from '$lib/services/eventBus';
-import type { NodeSpaceEvent } from '$lib/services/eventTypes';
+import { eventBus } from '$lib/services/event-bus';
+import type { NodeSpaceEvent } from '$lib/services/event-types';
 
 // ============================================================================
 // Node Creation Utilities

@@ -6,7 +6,7 @@
  */
 
 import type { SvelteComponent, Component } from 'svelte';
-import type { NodeViewerProps } from '$lib/types/nodeViewers';
+import type { NodeViewerProps } from '../types/node-viewers';
 
 // Base component types - match existing nodeViewers.ts definitions
 export type NodeViewerComponent = Component<NodeViewerProps>;

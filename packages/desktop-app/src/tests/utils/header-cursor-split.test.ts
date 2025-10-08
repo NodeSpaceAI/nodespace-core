@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { splitMarkdownContent } from '../../lib/utils/markdownSplitter';
+import { splitMarkdownContent } from '../../lib/utils/markdown-splitter';
 
 describe('Header Cursor Position Splitting', () => {
   describe('Fixed Behavior (now working correctly)', () => {

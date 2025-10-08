@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { queueDatabaseWrite, getQueueDepth } from '$lib/utils/databaseWriteQueue';
+import { queueDatabaseWrite, getQueueDepth } from '$lib/utils/database-write-queue';
 
 describe('databaseWriteQueue', () => {
   beforeEach(() => {

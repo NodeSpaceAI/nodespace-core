@@ -14,12 +14,12 @@
 <script lang="ts">
   import { textIcon } from './ui/text';
   import { circleIcon } from './ui/circle';
-  import { circleRingIcon } from './ui/circleRing';
-  import { chevronRightIcon } from './ui/chevronRight';
-  import { taskCompleteIcon } from './ui/taskComplete';
-  import { taskIncompleteIcon } from './ui/taskIncomplete';
-  import { taskInProgressIcon } from './ui/taskInProgress';
-  import { aiSquareIcon } from './ui/aiSquare';
+  import { circleRingIcon } from './ui/circle-ring';
+  import { chevronRightIcon } from './ui/chevron-right';
+  import { taskCompleteIcon } from './ui/task-complete';
+  import { taskIncompleteIcon } from './ui/task-incomplete';
+  import { taskInProgressIcon } from './ui/task-in-progress';
+  import { aiSquareIcon } from './ui/ai-square';
   import { calendarIcon } from './ui/calendar';
 
   const iconRegistry: Record<IconName, string> = {

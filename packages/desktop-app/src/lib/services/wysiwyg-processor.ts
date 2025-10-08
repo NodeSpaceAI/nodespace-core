@@ -5,8 +5,8 @@
  * to ContentEditable elements in real-time.
  */
 
-import type { MarkdownPattern, WYSIWYGTransformation } from '$lib/types/markdownPatterns';
-import { WYSIWYG_TRANSFORMATIONS } from '$lib/types/markdownPatterns';
+import type { MarkdownPattern, WYSIWYGTransformation } from '../types/markdown-patterns';
+import { WYSIWYG_TRANSFORMATIONS } from '../types/markdown-patterns';
 
 export interface WYSIWYGProcessedResult {
   htmlContent: string;

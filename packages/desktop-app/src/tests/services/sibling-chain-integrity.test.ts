@@ -13,11 +13,11 @@ import {
 (globalThis as Record<string, unknown>).$effect = createEffectMock;
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { createReactiveNodeService } from '$lib/services/reactiveNodeService.svelte.js';
+import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte.js';
 import type {
   NodeManagerEvents,
   ReactiveNodeService
-} from '$lib/services/reactiveNodeService.svelte.js';
+} from '$lib/services/reactive-node-service.svelte.js';
 import type { Node } from '$lib/types/node';
 
 describe('Sibling Chain Integrity', () => {

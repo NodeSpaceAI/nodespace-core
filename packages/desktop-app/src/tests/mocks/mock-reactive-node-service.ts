@@ -4,7 +4,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { ContentProcessor } from '../../lib/services/contentProcessor';
+import { ContentProcessor } from '../../lib/services/content-processor';
 
 export interface Node {
   id: string;

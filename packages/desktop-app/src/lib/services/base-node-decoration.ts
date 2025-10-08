@@ -14,8 +14,8 @@
  * - Integration with existing NodeReferenceService and DecorationCoordinator
  */
 
-import type { NodeReferenceService } from './nodeReferenceService';
-import type { ComponentDecoration } from '../types/componentDecoration';
+import type { NodeReferenceService } from './node-reference-service';
+import type { ComponentDecoration } from '../types/component-decoration';
 import { getNodeReferenceComponent } from '../components/references';
 
 // ============================================================================
