@@ -153,107 +153,77 @@ describe('Cursor Positioning', () => {
     });
   });
 
-  describe('Shift+Enter Syntax Positioning', () => {
-    it('should position cursor after header syntax', async () => {
-      const { user, editor } = await setupNode('## Test heading', 'text', 2);
+  describe('Shift+Enter Behavior', () => {
+    // Shift+Enter only works on multiline-enabled nodes (allowMultiline: true)
+    // For single-line nodes (headers, tasks), Shift+Enter should do nothing
+    // For multiline nodes:
+    //   - With inline formatting (**bold**, etc.) - uses markdown-aware splitting
+    //   - Without inline formatting (plain text) - delegates to browser insertLineBreak
 
-      // Position cursor in middle of text
-      editor.focus();
-      const selection = window.getSelection();
-      if (selection) {
-        const range = document.createRange();
-        const textNode = editor.firstChild as Text;
-        range.setStart(textNode, 7); // After "## Test"
-        range.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(range);
-      }
+    it('should not handle Shift+Enter for single-line nodes (headers)', async () => {
+      // Create node with allowMultiline: false
+      const user = userEvent.setup();
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'text',
+        content: '## Test heading',
+        headerLevel: 2,
+        autoFocus: true,
+        editableConfig: { allowMultiline: false } // Single-line node
+      });
 
+      const editor = container.querySelector('[contenteditable="true"]') as HTMLElement;
       await waitForEffects();
+
+      const execCommandSpy = vi.spyOn(document, 'execCommand');
+
+      // Position cursor
+      editor.focus();
 
       // Press Shift+Enter
       await user.keyboard('{Shift>}{Enter}{/Shift}');
       await waitForEffects();
 
-      // Verify line break was created and content structure is correct
-      const content = editor.textContent || '';
+      // For single-line nodes, Shift+Enter should not call insertLineBreak
+      // The event will be prevented but no action taken
+      expect(execCommandSpy).not.toHaveBeenCalledWith('insertLineBreak');
 
-      // Should contain a line break
-      expect(content).toContain('## Test');
-
-      // Verify cursor positioning logic executed (check for selection existence)
-      const newSelection = window.getSelection();
-      expect(newSelection).toBeTruthy();
-      expect(newSelection?.rangeCount).toBeGreaterThan(0);
-
-      // In real browser, cursor would be positioned after "## " on new line
-      // Happy-DOM limitation: we verify the code path works without errors
+      execCommandSpy.mockRestore();
     });
 
-    it('should position cursor after task checkbox syntax', async () => {
-      const { user, editor } = await setupNode('[ ] Task item', 'text');
+    it('should not handle Shift+Enter for single-line nodes (tasks)', async () => {
+      // Create task node with allowMultiline: false
+      const user = userEvent.setup();
+      const { container } = render(BaseNode, {
+        nodeId: 'test-node',
+        nodeType: 'task',
+        content: '[ ] Task item',
+        autoFocus: true,
+        editableConfig: { allowMultiline: false } // Single-line node
+      });
 
-      // Position cursor in middle
-      editor.focus();
-      const selection = window.getSelection();
-      if (selection) {
-        const range = document.createRange();
-        const textNode = editor.firstChild as Text;
-        range.setStart(textNode, 8); // After "[ ] Task"
-        range.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(range);
-      }
-
+      const editor = container.querySelector('[contenteditable="true"]') as HTMLElement;
       await waitForEffects();
+
+      const execCommandSpy = vi.spyOn(document, 'execCommand');
+
+      editor.focus();
 
       // Press Shift+Enter
       await user.keyboard('{Shift>}{Enter}{/Shift}');
       await waitForEffects();
 
-      // Verify line break was created
-      const content = editor.textContent || '';
-      expect(content).toContain('[ ] Task');
+      // For single-line nodes, Shift+Enter should not call insertLineBreak
+      expect(execCommandSpy).not.toHaveBeenCalledWith('insertLineBreak');
 
-      // Verify cursor positioning logic executed
-      const newSelection = window.getSelection();
-      expect(newSelection).toBeTruthy();
-      expect(newSelection?.rangeCount).toBeGreaterThan(0);
+      execCommandSpy.mockRestore();
     });
 
-    it('should position cursor after quote syntax', async () => {
-      const { user, editor } = await setupNode('> Quote text', 'text');
-
-      // Position cursor in middle
-      editor.focus();
-      const selection = window.getSelection();
-      if (selection) {
-        const range = document.createRange();
-        const textNode = editor.firstChild as Text;
-        range.setStart(textNode, 5); // After "> Quo"
-        range.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(range);
-      }
-
-      await waitForEffects();
-
-      // Press Shift+Enter
-      await user.keyboard('{Shift>}{Enter}{/Shift}');
-      await waitForEffects();
-
-      // Verify line break was created
-      const content = editor.textContent || '';
-      expect(content).toContain('> Quote');
-
-      // Verify cursor positioning logic executed
-      const newSelection = window.getSelection();
-      expect(newSelection).toBeTruthy();
-      expect(newSelection?.rangeCount).toBeGreaterThan(0);
-    });
-
-    it('should handle Shift+Enter in plain text without syntax', async () => {
+    it('should use browser insertLineBreak for multiline plain text without formatting', async () => {
+      // This test uses the setupNode helper which sets allowMultiline: true
       const { user, editor } = await setupNode('Plain text content', 'text');
+
+      const execCommandSpy = vi.spyOn(document, 'execCommand');
 
       // Position cursor in middle
       editor.focus();
@@ -273,14 +243,57 @@ describe('Cursor Positioning', () => {
       await user.keyboard('{Shift>}{Enter}{/Shift}');
       await waitForEffects();
 
-      // Verify line break was created
-      const content = editor.textContent || '';
-      expect(content).toContain('Plain');
+      // For multiline nodes without inline formatting, should call execCommand('insertLineBreak')
+      expect(execCommandSpy).toHaveBeenCalledWith('insertLineBreak');
 
-      // Verify cursor exists after line break
-      const newSelection = window.getSelection();
-      expect(newSelection).toBeTruthy();
-      expect(newSelection?.rangeCount).toBeGreaterThan(0);
+      execCommandSpy.mockRestore();
+    });
+
+    it('should use markdown-aware splitting for inline formatting', async () => {
+      const { user, editor } = await setupNode('**bold text**', 'text');
+
+      const execCommandSpy = vi.spyOn(document, 'execCommand');
+
+      // Position cursor inside bold formatting - need to find the actual text node
+      editor.focus();
+      await waitForEffects();
+
+      // Find text node containing "bold"
+      const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+      let boldTextNode: Node | null = null;
+      let currentNode;
+      while ((currentNode = walker.nextNode())) {
+        if (currentNode.textContent?.includes('bold')) {
+          boldTextNode = currentNode;
+          break;
+        }
+      }
+
+      if (boldTextNode) {
+        const selection = window.getSelection();
+        if (selection) {
+          const range = document.createRange();
+          range.setStart(boldTextNode, 3); // After "bol" in "bold text"
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      }
+
+      await waitForEffects();
+
+      // Press Shift+Enter
+      await user.keyboard('{Shift>}{Enter}{/Shift}');
+      await waitForEffects();
+
+      // For inline formatting, should NOT call execCommand - uses markdown splitting instead
+      expect(execCommandSpy).not.toHaveBeenCalledWith('insertLineBreak');
+
+      // Content should be split with formatting preserved (both lines should have **)
+      const content = editor.textContent || '';
+      expect(content).toContain('**');
+
+      execCommandSpy.mockRestore();
     });
   });
 

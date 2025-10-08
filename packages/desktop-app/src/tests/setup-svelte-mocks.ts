@@ -12,6 +12,9 @@ declare global {
   }
 }
 
+// Ensure this file is treated as a module
+export {};
+
 // Mock Svelte 5 runes for testing compatibility
 
 function createMockState<T>(initialValue: T): T {
@@ -125,11 +128,11 @@ if (typeof window !== 'undefined') {
   }
 }
 
-// Initialize global plugin registry for all tests
-import { pluginRegistry } from '$lib/plugins/plugin-registry';
-import { registerCorePlugins } from '$lib/plugins/core-plugins';
-
-// Register core plugins globally for all tests - only once per test run
-if (!pluginRegistry.hasPlugin('text')) {
-  registerCorePlugins(pluginRegistry);
-}
+// Plugin registry initialization moved to individual test files that need it
+// This avoids module resolution issues in setup files that run before aliases are fully configured
+// Individual tests can import and initialize plugins as needed:
+// import { pluginRegistry } from '$lib/plugins/plugin-registry';
+// import { registerCorePlugins } from '$lib/plugins/core-plugins';
+// if (!pluginRegistry.hasPlugin('text')) {
+//   registerCorePlugins(pluginRegistry);
+// }

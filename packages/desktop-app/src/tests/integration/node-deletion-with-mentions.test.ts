@@ -148,7 +148,8 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
 
       // Spy on private methods through the service
       const clearCachesSpy = vi.spyOn(
-        nodeReferenceService as unknown as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        nodeReferenceService as any,
         'invalidateNodeCaches'
       );
 

@@ -135,16 +135,14 @@ export default defineConfig({
   ],
 
   // Configure path aliases for test environment (needed when using svelte plugin instead of sveltekit)
-  resolve: process.env.VITEST
-    ? {
-        alias: {
-          $lib: path.resolve(__dirname, 'src/lib'),
-          $app: path.resolve(__dirname, 'node_modules/@sveltejs/kit/src/runtime/app')
-        },
-        // Force browser conditions to load client-side Svelte runtime
-        conditions: ['browser', 'import']
-      }
-    : undefined,
+  resolve: {
+    alias: {
+      $lib: path.resolve(__dirname, 'src/lib'),
+      $app: path.resolve(__dirname, 'node_modules/@sveltejs/kit/src/runtime/app')
+    },
+    // Force browser conditions to load client-side Svelte runtime
+    conditions: ['browser', 'import']
+  },
 
   // Disable CSS preprocessing in tests to prevent PostCSS/Happy-DOM incompatibility
   css: {

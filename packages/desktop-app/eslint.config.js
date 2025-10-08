@@ -84,7 +84,8 @@ export default [
           'index\\.ts$',
           '\\.d\\.ts$',
           '\\.test\\.ts$',
-          '\\.spec\\.ts$'
+          '\\.spec\\.ts$',
+          '\\.command\\.ts$' // Allow kebab-case for command files
         ]
       }]
     }

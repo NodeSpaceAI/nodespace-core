@@ -9,8 +9,30 @@ import ContentProcessor from '$lib/services/content-processor';
 import type { TriggerContext } from '$lib/services/node-reference-service';
 import type { SlashCommandContext } from '$lib/services/slash-command-service';
 import { SlashCommandService } from '$lib/services/slash-command-service';
+import { KeyboardCommandRegistry } from '$lib/services/keyboard-command-registry';
 import { splitMarkdownContent } from '$lib/utils/markdown-splitter';
 import { markdownToHtml, htmlToMarkdown } from '$lib/utils/marked-config';
+import { CreateNodeCommand } from '$lib/commands/keyboard/create-node.command';
+import { IndentNodeCommand } from '$lib/commands/keyboard/indent-node.command';
+import { OutdentNodeCommand } from '$lib/commands/keyboard/outdent-node.command';
+import { MergeNodesCommand } from '$lib/commands/keyboard/merge-nodes.command';
+import { NavigateUpCommand } from '$lib/commands/keyboard/navigate-up.command';
+import { NavigateDownCommand } from '$lib/commands/keyboard/navigate-down.command';
+import { FormatTextCommand } from '$lib/commands/keyboard/format-text.command';
+
+// Module-level command singletons - created once and reused across all controller instances
+// This prevents unnecessary object allocation and reduces GC pressure
+const KEYBOARD_COMMANDS = {
+  createNode: new CreateNodeCommand(),
+  indent: new IndentNodeCommand(),
+  outdent: new OutdentNodeCommand(),
+  mergeUp: new MergeNodesCommand('up'),
+  navigateUp: new NavigateUpCommand(),
+  navigateDown: new NavigateDownCommand(),
+  formatBold: new FormatTextCommand('bold'),
+  formatItalic: new FormatTextCommand('italic'),
+  formatUnderline: new FormatTextCommand('underline')
+};
 
 export interface ContentEditableEvents {
   contentChanged: (content: string) => void;
@@ -70,21 +92,26 @@ export interface ContentEditableConfig {
 }
 
 export class ContentEditableController {
-  // Constants
+  // Constants for Shift+Enter multiline handling
   private static readonly SECOND_LINE_INDEX = 1; // Index of second line in multiline content after Shift+Enter
   private static readonly MIN_DIV_COUNT_FOR_MULTILINE = 2; // Minimum DIVs expected after Shift+Enter
+
+  // Syntax detection patterns for cursor positioning
   private static readonly HEADER_PATTERN = /^(#{1,6})\s/;
   private static readonly CHECKBOX_PATTERN = /^\[\s*[x\s]\s*\]\s/i;
   private static readonly QUOTE_PATTERN = /^>\s/;
 
-  private element: HTMLDivElement;
+  // Track if global keyboard commands have been registered (should only happen once)
+  private static keyboardCommandsRegistered = false;
+
+  public element: HTMLDivElement;
   private nodeId: string;
   private nodeType: string;
   private config: ContentEditableConfig;
-  private isEditing: boolean = false;
+  public isEditing: boolean = false;
   private isInitialized: boolean = false;
-  private events: ContentEditableEvents;
-  private originalContent: string = ''; // Store original markdown content
+  public events: ContentEditableEvents;
+  public originalContent: string = ''; // Store original markdown content
   private isUpdatingFromInput: boolean = false; // Flag to prevent reactive loops
   private currentHeaderLevel: number = 0; // Track header level for CSS updates
 
@@ -96,18 +123,18 @@ export class ContentEditableController {
   private recentShiftEnter: boolean = false;
 
   // Track recent Enter to avoid interfering with node creation
-  private recentEnter: boolean = false;
+  public recentEnter: boolean = false;
 
   // Track if this node was just created to allow layout to settle
-  private justCreated: boolean = false;
+  public justCreated: boolean = false;
 
   // Track if we're being focused via arrow navigation (to prevent cursor jumping)
   private focusedViaArrowNavigation: boolean = false;
 
   // Track if slash command dropdown is currently active
-  private slashCommandDropdownActive: boolean = false;
+  public slashCommandDropdownActive: boolean = false;
   // Track if autocomplete dropdown is currently active
-  private autocompleteDropdownActive: boolean = false;
+  public autocompleteDropdownActive: boolean = false;
   // Prevent pattern detection loops after conversion
   private skipPatternDetection: boolean = false;
 
@@ -144,6 +171,46 @@ export class ContentEditableController {
       this.element as unknown as { _contentEditableController: ContentEditableController }
     )._contentEditableController = this;
     this.setupEventListeners();
+    this.registerKeyboardCommands();
+  }
+
+  /**
+   * Register keyboard commands with the global registry
+   * Commands follow the Command Pattern for extensibility
+   * Only registers once globally (not per controller instance)
+   */
+  private registerKeyboardCommands(): void {
+    // Skip if already registered (singleton registry should only be populated once)
+    if (ContentEditableController.keyboardCommandsRegistered) {
+      return;
+    }
+
+    const registry = KeyboardCommandRegistry.getInstance();
+
+    // Register module-level command singletons (prevents duplicate instances)
+    // Phase 1: Core commands
+    registry.register({ key: 'Enter' }, KEYBOARD_COMMANDS.createNode);
+
+    // Phase 2: Basic keyboard commands
+    registry.register({ key: 'Tab' }, KEYBOARD_COMMANDS.indent);
+    registry.register({ key: 'Tab', shift: true }, KEYBOARD_COMMANDS.outdent);
+    registry.register({ key: 'Backspace' }, KEYBOARD_COMMANDS.mergeUp);
+
+    // Phase 3: Advanced commands
+    // Navigation commands
+    registry.register({ key: 'ArrowUp' }, KEYBOARD_COMMANDS.navigateUp);
+    registry.register({ key: 'ArrowDown' }, KEYBOARD_COMMANDS.navigateDown);
+
+    // Text formatting commands (cross-platform: Cmd on Mac, Ctrl on Windows/Linux)
+    registry.register({ key: 'b', meta: true }, KEYBOARD_COMMANDS.formatBold);
+    registry.register({ key: 'b', ctrl: true }, KEYBOARD_COMMANDS.formatBold);
+    registry.register({ key: 'i', meta: true }, KEYBOARD_COMMANDS.formatItalic);
+    registry.register({ key: 'i', ctrl: true }, KEYBOARD_COMMANDS.formatItalic);
+    registry.register({ key: 'u', meta: true }, KEYBOARD_COMMANDS.formatUnderline);
+    registry.register({ key: 'u', ctrl: true }, KEYBOARD_COMMANDS.formatUnderline);
+
+    // Mark as registered
+    ContentEditableController.keyboardCommandsRegistered = true;
   }
 
   /**
@@ -436,10 +503,13 @@ export class ContentEditableController {
     if (this.config.allowMultiline) {
       if (this.isEditing) {
         // During editing: convert \n to <div> structure for native browser editing
-        // Split by newlines and wrap each part in a div
-        const lines = html.split('\n');
+        // Trim leading/trailing newlines - let browser handle blank lines naturally
+        const trimmedHtml = html.replace(/^\n+|\n+$/g, '');
+        const lines = trimmedHtml.split('\n');
         if (lines.length > 1) {
           html = lines.map((line) => `<div>${line}</div>`).join('');
+        } else {
+          html = trimmedHtml; // Single line, no DIV needed
         }
       } else {
         // During display: convert \n to <br> tags for formatted display
@@ -705,15 +775,8 @@ export class ContentEditableController {
         // Convert any remaining \n characters to <br> tags for display
         htmlContent = htmlContent.replace(/\n/g, '<br>');
 
-        // Ensure trailing line breaks are visible by adding a non-breaking space after trailing <br> tags
-        if (htmlContent.endsWith('<br>')) {
-          // Count consecutive trailing <br> tags
-          const trailingBrMatch = htmlContent.match(/(<br>)+$/);
-          if (trailingBrMatch) {
-            // Replace the last <br> with <br>&nbsp; to ensure it renders visually
-            htmlContent = htmlContent.slice(0, -4) + '<br>&nbsp;';
-          }
-        }
+        // Let browser handle trailing/leading blank lines naturally
+        // Don't try to preserve them with &nbsp; or other tricks
       }
 
       this.element.innerHTML = htmlContent;
@@ -744,7 +807,7 @@ export class ContentEditableController {
    * Convert HTML structure created by Shift+Enter to text with newlines
    * Browser creates <div> elements for newlines in contenteditable
    */
-  private convertHtmlToTextWithNewlines(html: string): string {
+  public convertHtmlToTextWithNewlines(html: string): string {
     // Create a temporary element to parse the HTML
     const tempDiv = document.createElement('div');
     tempDiv.innerHTML = html;
@@ -1067,21 +1130,16 @@ export class ContentEditableController {
     });
   }
 
-  private handleKeyDown(event: KeyboardEvent): void {
-    // Handle formatting shortcuts (Cmd+B, Cmd+I)
-    if ((event.metaKey || event.ctrlKey) && this.isEditing) {
-      if (event.key === 'b' || event.key === 'B') {
-        event.preventDefault();
-        this.toggleFormatting('**');
-        return;
-      }
-      if (event.key === 'i' || event.key === 'I') {
-        event.preventDefault();
-        this.toggleFormatting('*');
-        return;
-      }
+  private async handleKeyDown(event: KeyboardEvent): Promise<void> {
+    // Try keyboard command registry first
+    const context = this.buildKeyboardContext(event);
+    const handled = await KeyboardCommandRegistry.getInstance().execute(event, this, context);
+
+    if (handled) {
+      return; // Command handled the event
     }
 
+    // Fall back to existing code for commands not yet migrated
     // Check for immediate header detection when space is typed
     if (event.key === ' ' && this.isEditing) {
       // Get content that will exist after this space is added
@@ -1188,9 +1246,22 @@ export class ContentEditableController {
             this.recentShiftEnter = false;
           }, 100);
 
-          // Position cursor after any syntax on the new line
+          // Position cursor correctly on the new line
+          // Browser may position after leading whitespace; we want it at position 0
           setTimeout(() => {
-            this.positionCursorAfterSyntax();
+            const selection = window.getSelection();
+            if (!selection || selection.rangeCount === 0) return;
+
+            const range = selection.getRangeAt(0);
+
+            // If cursor is in a text node and not at position 0, move it to position 0
+            if (range.startContainer.nodeType === Node.TEXT_NODE && range.startOffset > 0) {
+              const newRange = document.createRange();
+              newRange.setStart(range.startContainer, 0);
+              newRange.collapse(true);
+              selection.removeAllRanges();
+              selection.addRange(newRange);
+            }
           }, 0);
         }
 
@@ -1201,11 +1272,14 @@ export class ContentEditableController {
         // Regular Enter: create new node with smart text splitting
         event.preventDefault();
 
-        // Get the raw markdown content (not the formatted display)
-        const currentContent = this.element.textContent || '';
-
-        // Get cursor position in the raw markdown content
-        const cursorPosition = this.getCursorPositionInMarkdown();
+        // For multiline nodes, preserve line breaks when getting content
+        let currentContent: string;
+        if (this.config.allowMultiline) {
+          currentContent = this.convertHtmlToTextWithNewlines(this.element.innerHTML);
+        } else {
+          currentContent = this.element.textContent || '';
+        }
+        const cursorPosition = this.getCurrentColumn();
 
         // Set flag to prevent cursor restoration during node creation
         this.recentEnter = true;
@@ -1249,106 +1323,6 @@ export class ContentEditableController {
         }
         return;
       }
-    }
-
-    // Tab key indents node
-    if (event.key === 'Tab' && !event.shiftKey) {
-      event.preventDefault();
-      this.events.indentNode({ nodeId: this.nodeId });
-      return;
-    }
-
-    // Shift+Tab outdents node
-    if (event.key === 'Tab' && event.shiftKey) {
-      event.preventDefault();
-      this.events.outdentNode({ nodeId: this.nodeId });
-      return;
-    }
-
-    // Arrow keys for navigation
-    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-      // If node was just created, wait for layout to settle before allowing navigation
-      if (this.justCreated) {
-        return;
-      }
-
-      // If any modal is active, let the modal handle the arrow keys
-      if (this.slashCommandDropdownActive || this.autocompleteDropdownActive) {
-        return;
-      }
-      const direction = event.key === 'ArrowUp' ? 'up' : 'down';
-
-      // Determine if we should navigate between nodes
-      let shouldNavigate = false;
-
-      if (this.config.allowMultiline) {
-        // Check if the node actually has multiple lines (DIVs exist)
-        const lineElements = Array.from(this.element.children).filter(
-          (child) => child.tagName === 'DIV'
-        );
-        const hasMultipleLines = lineElements.length > 0;
-
-        if (hasMultipleLines) {
-          // For nodes with actual multiple lines, navigate when on first/last line
-          // This creates seamless vertical navigation like a single document
-          if (direction === 'up') {
-            shouldNavigate = this.isAtFirstLine();
-          } else {
-            shouldNavigate = this.isAtLastLine();
-          }
-
-          if (!shouldNavigate) {
-            // Not on first/last line - let browser handle line-by-line navigation
-            return;
-          }
-        } else {
-          // Node supports multiline but currently has only single line
-          // Allow navigation from anywhere (like single-line nodes)
-          shouldNavigate = true;
-        }
-      } else {
-        // For single-line nodes, always navigate on arrow up/down
-        // (there's only one line, so we're always on first/last line)
-        shouldNavigate = true;
-      }
-
-      // Navigate between nodes
-      event.preventDefault();
-      const pixelOffset = this.getCurrentPixelOffset();
-
-      this.events.navigateArrow({
-        nodeId: this.nodeId,
-        direction,
-        pixelOffset
-      });
-      return;
-    }
-
-    // Backspace at start of node
-    if (event.key === 'Backspace' && this.isAtStart()) {
-      // For multi-line nodes, check if we're at the start of the first line or just at the start of a line
-      if (this.config.allowMultiline) {
-        const isAtStartOfFirstLine = this.isAtStartOfFirstLine();
-        if (!isAtStartOfFirstLine) {
-          // We're at the start of a line other than the first line
-          // Allow default backspace behavior to delete the line break
-          return;
-        }
-        // We're at the start of the first line, so combine with previous node
-      }
-
-      event.preventDefault();
-      const currentContent = this.element.textContent || '';
-
-      if (currentContent.trim() === '') {
-        this.events.deleteNode({ nodeId: this.nodeId });
-      } else {
-        this.events.combineWithPrevious({
-          nodeId: this.nodeId,
-          currentContent
-        });
-      }
-      return;
     }
   }
 
@@ -1400,7 +1374,38 @@ export class ContentEditableController {
     return Math.max(0, boundedPosition);
   }
 
-  private getCurrentColumn(): number {
+  /**
+   * Check if cursor is inside inline formatting (bold, italic, code, strikethrough)
+   * This determines whether to use markdown-aware splitting or simple line break
+   */
+  private isInsideInlineFormatting(content: string, position: number): boolean {
+    // Check if we're within inline formatting markers by scanning around the cursor position
+    // Look for **bold**, *italic*, `code`, ~~strikethrough~~, or ~strikethrough~
+
+    // Search backwards and forwards from cursor position for formatting markers
+    const before = content.substring(Math.max(0, position - 10), position);
+    const after = content.substring(position, Math.min(content.length, position + 10));
+    const around = before + after;
+
+    // Check for inline formatting patterns around cursor
+    const inlinePatterns = [
+      /\*\*[^*]*$/, // Opening bold **
+      /^[^*]*\*\*/, // Closing bold **
+      /\*[^*]*$/, // Opening italic *
+      /^[^*]*\*/, // Closing italic *
+      /`[^`]*$/, // Opening code `
+      /^[^`]*`/, // Closing code `
+      /~~[^~]*$/, // Opening double tilde ~~
+      /^[^~]*~~/, // Closing double tilde ~~
+      /~[^~]*$/, // Opening single tilde ~
+      /^[^~]*~/ // Closing single tilde ~
+    ];
+
+    // If any inline pattern matches around the cursor, we're inside inline formatting
+    return inlinePatterns.some((pattern) => pattern.test(around));
+  }
+
+  public getCurrentColumn(): number {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return 0;
 
@@ -1771,10 +1776,10 @@ export class ContentEditableController {
   }
 
   /**
-   * Get current cursor position as pixel offset from root container.
-   * This eliminates character width conversion issues with proportional fonts.
+   * Get current cursor position as pixel offset from viewport.
+   * This allows proper horizontal positioning across nodes with different font sizes.
    */
-  private getCurrentPixelOffset(): number {
+  public getCurrentPixelOffset(): number {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return 0;
 
@@ -1933,7 +1938,7 @@ export class ContentEditableController {
     return -1; // Unable to determine
   }
 
-  private isAtFirstLine(): boolean {
+  public isAtFirstLine(): boolean {
     if (!this.config.allowMultiline) return true;
 
     const selection = window.getSelection();
@@ -2008,7 +2013,7 @@ export class ContentEditableController {
     return true;
   }
 
-  private isAtLastLine(): boolean {
+  public isAtLastLine(): boolean {
     if (!this.config.allowMultiline) return true;
 
     const selection = window.getSelection();
@@ -2109,22 +2114,14 @@ export class ContentEditableController {
   }
 
   /**
-   * Restore cursor position within the element
+   * Restore cursor position within contenteditable element
    *
-   * @param textOffset - Character offset from the start of the target line/element
-   * @param lineNumber - Optional line index (0-based) for multiline elements
+   * @param textOffset - Character offset within the target scope
+   * @param lineNumber - Optional: Line index (0-based) for multiline positioning within a specific DIV
    *
-   * **Line Number Contract:**
-   * When `lineNumber` is specified and the element is in multiline mode (`allowMultiline: true`),
-   * this method positions the cursor within a specific DIV element. The DIV structure must be
-   * created by `setLiveFormattedContent()`, which converts newlines to DIVs:
-   * - Line 0 = first DIV (divs[0])
-   * - Line 1 = second DIV (divs[1])
-   * - etc.
-   *
-   * **Validation:**
-   * If `lineNumber` is out of bounds (>= number of DIVs), a warning is logged and the method
-   * falls back to linear positioning through all text nodes.
+   * **Contract:**
+   * - If `lineNumber` is undefined: Position is calculated across entire element content
+   * - If `lineNumber` is defined: Position is calculated within the specified DIV line only
    *
    * **Examples:**
    * ```typescript
@@ -2183,7 +2180,7 @@ export class ContentEditableController {
       }
     }
 
-    // Default behavior: position linearly through all text nodes
+    // Default behavior: linear positioning across entire element
     const walker = document.createTreeWalker(this.element, NodeFilter.SHOW_TEXT, null);
 
     let currentOffset = 0;
@@ -2289,13 +2286,17 @@ export class ContentEditableController {
    *
    * Supports: Bold (**,__), Italic (*,_), Sequential nesting, Mixed scenarios
    */
-  private toggleFormatting(marker: string): void {
+  public toggleFormatting(marker: string): void {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return;
 
     const range = selection.getRangeAt(0);
     const selectedText = range.toString();
-    const textContent = this.element.textContent || '';
+
+    // Use getMarkdownContent() to preserve newlines in multiline nodes
+    const textContent = this.config.allowMultiline
+      ? this.getMarkdownContent()
+      : this.element.textContent || '';
 
     if (selectedText) {
       // Get the actual selection positions using DOM position calculation
@@ -3701,6 +3702,140 @@ export class ContentEditableController {
   }
 
   /**
+   * Position cursor after syntax on current line (for Shift+Enter)
+   * Handles header syntax (## ), task checkboxes ([ ] ), etc.
+   */
+  private positionCursorAfterSyntax(): void {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+
+    const range = selection.getRangeAt(0);
+
+    // Find the line element containing the cursor
+    let lineElement: Element | null = null;
+    let currentNode: Node | null = range.startContainer;
+
+    // Walk up to find the containing DIV (line)
+    while (currentNode && currentNode !== this.element) {
+      if (
+        currentNode.nodeType === Node.ELEMENT_NODE &&
+        (currentNode as Element).tagName === 'DIV' &&
+        currentNode.parentNode === this.element
+      ) {
+        lineElement = currentNode as Element;
+        break;
+      }
+      currentNode = currentNode.parentNode;
+    }
+
+    // If not in a DIV, the cursor position might be in a text node or BR
+    // Try to find the correct DIV by checking all DIVs
+    if (!lineElement) {
+      const divs = Array.from(this.element.querySelectorAll('div'));
+
+      if (divs.length > 0) {
+        // Check if cursor is actually inside any DIV
+        for (const div of divs) {
+          if (div.contains(range.startContainer) || div === range.startContainer) {
+            lineElement = div;
+            break;
+          }
+        }
+
+        // If still not found, check if cursor is between DIVs or after all DIVs
+        if (!lineElement) {
+          // Get all nodes and find cursor position
+          const allNodes = Array.from(this.element.childNodes);
+          for (let i = 0; i < allNodes.length; i++) {
+            if (
+              allNodes[i] === range.startContainer ||
+              allNodes[i].contains(range.startContainer)
+            ) {
+              // Found the node - if it's a DIV, use it, otherwise use the next/previous DIV
+              if ((allNodes[i] as Element).tagName === 'DIV') {
+                lineElement = allNodes[i] as Element;
+              }
+              break;
+            }
+          }
+        }
+
+        // Final fallback: use first DIV (shouldn't jump to last, that was wrong)
+        if (!lineElement) {
+          lineElement = divs[0];
+        }
+      } else {
+        lineElement = this.element; // No DIVs, single line
+      }
+    }
+
+    // Get the text content of the current line
+    const lineText = lineElement.textContent || '';
+
+    // Calculate syntax length based on node type and content
+    let syntaxLength = 0;
+
+    // Check for header syntax (## , ### , etc.)
+    const headerMatch = lineText.match(ContentEditableController.HEADER_PATTERN);
+    if (headerMatch) {
+      syntaxLength = headerMatch[0].length; // Length of "## " or "### " etc.
+    }
+    // Check for task checkbox syntax ([ ] , [x] , etc.)
+    else {
+      const checkboxMatch = lineText.match(ContentEditableController.CHECKBOX_PATTERN);
+      if (checkboxMatch) {
+        syntaxLength = checkboxMatch[0].length; // Length of "[ ] " or "[x] "
+      }
+      // Check for quote syntax (> )
+      else if (ContentEditableController.QUOTE_PATTERN.test(lineText)) {
+        syntaxLength = 2; // Length of "> "
+      }
+    }
+
+    // If there's syntax, position cursor after it
+    if (syntaxLength > 0) {
+      // Use tree walker to find the correct text node and offset
+      const walker = document.createTreeWalker(lineElement, NodeFilter.SHOW_TEXT, null);
+      let currentOffset = 0;
+      let textNode = walker.nextNode() as Text | null;
+
+      while (textNode) {
+        const nodeLength = textNode.textContent?.length || 0;
+
+        if (currentOffset + nodeLength >= syntaxLength) {
+          // Found the target text node
+          const offsetInNode = syntaxLength - currentOffset;
+          const newRange = document.createRange();
+          newRange.setStart(textNode, Math.min(offsetInNode, nodeLength));
+          newRange.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(newRange);
+          return;
+        }
+
+        currentOffset += nodeLength;
+        textNode = walker.nextNode() as Text | null;
+      }
+    }
+
+    // If no syntax found, explicitly position cursor at beginning of line
+    // But only if we're in a DIV (multiline), not the top-level element
+    // Without this, browser may place cursor one character to the right
+    if (syntaxLength === 0 && lineElement !== this.element) {
+      const walker = document.createTreeWalker(lineElement, NodeFilter.SHOW_TEXT, null);
+      const firstTextNode = walker.nextNode() as Text | null;
+
+      if (firstTextNode) {
+        const newRange = document.createRange();
+        newRange.setStart(firstTextNode, 0);
+        newRange.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(newRange);
+      }
+    }
+  }
+
+  /**
    * Detect / slash command in content at cursor position
    */
   private detectSlashCommand(content: string, cursorPosition: number): SlashCommandContext | null {
@@ -3969,117 +4104,27 @@ export class ContentEditableController {
   }
 
   /**
-   * Position cursor after block-level syntax (headers, tasks, quotes) on new line after Shift+Enter
-   * This method is from PR #176 for cursor positioning
+   * Build keyboard context for command execution
+   * Provides all necessary information for keyboard commands to execute
    */
-  private positionCursorAfterSyntax(): void {
+  private buildKeyboardContext(
+    _event: KeyboardEvent
+  ): Partial<import('$lib/services/keyboard-command-registry').KeyboardContext> {
     const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) return;
+    const content = this.element.textContent || '';
+    const cursorPosition = this.getCurrentColumn();
 
-    const range = selection.getRangeAt(0);
-
-    // Find the line element containing the cursor
-    let lineElement: Element | null = null;
-    let currentNode: Node | null = range.startContainer;
-
-    // Walk up to find the containing DIV (line)
-    while (currentNode && currentNode !== this.element) {
-      if (
-        currentNode.nodeType === Node.ELEMENT_NODE &&
-        (currentNode as Element).tagName === 'DIV' &&
-        currentNode.parentNode === this.element
-      ) {
-        lineElement = currentNode as Element;
-        break;
+    return {
+      nodeId: this.nodeId,
+      nodeType: this.nodeType,
+      content,
+      cursorPosition,
+      selection,
+      allowMultiline: this.config.allowMultiline ?? false,
+      metadata: {
+        slashCommandDropdownActive: this.slashCommandDropdownActive,
+        autocompleteDropdownActive: this.autocompleteDropdownActive
       }
-      currentNode = currentNode.parentNode;
-    }
-
-    // If not in a DIV, we're in the top-level element (single line or before first DIV)
-    if (!lineElement) {
-      lineElement = this.element;
-    }
-
-    // Get the text content of the current line
-    const lineText = lineElement.textContent || '';
-
-    // Calculate syntax length based on node type and content
-    let syntaxLength = 0;
-
-    // Check for header syntax (## , ### , etc.)
-    const headerMatch = lineText.match(ContentEditableController.HEADER_PATTERN);
-    if (headerMatch) {
-      syntaxLength = headerMatch[0].length; // Length of "## " or "### " etc.
-    }
-    // Check for task checkbox syntax ([ ] , [x] , etc.)
-    else {
-      const checkboxMatch = lineText.match(ContentEditableController.CHECKBOX_PATTERN);
-      if (checkboxMatch) {
-        syntaxLength = checkboxMatch[0].length; // Length of "[ ] " or "[x] "
-      }
-      // Check for quote syntax (> )
-      else if (ContentEditableController.QUOTE_PATTERN.test(lineText)) {
-        syntaxLength = 2; // Length of "> "
-      }
-    }
-
-    // If there's syntax, position cursor after it
-    if (syntaxLength > 0) {
-      // Use tree walker to find the correct text node and offset
-      const walker = document.createTreeWalker(lineElement, NodeFilter.SHOW_TEXT, null);
-      let currentOffset = 0;
-      let textNode = walker.nextNode() as Text | null;
-
-      while (textNode) {
-        const nodeLength = textNode.textContent?.length || 0;
-
-        if (currentOffset + nodeLength >= syntaxLength) {
-          // Found the target text node
-          const offsetInNode = syntaxLength - currentOffset;
-          const newRange = document.createRange();
-          newRange.setStart(textNode, Math.min(offsetInNode, nodeLength));
-          newRange.collapse(true);
-          selection.removeAllRanges();
-          selection.addRange(newRange);
-          return;
-        }
-
-        currentOffset += nodeLength;
-        textNode = walker.nextNode() as Text | null;
-      }
-    }
-
-    // If no syntax or positioning failed, cursor stays where it is (beginning of line)
-  }
-
-  /**
-   * Check if cursor is inside inline formatting (bold, italic, code, strikethrough)
-   * This determines whether to use markdown-aware splitting or simple line break
-   */
-  private isInsideInlineFormatting(content: string, position: number): boolean {
-    // Check if we're within inline formatting markers by scanning around the cursor position
-    // Look for **bold**, *italic*, `code`, ~~strikethrough~~, or ~strikethrough~
-
-    // Search backwards and forwards from cursor position for formatting markers
-    const before = content.substring(Math.max(0, position - 10), position);
-    const after = content.substring(position, Math.min(content.length, position + 10));
-    const around = before + after;
-
-    // Check for inline formatting patterns around cursor
-    const inlinePatterns = [
-      /\*\*[^*]*$/, // Opening bold **
-      /^[^*]*\*\*/, // Closing bold **
-      /\*[^*]*$/, // Opening italic *
-      /^[^*]*\*/, // Closing italic *
-      /`[^`]*$/, // Opening code `
-      /^[^`]*`/, // Closing code `
-      /~~[^~]*$/, // Opening double tilde ~~
-      /^[^~]*~~/, // Closing double tilde ~~
-      /~[^~]*$/, // Opening single tilde ~
-      /^[^~]*~/ // Closing single tilde ~
-    ];
-
-    // If any inline pattern matches around the cursor, we're inside inline formatting
-    return inlinePatterns.some((pattern) => pattern.test(around));
+    };
   }
 }
