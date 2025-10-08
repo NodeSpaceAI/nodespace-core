@@ -91,7 +91,7 @@ function analyzeMarkdownContext(text: string, position: number): MarkdownContext
       continue;
     }
 
-    // Strikethrough (~~text~~)
+    // Strikethrough - check for double tilde first (~~text~~), then single (~text~)
     if (char === '~' && nextChar === '~') {
       if (context.strikethrough) {
         context.strikethrough = false;
@@ -101,6 +101,19 @@ function analyzeMarkdownContext(text: string, position: number): MarkdownContext
         context.openMarkers.push('~~');
       }
       i += 2;
+      continue;
+    }
+
+    // Single tilde strikethrough (~text~)
+    if (char === '~' && nextChar !== '~') {
+      if (context.strikethrough) {
+        context.strikethrough = false;
+        context.closeMarkers.push('~');
+      } else {
+        context.strikethrough = true;
+        context.openMarkers.push('~');
+      }
+      i++;
       continue;
     }
 
@@ -133,6 +146,9 @@ function getClosingMarkers(context: MarkdownContext): string {
       case '~~':
         if (context.strikethrough) markers.push('~~');
         break;
+      case '~':
+        if (context.strikethrough) markers.push('~');
+        break;
       case '`':
         if (context.code) markers.push('`');
         break;
@@ -161,6 +177,9 @@ function getOpeningMarkers(context: MarkdownContext): string {
         break;
       case '~~':
         if (context.strikethrough) markers.push('~~');
+        break;
+      case '~':
+        if (context.strikethrough) markers.push('~');
         break;
       case '`':
         if (context.code) markers.push('`');

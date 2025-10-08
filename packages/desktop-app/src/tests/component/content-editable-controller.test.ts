@@ -849,6 +849,344 @@ describe('ContentEditableController', () => {
     });
   });
 
+  describe('Shift+Enter with inline formatting (Integration Tests)', () => {
+    beforeEach(() => {
+      // Destroy previous controller
+      if (controller) {
+        controller.destroy();
+      }
+
+      // Reset event calls
+      eventCalls = {};
+
+      // Create a multiline contenteditable for these tests
+      controller = new ContentEditableController(element, 'test-node', 'text', mockEvents, {
+        allowMultiline: true
+      });
+    });
+
+    it('should split bold text and preserve formatting on both lines', () => {
+      // Initialize with bold text
+      controller.initialize('**bold text**', true);
+
+      // Position cursor after "bol" - **bol|d text**
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+
+      // Find the text node containing "bold text"
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
+      let boldTextNode: Node | null = null;
+      let currentNode;
+      while ((currentNode = walker.nextNode())) {
+        if (currentNode.textContent?.includes('bol')) {
+          boldTextNode = currentNode;
+          break;
+        }
+      }
+
+      expect(boldTextNode).not.toBeNull();
+
+      // Position after "bol" (3 characters into the text node)
+      range.setStart(boldTextNode!, 3);
+      range.setEnd(boldTextNode!, 3);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Simulate Shift+Enter
+      const shiftEnterEvent = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true
+      });
+      element.dispatchEvent(shiftEnterEvent);
+
+      // Verify DOM structure has two DIVs
+      const divs = element.querySelectorAll('div');
+      expect(divs.length).toBe(2);
+
+      // Verify content of both lines
+      expect(divs[0].textContent).toBe('**bol**');
+      expect(divs[1].textContent).toBe('**d text**');
+
+      // Verify contentChanged event was fired
+      expect(eventCalls.contentChanged).toHaveLength(1);
+      expect(eventCalls.contentChanged?.[0]).toBe('**bol**\n**d text**');
+    });
+
+    it('should split italic text and preserve formatting', () => {
+      controller.initialize('*italic text*', true);
+
+      // Position cursor after "ital" - *ital|ic text*
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
+      let textNode: Node | null = null;
+      let currentNode;
+      while ((currentNode = walker.nextNode())) {
+        if (currentNode.textContent?.includes('ital')) {
+          textNode = currentNode;
+          break;
+        }
+      }
+
+      range.setStart(textNode!, 4);
+      range.setEnd(textNode!, 4);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Simulate Shift+Enter
+      const shiftEnterEvent = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true
+      });
+      element.dispatchEvent(shiftEnterEvent);
+
+      // Verify two lines with preserved formatting
+      const divs = element.querySelectorAll('div');
+      expect(divs.length).toBe(2);
+      expect(divs[0].textContent).toBe('*ital*');
+      expect(divs[1].textContent).toBe('*ic text*');
+    });
+
+    it('should split code text and preserve formatting', () => {
+      controller.initialize('`code snippet`', true);
+
+      // Position cursor after "code" - `code| snippet`
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
+      let textNode: Node | null = null;
+      let currentNode;
+      while ((currentNode = walker.nextNode())) {
+        if (currentNode.textContent?.includes('code')) {
+          textNode = currentNode;
+          break;
+        }
+      }
+
+      range.setStart(textNode!, 4);
+      range.setEnd(textNode!, 4);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Simulate Shift+Enter
+      const shiftEnterEvent = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true
+      });
+      element.dispatchEvent(shiftEnterEvent);
+
+      // Verify preserved code formatting
+      const divs = element.querySelectorAll('div');
+      expect(divs.length).toBe(2);
+      expect(divs[0].textContent).toBe('`code`');
+      expect(divs[1].textContent).toBe('` snippet`');
+    });
+
+    it('should split strikethrough text and preserve formatting', () => {
+      controller.initialize('~~crossed out~~', true);
+
+      // Position cursor after "crossed" - ~~crossed| out~~
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
+      let textNode: Node | null = null;
+      let currentNode;
+      while ((currentNode = walker.nextNode())) {
+        if (currentNode.textContent?.includes('crossed')) {
+          textNode = currentNode;
+          break;
+        }
+      }
+
+      range.setStart(textNode!, 7);
+      range.setEnd(textNode!, 7);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Simulate Shift+Enter
+      const shiftEnterEvent = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true
+      });
+      element.dispatchEvent(shiftEnterEvent);
+
+      // Verify preserved strikethrough formatting
+      const divs = element.querySelectorAll('div');
+      expect(divs.length).toBe(2);
+      expect(divs[0].textContent).toBe('~~crossed~~');
+      expect(divs[1].textContent).toBe('~~ out~~');
+    });
+
+    it('should split mixed plain and formatted text correctly', () => {
+      controller.initialize('This is **bold** text', true);
+
+      // Position cursor in the middle of "bold" - This is **bo|ld** text
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
+      let textNode: Node | null = null;
+      let currentNode;
+      while ((currentNode = walker.nextNode())) {
+        if (currentNode.textContent?.includes('bo')) {
+          textNode = currentNode;
+          break;
+        }
+      }
+
+      range.setStart(textNode!, 2);
+      range.setEnd(textNode!, 2);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Simulate Shift+Enter
+      const shiftEnterEvent = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true
+      });
+      element.dispatchEvent(shiftEnterEvent);
+
+      // Verify split preserves bold formatting
+      const divs = element.querySelectorAll('div');
+      expect(divs.length).toBe(2);
+      expect(divs[0].textContent).toBe('This is **bo**');
+      expect(divs[1].textContent).toBe('**ld** text');
+    });
+
+    it('should handle Shift+Enter at the beginning of formatted text', () => {
+      controller.initialize('**bold**', true);
+
+      // Position cursor at beginning - |**bold**
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+      range.setStart(element, 0);
+      range.setEnd(element, 0);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Simulate Shift+Enter
+      const shiftEnterEvent = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true
+      });
+      element.dispatchEvent(shiftEnterEvent);
+
+      // Verify empty first line and preserved formatting on second line
+      const divs = element.querySelectorAll('div');
+      expect(divs.length).toBe(2);
+      expect(divs[0].textContent).toBe('');
+      expect(divs[1].textContent).toBe('**bold**');
+    });
+
+    it('should handle Shift+Enter at the end of formatted text', () => {
+      controller.initialize('**bold**', true);
+
+      // Position cursor at end - **bold**|
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
+      let lastNode: Node | null = null;
+      let currentNode;
+      while ((currentNode = walker.nextNode())) {
+        lastNode = currentNode;
+      }
+
+      if (lastNode) {
+        range.setStart(lastNode, lastNode.textContent?.length || 0);
+        range.setEnd(lastNode, lastNode.textContent?.length || 0);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+
+      // Simulate Shift+Enter
+      const shiftEnterEvent = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true
+      });
+      element.dispatchEvent(shiftEnterEvent);
+
+      // Verify preserved formatting on first line and empty second line
+      const divs = element.querySelectorAll('div');
+      expect(divs.length).toBe(2);
+      expect(divs[0].textContent).toBe('**bold**');
+      expect(divs[1].textContent).toBe('');
+    });
+
+    it('should handle multiple Shift+Enter presses', () => {
+      controller.initialize('**text**', true);
+
+      // First Shift+Enter in the middle
+      const selection = window.getSelection()!;
+      const range = document.createRange();
+
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
+      let textNode: Node | null = null;
+      let currentNode;
+      while ((currentNode = walker.nextNode())) {
+        if (currentNode.textContent?.includes('te')) {
+          textNode = currentNode;
+          break;
+        }
+      }
+
+      range.setStart(textNode!, 2);
+      range.setEnd(textNode!, 2);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      const shiftEnterEvent1 = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true
+      });
+      element.dispatchEvent(shiftEnterEvent1);
+
+      // Verify first split
+      let divs = element.querySelectorAll('div');
+      expect(divs.length).toBe(2);
+      expect(divs[0].textContent).toBe('**te**');
+      expect(divs[1].textContent).toBe('**xt**');
+
+      // Second Shift+Enter in the second line
+      const walker2 = document.createTreeWalker(divs[1], NodeFilter.SHOW_TEXT, null);
+      let textNode2: Node | null = null;
+      let currentNode2;
+      while ((currentNode2 = walker2.nextNode())) {
+        if (currentNode2.textContent?.includes('xt')) {
+          textNode2 = currentNode2;
+          break;
+        }
+      }
+
+      range.setStart(textNode2!, 1);
+      range.setEnd(textNode2!, 1);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      const shiftEnterEvent2 = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true
+      });
+      element.dispatchEvent(shiftEnterEvent2);
+
+      // Verify second split resulted in three lines
+      divs = element.querySelectorAll('div');
+      expect(divs.length).toBe(3);
+    });
+  });
+
   describe('Cleanup', () => {
     it('should properly cleanup event listeners', () => {
       const addEventListenerSpy = vi.spyOn(element, 'addEventListener');
