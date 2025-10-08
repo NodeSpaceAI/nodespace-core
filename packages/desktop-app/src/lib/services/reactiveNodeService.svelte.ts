@@ -1011,6 +1011,28 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     };
     _uiState[nodeId] = { ...uiState, depth: newDepth };
 
+    // Insert the outdented node into the new parent's sibling chain
+    // Find any sibling in the new parent that currently points to positionBeforeSibling
+    // and update it to point to the outdented node instead
+    if (positionBeforeSibling !== null) {
+      // Optimization: Only check direct siblings, not all nodes
+      const siblingIds = Object.keys(_nodes).filter(
+        (id) => id !== nodeId && _nodes[id].parentId === newParentId
+      );
+
+      for (const siblingId of siblingIds) {
+        const sibling = _nodes[siblingId];
+        if (sibling.beforeSiblingId === positionBeforeSibling) {
+          _nodes[siblingId] = {
+            ...sibling,
+            beforeSiblingId: nodeId,
+            modifiedAt: new Date().toISOString()
+          };
+          break; // Only one sibling can point to positionBeforeSibling
+        }
+      }
+    }
+
     // Transfer siblings below the outdented node as its children
     // Need to rebuild their before_sibling_id chain to be valid in new parent context
     if (siblingsBelow.length > 0) {
@@ -1030,6 +1052,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         const siblingId = siblingsBelow[i];
         const sibling = _nodes[siblingId];
         if (sibling) {
+          // Remove from current sibling chain BEFORE updating beforeSiblingId
+          removeFromSiblingChain(siblingId);
+
           // First transferred sibling points to last existing child (or null)
           // Subsequent siblings point to the previous transferred sibling
           const beforeSiblingId = i === 0 ? lastSiblingId : siblingsBelow[i - 1];

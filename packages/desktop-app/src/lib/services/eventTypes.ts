@@ -285,6 +285,22 @@ export interface NodeReferencePropagationEvent extends BaseEvent {
 // Event Union Type
 // ============================================================================
 
+// Error Events
+export interface PersistenceFailedEvent extends BaseEvent {
+  type: 'error:persistence-failed';
+  namespace: 'error';
+  message: string;
+  failedNodeIds: string[];
+  failureReason: 'timeout' | 'foreign-key-constraint' | 'database-locked' | 'unknown';
+  canRetry: boolean; // Whether retry might succeed
+  affectedOperations: Array<{
+    nodeId: string;
+    operation: 'create' | 'update' | 'delete';
+    error?: string;
+  }>;
+  metadata?: Record<string, unknown>;
+}
+
 export type NodeSpaceEvent =
   // Dynamic State Coordination
   | NodeStatusChangedEvent
@@ -316,7 +332,9 @@ export type NodeSpaceEvent =
   | NavigationEvent
   // Performance and Debug
   | PerformanceMetricEvent
-  | DebugEvent;
+  | DebugEvent
+  // Error Events
+  | PersistenceFailedEvent;
 
 // ============================================================================
 // Event Handler Types

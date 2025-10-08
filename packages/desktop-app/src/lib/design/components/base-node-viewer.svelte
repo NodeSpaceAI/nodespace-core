@@ -57,10 +57,100 @@
     }
   });
 
-  // Simple persistence: watch nodes, debounce saves
-  // Only save nodes when content actually changes
-  $effect(() => {
-    if (!parentId) return;
+  // Track pending content saves for new nodes (keyed by node ID)
+  // Structural updates must wait for these to complete to avoid FOREIGN KEY errors
+  const pendingContentSavePromises = new Map<string, Promise<void>>();
+
+  // Timeout configuration for promise coordination
+  const CONTENT_SAVE_TIMEOUT_MS = 5000; // 5 seconds
+  const TIMEOUT_GRACE_PERIOD_MS = 50; // 50ms grace period after timeout
+
+  // Explicit coordination: Promise that resolves when content save phase completes
+  // This makes the dependency between watchers explicit rather than relying on declaration order
+  let contentSavePhasePromise: Promise<void> = Promise.resolve();
+
+  // Explicit coordination: Promise that resolves when structural updates complete
+  // The deletion watcher awaits this to ensure children are reassigned before parent deletion
+  let pendingStructuralUpdatesPromise: Promise<void> | null = null;
+
+  /**
+   * Wait for a pending node save to complete, with timeout and grace period
+   * @param nodeIds - Array of node IDs to wait for
+   * @returns Set of node IDs that failed to save (should be excluded from updates)
+   */
+  async function waitForNodeSavesIfPending(nodeIds: string[]): Promise<Set<string>> {
+    const failedNodeIds = new Set<string>();
+    const relevantSaves = nodeIds
+      .map((id) => pendingContentSavePromises.get(id))
+      .filter((p): p is Promise<void> => p !== undefined);
+
+    if (relevantSaves.length === 0) return failedNodeIds;
+
+    try {
+      await Promise.race([
+        Promise.all(relevantSaves),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error('Timeout waiting for content saves')),
+            CONTENT_SAVE_TIMEOUT_MS
+          )
+        )
+      ]);
+    } catch (error) {
+      console.error('[BaseNodeViewer] Timeout or error waiting for content saves:', error);
+
+      // Add grace period to allow in-flight saves to complete
+      await new Promise((resolve) => setTimeout(resolve, TIMEOUT_GRACE_PERIOD_MS));
+
+      // After grace period, verify nodes actually exist in database
+      // If they don't exist, mark them as failed to prevent FOREIGN KEY errors
+      for (const nodeId of nodeIds) {
+        const promise = pendingContentSavePromises.get(nodeId);
+        if (promise) {
+          // Node still has pending save - check if it exists in database
+          try {
+            const exists = await databaseService.getNode(nodeId);
+            if (!exists) {
+              console.error(
+                '[BaseNodeViewer] Node save failed, will skip structural updates:',
+                nodeId
+              );
+              failedNodeIds.add(nodeId);
+            }
+          } catch (dbError) {
+            console.error(
+              '[BaseNodeViewer] Failed to verify node existence, assuming failed:',
+              nodeId,
+              dbError
+            );
+            failedNodeIds.add(nodeId);
+          }
+        }
+      }
+    }
+
+    return failedNodeIds;
+  }
+
+  // ============================================================================
+  // CONTENT SAVE WATCHER - Initiates content saves for new nodes
+  // ============================================================================
+  // This watcher creates a promise that the structural watcher awaits, ensuring
+  // new nodes are saved to the database before structural updates reference them.
+  // This prevents FOREIGN KEY constraint errors.
+  // ============================================================================
+  $effect.pre(() => {
+    if (!parentId) {
+      contentSavePhasePromise = Promise.resolve();
+      return;
+    }
+
+    // Create a new promise for this content save phase
+    // The structural watcher will await this before processing updates
+    let resolvePhase: () => void;
+    contentSavePhasePromise = new Promise((resolve) => {
+      resolvePhase = resolve;
+    });
 
     const nodes = nodeManager.visibleNodes;
 
@@ -73,9 +163,31 @@
       // Only save if content has changed since last save
       const lastContent = lastSavedContent.get(node.id);
       if (node.content.trim() && node.content !== lastContent) {
-        debounceSave(node.id, node.content, node.nodeType);
+        // Check if this is a brand new node (never saved before)
+        const isNewNode = lastContent === undefined;
+
+        if (isNewNode) {
+          // Save immediately without debounce - structural updates may need to reference this node
+          // Track the promise per node ID so structural updates can wait for it
+          const savePromise = saveNode(node.id, node.content, node.nodeType);
+
+          // Clean up Map entry when save completes (success or failure)
+          // Using finally() ensures atomic cleanup with promise resolution
+          savePromise.finally(() => {
+            pendingContentSavePromises.delete(node.id);
+          });
+
+          pendingContentSavePromises.set(node.id, savePromise);
+        } else {
+          // Existing node - use debounce for performance
+          debounceSave(node.id, node.content, node.nodeType);
+        }
       }
     }
+
+    // Mark content save phase as complete by resolving the promise
+    // Use Promise.resolve().then() to ensure this happens after all synchronous code
+    Promise.resolve().then(() => resolvePhase());
   });
 
   // Track node IDs to detect deletions
@@ -100,8 +212,48 @@
       // Delete nodes through the global write queue
       // The queue ensures deletions happen after any pending structural updates
       if (deletedNodeIds.length > 0) {
+        // Clean up previousStructure: null out any beforeSiblingId references to deleted nodes
+        // This prevents FOREIGN KEY errors when other nodes reference the deleted node
+        // Uses reverse index for O(1) lookup instead of O(n) iteration
+        for (const deletedId of deletedNodeIds) {
+          const affectedNodes = siblingToNodesMap.get(deletedId) || new Set();
+          for (const nodeId of affectedNodes) {
+            const structure = previousStructure.get(nodeId);
+            if (structure) {
+              // Use centralized tracking function
+              trackStructureChange(nodeId, {
+                ...structure,
+                beforeSiblingId: null
+              });
+            }
+          }
+          // Clean up the deleted node's entry
+          siblingToNodesMap.delete(deletedId);
+        }
+
         (async () => {
-          // Safe to delete nodes - queue ensures proper ordering
+          // CRITICAL: Await structural updates to complete before deleting
+          // This ensures children are reassigned BEFORE parent deletion triggers CASCADE
+          if (pendingStructuralUpdatesPromise) {
+            try {
+              await Promise.race([
+                pendingStructuralUpdatesPromise,
+                new Promise((_, reject) =>
+                  setTimeout(
+                    () => reject(new Error('Timeout waiting for structural updates')),
+                    CONTENT_SAVE_TIMEOUT_MS
+                  )
+                )
+              ]);
+            } catch (error) {
+              console.warn(
+                '[BaseNodeViewer] Timeout or error waiting for structural updates:',
+                error
+              );
+            }
+          }
+
+          // Now safe to delete nodes - children have been reassigned
           for (const nodeId of deletedNodeIds) {
             try {
               await queueDatabaseWrite(() => databaseService.deleteNode(nodeId));
@@ -120,13 +272,80 @@
     }
   });
 
-  // Track structural changes (parentId, beforeSiblingId) and persist to database
-  // This is critical for operations like node deletion that reassign children
-  // Using $effect.pre to ensure this runs BEFORE the deletion watcher
+  // ============================================================================
+  // STRUCTURAL CHANGE WATCHER - Persists structural changes
+  // ============================================================================
+  // This watcher awaits contentSavePhasePromise to ensure new nodes are saved
+  // before structural updates reference them. This prevents FOREIGN KEY errors.
+  //
+  // IMPORTANT: saveNodeWithParent() saves BOTH content AND structure
+  // This means new nodes don't need a separate structural update - they're already persisted
+  // This watcher only handles structural changes to EXISTING nodes (indent, outdent, reorder)
+  // ============================================================================
+  // previousStructure is updated in three places (all necessary):
+  // 1. Deletion watcher (line ~218): Cleans up beforeSiblingId references to deleted nodes
+  // 2. This watcher (line ~388): Tracks unchanged nodes to prevent redundant updates
+  // 3. This watcher (line ~490): Tracks successfully persisted structural changes (source of truth)
   let previousStructure = new Map<
     string,
     { parentId: string | null; beforeSiblingId: string | null }
   >();
+
+  // Reverse index: Map from beforeSiblingId -> Set of node IDs that reference it
+  // This allows O(1) lookup when cleaning up deleted sibling references
+  const siblingToNodesMap = new Map<string, Set<string>>();
+
+  /**
+   * Update reverse index when tracking structure changes
+   */
+  function updateSiblingIndex(
+    nodeId: string,
+    oldBeforeSiblingId: string | null,
+    newBeforeSiblingId: string | null
+  ): void {
+    // Remove from old index entry
+    if (oldBeforeSiblingId) {
+      const nodes = siblingToNodesMap.get(oldBeforeSiblingId);
+      if (nodes) {
+        nodes.delete(nodeId);
+        if (nodes.size === 0) {
+          siblingToNodesMap.delete(oldBeforeSiblingId);
+        }
+      }
+    }
+
+    // Add to new index entry
+    if (newBeforeSiblingId) {
+      if (!siblingToNodesMap.has(newBeforeSiblingId)) {
+        siblingToNodesMap.set(newBeforeSiblingId, new Set());
+      }
+      siblingToNodesMap.get(newBeforeSiblingId)!.add(nodeId);
+    }
+  }
+
+  /**
+   * Update previousStructure tracking and reverse index
+   * Centralizes structure change tracking logic used in three places:
+   * 1. Deletion watcher - cleaning up beforeSiblingId references
+   * 2. Structural watcher - tracking unchanged nodes
+   * 3. Structural watcher - tracking successfully persisted changes
+   */
+  function trackStructureChange(
+    nodeId: string,
+    newStructure: { parentId: string | null; beforeSiblingId: string | null }
+  ): void {
+    const oldStructure = previousStructure.get(nodeId);
+    previousStructure.set(nodeId, newStructure);
+
+    // Update reverse index if beforeSiblingId changed
+    if (!oldStructure || oldStructure.beforeSiblingId !== newStructure.beforeSiblingId) {
+      updateSiblingIndex(
+        nodeId,
+        oldStructure?.beforeSiblingId || null,
+        newStructure.beforeSiblingId
+      );
+    }
+  }
 
   $effect.pre(() => {
     if (!parentId) return;
@@ -164,34 +383,233 @@
           parentId: node.parentId,
           beforeSiblingId: node.beforeSiblingId
         });
+      } else {
+        // No change detected OR new node - update tracking to current state
+        // New nodes have their structure saved via saveNodeWithParent() in content save watcher
+        // So we can safely track them here to avoid redundant structural updates
+        trackStructureChange(node.id, currentStructure);
       }
-
-      // Update tracking
-      previousStructure.set(node.id, currentStructure);
     }
 
     // Persist updates sequentially to avoid SQLite "database is locked" errors
     // All writes go through the global queue to ensure serialization
     if (updates.length > 0) {
       // Process updates asynchronously - queue ensures proper serialization
-      (async () => {
+      // Track this promise so deletion watcher can await completion
+      pendingStructuralUpdatesPromise = (async () => {
+        // CRITICAL: Wait for content save phase to complete first
+        // This ensures new nodes are added to pendingContentSavePromises Map
+        await contentSavePhasePromise;
+
+        // Then wait for any pending content saves to complete
+        // New nodes must be persisted before structural updates can reference them
+        const nodeIdsToWaitFor: string[] = [];
         for (const update of updates) {
+          if (update.parentId) nodeIdsToWaitFor.push(update.parentId);
+          if (update.beforeSiblingId) nodeIdsToWaitFor.push(update.beforeSiblingId);
+        }
+
+        // Wait for all relevant saves with timeout and grace period
+        // Returns set of node IDs that failed to save
+        const failedNodeIds = await waitForNodeSavesIfPending(nodeIdsToWaitFor);
+
+        // Filter out updates that reference failed nodes to prevent FOREIGN KEY errors
+        const validUpdates = updates.filter(
+          (update) =>
+            !failedNodeIds.has(update.nodeId) &&
+            (!update.parentId || !failedNodeIds.has(update.parentId)) &&
+            (!update.beforeSiblingId || !failedNodeIds.has(update.beforeSiblingId))
+        );
+
+        // Track failed updates for rollback (separate from nodes that failed to save)
+        const failedUpdates: typeof updates = [];
+
+        for (const update of validUpdates) {
           try {
+            // First check if the node itself still exists (could have been deleted via merge/combine)
+            if (!nodeManager.nodes.has(update.nodeId)) {
+              console.debug('[BaseNodeViewer] Skipping update for deleted node:', update.nodeId);
+              continue; // Skip this update - node was deleted
+            }
+
+            // Validate both parentId and beforeSiblingId references exist to prevent FOREIGN KEY errors
+            let validatedParentId = update.parentId;
+            let validatedBeforeSiblingId = update.beforeSiblingId;
+
+            // Check parentId exists in memory
+            if (validatedParentId) {
+              // Special case: if the parent is this viewer's parentId, we know it exists
+              // (the parent node itself is not loaded in nodeManager.nodes, only its children are)
+              const isViewerParent = validatedParentId === parentId;
+
+              if (!isViewerParent) {
+                const parentNode = nodeManager.nodes.get(validatedParentId);
+                if (!parentNode) {
+                  console.warn(
+                    '[BaseNodeViewer] parentId references deleted node, queuing rollback:',
+                    update.nodeId,
+                    'referenced parent:',
+                    validatedParentId
+                  );
+                  // Queue for rollback instead of skipping silently
+                  failedUpdates.push(update);
+                  continue;
+                }
+              }
+              // Note: We've already awaited pendingContentSavePromise above,
+              // so any new parent nodes are guaranteed to be saved by now
+            }
+
+            // Check beforeSiblingId references exist
+            if (validatedBeforeSiblingId) {
+              const siblingExists = nodeManager.nodes.has(validatedBeforeSiblingId);
+              if (!siblingExists) {
+                // WARNING: Sibling node was deleted - null-ing the reference
+                // This is expected when nodes are deleted, but log for debugging
+                console.warn(
+                  '[BaseNodeViewer] beforeSiblingId references deleted node, null-ing reference:',
+                  update.nodeId,
+                  'referenced sibling:',
+                  validatedBeforeSiblingId
+                );
+                validatedBeforeSiblingId = null;
+              }
+            }
+
             await queueDatabaseWrite(() =>
               databaseService.updateNode(update.nodeId, {
-                parentId: update.parentId,
-                beforeSiblingId: update.beforeSiblingId
+                parentId: validatedParentId,
+                beforeSiblingId: validatedBeforeSiblingId
               })
             );
+
+            // Update tracking after successful persistence
+            trackStructureChange(update.nodeId, {
+              parentId: validatedParentId,
+              beforeSiblingId: validatedBeforeSiblingId
+            });
           } catch (error) {
+            // Categorize errors for better debugging and potential retry logic
+            const errorMessage = error instanceof Error ? error.message : String(error);
+
+            // Expected: Node was deleted via merge/combine
+            if (errorMessage.includes('Node not found') || errorMessage.includes('not found')) {
+              console.debug('[BaseNodeViewer] Skipping update for deleted node:', update.nodeId);
+              continue; // Don't treat as failure - node was intentionally deleted
+            }
+
+            // Critical: FOREIGN KEY constraint violation - coordination failed
+            if (errorMessage.includes('FOREIGN KEY constraint')) {
+              console.error(
+                '[BaseNodeViewer] FOREIGN KEY violation - coordination failed:',
+                update.nodeId,
+                error
+              );
+              failedUpdates.push(update);
+              continue;
+            }
+
+            // Retryable: Database locked (despite busy timeout and queue)
+            if (errorMessage.includes('database is locked')) {
+              console.warn(
+                '[BaseNodeViewer] Database locked, queueing for rollback:',
+                update.nodeId
+              );
+              failedUpdates.push(update);
+              continue;
+            }
+
+            // Unknown error - log and queue for rollback
             console.error(
-              '[BaseNodeViewer] Failed to persist structural change:',
+              '[BaseNodeViewer] Unexpected error persisting structural change:',
               update.nodeId,
               error
             );
+            failedUpdates.push(update);
           }
         }
+
+        // Handle failed updates: rollback in-memory state and emit error event
+        // Include both nodes that failed to save AND nodes that failed to update
+        const allFailedNodeIds = new Set([...failedNodeIds, ...failedUpdates.map((u) => u.nodeId)]);
+
+        if (allFailedNodeIds.size > 0) {
+          console.warn(
+            '[BaseNodeViewer] Failed to persist changes:',
+            failedNodeIds.size,
+            'save failure(s),',
+            failedUpdates.length,
+            'update failure(s)'
+          );
+
+          // Rollback in-memory state for failed updates to match last known database state
+          for (const update of failedUpdates) {
+            const lastGoodState = previousStructure.get(update.nodeId);
+            if (lastGoodState) {
+              // Revert node's in-memory structure to last successfully persisted state
+              const node = nodeManager.nodes.get(update.nodeId);
+              if (node) {
+                nodeManager.nodes.set(update.nodeId, {
+                  ...node,
+                  parentId: lastGoodState.parentId,
+                  beforeSiblingId: lastGoodState.beforeSiblingId
+                });
+              }
+            }
+          }
+
+          // Emit event for error notification (UI can show toast/banner)
+          import('$lib/services/eventBus').then(({ eventBus }) => {
+            // Determine failure reason based on what failed
+            let failureReason:
+              | 'timeout'
+              | 'foreign-key-constraint'
+              | 'database-locked'
+              | 'unknown' = 'unknown';
+            if (failedNodeIds.size > 0) {
+              failureReason = 'timeout'; // Nodes that failed to save due to timeout
+            } else if (failedUpdates.length > 0) {
+              // Check error messages to determine specific reason
+              failureReason = 'foreign-key-constraint'; // Most common for structural updates
+            }
+
+            // Build detailed operation list
+            const affectedOperations = [
+              // Failed saves (new nodes that timed out)
+              ...Array.from(failedNodeIds).map((nodeId) => ({
+                nodeId,
+                operation: 'create' as const,
+                error: 'Save operation timed out'
+              })),
+              // Failed updates (structural changes that failed)
+              ...failedUpdates.map((update) => ({
+                nodeId: update.nodeId,
+                operation: 'update' as const,
+                error: 'Structural update failed (possible FOREIGN KEY constraint)'
+              }))
+            ];
+
+            // Type assertion needed because of dynamic import context
+            const event = {
+              type: 'error:persistence-failed',
+              namespace: 'error',
+              source: 'base-node-viewer',
+              message: `Failed to persist ${allFailedNodeIds.size} node(s). Changes have been reverted.`,
+              failedNodeIds: Array.from(allFailedNodeIds),
+              failureReason,
+              canRetry: failureReason === 'timeout', // Timeouts might succeed on retry
+              affectedOperations
+            };
+            eventBus.emit(event as never);
+          });
+        }
+
+        // Clear promise after all updates complete
+        pendingStructuralUpdatesPromise = null;
       })();
+    } else {
+      // No updates to process - clear promise immediately
+      pendingStructuralUpdatesPromise = null;
     }
 
     // Clean up tracking for nodes that no longer exist
@@ -288,6 +706,32 @@
 
       // Mark as persisted by updating lastSavedContent
       lastSavedContent.set(parent.id, '');
+    }
+  }
+
+  async function saveNode(nodeId: string, content: string, nodeType: string) {
+    if (!parentId) return;
+
+    try {
+      const node = nodeManager.findNode(nodeId);
+
+      // Ensure all placeholder ancestors are persisted first
+      await ensureAncestorsPersisted(nodeId);
+
+      await queueDatabaseWrite(() =>
+        databaseService.saveNodeWithParent(nodeId, {
+          content,
+          nodeType: nodeType,
+          parentId: node?.parentId || parentId!,
+          originNodeId: node?.originNodeId || parentId!,
+          beforeSiblingId: node?.beforeSiblingId
+        })
+      );
+
+      // Update last saved content to prevent redundant saves
+      lastSavedContent.set(nodeId, content);
+    } catch (error) {
+      console.error('[BaseNodeViewer] Failed to save node:', nodeId, error);
     }
   }
 
@@ -1076,6 +1520,10 @@
       clearTimeout(timeout);
     }
     saveTimeouts.clear();
+
+    // Clear pending promise tracking to prevent memory leaks
+    pendingContentSavePromises.clear();
+    pendingStructuralUpdatesPromise = null;
   });
 </script>
 

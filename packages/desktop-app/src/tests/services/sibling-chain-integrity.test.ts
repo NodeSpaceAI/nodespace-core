@@ -558,6 +558,131 @@ describe('Sibling Chain Integrity', () => {
       validateSiblingChain('parent2');
     });
 
+    test('outdentNode with multiple transferred siblings maintains sibling chain integrity', () => {
+      // Setup: outdented node has existing children, and multiple siblings to transfer
+      const parent: Node = {
+        id: 'parent',
+        content: 'Parent',
+        nodeType: 'text',
+        parentId: null,
+        originNodeId: 'parent',
+        beforeSiblingId: null,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        properties: {},
+        mentions: []
+      };
+
+      const child1: Node = {
+        id: 'child1',
+        content: 'Child 1 (to outdent)',
+        nodeType: 'text',
+        parentId: 'parent',
+        originNodeId: 'parent',
+        beforeSiblingId: null,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        properties: {},
+        mentions: []
+      };
+
+      const existingChild: Node = {
+        id: 'existing-child',
+        content: 'Existing child of child1',
+        nodeType: 'text',
+        parentId: 'child1',
+        originNodeId: 'child1',
+        beforeSiblingId: null,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        properties: {},
+        mentions: []
+      };
+
+      const sibling1: Node = {
+        id: 'sibling1',
+        content: 'Sibling 1 (to transfer)',
+        nodeType: 'text',
+        parentId: 'parent',
+        originNodeId: 'parent',
+        beforeSiblingId: 'child1',
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        properties: {},
+        mentions: []
+      };
+
+      const sibling2: Node = {
+        id: 'sibling2',
+        content: 'Sibling 2 (to transfer)',
+        nodeType: 'text',
+        parentId: 'parent',
+        originNodeId: 'parent',
+        beforeSiblingId: 'sibling1',
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        properties: {},
+        mentions: []
+      };
+
+      const sibling3: Node = {
+        id: 'sibling3',
+        content: 'Sibling 3 (to transfer)',
+        nodeType: 'text',
+        parentId: 'parent',
+        originNodeId: 'parent',
+        beforeSiblingId: 'sibling2',
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        properties: {},
+        mentions: []
+      };
+
+      nodeManager.initializeNodes([parent, child1, existingChild, sibling1, sibling2, sibling3], {
+        expanded: true,
+        autoFocus: false,
+        inheritHeaderLevel: 0
+      });
+
+      validateSiblingChain(null); // root
+      validateSiblingChain('parent');
+      validateSiblingChain('child1');
+
+      // Act: Outdent child1
+      // Expected: sibling1, sibling2, sibling3 should transfer as children of child1
+      // They should form a chain AFTER existing-child
+      const success = nodeManager.outdentNode('child1');
+
+      // Assert
+      expect(success).toBe(true);
+
+      const child1Updated = nodeManager.findNode('child1');
+      expect(child1Updated?.parentId).toBe(null);
+      expect(child1Updated?.beforeSiblingId).toBe('parent');
+
+      // Validate transferred siblings form correct chain after existing child
+      const existingChildUpdated = nodeManager.findNode('existing-child');
+      expect(existingChildUpdated?.parentId).toBe('child1');
+      expect(existingChildUpdated?.beforeSiblingId).toBe(null); // Still first child
+
+      const sibling1Updated = nodeManager.findNode('sibling1');
+      expect(sibling1Updated?.parentId).toBe('child1');
+      expect(sibling1Updated?.beforeSiblingId).toBe('existing-child'); // After existing child
+
+      const sibling2Updated = nodeManager.findNode('sibling2');
+      expect(sibling2Updated?.parentId).toBe('child1');
+      expect(sibling2Updated?.beforeSiblingId).toBe('sibling1'); // After sibling1
+
+      const sibling3Updated = nodeManager.findNode('sibling3');
+      expect(sibling3Updated?.parentId).toBe('child1');
+      expect(sibling3Updated?.beforeSiblingId).toBe('sibling2'); // After sibling2
+
+      // Validate sibling chain integrity
+      validateSiblingChain(null); // root
+      validateSiblingChain('parent');
+      validateSiblingChain('child1'); // Should have 4 children in correct order
+    });
+
     test('deleteNode maintains sibling chain integrity', () => {
       const nodes: Node[] = [
         {

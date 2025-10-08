@@ -173,8 +173,12 @@ impl DatabaseService {
                 modified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 properties JSON NOT NULL DEFAULT '{}',
                 embedding_vector BLOB,
+                -- Parent deletion cascades to children (tree structure)
                 FOREIGN KEY (parent_id) REFERENCES nodes(id) ON DELETE CASCADE,
-                FOREIGN KEY (origin_node_id) REFERENCES nodes(id)
+                -- Origin deletion cascades to mirror/template instances (instances depend on origin)
+                FOREIGN KEY (origin_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+                -- Sibling deletion nulls the reference (maintain chain integrity)
+                FOREIGN KEY (before_sibling_id) REFERENCES nodes(id) ON DELETE SET NULL
             )",
             (),
         )
