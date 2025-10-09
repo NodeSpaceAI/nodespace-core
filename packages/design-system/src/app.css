@@ -1,0 +1,442 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+	:root {
+		/* NodeSpace Warm Gray Design System - Subtle Tint (Scheme 3) */
+		--primary: 200 40% 45%;
+		--primary-foreground: 0 0% 98%;
+		--secondary: 200 12% 92%;
+		--secondary-foreground: 200 12% 45%;
+		--accent: 200 40% 45%;
+		--accent-foreground: 0 0% 98%;
+		--background: 0 0% 98%;
+		--foreground: 0 0% 15%;
+		--card: 0 0% 100%;
+		--card-foreground: 0 0% 15%;
+		--popover: 0 0% 100%;
+		--popover-foreground: 0 0% 15%;
+		--muted: 200 12% 94%;
+		--muted-foreground: 0 0% 25%;
+		--border: 200 12% 88%;
+		--input: 200 12% 88%;
+		--ring: 200 40% 55%;
+		--destructive: 0 84% 60%;
+		--destructive-foreground: 0 0% 100%;
+		--radius: 0.5rem;
+
+		/* NodeSpace node colors */
+		--node-text: 200 40% 45%;
+		--node-task: 200 40% 45%;
+		--node-ai-chat: 200 40% 45%;
+	}
+
+	.dark {
+		/* Dark mode - Subtle Tint System */
+		--primary: 200 40% 55%;
+		--primary-foreground: 0 0% 95%;
+		--secondary: 200 12% 14%;
+		--secondary-foreground: 200 12% 60%;
+		--accent: 200 40% 55%;
+		--accent-foreground: 0 0% 95%;
+		--background: 0 0% 12%;
+		--foreground: 0 0% 90%;
+		--card: 200 12% 14%;
+		--card-foreground: 0 0% 90%;
+		--popover: 200 12% 14%;
+		--popover-foreground: 0 0% 90%;
+		--muted: 200 12% 16%;
+		--muted-foreground: 0 0% 75%;
+		--border: 200 12% 24%;
+		--input: 200 12% 26%;
+		--ring: 200 40% 65%;
+		--destructive: 0 84% 60%;
+		--destructive-foreground: 0 0% 100%;
+
+		/* Dark mode node colors */
+		--node-text: 200 40% 55%;
+		--node-task: 200 40% 55%;
+		--node-ai-chat: 200 40% 55%;
+	}
+
+	* {
+		@apply border-border;
+	}
+
+	body {
+		@apply bg-background text-foreground;
+		font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+	}
+
+	body.no-transitions *,
+	body.no-transitions *::before,
+	body.no-transitions *::after {
+		transition: none !important;
+		animation: none !important;
+	}
+}
+
+/* Apply no-transitions by default */
+body {
+	@apply no-transitions;
+}
+/* NodeSpace Design System Icons */
+/* Aligned with live Svelte implementation - multi-element approach */
+
+/* Base icon container */
+.ns-icon {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  position: relative;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+/* Basic Node Icons - Circle-based */
+.node-circle {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  background: hsl(var(--node-text)); /* Uses design system primary color */
+}
+
+/* Parent ring effect for nodes with children */
+.node-ring {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 3px solid hsl(var(--node-text) / 0.5); /* Uses design system primary color */
+  position: absolute;
+  top: 0;
+  left: 0;
+  box-sizing: border-box;
+}
+
+/* Task Icons - Following live Svelte implementation exactly */
+.task-circle {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  box-sizing: border-box;
+}
+
+.task-circle-pending {
+  background: transparent;
+  border: 1px solid hsl(var(--node-text)); /* Uses design system primary color */
+}
+
+.task-circle-in-progress {
+  background: linear-gradient(90deg, hsl(var(--node-text)) 50%, transparent 50%);
+  border: 1px solid hsl(var(--node-text)); /* Uses design system primary color */
+}
+
+.task-circle-completed {
+  background: hsl(var(--node-text)); /* Uses design system primary color */
+}
+
+/* Checkmark for completed tasks */
+.task-circle-completed::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 8px;
+  transform: translate(-50%, -50%);
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='8' viewBox='0 0 10 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 4L3.5 6.5L9 1' stroke='%23fcfcfc' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+}
+
+/* Task ring for parent tasks */
+.task-ring {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid hsl(var(--node-text) / 0.5); /* Uses design system primary color */
+  position: absolute;
+  top: 0;
+  left: 0;
+  box-sizing: border-box;
+}
+
+/* AI Chat Icons - Chat bubble shape using SVG in background-image (consistent with other icon overlays) */
+.ai-square {
+  width: 16px;
+  height: 16px;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M8 0 C3.582 0 0 3.582 0 8 C0 12.418 3.582 16 8 16 L15.5 16 C15.776 16 16 15.776 16 15.5 L16 8 C16 3.582 12.418 0 8 0 Z' fill='hsl(200 40%25 45%25)'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 16px 16px;
+}
+
+/* AI sparkle overlay using pseudo-element */
+.ai-square::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  background-image: url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 12 12' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M6 0 L7.5 4.5 L12 6 L7.5 7.5 L6 12 L4.5 7.5 L0 6 L4.5 4.5 Z' fill='hsl(204 0%25 99%25)'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 12px 12px;
+}
+
+/* AI ring for parent AI nodes */
+.ai-ring {
+  width: 20px;
+  height: 20px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  box-sizing: border-box;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Cpath d='M10 0 C4.477 0 0 4.477 0 10 C0 15.523 4.477 20 10 20 L19.375 20 C19.72 20 20 19.72 20 19.375 L20 10 C20 4.477 15.523 0 10 0 Z' fill='hsl(200 40%25 45%25 / 0.5)'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 20px 20px;
+}
+
+/* Code Node Icons - Curly braces with background-matching color */
+.code-circle {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  background: hsl(var(--node-text)); /* Uses design system primary color */
+}
+
+/* Code braces overlay - light theme
+   NOTE: SVG data URLs cannot use CSS variables, so this must be hardcoded
+   Matches: hsl(var(--content-background)) = hsl(0 0% 99%) = #fcfcfc */
+.code-circle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  transform: translate(-50%, -50%);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 20 20'%3E%3Cpath d='M4,6.25v1.5C4,8.16,3.66,8.5,3.25,8.5H2v3h1.25C3.66,11.5,4,11.84,4,12.25v1.5C4,14.99,5.01,16,6.25,16H8v-1.5H6.25 c-0.41,0-0.75-0.34-0.75-0.75v-1.5c0-1.16-0.88-2.11-2-2.24V9.99c1.12-0.12,2-1.08,2-2.24v-1.5c0-0.41,0.34-0.75,0.75-0.75H8V4 H6.25C5.01,4,4,5.01,4,6.25z' fill='%23fcfcfc'/%3E%3Cpath d='M16.75,8.5C16.34,8.5,16,8.16,16,7.75v-1.5C16,5.01,14.99,4,13.75,4H12v1.5h1.75c0.41,0,0.75,0.34,0.75,0.75v1.5 c0,1.16,0.88,2.11,2,2.24v0.03c-1.12,0.12-2,1.08-2,2.24v1.5c0,0.41-0.34,0.75-0.75,0.75H12V16h1.75c1.24,0,2.25-1.01,2.25-2.25 v-1.5c0-0.41,0.34-0.75,0.75-0.75H18v-3H16.75z' fill='%23fcfcfc'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 16px 16px;
+}
+
+/* Quote Node Icons - Double quotation mark with background-matching color */
+.quote-circle {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  background: hsl(var(--node-text)); /* Uses design system primary color */
+}
+
+/* Quotation mark overlay - light theme
+   NOTE: SVG data URLs cannot use CSS variables, so this must be hardcoded
+   Matches: hsl(var(--content-background)) = hsl(0 0% 99%) = #fcfcfc */
+.quote-circle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  transform: translate(-50%, -50%);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' height='16px' viewBox='0 0 24 24' width='16px'%3E%3Cpath d='M6 17h3l2-4V7H5v6h3zm8 0h3l2-4V7h-6v6h3z' fill='%23fcfcfc'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 16px 16px;
+}
+
+/* Navigation Icons - Simple SVG approach */
+.ns-icon--chevron {
+  background-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 24 24' fill='currentColor' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M9 6l6 6-6 6-1.5-1.5L12 12 7.5 7.5 9 6z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  transition: transform 0.2s ease;
+}
+
+.ns-icon--chevron.expanded {
+  transform: rotate(90deg);
+}
+
+/* Dark theme - checkmark and sparkle colors */
+.dark .task-circle-completed::after {
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='8' viewBox='0 0 10 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 4L3.5 6.5L9 1' stroke='%231f1f1f' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+/* Dark theme - AI icon base shape */
+.dark .ai-square {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M8 0 C3.582 0 0 3.582 0 8 C0 12.418 3.582 16 8 16 L15.5 16 C15.776 16 16 15.776 16 15.5 L16 8 C16 3.582 12.418 0 8 0 Z' fill='hsl(200 40%25 55%25)'/%3E%3C/svg%3E");
+}
+
+.dark .ai-ring {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Cpath d='M10 0 C4.477 0 0 4.477 0 10 C0 15.523 4.477 20 10 20 L19.375 20 C19.72 20 20 19.72 20 19.375 L20 10 C20 4.477 15.523 0 10 0 Z' fill='hsl(200 40%25 55%25 / 0.5)'/%3E%3C/svg%3E");
+}
+
+.dark .ai-square::after {
+  background-image: url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 12 12' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M6 0 L7.5 4.5 L12 6 L7.5 7.5 L6 12 L4.5 7.5 L0 6 L4.5 4.5 Z' fill='hsl(204 0%25 12%25)'/%3E%3C/svg%3E");
+}
+
+/* Dark theme - curly braces use dark background color */
+.dark .code-circle::after {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 20 20'%3E%3Cpath d='M4,6.25v1.5C4,8.16,3.66,8.5,3.25,8.5H2v3h1.25C3.66,11.5,4,11.84,4,12.25v1.5C4,14.99,5.01,16,6.25,16H8v-1.5H6.25 c-0.41,0-0.75-0.34-0.75-0.75v-1.5c0-1.16-0.88-2.11-2-2.24V9.99c1.12-0.12,2-1.08,2-2.24v-1.5c0-0.41,0.34-0.75,0.75-0.75H8V4 H6.25C5.01,4,4,5.01,4,6.25z' fill='%23252523'/%3E%3Cpath d='M16.75,8.5C16.34,8.5,16,8.16,16,7.75v-1.5C16,5.01,14.99,4,13.75,4H12v1.5h1.75c0.41,0,0.75,0.34,0.75,0.75v1.5 c0,1.16,0.88,2.11,2,2.24v0.03c-1.12,0.12-2,1.08-2,2.24v1.5c0,0.41-0.34,0.75-0.75,0.75H12V16h1.75c1.24,0,2.25-1.01,2.25-2.25 v-1.5c0-0.41,0.34-0.75,0.75-0.75H18v-3H16.75z' fill='%23252523'/%3E%3C/svg%3E");
+}
+
+/* Dark theme - quotation mark uses dark background color (matches checkmark) */
+.dark .quote-circle::after {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' height='16px' viewBox='0 0 24 24' width='16px'%3E%3Cpath d='M6 17h3l2-4V7H5v6h3zm8 0h3l2-4V7h-6v6h3z' fill='%231f1f1f'/%3E%3C/svg%3E");
+}
+
+/* Size variants */
+.ns-icon--sm { width: 16px; height: 16px; }
+.ns-icon--lg { width: 24px; height: 24px; }
+.ns-icon--xl { width: 32px; height: 32px; }
+
+/* Scale AI icon to match container size */
+.ns-icon--lg .ai-square {
+  width: 24px;
+  height: 24px;
+  top: 0;
+  left: 0;
+  background-size: 24px 24px;
+}
+
+.ns-icon--lg .ai-square::after {
+  width: 18px;
+  height: 18px;
+  background-size: 18px 18px;
+}
+
+.ns-icon--xl .ai-square {
+  width: 28px;
+  height: 28px;
+  top: 2px;
+  left: 2px;
+  background-size: 28px 28px;
+}
+
+.ns-icon--xl .ai-square::after {
+  width: 20px;
+  height: 20px;
+  background-size: 20px 20px;
+}.hierarchy-example {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segue UI', Roboto, sans-serif;
+  line-height: 1.6;
+  margin: 0;
+  padding-left: 0;
+  position: relative;
+}
+
+.hierarchy-node {
+  position: relative;
+  cursor: pointer;
+  border-radius: 0.25rem;
+  transition: background-color 0.15s ease;
+  padding-left: calc(16px + 20px + var(--circle-diameter, 20px) + var(--circle-text-gap, 8px));
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+  min-height: calc(var(--circle-diameter, 20px) + 0.5rem);
+  --line-height: 1.6;
+  --font-size: 1rem;
+  --line-height-px: calc(var(--font-size) * var(--line-height));
+  --node-indent: 2.5rem;
+}
+
+.hierarchy-node.child-1 {
+  margin-left: 2.5rem;
+}
+
+.hierarchy-node.child-2 {
+  margin-left: 5rem;
+}
+
+.hierarchy-indicator {
+  position: absolute;
+  left: calc(16px + 20px);
+  top: calc(0.25rem + (var(--line-height-px) / 2));
+  transform: translate(-50%, -50%); /* Center icon on coordinates - matches live implementation */
+  width: var(--circle-diameter, 20px);
+  height: var(--circle-diameter, 20px);
+  flex-shrink: 0;
+  z-index: 2;
+}
+
+/* TaskNode Circle Icon System */
+/* Icon Demo Container - Used for all icon types */
+.icon-demo {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  margin: 1rem 0;
+  padding: 1rem;
+  background: hsl(var(--content-background));
+  border: 1px solid hsl(var(--border));
+}
+
+.chevron-icon {
+  position: absolute;
+  top: calc(0.25rem + (var(--line-height-px) / 2));
+  transform: translate(-50%, -50%);
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s ease;
+  z-index: 3;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.hierarchy-node .chevron-icon {
+  left: 16px;
+}
+
+.chevron-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: hsl(var(--primary));
+  opacity: 0.5;
+}
+
+.chevron-icon.expanded {
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+
+.text-circle {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: hsl(var(--primary));
+  position: absolute;
+  top: 3px;
+  left: 3px;
+}
+
+.task-state-label {
+  font-size: 0.75rem;
+  color: hsl(var(--muted-foreground));
+  font-weight: 500;
+}
