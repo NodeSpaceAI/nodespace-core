@@ -31,6 +31,9 @@ uuid = { workspace = true }
 async-trait = { workspace = true }
 regex = "1.0"
 
+# Logging
+tracing = { workspace = true }
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 criterion = { workspace = true }

@@ -325,11 +325,18 @@ pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<usize, 
 /// ```
 #[tauri::command]
 pub async fn get_stale_topic_count(
-    _state: State<'_, EmbeddingState>,
+    state: State<'_, EmbeddingState>,
 ) -> Result<usize, CommandError> {
-    // TODO: Implement stale count query
-    // For now, return 0 as placeholder
-    Ok(0)
+    let topics = state
+        .service
+        .get_all_stale_topics()
+        .await
+        .map_err(|e| CommandError {
+            message: format!("Failed to get stale count: {}", e),
+            code: "STALE_COUNT_FAILED".to_string(),
+            details: Some(format!("{:?}", e)),
+        })?;
+    Ok(topics.len())
 }
 
 /// Batch generate embeddings for multiple topics

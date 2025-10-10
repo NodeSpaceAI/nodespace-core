@@ -23,6 +23,10 @@ use libsql::params;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
+use tracing::error;
+
+/// Maximum number of topics to sync in a single manual sync operation
+const MAX_MANUAL_SYNC_BATCH: usize = 10000;
 
 /// Configuration for the embedding processor
 #[derive(Debug, Clone)]
@@ -156,7 +160,7 @@ impl EmbeddingProcessor {
 
             // Process stale topics
             if let Err(e) = self.process_stale_topics().await {
-                eprintln!("Error processing stale topics: {}", e);
+                error!("Error processing stale topics: {}", e);
             }
         }
     }
@@ -181,13 +185,13 @@ impl EmbeddingProcessor {
         // Process each topic
         for topic_id in stale_topics {
             if let Err(e) = self.embedding_service.embed_topic(&topic_id).await {
-                eprintln!("Failed to embed topic {}: {}", topic_id, e);
+                error!("Failed to embed topic {}: {}", topic_id, e);
                 continue;
             }
 
             // Mark as no longer stale
             if let Err(e) = self.mark_topic_embedded(&topic_id).await {
-                eprintln!("Failed to mark topic {} as embedded: {}", topic_id, e);
+                error!("Failed to mark topic {} as embedded: {}", topic_id, e);
             }
         }
 
@@ -260,21 +264,21 @@ impl EmbeddingProcessor {
     ///
     /// Number of topics processed
     pub async fn sync_all_stale_topics(&self) -> Result<usize, NodeServiceError> {
-        // Get ALL stale topics (use large limit)
-        let stale_topics = self.get_stale_topics(10000).await?;
+        // Get ALL stale topics (use configured max batch size)
+        let stale_topics = self.get_stale_topics(MAX_MANUAL_SYNC_BATCH).await?;
 
         let count = stale_topics.len();
 
         // Process each topic
         for topic_id in stale_topics {
             if let Err(e) = self.embedding_service.embed_topic(&topic_id).await {
-                eprintln!("Failed to embed topic {}: {}", topic_id, e);
+                error!("Failed to embed topic {}: {}", topic_id, e);
                 continue;
             }
 
             // Mark as no longer stale
             if let Err(e) = self.mark_topic_embedded(&topic_id).await {
-                eprintln!("Failed to mark topic {} as embedded: {}", topic_id, e);
+                error!("Failed to mark topic {} as embedded: {}", topic_id, e);
             }
         }
 

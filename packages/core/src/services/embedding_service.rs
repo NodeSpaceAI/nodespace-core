@@ -31,9 +31,19 @@ use libsql::params;
 use nodespace_nlp_engine::EmbeddingService;
 use serde_json::json;
 use std::sync::Arc;
+use tracing::error;
 
 /// Embedding vector dimension for BAAI/bge-small-en-v1.5 model
 pub const EMBEDDING_DIMENSION: usize = 384;
+
+/// Time window (in seconds) to consider a topic "recently edited" after closing
+const RECENTLY_EDITED_THRESHOLD_SECS: i64 = 30;
+
+/// Idle timeout (in seconds) before triggering re-embedding
+const IDLE_TIMEOUT_THRESHOLD_SECS: i64 = 30;
+
+/// Time window (in seconds) for critical topics on app shutdown
+const SHUTDOWN_CRITICAL_WINDOW_SECS: i64 = 300; // 5 minutes
 
 /// Topic embedding service with adaptive chunking
 pub struct TopicEmbeddingService {
@@ -369,8 +379,10 @@ impl TopicEmbeddingService {
     /// # }
     /// # ```
     pub async fn on_topic_closed(&self, topic_id: &str) -> Result<(), NodeServiceError> {
-        // Check if topic was recently edited (within last 30 seconds)
-        let recently_edited = self.was_recently_edited(topic_id, 30).await?;
+        // Check if topic was recently edited (within configured threshold)
+        let recently_edited = self
+            .was_recently_edited(topic_id, RECENTLY_EDITED_THRESHOLD_SECS)
+            .await?;
 
         if recently_edited {
             // Re-embed immediately
@@ -394,8 +406,10 @@ impl TopicEmbeddingService {
     ///
     /// `true` if re-embedding was triggered, `false` if not needed
     pub async fn on_idle_timeout(&self, topic_id: &str) -> Result<bool, NodeServiceError> {
-        // Check if topic is stale and was last edited > 30 seconds ago
-        let should_embed = self.should_embed_after_idle(topic_id, 30).await?;
+        // Check if topic is stale and was last edited > configured idle threshold
+        let should_embed = self
+            .should_embed_after_idle(topic_id, IDLE_TIMEOUT_THRESHOLD_SECS)
+            .await?;
 
         if should_embed {
             self.embed_topic(topic_id).await?;
@@ -419,7 +433,7 @@ impl TopicEmbeddingService {
 
         for topic_id in stale_topics {
             if let Err(e) = self.embed_topic(&topic_id).await {
-                eprintln!("Failed to embed topic {}: {}", topic_id, e);
+                error!("Failed to embed topic {}: {}", topic_id, e);
                 continue;
             }
             self.mark_topic_embedded(&topic_id).await?;
@@ -436,13 +450,15 @@ impl TopicEmbeddingService {
     ///
     /// Number of topics re-embedded
     pub async fn on_app_shutdown(&self) -> Result<usize, NodeServiceError> {
-        // Get topics edited within last 5 minutes
-        let critical_topics = self.get_recently_edited_topics(300).await?;
+        // Get topics edited within configured shutdown window
+        let critical_topics = self
+            .get_recently_edited_topics(SHUTDOWN_CRITICAL_WINDOW_SECS)
+            .await?;
         let count = critical_topics.len();
 
         for topic_id in critical_topics {
             if let Err(e) = self.embed_topic(&topic_id).await {
-                eprintln!("Failed to embed topic {}: {}", topic_id, e);
+                error!("Failed to embed topic {}: {}", topic_id, e);
                 continue;
             }
             self.mark_topic_embedded(&topic_id).await?;
@@ -885,7 +901,7 @@ impl TopicEmbeddingService {
     }
 
     /// Get all stale topics
-    async fn get_all_stale_topics(&self) -> Result<Vec<String>, NodeServiceError> {
+    pub async fn get_all_stale_topics(&self) -> Result<Vec<String>, NodeServiceError> {
         let conn = self.db.connect_with_timeout().await.map_err(|e| {
             NodeServiceError::QueryFailed(format!("Database connection failed: {}", e))
         })?;
