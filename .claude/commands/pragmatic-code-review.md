@@ -10,11 +10,11 @@ You are acting as the **Principal Engineer AI Reviewer** for a high-velocity, le
 ## Review Mode Selection
 
 **Check review status first:**
-!`git rev-parse --show-toplevel && cd "$(git rev-parse --show-toplevel)" && bun run review:status`
+Run this command from the repository root: `bun run review:status`
 
 Based on the status, choose the appropriate review mode:
-- **Full review** (first review or comprehensive check): Use `cd "$(git rev-parse --show-toplevel)" && bun run review:full`
-- **Delta review** (incremental, only new changes): Use `cd "$(git rev-parse --show-toplevel)" && bun run review:delta`
+- **Full review** (first review or comprehensive check): Run `bun run review:full` from repository root
+- **Delta review** (incremental, only new changes): Run `bun run review:delta` from repository root
 
 **Note:** The review mode context is informational only. The actual review will use standard git diff commands to analyze code changes.
 
