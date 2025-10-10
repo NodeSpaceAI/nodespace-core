@@ -311,27 +311,36 @@ export class SharedNodeStore {
 
     // Phase 2.4: Persist to database
     if (!skipPersistence && source.type !== 'database') {
-      queueDatabaseWrite(node.id, async () => {
-        try {
-          // Check if node exists in database - if not, create it, otherwise update
-          const existingNode = await tauriNodeService.getNode(node.id);
-          if (existingNode) {
-            await tauriNodeService.updateNode(node.id, node);
-          } else {
-            await tauriNodeService.createNode(node);
+      // Skip persisting empty text nodes - they exist in UI but not in database
+      // until user adds content (backend validation requires non-empty content)
+      const isEmptyTextNode = node.nodeType === 'text' && node.content.trim() === '';
+
+      if (!isEmptyTextNode) {
+        queueDatabaseWrite(node.id, async () => {
+          try {
+            // Check if node exists in database - if not, create it, otherwise update
+            const existingNode = await tauriNodeService.getNode(node.id);
+            if (existingNode) {
+              await tauriNodeService.updateNode(node.id, node);
+            } else {
+              await tauriNodeService.createNode(node);
+            }
+          } catch (dbError) {
+            // Only log database errors in non-test environments
+            // Tests run without Tauri and database writes are expected to fail
+            if (typeof process === 'undefined' || process.env.NODE_ENV !== 'test') {
+              console.error(
+                `[SharedNodeStore] Database write failed for node ${node.id}:`,
+                dbError
+              );
+            }
           }
-        } catch (dbError) {
-          // Only log database errors in non-test environments
-          // Tests run without Tauri and database writes are expected to fail
+        }).catch((err) => {
           if (typeof process === 'undefined' || process.env.NODE_ENV !== 'test') {
-            console.error(`[SharedNodeStore] Database write failed for node ${node.id}:`, dbError);
+            console.error(`[SharedNodeStore] Failed to queue database write:`, err);
           }
-        }
-      }).catch((err) => {
-        if (typeof process === 'undefined' || process.env.NODE_ENV !== 'test') {
-          console.error(`[SharedNodeStore] Failed to queue database write:`, err);
-        }
-      });
+        });
+      }
     }
   }
 
