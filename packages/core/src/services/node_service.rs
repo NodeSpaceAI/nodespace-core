@@ -2536,6 +2536,15 @@ mod tests {
         assert_eq!(mentions.len(), 1, "Node 1 should have exactly one mention");
         assert_eq!(mentions[0], id2, "Node 1 should mention Node 2");
 
+        // Verify bidirectional relationship - check mentioned_by for node2
+        let mentioned_by = service.get_mentioned_by(&id2).await.unwrap();
+        assert_eq!(
+            mentioned_by.len(),
+            1,
+            "Node 2 should be mentioned by exactly one node"
+        );
+        assert_eq!(mentioned_by[0], id1, "Node 2 should be mentioned by Node 1");
+
         // Verify idempotency - calling create_mention again should not error
         service.create_mention(&id1, &id2).await.unwrap();
         let mentions = service.get_mentions(&id1).await.unwrap();
