@@ -169,7 +169,7 @@ impl NodeService {
 
         // Insert into database
         // Database defaults handle created_at and modified_at timestamps automatically
-        let conn = self.db.connect()?;
+        let conn = self.db.connect_with_timeout().await?;
 
         let properties_json = serde_json::to_string(&node.properties)
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
@@ -242,7 +242,7 @@ impl NodeService {
             return Err(NodeServiceError::node_not_found(mentioned_node_id));
         }
 
-        let conn = self.db.connect()?;
+        let conn = self.db.connect_with_timeout().await?;
 
         conn.execute(
             "INSERT OR IGNORE INTO node_mentions (node_id, mentions_node_id)
@@ -398,7 +398,7 @@ impl NodeService {
         self.behaviors.validate_node(&updated)?;
 
         // Execute update - database will auto-update modified_at via trigger or default
-        let conn = self.db.connect()?;
+        let conn = self.db.connect_with_timeout().await?;
         let properties_json = serde_json::to_string(&updated.properties)
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
@@ -467,7 +467,7 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn delete_node(&self, id: &str) -> Result<(), NodeServiceError> {
-        let conn = self.db.connect()?;
+        let conn = self.db.connect_with_timeout().await?;
 
         let rows_affected = conn
             .execute("DELETE FROM nodes WHERE id = ?", [id])
