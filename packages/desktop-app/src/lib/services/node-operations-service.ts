@@ -115,7 +115,7 @@ export class NodeOperationsService {
     // Resolve parent and root
     const hierarchyResolution = await this.resolveParentAndRoot(
       data.parentId || undefined,
-      data.originNodeId || undefined,
+      data.containerNodeId || undefined,
       nodeId,
       opts.preserveHierarchy && !!existingNode
     );
@@ -134,7 +134,7 @@ export class NodeOperationsService {
       nodeType: data.nodeType || (existingNode ? existingNode.nodeType : 'text'),
       content: contentResult.content,
       parentId: hierarchyResolution.parentId,
-      originNodeId: hierarchyResolution.rootId,
+      containerNodeId: hierarchyResolution.rootId,
       beforeSiblingId: siblingPosition.beforeSiblingId,
       createdAt: existingNode
         ? (existingNode.properties?.createdAt as string) ||

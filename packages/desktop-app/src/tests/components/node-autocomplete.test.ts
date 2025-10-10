@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen } from '@testing-library/svelte';
+import { render, screen, fireEvent } from '@testing-library/svelte';
 import NodeAutocomplete from '$lib/components/ui/node-autocomplete/node-autocomplete.svelte';
 import { createKeyboardEvent, getAriaAttributes } from '../helpers';
 import type { NodeType } from '$lib/design/icons';
@@ -647,7 +647,7 @@ describe('NodeAutocomplete', () => {
       });
 
       const options = screen.getAllByRole('option');
-      options[1].click();
+      fireEvent.mouseDown(options[1]);
 
       await waitForEffects();
 

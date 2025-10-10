@@ -77,7 +77,7 @@ export const MOCK_DATE_NODE: Node = createTestNode({
   nodeType: 'date',
   content: 'Daily notes for October 6, 2024',
   parentId: null,
-  originNodeId: null,
+  containerNodeId: null,
   createdAt: '2024-10-06T00:00:00Z',
   modifiedAt: '2024-10-06T00:00:00Z'
 });
@@ -104,28 +104,28 @@ export const MOCK_PARENT_NODE = createTestNode({
   id: 'parent-1',
   content: 'Parent node',
   parentId: null,
-  originNodeId: null
+  containerNodeId: null
 });
 
 export const MOCK_CHILD_NODE_1 = createTestNode({
   id: 'child-1',
   content: 'First child',
   parentId: 'parent-1',
-  originNodeId: 'parent-1'
+  containerNodeId: 'parent-1'
 });
 
 export const MOCK_CHILD_NODE_2 = createTestNode({
   id: 'child-2',
   content: 'Second child',
   parentId: 'parent-1',
-  originNodeId: 'parent-1'
+  containerNodeId: 'parent-1'
 });
 
 export const MOCK_GRANDCHILD_NODE = createTestNode({
   id: 'grandchild-1',
   content: 'Grandchild node',
   parentId: 'child-1',
-  originNodeId: 'parent-1'
+  containerNodeId: 'parent-1'
 });
 
 /**

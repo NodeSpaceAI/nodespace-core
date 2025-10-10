@@ -27,7 +27,7 @@ describe('Database Persistence Edge Cases', () => {
       content: string;
       nodeType: string;
       parentId: string | null;
-      originNodeId: string | null;
+      containerNodeId: string | null;
       beforeSiblingId: string | null;
     }
 
@@ -177,7 +177,7 @@ describe('Database Persistence Edge Cases', () => {
           content: 'Child 2',
           nodeType: 'text',
           parentId: null,
-          originNodeId: null,
+          containerNodeId: null,
           beforeSiblingId: 'parent2'
         });
       })();
@@ -263,7 +263,7 @@ describe('Database Persistence Edge Cases', () => {
             content: `Node ${nodeId}`,
             nodeType: 'text',
             parentId: null,
-            originNodeId: null,
+            containerNodeId: null,
             beforeSiblingId: null
           });
         })();
@@ -355,7 +355,7 @@ describe('Database Persistence Edge Cases', () => {
           content: 'Node 1',
           nodeType: 'text',
           parentId: 'parent1',
-          originNodeId: null,
+          containerNodeId: null,
           beforeSiblingId: null
         });
         pendingContentSavePromises.delete('node1');
@@ -369,7 +369,7 @@ describe('Database Persistence Edge Cases', () => {
           content: 'Node 2',
           nodeType: 'text',
           parentId: 'parent2',
-          originNodeId: null,
+          containerNodeId: null,
           beforeSiblingId: null
         });
         pendingContentSavePromises.delete('node2');
@@ -383,7 +383,7 @@ describe('Database Persistence Edge Cases', () => {
           content: 'Node 3',
           nodeType: 'text',
           parentId: 'parent3',
-          originNodeId: null,
+          containerNodeId: null,
           beforeSiblingId: null
         });
         pendingContentSavePromises.delete('node3');
@@ -430,7 +430,7 @@ describe('Database Persistence Edge Cases', () => {
           content: 'New Parent',
           nodeType: 'text',
           parentId: null,
-          originNodeId: null,
+          containerNodeId: null,
           beforeSiblingId: null
         });
         operationOrder.push('save-parent');
@@ -474,7 +474,7 @@ describe('Database Persistence Edge Cases', () => {
         content: 'New Parent',
         nodeType: 'text',
         parentId: null,
-        originNodeId: null,
+        containerNodeId: null,
         beforeSiblingId: null
       });
       expect(localMock.updateNode).toHaveBeenCalledWith('child-node', {

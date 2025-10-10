@@ -215,20 +215,20 @@ export class TauriNodeService {
    * - Single database query fetches all nodes with the same origin_node_id
    * - Frontend can reconstruct hierarchy using parent_id and before_sibling_id
    *
-   * @param originNodeId - ID of the origin node (e.g., date page ID like "2025-10-05")
+   * @param containerNodeId - ID of the origin node (e.g., date page ID like "2025-10-05")
    * @returns Array of all nodes belonging to this origin
    * @throws NodeOperationError if operation fails
    */
-  async getNodesByOriginId(originNodeId: string): Promise<Node[]> {
+  async getNodesByOriginId(containerNodeId: string): Promise<Node[]> {
     this.ensureInitialized();
 
     try {
-      const nodes = await universalInvoke<Node[]>('get_nodes_by_origin_id', { originNodeId });
+      const nodes = await universalInvoke<Node[]>('get_nodes_by_origin_id', { containerNodeId });
       return nodes;
     } catch (error) {
       const err = toError(error);
-      console.error('[TauriNodeService] Failed to get nodes by origin ID:', originNodeId, err);
-      throw new NodeOperationError(err.message, originNodeId, 'getNodesByOriginId');
+      console.error('[TauriNodeService] Failed to get nodes by origin ID:', containerNodeId, err);
+      throw new NodeOperationError(err.message, containerNodeId, 'getNodesByOriginId');
     }
   }
 
@@ -295,7 +295,7 @@ export class TauriNodeService {
       content: string;
       nodeType: string;
       parentId: string;
-      originNodeId: string;
+      containerNodeId: string;
       beforeSiblingId?: string | null;
     }
   ): Promise<void> {
@@ -307,7 +307,7 @@ export class TauriNodeService {
         content: data.content,
         nodeType: data.nodeType,
         parentId: data.parentId,
-        originNodeId: data.originNodeId,
+        containerNodeId: data.containerNodeId,
         beforeSiblingId: data.beforeSiblingId || null
       });
     } catch (error) {

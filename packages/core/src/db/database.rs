@@ -169,16 +169,17 @@ impl DatabaseService {
                     node_type TEXT NOT NULL,
                     content TEXT NOT NULL,
                     parent_id TEXT,
-                    origin_node_id TEXT,
+                    container_node_id TEXT,
                     before_sibling_id TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     modified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     properties JSON NOT NULL DEFAULT '{{}}',
+                    -- 384-dimensional embedding vectors from BAAI/bge-small-en-v1.5 model (PR #198)
                     embedding_vector F32_BLOB({}),
                     -- Parent deletion cascades to children (tree structure)
                     FOREIGN KEY (parent_id) REFERENCES nodes(id) ON DELETE CASCADE,
-                    -- Origin deletion cascades to mirror/template instances (instances depend on origin)
-                    FOREIGN KEY (origin_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+                    -- Container deletion cascades to all contained nodes
+                    FOREIGN KEY (container_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
                     -- Sibling deletion nulls the reference (maintain chain integrity)
                     FOREIGN KEY (before_sibling_id) REFERENCES nodes(id) ON DELETE SET NULL
                 )",
@@ -244,14 +245,17 @@ impl DatabaseService {
             ))
         })?;
 
-        // Index on origin_node_id (bulk fetch by document)
+        // Index on container_node_id (bulk fetch by container)
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_nodes_root ON nodes(origin_node_id)",
+            "CREATE INDEX IF NOT EXISTS idx_nodes_container ON nodes(container_node_id)",
             (),
         )
         .await
         .map_err(|e| {
-            DatabaseError::sql_execution(format!("Failed to create index 'idx_nodes_root': {}", e))
+            DatabaseError::sql_execution(format!(
+                "Failed to create index 'idx_nodes_container': {}",
+                e
+            ))
         })?;
 
         // Index on modified_at (temporal queries)
@@ -567,7 +571,7 @@ mod tests {
         // Check that all expected indexes exist
         assert!(index_names.contains(&"idx_nodes_type".to_string()));
         assert!(index_names.contains(&"idx_nodes_parent".to_string()));
-        assert!(index_names.contains(&"idx_nodes_root".to_string()));
+        assert!(index_names.contains(&"idx_nodes_container".to_string()));
         assert!(index_names.contains(&"idx_nodes_modified".to_string()));
         assert!(index_names.contains(&"idx_nodes_content".to_string()));
         assert!(index_names.contains(&"idx_mentions_source".to_string()));

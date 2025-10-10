@@ -172,15 +172,14 @@
       const allNodes = Array.from(services.nodeManager.nodes.values());
 
       // Filter nodes based on query
-      // Only show top-level nodes (originNodeId === null or originNodeId === id)
+      // Show all non-text nodes (Tasks, Persons, etc.) + container text nodes only
       // Exclude date nodes
       const filtered = allNodes
         .filter((node) => {
-          // Only top-level nodes
-          const isTopLevel = isRootNode(node);
-
           // Exclude date nodes
-          const isNotDateNode = node.nodeType !== 'date';
+          if (node.nodeType === 'date') {
+            return false;
+          }
 
           // Match query in title or content
           const title = node.content.split('\n')[0] || '';
@@ -188,7 +187,18 @@
             title.toLowerCase().includes(query.toLowerCase()) ||
             node.content.toLowerCase().includes(query.toLowerCase());
 
-          return isTopLevel && isNotDateNode && matchesQuery;
+          if (!matchesQuery) {
+            return false;
+          }
+
+          // Show non-text nodes regardless of hierarchy
+          if (node.nodeType !== 'text') {
+            return true;
+          }
+
+          // For text nodes, only show container nodes
+          const isContainer = node.containerNodeId === null;
+          return isContainer;
         })
         .slice(0, 10); // Limit to 10 results
 
@@ -239,10 +249,11 @@
   }
 
   /**
-   * Helper function to check if a node is a root/top-level node
+   * Helper function to check if a node is a container node
+   * Container nodes have containerNodeId === null (they ARE containers, not contained)
    */
-  function isRootNode(node: { originNodeId: string | null; id: string }): boolean {
-    return node.originNodeId === null || node.originNodeId === node.id;
+  function isContainerNode(node: { containerNodeId: string | null; id: string }): boolean {
+    return node.containerNodeId === null;
   }
 
   /**
@@ -264,17 +275,17 @@
 
       // Find the last root node to get the correct order
       const allNodes = Array.from(nodeManager.nodes.values());
-      const rootNodes = allNodes.filter(isRootNode);
+      const rootNodes = allNodes.filter(isContainerNode);
       const lastRootNode = rootNodes[rootNodes.length - 1];
       const beforeSiblingId = lastRootNode ? lastRootNode.id : null;
 
-      // Create node directly in database with null parent_id and origin_node_id
+      // Create node directly in database with null parent_id and container_node_id
       await invoke('create_node', {
         id: newNodeId,
         content: title,
         node_type: 'text',
         parent_id: null,
-        origin_node_id: null,
+        container_node_id: null,
         before_sibling_id: beforeSiblingId,
         properties: {},
         embedding_vector: null
@@ -286,7 +297,7 @@
         content: title,
         nodeType: 'text',
         parentId: null,
-        originNodeId: null,
+        containerNodeId: null,
         beforeSiblingId: beforeSiblingId,
         createdAt: now,
         modifiedAt: now,

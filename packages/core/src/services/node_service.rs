@@ -122,7 +122,7 @@ impl NodeService {
     /// Returns error if:
     /// - Node validation fails
     /// - Parent node doesn't exist (if parent_id is set)
-    /// - Root node doesn't exist (if origin_node_id is set)
+    /// - Root node doesn't exist (if container_node_id is set)
     /// - Database insertion fails
     ///
     /// # Examples
@@ -159,11 +159,11 @@ impl NodeService {
             }
         }
 
-        // Validate root exists if origin_node_id is set
-        if let Some(ref origin_node_id) = node.origin_node_id {
-            let root_exists = self.node_exists(origin_node_id).await?;
+        // Validate root exists if container_node_id is set
+        if let Some(ref container_node_id) = node.container_node_id {
+            let root_exists = self.node_exists(container_node_id).await?;
             if !root_exists {
-                return Err(NodeServiceError::invalid_root(origin_node_id));
+                return Err(NodeServiceError::invalid_root(container_node_id));
             }
         }
 
@@ -175,14 +175,14 @@ impl NodeService {
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
         conn.execute(
-            "INSERT INTO nodes (id, node_type, content, parent_id, origin_node_id, before_sibling_id, properties, embedding_vector)
+            "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 node.id.as_str(),
                 node.node_type.as_str(),
                 node.content.as_str(),
                 node.parent_id.as_deref(),
-                node.origin_node_id.as_deref(),
+                node.container_node_id.as_deref(),
                 node.before_sibling_id.as_deref(),
                 properties_json.as_str(),
                 node.embedding_vector.as_deref(),
@@ -192,6 +192,67 @@ impl NodeService {
         .map_err(|e| NodeServiceError::query_failed(format!("Failed to insert node: {}", e)))?;
 
         Ok(node.id)
+    }
+
+    /// Create a mention relationship between two existing nodes
+    ///
+    /// Adds an entry to the node_mentions table to track that one node mentions another.
+    /// This enables backlink/references functionality.
+    ///
+    /// # Arguments
+    ///
+    /// * `mentioning_node_id` - ID of the node that contains the mention
+    /// * `mentioned_node_id` - ID of the node being mentioned
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if successful
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - Either node doesn't exist
+    /// - Database insertion fails
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+    /// # let service = NodeService::new(db)?;
+    /// // Create mention: "daily-note" mentions "project-planning"
+    /// service.create_mention("daily-note-id", "project-planning-id").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn create_mention(
+        &self,
+        mentioning_node_id: &str,
+        mentioned_node_id: &str,
+    ) -> Result<(), NodeServiceError> {
+        // Validate both nodes exist
+        if !self.node_exists(mentioning_node_id).await? {
+            return Err(NodeServiceError::node_not_found(mentioning_node_id));
+        }
+        if !self.node_exists(mentioned_node_id).await? {
+            return Err(NodeServiceError::node_not_found(mentioned_node_id));
+        }
+
+        let conn = self.db.connect()?;
+
+        conn.execute(
+            "INSERT OR IGNORE INTO node_mentions (node_id, mentions_node_id)
+             VALUES (?, ?)",
+            (mentioning_node_id, mentioned_node_id),
+        )
+        .await
+        .map_err(|e| NodeServiceError::query_failed(format!("Failed to create mention: {}", e)))?;
+
+        Ok(())
     }
 
     /// Get a node by ID
@@ -225,7 +286,7 @@ impl NodeService {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, node_type, content, parent_id, origin_node_id, before_sibling_id,
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id,
                         created_at, modified_at, properties, embedding_vector
                  FROM nodes WHERE id = ?",
             )
@@ -313,8 +374,8 @@ impl NodeService {
             updated.parent_id = parent_id;
         }
 
-        if let Some(origin_node_id) = update.origin_node_id {
-            updated.origin_node_id = origin_node_id;
+        if let Some(container_node_id) = update.container_node_id {
+            updated.container_node_id = container_node_id;
         }
 
         if let Some(before_sibling_id) = update.before_sibling_id {
@@ -338,12 +399,12 @@ impl NodeService {
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
         conn.execute(
-            "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, origin_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ? WHERE id = ?",
+            "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ? WHERE id = ?",
             (
                 updated.node_type.as_str(),
                 updated.content.as_str(),
                 updated.parent_id.as_deref(),
-                updated.origin_node_id.as_deref(),
+                updated.container_node_id.as_deref(),
                 updated.before_sibling_id.as_deref(),
                 properties_json.as_str(),
                 updated.embedding_vector.as_deref(),
@@ -441,14 +502,14 @@ impl NodeService {
     /// Bulk fetch all nodes belonging to an origin node (viewer/page)
     ///
     /// This is the efficient way to load a complete document tree:
-    /// 1. Single database query fetches all nodes with the same origin_node_id
+    /// 1. Single database query fetches all nodes with the same container_node_id
     /// 2. In-memory hierarchy reconstruction using parent_id and before_sibling_id
     ///
     /// This avoids making multiple queries for each level of the tree.
     ///
     /// # Arguments
     ///
-    /// * `origin_node_id` - The ID of the origin node (e.g., date page ID)
+    /// * `container_node_id` - The ID of the origin node (e.g., date page ID)
     ///
     /// # Returns
     ///
@@ -472,9 +533,9 @@ impl NodeService {
     /// ```
     pub async fn get_nodes_by_origin_id(
         &self,
-        origin_node_id: &str,
+        container_node_id: &str,
     ) -> Result<Vec<Node>, NodeServiceError> {
-        let filter = NodeFilter::new().with_origin_node_id(origin_node_id.to_string());
+        let filter = NodeFilter::new().with_container_node_id(container_node_id.to_string());
 
         self.query_nodes(filter).await
     }
@@ -538,7 +599,7 @@ impl NodeService {
 
     /// Move a node to a new parent
     ///
-    /// Updates the parent_id and origin_node_id of a node, maintaining hierarchy consistency.
+    /// Updates the parent_id and container_node_id of a node, maintaining hierarchy consistency.
     ///
     /// # Arguments
     ///
@@ -597,22 +658,22 @@ impl NodeService {
             }
         }
 
-        // Determine new origin_node_id
-        let new_origin_node_id = match new_parent {
+        // Determine new container_node_id
+        let new_container_node_id = match new_parent {
             Some(parent_id) => {
-                // Get parent's origin_node_id, or use parent as root if it's a root node
+                // Get parent's container_node_id, or use parent as root if it's a root node
                 let parent = self
                     .get_node(parent_id)
                     .await?
                     .ok_or_else(|| NodeServiceError::invalid_parent(parent_id))?;
-                parent.origin_node_id.or(Some(parent_id.to_string()))
+                parent.container_node_id.or(Some(parent_id.to_string()))
             }
             None => None, // Node becomes a root
         };
 
         let update = NodeUpdate {
             parent_id: Some(new_parent.map(String::from)),
-            origin_node_id: Some(new_origin_node_id),
+            container_node_id: Some(new_container_node_id),
             ..Default::default()
         };
 
@@ -729,7 +790,7 @@ impl NodeService {
                 .unwrap_or_default();
 
             let query = format!(
-                "SELECT id, node_type, content, parent_id, origin_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes WHERE node_type = ?{}{}",
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes WHERE node_type = ?{}{}",
                 order_clause, limit_clause
             );
 
@@ -767,7 +828,7 @@ impl NodeService {
                 .unwrap_or_default();
 
             let query = format!(
-                "SELECT id, node_type, content, parent_id, origin_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes WHERE parent_id = ?{}{}",
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes WHERE parent_id = ?{}{}",
                 order_clause, limit_clause
             );
 
@@ -789,8 +850,8 @@ impl NodeService {
             }
 
             return Ok(nodes);
-        } else if let Some(ref origin_node_id) = filter.origin_node_id {
-            // Query by origin_node_id (bulk fetch optimization)
+        } else if let Some(ref container_node_id) = filter.container_node_id {
+            // Query by container_node_id (bulk fetch optimization)
             let order_clause = match filter.order_by {
                 Some(OrderBy::CreatedAsc) => " ORDER BY created_at ASC",
                 Some(OrderBy::CreatedDesc) => " ORDER BY created_at DESC",
@@ -805,7 +866,7 @@ impl NodeService {
                 .unwrap_or_default();
 
             let query = format!(
-                "SELECT id, node_type, content, parent_id, origin_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes WHERE origin_node_id = ?{}{}",
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes WHERE container_node_id = ?{}{}",
                 order_clause, limit_clause
             );
 
@@ -813,9 +874,12 @@ impl NodeService {
                 NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
             })?;
 
-            let mut rows = stmt.query([origin_node_id.as_str()]).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
-            })?;
+            let mut rows = stmt
+                .query([container_node_id.as_str()])
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
+                })?;
 
             let mut nodes = Vec::new();
             while let Some(row) = rows
@@ -844,7 +908,7 @@ impl NodeService {
             .unwrap_or_default();
 
         let query = format!(
-            "SELECT id, node_type, content, parent_id, origin_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes{}{}",
+            "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes{}{}",
             order_clause, limit_clause
         );
 
@@ -934,7 +998,7 @@ impl NodeService {
 
             // Query node_mentions table to find nodes that reference the target
             let sql_query = format!(
-                "SELECT n.id, n.node_type, n.content, n.parent_id, n.origin_node_id, n.before_sibling_id, n.created_at, n.modified_at, n.properties, n.embedding_vector
+                "SELECT n.id, n.node_type, n.content, n.parent_id, n.container_node_id, n.before_sibling_id, n.created_at, n.modified_at, n.properties, n.embedding_vector
                  FROM nodes n
                  INNER JOIN node_mentions nm ON n.id = nm.node_id
                  WHERE nm.mentions_node_id = ?{}",
@@ -987,7 +1051,7 @@ impl NodeService {
             let mut rows = if let Some(ref node_type) = query.node_type {
                 // Case 1: Filter by both content and node_type
                 let sql = format!(
-                    "SELECT id, node_type, content, parent_id, origin_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector
+                    "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector
                      FROM nodes WHERE content LIKE ? AND node_type = ?{}",
                     limit_clause
                 );
@@ -1010,7 +1074,7 @@ impl NodeService {
             } else {
                 // Case 2: Filter by content only
                 let sql = format!(
-                    "SELECT id, node_type, content, parent_id, origin_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector
+                    "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector
                      FROM nodes WHERE content LIKE ?{}",
                     limit_clause
                 );
@@ -1056,7 +1120,7 @@ impl NodeService {
                 .unwrap_or_default();
 
             let sql_query = format!(
-                "SELECT id, node_type, content, parent_id, origin_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector
                  FROM nodes WHERE node_type = ?{}",
                 limit_clause
             );
@@ -1209,14 +1273,14 @@ impl NodeService {
                 .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
             let result = conn.execute(
-                "INSERT INTO nodes (id, node_type, content, parent_id, origin_node_id, before_sibling_id, properties, embedding_vector)
+                "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     node.id.as_str(),
                     node.node_type.as_str(),
                     node.content.as_str(),
                     node.parent_id.as_deref(),
-                    node.origin_node_id.as_deref(),
+                    node.container_node_id.as_deref(),
                     node.before_sibling_id.as_deref(),
                     properties_json.as_str(),
                     node.embedding_vector.as_deref(),
@@ -1312,8 +1376,8 @@ impl NodeService {
                 updated.parent_id = parent_id;
             }
 
-            if let Some(origin_node_id) = update.origin_node_id {
-                updated.origin_node_id = origin_node_id;
+            if let Some(container_node_id) = update.container_node_id {
+                updated.container_node_id = container_node_id;
             }
 
             if let Some(before_sibling_id) = update.before_sibling_id {
@@ -1344,12 +1408,12 @@ impl NodeService {
                 .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
             let result = conn.execute(
-                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, origin_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ? WHERE id = ?",
+                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ? WHERE id = ?",
                 (
                     updated.node_type.as_str(),
                     updated.content.as_str(),
                     updated.parent_id.as_deref(),
-                    updated.origin_node_id.as_deref(),
+                    updated.container_node_id.as_deref(),
                     updated.before_sibling_id.as_deref(),
                     properties_json.as_str(),
                     updated.embedding_vector.as_deref(),
@@ -1460,7 +1524,7 @@ impl NodeService {
         content: &str,
         node_type: &str,
         parent_id: &str,
-        origin_node_id: &str,
+        container_node_id: &str,
         before_sibling_id: Option<&str>,
     ) -> Result<(), NodeServiceError> {
         let conn = self.db.connect_with_timeout().await?;
@@ -1473,7 +1537,7 @@ impl NodeService {
 
         // Use INSERT OR IGNORE for parent - won't error if already exists
         let parent_result = conn.execute(
-            "INSERT OR IGNORE INTO nodes (id, node_type, content, parent_id, origin_node_id, before_sibling_id, properties, embedding_vector)
+            "INSERT OR IGNORE INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
              VALUES (?, 'date', ?, NULL, NULL, NULL, '{}', NULL)",
             (parent_id, parent_id)
         ).await;
@@ -1488,15 +1552,15 @@ impl NodeService {
 
         // Use INSERT ... ON CONFLICT for node - upsert in single operation
         let node_result = conn.execute(
-            "INSERT INTO nodes (id, node_type, content, parent_id, origin_node_id, before_sibling_id, properties, embedding_vector)
+            "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
              VALUES (?, ?, ?, ?, ?, ?, '{}', NULL)
              ON CONFLICT(id) DO UPDATE SET
                 content = excluded.content,
                 parent_id = excluded.parent_id,
-                origin_node_id = excluded.origin_node_id,
+                container_node_id = excluded.container_node_id,
                 before_sibling_id = excluded.before_sibling_id,
                 modified_at = CURRENT_TIMESTAMP",
-            (node_id, node_type, content, parent_id, origin_node_id, before_sibling_id)
+            (node_id, node_type, content, parent_id, container_node_id, before_sibling_id)
         ).await;
 
         if let Err(e) = node_result {
@@ -1532,7 +1596,7 @@ impl NodeService {
         let parent_id: Option<String> = row
             .get(3)
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-        let origin_node_id: Option<String> = row
+        let container_node_id: Option<String> = row
             .get(4)
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
         let before_sibling_id: Option<String> = row
@@ -1576,7 +1640,7 @@ impl NodeService {
             node_type,
             content,
             parent_id,
-            origin_node_id,
+            container_node_id,
             before_sibling_id,
             created_at,
             modified_at,
@@ -1990,19 +2054,19 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         let root = Node::new("text".to_string(), "Root".to_string(), None, json!({}));
-        let origin_node_id = service.create_node(root).await.unwrap();
+        let container_node_id = service.create_node(root).await.unwrap();
 
         let node = Node::new("text".to_string(), "Node".to_string(), None, json!({}));
         let node_id = service.create_node(node).await.unwrap();
 
         service
-            .move_node(&node_id, Some(&origin_node_id))
+            .move_node(&node_id, Some(&container_node_id))
             .await
             .unwrap();
 
         let moved = service.get_node(&node_id).await.unwrap().unwrap();
-        assert_eq!(moved.parent_id, Some(origin_node_id.clone()));
-        assert_eq!(moved.origin_node_id, Some(origin_node_id));
+        assert_eq!(moved.parent_id, Some(container_node_id.clone()));
+        assert_eq!(moved.container_node_id, Some(container_node_id));
     }
 
     #[tokio::test]
@@ -2218,7 +2282,7 @@ mod tests {
         );
         service.create_node(date_node.clone()).await.unwrap();
 
-        // Create children with origin_node_id pointing to the date
+        // Create children with container_node_id pointing to the date
         let child1 = Node::new_with_root(
             "text".to_string(),
             "Child 1".to_string(),
@@ -2264,15 +2328,15 @@ mod tests {
         );
         service.create_node(other_child).await.unwrap();
 
-        // Bulk fetch should return only the 3 children with origin_node_id = "2025-10-05"
+        // Bulk fetch should return only the 3 children with container_node_id = "2025-10-05"
         let nodes = service.get_nodes_by_origin_id("2025-10-05").await.unwrap();
 
         assert_eq!(nodes.len(), 3, "Should return exactly 3 nodes");
         assert!(
             nodes
                 .iter()
-                .all(|n| n.origin_node_id == Some("2025-10-05".to_string())),
-            "All nodes should have origin_node_id = '2025-10-05'"
+                .all(|n| n.container_node_id == Some("2025-10-05".to_string())),
+            "All nodes should have container_node_id = '2025-10-05'"
         );
 
         // Verify it returns different node types
@@ -2450,5 +2514,75 @@ mod tests {
         assert_eq!(node2.mentions[0], id1);
         assert_eq!(node2.mentioned_by.len(), 1);
         assert_eq!(node2.mentioned_by[0], id1);
+    }
+
+    #[tokio::test]
+    async fn test_create_mention_persists_correctly() {
+        let (service, _temp) = create_test_service().await;
+
+        // Create two nodes
+        let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
+        let node2 = Node::new("text".to_string(), "Node 2".to_string(), None, json!({}));
+
+        let id1 = service.create_node(node1).await.unwrap();
+        let id2 = service.create_node(node2).await.unwrap();
+
+        // Create mention using the new create_mention() method
+        service.create_mention(&id1, &id2).await.unwrap();
+
+        // Verify the mention persists by checking the node_mentions table
+        // We can verify this by getting the mentions for node1
+        let mentions = service.get_mentions(&id1).await.unwrap();
+        assert_eq!(mentions.len(), 1, "Node 1 should have exactly one mention");
+        assert_eq!(mentions[0], id2, "Node 1 should mention Node 2");
+
+        // Verify bidirectional relationship - check mentioned_by for node2
+        let mentioned_by = service.get_mentioned_by(&id2).await.unwrap();
+        assert_eq!(
+            mentioned_by.len(),
+            1,
+            "Node 2 should be mentioned by exactly one node"
+        );
+        assert_eq!(mentioned_by[0], id1, "Node 2 should be mentioned by Node 1");
+
+        // Verify idempotency - calling create_mention again should not error
+        service.create_mention(&id1, &id2).await.unwrap();
+        let mentions = service.get_mentions(&id1).await.unwrap();
+        assert_eq!(
+            mentions.len(),
+            1,
+            "Should still have only one mention (INSERT OR IGNORE)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_mention_validates_nodes_exist() {
+        let (service, _temp) = create_test_service().await;
+
+        // Create only one node
+        let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
+        let id1 = service.create_node(node1).await.unwrap();
+
+        // Try to create mention to non-existent node
+        let result = service.create_mention(&id1, "nonexistent-id").await;
+        assert!(
+            result.is_err(),
+            "Should error when mentioned node doesn't exist"
+        );
+        assert!(
+            matches!(result.unwrap_err(), NodeServiceError::NodeNotFound { .. }),
+            "Should return NodeNotFound error"
+        );
+
+        // Try to create mention from non-existent node
+        let result = service.create_mention("nonexistent-id", &id1).await;
+        assert!(
+            result.is_err(),
+            "Should error when mentioning node doesn't exist"
+        );
+        assert!(
+            matches!(result.unwrap_err(), NodeServiceError::NodeNotFound { .. }),
+            "Should return NodeNotFound error"
+        );
     }
 }

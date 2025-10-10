@@ -72,7 +72,7 @@ pub enum ValidationError {
 /// - `node_type`: Type identifier (e.g., "text", "task", "person", "date", "schema")
 /// - `content`: Primary content/text of the node
 /// - `parent_id`: Optional reference to parent node (creation context)
-/// - `origin_node_id`: Optional reference to root document (NULL means this node IS root)
+/// - `container_node_id`: Optional reference to container node (NULL means this node IS a container)
 /// - `before_sibling_id`: Optional reference for sibling ordering
 /// - `created_at`: Timestamp when node was created
 /// - `modified_at`: Timestamp when node was last modified
@@ -129,8 +129,8 @@ pub struct Node {
     /// Parent node ID (creation context, not ownership)
     pub parent_id: Option<String>,
 
-    /// Root document ID (NULL means this node IS root/page)
-    pub origin_node_id: Option<String>,
+    /// Container node ID (NULL means this node IS a container/root)
+    pub container_node_id: Option<String>,
 
     /// Sibling ordering reference (single-pointer linked list)
     pub before_sibling_id: Option<String>,
@@ -174,11 +174,11 @@ impl Node {
     /// * `parent_id` - Optional parent node reference (creation context)
     /// * `properties` - JSON object with entity-specific fields
     ///
-    /// # Note on `origin_node_id`
+    /// # Note on `container_node_id`
     ///
-    /// This constructor sets `origin_node_id = parent_id`, which is correct for:
-    /// - Root nodes: `parent_id = None` → `origin_node_id = None` (node IS root)
-    /// - Direct children of root: `parent_id = Some(root)` → `origin_node_id = Some(root)`
+    /// This constructor sets `container_node_id = parent_id`, which is correct for:
+    /// - Root nodes: `parent_id = None` → `container_node_id = None` (node IS root)
+    /// - Direct children of root: `parent_id = Some(root)` → `container_node_id = Some(root)`
     ///
     /// For nested hierarchies (child of child), you should use `new_with_root()`
     /// to explicitly specify the root document ID.
@@ -213,17 +213,17 @@ impl Node {
         let now = Utc::now();
         let id = Uuid::new_v4().to_string();
 
-        // IMPORTANT: origin_node_id defaults to parent_id for simple hierarchies.
+        // IMPORTANT: container_node_id defaults to parent_id for simple hierarchies.
         // This is correct for root nodes and direct children of root.
         // For nested hierarchies, use new_with_root() instead.
-        let origin_node_id = parent_id.clone();
+        let container_node_id = parent_id.clone();
 
         Self {
             id,
             node_type,
             content,
             parent_id,
-            origin_node_id,
+            container_node_id,
             before_sibling_id: None,
             created_at: now,
             modified_at: now,
@@ -234,7 +234,7 @@ impl Node {
         }
     }
 
-    /// Create a new Node with auto-generated UUID and explicit origin_node_id
+    /// Create a new Node with auto-generated UUID and explicit container_node_id
     ///
     /// Use this constructor for nested hierarchies where the root document
     /// is different from the immediate parent.
@@ -244,7 +244,7 @@ impl Node {
     /// * `node_type` - Type identifier (e.g., "text", "task")
     /// * `content` - Primary content/text
     /// * `parent_id` - Optional parent node reference (creation context)
-    /// * `origin_node_id` - Optional root document reference (NULL = this node IS root)
+    /// * `container_node_id` - Optional root document reference (NULL = this node IS root)
     /// * `properties` - JSON object with entity-specific fields
     ///
     /// # Examples
@@ -253,14 +253,14 @@ impl Node {
     /// # use nodespace_core::models::Node;
     /// # use serde_json::json;
     /// // Create nested hierarchy: root -> child -> grandchild
-    /// let origin_node_id = "root-uuid".to_string();
+    /// let container_node_id = "root-uuid".to_string();
     /// let child_id = "child-uuid".to_string();
     ///
     /// let grandchild = Node::new_with_root(
     ///     "text".to_string(),
     ///     "Grandchild content".to_string(),
     ///     Some(child_id),           // Parent is the child
-    ///     Some(origin_node_id.clone()),    // Root is the root document
+    ///     Some(container_node_id.clone()),    // Root is the root document
     ///     json!({}),
     /// );
     /// ```
@@ -268,7 +268,7 @@ impl Node {
         node_type: String,
         content: String,
         parent_id: Option<String>,
-        origin_node_id: Option<String>,
+        container_node_id: Option<String>,
         properties: serde_json::Value,
     ) -> Self {
         let now = Utc::now();
@@ -279,7 +279,7 @@ impl Node {
             node_type,
             content,
             parent_id,
-            origin_node_id,
+            container_node_id,
             before_sibling_id: None,
             created_at: now,
             modified_at: now,
@@ -300,9 +300,9 @@ impl Node {
     /// * `parent_id` - Optional parent node reference
     /// * `properties` - JSON object with entity-specific fields
     ///
-    /// # Note on `origin_node_id`
+    /// # Note on `container_node_id`
     ///
-    /// Like `new()`, this sets `origin_node_id = parent_id`. For explicit origin_node_id
+    /// Like `new()`, this sets `container_node_id = parent_id`. For explicit container_node_id
     /// control, construct the Node directly using struct initialization.
     ///
     /// # Examples
@@ -326,14 +326,14 @@ impl Node {
         properties: serde_json::Value,
     ) -> Self {
         let now = Utc::now();
-        let origin_node_id = parent_id.clone();
+        let container_node_id = parent_id.clone();
 
         Self {
             id,
             node_type,
             content,
             parent_id,
-            origin_node_id,
+            container_node_id,
             before_sibling_id: None,
             created_at: now,
             modified_at: now,
@@ -396,8 +396,8 @@ impl Node {
             }
         }
 
-        if let Some(origin_node_id) = &self.origin_node_id {
-            if origin_node_id == &self.id {
+        if let Some(container_node_id) = &self.container_node_id {
+            if container_node_id == &self.id {
                 return Err(ValidationError::InvalidRoot(
                     "Node cannot be its own root".to_string(),
                 ));
@@ -415,7 +415,7 @@ impl Node {
         Ok(())
     }
 
-    /// Check if this node is a root node (no parent or origin_node_id is None)
+    /// Check if this node is a root node (no parent or container_node_id is None)
     ///
     /// # Examples
     ///
@@ -434,7 +434,7 @@ impl Node {
     /// assert!(!child.is_root());
     /// ```
     pub fn is_root(&self) -> bool {
-        self.origin_node_id.is_none()
+        self.container_node_id.is_none()
     }
 
     /// Update the node's content
@@ -474,7 +474,7 @@ impl Node {
 ///
 /// # Double-Option Pattern for Nullable Fields
 ///
-/// Fields like `parent_id`, `origin_node_id`, `before_sibling_id`, and `embedding_vector`
+/// Fields like `parent_id`, `container_node_id`, `before_sibling_id`, and `embedding_vector`
 /// use a double-`Option` pattern to distinguish between three states:
 ///
 /// - `None`: Don't change this field (omit from update)
@@ -533,11 +533,11 @@ pub struct NodeUpdate {
     /// Update root reference
     ///
     /// Uses double-Option pattern:
-    /// - `None`: Don't change origin_node_id
-    /// - `Some(None)`: Set origin_node_id to NULL (this node becomes root)
-    /// - `Some(Some(id))`: Set origin_node_id to the specified ID
+    /// - `None`: Don't change container_node_id
+    /// - `Some(None)`: Set container_node_id to NULL (this node becomes root)
+    /// - `Some(Some(id))`: Set container_node_id to the specified ID
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub origin_node_id: Option<Option<String>>,
+    pub container_node_id: Option<Option<String>>,
 
     /// Update sibling ordering
     ///
@@ -591,7 +591,7 @@ impl NodeUpdate {
         self.node_type.is_none()
             && self.content.is_none()
             && self.parent_id.is_none()
-            && self.origin_node_id.is_none()
+            && self.container_node_id.is_none()
             && self.before_sibling_id.is_none()
             && self.properties.is_none()
             && self.embedding_vector.is_none()
@@ -901,7 +901,7 @@ pub struct NodeFilter {
 
     /// Filter by root ID
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub origin_node_id: Option<String>,
+    pub container_node_id: Option<String>,
 
     /// Filter by specific IDs
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -967,8 +967,8 @@ impl NodeFilter {
     }
 
     /// Filter by root ID
-    pub fn with_origin_node_id(mut self, origin_node_id: String) -> Self {
-        self.origin_node_id = Some(origin_node_id);
+    pub fn with_container_node_id(mut self, container_node_id: String) -> Self {
+        self.container_node_id = Some(container_node_id);
         self
     }
 
@@ -1144,8 +1144,8 @@ mod tests {
     #[test]
     fn test_node_validation_circular_root() {
         let mut node = Node::new("text".to_string(), "Test".to_string(), None, json!({}));
-        // Set origin_node_id to self (circular reference)
-        node.origin_node_id = Some(node.id.clone());
+        // Set container_node_id to self (circular reference)
+        node.container_node_id = Some(node.id.clone());
 
         assert!(matches!(
             node.validate(),
@@ -1181,19 +1181,19 @@ mod tests {
 
     #[test]
     fn test_node_new_with_root() {
-        let origin_node_id = "root-123".to_string();
+        let container_node_id = "root-123".to_string();
         let parent_id = "parent-456".to_string();
 
         let node = Node::new_with_root(
             "text".to_string(),
             "Grandchild".to_string(),
             Some(parent_id.clone()),
-            Some(origin_node_id.clone()),
+            Some(container_node_id.clone()),
             json!({}),
         );
 
         assert_eq!(node.parent_id, Some(parent_id));
-        assert_eq!(node.origin_node_id, Some(origin_node_id));
+        assert_eq!(node.container_node_id, Some(container_node_id));
         assert!(!node.is_root());
     }
 

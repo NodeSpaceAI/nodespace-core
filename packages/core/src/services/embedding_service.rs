@@ -258,7 +258,7 @@ impl TopicEmbeddingService {
         let mut stmt = conn
             .prepare(
                 "SELECT
-                n.id, n.node_type, n.content, n.parent_id, n.origin_node_id,
+                n.id, n.node_type, n.content, n.parent_id, n.container_node_id,
                 n.before_sibling_id, n.created_at, n.modified_at, n.properties,
                 n.embedding_vector, vt.distance
              FROM vector_top_k('idx_nodes_embedding_vector', vector(?), ?) vt
@@ -322,7 +322,7 @@ impl TopicEmbeddingService {
         let mut stmt = conn
             .prepare(
                 "SELECT
-                id, node_type, content, parent_id, origin_node_id,
+                id, node_type, content, parent_id, container_node_id,
                 before_sibling_id, created_at, modified_at, properties,
                 embedding_vector,
                 vector_distance_cosine(embedding_vector, vector(?)) as distance
@@ -668,7 +668,7 @@ impl TopicEmbeddingService {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, node_type, content, parent_id, origin_node_id,
+                "SELECT id, node_type, content, parent_id, container_node_id,
                     before_sibling_id, created_at, modified_at, properties, embedding_vector
              FROM nodes WHERE id = ?",
             )
@@ -704,7 +704,7 @@ impl TopicEmbeddingService {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, node_type, content, parent_id, origin_node_id,
+                "SELECT id, node_type, content, parent_id, container_node_id,
                     before_sibling_id, created_at, modified_at, properties, embedding_vector
              FROM nodes WHERE parent_id = ?
              ORDER BY created_at ASC",
@@ -745,8 +745,8 @@ impl TopicEmbeddingService {
         let parent_id: Option<String> = row.get(3).map_err(|e| {
             NodeServiceError::QueryFailed(format!("Failed to get parent_id: {}", e))
         })?;
-        let origin_node_id: Option<String> = row.get(4).map_err(|e| {
-            NodeServiceError::QueryFailed(format!("Failed to get origin_node_id: {}", e))
+        let container_node_id: Option<String> = row.get(4).map_err(|e| {
+            NodeServiceError::QueryFailed(format!("Failed to get container_node_id: {}", e))
         })?;
         let before_sibling_id: Option<String> = row.get(5).map_err(|e| {
             NodeServiceError::QueryFailed(format!("Failed to get before_sibling_id: {}", e))
@@ -779,7 +779,7 @@ impl TopicEmbeddingService {
             node_type,
             content,
             parent_id,
-            origin_node_id,
+            container_node_id,
             before_sibling_id,
             created_at,
             modified_at,

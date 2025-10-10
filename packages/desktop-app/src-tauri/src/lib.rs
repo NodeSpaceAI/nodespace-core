@@ -78,6 +78,8 @@ pub fn run() {
             commands::embeddings::batch_generate_embeddings,
             commands::models::ensure_models_installed,
             commands::nodes::create_node,
+            commands::nodes::create_container_node,
+            commands::nodes::create_node_mention,
             commands::nodes::get_node,
             commands::nodes::update_node,
             commands::nodes::delete_node,

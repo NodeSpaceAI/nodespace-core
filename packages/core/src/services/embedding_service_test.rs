@@ -46,14 +46,14 @@ mod tests {
 
         let conn = db.connect_with_timeout().await?;
         conn.execute(
-            "INSERT INTO nodes (id, node_type, content, parent_id, origin_node_id, properties)
+            "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, properties)
              VALUES (?, ?, ?, ?, ?, ?)",
             libsql::params![
                 node.id.clone(),
                 node.node_type.clone(),
                 node.content.clone(),
                 node.parent_id.clone(),
-                node.origin_node_id.clone(),
+                node.container_node_id.clone(),
                 node.properties.to_string()
             ],
         )

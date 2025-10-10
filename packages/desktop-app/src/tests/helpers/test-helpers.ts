@@ -91,7 +91,7 @@ export function createTestNode(
       nodeType: options.nodeType || 'text',
       content: options.content ?? 'Test content',
       parentId: options.parentId ?? null,
-      originNodeId: options.originNodeId ?? options.parentId ?? null,
+      containerNodeId: options.containerNodeId ?? options.parentId ?? null,
       beforeSiblingId: options.beforeSiblingId ?? null,
       createdAt: options.createdAt || now,
       modifiedAt: options.modifiedAt || now,
@@ -111,7 +111,7 @@ export function createTestNode(
     nodeType: nodeType || 'text',
     content: content ?? 'Test content',
     parentId: parentId ?? null,
-    originNodeId: parentId ?? null,
+    containerNodeId: parentId ?? null,
     beforeSiblingId: null,
     createdAt: now,
     modifiedAt: now,
@@ -174,7 +174,7 @@ export function createDocumentNode(content: string): Node {
  * @param parentId - Parent node ID
  * @param content - Child node content
  * @param overrides - Additional properties to override
- * @returns Child node with proper parentId and originNodeId
+ * @returns Child node with proper parentId and containerNodeId
  *
  * @example
  * ```typescript
@@ -189,7 +189,7 @@ export function createNodeWithParent(
 ): Node {
   return createTestNode({
     parentId,
-    originNodeId: parentId,
+    containerNodeId: parentId,
     content,
     ...overrides
   });
@@ -224,7 +224,7 @@ export function createTestNodeTree(depth: number, breadth: number): Node[] {
         id,
         content: `Node ${id} (depth ${currentDepth})`,
         parentId,
-        originNodeId: parentId ?? null
+        containerNodeId: parentId ?? null
       });
       nodes.push(node);
 

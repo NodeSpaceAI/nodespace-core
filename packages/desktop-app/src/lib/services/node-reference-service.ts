@@ -712,7 +712,7 @@ export class NodeReferenceService {
         nodeType: nodeType,
         content: content,
         parentId: null, // Root node
-        originNodeId: nodeId,
+        containerNodeId: nodeId,
         beforeSiblingId: null,
         mentions: [],
         properties: {
