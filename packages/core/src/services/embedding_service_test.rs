@@ -18,7 +18,8 @@ mod tests {
     use tempfile::TempDir;
 
     /// Helper to create test services
-    async fn create_test_services() -> (Arc<DatabaseService>, Arc<TopicEmbeddingService>) {
+    /// Returns (db, service, _temp_dir) - temp_dir must be kept alive for test duration
+    async fn create_test_services() -> (Arc<DatabaseService>, Arc<TopicEmbeddingService>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
 
@@ -33,7 +34,7 @@ mod tests {
             Arc::clone(&db_service),
         ));
 
-        (db_service, embedding_service)
+        (db_service, embedding_service, temp_dir)
     }
 
     /// Helper to create a test topic node
@@ -64,7 +65,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_token_estimation() {
-        let (_db, service) = create_test_services().await;
+        let (_db, service, _temp_dir) = create_test_services().await;
 
         // 1 token ≈ 4 characters
         assert_eq!(service.estimate_tokens("test"), 1);
@@ -76,7 +77,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_chunking_strategy_small() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         // Create topic with < 512 tokens (< 2048 chars)
         let small_content = "This is a small topic.".to_string();
@@ -105,7 +106,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_chunking_strategy_medium() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         // Create topic with 512-2048 tokens (2048-8192 chars)
         let medium_content = "x".repeat(3000); // ~750 tokens
@@ -134,7 +135,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_chunking_strategy_large() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         // Create topic with > 2048 tokens (> 8192 chars)
         let large_content = "y".repeat(10000); // ~2500 tokens
@@ -163,7 +164,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_simple_summarize() {
-        let (_db, service) = create_test_services().await;
+        let (_db, service, _temp_dir) = create_test_services().await;
 
         // Short content - no truncation
         let short = "Hello world";
@@ -180,7 +181,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_re_embed_topic() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         let content = "Original content".to_string();
         let topic_id = create_test_topic(&db, content).await.unwrap();
@@ -227,7 +228,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_stale_flag_marking() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         let content = "Test content".to_string();
         let topic_id = create_test_topic(&db, content).await.unwrap();
@@ -276,7 +277,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_embedding_storage_format() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         let content = "Test embedding storage".to_string();
         let topic_id = create_test_topic(&db, content).await.unwrap();
@@ -304,7 +305,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_performance_embedding_time() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         let content = "Performance test content".repeat(100);
         let topic_id = create_test_topic(&db, content).await.unwrap();
@@ -324,7 +325,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_batch_embedding_multiple_topics() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         // Create multiple topics
         let topic1_id = create_test_topic(&db, "Topic 1 content".to_string())
@@ -359,7 +360,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_error_handling_missing_topic() {
-        let (_db, service) = create_test_services().await;
+        let (_db, service, _temp_dir) = create_test_services().await;
 
         // Try to embed non-existent topic
         let result = service.embed_topic("non-existent-id").await;
@@ -369,7 +370,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Performance test: creates 10k+ nodes. Run with: cargo test -- --ignored"]
     async fn test_vector_search_performance_10k_nodes() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         // 1. Create 10,000 topic nodes with embeddings
         println!("Creating 10,000 topic nodes...");
