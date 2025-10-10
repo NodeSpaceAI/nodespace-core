@@ -83,8 +83,17 @@
     return { x, y, showBelow };
   }
 
-  // Smart position calculation
-  $: smartPosition = getSmartPosition(position);
+  // Store initial position to prevent movement while typing
+  let initialPosition: { x: number; y: number; showBelow: boolean } | null = null;
+
+  // Smart position calculation - only calculate once when modal first appears
+  $: if (visible && !initialPosition) {
+    initialPosition = getSmartPosition(position);
+  } else if (!visible) {
+    initialPosition = null;
+  }
+
+  $: smartPosition = initialPosition || getSmartPosition(position);
 
   function scrollToSelected() {
     const selectedItem = itemRefs[selectedIndex];
@@ -184,18 +193,41 @@
         <span>Searching nodes...</span>
       </div>
     {:else if results.length === 0}
-      <div style="padding: 2rem; text-align: center; color: hsl(var(--muted-foreground));">
-        {#if query}
-          <div style="margin-bottom: 0.5rem; font-weight: 500;">No nodes found matching</div>
-          <code
-            style="background: hsl(var(--input)); color: hsl(var(--foreground)); padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.75rem;"
-            >{query}</code
-          >
-        {:else}
-          <div style="font-weight: 500; margin-bottom: 0.25rem;">No nodes available</div>
-          <div style="font-size: 0.875rem;">Start typing to search</div>
-        {/if}
-      </div>
+      <!-- Always show "Create new" option when no results, never show "No nodes found" -->
+      {#if query}
+        <div
+          style="padding: 0.75rem; cursor: pointer; color: hsl(var(--foreground)); background: hsl(var(--muted) / 0.5); font-weight: 600; border-radius: var(--radius); text-align: center;"
+          role="button"
+          tabindex="0"
+          on:mousedown={(e) => {
+            e.preventDefault();
+            onselect?.({ id: 'new', title: query, type: 'text' });
+          }}
+          on:keydown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onselect?.({ id: 'new', title: query, type: 'text' });
+            }
+          }}
+          on:mouseover={(e) => {
+            e.currentTarget.style.background = 'hsl(var(--muted))';
+          }}
+          on:mouseout={(e) => {
+            e.currentTarget.style.background = 'hsl(var(--muted) / 0.5)';
+          }}
+          on:blur={(e) => {
+            e.currentTarget.style.background = 'hsl(var(--muted) / 0.5)';
+          }}
+          on:focus
+        >
+          + Create new "{query.length > 30 ? query.substring(0, 30) + '...' : query}" node
+        </div>
+      {:else}
+        <div style="padding: 2rem; text-align: center; color: hsl(var(--muted-foreground));">
+          <div style="font-weight: 500; margin-bottom: 0.25rem;">Start typing to search</div>
+          <div style="font-size: 0.875rem;">Type @ followed by a node name</div>
+        </div>
+      {/if}
     {:else}
       {#each results as result, index}
         <div
@@ -215,7 +247,10 @@
           role="option"
           aria-selected={selectedIndex === index}
           tabindex={selectedIndex === index ? 0 : -1}
-          on:click={() => selectResult(result)}
+          on:mousedown={(e) => {
+            e.preventDefault(); // Prevent blur on contenteditable
+            selectResult(result);
+          }}
           on:mouseover={() => (selectedIndex = index)}
           on:mouseenter={() => {
             if (selectedIndex !== index) {
@@ -248,6 +283,37 @@
           </div>
         </div>
       {/each}
+
+      <!-- Always show "Create new" option at the bottom when there's a query -->
+      {#if query}
+        <div
+          style="padding: 0.75rem; cursor: pointer; color: hsl(var(--foreground)); background: hsl(var(--muted) / 0.5); font-weight: 600; border-top: 1px solid hsl(var(--border)); border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius); text-align: center;"
+          role="button"
+          tabindex="0"
+          on:mousedown={(e) => {
+            e.preventDefault();
+            onselect?.({ id: 'new', title: query, type: 'text' });
+          }}
+          on:keydown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onselect?.({ id: 'new', title: query, type: 'text' });
+            }
+          }}
+          on:mouseover={(e) => {
+            e.currentTarget.style.background = 'hsl(var(--muted))';
+          }}
+          on:mouseout={(e) => {
+            e.currentTarget.style.background = 'hsl(var(--muted) / 0.5)';
+          }}
+          on:blur={(e) => {
+            e.currentTarget.style.background = 'hsl(var(--muted) / 0.5)';
+          }}
+          on:focus
+        >
+          + Create new "{query.length > 30 ? query.substring(0, 30) + '...' : query}" node
+        </div>
+      {/if}
     {/if}
   </div>
 {/if}

@@ -190,16 +190,8 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
         expect(screen.getByRole('listbox')).toBeInTheDocument();
       });
 
-      // But should show "No nodes found matching" message
-      const options = screen.queryAllByRole('option');
-      if (options.length === 0) {
-        // Empty state - no options, should show message
-        expect(screen.getByText(/no nodes found/i)).toBeInTheDocument();
-      } else {
-        // Or a single "no results" message option
-        expect(options.length).toBe(1);
-        expect(options[0]).toHaveTextContent(/no nodes found/i);
-      }
+      // Should show "Create new" option instead of "No nodes found"
+      expect(screen.getByText(/create new "zzzznonexistent999" node/i)).toBeInTheDocument();
     });
   });
 
