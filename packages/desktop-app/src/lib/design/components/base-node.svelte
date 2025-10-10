@@ -279,13 +279,13 @@
       const lastRootNode = rootNodes[rootNodes.length - 1];
       const beforeSiblingId = lastRootNode ? lastRootNode.id : null;
 
-      // Create node directly in database with null parent_id and origin_node_id
+      // Create node directly in database with null parent_id and container_node_id
       await invoke('create_node', {
         id: newNodeId,
         content: title,
         node_type: 'text',
         parent_id: null,
-        origin_node_id: null,
+        container_node_id: null,
         before_sibling_id: beforeSiblingId,
         properties: {},
         embedding_vector: null
