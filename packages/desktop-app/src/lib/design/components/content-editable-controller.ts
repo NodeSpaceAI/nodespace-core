@@ -533,11 +533,23 @@ export class ContentEditableController {
    * Keeps all visual styling but hides the raw markdown syntax
    */
   private markdownToDisplayHtml(content: string): string {
+    // First, convert markdown links to HTML
+    // Match [text](url) pattern
+    let processedContent = content.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) => {
+      // For nodespace:// links, add special class and data attribute
+      if (url.startsWith('nodespace://')) {
+        const nodeId = url.replace('nodespace://', '');
+        return `<a href="${url}" class="node-reference" data-node-id="${nodeId}" contenteditable="false">${linkText}</a>`;
+      }
+      // For regular links
+      return `<a href="${url}" contenteditable="false">${linkText}</a>`;
+    });
+
     // Find all formatting patterns including mixed syntax
-    const patterns = this.findAllFormattingPatterns(content);
+    const patterns = this.findAllFormattingPatterns(processedContent);
 
     if (patterns.length === 0) {
-      return content; // No formatting patterns found
+      return processedContent; // No formatting patterns found
     }
 
     let result = '';
@@ -548,7 +560,7 @@ export class ContentEditableController {
       const { start, end, content: innerContent, type } = pattern;
 
       // Add any text before this pattern
-      result += content.substring(lastIndex, start);
+      result += processedContent.substring(lastIndex, start);
 
       // Build CSS class based on formatting type
       let cssClass = '';
@@ -571,7 +583,7 @@ export class ContentEditableController {
     });
 
     // Add any remaining text after the last pattern
-    result += content.substring(lastIndex);
+    result += processedContent.substring(lastIndex);
 
     return result;
   }
@@ -3379,12 +3391,12 @@ export class ContentEditableController {
     // Extract query text between @ and cursor
     const queryText = content.substring(lastAtIndex + 1, cursorPosition);
 
-    // Validate query (no spaces, reasonable length)
-    if (queryText.includes(' ') || queryText.includes('\n')) {
-      return null; // Query contains invalid characters
+    // Validate query (allow spaces, only reject newlines, reasonable length)
+    if (queryText.includes('\n')) {
+      return null; // Query contains newlines
     }
 
-    if (queryText.length > 50) {
+    if (queryText.length > 100) {
       return null; // Query too long
     }
 
@@ -3443,9 +3455,8 @@ export class ContentEditableController {
    * Insert node reference at current cursor position
    */
   public insertNodeReference(nodeId: string, nodeTitle: string): void {
-    // Allow insertion even when not actively editing since this is programmatic
-    // Temporarily switch to editing mode for the insertion
     const wasEditing = this.isEditing;
+
     if (!wasEditing) {
       this.isEditing = true;
       this.setRawMarkdown(this.originalContent || this.element.textContent || '');
@@ -3459,9 +3470,7 @@ export class ContentEditableController {
     const currentContent = this.element.textContent || '';
     const cursorPosition = this.getCurrentColumn();
 
-    // Find the @ trigger that initiated this
     const triggerContext = this.detectTrigger(currentContent, cursorPosition);
-
     if (!triggerContext) {
       return;
     }
@@ -3486,12 +3495,10 @@ export class ContentEditableController {
     this.events.contentChanged(newContent);
     this.events.nodeReferenceSelected({ nodeId, nodeTitle });
 
-    // Restore original editing state
-    if (!wasEditing) {
-      this.isEditing = false;
-      // Switch back to formatted display mode
-      this.setFormattedContent(newContent);
-    }
+    // Always switch to formatted mode to render the link
+    // This allows the markdown link to be displayed as a clickable element
+    this.isEditing = false;
+    this.setFormattedContent(newContent);
   }
 
   // ============================================================================

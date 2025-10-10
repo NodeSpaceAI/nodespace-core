@@ -36,6 +36,7 @@
   } from '$lib/services/slash-command-service';
   import type { TriggerContext } from '$lib/services/node-reference-service';
   import { getIconConfig, resolveNodeState, type NodeType } from '$lib/design/icons/registry';
+  import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
 
   // Props (Svelte 5 runes syntax) - nodeReferenceService removed
   let {
@@ -58,10 +59,13 @@
     metadata?: Record<string, unknown>;
   } = $props();
 
-  // Services temporarily disabled during refactoring
+  // Get services from context
   // In test environment, enable mock service to allow autocomplete testing
-  // In production, service remains null until real implementation is ready
-  let nodeReferenceService = $state(import.meta.env.VITEST ? ({} as Record<string, never>) : null);
+  // In production, use real service from context
+  const services = getNodeServices();
+  const nodeReferenceService =
+    services?.nodeReferenceService ||
+    (import.meta.env.VITEST ? ({} as Record<string, never>) : null);
 
   // DOM element and controller - Svelte bind:this assignment
   let contentEditableElement: HTMLDivElement | undefined = undefined;
@@ -81,63 +85,58 @@
   let slashCommands = $state<SlashCommand[]>([]);
   let slashCommandService = SlashCommandService.getInstance();
 
-  // Generate mock autocomplete results based on query
-  // Uses centralized mock data from test fixtures for consistency
-  function generateMockResults(query: string): NodeResult[] {
-    // In test environment, use centralized mock data
-    // In production, this would be replaced with real service calls
-    const mockNodes: NodeResult[] = import.meta.env.VITEST
-      ? [
-          {
-            id: 'mock-node-1',
-            title: 'Welcome to NodeSpace',
-            type: 'text',
-            subtitle: 'Getting started with your knowledge management system',
-            metadata: '2 days ago'
-          },
-          {
-            id: 'mock-node-2',
-            title: 'Project Notes',
-            type: 'document',
-            subtitle: 'Comprehensive project documentation and meeting notes',
-            metadata: '1 week ago'
-          },
-          {
-            id: 'mock-node-3',
-            title: 'Task List',
-            type: 'task',
-            subtitle: 'Important tasks and action items for the current sprint',
-            metadata: '3 days ago'
-          },
-          {
-            id: 'mock-node-4',
-            title: 'AI Research Chat',
-            type: 'ai-chat',
-            subtitle: 'Conversation about machine learning and AI development',
-            metadata: '5 days ago'
-          },
-          {
-            id: 'mock-node-5',
-            title: 'User Research Findings',
-            type: 'user',
-            subtitle: 'Key insights from user interviews and usability testing',
-            metadata: '1 week ago'
-          },
-          {
-            id: 'mock-node-6',
-            title: 'Search Query Examples',
-            type: 'query',
-            subtitle: 'Commonly used search patterns and filters',
-            metadata: '4 days ago'
-          }
-        ]
-      : [];
+  // Generate mock autocomplete results for TEST ENVIRONMENT ONLY
+  // Used only when import.meta.env.VITEST is true
+  function generateMockResultsForTests(query: string): NodeResult[] {
+    const mockNodes: NodeResult[] = [
+      {
+        id: 'mock-node-1',
+        title: 'Welcome to NodeSpace',
+        type: 'text',
+        subtitle: 'Getting started with your knowledge management system',
+        metadata: '2 days ago'
+      },
+      {
+        id: 'mock-node-2',
+        title: 'Project Notes',
+        type: 'document',
+        subtitle: 'Comprehensive project documentation and meeting notes',
+        metadata: '1 week ago'
+      },
+      {
+        id: 'mock-node-3',
+        title: 'Task List',
+        type: 'task',
+        subtitle: 'Important tasks and action items for the current sprint',
+        metadata: '3 days ago'
+      },
+      {
+        id: 'mock-node-4',
+        title: 'AI Research Chat',
+        type: 'ai-chat',
+        subtitle: 'Conversation about machine learning and AI development',
+        metadata: '5 days ago'
+      },
+      {
+        id: 'mock-node-5',
+        title: 'User Research Findings',
+        type: 'user',
+        subtitle: 'Key insights from user interviews and usability testing',
+        metadata: '1 week ago'
+      },
+      {
+        id: 'mock-node-6',
+        title: 'Search Query Examples',
+        type: 'query',
+        subtitle: 'Commonly used search patterns and filters',
+        metadata: '4 days ago'
+      }
+    ];
 
     if (!query.trim()) {
-      return mockNodes.slice(0, 4); // Show top 4 when no query
+      return mockNodes.slice(0, 4);
     }
 
-    // Filter results based on query
     return mockNodes.filter(
       (node) =>
         node.title.toLowerCase().includes(query.toLowerCase()) ||
@@ -148,9 +147,57 @@
   // Reactive effect to update autocomplete results when query changes
   $effect(() => {
     if (showAutocomplete && nodeReferenceService) {
-      autocompleteResults = generateMockResults(currentQuery);
+      // Use real search if services are available
+      if (services?.nodeManager) {
+        performRealSearch(currentQuery);
+      } else {
+        // Fallback to mock results ONLY in test mode when nodeManager is not available
+        autocompleteResults = generateMockResultsForTests(currentQuery);
+      }
     }
   });
+
+  // Perform real search using the node manager
+  async function performRealSearch(query: string) {
+    try {
+      autocompleteLoading = true;
+
+      // Get all nodes from the node manager
+      const allNodes = Array.from(services!.nodeManager.nodes.values());
+
+      // Filter nodes based on query
+      // Only show top-level nodes (originNodeId === null or originNodeId === id)
+      // Exclude date nodes
+      const filtered = allNodes
+        .filter((node) => {
+          // Only top-level nodes (where originNodeId is null or equals the node's own id)
+          const isTopLevel = node.originNodeId === null || node.originNodeId === node.id;
+
+          // Exclude date nodes
+          const isNotDateNode = node.nodeType !== 'date';
+
+          // Match query in title or content
+          const title = node.content.split('\n')[0] || '';
+          const matchesQuery =
+            title.toLowerCase().includes(query.toLowerCase()) ||
+            node.content.toLowerCase().includes(query.toLowerCase());
+
+          return isTopLevel && isNotDateNode && matchesQuery;
+        })
+        .slice(0, 10); // Limit to 10 results
+
+      // Convert to NodeResult format
+      autocompleteResults = filtered.map((node) => ({
+        id: node.id,
+        title: node.content.split('\n')[0] || 'Untitled',
+        type: (node.nodeType || 'text') as NodeType
+      }));
+    } catch {
+      autocompleteResults = [];
+    } finally {
+      autocompleteLoading = false;
+    }
+  }
 
   // Reactive effect to update slash commands when query changes
   $effect(() => {
@@ -160,11 +207,16 @@
   });
 
   // Autocomplete event handlers
-  function handleAutocompleteSelect(result: NodeResult) {
+  async function handleAutocompleteSelect(result: NodeResult) {
     if (controller) {
-      // Insert node reference in markdown link format: [nodeTitle](nodespace://nodeId)
-      // This replaces the @ trigger text with the proper reference format
-      controller.insertNodeReference(result.id, result.title);
+      if (result.id === 'new') {
+        const newNodeId = await createNewNodeFromMention(result.title);
+        if (newNodeId) {
+          controller.insertNodeReference(newNodeId, result.title);
+        }
+      } else {
+        controller.insertNodeReference(result.id, result.title);
+      }
     }
 
     // Hide autocomplete and clear state
@@ -177,6 +229,63 @@
       nodeId: result.id,
       nodeTitle: result.title
     });
+  }
+
+  /**
+   * Creates a new standalone top-level node from an @mention query
+   * Returns the new node ID if successful, null otherwise
+   */
+  async function createNewNodeFromMention(title: string): Promise<string | null> {
+    try {
+      if (!services?.nodeManager) {
+        return null;
+      }
+
+      const nodeManager = services.nodeManager;
+      const { v4: uuidv4 } = await import('uuid');
+      const { invoke } = await import('@tauri-apps/api/core');
+
+      const newNodeId = uuidv4();
+      const now = new Date().toISOString();
+
+      // Find the last root node to get the correct order
+      const allNodes = Array.from(nodeManager.nodes.values());
+      const rootNodes = allNodes.filter(
+        (node) => node.originNodeId === node.id || node.originNodeId === null
+      );
+      const lastRootNode = rootNodes[rootNodes.length - 1];
+      const beforeSiblingId = lastRootNode ? lastRootNode.id : null;
+
+      // Create node directly in database with null parent_id and origin_node_id
+      await invoke('create_node', {
+        id: newNodeId,
+        content: title,
+        node_type: 'text',
+        parent_id: null,
+        origin_node_id: null,
+        before_sibling_id: beforeSiblingId,
+        properties: {},
+        embedding_vector: null
+      });
+
+      // Add the node to the nodeManager's state
+      nodeManager.nodes.set(newNodeId, {
+        id: newNodeId,
+        content: title,
+        nodeType: 'text',
+        parentId: null,
+        originNodeId: null,
+        beforeSiblingId: beforeSiblingId,
+        createdAt: now,
+        modifiedAt: now,
+        properties: {},
+        embeddingVector: null
+      });
+
+      return newNodeId;
+    } catch {
+      return null;
+    }
   }
 
   // Slash command event handlers
@@ -293,7 +402,6 @@
       if (nodeReferenceService) {
         currentQuery = data.triggerContext.query;
         autocompletePosition = data.cursorPosition;
-        autocompleteResults = generateMockResults(currentQuery);
         showAutocomplete = true;
       }
     },
@@ -436,7 +544,6 @@
     showAutocomplete = false;
     currentQuery = '';
 
-    // Return focus to the content editable element
     if (controller) {
       controller.focus();
     }

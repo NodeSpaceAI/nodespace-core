@@ -104,8 +104,8 @@ describe('NodeAutocomplete', () => {
         }
       });
 
-      expect(screen.getByText('No nodes found matching')).toBeInTheDocument();
-      expect(screen.getByText('nonexistent')).toBeInTheDocument();
+      // Should show "Create new" option instead of "No nodes found"
+      expect(screen.getByText(/create new "nonexistent" node/i)).toBeInTheDocument();
     });
 
     it('should render empty state without query', () => {
@@ -119,8 +119,8 @@ describe('NodeAutocomplete', () => {
         }
       });
 
-      expect(screen.getByText('No nodes available')).toBeInTheDocument();
       expect(screen.getByText('Start typing to search')).toBeInTheDocument();
+      expect(screen.getByText(/Type @ followed by a node name/i)).toBeInTheDocument();
     });
 
     it('should render results list', () => {
@@ -773,7 +773,8 @@ describe('NodeAutocomplete', () => {
       await waitForEffects();
 
       expect(screen.queryByText('First Node')).not.toBeInTheDocument();
-      expect(screen.getByText('No nodes found matching')).toBeInTheDocument();
+      // Should show "Create new" option instead of "No nodes found"
+      expect(screen.getByText(/create new "test" node/i)).toBeInTheDocument();
     });
 
     it('should handle various node types', () => {
@@ -814,12 +815,13 @@ describe('NodeAutocomplete', () => {
       const listbox = screen.getByRole('listbox');
       const initialPosition = listbox.style.left;
 
-      // Update position
+      // Position should NOT change while typing (design requirement)
+      // The modal stays fixed at the initial position to prevent jumping
       await result.rerender({ position: { x: 200, y: 150 } });
       await waitForEffects();
 
       const newPosition = listbox.style.left;
-      expect(newPosition).not.toBe(initialPosition);
+      expect(newPosition).toBe(initialPosition); // Position should remain the same
     });
 
     it('should handle rapid keyboard events', async () => {
