@@ -813,9 +813,12 @@ impl NodeService {
                 NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
             })?;
 
-            let mut rows = stmt.query([container_node_id.as_str()]).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
-            })?;
+            let mut rows = stmt
+                .query([container_node_id.as_str()])
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
+                })?;
 
             let mut nodes = Vec::new();
             while let Some(row) = rows
