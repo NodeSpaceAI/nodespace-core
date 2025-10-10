@@ -1,7 +1,10 @@
 //! Database initialization and path management commands
 
+use crate::commands::embeddings::EmbeddingState;
+use nodespace_core::services::TopicEmbeddingService;
 use nodespace_core::{DatabaseService, NodeService};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tokio::fs;
 
@@ -121,15 +124,27 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
         );
     }
 
+    // Initialize database
     let db_service = DatabaseService::new(db_path)
         .await
         .map_err(|e| format!("Failed to initialize database: {}", e))?;
 
+    let db_arc = Arc::new(db_service.clone());
+
+    // Initialize node service
     let node_service = NodeService::new(db_service.clone())
         .map_err(|e| format!("Failed to initialize node service: {}", e))?;
 
+    // Initialize embedding service (creates its own NLP engine internally)
+    let embedding_service = TopicEmbeddingService::new_with_defaults(db_arc)
+        .map_err(|e| format!("Failed to initialize embedding service: {}", e))?;
+
+    // Manage all services
     app.manage(db_service);
     app.manage(node_service);
+    app.manage(EmbeddingState {
+        service: Arc::new(embedding_service),
+    });
 
     Ok(())
 }

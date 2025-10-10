@@ -15,6 +15,7 @@
 //! `/docs/architecture/business-logic/database-schema.md`
 
 use crate::db::error::DatabaseError;
+use crate::services::EMBEDDING_DIMENSION;
 use libsql::{Builder, Database};
 use serde_json::json;
 use std::path::PathBuf;
@@ -162,24 +163,27 @@ impl DatabaseService {
 
         // Create nodes table (Pure JSON schema)
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS nodes (
-                id TEXT PRIMARY KEY,
-                node_type TEXT NOT NULL,
-                content TEXT NOT NULL,
-                parent_id TEXT,
-                origin_node_id TEXT,
-                before_sibling_id TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                modified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                properties JSON NOT NULL DEFAULT '{}',
-                embedding_vector BLOB,
-                -- Parent deletion cascades to children (tree structure)
-                FOREIGN KEY (parent_id) REFERENCES nodes(id) ON DELETE CASCADE,
-                -- Origin deletion cascades to mirror/template instances (instances depend on origin)
-                FOREIGN KEY (origin_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
-                -- Sibling deletion nulls the reference (maintain chain integrity)
-                FOREIGN KEY (before_sibling_id) REFERENCES nodes(id) ON DELETE SET NULL
-            )",
+            &format!(
+                "CREATE TABLE IF NOT EXISTS nodes (
+                    id TEXT PRIMARY KEY,
+                    node_type TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    parent_id TEXT,
+                    origin_node_id TEXT,
+                    before_sibling_id TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    modified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    properties JSON NOT NULL DEFAULT '{{}}',
+                    embedding_vector F32_BLOB({}),
+                    -- Parent deletion cascades to children (tree structure)
+                    FOREIGN KEY (parent_id) REFERENCES nodes(id) ON DELETE CASCADE,
+                    -- Origin deletion cascades to mirror/template instances (instances depend on origin)
+                    FOREIGN KEY (origin_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+                    -- Sibling deletion nulls the reference (maintain chain integrity)
+                    FOREIGN KEY (before_sibling_id) REFERENCES nodes(id) ON DELETE SET NULL
+                )",
+                EMBEDDING_DIMENSION
+            ),
             (),
         )
         .await
@@ -340,6 +344,20 @@ impl DatabaseService {
         .map_err(|e| {
             DatabaseError::sql_execution(format!(
                 "Failed to create index 'idx_nodes_created': {}",
+                e
+            ))
+        })?;
+
+        // Vector index on embedding_vector (semantic search with DiskANN)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_nodes_embedding_vector
+             ON nodes(libsql_vector_idx(embedding_vector))",
+            (),
+        )
+        .await
+        .map_err(|e| {
+            DatabaseError::sql_execution(format!(
+                "Failed to create vector index 'idx_nodes_embedding_vector': {}",
                 e
             ))
         })?;
@@ -618,8 +636,15 @@ mod tests {
         let row = rows.next().await.unwrap().unwrap();
         let count: i64 = row.get(0).unwrap();
 
-        // Should have exactly 2 tables (nodes, node_mentions)
-        assert_eq!(count, 2);
+        // Should have 4 tables:
+        // - nodes (main table)
+        // - node_mentions (mention relationships)
+        // - libsql_vector_index (created by vector index extension)
+        // - libsql_vector_index_metadata (metadata for vector index)
+        assert_eq!(
+            count, 4,
+            "Expected 4 tables including libsql vector index tables"
+        );
     }
 
     #[tokio::test]
