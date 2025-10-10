@@ -251,7 +251,10 @@ impl DatabaseService {
         )
         .await
         .map_err(|e| {
-            DatabaseError::sql_execution(format!("Failed to create index 'idx_nodes_container': {}", e))
+            DatabaseError::sql_execution(format!(
+                "Failed to create index 'idx_nodes_container': {}",
+                e
+            ))
         })?;
 
         // Index on modified_at (temporal queries)

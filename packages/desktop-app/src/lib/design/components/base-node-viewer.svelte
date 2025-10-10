@@ -640,7 +640,7 @@
               nodeType: 'text',
               content: '',
               parentId: parentId,
-              originNodeId: parentId,
+              containerNodeId: parentId,
               beforeSiblingId: null,
               createdAt: new Date().toISOString(),
               modifiedAt: new Date().toISOString(),
@@ -699,7 +699,7 @@
           content: '', // Empty content for placeholder
           nodeType: parent.nodeType,
           parentId: parent.parentId || parentId!,
-          originNodeId: parent.originNodeId || parentId!,
+          containerNodeId: parent.containerNodeId || parentId!,
           beforeSiblingId: parent.beforeSiblingId
         })
       );
@@ -723,7 +723,7 @@
           content,
           nodeType: nodeType,
           parentId: node?.parentId || parentId!,
-          originNodeId: node?.originNodeId || parentId!,
+          containerNodeId: node?.containerNodeId || parentId!,
           beforeSiblingId: node?.beforeSiblingId
         })
       );
@@ -755,7 +755,7 @@
             content,
             nodeType: nodeType,
             parentId: node?.parentId || parentId!,
-            originNodeId: node?.originNodeId || parentId!,
+            containerNodeId: node?.containerNodeId || parentId!,
             beforeSiblingId: node?.beforeSiblingId
           })
         );
@@ -802,7 +802,7 @@
           content: node.content,
           nodeType: node.nodeType,
           parentId: node.parentId || parentId,
-          originNodeId: node.originNodeId || parentId,
+          containerNodeId: node.containerNodeId || parentId,
           beforeSiblingId: node.beforeSiblingId
         })
       );

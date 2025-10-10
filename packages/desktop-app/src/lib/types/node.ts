@@ -37,12 +37,12 @@ export interface Node {
   /**
    * Root document ID (NULL means this node IS root/page)
    *
-   * Rule: originNodeId = parentId for direct children of roots
+   * Rule: containerNodeId = parentId for direct children of roots
    * Example:
-   *   Date node: { parentId: null, originNodeId: null }  // IS root
-   *   Child of date: { parentId: "2025-10-04", originNodeId: "2025-10-04" }
+   *   Date node: { parentId: null, containerNodeId: null }  // IS root
+   *   Child of date: { parentId: "2025-10-04", containerNodeId: "2025-10-04" }
    */
-  originNodeId: string | null;
+  containerNodeId: string | null;
 
   /** Sibling ordering reference (single-pointer linked list) */
   beforeSiblingId: string | null;
@@ -91,7 +91,7 @@ export interface NodeUpdate {
   parentId?: string | null;
 
   /** Update root reference */
-  originNodeId?: string | null;
+  containerNodeId?: string | null;
 
   /** Update sibling ordering */
   beforeSiblingId?: string | null;
@@ -147,7 +147,7 @@ export function isNode(obj: unknown): obj is Node {
     typeof node.nodeType === 'string' &&
     typeof node.content === 'string' &&
     (node.parentId === null || typeof node.parentId === 'string') &&
-    (node.originNodeId === null || typeof node.originNodeId === 'string') &&
+    (node.containerNodeId === null || typeof node.containerNodeId === 'string') &&
     (node.beforeSiblingId === null || typeof node.beforeSiblingId === 'string') &&
     typeof node.createdAt === 'string' &&
     typeof node.modifiedAt === 'string' &&

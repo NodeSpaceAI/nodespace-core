@@ -352,7 +352,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (newParentId) {
       const parent = _nodes[newParentId];
       // Inherit origin_node_id from parent, or use parent's id if parent has no origin_node_id
-      rootId = parent?.originNodeId || newParentId;
+      rootId = parent?.containerNodeId || newParentId;
     } else {
       // No parent means this node is the root
       rootId = nodeId;
@@ -364,7 +364,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       nodeType: nodeType,
       content: initialContent,
       parentId: newParentId,
-      originNodeId: rootId,
+      containerNodeId: rootId,
       beforeSiblingId: beforeSiblingId,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),

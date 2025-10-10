@@ -4,6 +4,7 @@ use chrono::Utc;
 use nodespace_core::{Node, NodeQuery, NodeService, NodeServiceError, NodeUpdate};
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use uuid::Uuid;
 
 /// Allowed node types for initial E2E testing
 const ALLOWED_NODE_TYPES: &[&str] = &["text", "task", "date"];
@@ -128,6 +129,115 @@ pub async fn create_node(
     };
 
     service.create_node(full_node).await.map_err(Into::into)
+}
+
+/// Input for creating a container node
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateContainerNodeInput {
+    pub content: String,
+    pub node_type: String,
+    #[serde(default)]
+    pub properties: serde_json::Value,
+    #[serde(default)]
+    pub mentioned_by: Option<String>,
+}
+
+/// Create a new container node (root node with container_node_id = NULL)
+///
+/// Container nodes are root-level nodes that can contain other nodes.
+/// They always have:
+/// - parent_id = NULL
+/// - container_node_id = NULL (they ARE containers)
+/// - before_sibling_id = NULL
+///
+/// # Arguments
+/// * `service` - Node service instance from Tauri state
+/// * `input` - Container node data
+///
+/// # Returns
+/// * `Ok(String)` - ID of the created container node
+/// * `Err(CommandError)` - Error with details if creation fails
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// const nodeId = await invoke('create_container_node', {
+///   input: {
+///     content: 'Project Planning',
+///     nodeType: 'text',
+///     properties: {},
+///     mentionedBy: 'daily-note-id' // Optional: node that mentions this container
+///   }
+/// });
+/// ```
+#[tauri::command]
+pub async fn create_container_node(
+    service: State<'_, NodeService>,
+    input: CreateContainerNodeInput,
+) -> Result<String, CommandError> {
+    validate_node_type(&input.node_type)?;
+
+    let now = Utc::now();
+    let node_id = Uuid::new_v4().to_string();
+
+    let container_node = Node {
+        id: node_id.clone(),
+        node_type: input.node_type,
+        content: input.content,
+        parent_id: None,           // Always null for containers
+        container_node_id: None,   // Always null for containers (they ARE containers)
+        before_sibling_id: None,   // No sibling ordering for root nodes
+        created_at: now,
+        modified_at: now,
+        properties: input.properties,
+        embedding_vector: None,
+        mentions: Vec::new(),      // Will be populated when this node mentions others
+        mentioned_by: Vec::new(),  // Will be computed from node_mentions table
+    };
+
+    service.create_node(container_node).await?;
+
+    // If mentioned_by is provided, create mention relationship
+    if let Some(mentioning_node_id) = input.mentioned_by {
+        service
+            .create_mention(&mentioning_node_id, &node_id)
+            .await?;
+    }
+
+    Ok(node_id)
+}
+
+/// Create a mention relationship between two nodes
+///
+/// Records that one node mentions another in the node_mentions table.
+/// This enables backlink/references functionality.
+///
+/// # Arguments
+/// * `service` - Node service instance from Tauri state
+/// * `mentioning_node_id` - ID of the node that contains the mention
+/// * `mentioned_node_id` - ID of the node being mentioned
+///
+/// # Returns
+/// * `Ok(())` - Mention created successfully
+/// * `Err(CommandError)` - Error if either node doesn't exist or operation fails
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// await invoke('create_node_mention', {
+///   mentioningNodeId: 'daily-note-id',
+///   mentionedNodeId: 'project-planning-id'
+/// });
+/// ```
+#[tauri::command]
+pub async fn create_node_mention(
+    service: State<'_, NodeService>,
+    mentioning_node_id: String,
+    mentioned_node_id: String,
+) -> Result<(), CommandError> {
+    service
+        .create_mention(&mentioning_node_id, &mentioned_node_id)
+        .await
+        .map_err(Into::into)
 }
 
 /// Get a node by ID

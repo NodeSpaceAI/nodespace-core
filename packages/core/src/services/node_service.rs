@@ -194,6 +194,69 @@ impl NodeService {
         Ok(node.id)
     }
 
+    /// Create a mention relationship between two existing nodes
+    ///
+    /// Adds an entry to the node_mentions table to track that one node mentions another.
+    /// This enables backlink/references functionality.
+    ///
+    /// # Arguments
+    ///
+    /// * `mentioning_node_id` - ID of the node that contains the mention
+    /// * `mentioned_node_id` - ID of the node being mentioned
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if successful
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - Either node doesn't exist
+    /// - Database insertion fails
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+    /// # let service = NodeService::new(db)?;
+    /// // Create mention: "daily-note" mentions "project-planning"
+    /// service.create_mention("daily-note-id", "project-planning-id").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn create_mention(
+        &self,
+        mentioning_node_id: &str,
+        mentioned_node_id: &str,
+    ) -> Result<(), NodeServiceError> {
+        // Validate both nodes exist
+        if !self.node_exists(mentioning_node_id).await? {
+            return Err(NodeServiceError::node_not_found(mentioning_node_id));
+        }
+        if !self.node_exists(mentioned_node_id).await? {
+            return Err(NodeServiceError::node_not_found(mentioned_node_id));
+        }
+
+        let conn = self.db.connect()?;
+
+        conn.execute(
+            "INSERT OR IGNORE INTO node_mentions (mentioning_node_id, mentions_node_id)
+             VALUES (?, ?)",
+            (mentioning_node_id, mentioned_node_id),
+        )
+        .await
+        .map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to create mention: {}", e))
+        })?;
+
+        Ok(())
+    }
+
     /// Get a node by ID
     ///
     /// # Arguments
