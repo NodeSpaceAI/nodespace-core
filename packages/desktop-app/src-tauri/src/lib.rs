@@ -74,8 +74,13 @@ pub fn run() {
             commands::embeddings::generate_topic_embedding,
             commands::embeddings::search_topics,
             commands::embeddings::update_topic_embedding,
+            #[allow(deprecated)]
             commands::embeddings::schedule_topic_embedding_update,
             commands::embeddings::batch_generate_embeddings,
+            commands::embeddings::on_topic_closed,
+            commands::embeddings::on_topic_idle,
+            commands::embeddings::sync_embeddings,
+            commands::embeddings::get_stale_topic_count,
             commands::models::ensure_models_installed,
             commands::nodes::create_node,
             commands::nodes::get_node,

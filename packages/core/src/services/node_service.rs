@@ -300,12 +300,16 @@ impl NodeService {
 
         // For simplicity with libsql, we'll fetch the node, apply updates, and replace entirely
         let mut updated = existing.clone();
+        let mut content_changed = false;
 
         if let Some(node_type) = update.node_type {
             updated.node_type = node_type;
         }
 
         if let Some(content) = update.content {
+            if updated.content != content {
+                content_changed = true;
+            }
             updated.content = content;
         }
 
@@ -337,21 +341,40 @@ impl NodeService {
         let properties_json = serde_json::to_string(&updated.properties)
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
-        conn.execute(
-            "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, origin_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ? WHERE id = ?",
-            (
-                updated.node_type.as_str(),
-                updated.content.as_str(),
-                updated.parent_id.as_deref(),
-                updated.origin_node_id.as_deref(),
-                updated.before_sibling_id.as_deref(),
-                properties_json.as_str(),
-                updated.embedding_vector.as_deref(),
-                id,
-            ),
-        )
-        .await
-        .map_err(|e| NodeServiceError::query_failed(format!("Failed to update node: {}", e)))?;
+        // If content changed and this is a topic node, mark as stale
+        if content_changed && updated.node_type == "topic" {
+            conn.execute(
+                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, origin_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ?, embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+                (
+                    updated.node_type.as_str(),
+                    updated.content.as_str(),
+                    updated.parent_id.as_deref(),
+                    updated.origin_node_id.as_deref(),
+                    updated.before_sibling_id.as_deref(),
+                    properties_json.as_str(),
+                    updated.embedding_vector.as_deref(),
+                    id,
+                ),
+            )
+            .await
+            .map_err(|e| NodeServiceError::query_failed(format!("Failed to update node: {}", e)))?;
+        } else {
+            conn.execute(
+                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, origin_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ? WHERE id = ?",
+                (
+                    updated.node_type.as_str(),
+                    updated.content.as_str(),
+                    updated.parent_id.as_deref(),
+                    updated.origin_node_id.as_deref(),
+                    updated.before_sibling_id.as_deref(),
+                    properties_json.as_str(),
+                    updated.embedding_vector.as_deref(),
+                    id,
+                ),
+            )
+            .await
+            .map_err(|e| NodeServiceError::query_failed(format!("Failed to update node: {}", e)))?;
+        }
 
         Ok(())
     }

@@ -175,6 +175,9 @@ impl DatabaseService {
                     modified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     properties JSON NOT NULL DEFAULT '{{}}',
                     embedding_vector F32_BLOB({}),
+                    embedding_stale BOOLEAN DEFAULT FALSE,
+                    last_content_update DATETIME,
+                    last_embedding_update DATETIME,
                     -- Parent deletion cascades to children (tree structure)
                     FOREIGN KEY (parent_id) REFERENCES nodes(id) ON DELETE CASCADE,
                     -- Origin deletion cascades to mirror/template instances (instances depend on origin)
@@ -360,6 +363,16 @@ impl DatabaseService {
                 "Failed to create vector index 'idx_nodes_embedding_vector': {}",
                 e
             ))
+        })?;
+
+        // Index on embedding_stale for efficient stale topic queries
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_nodes_stale ON nodes(embedding_stale, node_type)",
+            (),
+        )
+        .await
+        .map_err(|e| {
+            DatabaseError::sql_execution(format!("Failed to create index 'idx_nodes_stale': {}", e))
         })?;
 
         Ok(())

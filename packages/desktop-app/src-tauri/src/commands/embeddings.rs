@@ -137,11 +137,11 @@ pub async fn search_topics(
     })
 }
 
-/// Update embedding for a topic node (immediate, no debouncing)
+/// Update embedding for a topic node immediately
 ///
 /// Use this for explicit user actions like "Regenerate Embedding" button.
-/// For automatic updates on content changes, the backend handles debouncing
-/// internally via `schedule_update_topic_embedding`.
+/// For automatic updates on content changes, use the smart triggers
+/// (on_topic_closed, on_topic_idle) instead.
 ///
 /// # Arguments
 ///
@@ -162,9 +162,10 @@ pub async fn update_topic_embedding(
     state: State<'_, EmbeddingState>,
     topic_id: String,
 ) -> Result<(), CommandError> {
+    // Re-embed and mark as fresh
     state
         .service
-        .update_topic_embedding(&topic_id)
+        .embed_topic(&topic_id)
         .await
         .map_err(|e| CommandError {
             message: format!("Failed to update embedding: {}", e),
@@ -175,10 +176,10 @@ pub async fn update_topic_embedding(
     Ok(())
 }
 
-/// Schedule a debounced embedding update (for content change events)
+/// Schedule a debounced embedding update (DEPRECATED - use smart triggers instead)
 ///
-/// This schedules a re-embedding after 5 seconds of inactivity.
-/// If additional content changes occur within 5 seconds, the timer resets.
+/// This command is deprecated. Use on_topic_closed or on_topic_idle instead.
+/// Kept for backward compatibility only.
 ///
 /// # Arguments
 ///
@@ -189,23 +190,146 @@ pub async fn update_topic_embedding(
 /// ```typescript
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
-/// // User types in topic content
-/// function onContentChange(topicId: string) {
-///   // This will debounce - only re-embeds after 5 seconds of no changes
-///   invoke('schedule_topic_embedding_update', { topicId });
-/// }
+/// // DEPRECATED: Use on_topic_closed or on_topic_idle instead
+/// invoke('schedule_topic_embedding_update', { topicId });
 /// ```
 #[tauri::command]
+#[deprecated(note = "Use on_topic_closed or on_topic_idle smart triggers instead")]
 pub async fn schedule_topic_embedding_update(
+    _state: State<'_, EmbeddingState>,
+    _topic_id: String,
+) -> Result<(), CommandError> {
+    // No-op for backward compatibility
+    // Content changes now mark topics as stale automatically in the backend
+    Ok(())
+}
+
+/// Smart trigger: Topic closed/unfocused
+///
+/// Called when user closes or navigates away from a topic.
+/// If the topic was recently edited, it triggers immediate re-embedding.
+///
+/// # Arguments
+///
+/// * `topic_id` - ID of the topic that was closed
+///
+/// # Example (from frontend)
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/tauri';
+///
+/// // User closes topic page or switches to another topic
+/// await invoke('on_topic_closed', { topicId: 'topic-uuid-123' });
+/// ```
+#[tauri::command]
+pub async fn on_topic_closed(
     state: State<'_, EmbeddingState>,
     topic_id: String,
 ) -> Result<(), CommandError> {
     state
         .service
-        .schedule_update_topic_embedding(&topic_id)
-        .await;
+        .on_topic_closed(&topic_id)
+        .await
+        .map_err(|e| CommandError {
+            message: format!("Failed to process topic close: {}", e),
+            code: "TOPIC_CLOSE_FAILED".to_string(),
+            details: Some(format!("{:?}", e)),
+        })?;
 
     Ok(())
+}
+
+/// Smart trigger: Idle timeout
+///
+/// Called when user has stopped editing for 30+ seconds.
+/// Triggers re-embedding if topic is stale.
+///
+/// # Arguments
+///
+/// * `topic_id` - ID of the topic to check
+///
+/// # Returns
+///
+/// `true` if re-embedding was triggered, `false` if not needed
+///
+/// # Example (from frontend)
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/tauri';
+///
+/// // After 30 seconds of idle time
+/// const wasEmbedded = await invoke('on_topic_idle', {
+///   topicId: 'topic-uuid-123'
+/// });
+/// console.log(`Re-embedded: ${wasEmbedded}`);
+/// ```
+#[tauri::command]
+pub async fn on_topic_idle(
+    state: State<'_, EmbeddingState>,
+    topic_id: String,
+) -> Result<bool, CommandError> {
+    state
+        .service
+        .on_idle_timeout(&topic_id)
+        .await
+        .map_err(|e| CommandError {
+            message: format!("Failed to process idle timeout: {}", e),
+            code: "IDLE_TIMEOUT_FAILED".to_string(),
+            details: Some(format!("{:?}", e)),
+        })
+}
+
+/// Manually sync all stale topics
+///
+/// Processes all stale topics immediately. Useful for explicit user action
+/// like "Sync All" button or app startup.
+///
+/// # Returns
+///
+/// Number of topics re-embedded
+///
+/// # Example (from frontend)
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/tauri';
+///
+/// // User clicks "Sync All Embeddings" button
+/// const count = await invoke('sync_embeddings');
+/// console.log(`Synced ${count} topics`);
+/// ```
+#[tauri::command]
+pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<usize, CommandError> {
+    state
+        .service
+        .sync_all_stale_topics()
+        .await
+        .map_err(|e| CommandError {
+            message: format!("Failed to sync embeddings: {}", e),
+            code: "SYNC_FAILED".to_string(),
+            details: Some(format!("{:?}", e)),
+        })
+}
+
+/// Get count of stale topics
+///
+/// Returns the number of topics that need re-embedding.
+/// Useful for showing status indicators in UI.
+///
+/// # Example (from frontend)
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/tauri';
+///
+/// const count = await invoke('get_stale_topic_count');
+/// // Display badge: "${count} topics need indexing"
+/// ```
+#[tauri::command]
+pub async fn get_stale_topic_count(
+    _state: State<'_, EmbeddingState>,
+) -> Result<usize, CommandError> {
+    // TODO: Implement stale count query
+    // For now, return 0 as placeholder
+    Ok(0)
 }
 
 /// Batch generate embeddings for multiple topics

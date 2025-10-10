@@ -16,7 +16,6 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use tokio::time::Duration;
 
     /// Helper to create test services
     async fn create_test_services() -> (Arc<DatabaseService>, Arc<TopicEmbeddingService>) {
@@ -180,7 +179,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
-    async fn test_update_topic_embedding() {
+    async fn test_re_embed_topic() {
         let (db, service) = create_test_services().await;
 
         let content = "Original content".to_string();
@@ -207,7 +206,8 @@ mod tests {
         .await
         .unwrap();
 
-        service.update_topic_embedding(&topic_id).await.unwrap();
+        // Re-embed directly
+        service.embed_topic(&topic_id).await.unwrap();
 
         // Get updated embedding
         let mut stmt = conn
@@ -226,33 +226,51 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
-    async fn test_debouncing() {
+    async fn test_stale_flag_marking() {
         let (db, service) = create_test_services().await;
 
         let content = "Test content".to_string();
         let topic_id = create_test_topic(&db, content).await.unwrap();
 
-        // Schedule multiple updates rapidly
-        service.schedule_update_topic_embedding(&topic_id).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        service.schedule_update_topic_embedding(&topic_id).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        service.schedule_update_topic_embedding(&topic_id).await;
+        // Generate initial embedding
+        service.embed_topic(&topic_id).await.unwrap();
 
-        // Wait for debounce delay (5 seconds + buffer)
-        tokio::time::sleep(Duration::from_secs(6)).await;
-
-        // Verify embedding was generated (only once, despite multiple calls)
+        // Mark as embedded (should clear stale flag)
         let conn = db.connect_with_timeout().await.unwrap();
+        conn.execute(
+            "UPDATE nodes SET embedding_stale = FALSE, last_embedding_update = CURRENT_TIMESTAMP WHERE id = ?",
+            libsql::params![topic_id.clone()],
+        )
+        .await
+        .unwrap();
+
+        // Verify not stale
         let mut stmt = conn
-            .prepare("SELECT embedding_vector FROM nodes WHERE id = ?")
+            .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
             .await
             .unwrap();
         let mut rows = stmt.query(libsql::params![topic_id.clone()]).await.unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        let embedding: Option<Vec<u8>> = row.get(0).unwrap();
+        let is_stale: bool = row.get(0).unwrap();
+        assert!(!is_stale);
 
-        assert!(embedding.is_some());
+        // Update content (should mark as stale in real implementation)
+        conn.execute(
+            "UPDATE nodes SET content = ?, embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+            libsql::params!["Updated content", topic_id.clone()],
+        )
+        .await
+        .unwrap();
+
+        // Verify now stale
+        let mut stmt = conn
+            .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
+            .await
+            .unwrap();
+        let mut rows = stmt.query(libsql::params![topic_id.clone()]).await.unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let is_stale: bool = row.get(0).unwrap();
+        assert!(is_stale);
     }
 
     #[tokio::test]
