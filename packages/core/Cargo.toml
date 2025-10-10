@@ -11,6 +11,9 @@ repository.workspace = true
 # Database - Using libsql for Turso embedded database
 libsql = { workspace = true }
 
+# NLP Engine for embeddings
+nodespace-nlp-engine = { path = "../nlp-engine" }
+
 # Async runtime
 tokio = { workspace = true }
 
