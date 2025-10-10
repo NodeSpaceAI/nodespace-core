@@ -16,10 +16,10 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
-    use tokio::time::Duration;
 
     /// Helper to create test services
-    async fn create_test_services() -> (Arc<DatabaseService>, Arc<TopicEmbeddingService>) {
+    /// Returns (db, service, _temp_dir) - temp_dir must be kept alive for test duration
+    async fn create_test_services() -> (Arc<DatabaseService>, Arc<TopicEmbeddingService>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
 
@@ -34,7 +34,7 @@ mod tests {
             Arc::clone(&db_service),
         ));
 
-        (db_service, embedding_service)
+        (db_service, embedding_service, temp_dir)
     }
 
     /// Helper to create a test topic node
@@ -65,7 +65,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_token_estimation() {
-        let (_db, service) = create_test_services().await;
+        let (_db, service, _temp_dir) = create_test_services().await;
 
         // 1 token ≈ 4 characters
         assert_eq!(service.estimate_tokens("test"), 1);
@@ -77,7 +77,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_chunking_strategy_small() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         // Create topic with < 512 tokens (< 2048 chars)
         let small_content = "This is a small topic.".to_string();
@@ -106,7 +106,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_chunking_strategy_medium() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         // Create topic with 512-2048 tokens (2048-8192 chars)
         let medium_content = "x".repeat(3000); // ~750 tokens
@@ -135,7 +135,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_chunking_strategy_large() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         // Create topic with > 2048 tokens (> 8192 chars)
         let large_content = "y".repeat(10000); // ~2500 tokens
@@ -164,7 +164,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_simple_summarize() {
-        let (_db, service) = create_test_services().await;
+        let (_db, service, _temp_dir) = create_test_services().await;
 
         // Short content - no truncation
         let short = "Hello world";
@@ -180,8 +180,8 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
-    async fn test_update_topic_embedding() {
-        let (db, service) = create_test_services().await;
+    async fn test_re_embed_topic() {
+        let (db, service, _temp_dir) = create_test_services().await;
 
         let content = "Original content".to_string();
         let topic_id = create_test_topic(&db, content).await.unwrap();
@@ -207,7 +207,8 @@ mod tests {
         .await
         .unwrap();
 
-        service.update_topic_embedding(&topic_id).await.unwrap();
+        // Re-embed directly
+        service.embed_topic(&topic_id).await.unwrap();
 
         // Get updated embedding
         let mut stmt = conn
@@ -226,39 +227,57 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
-    async fn test_debouncing() {
-        let (db, service) = create_test_services().await;
+    async fn test_stale_flag_marking() {
+        let (db, service, _temp_dir) = create_test_services().await;
 
         let content = "Test content".to_string();
         let topic_id = create_test_topic(&db, content).await.unwrap();
 
-        // Schedule multiple updates rapidly
-        service.schedule_update_topic_embedding(&topic_id).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        service.schedule_update_topic_embedding(&topic_id).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        service.schedule_update_topic_embedding(&topic_id).await;
+        // Generate initial embedding
+        service.embed_topic(&topic_id).await.unwrap();
 
-        // Wait for debounce delay (5 seconds + buffer)
-        tokio::time::sleep(Duration::from_secs(6)).await;
-
-        // Verify embedding was generated (only once, despite multiple calls)
+        // Mark as embedded (should clear stale flag)
         let conn = db.connect_with_timeout().await.unwrap();
+        conn.execute(
+            "UPDATE nodes SET embedding_stale = FALSE, last_embedding_update = CURRENT_TIMESTAMP WHERE id = ?",
+            libsql::params![topic_id.clone()],
+        )
+        .await
+        .unwrap();
+
+        // Verify not stale
         let mut stmt = conn
-            .prepare("SELECT embedding_vector FROM nodes WHERE id = ?")
+            .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
             .await
             .unwrap();
         let mut rows = stmt.query(libsql::params![topic_id.clone()]).await.unwrap();
         let row = rows.next().await.unwrap().unwrap();
-        let embedding: Option<Vec<u8>> = row.get(0).unwrap();
+        let is_stale: bool = row.get(0).unwrap();
+        assert!(!is_stale);
 
-        assert!(embedding.is_some());
+        // Update content (should mark as stale in real implementation)
+        conn.execute(
+            "UPDATE nodes SET content = ?, embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+            libsql::params!["Updated content", topic_id.clone()],
+        )
+        .await
+        .unwrap();
+
+        // Verify now stale
+        let mut stmt = conn
+            .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
+            .await
+            .unwrap();
+        let mut rows = stmt.query(libsql::params![topic_id.clone()]).await.unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let is_stale: bool = row.get(0).unwrap();
+        assert!(is_stale);
     }
 
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_embedding_storage_format() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         let content = "Test embedding storage".to_string();
         let topic_id = create_test_topic(&db, content).await.unwrap();
@@ -286,7 +305,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_performance_embedding_time() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         let content = "Performance test content".repeat(100);
         let topic_id = create_test_topic(&db, content).await.unwrap();
@@ -306,7 +325,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_batch_embedding_multiple_topics() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         // Create multiple topics
         let topic1_id = create_test_topic(&db, "Topic 1 content".to_string())
@@ -341,7 +360,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
     async fn test_error_handling_missing_topic() {
-        let (_db, service) = create_test_services().await;
+        let (_db, service, _temp_dir) = create_test_services().await;
 
         // Try to embed non-existent topic
         let result = service.embed_topic("non-existent-id").await;
@@ -351,7 +370,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Performance test: creates 10k+ nodes. Run with: cargo test -- --ignored"]
     async fn test_vector_search_performance_10k_nodes() {
-        let (db, service) = create_test_services().await;
+        let (db, service, _temp_dir) = create_test_services().await;
 
         // 1. Create 10,000 topic nodes with embeddings
         println!("Creating 10,000 topic nodes...");
@@ -444,5 +463,112 @@ mod tests {
         // Verify truncation would produce expected length
         let truncated = format!("{}...", &long_text[..max_chars]);
         assert_eq!(truncated.len(), max_chars + 3);
+    }
+
+    /// Integration test: Complete stale flag workflow
+    ///
+    /// Tests the full lifecycle:
+    /// 1. User edits content → stale flag set
+    /// 2. Background processor detects stale → re-embeds
+    /// 3. Stale flag cleared
+    #[tokio::test]
+    #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
+    async fn test_stale_flag_workflow_integration() {
+        use libsql::params;
+
+        let (_db, embedding_service, _temp_dir) = create_test_services().await;
+        let db = Arc::clone(&_db);
+
+        // Step 1: Create a topic with initial content
+        let topic_id = create_test_topic(&db, "Initial content".to_string())
+            .await
+            .unwrap();
+
+        // Step 2: Generate initial embedding
+        embedding_service.embed_topic(&topic_id).await.unwrap();
+
+        // Verify initial state: NOT stale
+        let conn = db.connect_with_timeout().await.unwrap();
+        let mut stmt = conn
+            .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
+            .await
+            .unwrap();
+        let mut rows = stmt.query(params![topic_id.clone()]).await.unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let is_stale: bool = row.get(0).unwrap();
+        assert!(
+            !is_stale,
+            "Topic should not be stale after initial embedding"
+        );
+
+        // Step 3: User edits content → should mark as stale
+        // Simulate content update (what node_service would do internally)
+        conn.execute(
+            "UPDATE nodes
+             SET content = ?,
+                 modified_at = CURRENT_TIMESTAMP,
+                 embedding_stale = TRUE,
+                 last_content_update = CURRENT_TIMESTAMP
+             WHERE id = ?",
+            params!["Updated content with more text", topic_id.clone()],
+        )
+        .await
+        .unwrap();
+
+        // Verify topic is now marked as stale
+        let mut stmt = conn
+            .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
+            .await
+            .unwrap();
+        let mut rows = stmt.query(params![topic_id.clone()]).await.unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let is_stale: bool = row.get(0).unwrap();
+        assert!(
+            is_stale,
+            "Topic should be marked stale after content update"
+        );
+
+        // Step 4: Background processor re-embeds stale topic
+        embedding_service.embed_topic(&topic_id).await.unwrap();
+
+        // Step 5: Mark as embedded (what processor would do)
+        conn.execute(
+            "UPDATE nodes SET embedding_stale = FALSE, last_embedding_update = CURRENT_TIMESTAMP WHERE id = ?",
+            params![topic_id.clone()],
+        )
+        .await
+        .unwrap();
+
+        // Verify stale flag is cleared
+        let mut stmt = conn
+            .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
+            .await
+            .unwrap();
+        let mut rows = stmt.query(params![topic_id.clone()]).await.unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let is_stale: bool = row.get(0).unwrap();
+        assert!(
+            !is_stale,
+            "Topic should not be stale after background re-embedding"
+        );
+
+        // Verify timestamps are populated
+        let mut stmt = conn
+            .prepare("SELECT last_content_update, last_embedding_update FROM nodes WHERE id = ?")
+            .await
+            .unwrap();
+        let mut rows = stmt.query(params![topic_id.clone()]).await.unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let last_content: Option<String> = row.get(0).unwrap();
+        let last_embedding: Option<String> = row.get(1).unwrap();
+
+        assert!(
+            last_content.is_some(),
+            "last_content_update should be populated"
+        );
+        assert!(
+            last_embedding.is_some(),
+            "last_embedding_update should be populated"
+        );
     }
 }

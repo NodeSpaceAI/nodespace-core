@@ -9,7 +9,7 @@
 //! - Adaptive chunking strategy based on token count (< 512, 512-2048, > 2048)
 //! - Integration with NLP engine (BAAI/bge-small-en-v1.5, 384 dimensions)
 //! - Native Turso vector search with DiskANN indexing
-//! - Debounced re-embedding on content changes
+//! - Stale flag tracking for efficient re-embedding
 //! - Metadata tracking for embeddings
 //!
 //! # Architecture
@@ -31,11 +31,19 @@ use libsql::params;
 use nodespace_nlp_engine::EmbeddingService;
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio::time::{sleep, Duration, Instant};
+use tracing::error;
 
 /// Embedding vector dimension for BAAI/bge-small-en-v1.5 model
 pub const EMBEDDING_DIMENSION: usize = 384;
+
+/// Time window (in seconds) to consider a topic "recently edited" after closing
+const RECENTLY_EDITED_THRESHOLD_SECS: i64 = 30;
+
+/// Idle timeout (in seconds) before triggering re-embedding
+const IDLE_TIMEOUT_THRESHOLD_SECS: i64 = 30;
+
+/// Time window (in seconds) for critical topics on app shutdown
+const SHUTDOWN_CRITICAL_WINDOW_SECS: i64 = 300; // 5 minutes
 
 /// Topic embedding service with adaptive chunking
 pub struct TopicEmbeddingService {
@@ -44,17 +52,6 @@ pub struct TopicEmbeddingService {
 
     /// Database service for persistence
     db: Arc<DatabaseService>,
-
-    /// Debouncer state for content change handling
-    debouncer: Arc<Mutex<DebouncerState>>,
-}
-
-/// Internal state for debouncing re-embedding operations
-struct DebouncerState {
-    /// Map of topic_id -> last update time
-    pending_updates: std::collections::HashMap<String, Instant>,
-    /// Debounce delay (5 seconds)
-    delay: Duration,
 }
 
 impl TopicEmbeddingService {
@@ -87,16 +84,7 @@ impl TopicEmbeddingService {
     /// # }
     /// ```
     pub fn new(nlp_engine: Arc<EmbeddingService>, db: Arc<DatabaseService>) -> Self {
-        let debouncer_state = DebouncerState {
-            pending_updates: std::collections::HashMap::new(),
-            delay: Duration::from_secs(5),
-        };
-
-        Self {
-            nlp_engine,
-            db,
-            debouncer: Arc::new(Mutex::new(debouncer_state)),
-        }
+        Self { nlp_engine, db }
     }
 
     /// Create a new TopicEmbeddingService with default configuration
@@ -361,15 +349,14 @@ impl TopicEmbeddingService {
         Ok(nodes)
     }
 
-    /// Schedule a debounced re-embedding for a topic
+    /// Smart trigger: Re-embed topic when it's closed (if recently edited)
     ///
-    /// Content changes trigger this method, which schedules a re-embedding
-    /// after 5 seconds of inactivity. If additional changes occur within
-    /// the 5-second window, the timer resets.
+    /// This is called when a user closes a topic page. If the topic was edited
+    /// within the last 30 seconds, it triggers immediate re-embedding.
     ///
     /// # Arguments
     ///
-    /// * `topic_id` - ID of the topic node that changed
+    /// * `topic_id` - ID of the topic node that was closed
     ///
     /// # Examples
     ///
@@ -386,60 +373,98 @@ impl TopicEmbeddingService {
     /// # nlp_engine.initialize()?;
     /// # let nlp_engine = Arc::new(nlp_engine);
     /// # let service = TopicEmbeddingService::new(nlp_engine, db);
-    /// // User edits topic content
-    /// service.schedule_update_topic_embedding("topic-id").await;
-    /// // If user continues editing, timer resets
-    /// service.schedule_update_topic_embedding("topic-id").await;
-    /// // After 5 seconds of no changes, re-embedding occurs automatically
+    /// // User closes topic page
+    /// service.on_topic_closed("topic-id").await?;
     /// # Ok(())
     /// # }
-    /// ```
-    pub async fn schedule_update_topic_embedding(&self, topic_id: &str) {
-        let topic_id = topic_id.to_string();
-        let mut state = self.debouncer.lock().await;
+    /// # ```
+    pub async fn on_topic_closed(&self, topic_id: &str) -> Result<(), NodeServiceError> {
+        // Check if topic was recently edited (within configured threshold)
+        let recently_edited = self
+            .was_recently_edited(topic_id, RECENTLY_EDITED_THRESHOLD_SECS)
+            .await?;
 
-        // Update the last change time for this topic
-        state
-            .pending_updates
-            .insert(topic_id.clone(), Instant::now());
-        let delay = state.delay;
-        drop(state);
+        if recently_edited {
+            // Re-embed immediately
+            self.embed_topic(topic_id).await?;
+            self.mark_topic_embedded(topic_id).await?;
+        }
 
-        // Spawn background task to handle debounced update
-        let service = self.clone();
-        let topic_id_clone = topic_id.clone();
-
-        tokio::spawn(async move {
-            sleep(delay).await;
-
-            // Check if this is still the most recent update
-            let state = service.debouncer.lock().await;
-            if let Some(last_update) = state.pending_updates.get(&topic_id_clone) {
-                if Instant::now().duration_since(*last_update) >= delay {
-                    drop(state);
-
-                    // Perform the actual re-embedding
-                    if let Err(e) = service.embed_topic(&topic_id_clone).await {
-                        eprintln!("Failed to re-embed topic {}: {}", topic_id_clone, e);
-                    }
-
-                    // Remove from pending updates
-                    let mut state = service.debouncer.lock().await;
-                    state.pending_updates.remove(&topic_id_clone);
-                }
-            }
-        });
+        Ok(())
     }
 
-    /// Immediately update topic embedding (no debouncing)
+    /// Smart trigger: Re-embed topic after idle timeout (30 seconds of no edits)
     ///
-    /// Use this for explicit user actions or batch operations.
+    /// This should be called periodically by the frontend to check if a topic
+    /// has been idle long enough to warrant re-embedding.
     ///
     /// # Arguments
     ///
-    /// * `topic_id` - ID of the topic node to update
-    pub async fn update_topic_embedding(&self, topic_id: &str) -> Result<(), NodeServiceError> {
-        self.embed_topic(topic_id).await
+    /// * `topic_id` - ID of the topic node to check
+    ///
+    /// # Returns
+    ///
+    /// `true` if re-embedding was triggered, `false` if not needed
+    pub async fn on_idle_timeout(&self, topic_id: &str) -> Result<bool, NodeServiceError> {
+        // Check if topic is stale and was last edited > configured idle threshold
+        let should_embed = self
+            .should_embed_after_idle(topic_id, IDLE_TIMEOUT_THRESHOLD_SECS)
+            .await?;
+
+        if should_embed {
+            self.embed_topic(topic_id).await?;
+            self.mark_topic_embedded(topic_id).await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Manually sync all stale topics (for explicit user action)
+    ///
+    /// This processes all stale topics immediately.
+    ///
+    /// # Returns
+    ///
+    /// Number of topics re-embedded
+    pub async fn sync_all_stale_topics(&self) -> Result<usize, NodeServiceError> {
+        let stale_topics = self.get_all_stale_topics().await?;
+        let count = stale_topics.len();
+
+        for topic_id in stale_topics {
+            if let Err(e) = self.embed_topic(&topic_id).await {
+                error!("Failed to embed topic {}: {}", topic_id, e);
+                continue;
+            }
+            self.mark_topic_embedded(&topic_id).await?;
+        }
+
+        Ok(count)
+    }
+
+    /// Sync critical topics before app shutdown
+    ///
+    /// Re-embeds topics that were edited within the last 5 minutes.
+    ///
+    /// # Returns
+    ///
+    /// Number of topics re-embedded
+    pub async fn on_app_shutdown(&self) -> Result<usize, NodeServiceError> {
+        // Get topics edited within configured shutdown window
+        let critical_topics = self
+            .get_recently_edited_topics(SHUTDOWN_CRITICAL_WINDOW_SECS)
+            .await?;
+        let count = critical_topics.len();
+
+        for topic_id in critical_topics {
+            if let Err(e) = self.embed_topic(&topic_id).await {
+                error!("Failed to embed topic {}: {}", topic_id, e);
+                continue;
+            }
+            self.mark_topic_embedded(&topic_id).await?;
+        }
+
+        Ok(count)
     }
 
     // Private helper methods
@@ -789,6 +814,192 @@ impl TopicEmbeddingService {
             mentioned_by: Vec::new(),
         })
     }
+
+    /// Check if a topic was recently edited (within N seconds)
+    async fn was_recently_edited(
+        &self,
+        topic_id: &str,
+        seconds: i64,
+    ) -> Result<bool, NodeServiceError> {
+        let conn = self.db.connect_with_timeout().await.map_err(|e| {
+            NodeServiceError::QueryFailed(format!("Database connection failed: {}", e))
+        })?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT (julianday('now') - julianday(last_content_update)) * 86400 as seconds_ago,
+                        embedding_stale
+                 FROM nodes WHERE id = ?",
+            )
+            .await
+            .map_err(|e| {
+                NodeServiceError::QueryFailed(format!("Query preparation failed: {}", e))
+            })?;
+
+        let mut rows = stmt
+            .query(params![topic_id])
+            .await
+            .map_err(|e| NodeServiceError::QueryFailed(format!("Query execution failed: {}", e)))?;
+
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| NodeServiceError::QueryFailed(format!("Row fetch failed: {}", e)))?
+        {
+            let seconds_ago: Option<f64> = row.get(0).ok();
+            let is_stale: bool = row.get(1).unwrap_or(false);
+
+            // Recently edited if stale AND edited within N seconds
+            Ok(is_stale && seconds_ago.map(|s| s <= seconds as f64).unwrap_or(false))
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Check if topic should be embedded after idle period
+    async fn should_embed_after_idle(
+        &self,
+        topic_id: &str,
+        idle_seconds: i64,
+    ) -> Result<bool, NodeServiceError> {
+        let conn = self.db.connect_with_timeout().await.map_err(|e| {
+            NodeServiceError::QueryFailed(format!("Database connection failed: {}", e))
+        })?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT (julianday('now') - julianday(last_content_update)) * 86400 as seconds_ago,
+                        embedding_stale
+                 FROM nodes WHERE id = ?",
+            )
+            .await
+            .map_err(|e| {
+                NodeServiceError::QueryFailed(format!("Query preparation failed: {}", e))
+            })?;
+
+        let mut rows = stmt
+            .query(params![topic_id])
+            .await
+            .map_err(|e| NodeServiceError::QueryFailed(format!("Query execution failed: {}", e)))?;
+
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| NodeServiceError::QueryFailed(format!("Row fetch failed: {}", e)))?
+        {
+            let seconds_ago: Option<f64> = row.get(0).ok();
+            let is_stale: bool = row.get(1).unwrap_or(false);
+
+            // Should embed if stale AND idle for more than N seconds
+            Ok(is_stale
+                && seconds_ago
+                    .map(|s| s > idle_seconds as f64)
+                    .unwrap_or(false))
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Get all stale topics
+    pub async fn get_all_stale_topics(&self) -> Result<Vec<String>, NodeServiceError> {
+        let conn = self.db.connect_with_timeout().await.map_err(|e| {
+            NodeServiceError::QueryFailed(format!("Database connection failed: {}", e))
+        })?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id FROM nodes
+                 WHERE node_type = 'topic' AND embedding_stale = TRUE
+                 ORDER BY last_content_update DESC",
+            )
+            .await
+            .map_err(|e| {
+                NodeServiceError::QueryFailed(format!("Query preparation failed: {}", e))
+            })?;
+
+        let mut rows = stmt
+            .query(())
+            .await
+            .map_err(|e| NodeServiceError::QueryFailed(format!("Query execution failed: {}", e)))?;
+
+        let mut topic_ids = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| NodeServiceError::QueryFailed(format!("Row fetch failed: {}", e)))?
+        {
+            let id: String = row
+                .get(0)
+                .map_err(|e| NodeServiceError::QueryFailed(format!("Failed to get id: {}", e)))?;
+            topic_ids.push(id);
+        }
+
+        Ok(topic_ids)
+    }
+
+    /// Get recently edited topics (within N seconds)
+    async fn get_recently_edited_topics(
+        &self,
+        seconds: i64,
+    ) -> Result<Vec<String>, NodeServiceError> {
+        let conn = self.db.connect_with_timeout().await.map_err(|e| {
+            NodeServiceError::QueryFailed(format!("Database connection failed: {}", e))
+        })?;
+
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT id FROM nodes
+                     WHERE node_type = 'topic'
+                       AND embedding_stale = TRUE
+                       AND last_content_update > datetime('now', '-{} seconds')
+                     ORDER BY last_content_update DESC",
+                seconds
+            ))
+            .await
+            .map_err(|e| {
+                NodeServiceError::QueryFailed(format!("Query preparation failed: {}", e))
+            })?;
+
+        let mut rows = stmt
+            .query(())
+            .await
+            .map_err(|e| NodeServiceError::QueryFailed(format!("Query execution failed: {}", e)))?;
+
+        let mut topic_ids = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| NodeServiceError::QueryFailed(format!("Row fetch failed: {}", e)))?
+        {
+            let id: String = row
+                .get(0)
+                .map_err(|e| NodeServiceError::QueryFailed(format!("Failed to get id: {}", e)))?;
+            topic_ids.push(id);
+        }
+
+        Ok(topic_ids)
+    }
+
+    /// Mark topic as freshly embedded (clear stale flag)
+    async fn mark_topic_embedded(&self, topic_id: &str) -> Result<(), NodeServiceError> {
+        let conn = self.db.connect_with_timeout().await.map_err(|e| {
+            NodeServiceError::QueryFailed(format!("Database connection failed: {}", e))
+        })?;
+
+        conn.execute(
+            "UPDATE nodes
+             SET embedding_stale = FALSE,
+                 last_embedding_update = CURRENT_TIMESTAMP
+             WHERE id = ?",
+            params![topic_id],
+        )
+        .await
+        .map_err(|e| {
+            NodeServiceError::QueryFailed(format!("Failed to mark topic as embedded: {}", e))
+        })?;
+
+        Ok(())
+    }
 }
 
 /// Clone implementation for spawning async tasks
@@ -797,7 +1008,6 @@ impl Clone for TopicEmbeddingService {
         Self {
             nlp_engine: Arc::clone(&self.nlp_engine),
             db: Arc::clone(&self.db),
-            debouncer: Arc::clone(&self.debouncer),
         }
     }
 }

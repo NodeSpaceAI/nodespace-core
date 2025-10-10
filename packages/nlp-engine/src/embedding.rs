@@ -81,6 +81,7 @@ impl EmbeddingService {
                 model_path.join("model.onnx")
             };
 
+
             if !model_file.exists() {
                 return Err(EmbeddingError::ModelNotFound(format!(
                     "Model file not found: {:?}",
@@ -91,7 +92,7 @@ impl EmbeddingService {
             let model = candle_onnx::read_file(&model_file)
                 .map_err(|e| EmbeddingError::ModelLoadError(e.to_string()))?;
 
-            // Load tokenizer
+            // Load tokenizer (in root model directory)
             let tokenizer_file = model_path.join("tokenizer.json");
             if !tokenizer_file.exists() {
                 return Err(EmbeddingError::ModelNotFound(format!(

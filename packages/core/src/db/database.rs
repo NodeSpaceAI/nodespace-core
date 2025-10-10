@@ -176,6 +176,9 @@ impl DatabaseService {
                     properties JSON NOT NULL DEFAULT '{{}}',
                     -- 384-dimensional embedding vectors from BAAI/bge-small-en-v1.5 model (PR #198)
                     embedding_vector F32_BLOB({}),
+                    embedding_stale BOOLEAN DEFAULT FALSE,
+                    last_content_update DATETIME,
+                    last_embedding_update DATETIME,
                     -- Parent deletion cascades to children (tree structure)
                     FOREIGN KEY (parent_id) REFERENCES nodes(id) ON DELETE CASCADE,
                     -- Container deletion cascades to all contained nodes
@@ -364,6 +367,16 @@ impl DatabaseService {
                 "Failed to create vector index 'idx_nodes_embedding_vector': {}",
                 e
             ))
+        })?;
+
+        // Index on embedding_stale for efficient stale topic queries
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_nodes_stale ON nodes(embedding_stale, node_type)",
+            (),
+        )
+        .await
+        .map_err(|e| {
+            DatabaseError::sql_execution(format!("Failed to create index 'idx_nodes_stale': {}", e))
         })?;
 
         Ok(())
@@ -782,5 +795,42 @@ mod tests {
         let count: i64 = row.get(0).unwrap();
 
         assert_eq!(count, 5);
+    }
+
+    #[tokio::test]
+    async fn test_stale_embedding_index_exists() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db_service = DatabaseService::new(db_path).await.unwrap();
+
+        let conn = db_service.connect().unwrap();
+
+        // Query sqlite_master to verify the index was created
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, sql FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_nodes_stale'",
+            )
+            .await
+            .unwrap();
+
+        let mut rows = stmt.query(()).await.unwrap();
+        let row = rows.next().await.unwrap();
+
+        assert!(row.is_some(), "Index idx_nodes_stale was not created");
+
+        let row = row.unwrap();
+        let index_name: String = row.get(0).unwrap();
+        let index_sql: String = row.get(1).unwrap();
+
+        assert_eq!(index_name, "idx_nodes_stale");
+        assert!(
+            index_sql.contains("embedding_stale"),
+            "Index should include embedding_stale column"
+        );
+        assert!(
+            index_sql.contains("node_type"),
+            "Index should include node_type column"
+        );
     }
 }
