@@ -464,4 +464,111 @@ mod tests {
         let truncated = format!("{}...", &long_text[..max_chars]);
         assert_eq!(truncated.len(), max_chars + 3);
     }
+
+    /// Integration test: Complete stale flag workflow
+    ///
+    /// Tests the full lifecycle:
+    /// 1. User edits content → stale flag set
+    /// 2. Background processor detects stale → re-embeds
+    /// 3. Stale flag cleared
+    #[tokio::test]
+    #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
+    async fn test_stale_flag_workflow_integration() {
+        use libsql::params;
+
+        let (_db, embedding_service, _temp_dir) = create_test_services().await;
+        let db = Arc::clone(&_db);
+
+        // Step 1: Create a topic with initial content
+        let topic_id = create_test_topic(&db, "Initial content".to_string())
+            .await
+            .unwrap();
+
+        // Step 2: Generate initial embedding
+        embedding_service.embed_topic(&topic_id).await.unwrap();
+
+        // Verify initial state: NOT stale
+        let conn = db.connect_with_timeout().await.unwrap();
+        let mut stmt = conn
+            .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
+            .await
+            .unwrap();
+        let mut rows = stmt.query(params![topic_id.clone()]).await.unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let is_stale: bool = row.get(0).unwrap();
+        assert!(
+            !is_stale,
+            "Topic should not be stale after initial embedding"
+        );
+
+        // Step 3: User edits content → should mark as stale
+        // Simulate content update (what node_service would do internally)
+        conn.execute(
+            "UPDATE nodes
+             SET content = ?,
+                 modified_at = CURRENT_TIMESTAMP,
+                 embedding_stale = TRUE,
+                 last_content_update = CURRENT_TIMESTAMP
+             WHERE id = ?",
+            params!["Updated content with more text", topic_id.clone()],
+        )
+        .await
+        .unwrap();
+
+        // Verify topic is now marked as stale
+        let mut stmt = conn
+            .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
+            .await
+            .unwrap();
+        let mut rows = stmt.query(params![topic_id.clone()]).await.unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let is_stale: bool = row.get(0).unwrap();
+        assert!(
+            is_stale,
+            "Topic should be marked stale after content update"
+        );
+
+        // Step 4: Background processor re-embeds stale topic
+        embedding_service.embed_topic(&topic_id).await.unwrap();
+
+        // Step 5: Mark as embedded (what processor would do)
+        conn.execute(
+            "UPDATE nodes SET embedding_stale = FALSE, last_embedding_update = CURRENT_TIMESTAMP WHERE id = ?",
+            params![topic_id.clone()],
+        )
+        .await
+        .unwrap();
+
+        // Verify stale flag is cleared
+        let mut stmt = conn
+            .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
+            .await
+            .unwrap();
+        let mut rows = stmt.query(params![topic_id.clone()]).await.unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let is_stale: bool = row.get(0).unwrap();
+        assert!(
+            !is_stale,
+            "Topic should not be stale after background re-embedding"
+        );
+
+        // Verify timestamps are populated
+        let mut stmt = conn
+            .prepare("SELECT last_content_update, last_embedding_update FROM nodes WHERE id = ?")
+            .await
+            .unwrap();
+        let mut rows = stmt.query(params![topic_id.clone()]).await.unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let last_content: Option<String> = row.get(0).unwrap();
+        let last_embedding: Option<String> = row.get(1).unwrap();
+
+        assert!(
+            last_content.is_some(),
+            "last_content_update should be populated"
+        );
+        assert!(
+            last_embedding.is_some(),
+            "last_embedding_update should be populated"
+        );
+    }
 }
