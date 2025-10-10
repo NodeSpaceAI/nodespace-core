@@ -1365,8 +1365,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       };
 
       // First pass: Add all nodes to SharedNodeStore
+      // Use database source to prevent write-back (nodes are already in database)
+      const databaseSource = { type: 'database' as const, reason: 'initialization' };
       for (const node of nodes) {
-        sharedNodeStore.setNode(node, viewerSource);
+        sharedNodeStore.setNode(node, databaseSource);
         _uiState[node.id] = createDefaultUIState(node.id, {
           depth: 0, // Will be computed in second pass
           expanded: defaults.expanded,
