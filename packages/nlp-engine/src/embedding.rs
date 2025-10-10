@@ -34,11 +34,9 @@ impl EmbeddingService {
 
         #[cfg(feature = "embedding-service")]
         let device = {
-            // Try Metal GPU first (macOS), fall back to CPU
-            Device::new_metal(0).unwrap_or_else(|_| {
-                tracing::info!("Metal GPU not available, using CPU");
-                Device::Cpu
-            })
+            // ONNX models currently only support CPU in candle-onnx
+            // Metal/CUDA support would require native .safetensors models
+            Device::Cpu
         };
 
         let cache_capacity = NonZeroUsize::new(config.cache_capacity)
@@ -75,8 +73,14 @@ impl EmbeddingService {
 
             tracing::info!("Model path resolved to: {:?}", model_path);
 
-            // Load ONNX model
-            let model_file = model_path.join("model.onnx");
+            // Load ONNX model (try onnx/ subdirectory first, then root)
+            let model_file = model_path.join("onnx").join("model.onnx");
+            let model_file = if model_file.exists() {
+                model_file
+            } else {
+                model_path.join("model.onnx")
+            };
+
             if !model_file.exists() {
                 return Err(EmbeddingError::ModelNotFound(format!(
                     "Model file not found: {:?}",
@@ -273,8 +277,17 @@ impl EmbeddingService {
 
         // Flatten into [batch_size * seq_len] and reshape to [batch_size, seq_len]
         let batch_size = texts.len();
-        let flattened_tokens: Vec<u32> = all_token_ids.into_iter().flatten().collect();
-        let flattened_masks: Vec<u32> = all_attention_masks.into_iter().flatten().collect();
+        // Convert u32 to i64 for ONNX model compatibility (expects I64 dtype)
+        let flattened_tokens: Vec<i64> = all_token_ids
+            .into_iter()
+            .flatten()
+            .map(|x| x as i64)
+            .collect();
+        let flattened_masks: Vec<i64> = all_attention_masks
+            .into_iter()
+            .flatten()
+            .map(|x| x as i64)
+            .collect();
 
         let token_ids = Tensor::from_vec(flattened_tokens, (batch_size, max_len), &self.device)
             .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?;
@@ -283,10 +296,15 @@ impl EmbeddingService {
             Tensor::from_vec(flattened_masks, (batch_size, max_len), &self.device)
                 .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?;
 
+        // Create token_type_ids (all zeros for single sentence batch)
+        let token_type_ids = Tensor::zeros_like(&token_ids)
+            .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?;
+
         // Run inference
         let inputs = std::collections::HashMap::from([
             ("input_ids".to_string(), token_ids),
             ("attention_mask".to_string(), attention_mask_tensor.clone()),
+            ("token_type_ids".to_string(), token_type_ids),
         ]);
 
         let outputs = simple_eval(model, inputs)
@@ -333,19 +351,28 @@ impl EmbeddingService {
         let tokens = encoding.get_ids();
         let attention_mask = encoding.get_attention_mask();
 
+        // Convert u32 to i64 for ONNX model compatibility (expects I64 dtype)
+        let tokens_i64: Vec<i64> = tokens.iter().map(|&x| x as i64).collect();
+        let mask_i64: Vec<i64> = attention_mask.iter().map(|&x| x as i64).collect();
+
         // Create tensors
-        let token_ids = Tensor::new(tokens, &self.device)
+        let token_ids = Tensor::new(tokens_i64.as_slice(), &self.device)
             .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?
             .unsqueeze(0)?; // Add batch dimension [1, seq_len]
 
-        let attention_mask_tensor = Tensor::new(attention_mask, &self.device)
+        let attention_mask_tensor = Tensor::new(mask_i64.as_slice(), &self.device)
             .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?
             .unsqueeze(0)?; // [1, seq_len]
+
+        // Create token_type_ids (all zeros for single sentence)
+        let token_type_ids = Tensor::zeros_like(&token_ids)
+            .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?;
 
         // Run inference
         let inputs = std::collections::HashMap::from([
             ("input_ids".to_string(), token_ids),
             ("attention_mask".to_string(), attention_mask_tensor.clone()),
+            ("token_type_ids".to_string(), token_type_ids),
         ]);
 
         let outputs = simple_eval(model, inputs)
@@ -374,8 +401,13 @@ impl EmbeddingService {
     /// Returns pooled embeddings [batch, hidden_dim] with L2 normalization
     #[cfg(feature = "embedding-service")]
     fn mean_pooling(hidden_state: &Tensor, attention_mask: &Tensor) -> Result<Tensor> {
+        // Convert attention mask to F32 for multiplication with hidden states
+        let attention_mask_f32 = attention_mask
+            .to_dtype(candle_core::DType::F32)
+            .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?;
+
         // Expand attention mask to [batch, seq_len, hidden_dim]
-        let mask_expanded = attention_mask
+        let mask_expanded = attention_mask_f32
             .unsqueeze(2)?
             .broadcast_as(hidden_state.shape())
             .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?;
@@ -389,14 +421,17 @@ impl EmbeddingService {
         let summed = masked.sum(1)?;
 
         // Count non-padding tokens and add small epsilon to avoid division by zero
-        let count = attention_mask
-            .sum(1)?
+        let count = attention_mask_f32.sum(1)?.clamp(1.0, f64::INFINITY)?; // Minimum 1.0 to avoid division by zero
+
+        // Broadcast count to match summed shape [batch, hidden_dim]
+        let count_expanded = count
             .unsqueeze(1)?
-            .clamp(1.0, f64::INFINITY)?; // Minimum 1.0 to avoid division by zero
+            .broadcast_as(summed.shape())
+            .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?;
 
         // Mean pooling: sum / count
         let pooled = summed
-            .div(&count)
+            .div(&count_expanded)
             .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?;
 
         // L2 normalize
@@ -406,8 +441,13 @@ impl EmbeddingService {
             .sqrt()?
             .clamp(1e-12, f64::INFINITY)?; // Avoid division by zero
 
+        // Broadcast norm to match pooled shape
+        let norm_expanded = norm
+            .broadcast_as(pooled.shape())
+            .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?;
+
         pooled
-            .div(&norm)
+            .div(&norm_expanded)
             .map_err(|e| EmbeddingError::InferenceError(e.to_string()))
     }
 
