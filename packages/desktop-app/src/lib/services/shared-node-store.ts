@@ -263,21 +263,35 @@ export class SharedNodeStore {
 
       // Phase 2.4: Persist to database (unless skipped)
       if (!options.skipPersistence && source.type !== 'database') {
-        // Queue database write to prevent concurrent writes
-        queueDatabaseWrite(nodeId, async () => {
-          try {
-            await tauriNodeService.updateNode(nodeId, updatedNode);
-            // Mark update as persisted
-            this.markUpdatePersisted(nodeId, update);
-          } catch (dbError) {
-            console.error(`[SharedNodeStore] Database write failed for node ${nodeId}:`, dbError);
-            // Rollback the optimistic update
-            this.rollbackUpdate(nodeId, update);
-          }
-        }).catch((err) => {
-          // Catch any queueing errors
-          console.error(`[SharedNodeStore] Failed to queue database write:`, err);
-        });
+        // Skip persisting empty text nodes - they exist in UI but not in database
+        const isEmptyTextNode =
+          updatedNode.nodeType === 'text' && updatedNode.content.trim() === '';
+
+        if (!isEmptyTextNode) {
+          // Queue database write to prevent concurrent writes
+          queueDatabaseWrite(nodeId, async () => {
+            try {
+              // Check if node exists in database - if not, create it first
+              // This handles race conditions where siblings reference not-yet-persisted nodes
+              const existingNode = await tauriNodeService.getNode(nodeId);
+              if (existingNode) {
+                await tauriNodeService.updateNode(nodeId, updatedNode);
+              } else {
+                // Node doesn't exist yet (was a placeholder or sibling reference)
+                await tauriNodeService.createNode(updatedNode);
+              }
+              // Mark update as persisted
+              this.markUpdatePersisted(nodeId, update);
+            } catch (dbError) {
+              console.error(`[SharedNodeStore] Database write failed for node ${nodeId}:`, dbError);
+              // Rollback the optimistic update
+              this.rollbackUpdate(nodeId, update);
+            }
+          }).catch((err) => {
+            // Catch any queueing errors
+            console.error(`[SharedNodeStore] Failed to queue database write:`, err);
+          });
+        }
       }
     } catch (error) {
       console.error(`[SharedNodeStore] Error updating node ${nodeId}:`, error);
