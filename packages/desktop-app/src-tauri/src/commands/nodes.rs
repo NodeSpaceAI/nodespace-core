@@ -16,7 +16,7 @@ pub struct CreateNodeInput {
     pub node_type: String,
     pub content: String,
     pub parent_id: Option<String>,
-    pub origin_node_id: Option<String>,
+    pub container_node_id: Option<String>,
     pub before_sibling_id: Option<String>,
     pub properties: serde_json::Value,
     #[serde(default)]
@@ -117,7 +117,7 @@ pub async fn create_node(
         node_type: node.node_type,
         content: node.content,
         parent_id: node.parent_id,
-        origin_node_id: node.origin_node_id,
+        container_node_id: node.container_node_id,
         before_sibling_id: node.before_sibling_id,
         created_at: now,  // Placeholder - DB will use its own timestamp
         modified_at: now, // Placeholder - DB will use its own timestamp
@@ -267,12 +267,12 @@ pub async fn get_children(
 /// Bulk fetch all nodes belonging to an origin node (viewer/page)
 ///
 /// This is the efficient way to load a complete document tree:
-/// - Single database query fetches all nodes with the same origin_node_id
+/// - Single database query fetches all nodes with the same container_node_id
 /// - In-memory hierarchy reconstruction using parent_id and before_sibling_id
 ///
 /// # Arguments
 /// * `service` - Node service instance from Tauri state
-/// * `origin_node_id` - ID of the origin node (e.g., date page ID)
+/// * `container_node_id` - ID of the origin node (e.g., date page ID)
 ///
 /// # Returns
 /// * `Ok(Vec<Node>)` - All nodes belonging to this origin
@@ -288,10 +288,10 @@ pub async fn get_children(
 #[tauri::command]
 pub async fn get_nodes_by_origin_id(
     service: State<'_, NodeService>,
-    origin_node_id: String,
+    container_node_id: String,
 ) -> Result<Vec<Node>, CommandError> {
     service
-        .get_nodes_by_origin_id(&origin_node_id)
+        .get_nodes_by_origin_id(&container_node_id)
         .await
         .map_err(Into::into)
 }
@@ -384,7 +384,7 @@ pub async fn save_node_with_parent(
     content: String,
     node_type: String,
     parent_id: String,
-    origin_node_id: String,
+    container_node_id: String,
     before_sibling_id: Option<String>,
 ) -> Result<(), CommandError> {
     validate_node_type(&node_type)?;
@@ -396,7 +396,7 @@ pub async fn save_node_with_parent(
             &content,
             &node_type,
             &parent_id,
-            &origin_node_id,
+            &container_node_id,
             before_sibling_id.as_deref(),
         )
         .await

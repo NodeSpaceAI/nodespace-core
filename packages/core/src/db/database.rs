@@ -167,7 +167,7 @@ impl DatabaseService {
                 node_type TEXT NOT NULL,
                 content TEXT NOT NULL,
                 parent_id TEXT,
-                origin_node_id TEXT,
+                container_node_id TEXT,
                 before_sibling_id TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 modified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -175,8 +175,8 @@ impl DatabaseService {
                 embedding_vector BLOB,
                 -- Parent deletion cascades to children (tree structure)
                 FOREIGN KEY (parent_id) REFERENCES nodes(id) ON DELETE CASCADE,
-                -- Origin deletion cascades to mirror/template instances (instances depend on origin)
-                FOREIGN KEY (origin_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+                -- Container deletion cascades to all contained nodes
+                FOREIGN KEY (container_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
                 -- Sibling deletion nulls the reference (maintain chain integrity)
                 FOREIGN KEY (before_sibling_id) REFERENCES nodes(id) ON DELETE SET NULL
             )",
@@ -240,9 +240,9 @@ impl DatabaseService {
             ))
         })?;
 
-        // Index on origin_node_id (bulk fetch by document)
+        // Index on container_node_id (bulk fetch by container)
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_nodes_root ON nodes(origin_node_id)",
+            "CREATE INDEX IF NOT EXISTS idx_nodes_container ON nodes(container_node_id)",
             (),
         )
         .await
