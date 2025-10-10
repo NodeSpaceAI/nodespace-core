@@ -21,6 +21,18 @@ import { render, screen, waitFor } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { waitForEffects } from '../helpers';
 import BaseNode from '$lib/design/components/base-node.svelte';
+import type { ContentEditableController } from '$lib/design/components/content-editable-controller';
+
+/**
+ * Helper function to get markdown content from contenteditable element
+ * Accesses the controller's markdown source instead of rendered HTML textContent
+ */
+function getMarkdownContent(editor: Element): string {
+  const controller = (
+    editor as unknown as { _contentEditableController?: ContentEditableController }
+  )._contentEditableController;
+  return controller?.getMarkdownContent() || '';
+}
 
 describe('Node Reference Autocomplete - Complete Flow', () => {
   beforeEach(() => {
@@ -224,7 +236,7 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
 
       // Reference should be inserted in markdown format [Title](nodespace://id)
       await waitFor(() => {
-        const content = editor!.textContent || '';
+        const content = getMarkdownContent(editor!);
         expect(content).toMatch(/\[.*\]\(nodespace:\/\/.*\)/);
       });
     });
@@ -260,7 +272,7 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
 
       // Reference should be inserted
       await waitFor(() => {
-        const content = editor!.textContent || '';
+        const content = getMarkdownContent(editor!);
         expect(content).toMatch(/\[.*\]\(nodespace:\/\/.*\)/);
       });
     });
@@ -298,7 +310,7 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
       });
 
       // Content should be unchanged (just "Before @")
-      const content = editor!.textContent || '';
+      const content = getMarkdownContent(editor!);
       expect(content).toBe(originalContent + '@');
     });
 
@@ -365,12 +377,12 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
       // In Svelte 5, we verify the event's effect on DOM rather than catching the event directly
       // The reference should be inserted, which proves the event chain worked
       await waitFor(() => {
-        const content = editor!.textContent || '';
+        const content = getMarkdownContent(editor!);
         expect(content).toMatch(/\[.+\]\(nodespace:\/\/.+\)/);
       });
 
       // Verify the inserted reference contains valid data structure
-      const content = editor!.textContent || '';
+      const content = getMarkdownContent(editor!);
       const match = content.match(/\[(.+)\]\(nodespace:\/\/(.+)\)/);
       expect(match).toBeTruthy();
 
@@ -412,7 +424,7 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
       await waitForEffects(100);
 
       // Verify no reference was inserted (event wasn't fired)
-      const content = editor!.textContent || '';
+      const content = getMarkdownContent(editor!);
       expect(content).not.toMatch(/\[.+\]\(nodespace:\/\/.+\)/);
       expect(content).toBe('@'); // Only the @ character should remain
     });
@@ -447,11 +459,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
 
       // Verify event data by checking DOM mutation
       await waitFor(() => {
-        const content = editor!.textContent || '';
+        const content = getMarkdownContent(editor!);
         expect(content).toMatch(/\[.+\]\(nodespace:\/\/.+\)/);
       });
 
-      const content = editor!.textContent || '';
+      const content = getMarkdownContent(editor!);
       const match = content.match(/\[(.+)\]\(nodespace:\/\/(.+)\)/);
       expect(match).toBeTruthy();
 
@@ -491,12 +503,12 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
 
       // Reference should be inserted with correct format
       await waitFor(() => {
-        const content = editor!.textContent || '';
+        const content = getMarkdownContent(editor!);
         expect(content).toMatch(/\[.+\]\(nodespace:\/\/.+\)/);
       });
 
       // Verify the reference contains a valid node ID
-      const content = editor!.textContent || '';
+      const content = getMarkdownContent(editor!);
       const match = content.match(/\[(.+)\]\(nodespace:\/\/(.+)\)/);
       expect(match).toBeTruthy();
       expect(match![2]).toBeTruthy(); // Node ID exists
@@ -528,7 +540,7 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
       await waitForEffects();
 
       // Reference should NOT be inserted
-      const content = editor!.textContent || '';
+      const content = getMarkdownContent(editor!);
       expect(content).not.toMatch(/\[.+\]\(nodespace:\/\/.+\)/);
       expect(content).toBe('@'); // Only the @ character should remain
     });
@@ -563,11 +575,11 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
 
       // Reference inserted with data matching selected node
       await waitFor(() => {
-        const content = editor!.textContent || '';
+        const content = getMarkdownContent(editor!);
         expect(content).toMatch(/\[.+\]\(nodespace:\/\/.+\)/);
       });
 
-      const content = editor!.textContent || '';
+      const content = getMarkdownContent(editor!);
       const match = content.match(/\[(.+)\]\(nodespace:\/\/(.+)\)/);
       expect(match).toBeTruthy();
 
@@ -668,12 +680,12 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
 
       // Verify markdown format: [Title](nodespace://id)
       await waitFor(() => {
-        const content = editor!.textContent || '';
+        const content = getMarkdownContent(editor!);
         expect(content).toMatch(/\[.+\]\(nodespace:\/\/.+\)/);
       });
 
       // Extract and verify format components
-      const content = editor!.textContent || '';
+      const content = getMarkdownContent(editor!);
       const markdownRegex = /\[(.+)\]\(nodespace:\/\/(.+)\)/;
       const match = content.match(markdownRegex);
 
@@ -712,7 +724,7 @@ describe('Node Reference Autocomplete - Complete Flow', () => {
 
       // Content should be: "Before [Title](nodespace://id) After"
       await waitFor(() => {
-        const content = editor!.textContent || '';
+        const content = getMarkdownContent(editor!);
         expect(content).toMatch(/Before.*\[.+\]\(nodespace:\/\/.+\).*After/);
       });
     });

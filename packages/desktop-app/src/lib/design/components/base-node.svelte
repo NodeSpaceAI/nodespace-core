@@ -162,16 +162,22 @@
     try {
       autocompleteLoading = true;
 
+      // Guard clause: Early return if nodeManager is not available
+      if (!services?.nodeManager) {
+        autocompleteResults = [];
+        return;
+      }
+
       // Get all nodes from the node manager
-      const allNodes = Array.from(services!.nodeManager.nodes.values());
+      const allNodes = Array.from(services.nodeManager.nodes.values());
 
       // Filter nodes based on query
       // Only show top-level nodes (originNodeId === null or originNodeId === id)
       // Exclude date nodes
       const filtered = allNodes
         .filter((node) => {
-          // Only top-level nodes (where originNodeId is null or equals the node's own id)
-          const isTopLevel = node.originNodeId === null || node.originNodeId === node.id;
+          // Only top-level nodes
+          const isTopLevel = isRootNode(node);
 
           // Exclude date nodes
           const isNotDateNode = node.nodeType !== 'date';
@@ -192,7 +198,8 @@
         title: node.content.split('\n')[0] || 'Untitled',
         type: (node.nodeType || 'text') as NodeType
       }));
-    } catch {
+    } catch (error) {
+      console.error('[NodeSearch] Search failed:', error);
       autocompleteResults = [];
     } finally {
       autocompleteLoading = false;
@@ -232,6 +239,13 @@
   }
 
   /**
+   * Helper function to check if a node is a root/top-level node
+   */
+  function isRootNode(node: { originNodeId: string | null; id: string }): boolean {
+    return node.originNodeId === null || node.originNodeId === node.id;
+  }
+
+  /**
    * Creates a new standalone top-level node from an @mention query
    * Returns the new node ID if successful, null otherwise
    */
@@ -250,9 +264,7 @@
 
       // Find the last root node to get the correct order
       const allNodes = Array.from(nodeManager.nodes.values());
-      const rootNodes = allNodes.filter(
-        (node) => node.originNodeId === node.id || node.originNodeId === null
-      );
+      const rootNodes = allNodes.filter(isRootNode);
       const lastRootNode = rootNodes[rootNodes.length - 1];
       const beforeSiblingId = lastRootNode ? lastRootNode.id : null;
 
@@ -283,7 +295,8 @@
       });
 
       return newNodeId;
-    } catch {
+    } catch (error) {
+      console.error('[NodeCreation] Failed to create node:', error);
       return null;
     }
   }

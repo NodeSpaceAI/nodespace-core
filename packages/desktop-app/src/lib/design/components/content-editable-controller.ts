@@ -100,6 +100,7 @@ export class ContentEditableController {
   private static readonly HEADER_PATTERN = /^(#{1,6})\s/;
   private static readonly CHECKBOX_PATTERN = /^\[\s*[x\s]\s*\]\s/i;
   private static readonly QUOTE_PATTERN = /^>\s/;
+  private static readonly MAX_QUERY_LENGTH = 100; // Maximum length for @mention queries
 
   // Track if global keyboard commands have been registered (should only happen once)
   private static keyboardCommandsRegistered = false;
@@ -3396,7 +3397,7 @@ export class ContentEditableController {
       return null; // Query contains newlines
     }
 
-    if (queryText.length > 100) {
+    if (queryText.length > ContentEditableController.MAX_QUERY_LENGTH) {
       return null; // Query too long
     }
 
