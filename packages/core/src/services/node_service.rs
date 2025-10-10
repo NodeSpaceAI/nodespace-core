@@ -245,7 +245,7 @@ impl NodeService {
         let conn = self.db.connect()?;
 
         conn.execute(
-            "INSERT OR IGNORE INTO node_mentions (mentioning_node_id, mentions_node_id)
+            "INSERT OR IGNORE INTO node_mentions (node_id, mentions_node_id)
              VALUES (?, ?)",
             (mentioning_node_id, mentioned_node_id),
         )
@@ -2514,5 +2514,66 @@ mod tests {
         assert_eq!(node2.mentions[0], id1);
         assert_eq!(node2.mentioned_by.len(), 1);
         assert_eq!(node2.mentioned_by[0], id1);
+    }
+
+    #[tokio::test]
+    async fn test_create_mention_persists_correctly() {
+        let (service, _temp) = create_test_service().await;
+
+        // Create two nodes
+        let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
+        let node2 = Node::new("text".to_string(), "Node 2".to_string(), None, json!({}));
+
+        let id1 = service.create_node(node1).await.unwrap();
+        let id2 = service.create_node(node2).await.unwrap();
+
+        // Create mention using the new create_mention() method
+        service.create_mention(&id1, &id2).await.unwrap();
+
+        // Verify the mention persists by checking the node_mentions table
+        // We can verify this by getting the mentions for node1
+        let mentions = service.get_mentions(&id1).await.unwrap();
+        assert_eq!(mentions.len(), 1, "Node 1 should have exactly one mention");
+        assert_eq!(mentions[0], id2, "Node 1 should mention Node 2");
+
+        // Verify idempotency - calling create_mention again should not error
+        service.create_mention(&id1, &id2).await.unwrap();
+        let mentions = service.get_mentions(&id1).await.unwrap();
+        assert_eq!(
+            mentions.len(),
+            1,
+            "Should still have only one mention (INSERT OR IGNORE)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_mention_validates_nodes_exist() {
+        let (service, _temp) = create_test_service().await;
+
+        // Create only one node
+        let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
+        let id1 = service.create_node(node1).await.unwrap();
+
+        // Try to create mention to non-existent node
+        let result = service.create_mention(&id1, "nonexistent-id").await;
+        assert!(
+            result.is_err(),
+            "Should error when mentioned node doesn't exist"
+        );
+        assert!(
+            matches!(result.unwrap_err(), NodeServiceError::NodeNotFound { .. }),
+            "Should return NodeNotFound error"
+        );
+
+        // Try to create mention from non-existent node
+        let result = service.create_mention("nonexistent-id", &id1).await;
+        assert!(
+            result.is_err(),
+            "Should error when mentioning node doesn't exist"
+        );
+        assert!(
+            matches!(result.unwrap_err(), NodeServiceError::NodeNotFound { .. }),
+            "Should return NodeNotFound error"
+        );
     }
 }

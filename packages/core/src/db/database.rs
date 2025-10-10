@@ -174,6 +174,7 @@ impl DatabaseService {
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     modified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     properties JSON NOT NULL DEFAULT '{{}}',
+                    -- 384-dimensional embedding vectors from BAAI/bge-small-en-v1.5 model (PR #198)
                     embedding_vector F32_BLOB({}),
                     -- Parent deletion cascades to children (tree structure)
                     FOREIGN KEY (parent_id) REFERENCES nodes(id) ON DELETE CASCADE,
@@ -570,7 +571,7 @@ mod tests {
         // Check that all expected indexes exist
         assert!(index_names.contains(&"idx_nodes_type".to_string()));
         assert!(index_names.contains(&"idx_nodes_parent".to_string()));
-        assert!(index_names.contains(&"idx_nodes_root".to_string()));
+        assert!(index_names.contains(&"idx_nodes_container".to_string()));
         assert!(index_names.contains(&"idx_nodes_modified".to_string()));
         assert!(index_names.contains(&"idx_nodes_content".to_string()));
         assert!(index_names.contains(&"idx_mentions_source".to_string()));
