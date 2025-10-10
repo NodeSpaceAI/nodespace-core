@@ -184,15 +184,15 @@ pub async fn create_container_node(
         id: node_id.clone(),
         node_type: input.node_type,
         content: input.content,
-        parent_id: None,           // Always null for containers
-        container_node_id: None,   // Always null for containers (they ARE containers)
-        before_sibling_id: None,   // No sibling ordering for root nodes
+        parent_id: None,         // Always null for containers
+        container_node_id: None, // Always null for containers (they ARE containers)
+        before_sibling_id: None, // No sibling ordering for root nodes
         created_at: now,
         modified_at: now,
         properties: input.properties,
         embedding_vector: None,
-        mentions: Vec::new(),      // Will be populated when this node mentions others
-        mentioned_by: Vec::new(),  // Will be computed from node_mentions table
+        mentions: Vec::new(), // Will be populated when this node mentions others
+        mentioned_by: Vec::new(), // Will be computed from node_mentions table
     };
 
     service.create_node(container_node).await?;

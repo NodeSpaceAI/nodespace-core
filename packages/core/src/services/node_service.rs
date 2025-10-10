@@ -250,9 +250,7 @@ impl NodeService {
             (mentioning_node_id, mentioned_node_id),
         )
         .await
-        .map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to create mention: {}", e))
-        })?;
+        .map_err(|e| NodeServiceError::query_failed(format!("Failed to create mention: {}", e)))?;
 
         Ok(())
     }
