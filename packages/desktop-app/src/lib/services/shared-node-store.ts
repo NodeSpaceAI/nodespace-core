@@ -313,8 +313,13 @@ export class SharedNodeStore {
     if (!skipPersistence && source.type !== 'database') {
       queueDatabaseWrite(node.id, async () => {
         try {
-          // Use updateNode for existing nodes (SharedNodeStore manages existence)
-          await tauriNodeService.updateNode(node.id, node);
+          // Check if node exists in database - if not, create it, otherwise update
+          const existingNode = await tauriNodeService.getNode(node.id);
+          if (existingNode) {
+            await tauriNodeService.updateNode(node.id, node);
+          } else {
+            await tauriNodeService.createNode(node);
+          }
         } catch (dbError) {
           // Only log database errors in non-test environments
           // Tests run without Tauri and database writes are expected to fail
