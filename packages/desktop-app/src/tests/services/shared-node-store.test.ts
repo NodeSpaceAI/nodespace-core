@@ -26,7 +26,7 @@ describe('SharedNodeStore', () => {
     nodeType: 'text',
     content: 'Test content',
     parentId: null,
-    originNodeId: 'test-node-1',
+    containerNodeId: null,
     beforeSiblingId: null,
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),

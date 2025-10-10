@@ -81,7 +81,6 @@ impl EmbeddingService {
                 model_path.join("model.onnx")
             };
 
-
             if !model_file.exists() {
                 return Err(EmbeddingError::ModelNotFound(format!(
                     "Model file not found: {:?}",

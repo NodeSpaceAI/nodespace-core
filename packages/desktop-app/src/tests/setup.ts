@@ -123,3 +123,11 @@ globalThis.Event = class extends OriginalEvent {
     }
   }
 } as typeof Event;
+
+// Mock Tauri environment detection
+// Tests run in browser mode (without Tauri), so __TAURI__ should not be defined
+// This prevents TauriNodeService from trying to invoke Rust commands
+if (typeof window !== 'undefined') {
+  // Ensure __TAURI__ is undefined so isTauriEnvironment() returns false
+  delete (window as unknown as Record<string, unknown>).__TAURI__;
+}

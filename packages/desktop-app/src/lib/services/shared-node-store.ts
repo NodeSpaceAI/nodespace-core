@@ -316,10 +316,16 @@ export class SharedNodeStore {
           // Use updateNode for existing nodes (SharedNodeStore manages existence)
           await tauriNodeService.updateNode(node.id, node);
         } catch (dbError) {
-          console.error(`[SharedNodeStore] Database write failed for node ${node.id}:`, dbError);
+          // Only log database errors in non-test environments
+          // Tests run without Tauri and database writes are expected to fail
+          if (typeof process === 'undefined' || process.env.NODE_ENV !== 'test') {
+            console.error(`[SharedNodeStore] Database write failed for node ${node.id}:`, dbError);
+          }
         }
       }).catch((err) => {
-        console.error(`[SharedNodeStore] Failed to queue database write:`, err);
+        if (typeof process === 'undefined' || process.env.NODE_ENV !== 'test') {
+          console.error(`[SharedNodeStore] Failed to queue database write:`, err);
+        }
       });
     }
   }
@@ -351,13 +357,17 @@ export class SharedNodeStore {
           try {
             await tauriNodeService.deleteNode(nodeId);
           } catch (dbError) {
-            console.error(
-              `[SharedNodeStore] Database deletion failed for node ${nodeId}:`,
-              dbError
-            );
+            if (typeof process === 'undefined' || process.env.NODE_ENV !== 'test') {
+              console.error(
+                `[SharedNodeStore] Database deletion failed for node ${nodeId}:`,
+                dbError
+              );
+            }
           }
         }).catch((err) => {
-          console.error(`[SharedNodeStore] Failed to queue database write:`, err);
+          if (typeof process === 'undefined' || process.env.NODE_ENV !== 'test') {
+            console.error(`[SharedNodeStore] Failed to queue database write:`, err);
+          }
         });
       }
     }
