@@ -27,12 +27,11 @@ use std::sync::Arc;
 ///
 /// ```no_run
 /// use nodespace_core::db::IndexManager;
-/// use libsql::Database;
 /// use std::sync::Arc;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let db = Arc::new(Database::open(":memory:").await?);
+///     let db = Arc::new(libsql::Builder::new_local(":memory:").build().await?);
 ///     let index_manager = IndexManager::new(db);
 ///
 ///     // Create JSON path index when needed
@@ -58,11 +57,10 @@ impl IndexManager {
     ///
     /// ```no_run
     /// # use nodespace_core::db::IndexManager;
-    /// # use libsql::Database;
     /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let db = Arc::new(Database::open(":memory:").await?);
+    /// let db = Arc::new(libsql::Builder::new_local(":memory:").build().await?);
     /// let index_manager = IndexManager::new(db);
     /// # Ok(())
     /// # }
@@ -139,11 +137,10 @@ impl IndexManager {
     ///
     /// ```no_run
     /// # use nodespace_core::db::IndexManager;
-    /// # use libsql::Database;
     /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = Arc::new(Database::open(":memory:").await?);
+    /// # let db = Arc::new(libsql::Builder::new_local(":memory:").build().await?);
     /// # let index_manager = IndexManager::new(db);
     /// // Create index on task.status for faster filtering
     /// index_manager.create_json_path_index("task", "status").await?;
@@ -198,11 +195,10 @@ impl IndexManager {
     ///
     /// ```no_run
     /// # use nodespace_core::db::IndexManager;
-    /// # use libsql::Database;
     /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = Arc::new(Database::open(":memory:").await?);
+    /// # let db = Arc::new(libsql::Builder::new_local(":memory:").build().await?);
     /// # let index_manager = IndexManager::new(db);
     /// if !index_manager.index_exists("task", "status").await? {
     ///     index_manager.create_json_path_index("task", "status").await?;
@@ -257,11 +253,10 @@ impl IndexManager {
     ///
     /// ```no_run
     /// # use nodespace_core::db::IndexManager;
-    /// # use libsql::Database;
     /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = Arc::new(Database::open(":memory:").await?);
+    /// # let db = Arc::new(libsql::Builder::new_local(":memory:").build().await?);
     /// # let index_manager = IndexManager::new(db);
     /// let task_indexes = index_manager.list_indexes("task").await?;
     /// println!("Task indexes: {:?}", task_indexes);
