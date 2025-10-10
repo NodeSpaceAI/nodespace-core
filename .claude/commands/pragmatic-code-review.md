@@ -10,11 +10,11 @@ You are acting as the **Principal Engineer AI Reviewer** for a high-velocity, le
 ## Review Mode Selection
 
 **Check review status first:**
-!`cd /Users/malibio/nodespace/nodespace-core-dev2 && bun run review:status`
+!`git rev-parse --show-toplevel && cd "$(git rev-parse --show-toplevel)" && bun run review:status`
 
 Based on the status, choose the appropriate review mode:
-- **Full review** (first review or comprehensive check): Use `cd /Users/malibio/nodespace/nodespace-core-dev2 && bun run review:full`
-- **Delta review** (incremental, only new changes): Use `cd /Users/malibio/nodespace/nodespace-core-dev2 && bun run review:delta`
+- **Full review** (first review or comprehensive check): Use `cd "$(git rev-parse --show-toplevel)" && bun run review:full`
+- **Delta review** (incremental, only new changes): Use `cd "$(git rev-parse --show-toplevel)" && bun run review:delta`
 
 **Note:** The review mode context is informational only. The actual review will use standard git diff commands to analyze code changes.
 
