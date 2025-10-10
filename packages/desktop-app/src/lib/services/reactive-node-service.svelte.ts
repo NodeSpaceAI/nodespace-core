@@ -1,20 +1,31 @@
 /**
- * ReactiveNodeService - Pure Svelte 5 Runes Reactive Architecture
+ * ReactiveNodeService - Svelte 5 Runes Adapter for SharedNodeStore
  *
- * Uses unified Node type from $lib/types with separated UI state.
+ * REFACTORED FOR MULTI-VIEWER SUPPORT (Phase 1.2):
+ * - Delegates node data storage to SharedNodeStore (single source of truth)
+ * - Maintains per-viewer UI state (expand/collapse, focus, depth)
+ * - Provides Svelte 5 reactivity via $state and $derived
+ * - Backward compatible - existing API preserved
+ *
+ * Architecture:
+ * - SharedNodeStore: Stores all node data (content, hierarchy, metadata)
+ * - ReactiveNodeService: Per-viewer instance with UI-specific state
+ * - Subscriptions: Automatically updates when SharedNodeStore changes
  *
  * Key features:
  * - Uses Node from $lib/types (with node_type, properties, etc.)
- * - Separates data (Node) from UI state (NodeUIState)
+ * - Separates data (Node in SharedNodeStore) from UI state (NodeUIState)
  * - Computes children on-demand instead of storing arrays
- * - Direct access to Node objects for mutations
+ * - Real-time synchronization across multiple viewers
  */
 
 import { v4 as uuidv4 } from 'uuid';
 import { ContentProcessor } from './content-processor';
 import { eventBus } from './event-bus';
+import { sharedNodeStore } from './shared-node-store';
 import type { Node, NodeUIState } from '$lib/types';
 import { createDefaultUIState } from '$lib/types';
+import type { UpdateSource } from '$lib/types/update-protocol';
 
 export interface NodeManagerEvents {
   focusRequested: (nodeId: string, position?: number) => void;
@@ -24,8 +35,19 @@ export interface NodeManagerEvents {
 }
 
 export function createReactiveNodeService(events: NodeManagerEvents) {
-  // Separated data and UI state - following unified type system
-  const _nodes = $state<Record<string, Node>>({});
+  // ADAPTER PATTERN: Delegate data storage to SharedNodeStore
+  // This service now focuses on per-viewer UI state and Svelte reactivity
+
+  // Generate unique viewer ID for this instance
+  const viewerId = uuidv4();
+
+  // Update source for this viewer
+  const viewerSource: UpdateSource = {
+    type: 'viewer',
+    viewerId
+  };
+
+  // UI state only - node data stored in SharedNodeStore
   const _uiState = $state<Record<string, NodeUIState>>({});
   let _rootNodeIds = $state<string[]>([]);
   const _activeNodeId = $state<string | undefined>(undefined);
@@ -33,11 +55,21 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   // View context: which parent are we viewing? (null = viewing global roots)
   let _viewParentId = $state<string | null>(null);
 
-  // Manual reactivity trigger for debugging
+  // Manual reactivity trigger - incremented when SharedNodeStore updates
   let _updateTrigger = $state(0);
 
   const serviceName = 'ReactiveNodeService';
   const contentProcessor = ContentProcessor.getInstance();
+
+  // Subscribe to SharedNodeStore changes for reactive updates
+  // Wildcard subscription - updates _updateTrigger when any node changes
+  // Note: Unsubscribe handled automatically when service instance is garbage collected
+  const _unsubscribe = sharedNodeStore.subscribeAll(() => {
+    _updateTrigger++;
+  });
+
+  // Prevent unused variable warning (cleanup would happen here if needed)
+  void _unsubscribe;
 
   // Performance optimization: Cache sorted children to avoid O(n) sorting on every render
   // Invalidate cache only when hierarchy changes (child added/removed/reordered)
@@ -82,7 +114,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Build a map of beforeSiblingId -> nodeId for quick lookup
     const beforeSiblingMap = new Map<string | null, string>();
     for (const childId of childIds) {
-      const child = _nodes[childId];
+      const child = sharedNodeStore.getNode(childId);
       if (child) {
         beforeSiblingMap.set(child.beforeSiblingId, childId);
       }
@@ -91,7 +123,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Find ALL candidates for first child to detect data corruption
     const firstChildCandidates: string[] = [];
     for (const childId of childIds) {
-      const child = _nodes[childId];
+      const child = sharedNodeStore.getNode(childId);
       if (child) {
         // A node is first if its beforeSiblingId is null or not in the sibling set
         if (child.beforeSiblingId === null || !childIds.includes(child.beforeSiblingId)) {
@@ -107,7 +139,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         childCount: childIds.length,
         childPointers: childIds.map((id) => ({
           id,
-          beforeSiblingId: _nodes[id]?.beforeSiblingId
+          beforeSiblingId: sharedNodeStore.getNode(id)?.beforeSiblingId
         }))
       });
       return childIds;
@@ -121,7 +153,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           candidates: firstChildCandidates,
           childPointers: childIds.map((id) => ({
             id,
-            beforeSiblingId: _nodes[id]?.beforeSiblingId
+            beforeSiblingId: sharedNodeStore.getNode(id)?.beforeSiblingId
           }))
         }
       );
@@ -186,7 +218,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           orphanedNodes,
           orphanedPointers: orphanedNodes.map((id) => ({
             id,
-            beforeSiblingId: _nodes[id]?.beforeSiblingId
+            beforeSiblingId: sharedNodeStore.getNode(id)?.beforeSiblingId
           }))
         }
       );
@@ -219,12 +251,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     })[] = [];
 
     for (const nodeId of nodeIds) {
-      const node = _nodes[nodeId];
+      const node = sharedNodeStore.getNode(nodeId);
       const uiState = _uiState[nodeId];
       if (node) {
-        const childIds = Object.values(_nodes)
-          .filter((n) => n.parentId === nodeId)
-          .map((n) => n.id);
+        // Get children from SharedNodeStore
+        const childIds = sharedNodeStore.getNodesForParent(nodeId).map((n) => n.id);
 
         // Sort children according to beforeSiblingId linked list
         const children = sortChildrenByBeforeSiblingId(childIds, nodeId);
@@ -251,10 +282,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
   // REACTIVITY FIX: Properly reactive visibleNodes computation using $derived.by
   const _visibleNodes = $derived.by(() => {
-    const allNodes = Object.values(_nodes);
-    for (const node of allNodes) {
-      void node.nodeType;
-    }
+    // Track SharedNodeStore updates via _updateTrigger
     void _updateTrigger;
     void _rootNodeIds;
     void _viewParentId;
@@ -264,9 +292,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // If viewParentId is null, roots are nodes with no parent_id
     let viewRoots: string[];
     if (_viewParentId !== null) {
-      const childIds = Object.values(_nodes)
-        .filter((n) => n.parentId === _viewParentId)
-        .map((n) => n.id);
+      // Get children from SharedNodeStore
+      const childIds = sharedNodeStore.getNodesForParent(_viewParentId).map((n) => n.id);
       // Sort children according to beforeSiblingId linked list
       viewRoots = sortChildrenByBeforeSiblingId(childIds, _viewParentId);
     } else {
@@ -277,7 +304,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   });
 
   function findNode(nodeId: string): Node | null {
-    return _nodes[nodeId] || null;
+    return sharedNodeStore.getNode(nodeId) || null;
   }
 
   function clearAllAutoFocus(): void {
@@ -350,7 +377,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Determine origin_node_id - inherit from parent or use own id if no parent
     let rootId: string;
     if (newParentId) {
-      const parent = _nodes[newParentId];
+      const parent = sharedNodeStore.getNode(newParentId);
       // Inherit origin_node_id from parent, or use parent's id if parent has no origin_node_id
       rootId = parent?.containerNodeId || newParentId;
     } else {
@@ -382,51 +409,34 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     });
 
     // Find next sibling BEFORE adding new node to prevent interference
-    const siblings = Object.values(_nodes).filter((n) => n.parentId === newParentId);
+    const siblings = sharedNodeStore.getNodesForParent(newParentId);
     const nextSibling = !insertAtBeginning
       ? siblings.find((n) => n.beforeSiblingId === afterNodeId)
       : null;
 
-    _nodes[nodeId] = newNode;
+    sharedNodeStore.setNode(newNode, viewerSource);
     _uiState[nodeId] = newUIState;
 
     // Update sibling linked list
     if (insertAtBeginning) {
       // New node takes afterNode's place, so afterNode now comes after newNode
-      _nodes[afterNodeId] = {
-        ...afterNode,
-        beforeSiblingId: nodeId,
-        modifiedAt: new Date().toISOString()
-      };
+      sharedNodeStore.updateNode(afterNodeId, { beforeSiblingId: nodeId }, viewerSource);
     } else {
       // New node inserted after afterNode - update next sibling to point to new node
       if (nextSibling) {
-        _nodes[nextSibling.id] = {
-          ...nextSibling,
-          beforeSiblingId: nodeId,
-          modifiedAt: new Date().toISOString()
-        };
+        sharedNodeStore.updateNode(nextSibling.id, { beforeSiblingId: nodeId }, viewerSource);
       }
     }
 
     // Bug 4 fix: Transfer children from expanded nodes
     // If afterNode is expanded and has children, transfer them to the new node
     if (!insertAtBeginning && afterUIState.expanded) {
-      const children = Object.values(_nodes)
-        .filter((n) => n.parentId === afterNodeId)
-        .map((n) => n.id);
+      const children = sharedNodeStore.getNodesForParent(afterNodeId);
 
       if (children.length > 0) {
         // Transfer children to new node
-        for (const childId of children) {
-          const child = _nodes[childId];
-          if (child) {
-            _nodes[childId] = {
-              ...child,
-              parentId: nodeId,
-              modifiedAt: new Date().toISOString()
-            };
-          }
+        for (const child of children) {
+          sharedNodeStore.updateNode(child.id, { parentId: nodeId }, viewerSource);
         }
       }
     }
@@ -536,17 +546,13 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   >();
 
   function updateNodeContent(nodeId: string, content: string): void {
-    const node = _nodes[nodeId];
+    const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
     const headerLevel = contentProcessor.parseHeaderLevel(content);
     const isPlaceholder = content.trim() === '';
 
-    _nodes[nodeId] = {
-      ...node,
-      content,
-      modifiedAt: new Date().toISOString()
-    };
+    sharedNodeStore.updateNode(nodeId, { content }, viewerSource);
 
     _uiState[nodeId] = {
       ..._uiState[nodeId],
@@ -560,14 +566,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function updateNodeType(nodeId: string, nodeType: string): void {
-    const node = _nodes[nodeId];
+    const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
-    _nodes[nodeId] = {
-      ...node,
-      nodeType: nodeType,
-      modifiedAt: new Date().toISOString()
-    };
+    sharedNodeStore.updateNode(nodeId, { nodeType }, viewerSource);
     _uiState[nodeId] = { ..._uiState[nodeId], autoFocus: true };
 
     _updateTrigger++;
@@ -585,14 +587,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function updateNodeMentions(nodeId: string, mentions: string[]): void {
-    const node = _nodes[nodeId];
+    const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
-    _nodes[nodeId] = {
-      ...node,
-      mentions: [...mentions],
-      modifiedAt: new Date().toISOString()
-    };
+    sharedNodeStore.updateNode(nodeId, { mentions: [...mentions] }, viewerSource);
 
     _updateTrigger++;
     emitNodeUpdated(nodeId, 'mentions', mentions);
@@ -603,14 +601,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     properties: Record<string, unknown>,
     merge: boolean = true
   ): void {
-    const node = _nodes[nodeId];
+    const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
-    _nodes[nodeId] = {
-      ...node,
-      properties: merge ? { ...node.properties, ...properties } : { ...properties },
-      modifiedAt: new Date().toISOString()
-    };
+    sharedNodeStore.updateNode(
+      nodeId,
+      { properties: merge ? { ...node.properties, ...properties } : { ...properties } },
+      viewerSource
+    );
 
     _updateTrigger++;
     emitNodeUpdated(nodeId, 'properties', properties);
@@ -639,7 +637,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function processFastContentOperations(nodeId: string, _content: string): void {
-    const node = _nodes[nodeId];
+    const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
     emitReferenceUpdateNeeded(nodeId);
@@ -652,7 +650,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function processExpensiveContentOperations(nodeId: string, content: string): void {
-    const node = _nodes[nodeId];
+    const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
     emitExpensivePersistenceNeeded(nodeId, content);
@@ -707,8 +705,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function combineNodes(currentNodeId: string, previousNodeId: string): void {
-    const currentNode = _nodes[currentNodeId];
-    const previousNode = _nodes[previousNodeId];
+    const currentNode = sharedNodeStore.getNode(currentNodeId);
+    const previousNode = sharedNodeStore.getNode(previousNodeId);
 
     if (!currentNode || !previousNode) return;
 
@@ -716,18 +714,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const combinedContent = previousNode.content + cleanedContent;
     const mergePosition = previousNode.content.length;
 
-    _nodes[previousNodeId] = {
-      ...previousNode,
-      content: combinedContent,
-      modifiedAt: new Date().toISOString()
-    };
+    sharedNodeStore.updateNode(previousNodeId, { content: combinedContent }, viewerSource);
     _uiState[previousNodeId] = { ..._uiState[previousNodeId], autoFocus: false };
 
     // Handle child promotion: children shift up while maintaining outline structure
     // Get all children of the node being deleted
-    const currentChildren = Object.values(_nodes)
-      .filter((n) => n.parentId === currentNodeId)
-      .map((n) => n.id);
+    const currentChildren = sharedNodeStore.getNodesForParent(currentNodeId);
 
     if (currentChildren.length > 0) {
       // Find the nearest ancestor node above the deleted node at the SAME depth,
@@ -750,13 +742,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           break;
         }
         // Keep walking up the tree
-        const parentId: string | null | undefined = _nodes[searchNode]?.parentId;
-        searchNode = parentId ?? null;
+        const searchNodeData = sharedNodeStore.getNode(searchNode);
+        searchNode = searchNodeData?.parentId ?? null;
       }
 
       // Find existing children of the new parent to append after them
-      const existingChildren = Object.values(_nodes)
-        .filter((n) => n.parentId === newParentForChildren && !currentChildren.includes(n.id))
+      const existingChildren = sharedNodeStore
+        .getNodesForParent(newParentForChildren)
+        .filter((n) => !currentChildren.find((c) => c.id === n.id))
         .map((n) => n.id);
 
       let lastSiblingId: string | null = null;
@@ -770,58 +763,54 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       }
 
       // Find the first child in the deleted node's children (the one with beforeSiblingId pointing outside or null)
-      const sortedDeletedChildren = sortChildrenByBeforeSiblingId(currentChildren, currentNodeId);
+      const sortedDeletedChildren = sortChildrenByBeforeSiblingId(
+        currentChildren.map((c) => c.id),
+        currentNodeId
+      );
       const firstChildId = sortedDeletedChildren[0];
 
       // Process each child
-      for (const childId of currentChildren) {
-        const child = _nodes[childId];
-        if (child) {
-          // Only update the first child's beforeSiblingId to append after existing children
-          // All other children keep their existing beforeSiblingId to maintain their chain
-          const updates: Partial<typeof child> = {
-            parentId: newParentForChildren,
-            modifiedAt: new Date().toISOString()
-          };
+      for (const child of currentChildren) {
+        // Only update the first child's beforeSiblingId to append after existing children
+        // All other children keep their existing beforeSiblingId to maintain their chain
+        const updates: Partial<Node> = {
+          parentId: newParentForChildren
+        };
 
-          if (childId === firstChildId) {
-            updates.beforeSiblingId = lastSiblingId;
-          }
-
-          _nodes[childId] = {
-            ...child,
-            ...updates
-          };
-
-          // Note: Database persistence is handled by UI layer's $effect watchers
-          // in base-node-viewer.svelte, which detects structural changes and persists them
-
-          // Update depth: children maintain their relative position in the outline
-          // Calculate target depth based on new parent
-          const currentChildDepth = _uiState[childId]?.depth ?? 0;
-          const targetDepth = newParentForChildren
-            ? (_uiState[newParentForChildren]?.depth ?? 0) + 1
-            : 0;
-
-          // Preserve depth: never increase, only maintain or decrease
-          // This ensures nodes shift UP in the outline, not down
-          const newDepth = Math.min(currentChildDepth, targetDepth);
-
-          _uiState[childId] = {
-            ..._uiState[childId],
-            depth: newDepth
-          };
-
-          // Recursively update descendant depths
-          updateDescendantDepths(childId);
+        if (child.id === firstChildId) {
+          updates.beforeSiblingId = lastSiblingId;
         }
+
+        sharedNodeStore.updateNode(child.id, updates, viewerSource);
+
+        // Note: Database persistence is handled by UI layer's $effect watchers
+        // in base-node-viewer.svelte, which detects structural changes and persists them
+
+        // Update depth: children maintain their relative position in the outline
+        // Calculate target depth based on new parent
+        const currentChildDepth = _uiState[child.id]?.depth ?? 0;
+        const targetDepth = newParentForChildren
+          ? (_uiState[newParentForChildren]?.depth ?? 0) + 1
+          : 0;
+
+        // Preserve depth: never increase, only maintain or decrease
+        // This ensures nodes shift UP in the outline, not down
+        const newDepth = Math.min(currentChildDepth, targetDepth);
+
+        _uiState[child.id] = {
+          ..._uiState[child.id],
+          depth: newDepth
+        };
+
+        // Recursively update descendant depths
+        updateDescendantDepths(child.id);
       }
     }
 
     // Remove node from sibling chain BEFORE deletion to prevent orphans
     removeFromSiblingChain(currentNodeId);
 
-    delete _nodes[currentNodeId];
+    sharedNodeStore.deleteNode(currentNodeId, viewerSource);
     delete _uiState[currentNodeId];
 
     const rootIndex = _rootNodeIds.indexOf(currentNodeId);
@@ -853,33 +842,31 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    * @param nodeId - The node being removed from its current parent
    */
   function removeFromSiblingChain(nodeId: string): void {
-    const node = _nodes[nodeId];
+    const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
     // Find the next sibling (the node that points to this one via beforeSiblingId)
-    const siblings = Object.values(_nodes).filter((n) => n.parentId === node.parentId);
+    const siblings = sharedNodeStore.getNodesForParent(node.parentId);
     const nextSibling = siblings.find((n) => n.beforeSiblingId === nodeId);
 
     if (nextSibling) {
       // Update next sibling to point to our predecessor, "splicing us out" of the chain
-      _nodes[nextSibling.id] = {
-        ...nextSibling,
-        beforeSiblingId: node.beforeSiblingId,
-        modifiedAt: new Date().toISOString()
-      };
+      sharedNodeStore.updateNode(
+        nextSibling.id,
+        { beforeSiblingId: node.beforeSiblingId },
+        viewerSource
+      );
     }
   }
 
   function indentNode(nodeId: string): boolean {
-    const node = _nodes[nodeId];
+    const node = sharedNodeStore.getNode(nodeId);
     if (!node) return false;
 
     // Get SORTED siblings according to beforeSiblingId chain
     let siblings: string[];
     if (node.parentId) {
-      const unsortedSiblings = Object.values(_nodes)
-        .filter((n) => n.parentId === node.parentId)
-        .map((n) => n.id);
+      const unsortedSiblings = sharedNodeStore.getNodesForParent(node.parentId).map((n) => n.id);
       siblings = sortChildrenByBeforeSiblingId(unsortedSiblings, node.parentId);
     } else {
       siblings = sortChildrenByBeforeSiblingId(_rootNodeIds, null);
@@ -889,16 +876,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (nodeIndex <= 0) return false; // Can't indent first child or if not found
 
     const prevSiblingId = siblings[nodeIndex - 1];
-    const prevSibling = _nodes[prevSiblingId];
+    const prevSibling = sharedNodeStore.getNode(prevSiblingId);
     if (!prevSibling) return false;
 
     // Remove node from current sibling chain BEFORE changing parent
     removeFromSiblingChain(nodeId);
 
     // Find the last child of the new parent to insert after
-    const existingChildren = Object.values(_nodes)
-      .filter((n) => n.parentId === prevSiblingId)
-      .map((n) => n.id);
+    const existingChildren = sharedNodeStore.getNodesForParent(prevSiblingId).map((n) => n.id);
 
     let beforeSiblingId: string | null = null;
     if (existingChildren.length > 0) {
@@ -910,12 +895,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const uiState = _uiState[nodeId];
     const prevSiblingUIState = _uiState[prevSiblingId];
 
-    _nodes[nodeId] = {
-      ...node,
-      parentId: prevSiblingId,
-      beforeSiblingId: beforeSiblingId, // Insert after last existing child (or null if no children)
-      modifiedAt: new Date().toISOString()
-    };
+    sharedNodeStore.updateNode(
+      nodeId,
+      {
+        parentId: prevSiblingId,
+        beforeSiblingId: beforeSiblingId // Insert after last existing child (or null if no children)
+      },
+      viewerSource
+    );
     _uiState[nodeId] = { ...uiState, depth: (prevSiblingUIState?.depth || 0) + 1 };
 
     // Recalculate depths for all descendants
@@ -957,18 +944,16 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function outdentNode(nodeId: string): boolean {
-    const node = _nodes[nodeId];
+    const node = sharedNodeStore.getNode(nodeId);
     if (!node || !node.parentId) return false;
 
-    const parent = _nodes[node.parentId];
+    const parent = sharedNodeStore.getNode(node.parentId);
     if (!parent) return false;
 
     const oldParentId = node.parentId;
 
     // Find siblings that come after this node (they will become children)
-    const siblings = Object.values(_nodes)
-      .filter((n) => n.parentId === oldParentId)
-      .map((n) => n.id);
+    const siblings = sharedNodeStore.getNodesForParent(oldParentId).map((n) => n.id);
     const sortedSiblings = sortChildrenByBeforeSiblingId(siblings, oldParentId);
     const nodeIndex = sortedSiblings.indexOf(nodeId);
     const siblingsBelow = nodeIndex >= 0 ? sortedSiblings.slice(nodeIndex + 1) : [];
@@ -985,15 +970,16 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     let positionBeforeSibling: string | null = oldParentId;
 
     // Check if old parent has a valid position in the new parent's context
-    const oldParentNode = _nodes[oldParentId];
+    const oldParentNode = sharedNodeStore.getNode(oldParentId);
     if (oldParentNode && oldParentNode.parentId === newParentId) {
       // Old parent is a valid sibling in the new context
       positionBeforeSibling = oldParentId;
     } else {
       // Old parent is not in the same parent context (shouldn't happen in normal outdent)
       // Position at the end by finding the last sibling
-      const siblings = Object.values(_nodes)
-        .filter((n) => n.parentId === newParentId && n.id !== nodeId)
+      const siblings = sharedNodeStore
+        .getNodesForParent(newParentId)
+        .filter((n) => n.id !== nodeId)
         .map((n) => n.id);
       if (siblings.length > 0) {
         const sortedSiblings = sortChildrenByBeforeSiblingId(siblings, newParentId);
@@ -1003,12 +989,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       }
     }
 
-    _nodes[nodeId] = {
-      ...node,
-      parentId: newParentId,
-      beforeSiblingId: positionBeforeSibling,
-      modifiedAt: new Date().toISOString()
-    };
+    sharedNodeStore.updateNode(
+      nodeId,
+      {
+        parentId: newParentId,
+        beforeSiblingId: positionBeforeSibling
+      },
+      viewerSource
+    );
     _uiState[nodeId] = { ...uiState, depth: newDepth };
 
     // Insert the outdented node into the new parent's sibling chain
@@ -1016,18 +1004,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // and update it to point to the outdented node instead
     if (positionBeforeSibling !== null) {
       // Optimization: Only check direct siblings, not all nodes
-      const siblingIds = Object.keys(_nodes).filter(
-        (id) => id !== nodeId && _nodes[id].parentId === newParentId
-      );
+      const allSiblings = sharedNodeStore.getNodesForParent(newParentId);
 
-      for (const siblingId of siblingIds) {
-        const sibling = _nodes[siblingId];
-        if (sibling.beforeSiblingId === positionBeforeSibling) {
-          _nodes[siblingId] = {
-            ...sibling,
-            beforeSiblingId: nodeId,
-            modifiedAt: new Date().toISOString()
-          };
+      for (const sibling of allSiblings) {
+        if (sibling.id !== nodeId && sibling.beforeSiblingId === positionBeforeSibling) {
+          sharedNodeStore.updateNode(sibling.id, { beforeSiblingId: nodeId }, viewerSource);
           break; // Only one sibling can point to positionBeforeSibling
         }
       }
@@ -1037,8 +1018,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Need to rebuild their before_sibling_id chain to be valid in new parent context
     if (siblingsBelow.length > 0) {
       // Find existing children of the outdented node to append after them
-      const existingChildren = Object.values(_nodes)
-        .filter((n) => n.parentId === nodeId && !siblingsBelow.includes(n.id))
+      const existingChildren = sharedNodeStore
+        .getNodesForParent(nodeId)
+        .filter((n) => !siblingsBelow.includes(n.id))
         .map((n) => n.id);
 
       let lastSiblingId: string | null = null;
@@ -1050,7 +1032,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       // Transfer each sibling, updating their before_sibling_id chain
       for (let i = 0; i < siblingsBelow.length; i++) {
         const siblingId = siblingsBelow[i];
-        const sibling = _nodes[siblingId];
+        const sibling = sharedNodeStore.getNode(siblingId);
         if (sibling) {
           // Remove from current sibling chain BEFORE updating beforeSiblingId
           removeFromSiblingChain(siblingId);
@@ -1059,12 +1041,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           // Subsequent siblings point to the previous transferred sibling
           const beforeSiblingId = i === 0 ? lastSiblingId : siblingsBelow[i - 1];
 
-          _nodes[siblingId] = {
-            ...sibling,
-            parentId: nodeId,
-            beforeSiblingId,
-            modifiedAt: new Date().toISOString()
-          };
+          sharedNodeStore.updateNode(
+            siblingId,
+            {
+              parentId: nodeId,
+              beforeSiblingId
+            },
+            viewerSource
+          );
           // Update depth for transferred sibling
           const siblingUIState = _uiState[siblingId];
           if (siblingUIState) {
@@ -1104,7 +1088,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function deleteNode(nodeId: string): void {
-    const node = _nodes[nodeId];
+    const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
     cleanupDebouncedOperations(nodeId);
@@ -1113,22 +1097,13 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     removeFromSiblingChain(nodeId);
 
     // Promote children
-    const children = Object.values(_nodes)
-      .filter((n) => n.parentId === nodeId)
-      .map((n) => n.id);
+    const children = sharedNodeStore.getNodesForParent(nodeId);
 
-    for (const childId of children) {
-      const child = _nodes[childId];
-      if (child) {
-        _nodes[childId] = {
-          ...child,
-          parentId: node.parentId,
-          modifiedAt: new Date().toISOString()
-        };
-      }
+    for (const child of children) {
+      sharedNodeStore.updateNode(child.id, { parentId: node.parentId }, viewerSource);
     }
 
-    delete _nodes[nodeId];
+    sharedNodeStore.deleteNode(nodeId, viewerSource);
     delete _uiState[nodeId];
 
     const rootIndex = _rootNodeIds.indexOf(nodeId);
@@ -1158,7 +1133,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       namespace: 'lifecycle',
       source: serviceName,
       changeType: 'delete',
-      affectedNodes: [nodeId, ...children]
+      affectedNodes: [nodeId, ...children.map((c) => c.id)]
     });
 
     eventBus.emit<import('./event-types').CacheInvalidateEvent>({
@@ -1264,27 +1239,25 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
   // Helper methods
   function updateDescendantDepths(nodeId: string): void {
-    const node = _nodes[nodeId];
+    const node = sharedNodeStore.getNode(nodeId);
     const uiState = _uiState[nodeId];
     if (!node || !uiState) return;
 
-    const children = Object.values(_nodes)
-      .filter((n) => n.parentId === nodeId)
-      .map((n) => n.id);
+    const children = sharedNodeStore.getNodesForParent(nodeId);
 
-    for (const childId of children) {
-      _uiState[childId] = {
-        ..._uiState[childId],
+    for (const child of children) {
+      _uiState[child.id] = {
+        ..._uiState[child.id],
         depth: uiState.depth + 1
       };
-      updateDescendantDepths(childId);
+      updateDescendantDepths(child.id);
     }
   }
 
   return {
     // Reactive getters
     get nodes() {
-      return new Map(Object.entries(_nodes));
+      return sharedNodeStore.getAllNodes();
     },
     get rootNodeIds() {
       return _rootNodeIds;
@@ -1327,27 +1300,27 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Content processing methods for integration tests
     parseNodeContent(nodeId: string) {
-      const node = _nodes[nodeId];
+      const node = sharedNodeStore.getNode(nodeId);
       if (!node) return null;
       return contentProcessor.parseMarkdown(node.content);
     },
 
     async renderNodeAsHTML(nodeId: string): Promise<string> {
-      const node = _nodes[nodeId];
+      const node = sharedNodeStore.getNode(nodeId);
       if (!node) return '';
       const result = await contentProcessor.markdownToDisplay(node.content);
       return result || '';
     },
 
     getNodeHeaderLevel(nodeId: string): number {
-      const node = _nodes[nodeId];
+      const node = sharedNodeStore.getNode(nodeId);
       if (!node) return 0;
       const headerMatch = node.content.match(/^(#{1,6})\s+/);
       return headerMatch ? headerMatch[1].length : 0;
     },
 
     getNodeDisplayText(nodeId: string): string {
-      const node = _nodes[nodeId];
+      const node = sharedNodeStore.getNode(nodeId);
       if (!node) return '';
       return contentProcessor
         .displayToMarkdown(node.content)
@@ -1356,7 +1329,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     },
 
     updateNodeContentWithProcessing(nodeId: string, content: string): boolean {
-      const node = _nodes[nodeId];
+      const node = sharedNodeStore.getNode(nodeId);
       if (!node) return false;
       updateNodeContent(nodeId, content);
       return true;
@@ -1372,7 +1345,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       }
     ): void {
       // Clear existing state
-      Object.keys(_nodes).forEach((id) => delete _nodes[id]);
       Object.keys(_uiState).forEach((id) => delete _uiState[id]);
       _rootNodeIds = [];
 
@@ -1387,14 +1359,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         if (visited.has(nodeId)) return 0; // Prevent infinite recursion
         visited.add(nodeId);
 
-        const node = _nodes[nodeId];
+        const node = sharedNodeStore.getNode(nodeId);
         if (!node || !node.parentId) return 0;
         return 1 + computeDepth(node.parentId, visited);
       };
 
-      // First pass: Add all nodes
+      // First pass: Add all nodes to SharedNodeStore
       for (const node of nodes) {
-        _nodes[node.id] = node;
+        sharedNodeStore.setNode(node, viewerSource);
         _uiState[node.id] = createDefaultUIState(node.id, {
           depth: 0, // Will be computed in second pass
           expanded: defaults.expanded,
@@ -1408,9 +1380,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       const childIds = new Set(nodes.filter((n) => n.parentId).map((n) => n.id));
       _rootNodeIds = nodes.filter((n) => !n.parentId || !childIds.has(n.id)).map((n) => n.id);
 
-      for (const nodeId of Object.keys(_nodes)) {
-        const depth = computeDepth(nodeId);
-        _uiState[nodeId] = { ..._uiState[nodeId], depth };
+      for (const node of nodes) {
+        const depth = computeDepth(node.id);
+        _uiState[node.id] = { ..._uiState[node.id], depth };
       }
 
       _updateTrigger++;

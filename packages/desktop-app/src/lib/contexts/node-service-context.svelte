@@ -143,6 +143,9 @@
         }
       };
 
+      // Phase 1.3: SharedNodeStore initialization
+      // SharedNodeStore is automatically initialized as singleton when ReactiveNodeService is created.
+      // Each ReactiveNodeService instance subscribes to the shared store for multi-viewer sync.
       const nodeManager = createReactiveNodeService(nodeManagerEvents);
 
       // No more demo data initialization - we'll load from real database

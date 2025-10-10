@@ -168,6 +168,25 @@ export interface HierarchyChangedEvent extends BaseEvent {
   metadata?: Record<string, unknown>;
 }
 
+export interface ConflictResolvedEvent extends BaseEvent {
+  type: 'node:conflict-resolved';
+  namespace: 'lifecycle';
+  nodeId: string;
+  conflictType: 'concurrent-edit' | 'version-mismatch' | 'deleted-node';
+  strategy: 'last-write-wins' | 'field-merge' | 'manual' | 'operational-transform';
+  discardedUpdate?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+export interface UpdateRolledBackEvent extends BaseEvent {
+  type: 'node:update-rolled-back';
+  namespace: 'lifecycle';
+  nodeId: string;
+  reason: string;
+  failedUpdate: unknown;
+  metadata?: Record<string, unknown>;
+}
+
 // ============================================================================
 // Phase 2+ Preparation Events (Backlinking, AI, Collaboration)
 // ============================================================================
@@ -318,6 +337,8 @@ export type NodeSpaceEvent =
   | NodeUpdatedEvent
   | NodeDeletedEvent
   | HierarchyChangedEvent
+  | ConflictResolvedEvent
+  | UpdateRolledBackEvent
   // Backend/Processing Events
   | NodeReferenceUpdateEvent
   | NodePersistenceEvent
@@ -421,6 +442,8 @@ export const EventTypes = {
   NODE_UPDATED: 'node:updated',
   NODE_DELETED: 'node:deleted',
   HIERARCHY_CHANGED: 'hierarchy:changed',
+  CONFLICT_RESOLVED: 'node:conflict-resolved',
+  UPDATE_ROLLED_BACK: 'node:update-rolled-back',
 
   // Phase 2+ Events
   BACKLINK_DETECTED: 'backlink:detected',
