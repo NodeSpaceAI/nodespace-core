@@ -22,7 +22,7 @@
     "analyze": "bunx vite-bundle-analyzer dist",
     "build:analyze": "bun run build && bun run analyze",
     "tauri": "bunx tauri",
-    "tauri:dev": "bunx tauri dev",
+    "tauri:dev": "bunx tauri dev -- --bin nodespace-app",
     "tauri:build": "bunx tauri build",
     "dev:server": "cd src-tauri && cargo run --bin dev-server --features dev-server"
   },
