@@ -12,6 +12,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# Development-only HTTP server for web-mode testing
+dev-server = ["axum", "tower-http", "tracing-subscriber"]
+
+[[bin]]
+name = "dev-server"
+path = "src/bin/dev-server.rs"
+required-features = ["dev-server"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
@@ -26,4 +35,9 @@ tauri-plugin-decorum = "1.1.1"
 nodespace-core = { workspace = true }
 dirs = "5.0"
 tracing = "0.1"
+
+# HTTP dev server dependencies (dev-only)
+axum = { version = "0.7", optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 

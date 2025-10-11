@@ -23,7 +23,8 @@
     "build:analyze": "bun run build && bun run analyze",
     "tauri": "bunx tauri",
     "tauri:dev": "bunx tauri dev",
-    "tauri:build": "bunx tauri build"
+    "tauri:build": "bunx tauri build",
+    "dev:server": "cd src-tauri && cargo run --bin dev-server --features dev-server"
   },
   "license": "MIT",
   "dependencies": {

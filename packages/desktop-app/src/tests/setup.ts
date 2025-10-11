@@ -22,6 +22,17 @@ if (
 // DOM globals are provided by happy-dom environment
 // No need to set up additional DOM globals - happy-dom handles this
 
+// Mock window.__TAURI__ as undefined to force HTTP adapter usage in tests
+// This ensures tests use the HTTP dev server instead of Tauri IPC
+if (typeof window !== 'undefined') {
+  // Ensure __TAURI__ is undefined for HTTP adapter detection
+  Object.defineProperty(window, '__TAURI__', {
+    value: undefined,
+    writable: false,
+    configurable: true
+  });
+}
+
 // Plugin registry initialization moved to globalSetup.ts
 
 // Mock MutationObserver for testing

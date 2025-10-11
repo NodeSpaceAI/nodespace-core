@@ -1,6 +1,10 @@
 // Tauri commands module
 mod commands;
 
+// HTTP dev server module (feature-gated for development only)
+#[cfg(feature = "dev-server")]
+pub mod dev_server;
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {

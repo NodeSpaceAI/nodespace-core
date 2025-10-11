@@ -1,8 +1,11 @@
 /**
- * TauriNodeService - Real backend integration via Tauri commands
+ * TauriNodeService - Backend integration with automatic adapter selection
  *
- * Provides persistent storage with libsql through Tauri invoke() commands.
- * Uses unified Node type that matches Rust backend exactly.
+ * Provides persistent storage through backend adapter pattern:
+ * - Tauri desktop mode: Uses IPC via TauriAdapter
+ * - Web development mode: Uses HTTP via HttpAdapter (port 3001)
+ *
+ * The service automatically detects the environment and uses the appropriate adapter.
  *
  * Database Location (automatically handled by backend):
  * - macOS/Linux: ~/.local/share/nodespace/nodespace.db
@@ -11,41 +14,30 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import type { Node, NodeUpdate } from '$lib/types';
-import { toError, DatabaseInitializationError, NodeOperationError } from '$lib/types/errors';
+import { DatabaseInitializationError, NodeOperationError, toError } from '$lib/types/errors';
+import { getBackendAdapter, type BackendAdapter } from './backend-adapter';
 
 /**
- * Detect if running in Tauri environment
- * In Tauri v2, we check for __TAURI__ global object
- */
-function isTauriEnvironment(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    (window as unknown as { __TAURI__?: unknown }).__TAURI__ !== undefined
-  );
-}
-
-/**
- * Invoke Tauri command - only works in Tauri environment
- * In web mode, throws an error that should be handled by caller
+ * Helper function for Phase 2/3 methods that aren't in backend adapter yet
+ * These will be migrated to the adapter pattern in future phases.
  */
 async function universalInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  if (!isTauriEnvironment()) {
-    throw new DatabaseInitializationError(
-      'Tauri API not available - running in web browser mode. Database operations require Tauri desktop app.',
-      undefined
-    );
-  }
-
   return invoke<T>(command, args);
 }
 
 /**
- * TauriNodeService - Clean implementation with unified types
- * Works in both Tauri desktop and web browser environments
+ * TauriNodeService - Clean implementation with backend adapter pattern
+ * Automatically uses the correct adapter (Tauri IPC or HTTP) based on environment
  */
 export class TauriNodeService {
   private initialized = false;
   private dbPath: string | null = null;
+  private adapter: BackendAdapter;
+
+  constructor() {
+    // Auto-detect environment and get appropriate adapter
+    this.adapter = getBackendAdapter();
+  }
 
   /**
    * Initialize database with default location
@@ -53,10 +45,11 @@ export class TauriNodeService {
    * Backend automatically chooses platform-appropriate location.
    * Call this once at app startup - BLOCKING operation.
    *
+   * @param customDbPath - Optional custom database path (useful for testing)
    * @returns Path to the initialized database file
    * @throws DatabaseInitializationError if initialization fails
    */
-  async initializeDatabase(): Promise<string> {
+  async initializeDatabase(customDbPath?: string): Promise<string> {
     // Guard against double initialization (can happen with HMR or React StrictMode)
     if (this.initialized && this.dbPath) {
       console.log('[TauriNodeService] Database already initialized, returning existing path');
@@ -64,36 +57,39 @@ export class TauriNodeService {
     }
 
     try {
-      this.dbPath = await universalInvoke<string>('initialize_database');
+      this.dbPath = await this.adapter.initializeDatabase(customDbPath);
       this.initialized = true;
       console.log('[TauriNodeService] Database initialized at:', this.dbPath);
       return this.dbPath;
     } catch (error) {
-      const err = toError(error);
-      console.error('[TauriNodeService] Failed to initialize database:', err);
-      throw new DatabaseInitializationError(err.message, err.stack);
+      console.error('[TauriNodeService] Failed to initialize database:', error);
+      throw error;
     }
   }
 
   /**
    * Select database location using native folder picker
    *
+   * NOTE: This method only works in Tauri desktop mode (not web/HTTP mode).
    * Presents a native dialog to the user for custom database locations.
    * Most apps should use initializeDatabase() instead.
    *
    * @returns Path to the selected database file
-   * @throws DatabaseInitializationError if user cancels or initialization fails
+   * @throws Error if not in Tauri mode or if user cancels
    */
   async selectDatabaseLocation(): Promise<string> {
+    // This functionality requires Tauri-specific APIs
+    // Not available through backend adapter (no HTTP equivalent)
+    const { invoke } = await import('@tauri-apps/api/core');
+
     try {
-      this.dbPath = await universalInvoke<string>('select_db_location');
+      this.dbPath = await invoke<string>('select_db_location');
       this.initialized = true;
       console.log('[TauriNodeService] Database location selected:', this.dbPath);
       return this.dbPath;
     } catch (error) {
-      const err = toError(error);
-      console.error('[TauriNodeService] Failed to select database location:', err);
-      throw new DatabaseInitializationError(err.message, err.stack);
+      console.error('[TauriNodeService] Failed to select database location:', error);
+      throw error;
     }
   }
 
@@ -109,17 +105,9 @@ export class TauriNodeService {
    */
   async createNode(node: Omit<Node, 'createdAt' | 'modifiedAt'>): Promise<string> {
     this.ensureInitialized();
-
-    try {
-      // Backend will add timestamps automatically
-      const nodeId = await universalInvoke<string>('create_node', { node });
-      console.log('[TauriNodeService] Created node:', nodeId);
-      return nodeId;
-    } catch (error) {
-      const err = toError(error);
-      console.error('[TauriNodeService] Failed to create node:', err);
-      throw new NodeOperationError(err.message, node.id, 'create');
-    }
+    const nodeId = await this.adapter.createNode(node);
+    console.log('[TauriNodeService] Created node:', nodeId);
+    return nodeId;
   }
 
   /**
@@ -131,15 +119,7 @@ export class TauriNodeService {
    */
   async getNode(id: string): Promise<Node | null> {
     this.ensureInitialized();
-
-    try {
-      const node = await universalInvoke<Node | null>('get_node', { id });
-      return node;
-    } catch (error) {
-      const err = toError(error);
-      console.error('[TauriNodeService] Failed to get node:', id, err);
-      throw new NodeOperationError(err.message, id, 'get');
-    }
+    return await this.adapter.getNode(id);
   }
 
   /**
@@ -153,16 +133,8 @@ export class TauriNodeService {
    */
   async updateNode(id: string, update: NodeUpdate): Promise<void> {
     this.ensureInitialized();
-
-    try {
-      // Backend will auto-update modified_at
-      await universalInvoke<void>('update_node', { id, update });
-      console.log('[TauriNodeService] Updated node:', id);
-    } catch (error) {
-      const err = toError(error);
-      console.error('[TauriNodeService] Failed to update node:', id, err);
-      throw new NodeOperationError(err.message, id, 'update');
-    }
+    await this.adapter.updateNode(id, update);
+    console.log('[TauriNodeService] Updated node:', id);
   }
 
   /**
@@ -175,15 +147,8 @@ export class TauriNodeService {
    */
   async deleteNode(id: string): Promise<void> {
     this.ensureInitialized();
-
-    try {
-      await universalInvoke<void>('delete_node', { id });
-      console.log('[TauriNodeService] Deleted node:', id);
-    } catch (error) {
-      const err = toError(error);
-      console.error('[TauriNodeService] Failed to delete node:', id, err);
-      throw new NodeOperationError(err.message, id, 'delete');
-    }
+    await this.adapter.deleteNode(id);
+    console.log('[TauriNodeService] Deleted node:', id);
   }
 
   /**
@@ -197,15 +162,7 @@ export class TauriNodeService {
    */
   async getChildren(parentId: string): Promise<Node[]> {
     this.ensureInitialized();
-
-    try {
-      const children = await universalInvoke<Node[]>('get_children', { parentId });
-      return children;
-    } catch (error) {
-      const err = toError(error);
-      console.error('[TauriNodeService] Failed to get children:', parentId, err);
-      throw new NodeOperationError(err.message, parentId, 'getChildren');
-    }
+    return await this.adapter.getChildren(parentId);
   }
 
   /**
