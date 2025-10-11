@@ -1,0 +1,15 @@
+//! Shared constants used across the application
+//!
+//! This module contains constants that are used in multiple places
+//! to ensure consistency and avoid duplication.
+
+/// Allowed node types in the system
+///
+/// Currently supported node types:
+/// - "text": Plain text nodes
+/// - "task": Task/todo nodes with completion status
+/// - "date": Date-based nodes for daily notes
+///
+/// Used by both Tauri IPC commands and HTTP dev server endpoints
+/// to ensure consistent validation.
+pub const ALLOWED_NODE_TYPES: &[&str] = &["text", "task", "date"];

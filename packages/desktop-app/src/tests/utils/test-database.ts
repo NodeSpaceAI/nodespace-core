@@ -36,17 +36,21 @@ import { tmpdir } from 'node:os';
 /**
  * Create a unique test database path
  *
+ * Uses timestamp and random suffix for uniqueness, preventing collisions
+ * in parallel test execution.
+ *
  * @param testName - Name of the test (used for unique file naming)
  * @returns Path to the test database file
  *
  * @example
  * const dbPath = createTestDatabase('node-crud-tests');
- * // Returns: /tmp/nodespace-test-node-crud-tests-1234567890.db
+ * // Returns: /tmp/nodespace-test-node-crud-tests-1234567890-a1b2c3.db
  */
 export function createTestDatabase(testName: string): string {
   const timestamp = Date.now();
+  const random = Math.random().toString(36).substring(2, 8); // 6 character random suffix
   const sanitizedName = testName.replace(/[^a-z0-9-]/gi, '-').toLowerCase();
-  const filename = `nodespace-test-${sanitizedName}-${timestamp}.db`;
+  const filename = `nodespace-test-${sanitizedName}-${timestamp}-${random}.db`;
   return path.join(tmpdir(), filename);
 }
 

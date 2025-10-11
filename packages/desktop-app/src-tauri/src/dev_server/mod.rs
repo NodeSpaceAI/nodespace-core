@@ -147,10 +147,35 @@ pub fn create_router(state: AppState) -> Router {
 
 /// Create CORS layer for development
 ///
-/// Allows requests from Vite dev server (localhost:1420) only.
+/// Allows requests from Vite dev server. Supports configurable origins via
+/// CORS_ALLOW_ORIGIN environment variable for flexibility when Vite uses
+/// different ports.
+///
+/// Default: http://localhost:1420
+/// Configure: CORS_ALLOW_ORIGIN="http://localhost:5173" cargo run ...
 fn cors_layer() -> CorsLayer {
+    // Allow multiple common Vite ports
+    let default_origins = [
+        "http://localhost:1420", // NodeSpace default
+        "http://localhost:5173", // Vite default
+        "http://localhost:1421", // Fallback if 1420 busy
+    ];
+
+    // Check for custom CORS origin from environment
+    let origins: Vec<header::HeaderValue> =
+        if let Ok(custom_origin) = std::env::var("CORS_ALLOW_ORIGIN") {
+            vec![custom_origin
+                .parse::<header::HeaderValue>()
+                .expect("Invalid CORS_ALLOW_ORIGIN - must be valid HTTP origin")]
+        } else {
+            default_origins
+                .iter()
+                .map(|o| o.parse::<header::HeaderValue>().unwrap())
+                .collect()
+        };
+
     CorsLayer::new()
-        .allow_origin("http://localhost:1420".parse::<header::HeaderValue>().unwrap())
+        .allow_origin(origins)
         .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
         .allow_headers(Any)
         .allow_credentials(false)

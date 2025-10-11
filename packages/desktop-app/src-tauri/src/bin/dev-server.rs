@@ -65,8 +65,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("📡 Port: {}", port);
 
     // Determine database path (use dev-specific database)
-    let home_dir = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Failed to get home directory"))?;
+    let home_dir =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Failed to get home directory"))?;
 
     let db_path: PathBuf = home_dir
         .join(".nodespace")
@@ -89,12 +89,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("✅ Services initialized");
 
     // Start HTTP server
-    nodespace_app_lib::dev_server::start_server(
-        Arc::new(db_service),
-        Arc::new(node_service),
-        port,
-    )
-    .await?;
+    nodespace_app_lib::dev_server::start_server(Arc::new(db_service), Arc::new(node_service), port)
+        .await?;
 
     Ok(())
 }

@@ -20,8 +20,19 @@ import { getBackendAdapter, type BackendAdapter } from './backend-adapter';
 /**
  * Helper function for Phase 2/3 methods that aren't in backend adapter yet
  * These will be migrated to the adapter pattern in future phases.
+ *
+ * IMPORTANT: These methods only work in Tauri desktop mode (IPC).
+ * Web mode will throw an error until Phase 2/3 HTTP endpoints are implemented.
  */
 async function universalInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  // Check if we're in HTTP mode (not Tauri)
+  if (typeof window !== 'undefined' && !window.__TAURI__) {
+    throw new Error(
+      `Method '${command}' requires Tauri IPC - HTTP endpoint not yet implemented. ` +
+        `This functionality will be added in Phase 2/3 (issues #211, #212). ` +
+        `Please use 'bun run tauri:dev' for full functionality.`
+    );
+  }
   return invoke<T>(command, args);
 }
 

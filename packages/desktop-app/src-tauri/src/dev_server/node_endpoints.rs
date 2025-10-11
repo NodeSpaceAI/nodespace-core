@@ -6,6 +6,7 @@
 //!
 //! # Endpoints
 //!
+//! - `GET /api/health` - Health check endpoint
 //! - `POST /api/database/init?db_path=` - Initialize database
 //! - `POST /api/nodes` - Create a new node
 //! - `GET /api/nodes/:id` - Get a node by ID
@@ -21,7 +22,6 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 use crate::commands::nodes::CreateNodeInput;
 use crate::dev_server::{AppState, HttpError};
@@ -42,6 +42,30 @@ pub struct InitDbResponse {
     pub db_path: String,
 }
 
+/// Health check response
+#[derive(Debug, Serialize)]
+pub struct HealthStatus {
+    pub status: String,
+    pub version: String,
+}
+
+/// Health check endpoint
+///
+/// Returns server status and version information. Useful for verifying
+/// that the dev server is running before executing tests.
+///
+/// # Example
+///
+/// ```bash
+/// curl http://localhost:3001/api/health
+/// ```
+async fn health_check() -> Json<HealthStatus> {
+    Json(HealthStatus {
+        status: "ok".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    })
+}
+
 /// Initialize database with optional custom path
 ///
 /// # Query Parameters
@@ -57,7 +81,14 @@ pub struct InitDbResponse {
 /// # Use custom path for testing
 /// curl -X POST "http://localhost:3001/api/database/init?db_path=/tmp/test.db"
 /// ```
+///
+/// # Note
+///
+/// This endpoint only prepares the database directory structure.
+/// The actual database initialization happens when the dev-server binary starts.
+/// Tests should ensure the dev-server is running before calling this endpoint.
 async fn init_database(
+    State(_state): State<AppState>,
     Query(params): Query<InitDbQuery>,
 ) -> Result<Json<InitDbResponse>, HttpError> {
     use std::path::PathBuf;
@@ -88,6 +119,12 @@ async fn init_database(
         .to_str()
         .ok_or_else(|| HttpError::new("Invalid database path", "PATH_ERROR"))?
         .to_string();
+
+    // Actually initialize the database using the existing DatabaseService
+    use nodespace_core::DatabaseService;
+    let _ = DatabaseService::new(db_path.clone())
+        .await
+        .map_err(|e| HttpError::from_anyhow(e.into(), "DATABASE_INIT_ERROR"))?;
 
     tracing::info!("📦 Database initialized at: {}", db_path_str);
 
@@ -121,10 +158,10 @@ async fn create_node(
     State(state): State<AppState>,
     Json(node): Json<CreateNodeInput>,
 ) -> Result<Json<String>, HttpError> {
+    use crate::constants::ALLOWED_NODE_TYPES;
     use chrono::Utc;
 
     // Validate node type (same as Tauri command)
-    const ALLOWED_NODE_TYPES: &[&str] = &["text", "task", "date"];
     if !ALLOWED_NODE_TYPES.contains(&node.node_type.as_str()) {
         return Err(HttpError::with_details(
             format!(
@@ -279,6 +316,7 @@ async fn get_children(
 /// all Phase 1 endpoints.
 pub fn routes(state: AppState) -> Router {
     Router::new()
+        .route("/api/health", get(health_check))
         .route("/api/database/init", post(init_database))
         .route("/api/nodes", post(create_node))
         .route("/api/nodes/:id", get(get_node))

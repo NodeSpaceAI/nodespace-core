@@ -1,5 +1,8 @@
-// Tauri commands module
-mod commands;
+// Tauri commands module (public for dev-server access)
+pub mod commands;
+
+// Shared constants
+pub mod constants;
 
 // HTTP dev server module (feature-gated for development only)
 #[cfg(feature = "dev-server")]

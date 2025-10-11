@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
-/// Allowed node types for initial E2E testing
-const ALLOWED_NODE_TYPES: &[&str] = &["text", "task", "date"];
+use crate::constants::ALLOWED_NODE_TYPES;
 
 /// Input for creating a node - timestamps generated server-side
 #[derive(Debug, Deserialize)]
