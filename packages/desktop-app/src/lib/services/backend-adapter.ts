@@ -48,8 +48,76 @@ export interface QueryNodesParams {
   containerId?: string;
 }
 
+// Phase 3: Embedding-related types
+
 /**
- * Backend adapter interface - Phase 1 & Phase 2 operations
+ * Search parameters for topic similarity search
+ *
+ * @example
+ * ```typescript
+ * const params: SearchTopicsParams = {
+ *   query: "machine learning",
+ *   threshold: 0.7,
+ *   limit: 20,
+ *   exact: false
+ * };
+ * const results = await adapter.searchTopics(params);
+ * ```
+ */
+export interface SearchTopicsParams {
+  query: string;
+  threshold?: number;
+  limit?: number;
+  exact?: boolean;
+}
+
+/**
+ * Result of batch embedding generation
+ *
+ * @example
+ * ```typescript
+ * const result: BatchEmbeddingResult = await adapter.batchGenerateEmbeddings([
+ *   "topic-1",
+ *   "topic-2",
+ *   "topic-3"
+ * ]);
+ * console.log(`Successfully embedded ${result.successCount} topics`);
+ * if (result.failedEmbeddings.length > 0) {
+ *   console.error("Failed embeddings:", result.failedEmbeddings);
+ * }
+ * ```
+ */
+export interface BatchEmbeddingResult {
+  successCount: number;
+  failedEmbeddings: Array<{
+    topicId: string;
+    error: string;
+  }>;
+}
+
+/**
+ * Input for creating a container node (root node with no parent)
+ *
+ * @example
+ * ```typescript
+ * const input: CreateContainerNodeInput = {
+ *   content: "Project Planning",
+ *   nodeType: "topic",
+ *   properties: { priority: "high", status: "active" },
+ *   mentionedBy: "user-node-123"
+ * };
+ * const containerId = await adapter.createContainerNode(input);
+ * ```
+ */
+export interface CreateContainerNodeInput {
+  content: string;
+  nodeType: string;
+  properties?: Record<string, unknown>;
+  mentionedBy?: string;
+}
+
+/**
+ * Backend adapter interface - Phase 1, 2, and 3 operations
  *
  * Future phases should extend this interface by adding new methods.
  */
@@ -102,6 +170,85 @@ export interface BackendAdapter {
    * @returns Array of matching nodes
    */
   queryNodes(params: QueryNodesParams): Promise<Node[]>;
+
+  // === Phase 3: Embedding Operations ===
+
+  /**
+   * Generate embedding for a topic node
+   * @param topicId - ID of the topic node to embed
+   * @throws {NodeOperationError} If embedding generation fails
+   */
+  generateTopicEmbedding(topicId: string): Promise<void>;
+
+  /**
+   * Search topics by semantic similarity
+   * @param params - Search parameters (query, threshold, limit, exact)
+   * @returns Array of matching topic nodes sorted by similarity score (highest first)
+   * @throws {NodeOperationError} If search operation fails
+   */
+  searchTopics(params: SearchTopicsParams): Promise<Node[]>;
+
+  /**
+   * Update topic embedding immediately
+   * @param topicId - ID of the topic to update
+   * @throws {NodeOperationError} If embedding update fails
+   */
+  updateTopicEmbedding(topicId: string): Promise<void>;
+
+  /**
+   * Batch generate embeddings for multiple topics
+   * @param topicIds - Array of topic IDs to embed
+   * @returns Result object containing success count and array of failed embeddings with error details
+   * @throws {NodeOperationError} If batch operation fails completely
+   */
+  batchGenerateEmbeddings(topicIds: string[]): Promise<BatchEmbeddingResult>;
+
+  /**
+   * Get count of stale topics needing re-embedding
+   * @returns Number of topics that have been modified but not yet re-embedded
+   * @throws {NodeOperationError} If count retrieval fails
+   */
+  getStaleTopicCount(): Promise<number>;
+
+  /**
+   * Smart trigger: Topic closed/unfocused
+   * @param topicId - ID of the topic that was closed
+   * @throws {NodeOperationError} If trigger operation fails
+   */
+  onTopicClosed(topicId: string): Promise<void>;
+
+  /**
+   * Smart trigger: Idle timeout (30s of no activity)
+   * @param topicId - ID of the topic to check
+   * @returns True if re-embedding was triggered, false if topic was not stale
+   * @throws {NodeOperationError} If trigger operation fails
+   */
+  onTopicIdle(topicId: string): Promise<boolean>;
+
+  /**
+   * Manually sync all stale topics
+   * @returns Number of topics successfully re-embedded during the sync operation
+   * @throws {NodeOperationError} If sync operation fails
+   */
+  syncEmbeddings(): Promise<number>;
+
+  // === Phase 3: Node Mention Operations ===
+
+  /**
+   * Create a container node (root node with no parent)
+   * @param input - Container node data
+   * @returns ID of the created container node
+   * @throws {NodeOperationError} If container node creation fails
+   */
+  createContainerNode(input: CreateContainerNodeInput): Promise<string>;
+
+  /**
+   * Create a mention relationship between two nodes
+   * @param mentioningNodeId - ID of the node that contains the mention
+   * @param mentionedNodeId - ID of the node being mentioned
+   * @throws {NodeOperationError} If mention creation fails
+   */
+  createNodeMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void>;
 }
 
 /**
@@ -175,6 +322,107 @@ export class TauriAdapter implements BackendAdapter {
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, params.parentId ?? 'query', 'queryNodes');
+    }
+  }
+
+  // === Phase 3: Embedding Operations ===
+
+  async generateTopicEmbedding(topicId: string): Promise<void> {
+    try {
+      await invoke<void>('generate_topic_embedding', { topicId });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, topicId, 'generateTopicEmbedding');
+    }
+  }
+
+  async searchTopics(params: SearchTopicsParams): Promise<Node[]> {
+    try {
+      return await invoke<Node[]>('search_topics', { params });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, params.query, 'searchTopics');
+    }
+  }
+
+  async updateTopicEmbedding(topicId: string): Promise<void> {
+    try {
+      await invoke<void>('update_topic_embedding', { topicId });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, topicId, 'updateTopicEmbedding');
+    }
+  }
+
+  async batchGenerateEmbeddings(topicIds: string[]): Promise<BatchEmbeddingResult> {
+    try {
+      return await invoke<BatchEmbeddingResult>('batch_generate_embeddings', { topicIds });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, topicIds.join(','), 'batchGenerateEmbeddings');
+    }
+  }
+
+  async getStaleTopicCount(): Promise<number> {
+    try {
+      return await invoke<number>('get_stale_topic_count');
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, '', 'getStaleTopicCount');
+    }
+  }
+
+  async onTopicClosed(topicId: string): Promise<void> {
+    try {
+      await invoke<void>('on_topic_closed', { topicId });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, topicId, 'onTopicClosed');
+    }
+  }
+
+  async onTopicIdle(topicId: string): Promise<boolean> {
+    try {
+      return await invoke<boolean>('on_topic_idle', { topicId });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, topicId, 'onTopicIdle');
+    }
+  }
+
+  async syncEmbeddings(): Promise<number> {
+    try {
+      return await invoke<number>('sync_embeddings');
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, '', 'syncEmbeddings');
+    }
+  }
+
+  // === Phase 3: Node Mention Operations ===
+
+  async createContainerNode(input: CreateContainerNodeInput): Promise<string> {
+    try {
+      return await invoke<string>('create_container_node', { input });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, input.content, 'createContainerNode');
+    }
+  }
+
+  async createNodeMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
+    try {
+      await invoke<void>('create_node_mention', {
+        mentioningNodeId,
+        mentionedNodeId
+      });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(
+        err.message,
+        `${mentioningNodeId} -> ${mentionedNodeId}`,
+        'createNodeMention'
+      );
     }
   }
 }
@@ -336,6 +584,221 @@ export class HttpAdapter implements BackendAdapter {
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, params.parentId ?? 'query', 'queryNodes');
+    }
+  }
+
+  // === Phase 3: Embedding Operations ===
+
+  /**
+   * Fetch with automatic timeout and error handling
+   *
+   * @param url - The URL to fetch
+   * @param options - Fetch options (method, headers, body, etc.)
+   * @param operationName - Name of the operation (for error messages)
+   * @param contextId - Context identifier for error tracking
+   * @returns Response object
+   * @throws {NodeOperationError} If request times out or fails
+   * @private
+   */
+  private async fetchWithTimeout(
+    url: string,
+    options: RequestInit,
+    operationName: string,
+    contextId: string = ''
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
+    try {
+      const response = await globalThis.fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      return response;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new NodeOperationError(
+          `${operationName} timeout - operation took too long`,
+          contextId,
+          operationName
+        );
+      }
+      throw error; // Re-throw for caller to handle
+    } finally {
+      clearTimeout(timeoutId); // Always cleanup
+    }
+  }
+
+  async generateTopicEmbedding(topicId: string): Promise<void> {
+    try {
+      const response = await this.fetchWithTimeout(
+        `${this.baseUrl}/api/embeddings/generate`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topicId })
+        },
+        'Embedding generation',
+        topicId
+      );
+      await this.handleResponse<void>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, topicId, 'generateTopicEmbedding');
+    }
+  }
+
+  async searchTopics(params: SearchTopicsParams): Promise<Node[]> {
+    try {
+      const response = await this.fetchWithTimeout(
+        `${this.baseUrl}/api/embeddings/search`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(params)
+        },
+        'Search',
+        params.query
+      );
+      return await this.handleResponse<Node[]>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, params.query, 'searchTopics');
+    }
+  }
+
+  async updateTopicEmbedding(topicId: string): Promise<void> {
+    try {
+      const response = await this.fetchWithTimeout(
+        `${this.baseUrl}/api/embeddings/${encodeURIComponent(topicId)}`,
+        {
+          method: 'PATCH'
+        },
+        'Embedding update',
+        topicId
+      );
+      await this.handleResponse<void>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, topicId, 'updateTopicEmbedding');
+    }
+  }
+
+  async batchGenerateEmbeddings(topicIds: string[]): Promise<BatchEmbeddingResult> {
+    try {
+      const response = await this.fetchWithTimeout(
+        `${this.baseUrl}/api/embeddings/batch`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topicIds })
+        },
+        'Batch embedding',
+        'batch'
+      );
+      return await this.handleResponse<BatchEmbeddingResult>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, 'batch', 'batchGenerateEmbeddings');
+    }
+  }
+
+  async getStaleTopicCount(): Promise<number> {
+    try {
+      const response = await globalThis.fetch(`${this.baseUrl}/api/embeddings/stale-count`);
+      return await this.handleResponse<number>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, 'stale-count', 'getStaleTopicCount');
+    }
+  }
+
+  async onTopicClosed(topicId: string): Promise<void> {
+    try {
+      const response = await this.fetchWithTimeout(
+        `${this.baseUrl}/api/embeddings/on-topic-closed`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topicId })
+        },
+        'Topic closed trigger',
+        topicId
+      );
+      await this.handleResponse<void>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, topicId, 'onTopicClosed');
+    }
+  }
+
+  async onTopicIdle(topicId: string): Promise<boolean> {
+    try {
+      const response = await this.fetchWithTimeout(
+        `${this.baseUrl}/api/embeddings/on-topic-idle`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topicId })
+        },
+        'Topic idle trigger',
+        topicId
+      );
+      return await this.handleResponse<boolean>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, topicId, 'onTopicIdle');
+    }
+  }
+
+  async syncEmbeddings(): Promise<number> {
+    try {
+      const response = await this.fetchWithTimeout(
+        `${this.baseUrl}/api/embeddings/sync`,
+        {
+          method: 'POST'
+        },
+        'Embeddings sync',
+        'sync'
+      );
+      return await this.handleResponse<number>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, 'sync', 'syncEmbeddings');
+    }
+  }
+
+  // === Phase 3: Node Mention Operations ===
+
+  async createContainerNode(input: CreateContainerNodeInput): Promise<string> {
+    try {
+      const response = await globalThis.fetch(`${this.baseUrl}/api/nodes/container`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input)
+      });
+      return await this.handleResponse<string>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, input.content, 'createContainerNode');
+    }
+  }
+
+  async createNodeMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
+    try {
+      const response = await globalThis.fetch(`${this.baseUrl}/api/nodes/mention`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mentioningNodeId, mentionedNodeId })
+      });
+      await this.handleResponse<void>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(
+        err.message,
+        `${mentioningNodeId} -> ${mentionedNodeId}`,
+        'createNodeMention'
+      );
     }
   }
 }

@@ -45,7 +45,7 @@ mod node_endpoints;
 mod query_endpoints;
 
 // Phase 3: Embeddings and mentions (added by #212)
-// mod embedding_endpoints;
+mod embedding_endpoints;
 
 // Shared HTTP error handling
 mod http_error;
@@ -85,7 +85,7 @@ pub fn create_router(state: AppState) -> Router {
         // Phase 2: Query and advanced operations (added by #211)
         .merge(query_endpoints::routes(state.clone()))
         // Phase 3: Embeddings and mentions (added by #212)
-        // .merge(embedding_endpoints::routes(state.clone()))
+        .merge(embedding_endpoints::routes(state.clone()))
         .layer(cors_layer())
 }
 
