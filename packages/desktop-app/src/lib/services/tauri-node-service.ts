@@ -62,9 +62,18 @@ export class TauriNodeService {
    */
   async initializeDatabase(customDbPath?: string): Promise<string> {
     // Guard against double initialization (can happen with HMR or React StrictMode)
+    // BUT: Allow re-initialization when a different custom DB path is provided (for testing)
     if (this.initialized && this.dbPath) {
-      console.log('[TauriNodeService] Database already initialized, returning existing path');
-      return this.dbPath;
+      // If requesting a different database, allow re-initialization
+      if (customDbPath && customDbPath !== this.dbPath) {
+        console.log(
+          `[TauriNodeService] Re-initializing with different database: ${customDbPath} (was: ${this.dbPath})`
+        );
+        this.initialized = false;
+      } else {
+        console.log('[TauriNodeService] Database already initialized, returning existing path');
+        return this.dbPath;
+      }
     }
 
     try {

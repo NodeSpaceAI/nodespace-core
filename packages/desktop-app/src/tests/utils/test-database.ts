@@ -29,6 +29,7 @@
  */
 
 import { HttpAdapter, type BackendAdapter } from '$lib/services/backend-adapter';
+import { tauriNodeService } from '$lib/services/tauri-node-service';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -90,7 +91,8 @@ export async function cleanupTestDatabase(dbPath: string): Promise<void> {
  * Initialize a test database via HTTP dev server
  *
  * This calls the `/api/database/init?db_path=` endpoint to initialize
- * the database at the specified path.
+ * the database at the specified path, and also initializes the singleton
+ * tauriNodeService to use this database for the test.
  *
  * @param dbPath - Path to the database file
  * @param serverUrl - HTTP dev server URL (default: http://localhost:3001)
@@ -106,6 +108,12 @@ export async function initializeTestDatabase(
 ): Promise<string> {
   const adapter = new HttpAdapter(serverUrl);
   const initializedPath = await adapter.initializeDatabase(dbPath);
+
+  // CRITICAL: Also initialize the singleton tauriNodeService with this test database
+  // SharedNodeStore uses tauriNodeService.createNode() to persist nodes, so we need
+  // to tell the singleton to use this test's specific database
+  await tauriNodeService.initializeDatabase(dbPath);
+
   console.log(`[Test] Initialized test database: ${initializedPath}`);
   return initializedPath;
 }
