@@ -30,11 +30,9 @@
 //! - Never runs in production (feature-gated)
 
 use axum::{
-    http::{header, Method, StatusCode},
-    response::{IntoResponse, Json, Response},
+    http::{header, Method},
     Router,
 };
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -44,70 +42,16 @@ use nodespace_core::{DatabaseService, NodeService};
 mod node_endpoints;
 
 // Phase 2: Query and advanced operations (added by #211)
-// mod query_endpoints;
+mod query_endpoints;
 
 // Phase 3: Embeddings and mentions (added by #212)
 // mod embedding_endpoints;
 
-/// HTTP error response matching Tauri's CommandError structure
-///
-/// This ensures consistent error handling between Tauri IPC and HTTP modes.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HttpError {
-    /// User-facing error message
-    pub message: String,
-    /// Machine-readable error code
-    pub code: String,
-    /// Optional detailed error information for debugging
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<String>,
-}
+// Shared HTTP error handling
+mod http_error;
 
-impl HttpError {
-    /// Create a new HTTP error
-    pub fn new(message: impl Into<String>, code: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            code: code.into(),
-            details: None,
-        }
-    }
-
-    /// Create a new HTTP error with details
-    pub fn with_details(
-        message: impl Into<String>,
-        code: impl Into<String>,
-        details: impl Into<String>,
-    ) -> Self {
-        Self {
-            message: message.into(),
-            code: code.into(),
-            details: Some(details.into()),
-        }
-    }
-
-    /// Convert from anyhow::Error
-    pub fn from_anyhow(err: anyhow::Error, code: impl Into<String>) -> Self {
-        Self {
-            message: err.to_string(),
-            code: code.into(),
-            details: Some(format!("{:?}", err)),
-        }
-    }
-}
-
-impl IntoResponse for HttpError {
-    fn into_response(self) -> Response {
-        let status = match self.code.as_str() {
-            "NODE_NOT_FOUND" | "RESOURCE_NOT_FOUND" => StatusCode::NOT_FOUND,
-            "INVALID_INPUT" | "INVALID_NODE_TYPE" | "VALIDATION_ERROR" => StatusCode::BAD_REQUEST,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        };
-
-        (status, Json(self)).into_response()
-    }
-}
+// Re-export HttpError for use by endpoint modules
+pub use http_error::HttpError;
 
 /// Application state shared across all endpoints
 #[derive(Clone)]
@@ -139,7 +83,7 @@ pub fn create_router(state: AppState) -> Router {
         // Phase 1: Basic node CRUD operations (this issue #209)
         .merge(node_endpoints::routes(state.clone()))
         // Phase 2: Query and advanced operations (added by #211)
-        // .merge(query_endpoints::routes(state.clone()))
+        .merge(query_endpoints::routes(state.clone()))
         // Phase 3: Embeddings and mentions (added by #212)
         // .merge(embedding_endpoints::routes(state.clone()))
         .layer(cors_layer())
