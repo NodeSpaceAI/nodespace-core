@@ -30,6 +30,13 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Node, NodeUpdate } from '$lib/types';
 import { toError, DatabaseInitializationError, NodeOperationError } from '$lib/types/errors';
+import { eventBus } from './event-bus';
+import type {
+  NodeCreatedEvent,
+  NodeUpdatedEvent,
+  NodeDeletedEvent,
+  HierarchyChangedEvent
+} from './event-types';
 
 /**
  * Query parameters for node queries (Phase 2)
@@ -271,7 +278,30 @@ export class TauriAdapter implements BackendAdapter {
 
   async createNode(node: Omit<Node, 'createdAt' | 'modifiedAt'>): Promise<string> {
     try {
-      return await invoke<string>('create_node', { node });
+      const nodeId = await invoke<string>('create_node', { node });
+
+      // Emit node:created event
+      eventBus.emit<NodeCreatedEvent>({
+        type: 'node:created',
+        namespace: 'lifecycle',
+        source: 'TauriAdapter',
+        nodeId: nodeId,
+        parentId: node.parentId ?? undefined,
+        nodeType: node.nodeType
+      });
+
+      // Emit hierarchy:changed event if node has parent (structural change)
+      if (node.parentId !== null) {
+        eventBus.emit<HierarchyChangedEvent>({
+          type: 'hierarchy:changed',
+          namespace: 'lifecycle',
+          source: 'TauriAdapter',
+          affectedNodes: [nodeId, node.parentId],
+          changeType: 'create'
+        });
+      }
+
+      return nodeId;
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, node.id, 'create');
@@ -290,6 +320,45 @@ export class TauriAdapter implements BackendAdapter {
   async updateNode(id: string, update: NodeUpdate): Promise<void> {
     try {
       await invoke<void>('update_node', { id, update });
+
+      // Determine update type based on what fields were updated
+      let updateType: 'content' | 'hierarchy' | 'status' | 'metadata' | 'nodeType' = 'content';
+      const affectedNodes: string[] = [id];
+
+      if ('content' in update) {
+        updateType = 'content';
+      } else if ('beforeSiblingId' in update || 'parentId' in update) {
+        updateType = 'hierarchy';
+        // Track affected nodes for hierarchy changes (only if not null)
+        if (update.beforeSiblingId !== undefined && update.beforeSiblingId !== null) {
+          affectedNodes.push(update.beforeSiblingId);
+        }
+        if (update.parentId !== undefined && update.parentId !== null) {
+          affectedNodes.push(update.parentId);
+        }
+      } else if ('nodeType' in update) {
+        updateType = 'nodeType';
+      }
+
+      // Emit node:updated event
+      eventBus.emit<NodeUpdatedEvent>({
+        type: 'node:updated',
+        namespace: 'lifecycle',
+        source: 'TauriAdapter',
+        nodeId: id,
+        updateType: updateType
+      });
+
+      // Emit hierarchy:changed event for structural changes
+      if (updateType === 'hierarchy') {
+        eventBus.emit<HierarchyChangedEvent>({
+          type: 'hierarchy:changed',
+          namespace: 'lifecycle',
+          source: 'TauriAdapter',
+          affectedNodes: affectedNodes,
+          changeType: 'move'
+        });
+      }
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, id, 'update');
@@ -298,7 +367,37 @@ export class TauriAdapter implements BackendAdapter {
 
   async deleteNode(id: string): Promise<void> {
     try {
+      // Fetch node before deletion to get metadata for events
+      // If node doesn't exist, getNode returns null but doesn't throw
+      const nodeBeforeDeletion = await this.getNode(id);
+
       await invoke<void>('delete_node', { id });
+
+      // Only emit events if node existed (successful deletion)
+      // Note: This handles the backend's non-idempotent DELETE behavior
+      // where attempting to delete a non-existent node returns 500 error
+      // Related: Issue #219 - Backend DELETE should be idempotent
+      if (nodeBeforeDeletion) {
+        // Emit node:deleted event
+        eventBus.emit<NodeDeletedEvent>({
+          type: 'node:deleted',
+          namespace: 'lifecycle',
+          source: 'TauriAdapter',
+          nodeId: id,
+          parentId: nodeBeforeDeletion.parentId ?? undefined
+        });
+
+        // Emit hierarchy:changed event if node had parent (structural change)
+        if (nodeBeforeDeletion.parentId) {
+          eventBus.emit<HierarchyChangedEvent>({
+            type: 'hierarchy:changed',
+            namespace: 'lifecycle',
+            source: 'TauriAdapter',
+            affectedNodes: [id, nodeBeforeDeletion.parentId],
+            changeType: 'delete'
+          });
+        }
+      }
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, id, 'delete');
@@ -485,7 +584,30 @@ export class HttpAdapter implements BackendAdapter {
         body: JSON.stringify(node)
       });
 
-      return await this.handleResponse<string>(response);
+      const nodeId = await this.handleResponse<string>(response);
+
+      // Emit node:created event
+      eventBus.emit<NodeCreatedEvent>({
+        type: 'node:created',
+        namespace: 'lifecycle',
+        source: 'HttpAdapter',
+        nodeId: nodeId,
+        parentId: node.parentId ?? undefined,
+        nodeType: node.nodeType
+      });
+
+      // Emit hierarchy:changed event if node has parent (structural change)
+      if (node.parentId !== null) {
+        eventBus.emit<HierarchyChangedEvent>({
+          type: 'hierarchy:changed',
+          namespace: 'lifecycle',
+          source: 'HttpAdapter',
+          affectedNodes: [nodeId, node.parentId],
+          changeType: 'create'
+        });
+      }
+
+      return nodeId;
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, node.id, 'create');
@@ -518,6 +640,45 @@ export class HttpAdapter implements BackendAdapter {
       );
 
       await this.handleResponse<void>(response);
+
+      // Determine update type based on what fields were updated
+      let updateType: 'content' | 'hierarchy' | 'status' | 'metadata' | 'nodeType' = 'content';
+      const affectedNodes: string[] = [id];
+
+      if ('content' in update) {
+        updateType = 'content';
+      } else if ('beforeSiblingId' in update || 'parentId' in update) {
+        updateType = 'hierarchy';
+        // Track affected nodes for hierarchy changes (only if not null)
+        if (update.beforeSiblingId !== undefined && update.beforeSiblingId !== null) {
+          affectedNodes.push(update.beforeSiblingId);
+        }
+        if (update.parentId !== undefined && update.parentId !== null) {
+          affectedNodes.push(update.parentId);
+        }
+      } else if ('nodeType' in update) {
+        updateType = 'nodeType';
+      }
+
+      // Emit node:updated event
+      eventBus.emit<NodeUpdatedEvent>({
+        type: 'node:updated',
+        namespace: 'lifecycle',
+        source: 'HttpAdapter',
+        nodeId: id,
+        updateType: updateType
+      });
+
+      // Emit hierarchy:changed event for structural changes
+      if (updateType === 'hierarchy') {
+        eventBus.emit<HierarchyChangedEvent>({
+          type: 'hierarchy:changed',
+          namespace: 'lifecycle',
+          source: 'HttpAdapter',
+          affectedNodes: affectedNodes,
+          changeType: 'move'
+        });
+      }
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, id, 'update');
@@ -526,6 +687,10 @@ export class HttpAdapter implements BackendAdapter {
 
   async deleteNode(id: string): Promise<void> {
     try {
+      // Fetch node before deletion to get metadata for events
+      // If node doesn't exist, getNode returns null but doesn't throw
+      const nodeBeforeDeletion = await this.getNode(id);
+
       const response = await globalThis.fetch(
         `${this.baseUrl}/api/nodes/${encodeURIComponent(id)}`,
         {
@@ -534,6 +699,32 @@ export class HttpAdapter implements BackendAdapter {
       );
 
       await this.handleResponse<void>(response);
+
+      // Only emit events if node existed (successful deletion)
+      // Note: This handles the backend's non-idempotent DELETE behavior
+      // where attempting to delete a non-existent node returns 500 error
+      // Related: Issue #219 - Backend DELETE should be idempotent
+      if (nodeBeforeDeletion) {
+        // Emit node:deleted event
+        eventBus.emit<NodeDeletedEvent>({
+          type: 'node:deleted',
+          namespace: 'lifecycle',
+          source: 'HttpAdapter',
+          nodeId: id,
+          parentId: nodeBeforeDeletion.parentId ?? undefined
+        });
+
+        // Emit hierarchy:changed event if node had parent (structural change)
+        if (nodeBeforeDeletion.parentId) {
+          eventBus.emit<HierarchyChangedEvent>({
+            type: 'hierarchy:changed',
+            namespace: 'lifecycle',
+            source: 'HttpAdapter',
+            affectedNodes: [id, nodeBeforeDeletion.parentId],
+            changeType: 'delete'
+          });
+        }
+      }
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, id, 'delete');
