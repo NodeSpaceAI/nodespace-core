@@ -12,12 +12,14 @@ import {
   createTestDatabase,
   cleanupTestDatabase,
   initializeTestDatabase,
-  cleanDatabase
+  cleanDatabase,
+  waitForDatabaseWrites
 } from '../utils/test-database';
 import { TestNodeBuilder } from '../utils/test-node-builder';
 import { getBackendAdapter } from '$lib/services/backend-adapter';
 import type { BackendAdapter } from '$lib/services/backend-adapter';
 import type { Node } from '$lib/types';
+import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe.sequential('Section 6: Node Ordering Tests', () => {
   let dbPath: string;
@@ -39,6 +41,9 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
   beforeEach(async () => {
     // Clean database between tests to ensure test isolation
     await cleanDatabase(backend);
+
+    // Clear any test errors from previous tests
+    sharedNodeStore.clearTestErrors();
   });
 
   /**
@@ -109,10 +114,16 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
       const node1Data = TestNodeBuilder.text('First node').build();
       const node1Id = await backend.createNode(node1Data);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       const node2Data = TestNodeBuilder.text('Second node')
         .withBeforeSibling(node1Id) // node2 comes after node1
         .build();
       const node2Id = await backend.createNode(node2Data);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Fetch to verify setup
       const node1 = await backend.getNode(node1Id);
@@ -129,10 +140,16 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
         .build();
       const newNodeId = await backend.createNode(newNodeData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Update node2 to point to newNode instead of node1
       await backend.updateNode(node2Id, {
         beforeSiblingId: newNodeId
       });
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Verify order: node1 -> newNode -> node2
       // Root nodes have parentId = null
@@ -152,6 +169,9 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
       const rootData = TestNodeBuilder.text('Root').build();
       const rootId = await backend.createNode(rootData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Create multiple nodes before previous new node (stack order)
       // Simulates: press Enter at beginning repeatedly
       // Expected order: node3 -> node2 -> node1 -> root
@@ -159,11 +179,20 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
       const node1Data = TestNodeBuilder.text('Node 1').withBeforeSibling(rootId).build();
       const node1Id = await backend.createNode(node1Data);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       const node2Data = TestNodeBuilder.text('Node 2').withBeforeSibling(node1Id).build();
       const node2Id = await backend.createNode(node2Data);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       const node3Data = TestNodeBuilder.text('Node 3').withBeforeSibling(node2Id).build();
       const node3Id = await backend.createNode(node3Data);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Verify order by traversing from root backwards
       // Each node points to the one before it in visual order
@@ -183,8 +212,14 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
       const node1Data = TestNodeBuilder.text('First').build();
       const node1Id = await backend.createNode(node1Data);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       const node2Data = TestNodeBuilder.text('Second').withBeforeSibling(node1Id).build();
       const node2Id = await backend.createNode(node2Data);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Create new node AFTER node1 (normal split in middle of content)
       // Visual order: node1 -> newNode -> node2
@@ -193,10 +228,16 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
         .build();
       const newNodeId = await backend.createNode(newNodeData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Update node2 to point to newNode
       await backend.updateNode(node2Id, {
         beforeSiblingId: newNodeId
       });
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Verify: node1 -> newNode -> node2
       const newNode = await backend.getNode(newNodeId);

@@ -30,11 +30,13 @@ import {
   createTestDatabase,
   cleanupTestDatabase,
   initializeTestDatabase,
-  cleanDatabase
+  cleanDatabase,
+  waitForDatabaseWrites
 } from '../utils/test-database';
 import { TestNodeBuilder } from '../utils/test-node-builder';
 import { getBackendAdapter } from '$lib/services/backend-adapter';
 import type { BackendAdapter } from '$lib/services/backend-adapter';
+import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 /**
  * Helper: Create parent node with children
@@ -95,6 +97,9 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
       );
       throw new Error('Database cleanup failed - test isolation compromised');
     }
+
+    // Clear any test errors from previous tests
+    sharedNodeStore.clearTestErrors();
   });
 
   describe('Placeholder Behavior', () => {
@@ -127,6 +132,10 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
       const nodeData = TestNodeBuilder.text('H').build();
       const nodeId = await backend.createNode(nodeData);
 
+      // Wait for database writes to complete
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Verify node persisted in database
       const fetchedNode = await backend.getNode(nodeId);
       expect(fetchedNode).toBeTruthy();
@@ -141,8 +150,14 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
       const nodeData = TestNodeBuilder.text('Hello').build();
       const nodeId = await backend.createNode(nodeData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Update content
       await backend.updateNode(nodeId, { content: 'Hello World' });
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Verify update persisted
       const fetchedNode = await backend.getNode(nodeId);
@@ -158,18 +173,33 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
       const nodeAData = TestNodeBuilder.text('Node A').build();
       const nodeAId = await backend.createNode(nodeAData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       const nodeBData = TestNodeBuilder.text('Node B').withBeforeSibling(nodeAId).build();
       const nodeBId = await backend.createNode(nodeBData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       const nodeCData = TestNodeBuilder.text('Node C').withBeforeSibling(nodeBId).build();
       const nodeCId = await backend.createNode(nodeCData);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Reorder: A -> C -> B (move C between A and B)
       // Step 1: Update C: beforeSiblingId = A  →  A -> C (B still points to old C.id)
       await backend.updateNode(nodeCId, { beforeSiblingId: nodeAId });
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Step 2: Update B: beforeSiblingId = C  →  A -> C -> B (final order)
       await backend.updateNode(nodeBId, { beforeSiblingId: nodeCId });
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Verify updates persisted
       const fetchedB = await backend.getNode(nodeBId);
@@ -195,6 +225,9 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
         nodeIds.push(nodeId);
       }
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       expect(nodeIds).toHaveLength(5);
       expect(new Set(nodeIds).size).toBe(5); // All IDs unique
 
@@ -217,10 +250,16 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
       const nodeData = TestNodeBuilder.text('Initial').build();
       const nodeId = await backend.createNode(nodeData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Simulates rapid sequential updates (e.g., user typing fast)
       for (let i = 0; i < 10; i++) {
         await backend.updateNode(nodeId, { content: `Update ${i}` });
       }
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Final state should be last update
       const finalNode = await backend.getNode(nodeId);
@@ -256,8 +295,14 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
         'Child 2'
       ]);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Delete parent
       await backend.deleteNode(parentId);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Verify parent deleted
       const fetchedParent = await backend.getNode(parentId);
@@ -300,8 +345,14 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
       const nodeData = TestNodeBuilder.text('To Delete').build();
       const nodeId = await backend.createNode(nodeData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Delete once
       await backend.deleteNode(nodeId);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Verify deleted
       const fetchedAfterFirst = await backend.getNode(nodeId);
@@ -323,8 +374,14 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
       const node1Data = TestNodeBuilder.text('Node 1').build();
       const node1Id = await backend.createNode(node1Data);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       const node2Data = TestNodeBuilder.text('Node 2').withBeforeSibling(node1Id).build();
       await backend.createNode(node2Data);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Query nodes (simulates loading on app start)
       const rootNodes = await backend.queryNodes({ parentId: null });

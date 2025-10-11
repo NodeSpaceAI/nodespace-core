@@ -30,7 +30,8 @@ import {
   createTestDatabase,
   cleanupTestDatabase,
   initializeTestDatabase,
-  cleanDatabase
+  cleanDatabase,
+  waitForDatabaseWrites
 } from '../utils/test-database';
 import { TestNodeBuilder } from '../utils/test-node-builder';
 import { getBackendAdapter } from '$lib/services/backend-adapter';
@@ -42,6 +43,7 @@ import type {
   NodeDeletedEvent,
   HierarchyChangedEvent
 } from '$lib/services/event-types';
+import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe.sequential('Section 8: Event System Tests', () => {
   let dbPath: string;
@@ -77,6 +79,9 @@ describe.sequential('Section 8: Event System Tests', () => {
 
     // Reset event bus to clear all event history and subscribers
     eventBus.reset();
+
+    // Clear any test errors from previous tests
+    sharedNodeStore.clearTestErrors();
   });
 
   afterEach(() => {
@@ -104,8 +109,18 @@ describe.sequential('Section 8: Event System Tests', () => {
       const nodeData = TestNodeBuilder.text('Test Node').build();
       const nodeId = await backend.createNode(nodeData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       await backend.updateNode(nodeId, { content: 'Updated Content' });
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       await backend.deleteNode(nodeId);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Verify: Each operation should emit exactly one event
       expect(eventsReceived).toEqual(['node:created', 'node:updated', 'node:deleted']);
@@ -126,6 +141,9 @@ describe.sequential('Section 8: Event System Tests', () => {
       // Create node
       const nodeData = TestNodeBuilder.text('New Node').build();
       const nodeId = await backend.createNode(nodeData);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Verify: Event was emitted
       expect(capturedEvent).not.toBeNull();
@@ -149,6 +167,9 @@ describe.sequential('Section 8: Event System Tests', () => {
       const nodeData = TestNodeBuilder.text('Initial Content').build();
       const nodeId = await backend.createNode(nodeData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Subscribe to node:updated events AFTER creation
       eventBus.subscribe('node:updated', (event) => {
         capturedEvent = event as NodeUpdatedEvent;
@@ -156,6 +177,9 @@ describe.sequential('Section 8: Event System Tests', () => {
 
       // Update node content
       await backend.updateNode(nodeId, { content: 'Updated Content' });
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Verify: Event was emitted
       expect(capturedEvent).not.toBeNull();
@@ -179,6 +203,9 @@ describe.sequential('Section 8: Event System Tests', () => {
       const nodeData = TestNodeBuilder.text('Node to Delete').build();
       const nodeId = await backend.createNode(nodeData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Subscribe to node:deleted events AFTER creation
       eventBus.subscribe('node:deleted', (event) => {
         capturedEvent = event as NodeDeletedEvent;
@@ -186,6 +213,9 @@ describe.sequential('Section 8: Event System Tests', () => {
 
       // Delete node
       await backend.deleteNode(nodeId);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Verify: Event was emitted
       expect(capturedEvent).not.toBeNull();
@@ -213,17 +243,33 @@ describe.sequential('Section 8: Event System Tests', () => {
       const parentData = TestNodeBuilder.text('Parent Node').build();
       const parentId = await backend.createNode(parentData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Create child node (hierarchy change)
       const childData = TestNodeBuilder.text('Child Node').withParent(parentId).build();
       const childId = await backend.createNode(childData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Move child node (hierarchy change via beforeSiblingId update)
       const siblingData = TestNodeBuilder.text('Sibling Node').withParent(parentId).build();
       const siblingId = await backend.createNode(siblingData);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       await backend.updateNode(childId, { beforeSiblingId: siblingId });
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Delete child node (hierarchy change)
       await backend.deleteNode(childId);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Verify: hierarchy:changed events were emitted
       expect(hierarchyEvents.length).toBeGreaterThan(0);
@@ -258,10 +304,23 @@ describe.sequential('Section 8: Event System Tests', () => {
       const nodeData = TestNodeBuilder.text('Test Node').build();
       const nodeId = await backend.createNode(nodeData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       await backend.updateNode(nodeId, { content: 'Updated 1' });
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       await backend.updateNode(nodeId, { content: 'Updated 2' });
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       await backend.deleteNode(nodeId);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Verify: Events fired in correct order
       expect(eventSequence).toEqual(['created', 'updated', 'updated', 'deleted']);

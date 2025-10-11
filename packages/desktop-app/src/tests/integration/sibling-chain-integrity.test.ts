@@ -21,11 +21,13 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import {
   createTestDatabase,
   cleanupTestDatabase,
-  initializeTestDatabase
+  initializeTestDatabase,
+  waitForDatabaseWrites
 } from '../utils/test-database';
 import { createAndFetchNode, checkServerHealth } from '../utils/test-node-helpers';
 import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
+import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe('Sibling Chain Integrity', () => {
   let dbPath: string;
@@ -54,6 +56,9 @@ describe('Sibling Chain Integrity', () => {
       nodeCreated: vi.fn(),
       nodeDeleted: vi.fn()
     });
+
+    // Clear any test errors from previous tests
+    sharedNodeStore.clearTestErrors();
   });
 
   afterEach(async () => {
@@ -168,6 +173,9 @@ describe('Sibling Chain Integrity', () => {
     const node3Id = service.createNode(node2Id, 'Third', 'text');
     const node4Id = service.createNode(node3Id, 'Fourth', 'text');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Chain integrity
     const validation = validateSiblingChain(null);
     expect(validation.valid).toBe(true);
@@ -224,6 +232,9 @@ describe('Sibling Chain Integrity', () => {
     // Act: Delete middle node
     service.deleteNode('node-2');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Chain repaired
     const validation = validateSiblingChain(null);
     expect(validation.valid).toBe(true);
@@ -277,6 +288,9 @@ describe('Sibling Chain Integrity', () => {
 
     // Act: Indent node-2
     service.indentNode('node-2');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Root chain repaired
     const rootValidation = validateSiblingChain(null);
@@ -336,6 +350,9 @@ describe('Sibling Chain Integrity', () => {
     // Act: Outdent child-1
     service.outdentNode('child-1');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Root chain valid
     const rootValidation = validateSiblingChain(null);
     expect(rootValidation.valid).toBe(true);
@@ -391,6 +408,9 @@ describe('Sibling Chain Integrity', () => {
 
     // Act: Combine node-2 into node-1
     service.combineNodes('node-2', 'node-1');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Chain repaired
     const validation = validateSiblingChain(null);
@@ -503,6 +523,9 @@ describe('Sibling Chain Integrity', () => {
     const node4Id = service.createNode('node-1', 'Node 4', 'text'); // Create after node-1
     service.outdentNode('node-2'); // Outdent node-2 back to root
     service.combineNodes(node3Id, 'node-2'); // Combine node-3 into node-2
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: All nodes exist
     expect(service.findNode(node3Id)).toBeTruthy();

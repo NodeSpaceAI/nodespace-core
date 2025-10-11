@@ -21,11 +21,13 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import {
   createTestDatabase,
   cleanupTestDatabase,
-  initializeTestDatabase
+  initializeTestDatabase,
+  waitForDatabaseWrites
 } from '../utils/test-database';
 import { createAndFetchNode, checkServerHealth } from '../utils/test-node-helpers';
 import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
+import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe('Backspace Operations', () => {
   let dbPath: string;
@@ -58,6 +60,9 @@ describe('Backspace Operations', () => {
       nodeCreated: vi.fn(),
       nodeDeleted: (nodeId) => deletedNodes.push(nodeId)
     });
+
+    // Clear any test errors from previous tests
+    sharedNodeStore.clearTestErrors();
   });
 
   afterEach(async () => {
@@ -94,6 +99,9 @@ describe('Backspace Operations', () => {
 
     // Act: Combine node-2 into node-1 (Backspace at beginning of node-2)
     service.combineNodes('node-2', 'node-1');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: node-1 has combined content
     const combined = service.findNode('node-1');
@@ -147,6 +155,9 @@ describe('Backspace Operations', () => {
     // Act: Combine nodes
     service.combineNodes('node-2', 'node-1');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Focus requested at correct position
     expect(focusRequests).toHaveLength(1);
     expect(focusRequests[0].nodeId).toBe('node-1');
@@ -183,6 +194,9 @@ describe('Backspace Operations', () => {
 
     // Act: Combine nodes
     service.combineNodes('node-2', 'node-1');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Header syntax stripped from combined content
     const combined = service.findNode('node-1');
@@ -232,6 +246,9 @@ describe('Backspace Operations', () => {
 
     // Act: Combine node-2 into node-1
     service.combineNodes('node-2', 'node-1');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Child promoted to node-1's level
     const promotedChild = service.findNode('child-1');
@@ -284,6 +301,9 @@ describe('Backspace Operations', () => {
 
     // Act: Combine node-2 into node-1 (removes node-2)
     service.combineNodes('node-2', 'node-1');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: node-3's sibling chain repaired
     const node3Updated = service.findNode('node-3');
@@ -349,6 +369,9 @@ describe('Backspace Operations', () => {
     // Act: Combine node-2 into node-1
     service.combineNodes('node-2', 'node-1');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Child hierarchy preserved
     const child = service.findNode('child-1');
     const grandchild1 = service.findNode('grandchild-1');
@@ -391,6 +414,9 @@ describe('Backspace Operations', () => {
     // Act: Combine nodes
     service.combineNodes('node-2', 'node-1');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Events emitted
     expect(deletedNodes).toContain('node-2');
     expect(hierarchyChangeCount).toBeGreaterThan(initialHierarchyCount);
@@ -431,6 +457,9 @@ describe('Backspace Operations', () => {
     // Act: Attempt to combine child with parent
     service.combineNodes('child', 'parent');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Content combined
     const parentNode = service.findNode('parent');
     expect(parentNode?.content).toBe('ParentChild');
@@ -470,6 +499,9 @@ describe('Backspace Operations', () => {
     // Act: Combine task node into normal node
     service.combineNodes('node-2', 'node-1');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Task checkbox stripped
     const combined = service.findNode('node-1');
     expect(combined?.content).toBe('Normal textTask item');
@@ -496,6 +528,9 @@ describe('Backspace Operations', () => {
     // This tests defensive programming - UI should prevent this, but service handles it gracefully
     // Real-world scenario: User presses backspace on first node (UI should block the call)
     service.combineNodes('first-node', 'non-existent-previous-node');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Operation was no-op (defensive null check succeeded)
     const unchanged = service.findNode('first-node');

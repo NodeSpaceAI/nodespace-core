@@ -30,6 +30,7 @@
 
 import { HttpAdapter, type BackendAdapter } from '$lib/services/backend-adapter';
 import { tauriNodeService } from '$lib/services/tauri-node-service';
+import { sharedNodeStore } from '$lib/services/shared-node-store';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -223,4 +224,56 @@ export async function cleanupAllTestDatabases(): Promise<void> {
   } catch (error) {
     console.warn(`[Test] Warning: Failed to clean up test databases: ${error}`);
   }
+}
+
+/**
+ * Wait for all pending database writes to complete
+ *
+ * This function polls the SharedNodeStore to check if there are pending
+ * database writes, and waits until all writes complete or timeout is reached.
+ *
+ * CRITICAL: Use this after any node creation/update in tests to ensure
+ * database persistence completes before checking results.
+ *
+ * @param maxWaitMs - Maximum time to wait in milliseconds (default: 5000)
+ * @param pollInterval - How often to check for completion in milliseconds (default: 50)
+ * @returns Promise that resolves when all writes complete or timeout
+ * @throws Error if timeout is reached with pending writes
+ *
+ * @example
+ * const nodeId = service.createNode('node-1', '', 'text');
+ * await waitForDatabaseWrites();
+ * expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+ * const dbNode = await adapter.getNode(nodeId);
+ * expect(dbNode).toBeDefined();
+ */
+export async function waitForDatabaseWrites(
+  maxWaitMs: number = 5000,
+  pollInterval: number = 50
+): Promise<void> {
+  const startTime = Date.now();
+
+  while (sharedNodeStore.hasPendingWrites()) {
+    const elapsed = Date.now() - startTime;
+
+    if (elapsed >= maxWaitMs) {
+      throw new Error(
+        `[Test] Timeout waiting for database writes to complete (${maxWaitMs}ms). ` +
+          `This indicates a database persistence issue.`
+      );
+    }
+
+    // Wait before next check
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+  }
+
+  // Defensive check: Verify loop exited correctly
+  if (sharedNodeStore.hasPendingWrites()) {
+    throw new Error(
+      '[Test] Internal error: waitForDatabaseWrites loop exited but writes still pending'
+    );
+  }
+
+  // All writes completed successfully
+  console.log(`[Test] All database writes completed in ${Date.now() - startTime}ms`);
 }

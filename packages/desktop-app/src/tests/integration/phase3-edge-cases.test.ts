@@ -12,12 +12,14 @@ import {
   createTestDatabase,
   cleanupTestDatabase,
   initializeTestDatabase,
-  cleanDatabase
+  cleanDatabase,
+  waitForDatabaseWrites
 } from '../utils/test-database';
 import { TestNodeBuilder } from '../utils/test-node-builder';
 import { getBackendAdapter } from '$lib/services/backend-adapter';
 import type { BackendAdapter } from '$lib/services/backend-adapter';
 import { NodeOperationError } from '$lib/types/errors';
+import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe.sequential('Section 10: Edge Cases & Error Handling', () => {
   let dbPath: string;
@@ -39,6 +41,9 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
   beforeEach(async () => {
     // Clean database between tests to ensure test isolation
     await cleanDatabase(backend);
+
+    // Clear any test errors from previous tests
+    sharedNodeStore.clearTestErrors();
   });
 
   describe('Invalid input handling', () => {
@@ -197,6 +202,9 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
       const topicData = TestNodeBuilder.text('Test Topic for Timeout').build();
       const topicId = await backend.createNode(topicData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Attempt operation (will be fast with placeholder)
       const startTime = performance.now();
       try {
@@ -221,6 +229,9 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
 
         const topic2Data = TestNodeBuilder.text('Topic 2').build();
         const topic2Id = await backend.createNode(topic2Data);
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         // Batch operation (placeholder will fail fast)
         try {
@@ -278,6 +289,9 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
       const validTopicData = TestNodeBuilder.text('Valid Topic').build();
       const validTopicId = await backend.createNode(validTopicData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       const topicIds = [validTopicId, 'invalid-id-1', 'invalid-id-2'];
 
       try {
@@ -328,6 +342,9 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
         const validNodeData = TestNodeBuilder.text('Valid Node').build();
         const validNodeId = await backend.createNode(validNodeData);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         try {
           await backend.createNodeMention(validNodeId, 'non-existent-mentioned-id');
           // Should have thrown
@@ -365,6 +382,9 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
 
         const node2Data = TestNodeBuilder.text('Node 2').build();
         const node2Id = await backend.createNode(node2Data);
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         // Create mention relationship
         await backend.createNodeMention(node1Id, node2Id);

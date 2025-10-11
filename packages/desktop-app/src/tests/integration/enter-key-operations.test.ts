@@ -21,11 +21,13 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import {
   createTestDatabase,
   cleanupTestDatabase,
-  initializeTestDatabase
+  initializeTestDatabase,
+  waitForDatabaseWrites
 } from '../utils/test-database';
 import { createAndFetchNode, checkServerHealth } from '../utils/test-node-helpers';
 import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
+import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe('Enter Key Operations', () => {
   let dbPath: string;
@@ -58,6 +60,9 @@ describe('Enter Key Operations', () => {
       nodeCreated: (nodeId) => createdNodes.push(nodeId),
       nodeDeleted: (nodeId) => deletedNodes.push(nodeId)
     });
+
+    // Clear any test errors from previous tests
+    sharedNodeStore.clearTestErrors();
   });
 
   afterEach(async () => {
@@ -83,6 +88,9 @@ describe('Enter Key Operations', () => {
 
     // Act: Simulate Enter key by calling createNode
     const newNodeId = service.createNode('node-1', '', 'text');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: In-memory state
     expect(newNodeId).toBeTruthy();
@@ -124,6 +132,9 @@ describe('Enter Key Operations', () => {
     // Act: Create new node with empty content (should inherit header)
     const newNodeId = service.createNode('header-node', '', 'text');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Header preserved
     const newNode = service.findNode(newNodeId);
     expect(newNode?.content).toMatch(/^##\s+/);
@@ -163,6 +174,9 @@ describe('Enter Key Operations', () => {
 
     // Act: Insert at beginning of node-2
     const newNodeId = service.createNode('node-2', 'New', 'text', undefined, true);
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Node inserted before node-2
     const newNode = service.findNode(newNodeId);
@@ -220,6 +234,9 @@ describe('Enter Key Operations', () => {
     // Act: Create new node after parent (should transfer children)
     const newNodeId = service.createNode('parent', '', 'text');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Children transferred to new node
     const newNode = service.findNode(newNodeId);
     expect(newNode).toBeDefined();
@@ -262,6 +279,9 @@ describe('Enter Key Operations', () => {
     // Act: Insert at beginning (should NOT transfer children)
     const newNodeId = service.createNode('parent', '', 'text', undefined, true);
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: New node created
     expect(newNodeId).toBeTruthy();
 
@@ -301,6 +321,9 @@ describe('Enter Key Operations', () => {
     // Act: Create node between node1 and node2
     const newNodeId = service.createNode('node-1', 'Middle', 'text');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Sibling chain updated
     const newNode = service.findNode(newNodeId);
     expect(newNode?.beforeSiblingId).toBe('node-1');
@@ -332,6 +355,9 @@ describe('Enter Key Operations', () => {
     // Act: Create child (should get root as containerNodeId)
     const childId = service.createNode('root', 'Child', 'text');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: containerNodeId set to root
     const child = service.findNode(childId);
     expect(child?.containerNodeId).toBe('root');
@@ -360,6 +386,9 @@ describe('Enter Key Operations', () => {
     // Update content to remove header
     service.updateNodeContent('node-1', 'No header now');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Act: Create node with originalNodeContent to preserve original header
     const newNodeId = service.createNode(
       'node-1',
@@ -369,6 +398,9 @@ describe('Enter Key Operations', () => {
       false,
       '### Modified Header' // Original content with header
     );
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Header preserved from original content
     const newNode = service.findNode(newNodeId);
@@ -393,6 +425,9 @@ describe('Enter Key Operations', () => {
 
     // Act: Create node with focusNewNode = false
     const newNodeId = service.createNode('node-1', '', 'text', undefined, false, undefined, false);
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: New node does NOT have autoFocus
     const newNodeUI = service.getUIState(newNodeId);
@@ -423,6 +458,9 @@ describe('Enter Key Operations', () => {
     const node2Id = service.createNode('node-1', 'Second', 'text');
     const node3Id = service.createNode(node2Id, 'Third', 'text');
     const node4Id = service.createNode(node3Id, 'Fourth', 'text');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: All nodes created
     expect(createdNodes).toHaveLength(3);

@@ -15,12 +15,14 @@ import {
   createTestDatabase,
   cleanupTestDatabase,
   initializeTestDatabase,
-  cleanDatabase
+  cleanDatabase,
+  waitForDatabaseWrites
 } from '../utils/test-database';
 import { TestNodeBuilder } from '../utils/test-node-builder';
 import { getBackendAdapter } from '$lib/services/backend-adapter';
 import type { BackendAdapter } from '$lib/services/backend-adapter';
 import type { Node } from '$lib/types';
+import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe.sequential('Section 12: Regression Prevention', () => {
   let dbPath: string;
@@ -42,6 +44,9 @@ describe.sequential('Section 12: Regression Prevention', () => {
   beforeEach(async () => {
     // Clean database between tests to ensure test isolation
     await cleanDatabase(backend);
+
+    // Clear any test errors from previous tests
+    sharedNodeStore.clearTestErrors();
   });
 
   /**
@@ -96,6 +101,9 @@ describe.sequential('Section 12: Regression Prevention', () => {
         };
         const container1Id = await backend.createContainerNode(container1Input);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         const container2Input = {
           content: 'Container 2: Project Beta',
           nodeType: 'text',
@@ -103,10 +111,16 @@ describe.sequential('Section 12: Regression Prevention', () => {
         };
         const container2Id = await backend.createContainerNode(container2Input);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         // Update container2 to come after container1
         await backend.updateNode(container2Id, {
           beforeSiblingId: container1Id
         });
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         const container3Input = {
           content: 'Container 3: Project Gamma',
@@ -115,10 +129,16 @@ describe.sequential('Section 12: Regression Prevention', () => {
         };
         const container3Id = await backend.createContainerNode(container3Input);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         // Update container3 to come after container2
         await backend.updateNode(container3Id, {
           beforeSiblingId: container2Id
         });
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         // Verify sibling order: container1 -> container2 -> container3
         const rootNodes = await getChildrenInOrder(null);
@@ -163,11 +183,17 @@ describe.sequential('Section 12: Regression Prevention', () => {
         };
         const containerId = await backend.createContainerNode(containerInput);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         const child1Data = TestNodeBuilder.text('Child 1')
           .withParent(containerId)
           .withContainer(containerId)
           .build();
         const child1Id = await backend.createNode(child1Data);
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         const child2Data = TestNodeBuilder.text('Child 2')
           .withParent(containerId)
@@ -176,11 +202,20 @@ describe.sequential('Section 12: Regression Prevention', () => {
           .build();
         const child2Id = await backend.createNode(child2Data);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         // Create mention relationship
         const dailyNoteData = TestNodeBuilder.text('Daily Note').withId('2025-01-15').build();
         const dailyNoteId = await backend.createNode(dailyNoteData);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         await backend.createNodeMention(dailyNoteId, containerId);
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         // Verify parent-child relationships are preserved
         const children = await backend.queryNodes({ parentId: containerId });
@@ -221,13 +256,25 @@ describe.sequential('Section 12: Regression Prevention', () => {
         const mentioningNodeData = TestNodeBuilder.text('Mentioning Node').build();
         const mentioningNodeId = await backend.createNode(mentioningNodeData);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         const mentionedNodeData = TestNodeBuilder.text('Mentioned Node').build();
         const mentionedNodeId = await backend.createNode(mentionedNodeData);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         await backend.createNodeMention(mentioningNodeId, mentionedNodeId);
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         // Delete the mentioned node
         await backend.deleteNode(mentionedNodeId);
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         // Verify mentioned node is deleted
         const deletedNode = await backend.getNode(mentionedNodeId);
@@ -261,13 +308,25 @@ describe.sequential('Section 12: Regression Prevention', () => {
         const mentioningNodeData = TestNodeBuilder.text('Mentioning Node').build();
         const mentioningNodeId = await backend.createNode(mentioningNodeData);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         const mentionedNodeData = TestNodeBuilder.text('Mentioned Node').build();
         const mentionedNodeId = await backend.createNode(mentionedNodeData);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         await backend.createNodeMention(mentioningNodeId, mentionedNodeId);
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         // Delete the mentioning node
         await backend.deleteNode(mentioningNodeId);
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         // Verify mentioning node is deleted
         const deletedNode = await backend.getNode(mentioningNodeId);
@@ -350,6 +409,9 @@ describe.sequential('Section 12: Regression Prevention', () => {
         const targetNodeData = TestNodeBuilder.text('Target Node').build();
         const targetNodeId = await backend.createNode(targetNodeData);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         // Create multiple mentioning nodes
         const mentioningNodeIds: string[] = [];
         for (let i = 1; i <= 5; i++) {
@@ -357,6 +419,9 @@ describe.sequential('Section 12: Regression Prevention', () => {
           const nodeId = await backend.createNode(nodeData);
           mentioningNodeIds.push(nodeId);
         }
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         // Create mentions concurrently
         const mentionPromises = mentioningNodeIds.map((mentioningId) =>
@@ -399,6 +464,9 @@ describe.sequential('Section 12: Regression Prevention', () => {
         const topicData = TestNodeBuilder.text('Original Content').build();
         const topicId = await backend.createNode(topicData);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         try {
           await backend.generateTopicEmbedding(topicId);
         } catch {
@@ -409,6 +477,9 @@ describe.sequential('Section 12: Regression Prevention', () => {
         await backend.updateNode(topicId, {
           content: 'Modified Content'
         });
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         // Check stale count
         try {
@@ -440,6 +511,9 @@ describe.sequential('Section 12: Regression Prevention', () => {
         const topicData = TestNodeBuilder.text('Initial Topic Content').build();
         const topicId = await backend.createNode(topicData);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         try {
           await backend.generateTopicEmbedding(topicId);
         } catch {
@@ -450,6 +524,9 @@ describe.sequential('Section 12: Regression Prevention', () => {
         await backend.updateNode(topicId, {
           content: 'Edited Topic Content'
         });
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         // Trigger on_topic_closed (should re-embed)
         try {
@@ -484,6 +561,9 @@ describe.sequential('Section 12: Regression Prevention', () => {
         const topicData = TestNodeBuilder.text('Topic for Idle Test').build();
         const topicId = await backend.createNode(topicData);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         try {
           await backend.generateTopicEmbedding(topicId);
         } catch {
@@ -495,13 +575,22 @@ describe.sequential('Section 12: Regression Prevention', () => {
           content: 'First Edit'
         });
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         await backend.updateNode(topicId, {
           content: 'Second Edit'
         });
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         await backend.updateNode(topicId, {
           content: 'Final Edit'
         });
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         // Trigger on_topic_idle (simulates 30s idle timeout)
         try {

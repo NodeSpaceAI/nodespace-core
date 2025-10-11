@@ -22,11 +22,13 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import {
   createTestDatabase,
   cleanupTestDatabase,
-  initializeTestDatabase
+  initializeTestDatabase,
+  waitForDatabaseWrites
 } from '../utils/test-database';
 import { createAndFetchNode, checkServerHealth } from '../utils/test-node-helpers';
 import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
+import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe('Shift+Enter Key Operations', () => {
   let dbPath: string;
@@ -55,6 +57,9 @@ describe('Shift+Enter Key Operations', () => {
       nodeCreated: vi.fn(),
       nodeDeleted: vi.fn()
     });
+
+    // Clear any test errors from previous tests
+    sharedNodeStore.clearTestErrors();
   });
 
   afterEach(async () => {
@@ -79,6 +84,9 @@ describe('Shift+Enter Key Operations', () => {
 
     // Act: Insert newline (Shift+Enter)
     service.updateNodeContent('node-1', 'First line\nSecond line');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: In-memory state
     const updatedNode = service.findNode('node-1');
@@ -109,6 +117,9 @@ describe('Shift+Enter Key Operations', () => {
     // Act: Add multiple newlines
     service.updateNodeContent('node-1', 'Line 1\n\n\nLine 4');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Multiple newlines preserved
     const updatedNode = service.findNode('node-1');
     expect(updatedNode?.content).toBe('Line 1\n\n\nLine 4');
@@ -135,6 +146,9 @@ describe('Shift+Enter Key Operations', () => {
 
     // Act: Add newline with more formatted content
     service.updateNodeContent('node-1', '**Bold text**\n*Italic text*\n`Code text`');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Formatting preserved
     const updatedNode = service.findNode('node-1');
@@ -163,6 +177,9 @@ describe('Shift+Enter Key Operations', () => {
     // Act: Add newline after header
     service.updateNodeContent('node-1', '## Header\nSubtext content');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Header preserved
     const updatedNode = service.findNode('node-1');
     expect(updatedNode?.content).toMatch(/^##\s+Header/);
@@ -187,6 +204,9 @@ describe('Shift+Enter Key Operations', () => {
 
     // Act: Add newline at beginning
     service.updateNodeContent('node-1', '\nContent with leading newline');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Leading newline preserved
     const updatedNode = service.findNode('node-1');
@@ -213,6 +233,9 @@ describe('Shift+Enter Key Operations', () => {
     // Act: Add newline at end
     service.updateNodeContent('node-1', 'Content with trailing newline\n');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Trailing newline preserved
     const updatedNode = service.findNode('node-1');
     expect(updatedNode?.content).toMatch(/\n$/);
@@ -236,6 +259,9 @@ describe('Shift+Enter Key Operations', () => {
 
     // Act: Add newlines with continued list content
     service.updateNodeContent('node-1', '- List item\n  Sub-item text\n  More sub-item');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: List formatting preserved
     const updatedNode = service.findNode('node-1');
@@ -262,6 +288,9 @@ describe('Shift+Enter Key Operations', () => {
 
     // Act: Add newlines with task description
     service.updateNodeContent('node-1', '[ ] Task item\nTask details line 1\nTask details line 2');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Task formatting preserved
     const updatedNode = service.findNode('node-1');
@@ -299,6 +328,9 @@ describe('Shift+Enter Key Operations', () => {
     ].join('\n');
 
     service.updateNodeContent('node-1', complexContent);
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: All formatting preserved
     const updatedNode = service.findNode('node-1');
@@ -343,6 +375,9 @@ describe('Shift+Enter Key Operations', () => {
     // Act: Add newlines to node 1
     service.updateNodeContent('node-1', 'Node 1\nLine 2\nLine 3');
 
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
     // Verify: Node count unchanged
     expect(service.visibleNodes).toHaveLength(initialCount);
     expect(service.visibleNodes.map((n) => n.id)).toEqual(['node-1', 'node-2']);
@@ -372,6 +407,9 @@ describe('Shift+Enter Key Operations', () => {
 
     // Act: Add content with empty lines (simulating paragraph breaks)
     service.updateNodeContent('node-1', 'Paragraph 1\n\nParagraph 2\n\nParagraph 3');
+
+    await waitForDatabaseWrites();
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Empty lines preserved
     const updatedNode = service.findNode('node-1');

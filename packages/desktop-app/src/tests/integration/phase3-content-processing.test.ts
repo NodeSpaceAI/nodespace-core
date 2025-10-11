@@ -12,11 +12,13 @@ import {
   createTestDatabase,
   cleanupTestDatabase,
   initializeTestDatabase,
-  cleanDatabase
+  cleanDatabase,
+  waitForDatabaseWrites
 } from '../utils/test-database';
 import { TestNodeBuilder } from '../utils/test-node-builder';
 import { getBackendAdapter } from '$lib/services/backend-adapter';
 import type { BackendAdapter } from '$lib/services/backend-adapter';
+import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe.sequential('Section 9: Content Processing & Advanced Operations', () => {
   let dbPath: string;
@@ -38,6 +40,9 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
   beforeEach(async () => {
     // Clean database between tests to ensure test isolation
     await cleanDatabase(backend);
+
+    // Clear any test errors from previous tests
+    sharedNodeStore.clearTestErrors();
   });
 
   describe('Content processing with embeddings', () => {
@@ -74,12 +79,18 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
           .build();
         const child1Id = await backend.createNode(child1Data);
 
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
         const child2Data = TestNodeBuilder.text('Task 2: Implementation')
           .withParent(containerId)
           .withContainer(containerId)
           .withBeforeSibling(child1Id)
           .build();
         const child2Id = await backend.createNode(child2Data);
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         // Verify hierarchy
         const children = await backend.queryNodes({ parentId: containerId });
@@ -104,6 +115,9 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
         .withType('text') // Use text type instead of date to avoid custom ID validation
         .build();
       const dailyNoteId = await backend.createNode(dailyNoteData);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Create a container node
       // Note: mentionedBy parameter may not be implemented yet
@@ -144,6 +158,9 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
         .build();
       const topicId = await backend.createNode(topicData);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       // Generate initial embedding
       try {
         await backend.generateTopicEmbedding(topicId);
@@ -161,6 +178,9 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
         await backend.updateNode(topicId, {
           content: 'Deep Learning and Neural Networks'
         });
+
+        await waitForDatabaseWrites();
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         // Verify content was updated
         const updatedTopic = await backend.getNode(topicId);
@@ -200,6 +220,9 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
       const topic3Data = TestNodeBuilder.text('Rust Programming').build();
       const topic3Id = await backend.createNode(topic3Data);
 
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
       const topicIds = [topic1Id, topic2Id, topic3Id];
 
       // Batch generate embeddings
@@ -231,6 +254,9 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
 
       const validTopic2Data = TestNodeBuilder.text('Valid Topic 2').build();
       const validTopic2Id = await backend.createNode(validTopic2Data);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Mix valid and non-existent topic IDs
       const topicIds = [
@@ -272,6 +298,9 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
         const topicId = await backend.createNode(topicData);
         topicIds.push(topicId);
       }
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       try {
         const result = await backend.batchGenerateEmbeddings(topicIds);
