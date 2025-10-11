@@ -12,55 +12,55 @@
 ## 1. Enter Key (Node Creation/Splitting)
 
 ### Basic Operations
-- [ ] **Basic Enter** - Create new node after current node
+- [x] **Basic Enter** - Create new node after current node ✅ `enter-key-operations.test.ts:66`
   - Given: Node with content "Hello"
   - When: Press Enter at end
   - Then: New empty node created after, cursor in new node
 
-- [ ] **Enter at beginning** - Create node before current (insertAtBeginning)
+- [x] **Enter at beginning** - Create node before current (insertAtBeginning) ✅ `enter-key-operations.test.ts:113`
   - Given: Node with content "Hello"
   - When: Press Enter at position 0
   - Then: New node created before, original content stays, cursor in new node
 
-- [ ] **Enter in middle** - Split content at cursor position
+- [x] **Enter in middle** - Split content at cursor position ✅ `enter-key-operations.test.ts:155`
   - Given: Node with content "Hello World"
   - When: Press Enter at position 6 (after "Hello ")
   - Then: First node has "Hello ", second node has "World"
 
-- [ ] **Enter at end** - Create empty node after
+- [x] **Enter at end** - Create empty node after ✅ `enter-key-operations.test.ts:197`
   - Given: Node with content "Hello"
   - When: Press Enter at end
   - Then: New empty placeholder node created, cursor positioned
 
 ### Header Preservation
-- [ ] **Enter with header syntax** - Preserve/inherit header level
+- [x] **Enter with header syntax** - Preserve/inherit header level ✅ `enter-key-operations.test.ts:238`
   - Given: Node with content "## Section Header"
   - When: Press Enter at end
   - Then: New node has "## " prefix, inherits header level
 
-- [ ] **Enter at beginning of header** - Preserve header on original
+- [x] **Enter at beginning of header** - Preserve header on original ✅ `enter-key-operations.test.ts:280`
   - Given: Node with "## Header"
   - When: Press Enter at position 0
   - Then: Original keeps "## Header", new node has "## " prefix
 
 ### Edge Cases
-- [ ] **Enter in empty node** - Create sibling, don't duplicate
+- [x] **Enter in empty node** - Create sibling, don't duplicate ✅ `enter-key-operations.test.ts:323`
   - Given: Empty placeholder node
   - When: Press Enter
   - Then: New sibling created, original stays empty
 
-- [ ] **Enter with children (expanded node)** - Transfer children
+- [x] **Enter with children (expanded node)** - Transfer children ✅ `enter-key-operations.test.ts:359`
   - Given: Node "Parent" with children ["Child1", "Child2"], expanded
   - When: Press Enter at end of "Parent"
   - Then: New node created, children transferred to new node
 
-- [ ] **Last character leak prevention** - No trailing characters
+- [x] **Last character leak prevention** - No trailing characters ✅ `enter-key-operations.test.ts:431`
   - Given: Multiline node with content
   - When: Press Enter at end
   - Then: No characters left behind in original node
 
 ### Sibling Chain Updates
-- [ ] **Enter updates next sibling beforeSiblingId**
+- [x] **Enter updates next sibling beforeSiblingId** ✅ `enter-key-operations.test.ts:486`
   - Given: Siblings [A, B, C] where B.beforeSiblingId = A
   - When: Press Enter in A (creates A2)
   - Then: B.beforeSiblingId = A2
@@ -70,12 +70,12 @@
 ## 2. Shift+Enter (Newline/Line Break)
 
 ### Basic Newline
-- [ ] **Basic Shift+Enter** - Insert `\n` without creating new node
+- [x] **Basic Shift+Enter** - Insert `\n` without creating new node ✅ `shift-enter-operations.test.ts:63`
   - Given: Node with content "Hello"
   - When: Press Shift+Enter at end
   - Then: Content becomes "Hello\n", stays in same node
 
-- [ ] **Multiple Shift+Enter** - Handle multiple newlines
+- [x] **Multiple Shift+Enter** - Handle multiple newlines ✅ `shift-enter-operations.test.ts:92`
   - Given: Node with content "Hello"
   - When: Press Shift+Enter twice
   - Then: Content becomes "Hello\n\n"
@@ -86,38 +86,38 @@
   - Then: UI shows line break (DIV structure or <br>)
 
 ### Inline Formatting Preservation
-- [ ] **Shift+Enter in bold** - Preserve **bold** formatting
+- [x] **Shift+Enter in bold** - Preserve **bold** formatting ✅ `shift-enter-operations.test.ts:120`
   - Given: Content "**bold text**", cursor at position 7 (after "**bol")
   - When: Press Shift+Enter
   - Then: Content becomes "**bol**\n**d text**"
 
-- [ ] **Shift+Enter in italic** - Preserve *italic* formatting
+- [x] **Shift+Enter in italic** - Preserve *italic* formatting ✅ `shift-enter-operations.test.ts:144`
   - Given: Content "*italic*", cursor at position 5 (after "*ita")
   - When: Press Shift+Enter
   - Then: Content becomes "*ita*\n*lic*"
 
-- [ ] **Shift+Enter in code** - Preserve `code` formatting
+- [x] **Shift+Enter in code** - Preserve `code` formatting ✅ `shift-enter-operations.test.ts:168`
   - Given: Content "`code`", cursor at position 4 (after "`co")
   - When: Press Shift+Enter
   - Then: Content becomes "`co`\n`de`"
 
-- [ ] **Shift+Enter in strikethrough (double)** - Preserve ~~strikethrough~~
+- [x] **Shift+Enter in strikethrough (double)** - Preserve ~~strikethrough~~ ✅ `shift-enter-operations.test.ts:192`
   - Given: Content "~~strike~~", cursor at position 9 (after "~~str")
   - When: Press Shift+Enter
   - Then: Content becomes "~~str~~\n~~ike~~"
 
-- [ ] **Shift+Enter in strikethrough (single)** - Preserve ~strikethrough~
+- [x] **Shift+Enter in strikethrough (single)** - Preserve ~strikethrough~ ✅ `shift-enter-operations.test.ts:216`
   - Given: Content "~strike~", cursor at position 7 (after "~str")
   - When: Press Shift+Enter
   - Then: Content becomes "~str~\n~ike~"
 
-- [ ] **Shift+Enter with mixed formatting** - Multiple formats on same line
+- [x] **Shift+Enter with mixed formatting** - Multiple formats on same line ✅ `shift-enter-operations.test.ts:240`
   - Given: Content "**bold** and *italic*", cursor at position 13
   - When: Press Shift+Enter
   - Then: Formatting preserved on both lines
 
 ### Cursor Positioning
-- [ ] **Shift+Enter cursor positioning** - Cursor after opening markers
+- [x] **Shift+Enter cursor positioning** - Cursor after opening markers ✅ `shift-enter-operations.test.ts:264`
   - Given: Content "**bold**", cursor at position 6
   - When: Press Shift+Enter
   - Then: Cursor positioned after "**" on new line (position 2 in new line)
@@ -133,39 +133,39 @@
 ## 3. Backspace (Node Merging/Deletion)
 
 ### Basic Merging
-- [ ] **Basic backspace merge** - Combine current with previous
+- [x] **Basic backspace merge** - Combine current with previous ✅ `backspace-operations.test.ts:66`
   - Given: Node A "Hello", Node B "World"
   - When: Backspace at position 0 in Node B
   - Then: Node A becomes "HelloWorld", Node B deleted
 
-- [ ] **Backspace merge cursor position** - Cursor at junction
+- [x] **Backspace merge cursor position** - Cursor at junction ✅ `backspace-operations.test.ts:118`
   - Given: Node A "Hello" (5 chars), Node B "World"
   - When: Backspace in Node B at position 0
   - Then: Merged content "HelloWorld", cursor at position 5
 
-- [ ] **Backspace with inline formatting** - Preserve formatting
+- [x] **Backspace with inline formatting** - Preserve formatting ✅ `backspace-operations.test.ts:155`
   - Given: Node A "**bold**", Node B "text"
   - When: Backspace in Node B
   - Then: Merged content preserves bold formatting
 
 ### Child Handling
-- [ ] **Backspace with children** - Promote children to parent
+- [x] **Backspace with children** - Promote children to parent ✅ `backspace-operations.test.ts:197`
   - Given: Node A, Node B (to delete) with children [C1, C2]
   - When: Backspace merge deletes Node B
   - Then: C1 and C2 become children of Node A's parent
 
-- [ ] **Children promotion preserves depth** - Depth maintained
+- [x] **Children promotion preserves depth** - Depth maintained ✅ `backspace-operations.test.ts:274`
   - Given: Node B (depth 2) with children (depth 3)
   - When: Delete Node B
   - Then: Children promoted to depth 2
 
-- [ ] **Children disappearing prevention** - Children not lost
+- [x] **Children disappearing prevention** - Children not lost ✅ `backspace-operations.test.ts:357`
   - Given: Node with multiple children
   - When: Delete node via backspace merge
   - Then: All children still exist with correct parent
 
 ### Sibling Chain Updates
-- [ ] **Backspace sibling chain update** - beforeSiblingId repaired
+- [x] **Backspace sibling chain update** - beforeSiblingId repaired ✅ `backspace-operations.test.ts:428`
   - Given: Siblings [A, B, C] where B.beforeSiblingId=A, C.beforeSiblingId=B
   - When: Delete B
   - Then: C.beforeSiblingId=A
@@ -176,81 +176,87 @@
   - When: Press Backspace
   - Then: Content becomes "Helo" (no merge triggered)
 
+### Edge Cases
+- [x] **Cannot backspace first node** - Handle gracefully ✅ `backspace-operations.test.ts:474`
+  - Given: First node with no previous node
+  - When: Attempt backspace at beginning
+  - Then: Operation is no-op, node unchanged
+
 ---
 
 ## 4. Indent/Outdent Operations
 
 ### Basic Indent
-- [ ] **Basic indent** - Make node child of previous sibling
+- [x] **Basic indent** - Make node child of previous sibling ✅ `indent-outdent-operations.test.ts:62`
   - Given: Siblings [A, B, C]
   - When: Indent B
   - Then: B becomes child of A, C remains sibling of A
 
-- [ ] **Indent first child** - Cannot indent (no previous sibling)
+- [x] **Indent first child** - Cannot indent (no previous sibling) ✅ `indent-outdent-operations.test.ts:125`
   - Given: First child node
   - When: Attempt indent
   - Then: Operation fails/does nothing
 
-- [ ] **Indent with existing children** - Append to end
+- [x] **Indent with existing children** - Append to end ✅ `indent-outdent-operations.test.ts:151`
   - Given: Node A with children [C1, C2], Node B is sibling
   - When: Indent B (make child of A)
   - Then: B.beforeSiblingId = C2 (inserted after last child)
 
-- [ ] **Indent updates sibling chain** - Remove from old chain
+- [x] **Indent updates sibling chain** - Remove from old chain ✅ `indent-outdent-operations.test.ts:228`
   - Given: Siblings [A, B, C] where B.beforeSiblingId=A, C.beforeSiblingId=B
   - When: Indent B
   - Then: C.beforeSiblingId=A (B removed from chain)
 
-- [ ] **Indent depth calculation** - Depth increases by 1
+- [x] **Indent depth calculation** - Depth increases by 1 ✅ `indent-outdent-operations.test.ts:291`
   - Given: Node A (depth 1), Node B (depth 1)
   - When: Indent B to make child of A
   - Then: B.depth = 2
 
 ### Basic Outdent
-- [ ] **Basic outdent** - Move node up one level
+- [x] **Basic outdent** - Move node up one level ✅ `indent-outdent-operations.test.ts:339`
   - Given: Node A with child B
   - When: Outdent B
   - Then: B becomes sibling of A
 
-- [ ] **Outdent root node** - Cannot outdent (no parent)
+- [x] **Outdent root node** - Cannot outdent (no parent) ✅ `indent-outdent-operations.test.ts:391`
   - Given: Root level node
   - When: Attempt outdent
   - Then: Operation fails/does nothing
 
-- [ ] **Outdent positioning** - Insert after old parent
+- [x] **Outdent positioning** - Insert after old parent ✅ `indent-outdent-operations.test.ts:415`
   - Given: Node A with child B, sibling C
   - When: Outdent B
   - Then: B positioned after A in sibling list
 
 ### Outdent with Siblings Transfer
-- [ ] **Outdent transfers siblings below as children**
+- [x] **Outdent transfers siblings below as children** ✅ `indent-outdent-operations.test.ts:481`
   - Given: Parent P with children [A, B, C]
   - When: Outdent A
   - Then: B and C become children of A
 
-- [ ] **Transferred siblings maintain order**
+- [x] **Transferred siblings maintain order** ✅ `indent-outdent-operations.test.ts:571`
   - Given: Parent with children [A, B, C, D]
   - When: Outdent A
   - Then: A's children are [B, C, D] in that order
 
-- [ ] **Outdent sibling chain integrity** - Valid chain after transfer
+- [x] **Outdent sibling chain integrity** - Valid chain after transfer ✅ `indent-outdent-operations.test.ts:679`
   - Given: Complex sibling chain
   - When: Outdent node with siblings below
   - Then: All beforeSiblingId references valid
 
 ### Depth Recalculation
-- [ ] **Outdent updates descendant depths** - Recursive depth update
+- [x] **Outdent updates descendant depths** - Recursive depth update ✅ `indent-outdent-operations.test.ts:764`
   - Given: Node A (depth 2) with children (depth 3) and grandchildren (depth 4)
   - When: Outdent A to depth 1
   - Then: Children become depth 2, grandchildren depth 3
 
-- [ ] **Indent updates descendant depths**
+- [x] **Indent updates descendant depths** ✅ `indent-outdent-operations.test.ts:856`
   - Given: Node with children
   - When: Indent node
   - Then: All descendants increase depth by 1
 
 ### Deep Hierarchy
-- [ ] **Indent/outdent in deep hierarchy** - Works at any depth
+- [x] **Indent/outdent in deep hierarchy** - Works at any depth ✅ `indent-outdent-operations.test.ts:967`
   - Given: Node at depth 5
   - When: Indent or outdent
   - Then: Operation succeeds, depths recalculated correctly
@@ -266,47 +272,47 @@
 ## 5. Sibling Chain Integrity
 
 ### Creation
-- [ ] **Creating node updates next sibling** - Chain maintained
+- [x] **Creating node updates next sibling** - Chain maintained ✅ `sibling-chain-integrity.test.ts:68`
   - Given: Siblings [A, B] where B.beforeSiblingId=A
   - When: Create node N after A
   - Then: B.beforeSiblingId=N, N.beforeSiblingId=A
 
-- [ ] **Creating first child** - beforeSiblingId is null
+- [x] **Creating first child** - beforeSiblingId is null ✅ `sibling-chain-integrity.test.ts:155`
   - Given: Parent with no children
   - When: Create first child
   - Then: Child.beforeSiblingId = null
 
 ### Deletion
-- [ ] **Deleting node repairs chain** - Next sibling updated
+- [x] **Deleting node repairs chain** - Next sibling updated ✅ `sibling-chain-integrity.test.ts:207`
   - Given: Siblings [A, B, C] where C.beforeSiblingId=B
   - When: Delete B
   - Then: C.beforeSiblingId=A
 
-- [ ] **Deleting last sibling** - No updates needed
+- [x] **Deleting last sibling** - No updates needed ✅ `sibling-chain-integrity.test.ts:282`
   - Given: Siblings [A, B] where B is last
   - When: Delete B
   - Then: A.beforeSiblingId unchanged
 
 ### Movement
-- [ ] **Moving node removes from old chain** - No orphaned references
+- [x] **Moving node removes from old chain** - No orphaned references ✅ `sibling-chain-integrity.test.ts:336`
   - Given: Node in sibling chain
   - When: Move to different parent (indent)
   - Then: Old sibling chain repaired, no dangling references
 
 ### Validation
-- [ ] **Multiple siblings maintain order** - 3+ siblings correct
+- [x] **Multiple siblings maintain order** - 3+ siblings correct ✅ `sibling-chain-integrity.test.ts:415`
   - Given: Siblings [A, B, C, D]
   - Then: Can traverse A→B→C→D via beforeSiblingId
 
-- [ ] **Exactly one first child** - Only one null beforeSiblingId
+- [x] **Exactly one first child** - Only one null beforeSiblingId ✅ `sibling-chain-integrity.test.ts:70-147` (validateSiblingChain helper)
   - Given: Parent with children
   - Then: Exactly one child has beforeSiblingId=null
 
-- [ ] **No circular references** - Chain doesn't loop
+- [x] **No circular references** - Chain doesn't loop ✅ `sibling-chain-integrity.test.ts:70-147` (validateSiblingChain helper)
   - Given: Any sibling chain
   - Then: Traversing chain terminates (no infinite loop)
 
-- [ ] **No orphaned nodes** - All nodes reachable
+- [x] **No orphaned nodes** - All nodes reachable ✅ `sibling-chain-integrity.test.ts:70-147` (validateSiblingChain helper)
   - Given: Parent with children
   - Then: All children reachable from first child by following chain
 
