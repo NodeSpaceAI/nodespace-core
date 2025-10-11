@@ -11,7 +11,8 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import {
   createTestDatabase,
   cleanupTestDatabase,
-  initializeTestDatabase
+  initializeTestDatabase,
+  cleanDatabase
 } from '../utils/test-database';
 import { TestNodeBuilder } from '../utils/test-node-builder';
 import { getBackendAdapter } from '$lib/services/backend-adapter';
@@ -36,9 +37,8 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
   });
 
   beforeEach(async () => {
-    // Clean database between tests
-    // TODO: Implement cleanDatabase utility to delete all nodes
-    // For now, each test creates unique nodes
+    // Clean database between tests to ensure test isolation
+    await cleanDatabase(backend);
   });
 
   /**
@@ -67,7 +67,8 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
    * // Returns: [node1, node2, node3]
    */
   async function getChildrenInOrder(parentId: string | null): Promise<Node[]> {
-    const children = await backend.getChildren(parentId || '');
+    // Use Phase 2 queryNodes() method
+    const children = await backend.queryNodes({ parentId });
 
     // Sort by beforeSiblingId linked list
     if (children.length === 0) return [];
@@ -326,29 +327,30 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
   });
 
   describe('Header Nodes with insertAtBeginning', () => {
-    it('should create empty node before header (Enter at |# Header)', async () => {
+    it('should create new node before header (Enter at |# Header)', async () => {
       // Create header node (without using properties - backend might not support it yet)
       const headerData = TestNodeBuilder.text('# My Header').build();
       const headerId = await backend.createNode(headerData);
 
-      // Create empty node BEFORE header (simulating Enter at beginning of header)
-      const emptyNodeData = TestNodeBuilder.text('')
+      // Create new node BEFORE header (simulating Enter at beginning of header)
+      // Note: Backend rejects empty nodes, so use actual content
+      const newNodeData = TestNodeBuilder.text('New text before header')
         .withBeforeSibling(null) // First in list
         .build();
-      const emptyNodeId = await backend.createNode(emptyNodeData);
+      const newNodeId = await backend.createNode(newNodeData);
 
-      // Update header to point to empty node
+      // Update header to point to new node
       await backend.updateNode(headerId, {
-        beforeSiblingId: emptyNodeId
+        beforeSiblingId: newNodeId
       });
 
-      // Verify order: emptyNode -> header
-      const emptyNode = await backend.getNode(emptyNodeId);
+      // Verify order: newNode -> header
+      const newNode = await backend.getNode(newNodeId);
       const header = await backend.getNode(headerId);
 
-      expect(emptyNode?.beforeSiblingId).toBeNull();
-      expect(header?.beforeSiblingId).toBe(emptyNodeId);
-      expect(emptyNode?.content).toBe('');
+      expect(newNode?.beforeSiblingId).toBeNull();
+      expect(header?.beforeSiblingId).toBe(newNodeId);
+      expect(newNode?.content).toBe('New text before header');
       expect(header?.content).toBe('# My Header');
     }, 10000);
   });

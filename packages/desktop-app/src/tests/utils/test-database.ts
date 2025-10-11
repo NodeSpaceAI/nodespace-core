@@ -28,7 +28,7 @@
  * ```
  */
 
-import { HttpAdapter } from '$lib/services/backend-adapter';
+import { HttpAdapter, type BackendAdapter } from '$lib/services/backend-adapter';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -108,6 +108,74 @@ export async function initializeTestDatabase(
   const initializedPath = await adapter.initializeDatabase(dbPath);
   console.log(`[Test] Initialized test database: ${initializedPath}`);
   return initializedPath;
+}
+
+/**
+ * Result of database cleanup operation
+ */
+export interface CleanDatabaseResult {
+  /** Whether all nodes were successfully deleted */
+  success: boolean;
+  /** Number of nodes successfully deleted */
+  deletedCount: number;
+  /** Total number of nodes found for deletion */
+  totalCount: number;
+}
+
+/**
+ * Clean database by deleting all nodes
+ *
+ * This function queries all root nodes and deletes them recursively,
+ * effectively clearing the database for the next test.
+ *
+ * @param backend - Backend adapter to use for operations
+ * @returns Cleanup result with success status and counts
+ *
+ * @example
+ * beforeEach(async () => {
+ *   const result = await cleanDatabase(backend);
+ *   // Optional: assert on cleanup success if needed
+ *   expect(result.success).toBe(true);
+ * });
+ */
+export async function cleanDatabase(backend: BackendAdapter): Promise<CleanDatabaseResult> {
+  try {
+    // Query all root nodes (parentId = null)
+    const rootNodes = await backend.queryNodes({ parentId: null });
+
+    // Delete each root node (cascade delete will handle children)
+    // Handle errors individually so one failure doesn't stop cleanup
+    let successCount = 0;
+
+    for (const node of rootNodes) {
+      try {
+        await backend.deleteNode(node.id);
+        successCount++;
+      } catch {
+        // Ignore deletion errors - node might already be deleted by cascade
+      }
+    }
+
+    if (successCount > 0) {
+      console.log(
+        `[Test] Cleaned database: deleted ${successCount}/${rootNodes.length} root nodes`
+      );
+    }
+
+    return {
+      success: successCount === rootNodes.length,
+      deletedCount: successCount,
+      totalCount: rootNodes.length
+    };
+  } catch (error) {
+    console.warn(`[Test] Warning: Failed to clean database: ${error}`);
+    // Don't throw - cleanup failures shouldn't fail tests
+    return {
+      success: false,
+      deletedCount: 0,
+      totalCount: 0
+    };
+  }
 }
 
 /**

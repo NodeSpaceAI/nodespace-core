@@ -32,7 +32,24 @@ import type { Node, NodeUpdate } from '$lib/types';
 import { toError, DatabaseInitializationError, NodeOperationError } from '$lib/types/errors';
 
 /**
- * Backend adapter interface - Phase 1 operations
+ * Query parameters for node queries (Phase 2)
+ */
+export interface QueryNodesParams {
+  /**
+   * Filter by parent ID
+   * - Use null to query root nodes (nodes with parentId = null)
+   * - Use specific ID to query children of that node
+   */
+  parentId?: string | null;
+
+  /**
+   * Filter by container ID (optional)
+   */
+  containerId?: string;
+}
+
+/**
+ * Backend adapter interface - Phase 1 & Phase 2 operations
  *
  * Future phases should extend this interface by adding new methods.
  */
@@ -77,6 +94,14 @@ export interface BackendAdapter {
    * @returns Array of child nodes
    */
   getChildren(parentId: string): Promise<Node[]>;
+
+  /**
+   * Query nodes by parent and/or container (Phase 2)
+   * @since Phase 2
+   * @param params - Query parameters
+   * @returns Array of matching nodes
+   */
+  queryNodes(params: QueryNodesParams): Promise<Node[]>;
 }
 
 /**
@@ -139,6 +164,17 @@ export class TauriAdapter implements BackendAdapter {
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, parentId, 'getChildren');
+    }
+  }
+
+  async queryNodes(params: QueryNodesParams): Promise<Node[]> {
+    try {
+      // Note: Tauri command for query_nodes needs to be implemented in the backend
+      // For now, this is a placeholder that will need backend support
+      return await invoke<Node[]>('query_nodes', { params });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, params.parentId ?? 'query', 'queryNodes');
     }
   }
 }
@@ -265,6 +301,41 @@ export class HttpAdapter implements BackendAdapter {
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, parentId, 'getChildren');
+    }
+  }
+
+  /**
+   * Build query URL with proper parameter encoding
+   * @param params - Query parameters
+   * @returns Formatted URL string
+   * @private
+   */
+  private buildQueryUrl(params: QueryNodesParams): string {
+    const url = new URL(`${this.baseUrl}/api/nodes/query`);
+
+    // Handle parentId parameter
+    if (params.parentId !== undefined) {
+      // Backend expects "null" string for SQL NULL queries (root nodes)
+      // See query_endpoints.rs:127-137 for backend parsing logic
+      url.searchParams.set('parent_id', params.parentId === null ? 'null' : params.parentId);
+    }
+
+    // Handle containerId parameter
+    if (params.containerId !== undefined) {
+      url.searchParams.set('container_id', params.containerId);
+    }
+
+    return url.toString();
+  }
+
+  async queryNodes(params: QueryNodesParams): Promise<Node[]> {
+    try {
+      const url = this.buildQueryUrl(params);
+      const response = await globalThis.fetch(url);
+      return await this.handleResponse<Node[]>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, params.parentId ?? 'query', 'queryNodes');
     }
   }
 }
