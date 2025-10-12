@@ -834,6 +834,33 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    */
 
   /**
+   * Finds the deepest last visible descendant of a node.
+   * This is used to determine the actual "previous visible node" in document order
+   * when indenting, which accounts for expanded children.
+   *
+   * For consecutive indents to work correctly (e.g., indent node-2, then indent node-3),
+   * we need node-3 to become a child of node-2, not node-1. This requires finding
+   * the deepest descendant of the previous sibling.
+   *
+   * @param nodeId - The node to start from
+   * @returns The ID of the deepest last descendant, or the nodeId itself if no children
+   */
+  function getDeepestLastDescendant(nodeId: string): string {
+    const children = sharedNodeStore.getNodesForParent(nodeId);
+    if (children.length === 0) {
+      return nodeId;
+    }
+
+    // Get sorted children and recursively find the deepest last descendant
+    const sortedChildren = sortChildrenByBeforeSiblingId(
+      children.map((c) => c.id),
+      nodeId
+    );
+    const lastChildId = sortedChildren[sortedChildren.length - 1];
+    return getDeepestLastDescendant(lastChildId);
+  }
+
+  /**
    * Removes a node from its current sibling chain by updating the next sibling's beforeSiblingId.
    * This prevents orphaned nodes when a node is moved (indent/outdent) or deleted.
    *
@@ -879,48 +906,60 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const prevSibling = sharedNodeStore.getNode(prevSiblingId);
     if (!prevSibling) return false;
 
+    // Find the target parent: the deepest last descendant of the previous sibling
+    // This ensures consecutive indents work correctly (node-3 becomes child of node-2 after node-2 was indented)
+    // However, if the deepest descendant has a containerNodeId set, it's a "container node"
+    // (like a date node's first child), and we should NOT descend into it
+    const deepestDescendant = getDeepestLastDescendant(prevSiblingId);
+    const deepestNode = sharedNodeStore.getNode(deepestDescendant);
+    const targetParentId = deepestNode?.containerNodeId ? prevSiblingId : deepestDescendant;
+
     // Step 1: Remove node from current sibling chain BEFORE changing parent
     // This operation updates the next sibling (if any) to maintain chain integrity
-    // Return value not needed here - the sibling update happens automatically
-    void removeFromSiblingChain(nodeId);
+    const updatedSiblingId = removeFromSiblingChain(nodeId);
 
-    // Find the last child of the new parent to insert after
-    const existingChildren = sharedNodeStore.getNodesForParent(prevSiblingId).map((n) => n.id);
+    // The node becomes a child of the target parent
+    // It should be appended to the end of the target parent's children
+    const existingChildren = sharedNodeStore.getNodesForParent(targetParentId).map((n) => n.id);
 
     let beforeSiblingId: string | null = null;
     if (existingChildren.length > 0) {
       // Get sorted children and append after the last one
-      const sortedChildren = sortChildrenByBeforeSiblingId(existingChildren, prevSiblingId);
+      const sortedChildren = sortChildrenByBeforeSiblingId(existingChildren, targetParentId);
       beforeSiblingId = sortedChildren[sortedChildren.length - 1]; // Insert after last child
     }
 
     const uiState = _uiState[nodeId];
-    const prevSiblingUIState = _uiState[prevSiblingId];
+    const targetParentUIState = _uiState[targetParentId];
 
     // Step 2: Build dependency list for persistence sequencing
-    // (See "PERSISTENCE DEPENDENCY PATTERN" documentation above for why we don't
-    // add updatedSiblingId from removeFromSiblingChain as a dependency)
     const persistenceDependencies: string[] = [];
 
     // Defensive validation: Ensure parent exists before adding dependency
-    if (!prevSiblingId) {
-      console.error('[indentNode] Invalid state: prevSiblingId is null/undefined');
+    if (!targetParentId) {
+      console.error('[indentNode] Invalid state: targetParentId is null/undefined');
       return false; // Early return to prevent corruption
     }
 
-    // Ensure the new parent (prevSibling) is persisted before making this node its child
-    persistenceDependencies.push(prevSiblingId);
+    // Ensure the target parent is persisted before making this node its child
+    persistenceDependencies.push(targetParentId);
 
     // If positioning after an existing child, ensure that child is persisted
     if (beforeSiblingId) {
       persistenceDependencies.push(beforeSiblingId);
     }
 
+    // If we updated a sibling during removal, ensure it's persisted first
+    // This prevents FOREIGN KEY violations when the updated sibling references this node
+    if (updatedSiblingId) {
+      persistenceDependencies.push(updatedSiblingId);
+    }
+
     // Step 3: Update the main node with persistence dependencies
     sharedNodeStore.updateNode(
       nodeId,
       {
-        parentId: prevSiblingId,
+        parentId: targetParentId,
         beforeSiblingId: beforeSiblingId
       },
       viewerSource,
@@ -929,7 +968,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       }
     );
 
-    _uiState[nodeId] = { ...uiState, depth: (prevSiblingUIState?.depth || 0) + 1 };
+    _uiState[nodeId] = { ...uiState, depth: (targetParentUIState?.depth || 0) + 1 };
 
     // Recalculate depths for all descendants
     updateDescendantDepths(nodeId);
@@ -944,7 +983,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Invalidate sorted children cache for both old and new parents
     invalidateSortedChildrenCache(node.parentId); // Old parent
-    invalidateSortedChildrenCache(prevSiblingId); // New parent
+    invalidateSortedChildrenCache(targetParentId); // New parent
 
     events.hierarchyChanged();
     _updateTrigger++;
@@ -986,8 +1025,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Step 1: Prepare for parent change
     // Remove node from current sibling chain to maintain chain integrity
-    // Return value not needed here - the sibling update happens automatically
-    void removeFromSiblingChain(nodeId);
+    const updatedSiblingFromRemoval = removeFromSiblingChain(nodeId);
 
     // Step 2: Calculate new position in parent hierarchy
     const newParentId = parent.parentId || null;
@@ -1019,8 +1057,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
 
     // Step 3: Build persistence dependencies
-    // (See "PERSISTENCE DEPENDENCY PATTERN" documentation above for why we don't
-    // add updatedSiblingId from removeFromSiblingChain as a dependency)
     const mainNodeDeps: string[] = [];
 
     // Defensive validation: Ensure old parent exists before adding dependency
@@ -1032,6 +1068,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     mainNodeDeps.push(oldParentId);
     if (positionBeforeSibling && positionBeforeSibling !== oldParentId) {
       mainNodeDeps.push(positionBeforeSibling);
+    }
+
+    // If we updated a sibling during removal from old parent, ensure it's persisted first
+    // This prevents FOREIGN KEY violations when the updated sibling references this node
+    if (updatedSiblingFromRemoval) {
+      mainNodeDeps.push(updatedSiblingFromRemoval);
     }
 
     // Step 4: Execute main node update
