@@ -17,30 +17,6 @@
  * - Separates data (Node in SharedNodeStore) from UI state (NodeUIState)
  * - Computes children on-demand instead of storing arrays
  * - Real-time synchronization across multiple viewers
- *
- * ============================================================================
- * PERSISTENCE COORDINATION - Sibling Chain Operations
- * ============================================================================
- *
- * Operations that modify sibling chains (deleteNode, indentNode, outdentNode, combineNodes)
- * use the PersistenceCoordinator's dependency system to prevent race conditions.
- *
- * DESIGN PATTERN: Pass dependencies explicitly, let PersistenceCoordinator sequence
- *
- * How it works:
- * 1. Identify affected nodes BEFORE making changes (e.g., nextSibling that will be updated)
- * 2. Call removeFromSiblingChain() to queue the repair (auto-persists via SharedNodeStore)
- * 3. Pass affected nodes as dependencies to the structural change operation
- * 4. PersistenceCoordinator automatically sequences: repair → structural change
- *
- * Benefits over manual awaits:
- * - Declarative: Dependencies are explicit in the code
- * - Automatic: PersistenceCoordinator handles all sequencing
- * - Efficient: No manual timeout handling or error catching needed
- * - Correct: Dependencies ensure proper FOREIGN KEY ordering
- *
- * References: See deleteNode(), indentNode(), outdentNode(), combineNodes()
- * ============================================================================
  */
 
 import { v4 as uuidv4 } from 'uuid';
@@ -648,9 +624,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
-    // Mentions are computed fields - derived from content and shouldn't be persisted directly
+    // Mentions are computed fields - skip persistence (they're derived from content)
     sharedNodeStore.updateNode(nodeId, { mentions: [...mentions] }, viewerSource, {
-      isComputedField: true
+      skipPersistence: true
     });
 
     _updateTrigger++;
@@ -788,29 +764,31 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Handle child promotion using shared depth-aware logic
     promoteChildren(currentNodeId, previousNodeId);
 
-    // PATTERN A: Identify nodes that will be affected by sibling chain repair BEFORE making changes
+    // CRITICAL: Collect dependencies that must persist before deletion
     // This prevents "database is locked" errors and FOREIGN KEY violations
-    const nodesToWaitFor: string[] = [];
+    // PersistenceCoordinator will ensure these operations complete before deletion
+    const deletionDependencies = [previousNodeId]; // Content update must persist first
     const siblings = sharedNodeStore.getNodesForParent(currentNode.parentId);
     const nextSibling = siblings.find((n) => n.beforeSiblingId === currentNodeId);
     if (nextSibling) {
-      nodesToWaitFor.push(nextSibling.id);
+      deletionDependencies.push(nextSibling.id); // Sibling chain repair must complete
     }
     const children = sharedNodeStore.getNodesForParent(currentNodeId);
     if (children.length > 0) {
-      nodesToWaitFor.push(...children.map((c) => c.id));
+      deletionDependencies.push(...children.map((c) => c.id)); // Child promotions must complete
     }
 
-    // Queue sibling chain repair (auto-persists via SharedNodeStore)
+    // Remove node from sibling chain BEFORE deletion to prevent orphans
     removeFromSiblingChain(currentNodeId);
 
-    // Delete node with dependencies - PersistenceCoordinator will wait for dependencies automatically
-    sharedNodeStore.deleteNode(currentNodeId, viewerSource, false, nodesToWaitFor);
+    // Delete with dependencies - PersistenceCoordinator ensures correct order
+    sharedNodeStore.deleteNode(currentNodeId, viewerSource, false, deletionDependencies);
     delete _uiState[currentNodeId];
 
+    // CRITICAL: Must reassign (not mutate) for Svelte 5 reactivity
     const rootIndex = _rootNodeIds.indexOf(currentNodeId);
     if (rootIndex >= 0) {
-      _rootNodeIds.splice(rootIndex, 1);
+      _rootNodeIds = _rootNodeIds.filter((id) => id !== currentNodeId);
     }
 
     // Invalidate sorted children cache for both old parent and new parent
@@ -860,10 +838,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    * Removes a node from its current sibling chain by updating the next sibling's beforeSiblingId.
    * This prevents orphaned nodes when a node is moved (indent/outdent) or deleted.
    *
-   * **PERSISTENCE**: This function queues persistence for the next sibling via SharedNodeStore.
-   * Callers should use `waitForNodeSaves()` to ensure the repair completes before proceeding
-   * with structural changes that depend on it.
-   *
    * @param nodeId - The node being removed from its current parent
    */
   function removeFromSiblingChain(nodeId: string): string | null {
@@ -876,113 +850,145 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     if (nextSibling) {
       // Update next sibling to point to our predecessor, "splicing us out" of the chain
-      // Auto-persist - caller will use waitForNodeSaves() to sequence operations
       sharedNodeStore.updateNode(
         nextSibling.id,
         { beforeSiblingId: node.beforeSiblingId },
-        viewerSource
+        viewerSource,
+        { skipConflictDetection: true } // Sequential structural updates
       );
       return nextSibling.id; // Return the ID of the updated sibling
     }
     return null;
   }
 
-  /**
-   * Indents a node by making it a child of its previous sibling.
-   *
-   * The node is inserted as the last child of its previous sibling, maintaining
-   * proper sibling chain integrity using dependencies passed to PersistenceCoordinator.
-   *
-   * Race Condition Handling:
-   * - Identifies next sibling in OLD parent context (sibling chain repair)
-   * - Calls removeFromSiblingChain() which auto-persists the repair via SharedNodeStore
-   * - Passes nextSibling as dependency to updateNode()
-   * - PersistenceCoordinator automatically sequences: repair → then → indent
-   *
-   * @param nodeId - The ID of the node to indent
-   * @returns boolean - true if indent succeeded, false if operation invalid
-   *
-   * @example
-   * ```typescript
-   * // Before: A, B, C (siblings)
-   * indentNode('C');
-   * // After: A, B (with C as last child of B)
-   * ```
-   */
   function indentNode(nodeId: string): boolean {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return false;
 
-    // Get SORTED siblings in current (old) parent context
-    let currentSiblings: string[];
+    // Get SORTED siblings according to beforeSiblingId chain
+    let siblings: string[];
     if (node.parentId) {
       const unsortedSiblings = sharedNodeStore.getNodesForParent(node.parentId).map((n) => n.id);
-      currentSiblings = sortChildrenByBeforeSiblingId(unsortedSiblings, node.parentId);
+      siblings = sortChildrenByBeforeSiblingId(unsortedSiblings, node.parentId);
     } else {
-      currentSiblings = sortChildrenByBeforeSiblingId(_rootNodeIds, null);
+      siblings = sortChildrenByBeforeSiblingId(_rootNodeIds, null);
     }
 
-    const nodeIndex = currentSiblings.indexOf(nodeId);
+    const nodeIndex = siblings.indexOf(nodeId);
     if (nodeIndex <= 0) return false; // Can't indent first child or if not found
 
-    const prevSiblingId = currentSiblings[nodeIndex - 1];
+    const prevSiblingId = siblings[nodeIndex - 1];
     const prevSibling = sharedNodeStore.getNode(prevSiblingId);
     if (!prevSibling) return false;
 
-    // PATTERN A: Identify affected nodes BEFORE making changes
-    // Pass them as dependencies so PersistenceCoordinator sequences operations correctly
+    // Indent target is ALWAYS the previous sibling directly
+    // The node becomes a child of the previous sibling, positioned after any existing children
+    //
+    // Examples:
+    // - Simple indent: A B → A[B] (B becomes child of A)
+    // - With existing children: A[existing] B → A[existing, B] (B becomes sibling of existing)
+    // - Multiple indents: A B C → indent B → A[B] C → indent C → A[B, C] (both siblings under A)
+    //
+    // This matches natural outliner behavior where Tab makes a node a child of the item above it
+    const targetParentId = prevSiblingId;
 
-    // Affected nodes in OLD parent context (sibling chain repair)
-    const dependencies: string[] = [];
-    const oldParentSiblings = sharedNodeStore.getNodesForParent(node.parentId);
-    const nextSibling = oldParentSiblings.find((n) => n.beforeSiblingId === nodeId);
-    if (nextSibling) {
-      dependencies.push(nextSibling.id);
-    }
+    // Step 1: Remove node from current sibling chain BEFORE changing parent
+    // This operation updates the next sibling (if any) to maintain chain integrity
+    const updatedSiblingId = removeFromSiblingChain(nodeId);
 
-    // Queue sibling chain repair (auto-persists via SharedNodeStore)
-    removeFromSiblingChain(nodeId);
-
-    // Find the last child of the new parent to insert after
-    const existingChildren = sharedNodeStore.getNodesForParent(prevSiblingId).map((n) => n.id);
+    // The node becomes a child of the target parent
+    // It should be appended to the end of the target parent's children
+    const existingChildren = sharedNodeStore.getNodesForParent(targetParentId).map((n) => n.id);
 
     let beforeSiblingId: string | null = null;
     if (existingChildren.length > 0) {
       // Get sorted children and append after the last one
-      const sortedChildren = sortChildrenByBeforeSiblingId(existingChildren, prevSiblingId);
+      const sortedChildren = sortChildrenByBeforeSiblingId(existingChildren, targetParentId);
       beforeSiblingId = sortedChildren[sortedChildren.length - 1]; // Insert after last child
     }
 
     const uiState = _uiState[nodeId];
-    const prevSiblingUIState = _uiState[prevSiblingId];
+    const targetParentUIState = _uiState[targetParentId];
 
-    // Update node with dependencies - PersistenceCoordinator will wait for dependencies automatically
+    // Step 2: Build dependency list for persistence sequencing
+    const persistenceDependencies: string[] = [];
+
+    // Defensive validation: Ensure parent exists before adding dependency
+    if (!targetParentId) {
+      console.error('[indentNode] Invalid state: targetParentId is null/undefined');
+      return false; // Early return to prevent corruption
+    }
+
+    // Ensure the target parent is persisted before making this node its child
+    persistenceDependencies.push(targetParentId);
+
+    // If positioning after an existing child, ensure that child is persisted
+    if (beforeSiblingId) {
+      persistenceDependencies.push(beforeSiblingId);
+    }
+
+    // If we updated a sibling during removal, ensure it's persisted first
+    // This prevents FOREIGN KEY violations when the updated sibling references this node
+    if (updatedSiblingId) {
+      persistenceDependencies.push(updatedSiblingId);
+    }
+
+    // Step 3: Update the main node with persistence dependencies
+    // Set containerNodeId to the root container when indenting
+    // This is required for FOREIGN KEY validation and proper nesting
+    let containerNodeId: string | null = null;
+    if (targetParentId) {
+      // Walk up to find the root container
+      let current = sharedNodeStore.getNode(targetParentId);
+      while (current) {
+        if (!current.parentId) {
+          // Reached root level - this node is the container
+          containerNodeId = current.id;
+          break;
+        }
+        if (current.containerNodeId) {
+          // This node has an explicit container - use it
+          containerNodeId = current.containerNodeId;
+          break;
+        }
+        // Move up the chain
+        current = current.parentId ? sharedNodeStore.getNode(current.parentId) : undefined;
+      }
+    }
+
     sharedNodeStore.updateNode(
       nodeId,
       {
-        parentId: prevSiblingId,
-        beforeSiblingId: beforeSiblingId // Insert after last existing child (or null if no children)
+        parentId: targetParentId,
+        containerNodeId: containerNodeId,
+        beforeSiblingId: beforeSiblingId
       },
       viewerSource,
-      { persistenceDependencies: dependencies }
+      {
+        persistenceDependencies,
+        // Skip conflict detection for sequential viewer operations
+        // These are coordinated structural changes, not concurrent edits
+        skipConflictDetection: true
+      }
     );
 
-    _uiState[nodeId] = { ...uiState, depth: (prevSiblingUIState?.depth || 0) + 1 };
+    _uiState[nodeId] = { ...uiState, depth: (targetParentUIState?.depth || 0) + 1 };
 
     // Recalculate depths for all descendants
     updateDescendantDepths(nodeId);
 
     // If node was a root node, remove from _rootNodeIds array
+    // CRITICAL: Must reassign (not mutate) for Svelte 5 reactivity
     if (!node.parentId) {
       const rootIndex = _rootNodeIds.indexOf(nodeId);
       if (rootIndex >= 0) {
-        _rootNodeIds.splice(rootIndex, 1);
+        _rootNodeIds = _rootNodeIds.filter((id) => id !== nodeId);
       }
     }
 
     // Invalidate sorted children cache for both old and new parents
     invalidateSortedChildrenCache(node.parentId); // Old parent
-    invalidateSortedChildrenCache(prevSiblingId); // New parent
+    invalidateSortedChildrenCache(targetParentId); // New parent
 
     events.hierarchyChanged();
     _updateTrigger++;
@@ -1007,29 +1013,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     return true;
   }
 
-  /**
-   * Outdents a node by promoting it to the same level as its parent.
-   *
-   * The node is positioned immediately after its old parent as a sibling. Any siblings
-   * that were below this node become children of the outdented node, maintaining proper
-   * hierarchy and sibling chain integrity using dependencies passed to PersistenceCoordinator.
-   *
-   * Race Condition Handling:
-   * - Identifies next sibling in OLD parent context (sibling chain repair)
-   * - Calls removeFromSiblingChain() which auto-persists the repair via SharedNodeStore
-   * - Passes nextSibling as dependency to updateNode()
-   * - PersistenceCoordinator automatically sequences: repair → then → outdent → then → transfer siblings
-   *
-   * @param nodeId - The ID of the node to outdent
-   * @returns boolean - true if outdent succeeded, false if operation invalid (e.g., root node)
-   *
-   * @example
-   * ```typescript
-   * // Before: A (with child B, B has child C)
-   * outdentNode('C');
-   * // After: A, B, C (all siblings)
-   * ```
-   */
   function outdentNode(nodeId: string): boolean {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node || !node.parentId) return false;
@@ -1039,81 +1022,95 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     const oldParentId = node.parentId;
 
-    // Find siblings in current (old) parent context that come after this node (they will become children)
-    const currentSiblings = sharedNodeStore.getNodesForParent(oldParentId).map((n) => n.id);
-    const sortedCurrentSiblings = sortChildrenByBeforeSiblingId(currentSiblings, oldParentId);
-    const nodeIndex = sortedCurrentSiblings.indexOf(nodeId);
-    const siblingsBelow = nodeIndex >= 0 ? sortedCurrentSiblings.slice(nodeIndex + 1) : [];
+    // Find siblings that come after this node (they will become children)
+    const siblings = sharedNodeStore.getNodesForParent(oldParentId).map((n) => n.id);
+    const sortedSiblings = sortChildrenByBeforeSiblingId(siblings, oldParentId);
+    const nodeIndex = sortedSiblings.indexOf(nodeId);
+    const siblingsBelow = nodeIndex >= 0 ? sortedSiblings.slice(nodeIndex + 1) : [];
 
-    // PATTERN A: Identify affected nodes BEFORE making changes
-    // Pass them as dependencies so PersistenceCoordinator sequences operations correctly
+    // Step 1: Prepare for parent change
+    // Remove node from current sibling chain to maintain chain integrity
+    const updatedSiblingFromRemoval = removeFromSiblingChain(nodeId);
 
-    // Affected nodes in OLD parent context (sibling chain repair)
-    const dependencies: string[] = [];
-    const oldParentSiblings = sharedNodeStore.getNodesForParent(node.parentId);
-    const nextSibling = oldParentSiblings.find((n) => n.beforeSiblingId === nodeId);
-
-    // Check if next sibling will be transferred as a sibling below
-    // If so, don't update it here - we'll update it when we transfer it
-    const nextSiblingWillBeTransferred = nextSibling && siblingsBelow.includes(nextSibling.id);
-
-    if (nextSibling && !nextSiblingWillBeTransferred) {
-      // Only repair the chain if the next sibling is NOT being transferred
-      // This avoids conflicting updates to the same node
-      sharedNodeStore.updateNode(
-        nextSibling.id,
-        { beforeSiblingId: node.beforeSiblingId },
-        viewerSource
-      );
-      dependencies.push(nextSibling.id);
-    }
-
-    // Determine insertion point in NEW parent context
+    // Step 2: Calculate new position in parent hierarchy
     const newParentId = parent.parentId || null;
-    const oldParentNode = sharedNodeStore.getNode(oldParentId);
-    let positionBeforeSiblingId: string | null = null;
-
-    if (oldParentNode && oldParentNode.parentId === newParentId) {
-      // Old parent is a valid sibling in new context - will be our beforeSiblingId
-      positionBeforeSiblingId = oldParentId;
-    } else {
-      // Fallback: position at end after last sibling in new parent
-      const newParentSiblings = sharedNodeStore.getNodesForParent(newParentId);
-      if (newParentSiblings.length > 0) {
-        const sortedNewParentSiblings = sortChildrenByBeforeSiblingId(
-          newParentSiblings.map((n) => n.id),
-          newParentId
-        );
-        positionBeforeSiblingId = sortedNewParentSiblings[sortedNewParentSiblings.length - 1];
-      }
-    }
-
     const uiState = _uiState[nodeId];
     const newDepth = newParentId ? (_uiState[newParentId]?.depth || 0) + 1 : 0;
 
-    // Update node with dependencies - PersistenceCoordinator will wait for dependencies automatically
+    // Find where to position the outdented node in its new parent's child list
+    // It should come right after its old parent (which is now a sibling)
+    let positionBeforeSibling: string | null = oldParentId;
+
+    // Check if old parent has a valid position in the new parent's context
+    const oldParentNode = sharedNodeStore.getNode(oldParentId);
+    if (oldParentNode && oldParentNode.parentId === newParentId) {
+      // Old parent is a valid sibling in the new context
+      positionBeforeSibling = oldParentId;
+    } else {
+      // Old parent is not in the same parent context (shouldn't happen in normal outdent)
+      // Position at the end by finding the last sibling
+      const siblings = sharedNodeStore
+        .getNodesForParent(newParentId)
+        .filter((n) => n.id !== nodeId)
+        .map((n) => n.id);
+      if (siblings.length > 0) {
+        const sortedSiblings = sortChildrenByBeforeSiblingId(siblings, newParentId);
+        positionBeforeSibling = sortedSiblings[sortedSiblings.length - 1];
+      } else {
+        positionBeforeSibling = null;
+      }
+    }
+
+    // Step 3: Build persistence dependencies
+    const mainNodeDeps: string[] = [];
+
+    // Defensive validation: Ensure old parent exists before adding dependency
+    if (!oldParentId) {
+      console.error('[outdentNode] Invalid state: oldParentId is null/undefined');
+      return false; // Early return to prevent corruption
+    }
+
+    mainNodeDeps.push(oldParentId);
+    if (positionBeforeSibling && positionBeforeSibling !== oldParentId) {
+      mainNodeDeps.push(positionBeforeSibling);
+    }
+
+    // If we updated a sibling during removal from old parent, ensure it's persisted first
+    // This prevents FOREIGN KEY violations when the updated sibling references this node
+    if (updatedSiblingFromRemoval) {
+      mainNodeDeps.push(updatedSiblingFromRemoval);
+    }
+
+    // Step 4: Execute main node update
     sharedNodeStore.updateNode(
       nodeId,
       {
         parentId: newParentId,
-        beforeSiblingId: positionBeforeSiblingId
+        beforeSiblingId: positionBeforeSibling
       },
       viewerSource,
-      { persistenceDependencies: dependencies }
+      {
+        persistenceDependencies: mainNodeDeps,
+        // Skip conflict detection for sequential viewer operations
+        skipConflictDetection: true
+      }
     );
 
     _uiState[nodeId] = { ...uiState, depth: newDepth };
 
-    // Insert the outdented node into the new parent's sibling chain
+    // Step 5: Repair sibling chain in new parent
     // Find any sibling in the new parent that currently points to positionBeforeSibling
     // and update it to point to the outdented node instead
-    if (positionBeforeSiblingId !== null) {
+    if (positionBeforeSibling !== null) {
+      // Optimization: Only check direct siblings, not all nodes
       const allSiblings = sharedNodeStore.getNodesForParent(newParentId);
 
       for (const sibling of allSiblings) {
-        if (sibling.id !== nodeId && sibling.beforeSiblingId === positionBeforeSiblingId) {
-          // Update through SharedNodeStore (auto-queues persistence)
-          sharedNodeStore.updateNode(sibling.id, { beforeSiblingId: nodeId }, viewerSource);
+        if (sibling.id !== nodeId && sibling.beforeSiblingId === positionBeforeSibling) {
+          sharedNodeStore.updateNode(sibling.id, { beforeSiblingId: nodeId }, viewerSource, {
+            persistenceDependencies: [nodeId], // Wait for main node
+            skipConflictDetection: true // Sequential structural updates
+          });
           break; // Only one sibling can point to positionBeforeSibling
         }
       }
@@ -1135,38 +1132,26 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       }
 
       // Transfer each sibling, updating their before_sibling_id chain
+      // Each sibling must wait for the previous one to complete
       for (let i = 0; i < siblingsBelow.length; i++) {
         const siblingId = siblingsBelow[i];
         const sibling = sharedNodeStore.getNode(siblingId);
         if (sibling) {
-          // Identify next sibling for this transferring node as dependency
-          const transferDependencies: string[] = [nodeId]; // Must wait for outdented node to be updated
-
-          // Fix the sibling chain in the OLD parent before transferring
-          // Find the node that points to this sibling and update it to bypass this sibling
-          const siblingsOfTransferring = sharedNodeStore.getNodesForParent(sibling.parentId);
-          const nextOfTransferring = siblingsOfTransferring.find(
-            (n) => n.beforeSiblingId === siblingId
-          );
-          if (nextOfTransferring) {
-            // Update next sibling to point to our predecessor
-            sharedNodeStore.updateNode(
-              nextOfTransferring.id,
-              { beforeSiblingId: sibling.beforeSiblingId },
-              viewerSource
-            );
-            transferDependencies.push(nextOfTransferring.id);
-          }
+          // Remove from current sibling chain BEFORE updating beforeSiblingId
+          const removedSiblingId = removeFromSiblingChain(siblingId);
 
           // First transferred sibling points to last existing child (or null)
           // Subsequent siblings point to the previous transferred sibling
           const beforeSiblingId = i === 0 ? lastSiblingId : siblingsBelow[i - 1];
-          if (i > 0) {
-            // If not first, also depends on previous transferred sibling
-            transferDependencies.push(siblingsBelow[i - 1]);
-          }
 
-          // Update with dependencies - PersistenceCoordinator will wait for dependencies automatically
+          // Build dependency chain
+          const deps: string[] = [
+            nodeId, // Wait for main node (the new parent)
+            ...(removedSiblingId ? [removedSiblingId] : []), // Wait for sibling chain removal
+            ...(beforeSiblingId ? [beforeSiblingId] : []) // Wait for beforeSibling
+          ];
+
+          // Update the sibling
           sharedNodeStore.updateNode(
             siblingId,
             {
@@ -1174,7 +1159,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
               beforeSiblingId
             },
             viewerSource,
-            { persistenceDependencies: transferDependencies }
+            {
+              persistenceDependencies: deps,
+              skipConflictDetection: true // Sequential structural updates
+            }
           );
 
           // Update depth for transferred sibling
@@ -1186,38 +1174,19 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           updateDescendantDepths(siblingId);
         }
       }
-
-      // DEV-MODE ASSERTIONS: Validate transfer correctness
-      if (import.meta.env.DEV) {
-        // Validate all transferred siblings have correct parent
-        for (const siblingId of siblingsBelow) {
-          const transferred = sharedNodeStore.getNode(siblingId);
-          console.assert(
-            transferred?.parentId === nodeId,
-            `[outdentNode] Transfer failed: ${siblingId} has parent ${transferred?.parentId}, expected ${nodeId}`
-          );
-        }
-
-        // Validate sibling chain is correctly formed
-        if (siblingsBelow.length > 1) {
-          for (let i = 1; i < siblingsBelow.length; i++) {
-            const sibling = sharedNodeStore.getNode(siblingsBelow[i]);
-            const expectedPredecessor = siblingsBelow[i - 1];
-            console.assert(
-              sibling?.beforeSiblingId === expectedPredecessor,
-              `[outdentNode] Chain broken: ${siblingsBelow[i]} points to ${sibling?.beforeSiblingId}, expected ${expectedPredecessor}`
-            );
-          }
-        }
-      }
     }
 
     // Recalculate depths for all descendants
     updateDescendantDepths(nodeId);
 
+    // CRITICAL: Must reassign (not mutate) for Svelte 5 reactivity
     if (!newParentId) {
       const parentIndex = _rootNodeIds.indexOf(parent.id);
-      _rootNodeIds.splice(parentIndex + 1, 0, nodeId);
+      _rootNodeIds = [
+        ..._rootNodeIds.slice(0, parentIndex + 1),
+        nodeId,
+        ..._rootNodeIds.slice(parentIndex + 1)
+      ];
     }
 
     // Invalidate sorted children cache for old parent, new parent, and outdented node
@@ -1318,8 +1287,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       sharedNodeStore.updateNode(child.id, updates, viewerSource);
 
       // CRITICAL: If promoting to root level, add to _rootNodeIds
+      // Must reassign (not mutate) for Svelte 5 reactivity
       if (newParentForChildren === null && !_rootNodeIds.includes(child.id)) {
-        _rootNodeIds.push(child.id);
+        _rootNodeIds = [..._rootNodeIds, child.id];
       }
 
       // Update depth
@@ -1390,12 +1360,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    * - Backend operations where child handling is managed separately
    * - Cleanup operations where orphaned children are intentional
    *
-   * Race Condition Handling:
-   * - Identifies next sibling (sibling chain repair target)
-   * - Calls removeFromSiblingChain() which auto-persists the repair
-   * - Passes nextSibling as dependency to deleteNode()
-   * - PersistenceCoordinator automatically sequences: repair → then → delete
-   *
    * @param nodeId - The ID of the node to delete
    */
   function deleteNode(nodeId: string): void {
@@ -1404,30 +1368,16 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     cleanupDebouncedOperations(nodeId);
 
-    // PATTERN A: Identify affected nodes BEFORE making changes
-    // Pass them as dependencies so PersistenceCoordinator sequences operations correctly
-    //
-    // We only need the NEXT SIBLING because removeFromSiblingChain() only
-    // modifies that node (updates its beforeSiblingId to splice out the deleted node).
-    // Children are orphaned but NOT modified, so we don't need them as dependencies.
-    const dependencies: string[] = [];
-    const siblings = sharedNodeStore.getNodesForParent(node.parentId);
-    const nextSibling = siblings.find((n) => n.beforeSiblingId === nodeId);
-    if (nextSibling) {
-      dependencies.push(nextSibling.id);
-    }
-
-    // Queue sibling chain repair (auto-persists via SharedNodeStore)
+    // Remove node from sibling chain BEFORE deletion to prevent orphans
     removeFromSiblingChain(nodeId);
 
-    // Delete node with dependencies - PersistenceCoordinator will wait for dependencies automatically
-    sharedNodeStore.deleteNode(nodeId, viewerSource, false, dependencies);
-
+    sharedNodeStore.deleteNode(nodeId, viewerSource);
     delete _uiState[nodeId];
 
+    // CRITICAL: Must reassign (not mutate) for Svelte 5 reactivity
     const rootIndex = _rootNodeIds.indexOf(nodeId);
     if (rootIndex >= 0) {
-      _rootNodeIds.splice(rootIndex, 1);
+      _rootNodeIds = _rootNodeIds.filter((id) => id !== nodeId);
     }
 
     // Invalidate sorted children cache for parent

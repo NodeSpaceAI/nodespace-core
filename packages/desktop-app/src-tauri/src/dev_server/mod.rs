@@ -63,10 +63,14 @@ type SharedService<T> = Arc<RwLock<Arc<T>>>;
 
 /// Application state shared across all endpoints
 ///
-/// Uses RwLock to allow dynamic database switching for test isolation.
-/// Each test can call /api/database/init with a unique database path,
-/// and the init endpoint will replace the NodeService with a new instance
-/// connected to the test database.
+/// Uses RwLock to allow dynamic database switching for test isolation (Issue #255).
+/// Each test can call /api/database/init with a unique database path, and the init
+/// endpoint will:
+/// 1. Drain connections from the old database
+/// 2. Create a new DatabaseService
+/// 3. Atomically swap the services
+///
+/// This ensures proper synchronization without stale connections.
 #[derive(Clone)]
 pub struct AppState {
     pub db: SharedService<DatabaseService>,

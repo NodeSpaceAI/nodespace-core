@@ -49,12 +49,12 @@ use axum::{
     routing::{get, patch, post},
     Router,
 };
-use std::sync::Arc;
 
 use crate::commands::embeddings::{BatchEmbeddingResult, SearchTopicsParams};
 use crate::commands::nodes::CreateContainerNodeInput;
 use crate::dev_server::{AppState, HttpError};
 use nodespace_core::Node;
+use std::sync::Arc;
 
 // ============================================================================
 // Embedding Endpoints

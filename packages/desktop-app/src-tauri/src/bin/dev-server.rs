@@ -83,12 +83,13 @@ async fn main() -> anyhow::Result<()> {
     // Initialize services (same as Tauri app)
     tracing::info!("🔧 Initializing services...");
 
+    // Create initial database and node service for startup
     let db_service = DatabaseService::new(db_path.clone()).await?;
     let node_service = NodeService::new(db_service.clone())?;
 
     tracing::info!("✅ Services initialized");
 
-    // Wrap services in RwLock for dynamic database switching during tests
+    // Wrap services in RwLock for dynamic database switching during tests (Issue #255)
     let db_arc = Arc::new(RwLock::new(Arc::new(db_service)));
     let ns_arc = Arc::new(RwLock::new(Arc::new(node_service)));
 
