@@ -465,8 +465,18 @@ export class SharedNodeStore {
 
   /**
    * Delete a node
+   *
+   * @param nodeId - ID of node to delete
+   * @param source - Source of the deletion
+   * @param skipPersistence - Skip database persistence (default: false)
+   * @param dependencies - Node IDs that must be persisted before deletion (prevents FOREIGN KEY violations)
    */
-  deleteNode(nodeId: string, source: UpdateSource, skipPersistence = false): void {
+  deleteNode(
+    nodeId: string,
+    source: UpdateSource,
+    skipPersistence = false,
+    dependencies?: string[]
+  ): void {
     const node = this.nodes.get(nodeId);
     if (node) {
       this.nodes.delete(nodeId);
@@ -487,7 +497,7 @@ export class SharedNodeStore {
 
       // Phase 2.4: Persist deletion to database
       if (!skipPersistence && source.type !== 'database') {
-        // Delegate to PersistenceCoordinator
+        // Delegate to PersistenceCoordinator with dependencies
         PersistenceCoordinator.getInstance().persist(
           nodeId,
           async () => {
@@ -508,7 +518,8 @@ export class SharedNodeStore {
             }
           },
           {
-            mode: 'immediate'
+            mode: 'immediate',
+            dependencies: dependencies || []
           }
         );
       }

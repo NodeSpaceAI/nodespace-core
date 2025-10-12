@@ -741,7 +741,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     });
   }
 
-  async function combineNodes(currentNodeId: string, previousNodeId: string): Promise<void> {
+  function combineNodes(currentNodeId: string, previousNodeId: string): void {
     const currentNode = sharedNodeStore.getNode(currentNodeId);
     const previousNode = sharedNodeStore.getNode(previousNodeId);
 
@@ -751,46 +751,38 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const combinedContent = previousNode.content + cleanedContent;
     const mergePosition = previousNode.content.length;
 
-    sharedNodeStore.updateNode(previousNodeId, { content: combinedContent }, viewerSource);
+    // Use external source to ensure content update persists
+    // (using viewerSource would skip persistence for content-only changes per line 254 in shared-node-store.ts)
+    const contentUpdateSource = {
+      type: 'external' as const,
+      source: 'ReactiveNodeService',
+      description: 'combineNodes content merge'
+    };
+    sharedNodeStore.updateNode(previousNodeId, { content: combinedContent }, contentUpdateSource);
     _uiState[previousNodeId] = { ..._uiState[previousNodeId], autoFocus: false };
 
     // Handle child promotion using shared depth-aware logic
     promoteChildren(currentNodeId, previousNodeId);
 
-    // CRITICAL: Identify nodes that will be affected by sibling chain repair BEFORE making changes
+    // CRITICAL: Collect dependencies that must persist before deletion
     // This prevents "database is locked" errors and FOREIGN KEY violations
-    const nodesToWaitFor = [];
+    // PersistenceCoordinator will ensure these operations complete before deletion
+    const deletionDependencies = [previousNodeId]; // Content update must persist first
     const siblings = sharedNodeStore.getNodesForParent(currentNode.parentId);
     const nextSibling = siblings.find((n) => n.beforeSiblingId === currentNodeId);
     if (nextSibling) {
-      nodesToWaitFor.push(nextSibling.id);
+      deletionDependencies.push(nextSibling.id); // Sibling chain repair must complete
     }
     const children = sharedNodeStore.getNodesForParent(currentNodeId);
     if (children.length > 0) {
-      nodesToWaitFor.push(...children.map((c) => c.id));
+      deletionDependencies.push(...children.map((c) => c.id)); // Child promotions must complete
     }
 
     // Remove node from sibling chain BEFORE deletion to prevent orphans
     removeFromSiblingChain(currentNodeId);
 
-    // Wait for sibling chain repairs to complete before deletion
-    if (nodesToWaitFor.length > 0) {
-      const persistedNodes = await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
-
-      // Defensive check: ensure all expected nodes were persisted
-      if (persistedNodes.size !== nodesToWaitFor.length) {
-        const failedNodes = nodesToWaitFor.filter((id) => !persistedNodes.has(id));
-        console.error('[combineNodes] Some nodes failed to persist before deletion:', {
-          expected: nodesToWaitFor,
-          persisted: Array.from(persistedNodes),
-          failed: failedNodes
-        });
-        // Continue with deletion despite timeout - PersistenceCoordinator has already logged errors
-        // and the operation should complete to avoid leaving UI in inconsistent state
-      }
-    }
-
-    sharedNodeStore.deleteNode(currentNodeId, viewerSource);
+    // Delete with dependencies - PersistenceCoordinator ensures correct order
+    sharedNodeStore.deleteNode(currentNodeId, viewerSource, false, deletionDependencies);
     delete _uiState[currentNodeId];
 
     const rootIndex = _rootNodeIds.indexOf(currentNodeId);
@@ -1079,22 +1071,32 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (children.length === 0) return;
 
     // Find the nearest ancestor node at the SAME depth as the deleted node
+    const deletedNode = sharedNodeStore.getNode(nodeId);
     const deletedNodeDepth = _uiState[nodeId]?.depth ?? 0;
-    let newParentForChildren = previousNodeId;
-    let searchNode: string | null = previousNodeId;
 
-    while (searchNode) {
-      const searchDepth = _uiState[searchNode]?.depth ?? 0;
-      if (searchDepth === deletedNodeDepth) {
-        newParentForChildren = searchNode;
-        break;
+    // CRITICAL: If deleted node is at root level (parentId=null), promote children to root level too
+    // Don't make them children of the previous sibling - maintain the flat root structure
+    let newParentForChildren: string | null;
+    if (deletedNode?.parentId === null) {
+      newParentForChildren = null; // Promote to root level
+    } else {
+      // For nested nodes, find a parent at the same depth
+      newParentForChildren = previousNodeId;
+      let searchNode: string | null = previousNodeId;
+
+      while (searchNode) {
+        const searchDepth = _uiState[searchNode]?.depth ?? 0;
+        if (searchDepth === deletedNodeDepth) {
+          newParentForChildren = searchNode;
+          break;
+        }
+        if (searchDepth < deletedNodeDepth) {
+          newParentForChildren = searchNode;
+          break;
+        }
+        const searchNodeData = sharedNodeStore.getNode(searchNode);
+        searchNode = searchNodeData?.parentId ?? null;
       }
-      if (searchDepth < deletedNodeDepth) {
-        newParentForChildren = searchNode;
-        break;
-      }
-      const searchNodeData = sharedNodeStore.getNode(searchNode);
-      searchNode = searchNodeData?.parentId ?? null;
     }
 
     // Find existing children of the new parent to append after them
@@ -1119,8 +1121,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Note: We could optimize this with a batch update API, but typical nodes have <10 children
     // and PersistenceCoordinator already handles batching at a lower level
     for (const child of children) {
+      // Determine the new parent node to check its containerNodeId
+      const newParent = newParentForChildren ? sharedNodeStore.getNode(newParentForChildren) : null;
+
       const updates: Partial<Node> = {
-        parentId: newParentForChildren
+        parentId: newParentForChildren,
+        // CRITICAL: Update containerNodeId to prevent FOREIGN KEY violations when old container is deleted
+        // Container should match the new parent's container (for nested nodes) or null (for root-level)
+        containerNodeId: newParent?.containerNodeId ?? null
       };
 
       if (child.id === firstChildId) {
@@ -1128,6 +1136,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       }
 
       sharedNodeStore.updateNode(child.id, updates, viewerSource);
+
+      // CRITICAL: If promoting to root level, add to _rootNodeIds
+      if (newParentForChildren === null && !_rootNodeIds.includes(child.id)) {
+        _rootNodeIds.push(child.id);
+      }
 
       // Update depth
       const currentChildDepth = _uiState[child.id]?.depth ?? 0;
@@ -1142,6 +1155,42 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       };
 
       updateDescendantDepths(child.id);
+
+      // CRITICAL: Recursively fix containerNodeId for all descendants
+      // When promoting a child, all of its descendants still have containerNodeId pointing to the old deleted node
+      // This would cause FOREIGN KEY violations when the old container is deleted
+      const newContainerId = newParent?.containerNodeId ?? null;
+      fixDescendantContainerIds(child.id, nodeId, newContainerId);
+    }
+  }
+
+  /**
+   * Recursively updates containerNodeId for all descendants that reference an old container
+   * This prevents FOREIGN KEY violations when deleting a node that was a container for nested descendants
+   *
+   * @param rootId - The root node whose descendants to update
+   * @param oldContainerId - The old container ID to replace
+   * @param newContainerId - The new container ID to use
+   */
+  function fixDescendantContainerIds(
+    rootId: string,
+    oldContainerId: string,
+    newContainerId: string | null
+  ): void {
+    const descendants = sharedNodeStore.getNodesForParent(rootId);
+
+    for (const descendant of descendants) {
+      // Only update if this descendant currently references the old container
+      if (descendant.containerNodeId === oldContainerId) {
+        sharedNodeStore.updateNode(
+          descendant.id,
+          { containerNodeId: newContainerId },
+          viewerSource
+        );
+      }
+
+      // Recurse to fix deeper descendants
+      fixDescendantContainerIds(descendant.id, oldContainerId, newContainerId);
     }
   }
 
