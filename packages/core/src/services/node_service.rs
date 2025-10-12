@@ -485,7 +485,10 @@ impl NodeService {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn delete_node(&self, id: &str) -> Result<(), NodeServiceError> {
+    pub async fn delete_node(
+        &self,
+        id: &str,
+    ) -> Result<crate::models::DeleteResult, NodeServiceError> {
         let conn = self.db.connect_with_timeout().await?;
 
         let rows_affected = conn
@@ -493,11 +496,18 @@ impl NodeService {
             .await
             .map_err(|e| NodeServiceError::query_failed(format!("Failed to delete node: {}", e)))?;
 
-        if rows_affected == 0 {
-            return Err(NodeServiceError::node_not_found(id));
-        }
-
-        Ok(())
+        // Idempotent delete: return success even if node doesn't exist
+        // This follows RESTful best practices and prevents race conditions
+        // in distributed scenarios. DELETE is idempotent - deleting a
+        // non-existent resource should succeed (HTTP 200/204).
+        //
+        // The DeleteResult provides visibility for debugging/auditing while
+        // maintaining idempotence.
+        Ok(if rows_affected > 0 {
+            crate::models::DeleteResult::existed()
+        } else {
+            crate::models::DeleteResult::not_found()
+        })
     }
 
     /// Get children of a node

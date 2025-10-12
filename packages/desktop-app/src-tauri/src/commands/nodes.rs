@@ -331,7 +331,10 @@ pub async fn update_node(
 /// await invoke('delete_node', { id: 'node-123' });
 /// ```
 #[tauri::command]
-pub async fn delete_node(service: State<'_, NodeService>, id: String) -> Result<(), CommandError> {
+pub async fn delete_node(
+    service: State<'_, NodeService>,
+    id: String,
+) -> Result<nodespace_core::models::DeleteResult, CommandError> {
     service.delete_node(&id).await.map_err(Into::into)
 }
 

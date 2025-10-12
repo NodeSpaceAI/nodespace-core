@@ -12,7 +12,7 @@ mod node;
 pub mod time;
 
 pub use node::{
-    FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter,
+    DeleteResult, FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter,
     ValidationError,
 };
 pub use time::{SystemTimeProvider, TimeProvider};

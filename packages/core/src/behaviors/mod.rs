@@ -238,6 +238,37 @@ pub trait NodeBehavior: Send + Sync {
     }
 }
 
+/// Check if a string contains only whitespace (including Unicode whitespace)
+///
+/// This function validates that content has at least one non-whitespace character.
+/// It handles both ASCII and Unicode whitespace characters including:
+/// - Standard ASCII whitespace (space, tab, newline, etc.) - covered by is_whitespace()
+/// - Non-breaking spaces (U+00A0) - covered by is_whitespace()
+/// - Unicode line/paragraph separators (U+2028, U+2029) - covered by is_whitespace()
+/// - Zero-width spaces (U+200B, U+200C, U+200D) - NOT covered by is_whitespace(), checked explicitly
+/// - Zero-width no-break space / BOM (U+FEFF) - checked explicitly
+///
+/// Note: Rust's char::is_whitespace() follows Unicode's "White_Space" property,
+/// which intentionally excludes zero-width spaces as they're meant for text shaping,
+/// not spacing. However, for content validation, we treat them as empty.
+///
+/// # Arguments
+///
+/// * `content` - The string to check
+///
+/// # Returns
+///
+/// `true` if the string is empty or contains only whitespace/invisible characters
+fn is_empty_or_whitespace(content: &str) -> bool {
+    content.chars().all(|c| {
+        c.is_whitespace()
+            || c == '\u{200B}' // Zero-width space
+            || c == '\u{200C}' // Zero-width non-joiner
+            || c == '\u{200D}' // Zero-width joiner
+            || c == '\u{FEFF}' // Zero-width no-break space (BOM)
+    })
+}
+
 /// Built-in behavior for text nodes
 ///
 /// Text nodes support markdown formatting and can contain other nodes.
@@ -265,18 +296,28 @@ impl NodeBehavior for TextNodeBehavior {
         "text"
     }
 
-    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
-        // Allow empty content for placeholder nodes created by Enter key operations.
-        // Users press Enter to create a new node, then fill in content afterward.
-        // This is a valid UX pattern and should not be restricted.
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // Backend validates data integrity: empty nodes are rejected.
+        // Frontend manages placeholder UX: empty nodes stay in memory until content added.
         //
-        // Security consideration: Empty nodes are intentional user actions,
-        // not data corruption. The application layer ensures nodes are only
-        // created through user interactions (Enter key, explicit creation, etc.),
-        // not through arbitrary external input.
+        // Architecture:
+        // - Frontend: Creates placeholder nodes in _nodes Map when user presses Enter
+        // - Frontend: Only sends nodes to backend AFTER user adds content
+        // - Backend: Enforces data integrity by rejecting empty content
         //
-        // Previously required non-empty content, but this blocked the Enter key
-        // workflow where users create nodes first, then type content.
+        // This separation ensures:
+        // 1. Good UX: Users can create nodes via Enter key
+        // 2. Data integrity: Database only contains meaningful content
+        // 3. Clear contract: Frontend handles placeholders, backend validates data
+        //
+        // Unicode Validation:
+        // - Uses is_empty_or_whitespace() to handle Unicode whitespace (U+200B, U+00A0, etc.)
+        // - Rust's char.is_whitespace() correctly identifies all Unicode whitespace
+        if is_empty_or_whitespace(&node.content) {
+            return Err(NodeValidationError::MissingField(
+                "Text nodes must have content".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -667,10 +708,85 @@ mod tests {
         );
         assert!(behavior.validate(&valid_node).is_ok());
 
-        // Now valid: empty content (placeholder nodes allowed)
-        let mut placeholder_node = valid_node.clone();
-        placeholder_node.content = "   ".to_string();
-        assert!(behavior.validate(&placeholder_node).is_ok());
+        // Invalid: empty content (backend rejects empty nodes)
+        let mut empty_node = valid_node.clone();
+        empty_node.content = "".to_string();
+        assert!(behavior.validate(&empty_node).is_err());
+
+        // Invalid: whitespace-only content
+        let mut whitespace_node = valid_node.clone();
+        whitespace_node.content = "   ".to_string();
+        assert!(behavior.validate(&whitespace_node).is_err());
+    }
+
+    #[test]
+    fn test_text_node_unicode_whitespace_validation() {
+        let behavior = TextNodeBehavior;
+        let base_node = Node::new("text".to_string(), "Valid".to_string(), None, json!({}));
+
+        // Zero-width space (U+200B) - should be rejected
+        let mut node = base_node.clone();
+        node.content = "\u{200B}".to_string();
+        assert!(
+            behavior.validate(&node).is_err(),
+            "Zero-width space should be rejected"
+        );
+
+        // Zero-width non-joiner (U+200C) - should be rejected
+        node.content = "\u{200C}".to_string();
+        assert!(
+            behavior.validate(&node).is_err(),
+            "Zero-width non-joiner should be rejected"
+        );
+
+        // Zero-width joiner (U+200D) - should be rejected
+        node.content = "\u{200D}".to_string();
+        assert!(
+            behavior.validate(&node).is_err(),
+            "Zero-width joiner should be rejected"
+        );
+
+        // Non-breaking space (U+00A0) - should be rejected
+        node.content = "\u{00A0}".to_string();
+        assert!(
+            behavior.validate(&node).is_err(),
+            "Non-breaking space should be rejected"
+        );
+
+        // Line separator (U+2028) - should be rejected
+        node.content = "\u{2028}".to_string();
+        assert!(
+            behavior.validate(&node).is_err(),
+            "Line separator should be rejected"
+        );
+
+        // Paragraph separator (U+2029) - should be rejected
+        node.content = "\u{2029}".to_string();
+        assert!(
+            behavior.validate(&node).is_err(),
+            "Paragraph separator should be rejected"
+        );
+
+        // Mixed Unicode whitespace - should be rejected
+        node.content = "\u{200B}\u{00A0}\u{2028}".to_string();
+        assert!(
+            behavior.validate(&node).is_err(),
+            "Mixed Unicode whitespace should be rejected"
+        );
+
+        // Valid: Actual content with Unicode whitespace mixed in - should be accepted
+        node.content = "Hello\u{00A0}World".to_string();
+        assert!(
+            behavior.validate(&node).is_ok(),
+            "Content with Unicode whitespace inside should be accepted"
+        );
+
+        // Valid: Emoji content - should be accepted
+        node.content = "👍".to_string();
+        assert!(
+            behavior.validate(&node).is_ok(),
+            "Emoji content should be accepted"
+        );
     }
 
     #[test]
