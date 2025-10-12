@@ -930,7 +930,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         beforeSiblingId: beforeSiblingId // Insert after last existing child (or null if no children)
       },
       viewerSource,
-      { dependencies }
+      { persistenceDependencies: dependencies }
     );
 
     _uiState[nodeId] = { ...uiState, depth: (prevSiblingUIState?.depth || 0) + 1 };
@@ -1056,7 +1056,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         beforeSiblingId: positionBeforeSiblingId
       },
       viewerSource,
-      { dependencies }
+      { persistenceDependencies: dependencies }
     );
 
     _uiState[nodeId] = { ...uiState, depth: newDepth };
@@ -1125,7 +1125,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
               beforeSiblingId
             },
             viewerSource,
-            { dependencies: transferDependencies }
+            { persistenceDependencies: transferDependencies }
           );
 
           // Update depth for transferred sibling
