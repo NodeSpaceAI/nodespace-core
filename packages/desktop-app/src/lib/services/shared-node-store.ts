@@ -24,6 +24,7 @@
 
 import { eventBus } from './event-bus';
 import { tauriNodeService } from './tauri-node-service';
+import { PersistenceCoordinator } from './persistence-coordinator.svelte';
 import type { Node } from '$lib/types';
 import type {
   NodeUpdate,
@@ -41,43 +42,8 @@ import { createDefaultResolver } from './conflict-resolvers';
 // ============================================================================
 // Database Write Coordination (Phase 2.4)
 // ============================================================================
-
-/**
- * Module-level write queue for coordinated database persistence
- *
- * Prevents concurrent writes to the same node by ensuring writes are
- * executed sequentially per node. The Map key is the node ID, and the
- * value is the Promise representing the pending write operation.
- *
- * This coordination mechanism ensures database consistency and prevents
- * race conditions across all SharedNodeStore instances.
- */
-const pendingDatabaseWrites = new Map<string, Promise<void>>();
-
-/**
- * Queue a database write operation to prevent concurrent writes to same node
- * This ensures database consistency and prevents race conditions
- */
-async function queueDatabaseWrite(nodeId: string, operation: () => Promise<void>): Promise<void> {
-  // Wait for any pending writes to this node
-  const pending = pendingDatabaseWrites.get(nodeId);
-  if (pending) {
-    await pending;
-  }
-
-  // Execute and track this write
-  const writePromise = operation();
-  pendingDatabaseWrites.set(nodeId, writePromise);
-
-  try {
-    await writePromise;
-  } finally {
-    // Clean up if this was the last write
-    if (pendingDatabaseWrites.get(nodeId) === writePromise) {
-      pendingDatabaseWrites.delete(nodeId);
-    }
-  }
-}
+// NOTE: Database write coordination is now handled by PersistenceCoordinator
+// All persistence operations delegate to PersistenceCoordinator.getInstance().persist()
 
 /**
  * Subscription metadata for debugging and cleanup
@@ -130,16 +96,6 @@ export class SharedNodeStore {
 
   // Test error tracking (populated only in NODE_ENV='test', cleared between tests)
   private testErrors: Error[] = [];
-
-  // Debouncing for content updates (500ms)
-  private contentDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-  // Queue for structural updates (processed serially)
-  private structuralUpdateQueue: Array<() => Promise<void>> = [];
-  private isProcessingStructuralQueue = false;
-
-  // Track pending content saves (for FOREIGN KEY coordination)
-  private pendingContentSaves = new Map<string, Promise<void>>();
 
   private constructor() {
     // Private constructor for singleton
@@ -297,43 +253,56 @@ export class SharedNodeStore {
           'parentId' in changes || 'beforeSiblingId' in changes || 'containerNodeId' in changes;
         const shouldPersist = source.type !== 'viewer' || isStructuralChange;
 
-        if (shouldPersist) {
-          // Queue database write to prevent concurrent writes
-          queueDatabaseWrite(nodeId, async () => {
-            try {
-              // Check if node has been persisted - use in-memory tracking to avoid database query
-              const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
-              if (isPersistedToDatabase) {
-                await tauriNodeService.updateNode(nodeId, updatedNode);
-              } else {
-                // Node doesn't exist yet (was a placeholder or new node)
-                await tauriNodeService.createNode(updatedNode);
-                this.persistedNodeIds.add(nodeId); // Track as persisted
+        // Skip persisting empty text nodes - they exist in UI but not in database
+        const isEmptyTextNode =
+          updatedNode.nodeType === 'text' && updatedNode.content.trim() === '';
+
+        if (shouldPersist && !isEmptyTextNode) {
+          // Delegate to PersistenceCoordinator for coordinated persistence
+          // Use debounced mode for content changes (typing), immediate for structural changes
+          const dependencies: Array<string | (() => Promise<void>)> = [];
+
+          // For structural changes, ensure ENTIRE ancestor chain is persisted (FOREIGN KEY)
+          if (isStructuralChange && updatedNode.parentId) {
+            dependencies.push(async () => {
+              await this.ensureAncestorChainPersisted(updatedNode.parentId!);
+            });
+          }
+
+          PersistenceCoordinator.getInstance().persist(
+            nodeId,
+            async () => {
+              try {
+                // Check if node has been persisted - use in-memory tracking to avoid database query
+                const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
+                if (isPersistedToDatabase) {
+                  await tauriNodeService.updateNode(nodeId, updatedNode);
+                } else {
+                  // Node doesn't exist yet (was a placeholder or new node)
+                  await tauriNodeService.createNode(updatedNode);
+                  this.persistedNodeIds.add(nodeId); // Track as persisted
+                }
+                // Mark update as persisted
+                this.markUpdatePersisted(nodeId, update);
+              } catch (dbError) {
+                const error = dbError instanceof Error ? dbError : new Error(String(dbError));
+                console.error(`[SharedNodeStore] Database write failed for node ${nodeId}:`, error);
+
+                // Track error in test environment for test verification
+                if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
+                  this.testErrors.push(error);
+                }
+
+                // Rollback the optimistic update
+                this.rollbackUpdate(nodeId, update);
+                throw error; // Re-throw to mark operation as failed in coordinator
               }
-              // Mark update as persisted
-              this.markUpdatePersisted(nodeId, update);
-            } catch (dbError) {
-              const error = dbError instanceof Error ? dbError : new Error(String(dbError));
-              console.error(`[SharedNodeStore] Database write failed for node ${nodeId}:`, error);
-
-              // Track error in test environment for test verification
-              if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
-                this.testErrors.push(error);
-              }
-
-              // Rollback the optimistic update
-              this.rollbackUpdate(nodeId, update);
+            },
+            {
+              mode: isStructuralChange ? 'immediate' : 'debounce',
+              dependencies: dependencies.length > 0 ? dependencies : undefined
             }
-          }).catch((err) => {
-            // Catch any queueing errors
-            const error = err instanceof Error ? err : new Error(String(err));
-            console.error(`[SharedNodeStore] Failed to queue database write:`, error);
-
-            // Track error in test environment for test verification
-            if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
-              this.testErrors.push(error);
-            }
-          });
+          );
         }
       }
     } catch (error) {
@@ -379,35 +348,49 @@ export class SharedNodeStore {
     if (!skipPersistence && source.type !== 'database') {
       const shouldPersist = source.type !== 'viewer' || isNewNode;
 
-      if (shouldPersist) {
-        queueDatabaseWrite(node.id, async () => {
-          try {
-            // Check if node has been persisted - use in-memory tracking to avoid database query
-            const isPersistedToDatabase = this.persistedNodeIds.has(node.id);
-            if (isPersistedToDatabase) {
-              await tauriNodeService.updateNode(node.id, node);
-            } else {
-              await tauriNodeService.createNode(node);
-              this.persistedNodeIds.add(node.id); // Track as persisted
-            }
-          } catch (dbError) {
-            const error = dbError instanceof Error ? dbError : new Error(String(dbError));
-            console.error(`[SharedNodeStore] Database write failed for node ${node.id}:`, error);
+      // Skip persisting empty text nodes - they exist in UI but not in database
+      // until user adds content (backend validation requires non-empty content)
+      const isEmptyTextNode = node.nodeType === 'text' && node.content.trim() === '';
 
-            // Track error in test environment for test verification
-            if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
-              this.testErrors.push(error);
-            }
-          }
-        }).catch((err) => {
-          const error = err instanceof Error ? err : new Error(String(err));
-          console.error(`[SharedNodeStore] Failed to queue database write:`, error);
+      if (shouldPersist && !isEmptyTextNode) {
+        // Delegate to PersistenceCoordinator
+        const dependencies: Array<string | (() => Promise<void>)> = [];
 
-          // Track error in test environment for test verification
-          if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
-            this.testErrors.push(error);
+        // Ensure ENTIRE ancestor chain is persisted (FOREIGN KEY)
+        if (node.parentId) {
+          dependencies.push(async () => {
+            await this.ensureAncestorChainPersisted(node.parentId!);
+          });
+        }
+
+        PersistenceCoordinator.getInstance().persist(
+          node.id,
+          async () => {
+            try {
+              // Check if node has been persisted - use in-memory tracking to avoid database query
+              const isPersistedToDatabase = this.persistedNodeIds.has(node.id);
+              if (isPersistedToDatabase) {
+                await tauriNodeService.updateNode(node.id, node);
+              } else {
+                await tauriNodeService.createNode(node);
+                this.persistedNodeIds.add(node.id); // Track as persisted
+              }
+            } catch (dbError) {
+              const error = dbError instanceof Error ? dbError : new Error(String(dbError));
+              console.error(`[SharedNodeStore] Database write failed for node ${node.id}:`, error);
+
+              // Track error in test environment for test verification
+              if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
+                this.testErrors.push(error);
+              }
+              throw error; // Re-throw to mark operation as failed in coordinator
+            }
+          },
+          {
+            mode: 'immediate',
+            dependencies: dependencies.length > 0 ? dependencies : undefined
           }
-        });
+        );
       }
     }
   }
@@ -436,27 +419,30 @@ export class SharedNodeStore {
 
       // Phase 2.4: Persist deletion to database
       if (!skipPersistence && source.type !== 'database') {
-        queueDatabaseWrite(nodeId, async () => {
-          try {
-            await tauriNodeService.deleteNode(nodeId);
-          } catch (dbError) {
-            const error = dbError instanceof Error ? dbError : new Error(String(dbError));
-            console.error(`[SharedNodeStore] Database deletion failed for node ${nodeId}:`, error);
+        // Delegate to PersistenceCoordinator
+        PersistenceCoordinator.getInstance().persist(
+          nodeId,
+          async () => {
+            try {
+              await tauriNodeService.deleteNode(nodeId);
+            } catch (dbError) {
+              const error = dbError instanceof Error ? dbError : new Error(String(dbError));
+              console.error(
+                `[SharedNodeStore] Database deletion failed for node ${nodeId}:`,
+                error
+              );
 
-            // Track error in test environment for test verification
-            if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
-              this.testErrors.push(error);
+              // Track error in test environment for test verification
+              if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
+                this.testErrors.push(error);
+              }
+              throw error; // Re-throw to mark operation as failed in coordinator
             }
+          },
+          {
+            mode: 'immediate'
           }
-        }).catch((err) => {
-          const error = err instanceof Error ? err : new Error(String(err));
-          console.error(`[SharedNodeStore] Failed to queue database write:`, error);
-
-          // Track error in test environment for test verification
-          if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
-            this.testErrors.push(error);
-          }
-        });
+        );
       }
     }
   }
@@ -502,239 +488,52 @@ export class SharedNodeStore {
   }
 
   /**
-   * Update node content with debouncing (500ms for typing)
-   * Replaces BaseNodeViewer's debounceSave() logic
-   *
-   * @param nodeId - The node to update
-   * @param content - New content
-   * @param nodeType - Node type
-   * @param isPlaceholder - Whether this is a placeholder node
-   * @param source - Update source
-   */
-  updateNodeContentDebounced(
-    nodeId: string,
-    content: string,
-    nodeType: string,
-    isPlaceholder: boolean,
-    source: UpdateSource
-  ): void {
-    // Clear existing timer
-    const existing = this.contentDebounceTimers.get(nodeId);
-    if (existing) {
-      clearTimeout(existing);
-    }
-
-    // Skip persisting placeholders
-    if (isPlaceholder) {
-      // Update in-memory only
-      this.updateNode(nodeId, { content }, source, { skipPersistence: true });
-      return;
-    }
-
-    // Debounce content updates (500ms)
-    const timer = setTimeout(() => {
-      this.updateNode(nodeId, { content, nodeType }, source);
-      this.contentDebounceTimers.delete(nodeId);
-    }, 500);
-
-    this.contentDebounceTimers.set(nodeId, timer);
-  }
-
-  /**
-   * Update node content immediately (for new nodes)
-   * Replaces BaseNodeViewer's saveNode() for immediate saves
-   * Tracks pending saves for FOREIGN KEY coordination
-   *
-   * @param nodeId - The node to update
-   * @param content - New content
-   * @param nodeType - Node type
-   * @param parentId - Parent node ID
-   * @param containerNodeId - Container/origin node ID
-   * @param beforeSiblingId - Sibling ordering
-   * @param isPlaceholder - Whether this is a placeholder node
-   * @param source - Update source
-   */
-  async saveNodeImmediately(
-    nodeId: string,
-    content: string,
-    nodeType: string,
-    parentId: string | null,
-    containerNodeId: string,
-    beforeSiblingId: string | null,
-    isPlaceholder: boolean,
-    source: UpdateSource
-  ): Promise<void> {
-    // Skip persisting placeholders
-    if (isPlaceholder) {
-      return;
-    }
-
-    const savePromise = (async () => {
-      const node: Node = {
-        id: nodeId,
-        nodeType,
-        content,
-        parentId,
-        containerNodeId,
-        beforeSiblingId,
-        createdAt: new Date().toISOString(),
-        modifiedAt: new Date().toISOString(),
-        properties: {}
-        // Note: mentions is computed, not persisted
-      };
-
-      // Check if node already exists
-      const existingNode = this.getNode(nodeId);
-      if (existingNode) {
-        // Update existing node - directly persist to database without triggering updateNode()
-        // This prevents duplicate persistence operations
-        await queueDatabaseWrite(nodeId, async () => {
-          try {
-            // Node exists in memory, check if it's been persisted to database
-            const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
-            if (isPersistedToDatabase) {
-              // Update in database
-              await tauriNodeService.updateNode(nodeId, {
-                content,
-                nodeType,
-                parentId,
-                containerNodeId,
-                beforeSiblingId
-              });
-            } else {
-              // Not yet persisted - create in database
-              await tauriNodeService.createNode(node);
-              this.persistedNodeIds.add(nodeId);
-            }
-
-            // Update in-memory store (skip persistence since we just did it)
-            this.updateNode(
-              nodeId,
-              { content, nodeType, parentId, containerNodeId, beforeSiblingId },
-              source,
-              { skipPersistence: true } // CRITICAL: Skip persistence since we already did it above
-            );
-          } catch (error) {
-            console.error('[SharedNodeStore] Failed to save node immediately:', nodeId, error);
-            throw error;
-          }
-        });
-      } else {
-        // Create new node
-        this.setNode(node, source);
-      }
-    })();
-
-    // Track pending save for FOREIGN KEY coordination
-    this.pendingContentSaves.set(nodeId, savePromise);
-
-    try {
-      await savePromise;
-    } finally {
-      this.pendingContentSaves.delete(nodeId);
-    }
-  }
-
-  /**
    * Check if a node has a pending save operation
-   * Provides single source of truth for pending save status
+   * Delegates to PersistenceCoordinator
    *
    * @param nodeId - Node ID to check
    * @returns True if save is pending
    */
   hasPendingSave(nodeId: string): boolean {
-    return this.pendingContentSaves.has(nodeId);
+    return PersistenceCoordinator.getInstance().isPending(nodeId);
   }
 
   /**
    * Wait for pending node saves to complete with timeout
-   * Replaces BaseNodeViewer's waitForNodeSavesIfPending() logic
+   * Delegates to PersistenceCoordinator
    *
    * @param nodeIds - Array of node IDs to wait for
    * @param timeoutMs - Timeout in milliseconds (default 5000)
    * @returns Set of node IDs that failed to save
    */
   async waitForNodeSaves(nodeIds: string[], timeoutMs = 5000): Promise<Set<string>> {
-    const failedNodeIds = new Set<string>();
-    const nodeSavePromises = new Map<string, Promise<void>>();
-
-    // Collect relevant pending saves
-    for (const nodeId of nodeIds) {
-      const savePromise = this.pendingContentSaves.get(nodeId);
-      if (savePromise) {
-        nodeSavePromises.set(nodeId, savePromise);
-      }
-    }
-
-    if (nodeSavePromises.size === 0) return failedNodeIds;
-
-    try {
-      await Promise.race([
-        Promise.all(nodeSavePromises.values()),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Timeout waiting for saves')), timeoutMs)
-        )
-      ]);
-    } catch (error) {
-      console.error('[SharedNodeStore] Timeout waiting for saves:', error);
-
-      // Grace period to allow in-flight saves to complete
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      // After grace period, check each promise individually to see if it actually failed
-      for (const [nodeId, savePromise] of nodeSavePromises) {
-        try {
-          // Try to await the promise - if it resolved during grace period, it succeeds
-          await Promise.race([
-            savePromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Grace timeout')), 0))
-          ]);
-          // Promise resolved - node saved successfully
-        } catch {
-          // Promise rejected or still pending after grace period - mark as failed
-          console.error('[SharedNodeStore] Node save failed or timed out:', nodeId);
-          failedNodeIds.add(nodeId);
-        }
-      }
-    }
-
-    return failedNodeIds;
+    return PersistenceCoordinator.getInstance().waitForPersistence(nodeIds, timeoutMs);
   }
 
   /**
-   * Recursively ensure all placeholder ancestors are persisted
-   * Replaces BaseNodeViewer's ensureAncestorsPersisted() logic
+   * Ensure entire ancestor chain is persisted before persisting a child node
+   * Recursively walks up the parent chain and waits for each ancestor to be persisted
    *
-   * @param nodeId - Node ID to check ancestors for
-   * @param checkIsPlaceholder - Function to check if a node is a placeholder (UI state)
+   * This prevents FOREIGN KEY constraint violations when creating deeply nested
+   * placeholder nodes (e.g., Grandparent → Parent → Child where all are placeholders)
+   *
+   * @param nodeId - Starting node ID to walk ancestors from
    */
-  async ensureAncestorChainPersisted(
-    nodeId: string,
-    checkIsPlaceholder: (nodeId: string) => boolean
-  ): Promise<void> {
-    const node = this.getNode(nodeId);
-    if (!node || !node.parentId) return;
+  private async ensureAncestorChainPersisted(nodeId: string): Promise<void> {
+    const node = this.nodes.get(nodeId);
+    if (!node) {
+      // Node doesn't exist in store, nothing to persist
+      return;
+    }
 
-    const parent = this.getNode(node.parentId);
-    if (!parent) return;
+    // If node has a parent, recursively ensure parent chain is persisted first
+    if (node.parentId) {
+      await this.ensureAncestorChainPersisted(node.parentId);
+    }
 
-    const isParentPlaceholder = checkIsPlaceholder(parent.id);
-
-    if (isParentPlaceholder) {
-      // Recursively persist grandparents first
-      await this.ensureAncestorChainPersisted(parent.id, checkIsPlaceholder);
-
-      // Persist placeholder parent with empty content
-      await this.saveNodeImmediately(
-        parent.id,
-        '', // empty content for placeholder
-        parent.nodeType,
-        parent.parentId,
-        parent.containerNodeId || parent.parentId || parent.id,
-        parent.beforeSiblingId,
-        false, // no longer a placeholder after persisting
-        { type: 'viewer', viewerId: 'ancestor-chain' }
-      );
+    // Wait for this node to be persisted (if it has a pending operation)
+    if (this.hasPendingSave(nodeId)) {
+      await this.waitForNodeSaves([nodeId]);
     }
   }
 
@@ -1251,9 +1050,11 @@ export class SharedNodeStore {
   /**
    * Check if there are pending database writes
    * Used by tests to wait for all writes to complete
+   * Delegates to PersistenceCoordinator
    */
   hasPendingWrites(): boolean {
-    return pendingDatabaseWrites.size > 0;
+    const metrics = PersistenceCoordinator.getInstance().getMetrics();
+    return metrics.pendingOperations > 0;
   }
 
   /**

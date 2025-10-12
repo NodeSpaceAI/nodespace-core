@@ -14,6 +14,7 @@
   import TextNodeViewer from '$lib/components/viewers/text-node-viewer.svelte';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { sharedNodeStore } from '$lib/services/shared-node-store';
+  import type { Node } from '$lib/types';
   import type { UpdateSource } from '$lib/types/update-protocol';
   import type { Snippet } from 'svelte';
 
@@ -200,16 +201,20 @@
             // Check again after async operation
             if (isDestroyed) return;
 
-            await sharedNodeStore.saveNodeImmediately(
-              node.id,
-              node.content,
-              node.nodeType,
-              node.parentId || parentId,
-              node.containerNodeId || parentId!,
-              node.beforeSiblingId,
-              false, // not placeholder
-              VIEWER_SOURCE
-            );
+            // Create/update node immediately (was saveNodeImmediately)
+            const fullNode: Node = {
+              id: node.id,
+              nodeType: node.nodeType,
+              content: node.content,
+              parentId: node.parentId || parentId,
+              containerNodeId: node.containerNodeId || parentId!,
+              beforeSiblingId: node.beforeSiblingId,
+              createdAt: node.createdAt || new Date().toISOString(),
+              modifiedAt: new Date().toISOString(),
+              properties: node.properties || {},
+              mentions: node.mentions || []
+            };
+            sharedNodeStore.setNode(fullNode, VIEWER_SOURCE);
           })();
 
           // Clean up Map entry when save completes (success or failure)
@@ -220,14 +225,11 @@
 
           pendingContentSavePromises.set(node.id, savePromise);
         } else {
-          // Existing node - use SharedNodeStore's debounced save
-          // Note: debounced save will check isDestroyed in its callback
+          // Existing node - update content (triggers debounced persistence automatically)
           if (!isDestroyed) {
-            sharedNodeStore.updateNodeContentDebounced(
+            sharedNodeStore.updateNode(
               node.id,
-              node.content,
-              node.nodeType,
-              false, // not placeholder
+              { content: node.content, nodeType: node.nodeType },
               VIEWER_SOURCE
             );
             lastSavedContent.set(node.id, node.content);
@@ -591,13 +593,14 @@
    * This handles the case where a user creates nested placeholder nodes, then fills in
    * a child before filling in the parent.
    *
-   * Delegates to SharedNodeStore which handles the coordination and persistence logic.
+   * NOTE: Ancestor persistence now handled by PersistenceCoordinator dependencies.
+   * When a node is saved, coordinator automatically waits for parent dependencies.
+   * This function kept for backward compatibility but is now a no-op.
    */
-  async function ensureAncestorsPersisted(nodeId: string): Promise<void> {
-    await sharedNodeStore.ensureAncestorChainPersisted(nodeId, (id) => {
-      const visibleNode = nodeManager.visibleNodes.find((n) => n.id === id);
-      return visibleNode?.isPlaceholder || false;
-    });
+  async function ensureAncestorsPersisted(_nodeId: string): Promise<void> {
+    // No-op: PersistenceCoordinator handles dependency ordering automatically
+    // via the dependencies array in persist() calls
+    return Promise.resolve();
   }
 
   /**
@@ -626,16 +629,20 @@
         return;
       }
 
-      await sharedNodeStore.saveNodeImmediately(
-        nodeId,
-        node.content,
-        node.nodeType,
-        node.parentId || parentId,
-        node.containerNodeId || parentId,
-        node.beforeSiblingId,
-        false, // not placeholder
-        VIEWER_SOURCE
-      );
+      // Update node with structural changes (was saveNodeImmediately)
+      const fullNode: Node = {
+        id: nodeId,
+        nodeType: node.nodeType,
+        content: node.content,
+        parentId: node.parentId || parentId,
+        containerNodeId: node.containerNodeId || parentId,
+        beforeSiblingId: node.beforeSiblingId,
+        createdAt: node.createdAt || new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        properties: node.properties || {},
+        mentions: node.mentions || []
+      };
+      sharedNodeStore.setNode(fullNode, VIEWER_SOURCE);
     } catch (error) {
       console.error('[BaseNodeViewer] Failed to save hierarchy change:', nodeId, error);
     }
