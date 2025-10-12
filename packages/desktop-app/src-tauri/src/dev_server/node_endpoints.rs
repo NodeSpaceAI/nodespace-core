@@ -34,6 +34,17 @@ pub struct InitDbQuery {
     /// Optional custom database path
     /// If not provided, uses default: ~/.nodespace/database/nodespace-dev.db
     db_path: Option<String>,
+
+    /// Optional delay in milliseconds before swapping database (default: 150ms)
+    ///
+    /// This delay allows pending HTTP requests from the previous test to complete
+    /// before the database path is swapped. Without it, in-flight requests may
+    /// fail when they try to access the old database after the swap.
+    ///
+    /// Default is 150ms which is conservative for most test scenarios. Tests can
+    /// override this if needed (e.g., `delay_ms=0` to disable, `delay_ms=200` for
+    /// slower CI environments).
+    delay_ms: Option<u64>,
 }
 
 /// Response from database initialization
@@ -72,15 +83,26 @@ async fn health_check() -> Json<HealthStatus> {
 /// # Query Parameters
 ///
 /// - `db_path` (optional): Custom database file path
+/// - `delay_ms` (optional): Delay in milliseconds before database swap (default: 150)
+///
+/// The delay allows pending HTTP requests from previous tests to complete before
+/// swapping the database path. This prevents "no such table" errors from in-flight
+/// requests accessing the old database after the swap.
 ///
 /// # Example
 ///
 /// ```bash
-/// # Use default path
+/// # Use default path and default delay (150ms)
 /// curl -X POST http://localhost:3001/api/database/init
 ///
 /// # Use custom path for testing
 /// curl -X POST "http://localhost:3001/api/database/init?db_path=/tmp/test.db"
+///
+/// # Use custom path with no delay (for fast isolated tests)
+/// curl -X POST "http://localhost:3001/api/database/init?db_path=/tmp/test.db&delay_ms=0"
+///
+/// # Use custom path with longer delay (for slow CI environments)
+/// curl -X POST "http://localhost:3001/api/database/init?db_path=/tmp/test.db&delay_ms=300"
 /// ```
 ///
 /// # Note
@@ -123,8 +145,19 @@ async fn init_database(
 
     // CRITICAL: Allow time for any pending operations from previous test to complete
     // Issue #255: Without this delay, operations queued before database swap will fail
-    // when they execute after the swap, reading from the wrong database path
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // when they execute after the swap, reading from the wrong database path.
+    //
+    // Why the delay is needed:
+    // 1. Tests call waitForDatabaseWrites() to ensure PersistenceCoordinator finishes
+    // 2. But HTTP requests may still be in-flight between browser and dev-server
+    // 3. These in-flight requests will complete AFTER the database swap
+    // 4. They'll try to read from the old database path, causing failures
+    //
+    // Default 150ms is conservative for most scenarios. Tests can override via query param.
+    let delay_ms = params.delay_ms.unwrap_or(150);
+    if delay_ms > 0 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+    }
 
     // Create temporary DatabaseService to initialize schema (Issue #255 - Option A)
     // This ensures the database file and schema exist before updating the path
@@ -240,7 +273,27 @@ async fn create_node(
 /// Helper function to create a fresh NodeService for each request
 ///
 /// This implements Option A for Issue #255: per-request database connections
-/// to avoid race conditions with database initialization.
+/// to avoid race conditions with database initialization during test isolation.
+///
+/// # Architecture Decision: Per-Request Connections
+///
+/// **Rationale**:
+/// - Eliminates stale connection issues when tests swap databases
+/// - Each request reads current db_path and creates fresh connection
+/// - Prevents "no such table" errors from connections bound to old database
+///
+/// **Tradeoffs**:
+/// - ✅ **Pros**: Safe test isolation, no stale connections
+/// - ⚠️ **Cons**: Connection overhead per request (schema checks, WAL setup)
+///
+/// **Production Considerations**:
+/// ⚠️ This approach is acceptable for the dev-server (test-only) but should NOT
+/// be used in production. Production applications should use:
+/// - Connection pooling (e.g., deadpool, r2d2)
+/// - Shared DatabaseService instance across requests
+/// - Long-lived connections for better performance
+///
+/// The per-request pattern is intentionally simple for the test server's needs.
 pub(crate) async fn create_node_service(
     state: &AppState,
 ) -> Result<nodespace_core::NodeService, HttpError> {

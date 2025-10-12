@@ -78,6 +78,10 @@ impl DatabaseService {
     /// # }
     /// ```
     pub async fn new(db_path: PathBuf) -> Result<Self, DatabaseError> {
+        // Check if database file already exists (before we open it)
+        // This allows us to optimize the WAL checkpoint - only needed for new databases
+        let is_new_database = !db_path.exists();
+
         // Ensure parent directory exists
         if let Some(parent) = db_path.parent() {
             if !parent.exists() {
@@ -102,8 +106,8 @@ impl DatabaseService {
             db_path,
         };
 
-        // Initialize schema
-        service.initialize_schema().await?;
+        // Initialize schema (only checkpoints if is_new_database = true)
+        service.initialize_schema(is_new_database).await?;
 
         Ok(service)
     }
@@ -131,6 +135,12 @@ impl DatabaseService {
     /// Creates tables and indexes using CREATE TABLE IF NOT EXISTS,
     /// ensuring idempotent initialization (safe to call multiple times).
     ///
+    /// # Arguments
+    ///
+    /// * `is_new_database` - Whether this is a newly created database file.
+    ///   If true, performs a WAL checkpoint to flush schema to disk (prevents
+    ///   race conditions in tests). If false, skips checkpoint for performance.
+    ///
     /// # Schema
     ///
     /// - `nodes` table: Universal node storage with Pure JSON properties
@@ -142,7 +152,7 @@ impl DatabaseService {
     /// - WAL mode: Write-Ahead Logging for better concurrency
     /// - Foreign keys: Enabled for referential integrity
     /// - JSON support: Native SQLite JSON operators enabled
-    async fn initialize_schema(&self) -> Result<(), DatabaseError> {
+    async fn initialize_schema(&self, is_new_database: bool) -> Result<(), DatabaseError> {
         let conn = self
             .db
             .connect()
@@ -217,11 +227,14 @@ impl DatabaseService {
         // Seed core schemas
         self.seed_core_schemas(&conn).await?;
 
-        // Force WAL checkpoint to ensure schema is written to disk (Issue #255)
+        // Force WAL checkpoint only for newly created databases (Issue #255)
         // This prevents race conditions where rapid database swaps in tests
-        // cause "no such table" errors due to WAL entries not being flushed
-        self.execute_pragma(&conn, "PRAGMA wal_checkpoint(TRUNCATE)")
-            .await?;
+        // cause "no such table" errors due to WAL entries not being flushed.
+        // For existing databases, skip checkpoint to avoid unnecessary overhead.
+        if is_new_database {
+            self.execute_pragma(&conn, "PRAGMA wal_checkpoint(TRUNCATE)")
+                .await?;
+        }
 
         Ok(())
     }
