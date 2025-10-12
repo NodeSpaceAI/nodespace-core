@@ -131,6 +131,16 @@ export class SharedNodeStore {
   // Test error tracking (populated only in NODE_ENV='test', cleared between tests)
   private testErrors: Error[] = [];
 
+  // Debouncing for content updates (500ms)
+  private contentDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  // Queue for structural updates (processed serially)
+  private structuralUpdateQueue: Array<() => Promise<void>> = [];
+  private isProcessingStructuralQueue = false;
+
+  // Track pending content saves (for FOREIGN KEY coordination)
+  private pendingContentSaves = new Map<string, Promise<void>>();
+
   private constructor() {
     // Private constructor for singleton
   }
@@ -454,6 +464,366 @@ export class SharedNodeStore {
     this.pendingUpdates.clear();
     this.persistedNodeIds.clear();
     this.notifyAllSubscribers();
+  }
+
+  // ========================================================================
+  // New Methods for BaseNodeViewer Migration (Issue #237)
+  // ========================================================================
+
+  /**
+   * Load child nodes from database for a parent
+   * Replaces BaseNodeViewer's direct databaseService.getNodesByOriginId() call
+   *
+   * @param parentId - The parent/container node ID
+   * @returns Array of child nodes loaded from database
+   */
+  async loadChildrenForParent(parentId: string): Promise<Node[]> {
+    try {
+      const nodes = await tauriNodeService.getNodesByOriginId(parentId);
+
+      // Add nodes to store with database source (skips persistence)
+      const databaseSource = { type: 'database' as const, reason: 'loaded-from-db' };
+      for (const node of nodes) {
+        this.setNode(node, databaseSource, true); // skipPersistence = true
+        this.persistedNodeIds.add(node.id); // Mark as already persisted
+      }
+
+      return nodes;
+    } catch (error) {
+      console.error(`[SharedNodeStore] Failed to load children for parent ${parentId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update node content with debouncing (500ms for typing)
+   * Replaces BaseNodeViewer's debounceSave() logic
+   *
+   * @param nodeId - The node to update
+   * @param content - New content
+   * @param nodeType - Node type
+   * @param isPlaceholder - Whether this is a placeholder node
+   * @param source - Update source
+   */
+  updateNodeContentDebounced(
+    nodeId: string,
+    content: string,
+    nodeType: string,
+    isPlaceholder: boolean,
+    source: UpdateSource
+  ): void {
+    // Clear existing timer
+    const existing = this.contentDebounceTimers.get(nodeId);
+    if (existing) {
+      clearTimeout(existing);
+    }
+
+    // Skip persisting placeholders
+    if (isPlaceholder) {
+      // Update in-memory only
+      this.updateNode(nodeId, { content }, source, { skipPersistence: true });
+      return;
+    }
+
+    // Debounce content updates (500ms)
+    const timer = setTimeout(() => {
+      this.updateNode(nodeId, { content, nodeType }, source);
+      this.contentDebounceTimers.delete(nodeId);
+    }, 500);
+
+    this.contentDebounceTimers.set(nodeId, timer);
+  }
+
+  /**
+   * Update node content immediately (for new nodes)
+   * Replaces BaseNodeViewer's saveNode() for immediate saves
+   * Tracks pending saves for FOREIGN KEY coordination
+   *
+   * @param nodeId - The node to update
+   * @param content - New content
+   * @param nodeType - Node type
+   * @param parentId - Parent node ID
+   * @param containerNodeId - Container/origin node ID
+   * @param beforeSiblingId - Sibling ordering
+   * @param isPlaceholder - Whether this is a placeholder node
+   * @param source - Update source
+   */
+  async saveNodeImmediately(
+    nodeId: string,
+    content: string,
+    nodeType: string,
+    parentId: string | null,
+    containerNodeId: string,
+    beforeSiblingId: string | null,
+    isPlaceholder: boolean,
+    source: UpdateSource
+  ): Promise<void> {
+    // Skip persisting placeholders
+    if (isPlaceholder) {
+      return;
+    }
+
+    const savePromise = (async () => {
+      const node: Node = {
+        id: nodeId,
+        nodeType,
+        content,
+        parentId,
+        containerNodeId,
+        beforeSiblingId,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        properties: {}
+        // Note: mentions is computed, not persisted
+      };
+
+      // Check if node already exists
+      const existingNode = this.getNode(nodeId);
+      if (existingNode) {
+        // Update existing node
+        this.updateNode(
+          nodeId,
+          { content, nodeType, parentId, containerNodeId, beforeSiblingId },
+          source
+        );
+      } else {
+        // Create new node
+        this.setNode(node, source);
+      }
+    })();
+
+    // Track pending save for FOREIGN KEY coordination
+    this.pendingContentSaves.set(nodeId, savePromise);
+
+    try {
+      await savePromise;
+    } finally {
+      this.pendingContentSaves.delete(nodeId);
+    }
+  }
+
+  /**
+   * Check if a node has a pending save operation
+   * Provides single source of truth for pending save status
+   *
+   * @param nodeId - Node ID to check
+   * @returns True if save is pending
+   */
+  hasPendingSave(nodeId: string): boolean {
+    return this.pendingContentSaves.has(nodeId);
+  }
+
+  /**
+   * Wait for pending node saves to complete with timeout
+   * Replaces BaseNodeViewer's waitForNodeSavesIfPending() logic
+   *
+   * @param nodeIds - Array of node IDs to wait for
+   * @param timeoutMs - Timeout in milliseconds (default 5000)
+   * @returns Set of node IDs that failed to save
+   */
+  async waitForNodeSaves(nodeIds: string[], timeoutMs = 5000): Promise<Set<string>> {
+    const failedNodeIds = new Set<string>();
+    const nodeSavePromises = new Map<string, Promise<void>>();
+
+    // Collect relevant pending saves
+    for (const nodeId of nodeIds) {
+      const savePromise = this.pendingContentSaves.get(nodeId);
+      if (savePromise) {
+        nodeSavePromises.set(nodeId, savePromise);
+      }
+    }
+
+    if (nodeSavePromises.size === 0) return failedNodeIds;
+
+    try {
+      await Promise.race([
+        Promise.all(nodeSavePromises.values()),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Timeout waiting for saves')), timeoutMs)
+        )
+      ]);
+    } catch (error) {
+      console.error('[SharedNodeStore] Timeout waiting for saves:', error);
+
+      // Grace period to allow in-flight saves to complete
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // After grace period, check each promise individually to see if it actually failed
+      for (const [nodeId, savePromise] of nodeSavePromises) {
+        try {
+          // Try to await the promise - if it resolved during grace period, it succeeds
+          await Promise.race([
+            savePromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Grace timeout')), 0))
+          ]);
+          // Promise resolved - node saved successfully
+        } catch {
+          // Promise rejected or still pending after grace period - mark as failed
+          console.error('[SharedNodeStore] Node save failed or timed out:', nodeId);
+          failedNodeIds.add(nodeId);
+        }
+      }
+    }
+
+    return failedNodeIds;
+  }
+
+  /**
+   * Recursively ensure all placeholder ancestors are persisted
+   * Replaces BaseNodeViewer's ensureAncestorsPersisted() logic
+   *
+   * @param nodeId - Node ID to check ancestors for
+   * @param checkIsPlaceholder - Function to check if a node is a placeholder (UI state)
+   */
+  async ensureAncestorChainPersisted(
+    nodeId: string,
+    checkIsPlaceholder: (nodeId: string) => boolean
+  ): Promise<void> {
+    const node = this.getNode(nodeId);
+    if (!node || !node.parentId) return;
+
+    const parent = this.getNode(node.parentId);
+    if (!parent) return;
+
+    const isParentPlaceholder = checkIsPlaceholder(parent.id);
+
+    if (isParentPlaceholder) {
+      // Recursively persist grandparents first
+      await this.ensureAncestorChainPersisted(parent.id, checkIsPlaceholder);
+
+      // Persist placeholder parent with empty content
+      await this.saveNodeImmediately(
+        parent.id,
+        '', // empty content for placeholder
+        parent.nodeType,
+        parent.parentId,
+        parent.containerNodeId || parent.parentId || parent.id,
+        parent.beforeSiblingId,
+        false, // no longer a placeholder after persisting
+        { type: 'viewer', viewerId: 'ancestor-chain' }
+      );
+    }
+  }
+
+  /**
+   * Validate FOREIGN KEY references before structural update
+   * Replaces BaseNodeViewer's inline validation logic
+   *
+   * @param nodeId - Node to validate
+   * @param parentId - Proposed parent ID
+   * @param beforeSiblingId - Proposed sibling ID
+   * @param viewerParentId - Special case: viewer's parent exists but isn't loaded in store
+   * @returns Validated references and any errors
+   */
+  async validateNodeReferences(
+    nodeId: string,
+    parentId: string | null,
+    beforeSiblingId: string | null,
+    viewerParentId: string | null
+  ): Promise<{
+    validatedParentId: string | null;
+    validatedBeforeSiblingId: string | null;
+    errors: string[];
+  }> {
+    const errors: string[] = [];
+    let validatedParentId = parentId;
+    let validatedBeforeSiblingId = beforeSiblingId;
+
+    // Validate node still exists
+    if (!this.hasNode(nodeId)) {
+      errors.push(`Node ${nodeId} not found (may have been deleted)`);
+      return { validatedParentId, validatedBeforeSiblingId, errors };
+    }
+
+    // Validate parentId exists
+    if (validatedParentId) {
+      // Special case: viewer's parent exists in database but not loaded in store
+      const isViewerParent = validatedParentId === viewerParentId;
+      if (!isViewerParent && !this.hasNode(validatedParentId)) {
+        errors.push(`Parent ${validatedParentId} not found (may have been deleted)`);
+      }
+    }
+
+    // Validate beforeSiblingId exists
+    if (validatedBeforeSiblingId) {
+      if (!this.hasNode(validatedBeforeSiblingId)) {
+        console.warn(
+          `[SharedNodeStore] beforeSiblingId ${validatedBeforeSiblingId} not found, null-ing reference`
+        );
+        validatedBeforeSiblingId = null;
+      }
+    }
+
+    return { validatedParentId, validatedBeforeSiblingId, errors };
+  }
+
+  /**
+   * Update structural changes with validation and serial processing
+   * Replaces BaseNodeViewer's complex structural watcher logic
+   *
+   * @param updates - Array of structural updates
+   * @param source - Update source
+   * @param viewerParentId - Viewer's parent ID (for reference validation)
+   * @returns Results with succeeded/failed updates
+   */
+  async updateStructuralChangesValidated(
+    updates: Array<{
+      nodeId: string;
+      parentId: string | null;
+      beforeSiblingId: string | null;
+    }>,
+    source: UpdateSource,
+    viewerParentId: string | null
+  ): Promise<{
+    succeeded: typeof updates;
+    failed: typeof updates;
+    errors: Map<string, Error>;
+  }> {
+    const succeeded: typeof updates = [];
+    const failed: typeof updates = [];
+    const errors = new Map<string, Error>();
+
+    // Process updates serially to prevent race conditions
+    for (const update of updates) {
+      try {
+        // Validate FOREIGN KEY references
+        const validation = await this.validateNodeReferences(
+          update.nodeId,
+          update.parentId,
+          update.beforeSiblingId,
+          viewerParentId
+        );
+
+        if (validation.errors.length > 0) {
+          failed.push(update);
+          errors.set(update.nodeId, new Error(validation.errors.join('; ')));
+          continue;
+        }
+
+        // Apply validated update
+        this.updateNode(
+          update.nodeId,
+          {
+            parentId: validation.validatedParentId,
+            beforeSiblingId: validation.validatedBeforeSiblingId
+          },
+          source
+        );
+
+        succeeded.push({
+          ...update,
+          parentId: validation.validatedParentId,
+          beforeSiblingId: validation.validatedBeforeSiblingId
+        });
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        console.error('[SharedNodeStore] Structural update failed:', update.nodeId, err);
+        failed.push(update);
+        errors.set(update.nodeId, err);
+      }
+    }
+
+    return { succeeded, failed, errors };
   }
 
   // ========================================================================
