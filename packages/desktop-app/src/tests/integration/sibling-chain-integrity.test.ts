@@ -407,7 +407,7 @@ describe('Sibling Chain Integrity', () => {
     service.initializeNodes([node1, node2, node3]);
 
     // Act: Combine node-2 into node-1
-    service.combineNodes('node-2', 'node-1');
+    await service.combineNodes('node-2', 'node-1');
 
     await waitForDatabaseWrites();
     expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
@@ -522,7 +522,7 @@ describe('Sibling Chain Integrity', () => {
     service.indentNode('node-2'); // Indent node-2 under node-1
     const node4Id = service.createNode('node-1', 'Node 4', 'text'); // Create after node-1
     service.outdentNode('node-2'); // Outdent node-2 back to root
-    service.combineNodes(node3Id, 'node-2'); // Combine node-3 into node-2
+    await service.combineNodes(node3Id, 'node-2'); // Combine node-3 into node-2
 
     await waitForDatabaseWrites();
     expect(sharedNodeStore.getTestErrors()).toHaveLength(0);

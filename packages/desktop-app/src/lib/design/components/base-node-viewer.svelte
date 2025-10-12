@@ -1184,7 +1184,7 @@
 
   // Handle combining current node with previous node (Backspace at start of node)
   // CLEAN DELEGATION: All logic handled by NodeManager
-  function handleCombineWithPrevious(
+  async function handleCombineWithPrevious(
     event: CustomEvent<{ nodeId: string; currentContent: string }>
   ) {
     try {
@@ -1210,13 +1210,13 @@
         return;
       }
 
+      // Always use combineNodes (handles both empty and non-empty nodes with proper child promotion)
+      await nodeManager.combineNodes(nodeId, previousNode.id);
+
+      // For empty nodes, we need to manually request focus since combineNodes doesn't know
+      // the node was empty
       if (currentContent.trim() === '') {
-        // Empty node - delete and focus previous at end
-        nodeManager.deleteNode(nodeId);
         requestNodeFocus(previousNode.id, previousNode.content.length);
-      } else {
-        // Combine nodes - NodeManager handles focus automatically
-        nodeManager.combineNodes(nodeId, previousNode.id);
       }
     } catch (error) {
       console.error('Error during node combination:', error);
@@ -1224,7 +1224,7 @@
   }
 
   // Handle deleting empty node (Backspace at start of empty node)
-  function handleDeleteNode(event: CustomEvent<{ nodeId: string }>) {
+  async function handleDeleteNode(event: CustomEvent<{ nodeId: string }>) {
     try {
       const { nodeId } = event.detail;
 
@@ -1243,13 +1243,12 @@
 
       if (!previousNode || !nodeManager.nodes.has(previousNode.id)) {
         console.error('Previous node not found for focus after deletion:', previousNode?.id);
-        // Still delete the node even if we can\'t focus the previous one
-        nodeManager.deleteNode(nodeId);
+        // Can't combine without previous node - this shouldn't happen in normal usage
         return;
       }
 
-      // Delete node and focus previous at end
-      nodeManager.deleteNode(nodeId);
+      // Use combineNodes even for empty nodes (handles child promotion properly)
+      await nodeManager.combineNodes(nodeId, previousNode.id);
       requestNodeFocus(previousNode.id, previousNode.content.length);
     } catch (error) {
       console.error('Error during node deletion:', error);
