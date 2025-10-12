@@ -1152,6 +1152,30 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           updateDescendantDepths(siblingId);
         }
       }
+
+      // DEV-MODE ASSERTIONS: Validate transfer correctness
+      if (import.meta.env.DEV) {
+        // Validate all transferred siblings have correct parent
+        for (const siblingId of siblingsBelow) {
+          const transferred = sharedNodeStore.getNode(siblingId);
+          console.assert(
+            transferred?.parentId === nodeId,
+            `[outdentNode] Transfer failed: ${siblingId} has parent ${transferred?.parentId}, expected ${nodeId}`
+          );
+        }
+
+        // Validate sibling chain is correctly formed
+        if (siblingsBelow.length > 1) {
+          for (let i = 1; i < siblingsBelow.length; i++) {
+            const sibling = sharedNodeStore.getNode(siblingsBelow[i]);
+            const expectedPredecessor = siblingsBelow[i - 1];
+            console.assert(
+              sibling?.beforeSiblingId === expectedPredecessor,
+              `[outdentNode] Chain broken: ${siblingsBelow[i]} points to ${sibling?.beforeSiblingId}, expected ${expectedPredecessor}`
+            );
+          }
+        }
+      }
     }
 
     // Recalculate depths for all descendants

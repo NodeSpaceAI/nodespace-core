@@ -244,9 +244,18 @@ describe('Sibling Chain Integrity', () => {
     expect(validation.errors).toHaveLength(0);
     expect(validation.reachable.size).toBe(2);
 
-    // Verify: node-3 now points to node-1
+    // Verify: node-3 now points to node-1 (in-memory)
     const node3Updated = service.findNode('node-3');
     expect(node3Updated?.beforeSiblingId).toBe('node-1');
+
+    // Verify: Database persistence matches in-memory state
+    const node3Persisted = await adapter.getNode('node-3');
+    expect(node3Persisted?.beforeSiblingId).toBe('node-1');
+    expect(node3Persisted?.parentId).toBe(null);
+
+    // Verify: node-2 was actually deleted from database
+    const node2Persisted = await adapter.getNode('node-2');
+    expect(node2Persisted).toBeNull();
   });
 
   it('should maintain chain integrity during indent operation', async () => {
@@ -305,9 +314,18 @@ describe('Sibling Chain Integrity', () => {
     expect(node1ChildValidation.valid).toBe(true);
     expect(node1ChildValidation.reachable.size).toBe(1); // node-2
 
-    // Verify: node-3 now points to node-1 (bypassing indented node-2)
+    // Verify: node-3 now points to node-1 (bypassing indented node-2) (in-memory)
     const node3Updated = service.findNode('node-3');
     expect(node3Updated?.beforeSiblingId).toBe('node-1');
+
+    // Verify: Database persistence matches in-memory state
+    const node2Persisted = await adapter.getNode('node-2');
+    expect(node2Persisted?.parentId).toBe('node-1'); // node-2 is now child of node-1
+    expect(node2Persisted?.beforeSiblingId).toBeNull(); // Last child of node-1
+
+    const node3Persisted = await adapter.getNode('node-3');
+    expect(node3Persisted?.beforeSiblingId).toBe('node-1'); // node-3 bypasses indented node-2
+    expect(node3Persisted?.parentId).toBeNull(); // node-3 still at root level
   });
 
   it('should maintain chain integrity during outdent operation', async () => {
@@ -360,13 +378,22 @@ describe('Sibling Chain Integrity', () => {
     const rootValidation = validateSiblingChain(null);
     expect(rootValidation.valid).toBe(true);
 
-    // Verify: child-2 transferred to child-1 (as outdent transfers siblings below)
+    // Verify: child-2 transferred to child-1 (as outdent transfers siblings below) (in-memory)
     const child2Updated = service.findNode('child-2');
     expect(child2Updated?.parentId).toBe('child-1');
 
     // Verify: child-1's children chain valid
     const child1ChildValidation = validateSiblingChain('child-1');
     expect(child1ChildValidation.valid).toBe(true);
+
+    // Verify: Database persistence matches in-memory state
+    const child1Persisted = await adapter.getNode('child-1');
+    expect(child1Persisted?.parentId).toBeNull(); // child-1 outdented to root
+    expect(child1Persisted?.beforeSiblingId).toBe('parent'); // Positioned after parent
+
+    const child2Persisted = await adapter.getNode('child-2');
+    expect(child2Persisted?.parentId).toBe('child-1'); // child-2 transferred to child-1
+    expect(child2Persisted?.beforeSiblingId).toBeNull(); // First/only child of child-1
   });
 
   it('should maintain chain when combining nodes', async () => {
