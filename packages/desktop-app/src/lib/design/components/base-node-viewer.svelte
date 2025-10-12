@@ -187,7 +187,6 @@
       if (node.content.trim() && node.content !== lastContent) {
         // Check if this is a brand new node (never saved before)
         const isNewNode = lastContent === undefined;
-        console.log('[BaseNodeViewer] Content watcher:', node.id, 'isNewNode:', isNewNode, 'lastContent:', lastContent, 'currentContent:', node.content);
 
         if (isNewNode) {
           // Save immediately without debounce - structural updates may need to reference this node

@@ -289,8 +289,6 @@ export class SharedNodeStore {
 
       // Phase 2.4: Persist to database (unless skipped)
       if (!options.skipPersistence && source.type !== 'database') {
-        console.log('[SharedNodeStore] Persisting node update:', nodeId, 'source:', source.type, 'skipPersistence:', options.skipPersistence, 'changes:', Object.keys(changes));
-        console.trace('[SharedNodeStore] Call stack:');
         // Skip persisting empty text nodes - they exist in UI but not in database
         const isEmptyTextNode =
           updatedNode.nodeType === 'text' && updatedNode.content.trim() === '';
