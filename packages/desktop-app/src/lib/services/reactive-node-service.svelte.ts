@@ -834,33 +834,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    */
 
   /**
-   * Finds the deepest last visible descendant of a node.
-   * This is used to determine the actual "previous visible node" in document order
-   * when indenting, which accounts for expanded children.
-   *
-   * For consecutive indents to work correctly (e.g., indent node-2, then indent node-3),
-   * we need node-3 to become a child of node-2, not node-1. This requires finding
-   * the deepest descendant of the previous sibling.
-   *
-   * @param nodeId - The node to start from
-   * @returns The ID of the deepest last descendant, or the nodeId itself if no children
-   */
-  function getDeepestLastDescendant(nodeId: string): string {
-    const children = sharedNodeStore.getNodesForParent(nodeId);
-    if (children.length === 0) {
-      return nodeId;
-    }
-
-    // Get sorted children and recursively find the deepest last descendant
-    const sortedChildren = sortChildrenByBeforeSiblingId(
-      children.map((c) => c.id),
-      nodeId
-    );
-    const lastChildId = sortedChildren[sortedChildren.length - 1];
-    return getDeepestLastDescendant(lastChildId);
-  }
-
-  /**
    * Removes a node from its current sibling chain by updating the next sibling's beforeSiblingId.
    * This prevents orphaned nodes when a node is moved (indent/outdent) or deleted.
    *
@@ -906,10 +879,16 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const prevSibling = sharedNodeStore.getNode(prevSiblingId);
     if (!prevSibling) return false;
 
-    // Find the target parent: the deepest last descendant of the previous sibling
-    // This ensures consecutive indents work correctly (node-3 becomes child of node-2 after node-2 was indented)
-    const deepestDescendant = getDeepestLastDescendant(prevSiblingId);
-    const targetParentId = deepestDescendant;
+    // Indent target is ALWAYS the previous sibling directly
+    // The node becomes a child of the previous sibling, positioned after any existing children
+    //
+    // Examples:
+    // - Simple indent: A B → A[B] (B becomes child of A)
+    // - With existing children: A[existing] B → A[existing, B] (B becomes sibling of existing)
+    // - Multiple indents: A B C → indent B → A[B] C → indent C → A[B, C] (both siblings under A)
+    //
+    // This matches natural outliner behavior where Tab makes a node a child of the item above it
+    const targetParentId = prevSiblingId;
 
     // Step 1: Remove node from current sibling chain BEFORE changing parent
     // This operation updates the next sibling (if any) to maintain chain integrity

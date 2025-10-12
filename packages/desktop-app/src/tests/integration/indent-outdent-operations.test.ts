@@ -28,6 +28,7 @@ import { createAndFetchNode, checkServerHealth } from '../utils/test-node-helper
 import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
+import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
 
 describe('Indent/Outdent Operations', () => {
   let dbPath: string;
@@ -42,8 +43,11 @@ describe('Indent/Outdent Operations', () => {
   });
 
   beforeEach(async () => {
-    // CRITICAL: Reset SharedNodeStore singleton to prevent test interference
-    // Without this, nodes from previous tests remain in the store, causing incorrect behavior
+    // CRITICAL: Reset singletons to prevent test interference
+    // 1. PersistenceCoordinator tracks async operations - must be clean between tests
+    PersistenceCoordinator.resetInstance();
+
+    // 2. SharedNodeStore holds node data - without reset, nodes from previous tests remain
     sharedNodeStore.__resetForTesting();
 
     // Note: We create a new database per test (not per suite) for better isolation,
@@ -330,7 +334,7 @@ describe('Indent/Outdent Operations', () => {
 
     service.initializeNodes([parent, child1, child2, child3], { expanded: true });
 
-    // Act: Outdent child-2 (should take child-3 with it)
+    // Act: Outdent child-2 (should take child-3 with it as sibling below transfers to child)
     service.outdentNode('child-2');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
@@ -340,7 +344,7 @@ describe('Indent/Outdent Operations', () => {
     const child2Node = service.findNode('child-2');
     expect(child2Node?.parentId).toBeNull();
 
-    // Verify: child-3 became child of child-2
+    // Verify: child-3 became child of child-2 (transferred as sibling below)
     const child3Node = service.findNode('child-3');
     expect(child3Node?.parentId).toBe('child-2');
 
@@ -566,7 +570,7 @@ describe('Indent/Outdent Operations', () => {
     expect(node1Children).toEqual(['existing-child', 'node-2']);
   });
 
-  it('should handle multiple consecutive indents', async () => {
+  it('should indent multiple nodes as siblings when indented separately', async () => {
     // Setup: Create chain of nodes
     const node1 = await createAndFetchNode(adapter, {
       id: 'node-1',
@@ -606,26 +610,27 @@ describe('Indent/Outdent Operations', () => {
 
     service.initializeNodes([node1, node2, node3]);
 
-    // Act: Indent multiple times
+    // Act: Indent multiple different nodes (not the same node twice)
+    // This simulates indenting node-2, then moving cursor to node-3 and indenting it
     service.indentNode('node-2'); // node-2 becomes child of node-1
-    service.indentNode('node-3'); // node-3 becomes child of node-2
+    service.indentNode('node-3'); // node-3 becomes child of node-1 (sibling of node-2, not nested deeper)
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
 
-    // Verify: Hierarchy built correctly
+    // Verify: Both nodes are children of node-1 (siblings of each other)
     const node2Updated = service.findNode('node-2');
     const node3Updated = service.findNode('node-3');
 
     expect(node2Updated?.parentId).toBe('node-1');
-    expect(node3Updated?.parentId).toBe('node-2');
+    expect(node3Updated?.parentId).toBe('node-1'); // Sibling of node-2, not child
 
-    // Verify: Depths correct
+    // Verify: Both at same depth (siblings)
     const node2UI = service.getUIState('node-2');
     const node3UI = service.getUIState('node-3');
 
     expect(node2UI?.depth).toBe(1);
-    expect(node3UI?.depth).toBe(2);
+    expect(node3UI?.depth).toBe(1); // Same depth as node-2
   });
 
   it('should handle multiple consecutive outdents', async () => {
@@ -734,10 +739,9 @@ describe('Indent/Outdent Operations', () => {
     const child1Node = service.findNode('child-1');
     expect(child1Node?.parentId).toBeNull();
 
-    // Verify: child-2 became first child of parent or child of child-1
-    // (depending on outdent behavior with siblings below)
+    // Verify: child-2 became child of child-1 (transferred as sibling below)
     const child2Node = service.findNode('child-2');
-    expect(child2Node?.parentId).toBe('child-1'); // Transferred as sibling below
+    expect(child2Node?.parentId).toBe('child-1');
   });
 
   it('should emit hierarchy changed events for indent/outdent', async () => {
