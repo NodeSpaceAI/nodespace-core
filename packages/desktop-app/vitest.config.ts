@@ -181,6 +181,15 @@ export default defineConfig({
     testTimeout: 5000,
     hookTimeout: 5000,
 
+    // CRITICAL: Run tests sequentially to prevent SharedNodeStore interference (Issue #228, #255)
+    // SharedNodeStore is a singleton, so parallel tests within a file share state.
+    // Even though singleFork: true runs test FILES sequentially, individual tests
+    // within a file can run concurrently, causing state corruption.
+    sequence: {
+      concurrent: false, // Run all tests sequentially, never in parallel
+      shuffle: false // Don't randomize test order
+    },
+
     // Run integration tests sequentially to prevent database race conditions (Issue #255)
     // Each test swaps the dev-server's database path, so parallel execution causes
     // "no such table" errors when operations read the wrong database

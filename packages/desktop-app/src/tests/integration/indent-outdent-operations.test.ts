@@ -27,6 +27,7 @@ import {
 import { createAndFetchNode, checkServerHealth } from '../utils/test-node-helpers';
 import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
+import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe('Indent/Outdent Operations', () => {
   let dbPath: string;
@@ -41,6 +42,10 @@ describe('Indent/Outdent Operations', () => {
   });
 
   beforeEach(async () => {
+    // CRITICAL: Reset SharedNodeStore singleton to prevent test interference
+    // Without this, nodes from previous tests remain in the store, causing incorrect behavior
+    sharedNodeStore.__resetForTesting();
+
     // Note: We create a new database per test (not per suite) for better isolation,
     // trading minor performance cost for stronger guarantees against test interference.
     dbPath = createTestDatabase('indent-outdent-operations');

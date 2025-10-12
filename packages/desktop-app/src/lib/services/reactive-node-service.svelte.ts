@@ -908,11 +908,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Find the target parent: the deepest last descendant of the previous sibling
     // This ensures consecutive indents work correctly (node-3 becomes child of node-2 after node-2 was indented)
-    // However, if the deepest descendant has a containerNodeId set, it's a "container node"
-    // (like a date node's first child), and we should NOT descend into it
     const deepestDescendant = getDeepestLastDescendant(prevSiblingId);
-    const deepestNode = sharedNodeStore.getNode(deepestDescendant);
-    const targetParentId = deepestNode?.containerNodeId ? prevSiblingId : deepestDescendant;
+    const targetParentId = deepestDescendant;
 
     // Step 1: Remove node from current sibling chain BEFORE changing parent
     // This operation updates the next sibling (if any) to maintain chain integrity
@@ -956,10 +953,33 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
 
     // Step 3: Update the main node with persistence dependencies
+    // Set containerNodeId to the root container when indenting
+    // This is required for FOREIGN KEY validation and proper nesting
+    let containerNodeId: string | null = null;
+    if (targetParentId) {
+      // Walk up to find the root container
+      let current = sharedNodeStore.getNode(targetParentId);
+      while (current) {
+        if (!current.parentId) {
+          // Reached root level - this node is the container
+          containerNodeId = current.id;
+          break;
+        }
+        if (current.containerNodeId) {
+          // This node has an explicit container - use it
+          containerNodeId = current.containerNodeId;
+          break;
+        }
+        // Move up the chain
+        current = current.parentId ? sharedNodeStore.getNode(current.parentId) : undefined;
+      }
+    }
+
     sharedNodeStore.updateNode(
       nodeId,
       {
         parentId: targetParentId,
+        containerNodeId: containerNodeId,
         beforeSiblingId: beforeSiblingId
       },
       viewerSource,
