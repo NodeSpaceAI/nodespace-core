@@ -110,10 +110,15 @@ export async function initializeTestDatabase(
   const adapter = new HttpAdapter(serverUrl);
   const initializedPath = await adapter.initializeDatabase(dbPath);
 
-  // CRITICAL: Also initialize the singleton tauriNodeService with this test database
+  // CRITICAL: Update the singleton tauriNodeService to use this test database.
   // SharedNodeStore uses tauriNodeService.createNode() to persist nodes, so we need
-  // to tell the singleton to use this test's specific database
-  await tauriNodeService.initializeDatabase(dbPath);
+  // to tell the singleton to use this test's specific database.
+  //
+  // NOTE: We do NOT call tauriNodeService.initializeDatabase(dbPath) because that would
+  // make a second HTTP request to the same endpoint, causing the database to be swapped
+  // twice. Instead, we use the test-only API to update the singleton's internal state
+  // since we've already initialized the dev server above.
+  tauriNodeService.__testOnly_setInitializedPath(dbPath);
 
   console.log(`[Test] Initialized test database: ${initializedPath}`);
   return initializedPath;

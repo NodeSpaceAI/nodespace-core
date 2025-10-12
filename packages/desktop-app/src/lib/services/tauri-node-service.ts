@@ -309,6 +309,32 @@ export class TauriNodeService {
   }
 
   /**
+   * TEST ONLY: Initialize service with existing database path
+   *
+   * Use this ONLY in tests when database has already been initialized
+   * externally and you need to update the singleton's internal state.
+   *
+   * This avoids making duplicate HTTP requests to the initialization endpoint
+   * when the test infrastructure has already initialized the database.
+   *
+   * @param dbPath - Path to pre-initialized database
+   * @throws Error if called outside test environment
+   * @internal
+   */
+  public __testOnly_setInitializedPath(dbPath: string): void {
+    if (import.meta.env.MODE !== 'test') {
+      throw new Error(
+        '__testOnly_setInitializedPath can only be called in test environment. ' +
+          'Current mode: ' +
+          import.meta.env.MODE
+      );
+    }
+    this.dbPath = dbPath;
+    this.initialized = true;
+    console.log('[TauriNodeService] Test-only initialization with path:', dbPath);
+  }
+
+  /**
    * Ensure database is initialized before operations
    * @private
    */
