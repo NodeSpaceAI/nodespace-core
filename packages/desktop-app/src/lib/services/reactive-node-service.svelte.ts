@@ -785,9 +785,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     sharedNodeStore.deleteNode(currentNodeId, viewerSource, false, deletionDependencies);
     delete _uiState[currentNodeId];
 
+    // CRITICAL: Must reassign (not mutate) for Svelte 5 reactivity
     const rootIndex = _rootNodeIds.indexOf(currentNodeId);
     if (rootIndex >= 0) {
-      _rootNodeIds.splice(rootIndex, 1);
+      _rootNodeIds = _rootNodeIds.filter((id) => id !== currentNodeId);
     }
 
     // Invalidate sorted children cache for both old parent and new parent
@@ -852,7 +853,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       sharedNodeStore.updateNode(
         nextSibling.id,
         { beforeSiblingId: node.beforeSiblingId },
-        viewerSource
+        viewerSource,
+        { skipConflictDetection: true } // Sequential structural updates
       );
       return nextSibling.id; // Return the ID of the updated sibling
     }
@@ -963,7 +965,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       },
       viewerSource,
       {
-        persistenceDependencies
+        persistenceDependencies,
+        // Skip conflict detection for sequential viewer operations
+        // These are coordinated structural changes, not concurrent edits
+        skipConflictDetection: true
       }
     );
 
@@ -973,10 +978,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     updateDescendantDepths(nodeId);
 
     // If node was a root node, remove from _rootNodeIds array
+    // CRITICAL: Must reassign (not mutate) for Svelte 5 reactivity
     if (!node.parentId) {
       const rootIndex = _rootNodeIds.indexOf(nodeId);
       if (rootIndex >= 0) {
-        _rootNodeIds.splice(rootIndex, 1);
+        _rootNodeIds = _rootNodeIds.filter((id) => id !== nodeId);
       }
     }
 
@@ -1084,7 +1090,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       },
       viewerSource,
       {
-        persistenceDependencies: mainNodeDeps
+        persistenceDependencies: mainNodeDeps,
+        // Skip conflict detection for sequential viewer operations
+        skipConflictDetection: true
       }
     );
 
@@ -1100,7 +1108,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       for (const sibling of allSiblings) {
         if (sibling.id !== nodeId && sibling.beforeSiblingId === positionBeforeSibling) {
           sharedNodeStore.updateNode(sibling.id, { beforeSiblingId: nodeId }, viewerSource, {
-            persistenceDependencies: [nodeId] // Wait for main node
+            persistenceDependencies: [nodeId], // Wait for main node
+            skipConflictDetection: true // Sequential structural updates
           });
           break; // Only one sibling can point to positionBeforeSibling
         }
@@ -1151,7 +1160,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
             },
             viewerSource,
             {
-              persistenceDependencies: deps
+              persistenceDependencies: deps,
+              skipConflictDetection: true // Sequential structural updates
             }
           );
 
@@ -1169,9 +1179,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Recalculate depths for all descendants
     updateDescendantDepths(nodeId);
 
+    // CRITICAL: Must reassign (not mutate) for Svelte 5 reactivity
     if (!newParentId) {
       const parentIndex = _rootNodeIds.indexOf(parent.id);
-      _rootNodeIds.splice(parentIndex + 1, 0, nodeId);
+      _rootNodeIds = [
+        ..._rootNodeIds.slice(0, parentIndex + 1),
+        nodeId,
+        ..._rootNodeIds.slice(parentIndex + 1)
+      ];
     }
 
     // Invalidate sorted children cache for old parent, new parent, and outdented node
@@ -1272,8 +1287,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       sharedNodeStore.updateNode(child.id, updates, viewerSource);
 
       // CRITICAL: If promoting to root level, add to _rootNodeIds
+      // Must reassign (not mutate) for Svelte 5 reactivity
       if (newParentForChildren === null && !_rootNodeIds.includes(child.id)) {
-        _rootNodeIds.push(child.id);
+        _rootNodeIds = [..._rootNodeIds, child.id];
       }
 
       // Update depth
@@ -1358,9 +1374,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     sharedNodeStore.deleteNode(nodeId, viewerSource);
     delete _uiState[nodeId];
 
+    // CRITICAL: Must reassign (not mutate) for Svelte 5 reactivity
     const rootIndex = _rootNodeIds.indexOf(nodeId);
     if (rootIndex >= 0) {
-      _rootNodeIds.splice(rootIndex, 1);
+      _rootNodeIds = _rootNodeIds.filter((id) => id !== nodeId);
     }
 
     // Invalidate sorted children cache for parent
