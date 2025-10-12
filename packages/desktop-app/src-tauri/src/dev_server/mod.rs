@@ -36,7 +36,7 @@ use axum::{
 use std::sync::{Arc, RwLock};
 use tower_http::cors::{Any, CorsLayer};
 
-use nodespace_core::NodeService;
+use nodespace_core::{DatabaseService, NodeService};
 
 // Phase 1: Node CRUD endpoints (this issue #209)
 mod node_endpoints;
@@ -63,15 +63,17 @@ type SharedService<T> = Arc<RwLock<Arc<T>>>;
 
 /// Application state shared across all endpoints
 ///
-/// Uses db_path instead of shared DatabaseService to fix Issue #255 (race condition).
-/// Each endpoint creates a fresh DatabaseService connection per request, ensuring
-/// no stale connections after database initialization.
+/// Uses RwLock to allow dynamic database switching for test isolation (Issue #255).
+/// Each test can call /api/database/init with a unique database path, and the init
+/// endpoint will:
+/// 1. Drain connections from the old database
+/// 2. Create a new DatabaseService
+/// 3. Atomically swap the services
 ///
-/// Each test can call /api/database/init with a unique database path,
-/// and the init endpoint will update the path and recreate the NodeService.
+/// This ensures proper synchronization without stale connections.
 #[derive(Clone)]
 pub struct AppState {
-    pub db_path: Arc<RwLock<String>>,
+    pub db: SharedService<DatabaseService>,
     pub node_service: SharedService<NodeService>,
 }
 
@@ -144,7 +146,7 @@ fn cors_layer() -> CorsLayer {
 ///
 /// # Arguments
 ///
-/// * `db_path` - Database file path
+/// * `db` - Database service instance
 /// * `node_service` - Node service instance
 /// * `port` - Port to listen on (typically 3001)
 ///
@@ -152,12 +154,12 @@ fn cors_layer() -> CorsLayer {
 ///
 /// Returns error if server fails to bind or start.
 pub async fn start_server(
-    db_path: Arc<RwLock<String>>,
+    db: SharedService<DatabaseService>,
     node_service: SharedService<NodeService>,
     port: u16,
 ) -> anyhow::Result<()> {
     let state = AppState {
-        db_path,
+        db,
         node_service,
     };
     let app = create_router(state);

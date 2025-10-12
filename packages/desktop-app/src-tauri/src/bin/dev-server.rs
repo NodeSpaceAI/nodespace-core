@@ -83,25 +83,18 @@ async fn main() -> anyhow::Result<()> {
     // Initialize services (same as Tauri app)
     tracing::info!("🔧 Initializing services...");
 
-    // Issue #255 - Option A: Store path instead of DatabaseService
-    // Each endpoint will create fresh connections per request
-    let db_path_str = db_path
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid database path"))?
-        .to_string();
-
     // Create initial database and node service for startup
-    let initial_db = DatabaseService::new(db_path.clone()).await?;
-    let initial_node_service = NodeService::new(initial_db)?;
+    let db_service = DatabaseService::new(db_path.clone()).await?;
+    let node_service = NodeService::new(db_service.clone())?;
 
     tracing::info!("✅ Services initialized");
 
-    // Store path in RwLock for dynamic database switching during tests
-    let db_path_arc = Arc::new(RwLock::new(db_path_str));
-    let ns_arc = Arc::new(RwLock::new(Arc::new(initial_node_service)));
+    // Wrap services in RwLock for dynamic database switching during tests (Issue #255)
+    let db_arc = Arc::new(RwLock::new(Arc::new(db_service)));
+    let ns_arc = Arc::new(RwLock::new(Arc::new(node_service)));
 
     // Start HTTP server
-    nodespace_app_lib::dev_server::start_server(db_path_arc, ns_arc, port).await?;
+    nodespace_app_lib::dev_server::start_server(db_arc, ns_arc, port).await?;
 
     Ok(())
 }

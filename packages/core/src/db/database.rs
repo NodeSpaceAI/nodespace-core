@@ -511,6 +511,35 @@ impl DatabaseService {
         Ok(())
     }
 
+    /// Drain connections and checkpoint WAL before database swap (Issue #255)
+    ///
+    /// This method ensures proper synchronization when swapping databases:
+    /// 1. Forces WAL checkpoint to flush all pending writes to disk
+    /// 2. Adds a small delay to allow any in-flight operations to complete
+    ///
+    /// This prevents race conditions where operations using stale connections
+    /// from the old database fail with "no such table" errors after swap.
+    ///
+    /// # Implementation Note
+    ///
+    /// libsql doesn't expose an explicit connection draining API, so we use
+    /// WAL checkpoint + small delay as a pragmatic solution. The checkpoint
+    /// ensures all writes are committed, and the 10ms delay provides a safety
+    /// margin for in-flight operations.
+    pub async fn drain_and_checkpoint(&self) -> Result<(), DatabaseError> {
+        // Force WAL checkpoint to flush all pending writes
+        let conn = self.connect()?;
+        self.execute_pragma(&conn, "PRAGMA wal_checkpoint(TRUNCATE)")
+            .await?;
+
+        // Small safety margin for in-flight operations (10ms is sufficient)
+        // This is much shorter than the 100ms we used before, but provides
+        // deterministic synchronization via the checkpoint above
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        Ok(())
+    }
+
     /// Get a connection to the database
     ///
     /// Returns a new connection that can be used for queries.

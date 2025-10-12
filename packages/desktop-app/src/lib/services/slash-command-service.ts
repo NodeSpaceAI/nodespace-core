@@ -114,7 +114,8 @@ export class SlashCommandService {
    * Get all available commands from registered plugins
    */
   public getCommands(): SlashCommand[] {
-    return this.convertPluginCommandsToSlashCommands(pluginRegistry.getAllSlashCommands());
+    const pluginCommands = pluginRegistry.getAllSlashCommands();
+    return this.convertPluginCommandsToSlashCommands(pluginCommands);
   }
 
   /**

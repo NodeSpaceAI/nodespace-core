@@ -108,4 +108,10 @@ export interface UpdateOptions {
   forceNotify?: boolean;
   /** Additional dependencies for persistence sequencing (node IDs or lambda functions) */
   persistenceDependencies?: Array<string | (() => Promise<void>)>;
+  /**
+   * Indicates this update is for a computed/derived field (mentions, tags, backlinks, etc.)
+   * Automatically implies skipPersistence=true and skipConflictDetection=true
+   * Use this for fields that are computed from content and shouldn't be persisted directly
+   */
+  isComputedField?: boolean;
 }

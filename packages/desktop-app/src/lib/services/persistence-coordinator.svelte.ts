@@ -114,9 +114,9 @@ export class PersistenceCoordinator {
   // Singleton instance
   private static instance: PersistenceCoordinator | null = null;
 
-  // Reactive state (Svelte 5)
-  private persistenceStatus = $state(new Map<string, PersistenceStatus>());
-  private persistedNodes = $state(new Set<string>());
+  // Reactive state (Svelte 5) - Declared without initialization
+  private persistenceStatus: Map<string, PersistenceStatus>;
+  private persistedNodes: Set<string>;
 
   // Internal tracking
   private operations = new Map<string, PersistenceOperation>();
@@ -142,7 +142,9 @@ export class PersistenceCoordinator {
   private statusCleanupDelayMs = 5 * 60 * 1000; // 5 minutes
 
   private constructor() {
-    // Private constructor for singleton
+    // Initialize reactive state in constructor as first assignments
+    this.persistenceStatus = $state(new Map<string, PersistenceStatus>());
+    this.persistedNodes = $state(new Set<string>());
   }
 
   /**

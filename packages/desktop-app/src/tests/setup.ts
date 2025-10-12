@@ -5,6 +5,7 @@
 import { vi, beforeEach, afterEach } from 'vitest';
 import '@testing-library/jest-dom';
 import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
+import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 // Ensure global object is available for legacy test compatibility
 // In Vitest/Node.js environment, global should already be available, but provide fallback
@@ -34,7 +35,26 @@ if (typeof window !== 'undefined') {
   });
 }
 
-// Plugin registry initialization moved to globalSetup.ts
+// CRITICAL: Plugin registry initialization MUST happen in setup.ts, not global-setup.ts
+// This ensures plugins are registered in the same module context (Happy-DOM browser env)
+// as the Svelte components that will use them. Global setup runs in Node context,
+// which creates a separate module graph and duplicate registry instances.
+import { pluginRegistry } from '$lib/plugins/index';
+import { registerCorePlugins } from '$lib/plugins/core-plugins';
+
+// Register core plugins once at module load time
+// Idempotent guard: safe to call multiple times
+try {
+  if (!pluginRegistry.hasPlugin('text')) {
+    registerCorePlugins(pluginRegistry);
+    console.log('✅ Core plugins registered in test setup (browser context)');
+  } else {
+    console.debug('Core plugins already registered, skipping');
+  }
+} catch (error) {
+  console.error('Failed to register core plugins in test setup:', error);
+  throw error; // Fail fast - tests can't run without plugins
+}
 
 // Mock MutationObserver for testing
 interface MockMutationRecord {
@@ -144,10 +164,14 @@ if (typeof window !== 'undefined') {
   delete (window as unknown as Record<string, unknown>).__TAURI__;
 }
 
-// PersistenceCoordinator cleanup for each test
+// PersistenceCoordinator and SharedNodeStore cleanup for each test
 // NOTE: Coordinator runs in test mode (errors caught gracefully)
 // TODO (#248): Future work - Replace test mode with proper vi.mock() of tauriNodeService
 beforeEach(() => {
+  // Reset SharedNodeStore to clear all nodes between tests
+  sharedNodeStore.__resetForTesting();
+
+  // Reset PersistenceCoordinator
   const coordinator = PersistenceCoordinator.getInstance();
   coordinator.resetTestState();
 });

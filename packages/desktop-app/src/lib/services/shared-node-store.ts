@@ -183,6 +183,15 @@ export class SharedNodeStore {
   ): void {
     const startTime = performance.now();
 
+    // Handle isComputedField flag - automatically set skipPersistence and skipConflictDetection
+    if (options.isComputedField) {
+      options = {
+        ...options,
+        skipPersistence: true,
+        skipConflictDetection: true
+      };
+    }
+
     try {
       // Get existing node
       const existingNode = this.nodes.get(nodeId);
@@ -236,7 +245,7 @@ export class SharedNodeStore {
         namespace: 'lifecycle',
         source: source.type,
         nodeId,
-        updateType: 'content',
+        updateType: this.determineUpdateType(changes),
         newValue: changes
       } as never);
 
@@ -475,7 +484,7 @@ export class SharedNodeStore {
     nodeId: string,
     source: UpdateSource,
     skipPersistence = false,
-    dependencies?: string[]
+    dependencies: string[] = []
   ): void {
     const node = this.nodes.get(nodeId);
     if (node) {
@@ -497,7 +506,12 @@ export class SharedNodeStore {
 
       // Phase 2.4: Persist deletion to database
       if (!skipPersistence && source.type !== 'database') {
-        // Delegate to PersistenceCoordinator with dependencies
+        // Filter dependencies to only include nodes with pending persistence operations
+        const pendingDeps = dependencies.filter((depId) =>
+          PersistenceCoordinator.getInstance().isPending(depId)
+        );
+
+        // Delegate to PersistenceCoordinator
         PersistenceCoordinator.getInstance().persist(
           nodeId,
           async () => {
@@ -519,7 +533,7 @@ export class SharedNodeStore {
           },
           {
             mode: 'immediate',
-            dependencies: dependencies || []
+            dependencies: pendingDeps.length > 0 ? pendingDeps : undefined
           }
         );
       }
@@ -1066,6 +1080,38 @@ export class SharedNodeStore {
         }
       }
     }
+  }
+
+  /**
+   * Determine the type of update based on which fields changed
+   *
+   * @param changes - Partial node data representing the changes
+   * @returns 'structure' for hierarchy changes, 'metadata' for computed fields, 'content' otherwise
+   */
+  private determineUpdateType(changes: Partial<Node>): 'content' | 'structure' | 'metadata' {
+    // Structural changes take precedence
+    if ('parentId' in changes || 'beforeSiblingId' in changes || 'containerNodeId' in changes) {
+      return 'structure';
+    }
+
+    // Metadata-only changes (computed fields that don't affect content)
+    if (this.isMetadataOnlyUpdate(changes)) {
+      return 'metadata';
+    }
+
+    return 'content';
+  }
+
+  /**
+   * Check if an update only modifies metadata (computed fields)
+   *
+   * @param changes - Partial node data representing the changes
+   * @returns true if only computed/derived fields changed
+   */
+  private isMetadataOnlyUpdate(changes: Partial<Node>): boolean {
+    // Currently only mentions are metadata-only (computed from content)
+    // Future: Could include other computed fields (tags, backlinks, etc.)
+    return 'mentions' in changes && Object.keys(changes).length === 1;
   }
 
   // ========================================================================
