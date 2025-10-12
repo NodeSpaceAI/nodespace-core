@@ -121,6 +121,11 @@ async fn init_database(
         .ok_or_else(|| HttpError::new("Invalid database path", "PATH_ERROR"))?
         .to_string();
 
+    // CRITICAL: Allow time for any pending operations from previous test to complete
+    // Issue #255: Without this delay, operations queued before database swap will fail
+    // when they execute after the swap, reading from the wrong database path
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
     // Create temporary DatabaseService to initialize schema (Issue #255 - Option A)
     // This ensures the database file and schema exist before updating the path
     use nodespace_core::{DatabaseService, NodeService};

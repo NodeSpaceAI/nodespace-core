@@ -187,7 +187,7 @@ export default defineConfig({
     pool: 'forks',
     poolOptions: {
       forks: {
-        singleFork: true  // Run all tests in a single process sequentially
+        singleFork: true // Run all tests in a single process sequentially
       }
     }
   }
