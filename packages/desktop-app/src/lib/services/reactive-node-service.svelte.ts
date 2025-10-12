@@ -17,6 +17,33 @@
  * - Separates data (Node in SharedNodeStore) from UI state (NodeUIState)
  * - Computes children on-demand instead of storing arrays
  * - Real-time synchronization across multiple viewers
+ *
+ * ============================================================================
+ * ERROR HANDLING PHILOSOPHY - Async Operations (deleteNode, indentNode, outdentNode)
+ * ============================================================================
+ *
+ * These operations use `waitForNodeSaves()` to prevent race conditions when modifying
+ * sibling chains. The wait can timeout if persistence takes too long (>5 seconds).
+ *
+ * DESIGN DECISION: Continue operations despite timeout to prevent UI deadlock.
+ *
+ * Rationale:
+ * - The PersistenceCoordinator uses eventual consistency with debouncing
+ * - Pending operations complete asynchronously in the background
+ * - Worst case: Brief data inconsistency that self-heals when operations complete
+ * - UI remains responsive and users can continue working
+ *
+ * Alternative Considered: Halt operation and return false/void on timeout.
+ * Rejected because:
+ * - Leaves UI in confusing limbo state (operation appears to fail)
+ * - Blocks user workflow unnecessarily
+ * - Doesn't prevent the underlying race condition (operation already queued)
+ *
+ * Trade-off: We favor UI responsiveness over strict consistency, accepting the
+ * risk of transient inconsistency that self-heals within seconds.
+ *
+ * References: See deleteNode(), indentNode(), outdentNode() error handling blocks
+ * ============================================================================
  */
 
 import { v4 as uuidv4 } from 'uuid';
@@ -805,23 +832,45 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
   }
 
+  /**
+   * Indents a node by making it a child of its previous sibling.
+   *
+   * The node is inserted as the last child of its previous sibling, maintaining
+   * proper sibling chain integrity by waiting for all affected nodes to persist
+   * before making structural changes.
+   *
+   * Race Condition Handling:
+   * - Waits for next sibling in OLD parent context (sibling chain repair)
+   * - Waits for last child in NEW parent context (insertion point dependency)
+   * - This prevents "database is locked" and FOREIGN KEY constraint violations
+   *
+   * @param nodeId - The ID of the node to indent
+   * @returns Promise<boolean> - true if indent succeeded, false if operation invalid
+   *
+   * @example
+   * ```typescript
+   * // Before: A, B, C (siblings)
+   * await indentNode('C');
+   * // After: A, B (with C as last child of B)
+   * ```
+   */
   async function indentNode(nodeId: string): Promise<boolean> {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return false;
 
-    // Get SORTED siblings according to beforeSiblingId chain
-    let siblings: string[];
+    // Get SORTED siblings in current (old) parent context
+    let currentSiblings: string[];
     if (node.parentId) {
       const unsortedSiblings = sharedNodeStore.getNodesForParent(node.parentId).map((n) => n.id);
-      siblings = sortChildrenByBeforeSiblingId(unsortedSiblings, node.parentId);
+      currentSiblings = sortChildrenByBeforeSiblingId(unsortedSiblings, node.parentId);
     } else {
-      siblings = sortChildrenByBeforeSiblingId(_rootNodeIds, null);
+      currentSiblings = sortChildrenByBeforeSiblingId(_rootNodeIds, null);
     }
 
-    const nodeIndex = siblings.indexOf(nodeId);
+    const nodeIndex = currentSiblings.indexOf(nodeId);
     if (nodeIndex <= 0) return false; // Can't indent first child or if not found
 
-    const prevSiblingId = siblings[nodeIndex - 1];
+    const prevSiblingId = currentSiblings[nodeIndex - 1];
     const prevSibling = sharedNodeStore.getNode(prevSiblingId);
     if (!prevSibling) return false;
 
@@ -836,10 +885,23 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       nodesToWaitFor.push(nextSibling.id);
     }
 
+    // Affected nodes in NEW parent context (insertion point)
+    // We will set beforeSiblingId to the last child of the new parent
+    // Wait for that child to persist to avoid FOREIGN KEY violations
+    const newParentChildren = sharedNodeStore.getNodesForParent(prevSiblingId);
+    if (newParentChildren.length > 0) {
+      const sortedNewParentChildren = sortChildrenByBeforeSiblingId(
+        newParentChildren.map((n) => n.id),
+        prevSiblingId
+      );
+      const lastChildId = sortedNewParentChildren[sortedNewParentChildren.length - 1];
+      nodesToWaitFor.push(lastChildId);
+    }
+
     // Remove node from current sibling chain BEFORE changing parent
     removeFromSiblingChain(nodeId);
 
-    // Wait for sibling chain repairs in old parent context to complete
+    // Wait for sibling chain repairs in both old and new parent contexts to complete
     if (nodesToWaitFor.length > 0) {
       const persistedNodes = await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
 
@@ -851,8 +913,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           persisted: Array.from(persistedNodes),
           failed: failedNodes
         });
-        // Continue with hierarchy change despite timeout - PersistenceCoordinator has already logged errors
-        // and the operation should complete to avoid leaving UI in inconsistent state
+        // DESIGN DECISION: Continue despite timeout (see Error Handling Philosophy at top of file)
       }
     }
 
@@ -917,6 +978,28 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     return true;
   }
 
+  /**
+   * Outdents a node by promoting it to the same level as its parent.
+   *
+   * The node is positioned immediately after its old parent as a sibling. Any siblings
+   * that were below this node become children of the outdented node, maintaining proper
+   * hierarchy and sibling chain integrity.
+   *
+   * Race Condition Handling:
+   * - Waits for next sibling in OLD parent context (sibling chain repair)
+   * - Waits for old parent OR last sibling in NEW parent context (insertion point dependency)
+   * - This prevents "database is locked" and FOREIGN KEY constraint violations
+   *
+   * @param nodeId - The ID of the node to outdent
+   * @returns Promise<boolean> - true if outdent succeeded, false if operation invalid (e.g., root node)
+   *
+   * @example
+   * ```typescript
+   * // Before: A (with child B, B has child C)
+   * await outdentNode('C');
+   * // After: A, B, C (all siblings)
+   * ```
+   */
   async function outdentNode(nodeId: string): Promise<boolean> {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node || !node.parentId) return false;
@@ -926,11 +1009,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     const oldParentId = node.parentId;
 
-    // Find siblings that come after this node (they will become children)
-    const siblings = sharedNodeStore.getNodesForParent(oldParentId).map((n) => n.id);
-    const sortedSiblings = sortChildrenByBeforeSiblingId(siblings, oldParentId);
-    const nodeIndex = sortedSiblings.indexOf(nodeId);
-    const siblingsBelow = nodeIndex >= 0 ? sortedSiblings.slice(nodeIndex + 1) : [];
+    // Find siblings in current (old) parent context that come after this node (they will become children)
+    const currentSiblings = sharedNodeStore.getNodesForParent(oldParentId).map((n) => n.id);
+    const sortedCurrentSiblings = sortChildrenByBeforeSiblingId(currentSiblings, oldParentId);
+    const nodeIndex = sortedCurrentSiblings.indexOf(nodeId);
+    const siblingsBelow = nodeIndex >= 0 ? sortedCurrentSiblings.slice(nodeIndex + 1) : [];
 
     // CRITICAL: Identify nodes that WILL BE AFFECTED in BOTH old and new parent contexts
     // This prevents "database is locked" errors and FOREIGN KEY violations
@@ -943,10 +1026,31 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       nodesToWaitFor.push(nextSibling.id);
     }
 
+    // Affected nodes in NEW parent context (insertion point)
+    // We will position the node after its old parent (which becomes a sibling)
+    // Wait for the old parent to persist to avoid FOREIGN KEY violations
+    const newParentId = parent.parentId || null;
+    const oldParentNode = sharedNodeStore.getNode(oldParentId);
+    if (oldParentNode && oldParentNode.parentId === newParentId) {
+      // Old parent is a valid sibling in new context - will be our beforeSiblingId
+      nodesToWaitFor.push(oldParentId);
+    } else {
+      // Fallback: position at end after last sibling in new parent
+      const newParentSiblings = sharedNodeStore.getNodesForParent(newParentId);
+      if (newParentSiblings.length > 0) {
+        const sortedNewParentSiblings = sortChildrenByBeforeSiblingId(
+          newParentSiblings.map((n) => n.id),
+          newParentId
+        );
+        const lastSiblingId = sortedNewParentSiblings[sortedNewParentSiblings.length - 1];
+        nodesToWaitFor.push(lastSiblingId);
+      }
+    }
+
     // Remove node from current sibling chain BEFORE changing parent
     removeFromSiblingChain(nodeId);
 
-    // Wait for sibling chain repairs in old parent context to complete
+    // Wait for sibling chain repairs in both old and new parent contexts to complete
     if (nodesToWaitFor.length > 0) {
       const persistedNodes = await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
 
@@ -958,12 +1062,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           persisted: Array.from(persistedNodes),
           failed: failedNodes
         });
-        // Continue with hierarchy change despite timeout - PersistenceCoordinator has already logged errors
-        // and the operation should complete to avoid leaving UI in inconsistent state
+        // DESIGN DECISION: Continue despite timeout (see Error Handling Philosophy at top of file)
       }
     }
 
-    const newParentId = parent.parentId || null;
     const uiState = _uiState[nodeId];
     const newDepth = newParentId ? (_uiState[newParentId]?.depth || 0) + 1 : 0;
 
@@ -972,7 +1074,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     let positionBeforeSibling: string | null = oldParentId;
 
     // Check if old parent has a valid position in the new parent's context
-    const oldParentNode = sharedNodeStore.getNode(oldParentId);
+    // (oldParentNode already declared earlier for wait logic)
     if (oldParentNode && oldParentNode.parentId === newParentId) {
       // Old parent is a valid sibling in the new context
       positionBeforeSibling = oldParentId;
@@ -1193,21 +1295,21 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // CRITICAL: Identify nodes that WILL BE AFFECTED before making changes
     // This prevents "database is locked" errors and FOREIGN KEY violations
+    //
+    // We only wait for the NEXT SIBLING because removeFromSiblingChain() only
+    // modifies that node (updates its beforeSiblingId to splice out the deleted node).
+    // Children are orphaned but NOT modified, so we don't need to wait for them.
     const nodesToWaitFor = [];
     const siblings = sharedNodeStore.getNodesForParent(node.parentId);
     const nextSibling = siblings.find((n) => n.beforeSiblingId === nodeId);
     if (nextSibling) {
       nodesToWaitFor.push(nextSibling.id);
     }
-    const children = sharedNodeStore.getNodesForParent(nodeId);
-    if (children.length > 0) {
-      nodesToWaitFor.push(...children.map((c) => c.id));
-    }
 
     // Remove node from sibling chain BEFORE deletion to prevent orphans
     removeFromSiblingChain(nodeId);
 
-    // Wait for sibling chain repairs to complete before deletion
+    // Wait for next sibling repair to complete before deletion
     if (nodesToWaitFor.length > 0) {
       const persistedNodes = await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
 
@@ -1219,8 +1321,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           persisted: Array.from(persistedNodes),
           failed: failedNodes
         });
-        // Continue with deletion despite timeout - PersistenceCoordinator has already logged errors
-        // and the operation should complete to avoid leaving UI in inconsistent state
+        // DESIGN DECISION: Continue despite timeout (see Error Handling Philosophy at top of file)
       }
     }
 
