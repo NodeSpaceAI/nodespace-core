@@ -90,6 +90,8 @@ interface PersistenceOperation {
   startedAt?: number;
   completedAt?: number;
   error?: Error;
+  blocked: boolean; // Is this operation waiting for dependencies?
+  blockingDeps: Set<string>; // Which dependencies are still pending?
 }
 
 /**
@@ -119,6 +121,7 @@ export class PersistenceCoordinator {
   // Internal tracking
   private operations = new Map<string, PersistenceOperation>();
   private completedOperations = new Set<string>();
+  private waitingQueue = new Map<string, PersistenceOperation>(); // Operations blocked by dependencies
 
   // Test mode
   private testMode = false;
@@ -258,7 +261,9 @@ export class PersistenceCoordinator {
       promise,
       resolve: resolvePromise!,
       reject: rejectPromise!,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      blocked: false,
+      blockingDeps: new Set()
     };
 
     // Track operation
@@ -267,12 +272,32 @@ export class PersistenceCoordinator {
     this.metrics.totalOperations++;
     this.metrics.pendingOperations++;
 
-    // Schedule execution based on mode
-    const mode = options.mode || 'debounce';
-    if (mode === 'immediate') {
-      this.scheduleImmediate(op);
+    // Check if dependencies are pending - if so, block this operation
+    const blockingDeps = new Set<string>();
+    for (const dep of op.dependencies) {
+      if (typeof dep === 'string') {
+        const depOp = this.operations.get(dep);
+        if (depOp && (depOp.status === 'pending' || depOp.status === 'in-progress')) {
+          blockingDeps.add(dep);
+        }
+      }
+      // Lambda dependencies cannot be blocked - they execute inline
+      // This is intentional as they handle ancestor chain persistence
+    }
+
+    if (blockingDeps.size > 0) {
+      // Operation must wait - don't schedule yet
+      op.blocked = true;
+      op.blockingDeps = blockingDeps;
+      this.waitingQueue.set(nodeId, op);
     } else {
-      this.scheduleDebounced(op);
+      // No blocking deps - schedule normally
+      const mode = options.mode || 'debounce';
+      if (mode === 'immediate') {
+        this.scheduleImmediate(op);
+      } else {
+        this.scheduleDebounced(op);
+      }
     }
 
     // Return handle
@@ -399,6 +424,7 @@ export class PersistenceCoordinator {
     // Clear state (use .clear() to preserve Svelte 5 reactivity)
     this.operations.clear();
     this.completedOperations.clear();
+    this.waitingQueue.clear(); // Clear blocked operations
     this.persistenceStatus.clear(); // Changed from reassignment to preserve reactive proxy
     this.persistedNodes.clear(); // Changed from reassignment to preserve reactive proxy
     this.mockPersistence.clear();
@@ -545,6 +571,9 @@ export class PersistenceCoordinator {
       this.operations.delete(op.nodeId);
       this.metrics.pendingOperations--;
 
+      // Unblock any operations that were waiting for this one
+      this.unblockDependentOperations(op.nodeId);
+
       // Schedule cleanup of completed status to prevent memory leaks
       this.scheduleStatusCleanup(op.nodeId);
     } catch (error) {
@@ -571,6 +600,30 @@ export class PersistenceCoordinator {
       // Clean up
       this.operations.delete(op.nodeId);
       this.metrics.pendingOperations--;
+    }
+  }
+
+  /**
+   * Unblock operations that were waiting for a completed dependency
+   */
+  private unblockDependentOperations(completedNodeId: string): void {
+    for (const [waitingNodeId, waitingOp] of this.waitingQueue) {
+      if (waitingOp.blockingDeps.has(completedNodeId)) {
+        waitingOp.blockingDeps.delete(completedNodeId);
+
+        if (waitingOp.blockingDeps.size === 0) {
+          // All dependencies resolved - schedule now
+          this.waitingQueue.delete(waitingNodeId);
+          waitingOp.blocked = false;
+
+          const mode = waitingOp.options.mode || 'debounce';
+          if (mode === 'immediate') {
+            this.scheduleImmediate(waitingOp);
+          } else {
+            this.scheduleDebounced(waitingOp);
+          }
+        }
+      }
     }
   }
 

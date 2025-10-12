@@ -301,6 +301,11 @@ export class SharedNodeStore {
             dependencies.push(updatedNode.beforeSiblingId);
           }
 
+          // Add any additional dependencies from options
+          if (options.persistenceDependencies) {
+            dependencies.push(...options.persistenceDependencies);
+          }
+
           PersistenceCoordinator.getInstance().persist(
             nodeId,
             async () => {
