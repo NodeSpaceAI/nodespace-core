@@ -1018,12 +1018,21 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const dependencies: string[] = [];
     const oldParentSiblings = sharedNodeStore.getNodesForParent(node.parentId);
     const nextSibling = oldParentSiblings.find((n) => n.beforeSiblingId === nodeId);
-    if (nextSibling) {
+
+    // Check if next sibling will be transferred as a sibling below
+    // If so, don't update it here - we'll update it when we transfer it
+    const nextSiblingWillBeTransferred = nextSibling && siblingsBelow.includes(nextSibling.id);
+
+    if (nextSibling && !nextSiblingWillBeTransferred) {
+      // Only repair the chain if the next sibling is NOT being transferred
+      // This avoids conflicting updates to the same node
+      sharedNodeStore.updateNode(
+        nextSibling.id,
+        { beforeSiblingId: node.beforeSiblingId },
+        viewerSource
+      );
       dependencies.push(nextSibling.id);
     }
-
-    // Queue sibling chain repair (auto-persists via SharedNodeStore)
-    removeFromSiblingChain(nodeId);
 
     // Determine insertion point in NEW parent context
     const newParentId = parent.parentId || null;
@@ -1098,16 +1107,22 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         if (sibling) {
           // Identify next sibling for this transferring node as dependency
           const transferDependencies: string[] = [nodeId]; // Must wait for outdented node to be updated
+
+          // Fix the sibling chain in the OLD parent before transferring
+          // Find the node that points to this sibling and update it to bypass this sibling
           const siblingsOfTransferring = sharedNodeStore.getNodesForParent(sibling.parentId);
           const nextOfTransferring = siblingsOfTransferring.find(
             (n) => n.beforeSiblingId === siblingId
           );
           if (nextOfTransferring) {
+            // Update next sibling to point to our predecessor
+            sharedNodeStore.updateNode(
+              nextOfTransferring.id,
+              { beforeSiblingId: sibling.beforeSiblingId },
+              viewerSource
+            );
             transferDependencies.push(nextOfTransferring.id);
           }
-
-          // Queue sibling chain repair (auto-persists)
-          removeFromSiblingChain(siblingId);
 
           // First transferred sibling points to last existing child (or null)
           // Subsequent siblings point to the previous transferred sibling
