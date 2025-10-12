@@ -38,7 +38,7 @@
 //! ```
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -467,6 +467,25 @@ impl Node {
     }
 }
 
+/// Custom deserializer for optional fields that accepts both plain values and nested Options
+///
+/// This enables TypeScript frontend to send `{"beforeSiblingId": "value"}` instead of
+/// requiring the more complex `{"beforeSiblingId": {"value": "value"}}` structure.
+///
+/// Maps three input formats to the double-Option pattern:
+/// - Missing field → None (don't update)
+/// - null → Some(None) (set to NULL)
+/// - "value" → Some(Some("value")) (set to value)
+fn deserialize_optional_field<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    // Accept either T or Option<T> from JSON
+    // Missing field is handled by #[serde(default)] on the struct field
+    Ok(Some(Option::<T>::deserialize(deserializer)?))
+}
+
 /// Partial node update structure for PATCH operations
 ///
 /// All fields are optional to support partial updates. Only provided fields
@@ -527,7 +546,11 @@ pub struct NodeUpdate {
     /// - `None`: Don't change parent_id
     /// - `Some(None)`: Set parent_id to NULL (remove parent)
     /// - `Some(Some(id))`: Set parent_id to the specified ID
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_field"
+    )]
     pub parent_id: Option<Option<String>>,
 
     /// Update root reference
@@ -536,7 +559,11 @@ pub struct NodeUpdate {
     /// - `None`: Don't change container_node_id
     /// - `Some(None)`: Set container_node_id to NULL (this node becomes root)
     /// - `Some(Some(id))`: Set container_node_id to the specified ID
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_field"
+    )]
     pub container_node_id: Option<Option<String>>,
 
     /// Update sibling ordering
@@ -545,7 +572,11 @@ pub struct NodeUpdate {
     /// - `None`: Don't change before_sibling_id
     /// - `Some(None)`: Set before_sibling_id to NULL (no explicit ordering)
     /// - `Some(Some(id))`: Set before_sibling_id to the specified ID
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_field"
+    )]
     pub before_sibling_id: Option<Option<String>>,
 
     /// Update or merge properties
@@ -558,7 +589,11 @@ pub struct NodeUpdate {
     /// - `None`: Don't change embedding_vector
     /// - `Some(None)`: Set embedding_vector to NULL (remove embedding)
     /// - `Some(Some(vec))`: Set embedding_vector to the specified bytes
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_field"
+    )]
     pub embedding_vector: Option<Option<Vec<u8>>>,
 }
 

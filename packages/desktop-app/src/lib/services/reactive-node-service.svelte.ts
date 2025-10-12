@@ -374,15 +374,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       beforeSiblingId = afterNodeId;
     }
 
-    // Determine origin_node_id - inherit from parent or use own id if no parent
+    // Determine origin_node_id - inherit from parent or use 'root' if no parent
     let rootId: string;
     if (newParentId) {
       const parent = sharedNodeStore.getNode(newParentId);
       // Inherit origin_node_id from parent, or use parent's id if parent has no origin_node_id
       rootId = parent?.containerNodeId || newParentId;
     } else {
-      // No parent means this node is the root
-      rootId = nodeId;
+      // No parent means this node is at root level
+      rootId = 'root';
     }
 
     // Create Node with unified type system

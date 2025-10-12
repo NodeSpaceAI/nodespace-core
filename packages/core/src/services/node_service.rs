@@ -19,6 +19,12 @@ use crate::services::error::NodeServiceError;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use std::sync::Arc;
 
+/// Special container node ID that represents "no container" (root-level nodes)
+///
+/// The frontend uses "root" as a sentinel value to indicate nodes at the root level.
+/// The backend converts this to NULL in the database for proper relational semantics.
+const ROOT_CONTAINER_ID: &str = "root";
+
 /// Parse timestamp from database - handles both SQLite and RFC3339 formats
 fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, String> {
     // Try SQLite format first: "YYYY-MM-DD HH:MM:SS"
@@ -160,10 +166,13 @@ impl NodeService {
         }
 
         // Validate root exists if container_node_id is set
+        // Special case: ROOT_CONTAINER_ID is treated as null (no container node)
         if let Some(ref container_node_id) = node.container_node_id {
-            let root_exists = self.node_exists(container_node_id).await?;
-            if !root_exists {
-                return Err(NodeServiceError::invalid_root(container_node_id));
+            if container_node_id != ROOT_CONTAINER_ID {
+                let root_exists = self.node_exists(container_node_id).await?;
+                if !root_exists {
+                    return Err(NodeServiceError::invalid_root(container_node_id));
+                }
             }
         }
 
@@ -174,6 +183,12 @@ impl NodeService {
         let properties_json = serde_json::to_string(&node.properties)
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
+        // Convert ROOT_CONTAINER_ID to None (null in database)
+        let container_node_id_value = node
+            .container_node_id
+            .as_deref()
+            .filter(|id| *id != ROOT_CONTAINER_ID);
+
         conn.execute(
             "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -182,7 +197,7 @@ impl NodeService {
                 node.node_type.as_str(),
                 node.content.as_str(),
                 node.parent_id.as_deref(),
-                node.container_node_id.as_deref(),
+                container_node_id_value,
                 node.before_sibling_id.as_deref(),
                 properties_json.as_str(),
                 node.embedding_vector.as_deref(),
@@ -379,7 +394,11 @@ impl NodeService {
         }
 
         if let Some(container_node_id) = update.container_node_id {
-            updated.container_node_id = container_node_id;
+            // Convert ROOT_CONTAINER_ID to None (null in database) - same as CREATE operation
+            updated.container_node_id = match container_node_id {
+                Some(id) if id == ROOT_CONTAINER_ID => None,
+                other => other,
+            };
         }
 
         if let Some(before_sibling_id) = update.before_sibling_id {

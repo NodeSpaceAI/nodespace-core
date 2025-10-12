@@ -80,6 +80,41 @@ export interface Node {
  * Note: created_at and modified_at are NOT updatable.
  * Backend automatically sets modified_at on updates.
  */
+/**
+ * NodeUpdate - Partial node update interface
+ *
+ * This interface maps to Rust's `NodeUpdate` struct which uses Option<Option<T>>
+ * for nullable fields. Understanding this mapping is critical for correct updates.
+ *
+ * ## Type System Mapping (TypeScript → Rust)
+ *
+ * For nullable fields (parentId, containerNodeId, beforeSiblingId, embeddingVector):
+ *
+ * | TypeScript Value | Meaning | Rust Type | Behavior |
+ * |-----------------|---------|-----------|----------|
+ * | `undefined` (field omitted) | Don't update this field | `None` | Field unchanged in database |
+ * | `null` | Clear this field | `Some(None)` | Field set to NULL in database |
+ * | `"value"` | Set to this value | `Some(Some("value"))` | Field set to value in database |
+ *
+ * ## Example Usage
+ *
+ * ```typescript
+ * // Don't update beforeSiblingId (leave as-is)
+ * updateNode('node-1', { content: 'New content' });
+ *
+ * // Clear beforeSiblingId (set to NULL)
+ * updateNode('node-1', { beforeSiblingId: null });
+ *
+ * // Set beforeSiblingId to a value
+ * updateNode('node-1', { beforeSiblingId: 'node-2' });
+ * ```
+ *
+ * ## Implementation Details
+ *
+ * The Rust backend uses a custom deserializer (see nodespace-core/src/models/node.rs)
+ * to handle this three-way mapping. This allows TypeScript to use natural optional
+ * types while Rust maintains explicit control over "don't update" vs "set to null".
+ */
 export interface NodeUpdate {
   /** Update node type */
   nodeType?: string;
@@ -87,19 +122,43 @@ export interface NodeUpdate {
   /** Update primary content */
   content?: string;
 
-  /** Update parent reference */
+  /**
+   * Update parent reference
+   *
+   * - `undefined`: Don't update (keep current value)
+   * - `null`: Clear parent (set to NULL)
+   * - `string`: Set to new parent ID
+   */
   parentId?: string | null;
 
-  /** Update root reference */
+  /**
+   * Update root reference
+   *
+   * - `undefined`: Don't update (keep current value)
+   * - `null`: Clear container (set to NULL)
+   * - `string`: Set to new container ID
+   */
   containerNodeId?: string | null;
 
-  /** Update sibling ordering */
+  /**
+   * Update sibling ordering
+   *
+   * - `undefined`: Don't update (keep current position)
+   * - `null`: Clear sibling reference (move to end of list)
+   * - `string`: Insert before this sibling
+   */
   beforeSiblingId?: string | null;
 
   /** Update or merge properties */
   properties?: Record<string, unknown>;
 
-  /** Update embedding vector */
+  /**
+   * Update embedding vector
+   *
+   * - `undefined`: Don't update (keep current vector)
+   * - `null`: Clear vector (set to NULL)
+   * - `number[]`: Set to new vector
+   */
   embeddingVector?: number[] | null;
 }
 

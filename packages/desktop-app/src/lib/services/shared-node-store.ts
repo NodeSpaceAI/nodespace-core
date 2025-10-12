@@ -288,12 +288,16 @@ export class SharedNodeStore {
       this.metrics.updateCount++;
 
       // Phase 2.4: Persist to database (unless skipped)
+      // IMPORTANT: For viewer-sourced updates:
+      // - Structural changes (parentId, beforeSiblingId, containerNodeId) persist immediately
+      // - Content changes skip persistence - BaseNodeViewer handles with debouncing
+      // This ensures hierarchy operations work while avoiding duplicate writes on content edits
       if (!options.skipPersistence && source.type !== 'database') {
-        // Skip persisting empty text nodes - they exist in UI but not in database
-        const isEmptyTextNode =
-          updatedNode.nodeType === 'text' && updatedNode.content.trim() === '';
+        const isStructuralChange =
+          'parentId' in changes || 'beforeSiblingId' in changes || 'containerNodeId' in changes;
+        const shouldPersist = source.type !== 'viewer' || isStructuralChange;
 
-        if (!isEmptyTextNode) {
+        if (shouldPersist) {
           // Queue database write to prevent concurrent writes
           queueDatabaseWrite(nodeId, async () => {
             try {
@@ -358,6 +362,7 @@ export class SharedNodeStore {
    * Set a node (create or replace)
    */
   setNode(node: Node, source: UpdateSource, skipPersistence = false): void {
+    const isNewNode = !this.persistedNodeIds.has(node.id);
     this.nodes.set(node.id, node);
     this.versions.set(node.id, this.getNextVersion(node.id));
     this.notifySubscribers(node.id, node, source);
@@ -368,12 +373,13 @@ export class SharedNodeStore {
     }
 
     // Phase 2.4: Persist to database
+    // IMPORTANT: For NEW nodes from viewer, persist immediately (including empty ones!)
+    // For UPDATES from viewer, skip persistence - BaseNodeViewer handles with debouncing
+    // This ensures createNode() persistence works while avoiding duplicate writes on updates
     if (!skipPersistence && source.type !== 'database') {
-      // Skip persisting empty text nodes - they exist in UI but not in database
-      // until user adds content (backend validation requires non-empty content)
-      const isEmptyTextNode = node.nodeType === 'text' && node.content.trim() === '';
+      const shouldPersist = source.type !== 'viewer' || isNewNode;
 
-      if (!isEmptyTextNode) {
+      if (shouldPersist) {
         queueDatabaseWrite(node.id, async () => {
           try {
             // Check if node has been persisted - use in-memory tracking to avoid database query
@@ -1264,6 +1270,28 @@ export class SharedNodeStore {
    */
   clearTestErrors(): void {
     this.testErrors = [];
+  }
+
+  /**
+   * Reset store state (for testing only)
+   * @internal
+   */
+  __resetForTesting(): void {
+    this.nodes.clear();
+    this.persistedNodeIds.clear();
+    this.subscriptions.clear();
+    this.wildcardSubscriptions.clear();
+    this.pendingUpdates.clear();
+    this.versions.clear();
+    this.testErrors = [];
+    this.metrics = {
+      updateCount: 0,
+      avgUpdateTime: 0,
+      maxUpdateTime: 0,
+      subscriptionCount: 0,
+      conflictCount: 0,
+      rollbackCount: 0
+    };
   }
 }
 

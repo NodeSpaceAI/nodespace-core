@@ -488,4 +488,43 @@ describe('Enter Key Operations', () => {
     expect(dbNode3).toBeDefined();
     expect(dbNode4).toBeDefined();
   });
+
+  it('should convert containerNodeId "root" to null in database', async () => {
+    // This test verifies the ROOT_CONTAINER_ID constant behavior:
+    // Frontend uses "root" as a sentinel value for root-level nodes.
+    // Backend must convert "root" to NULL in the database.
+
+    // Setup: Create a node with containerNodeId="root"
+    const rootNode = await createAndFetchNode(adapter, {
+      id: 'root-node',
+      nodeType: 'text',
+      content: 'Root level node',
+      parentId: null,
+      containerNodeId: 'root', // Frontend uses "root" string
+      beforeSiblingId: null,
+      properties: {},
+      embeddingVector: null,
+      mentions: []
+    });
+
+    // Initialize service with the root node
+    service.initializeNodes([rootNode]);
+    await waitForDatabaseWrites();
+
+    // Verify: Database stores NULL, not "root" string
+    const dbNode = await adapter.getNode('root-node');
+    expect(dbNode).toBeDefined();
+    expect(dbNode?.containerNodeId).toBeNull(); // Backend converts to null
+
+    // Verify: Frontend receives the node correctly
+    const serviceNode = service.nodes.get('root-node');
+    expect(serviceNode).toBeDefined();
+
+    // The node should work correctly with root containerNodeId
+    expect(serviceNode?.id).toBe('root-node');
+    expect(serviceNode?.content).toBe('Root level node');
+
+    // Verify: No errors occurred
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+  });
 });

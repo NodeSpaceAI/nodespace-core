@@ -39,7 +39,7 @@
 
 use std::env;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use nodespace_core::{DatabaseService, NodeService};
 
@@ -88,9 +88,12 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("✅ Services initialized");
 
+    // Wrap services in RwLock for dynamic database switching during tests
+    let db_arc = Arc::new(RwLock::new(Arc::new(db_service)));
+    let ns_arc = Arc::new(RwLock::new(Arc::new(node_service)));
+
     // Start HTTP server
-    nodespace_app_lib::dev_server::start_server(Arc::new(db_service), Arc::new(node_service), port)
-        .await?;
+    nodespace_app_lib::dev_server::start_server(db_arc, ns_arc, port).await?;
 
     Ok(())
 }

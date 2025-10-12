@@ -30,6 +30,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
+import { sharedNodeStore } from '$lib/services/shared-node-store';
 import { createTestNode } from '../helpers';
 
 describe('Node Ordering Integration Tests', () => {
@@ -43,6 +44,8 @@ describe('Node Ordering Integration Tests', () => {
   };
 
   beforeEach(() => {
+    // Reset singleton state between tests to prevent contamination
+    sharedNodeStore.__resetForTesting();
     nodeService = createReactiveNodeService(mockEvents);
   });
 
