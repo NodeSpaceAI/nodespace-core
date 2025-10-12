@@ -269,6 +269,27 @@ export class SharedNodeStore {
             });
           }
 
+          // Ensure beforeSiblingId node is persisted (FOREIGN KEY constraint)
+          // Only add as dependency if it has a pending persistence operation
+          if (
+            isStructuralChange &&
+            updatedNode.beforeSiblingId &&
+            PersistenceCoordinator.getInstance().isPending(updatedNode.beforeSiblingId)
+          ) {
+            dependencies.push(updatedNode.beforeSiblingId);
+          }
+
+          // Add user-specified dependencies (e.g., from sibling chain repairs)
+          // Only include nodes that actually have pending persistence operations
+          if (options.dependencies && options.dependencies.length > 0) {
+            const pendingDeps = options.dependencies.filter((depId) =>
+              PersistenceCoordinator.getInstance().isPending(depId)
+            );
+            if (pendingDeps.length > 0) {
+              dependencies.push(...pendingDeps);
+            }
+          }
+
           PersistenceCoordinator.getInstance().persist(
             nodeId,
             async () => {
@@ -363,6 +384,15 @@ export class SharedNodeStore {
           });
         }
 
+        // Ensure beforeSiblingId node is persisted (FOREIGN KEY constraint)
+        // Only add as dependency if it has a pending persistence operation
+        if (
+          node.beforeSiblingId &&
+          PersistenceCoordinator.getInstance().isPending(node.beforeSiblingId)
+        ) {
+          dependencies.push(node.beforeSiblingId);
+        }
+
         PersistenceCoordinator.getInstance().persist(
           node.id,
           async () => {
@@ -398,7 +428,12 @@ export class SharedNodeStore {
   /**
    * Delete a node
    */
-  deleteNode(nodeId: string, source: UpdateSource, skipPersistence = false): void {
+  deleteNode(
+    nodeId: string,
+    source: UpdateSource,
+    skipPersistence = false,
+    dependencies: string[] = []
+  ): void {
     const node = this.nodes.get(nodeId);
     if (node) {
       this.nodes.delete(nodeId);
@@ -419,6 +454,11 @@ export class SharedNodeStore {
 
       // Phase 2.4: Persist deletion to database
       if (!skipPersistence && source.type !== 'database') {
+        // Filter dependencies to only include nodes with pending persistence operations
+        const pendingDeps = dependencies.filter((depId) =>
+          PersistenceCoordinator.getInstance().isPending(depId)
+        );
+
         // Delegate to PersistenceCoordinator
         PersistenceCoordinator.getInstance().persist(
           nodeId,
@@ -440,7 +480,8 @@ export class SharedNodeStore {
             }
           },
           {
-            mode: 'immediate'
+            mode: 'immediate',
+            dependencies: pendingDeps.length > 0 ? pendingDeps : undefined
           }
         );
       }

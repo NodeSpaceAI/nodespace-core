@@ -106,4 +106,6 @@ export interface UpdateOptions {
   force?: boolean;
   /** Notify subscribers even if no actual changes */
   forceNotify?: boolean;
+  /** Dependencies that must be persisted before this update */
+  dependencies?: string[];
 }

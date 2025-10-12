@@ -50,6 +50,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { ContentProcessor } from './content-processor';
 import { eventBus } from './event-bus';
 import { sharedNodeStore } from './shared-node-store';
+import { tauriNodeService } from './tauri-node-service';
+import { PersistenceCoordinator } from './persistence-coordinator.svelte';
 import type { Node, NodeUIState } from '$lib/types';
 import { createDefaultUIState } from '$lib/types';
 import type { UpdateSource } from '$lib/types/update-protocol';
@@ -764,26 +766,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
 
     // Remove node from sibling chain BEFORE deletion to prevent orphans
+    // This queues an update for the next sibling
     removeFromSiblingChain(currentNodeId);
 
-    // Wait for sibling chain repairs to complete before deletion
-    if (nodesToWaitFor.length > 0) {
-      const persistedNodes = await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
+    // Delete with dependencies - PersistenceCoordinator handles sequencing automatically
+    sharedNodeStore.deleteNode(currentNodeId, viewerSource, false, nodesToWaitFor);
 
-      // Defensive check: ensure all expected nodes were persisted
-      if (persistedNodes.size !== nodesToWaitFor.length) {
-        const failedNodes = nodesToWaitFor.filter((id) => !persistedNodes.has(id));
-        console.error('[combineNodes] Some nodes failed to persist before deletion:', {
-          expected: nodesToWaitFor,
-          persisted: Array.from(persistedNodes),
-          failed: failedNodes
-        });
-        // Continue with deletion despite timeout - PersistenceCoordinator has already logged errors
-        // and the operation should complete to avoid leaving UI in inconsistent state
-      }
-    }
+    // Wait for the deletion to complete before continuing
+    await PersistenceCoordinator.getInstance().waitForPersistence([currentNodeId]);
 
-    sharedNodeStore.deleteNode(currentNodeId, viewerSource);
     delete _uiState[currentNodeId];
 
     const rootIndex = _rootNodeIds.indexOf(currentNodeId);
@@ -824,10 +815,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     if (nextSibling) {
       // Update next sibling to point to our predecessor, "splicing us out" of the chain
+      // Use skipPersistence to only update in-memory - caller will handle persistence
       sharedNodeStore.updateNode(
         nextSibling.id,
         { beforeSiblingId: node.beforeSiblingId },
-        viewerSource
+        viewerSource,
+        { skipPersistence: true }
       );
     }
   }
@@ -836,21 +829,20 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    * Indents a node by making it a child of its previous sibling.
    *
    * The node is inserted as the last child of its previous sibling, maintaining
-   * proper sibling chain integrity by waiting for all affected nodes to persist
-   * before making structural changes.
+   * proper sibling chain integrity by declaring dependencies to the PersistenceCoordinator.
    *
    * Race Condition Handling:
-   * - Waits for next sibling in OLD parent context (sibling chain repair)
-   * - Waits for last child in NEW parent context (insertion point dependency)
-   * - This prevents "database is locked" and FOREIGN KEY constraint violations
+   * - Declares next sibling in OLD parent context as dependency (sibling chain repair)
+   * - Declares last child in NEW parent context as dependency (insertion point)
+   * - PersistenceCoordinator ensures proper sequencing to prevent FOREIGN KEY violations
    *
    * @param nodeId - The ID of the node to indent
-   * @returns Promise<boolean> - true if indent succeeded, false if operation invalid
+   * @returns boolean - true if indent succeeded, false if operation invalid
    *
    * @example
    * ```typescript
    * // Before: A, B, C (siblings)
-   * await indentNode('C');
+   * indentNode('C');
    * // After: A, B (with C as last child of B)
    * ```
    */
@@ -876,44 +868,36 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // CRITICAL: Identify nodes that WILL BE AFFECTED in BOTH old and new parent contexts
     // This prevents "database is locked" errors and FOREIGN KEY violations
-    const nodesToWaitFor = [];
 
     // Affected nodes in OLD parent context (sibling chain repair)
     const oldParentSiblings = sharedNodeStore.getNodesForParent(node.parentId);
     const nextSibling = oldParentSiblings.find((n) => n.beforeSiblingId === nodeId);
-    if (nextSibling) {
-      nodesToWaitFor.push(nextSibling.id);
-    }
 
     // Affected nodes in NEW parent context (insertion point)
     // We will set beforeSiblingId to the last child of the new parent
-    // Wait for that child to persist to avoid FOREIGN KEY violations
     const newParentChildren = sharedNodeStore.getNodesForParent(prevSiblingId);
-    if (newParentChildren.length > 0) {
-      const sortedNewParentChildren = sortChildrenByBeforeSiblingId(
-        newParentChildren.map((n) => n.id),
-        prevSiblingId
-      );
-      const lastChildId = sortedNewParentChildren[sortedNewParentChildren.length - 1];
-      nodesToWaitFor.push(lastChildId);
-    }
+    const lastChildId =
+      newParentChildren.length > 0
+        ? sortChildrenByBeforeSiblingId(
+            newParentChildren.map((n) => n.id),
+            prevSiblingId
+          )[newParentChildren.length - 1]
+        : null;
 
-    // Remove node from current sibling chain BEFORE changing parent
+    // Remove node from current sibling chain BEFORE changing parent (updates in-memory only)
     removeFromSiblingChain(nodeId);
 
-    // Wait for sibling chain repairs in both old and new parent contexts to complete
-    if (nodesToWaitFor.length > 0) {
-      const persistedNodes = await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
-
-      // Defensive check: ensure all expected nodes were persisted
-      if (persistedNodes.size !== nodesToWaitFor.length) {
-        const failedNodes = nodesToWaitFor.filter((id) => !persistedNodes.has(id));
-        console.error('[indentNode] Some nodes failed to persist before hierarchy change:', {
-          expected: nodesToWaitFor,
-          persisted: Array.from(persistedNodes),
-          failed: failedNodes
-        });
-        // DESIGN DECISION: Continue despite timeout (see Error Handling Philosophy at top of file)
+    // Persist sibling chain repair if there's a next sibling
+    if (nextSibling) {
+      const updatedNextSibling = sharedNodeStore.getNode(nextSibling.id);
+      if (updatedNextSibling) {
+        await PersistenceCoordinator.getInstance().persist(
+          nextSibling.id,
+          async () => {
+            await tauriNodeService.updateNode(nextSibling.id, updatedNextSibling);
+          },
+          { mode: 'immediate' }
+        );
       }
     }
 
@@ -930,14 +914,36 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const uiState = _uiState[nodeId];
     const prevSiblingUIState = _uiState[prevSiblingId];
 
+    // Update in-memory state first with skipPersistence
     sharedNodeStore.updateNode(
       nodeId,
       {
         parentId: prevSiblingId,
         beforeSiblingId: beforeSiblingId // Insert after last existing child (or null if no children)
       },
-      viewerSource
+      viewerSource,
+      { skipPersistence: true }
     );
+
+    // Persist the node's hierarchy change
+    const updatedNode = sharedNodeStore.getNode(nodeId);
+    if (updatedNode) {
+      const dependencies: Array<string | (() => Promise<void>)> = [];
+
+      // Wait for lastChildId if it exists and is being persisted
+      if (lastChildId && PersistenceCoordinator.getInstance().isPending(lastChildId)) {
+        dependencies.push(lastChildId);
+      }
+
+      await PersistenceCoordinator.getInstance().persist(
+        nodeId,
+        async () => {
+          await tauriNodeService.updateNode(nodeId, updatedNode);
+        },
+        { mode: 'immediate', dependencies }
+      );
+    }
+
     _uiState[nodeId] = { ...uiState, depth: (prevSiblingUIState?.depth || 0) + 1 };
 
     // Recalculate depths for all descendants
@@ -983,20 +989,20 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    *
    * The node is positioned immediately after its old parent as a sibling. Any siblings
    * that were below this node become children of the outdented node, maintaining proper
-   * hierarchy and sibling chain integrity.
+   * hierarchy and sibling chain integrity by declaring dependencies to the PersistenceCoordinator.
    *
    * Race Condition Handling:
-   * - Waits for next sibling in OLD parent context (sibling chain repair)
-   * - Waits for old parent OR last sibling in NEW parent context (insertion point dependency)
-   * - This prevents "database is locked" and FOREIGN KEY constraint violations
+   * - Declares next sibling in OLD parent context as dependency (sibling chain repair)
+   * - Declares old parent OR last sibling in NEW parent context as dependency (insertion point)
+   * - PersistenceCoordinator ensures proper sequencing to prevent FOREIGN KEY violations
    *
    * @param nodeId - The ID of the node to outdent
-   * @returns Promise<boolean> - true if outdent succeeded, false if operation invalid (e.g., root node)
+   * @returns boolean - true if outdent succeeded, false if operation invalid (e.g., root node)
    *
    * @example
    * ```typescript
    * // Before: A (with child B, B has child C)
-   * await outdentNode('C');
+   * outdentNode('C');
    * // After: A, B, C (all siblings)
    * ```
    */
@@ -1017,23 +1023,19 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // CRITICAL: Identify nodes that WILL BE AFFECTED in BOTH old and new parent contexts
     // This prevents "database is locked" errors and FOREIGN KEY violations
-    const nodesToWaitFor = [];
 
     // Affected nodes in OLD parent context (sibling chain repair)
     const oldParentSiblings = sharedNodeStore.getNodesForParent(node.parentId);
     const nextSibling = oldParentSiblings.find((n) => n.beforeSiblingId === nodeId);
-    if (nextSibling) {
-      nodesToWaitFor.push(nextSibling.id);
-    }
 
     // Affected nodes in NEW parent context (insertion point)
-    // We will position the node after its old parent (which becomes a sibling)
-    // Wait for the old parent to persist to avoid FOREIGN KEY violations
     const newParentId = parent.parentId || null;
     const oldParentNode = sharedNodeStore.getNode(oldParentId);
+    let positionBeforeSiblingId: string | null = null;
+
     if (oldParentNode && oldParentNode.parentId === newParentId) {
       // Old parent is a valid sibling in new context - will be our beforeSiblingId
-      nodesToWaitFor.push(oldParentId);
+      positionBeforeSiblingId = oldParentId;
     } else {
       // Fallback: position at end after last sibling in new parent
       const newParentSiblings = sharedNodeStore.getNodesForParent(newParentId);
@@ -1042,77 +1044,90 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           newParentSiblings.map((n) => n.id),
           newParentId
         );
-        const lastSiblingId = sortedNewParentSiblings[sortedNewParentSiblings.length - 1];
-        nodesToWaitFor.push(lastSiblingId);
+        positionBeforeSiblingId = sortedNewParentSiblings[sortedNewParentSiblings.length - 1];
       }
     }
 
-    // Remove node from current sibling chain BEFORE changing parent
+    // Remove node from current sibling chain BEFORE changing parent (updates in-memory only)
     removeFromSiblingChain(nodeId);
 
-    // Wait for sibling chain repairs in both old and new parent contexts to complete
-    if (nodesToWaitFor.length > 0) {
-      const persistedNodes = await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
-
-      // Defensive check: ensure all expected nodes were persisted
-      if (persistedNodes.size !== nodesToWaitFor.length) {
-        const failedNodes = nodesToWaitFor.filter((id) => !persistedNodes.has(id));
-        console.error('[outdentNode] Some nodes failed to persist before hierarchy change:', {
-          expected: nodesToWaitFor,
-          persisted: Array.from(persistedNodes),
-          failed: failedNodes
-        });
-        // DESIGN DECISION: Continue despite timeout (see Error Handling Philosophy at top of file)
+    // Persist sibling chain repair if there's a next sibling
+    if (nextSibling) {
+      const updatedNextSibling = sharedNodeStore.getNode(nextSibling.id);
+      if (updatedNextSibling) {
+        await PersistenceCoordinator.getInstance().persist(
+          nextSibling.id,
+          async () => {
+            await tauriNodeService.updateNode(nextSibling.id, updatedNextSibling);
+          },
+          { mode: 'immediate' }
+        );
       }
     }
 
     const uiState = _uiState[nodeId];
     const newDepth = newParentId ? (_uiState[newParentId]?.depth || 0) + 1 : 0;
 
-    // Find where to position the outdented node in its new parent's child list
-    // It should come right after its old parent (which is now a sibling)
-    let positionBeforeSibling: string | null = oldParentId;
-
-    // Check if old parent has a valid position in the new parent's context
-    // (oldParentNode already declared earlier for wait logic)
-    if (oldParentNode && oldParentNode.parentId === newParentId) {
-      // Old parent is a valid sibling in the new context
-      positionBeforeSibling = oldParentId;
-    } else {
-      // Old parent is not in the same parent context (shouldn't happen in normal outdent)
-      // Position at the end by finding the last sibling
-      const siblings = sharedNodeStore
-        .getNodesForParent(newParentId)
-        .filter((n) => n.id !== nodeId)
-        .map((n) => n.id);
-      if (siblings.length > 0) {
-        const sortedSiblings = sortChildrenByBeforeSiblingId(siblings, newParentId);
-        positionBeforeSibling = sortedSiblings[sortedSiblings.length - 1];
-      } else {
-        positionBeforeSibling = null;
-      }
-    }
-
+    // Update in-memory state first with skipPersistence
     sharedNodeStore.updateNode(
       nodeId,
       {
         parentId: newParentId,
-        beforeSiblingId: positionBeforeSibling
+        beforeSiblingId: positionBeforeSiblingId
       },
-      viewerSource
+      viewerSource,
+      { skipPersistence: true }
     );
+
+    // Persist the node's hierarchy change
+    const updatedNode = sharedNodeStore.getNode(nodeId);
+    if (updatedNode) {
+      const dependencies: Array<string | (() => Promise<void>)> = [];
+
+      // Wait for positionBeforeSiblingId if it exists and is being persisted
+      if (
+        positionBeforeSiblingId &&
+        PersistenceCoordinator.getInstance().isPending(positionBeforeSiblingId)
+      ) {
+        dependencies.push(positionBeforeSiblingId);
+      }
+
+      await PersistenceCoordinator.getInstance().persist(
+        nodeId,
+        async () => {
+          await tauriNodeService.updateNode(nodeId, updatedNode);
+        },
+        { mode: 'immediate', dependencies }
+      );
+    }
+
     _uiState[nodeId] = { ...uiState, depth: newDepth };
 
     // Insert the outdented node into the new parent's sibling chain
     // Find any sibling in the new parent that currently points to positionBeforeSibling
     // and update it to point to the outdented node instead
-    if (positionBeforeSibling !== null) {
+    if (positionBeforeSiblingId !== null) {
       // Optimization: Only check direct siblings, not all nodes
       const allSiblings = sharedNodeStore.getNodesForParent(newParentId);
 
       for (const sibling of allSiblings) {
-        if (sibling.id !== nodeId && sibling.beforeSiblingId === positionBeforeSibling) {
-          sharedNodeStore.updateNode(sibling.id, { beforeSiblingId: nodeId }, viewerSource);
+        if (sibling.id !== nodeId && sibling.beforeSiblingId === positionBeforeSiblingId) {
+          // Update in-memory
+          sharedNodeStore.updateNode(sibling.id, { beforeSiblingId: nodeId }, viewerSource, {
+            skipPersistence: true
+          });
+
+          // Persist the update
+          const updatedSibling = sharedNodeStore.getNode(sibling.id);
+          if (updatedSibling) {
+            await PersistenceCoordinator.getInstance().persist(
+              sibling.id,
+              async () => {
+                await tauriNodeService.updateNode(sibling.id, updatedSibling);
+              },
+              { mode: 'immediate', dependencies: [nodeId] }
+            );
+          }
           break; // Only one sibling can point to positionBeforeSibling
         }
       }
@@ -1138,21 +1153,64 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         const siblingId = siblingsBelow[i];
         const sibling = sharedNodeStore.getNode(siblingId);
         if (sibling) {
-          // Remove from current sibling chain BEFORE updating beforeSiblingId
+          // Get the next sibling BEFORE removing from chain
+          const siblingsOfTransferring = sharedNodeStore.getNodesForParent(sibling.parentId);
+          const nextOfTransferring = siblingsOfTransferring.find(
+            (n) => n.beforeSiblingId === siblingId
+          );
+
+          // Remove from current sibling chain BEFORE updating beforeSiblingId (updates in-memory only)
           removeFromSiblingChain(siblingId);
+
+          // Persist sibling chain repair if there's a next sibling
+          if (nextOfTransferring) {
+            const updatedNext = sharedNodeStore.getNode(nextOfTransferring.id);
+            if (updatedNext) {
+              await PersistenceCoordinator.getInstance().persist(
+                nextOfTransferring.id,
+                async () => {
+                  await tauriNodeService.updateNode(nextOfTransferring.id, updatedNext);
+                },
+                { mode: 'immediate' }
+              );
+            }
+          }
 
           // First transferred sibling points to last existing child (or null)
           // Subsequent siblings point to the previous transferred sibling
           const beforeSiblingId = i === 0 ? lastSiblingId : siblingsBelow[i - 1];
 
+          // Update in-memory
           sharedNodeStore.updateNode(
             siblingId,
             {
               parentId: nodeId,
               beforeSiblingId
             },
-            viewerSource
+            viewerSource,
+            { skipPersistence: true }
           );
+
+          // Persist the transfer
+          const updatedTransferred = sharedNodeStore.getNode(siblingId);
+          if (updatedTransferred) {
+            const transferDeps: Array<string | (() => Promise<void>)> = [nodeId];
+            if (
+              beforeSiblingId &&
+              PersistenceCoordinator.getInstance().isPending(beforeSiblingId)
+            ) {
+              transferDeps.push(beforeSiblingId);
+            }
+
+            await PersistenceCoordinator.getInstance().persist(
+              siblingId,
+              async () => {
+                await tauriNodeService.updateNode(siblingId, updatedTransferred);
+              },
+              { mode: 'immediate', dependencies: transferDeps }
+            );
+          }
+
           // Update depth for transferred sibling
           const siblingUIState = _uiState[siblingId];
           if (siblingUIState) {
@@ -1299,33 +1357,38 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // We only wait for the NEXT SIBLING because removeFromSiblingChain() only
     // modifies that node (updates its beforeSiblingId to splice out the deleted node).
     // Children are orphaned but NOT modified, so we don't need to wait for them.
-    const nodesToWaitFor = [];
     const siblings = sharedNodeStore.getNodesForParent(node.parentId);
     const nextSibling = siblings.find((n) => n.beforeSiblingId === nodeId);
-    if (nextSibling) {
-      nodesToWaitFor.push(nextSibling.id);
-    }
 
-    // Remove node from sibling chain BEFORE deletion to prevent orphans
+    // Remove node from sibling chain BEFORE deletion (updates in-memory only)
     removeFromSiblingChain(nodeId);
 
-    // Wait for next sibling repair to complete before deletion
-    if (nodesToWaitFor.length > 0) {
-      const persistedNodes = await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
-
-      // Defensive check: ensure all expected nodes were persisted
-      if (persistedNodes.size !== nodesToWaitFor.length) {
-        const failedNodes = nodesToWaitFor.filter((id) => !persistedNodes.has(id));
-        console.error('[deleteNode] Some nodes failed to persist before deletion:', {
-          expected: nodesToWaitFor,
-          persisted: Array.from(persistedNodes),
-          failed: failedNodes
-        });
-        // DESIGN DECISION: Continue despite timeout (see Error Handling Philosophy at top of file)
+    // If there's a next sibling, persist its sibling chain repair first
+    if (nextSibling) {
+      const updatedNextSibling = sharedNodeStore.getNode(nextSibling.id);
+      if (updatedNextSibling) {
+        await PersistenceCoordinator.getInstance().persist(
+          nextSibling.id,
+          async () => {
+            await tauriNodeService.updateNode(nextSibling.id, updatedNextSibling);
+          },
+          { mode: 'immediate' }
+        );
       }
     }
 
-    sharedNodeStore.deleteNode(nodeId, viewerSource);
+    // Now delete the node with skipPersistence and handle persistence directly
+    sharedNodeStore.deleteNode(nodeId, viewerSource, true);
+
+    // Persist the deletion
+    await PersistenceCoordinator.getInstance().persist(
+      nodeId,
+      async () => {
+        await tauriNodeService.deleteNode(nodeId);
+      },
+      { mode: 'immediate' }
+    );
+
     delete _uiState[nodeId];
 
     const rootIndex = _rootNodeIds.indexOf(nodeId);
