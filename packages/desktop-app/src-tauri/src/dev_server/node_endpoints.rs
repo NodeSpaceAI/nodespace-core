@@ -121,11 +121,33 @@ async fn init_database(
         .ok_or_else(|| HttpError::new("Invalid database path", "PATH_ERROR"))?
         .to_string();
 
+    // Drain old connections before swapping (Issue #255)
+    // This prevents race conditions where stale connections from the previous
+    // database are still active when the new database is installed
+    let old_db = {
+        let lock = state.db.read().map_err(|e| {
+            HttpError::new(
+                format!("Failed to acquire database read lock for draining: {}", e),
+                "LOCK_ERROR",
+            )
+        })?;
+        Arc::clone(&*lock)
+    };
+    old_db
+        .drain_connections()
+        .await
+        .map_err(|e| HttpError::from_anyhow(e.into(), "DRAIN_ERROR"))?;
+
     // Create new DatabaseService and NodeService for this database
     use nodespace_core::{DatabaseService, NodeService};
     let new_db = DatabaseService::new(db_path.clone())
         .await
         .map_err(|e| HttpError::from_anyhow(e.into(), "DATABASE_INIT_ERROR"))?;
+
+    // Additional stabilization delay to ensure schema writes are flushed to disk (Issue #255)
+    // With WAL mode, there can be a delay between CREATE TABLE returning and the changes
+    // being visible to new connections
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     let new_node_service = NodeService::new(new_db.clone())
         .map_err(|e| HttpError::from_anyhow(e.into(), "NODE_SERVICE_INIT_ERROR"))?;

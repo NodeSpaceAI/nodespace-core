@@ -108,6 +108,38 @@ impl DatabaseService {
         Ok(service)
     }
 
+    /// Drain pending database connections
+    ///
+    /// This method provides a grace period for in-flight database operations to complete
+    /// before the DatabaseService is replaced. This is essential for the HTTP dev server
+    /// test infrastructure where databases are rapidly swapped between test cases.
+    ///
+    /// # Implementation Note
+    ///
+    /// libsql doesn't expose an explicit connection drain API, so we use a small delay
+    /// to let pending operations complete naturally. This is a pragmatic workaround for
+    /// Issue #255 (database initialization race condition).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let old_db = DatabaseService::new(PathBuf::from("old.db")).await?;
+    /// old_db.drain_connections().await?;
+    /// let new_db = DatabaseService::new(PathBuf::from("new.db")).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn drain_connections(&self) -> Result<(), DatabaseError> {
+        // Add small delay to let pending operations complete
+        // 100ms provides sufficient time for connection pool cleanup
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        Ok(())
+    }
+
     /// Execute a PRAGMA statement
     ///
     /// PRAGMA statements return rows, so we must use query() instead of execute().
@@ -216,6 +248,12 @@ impl DatabaseService {
 
         // Seed core schemas
         self.seed_core_schemas(&conn).await?;
+
+        // Force WAL checkpoint to ensure schema is written to disk (Issue #255)
+        // This prevents race conditions where rapid database swaps in tests
+        // cause "no such table" errors due to WAL entries not being flushed
+        self.execute_pragma(&conn, "PRAGMA wal_checkpoint(TRUNCATE)")
+            .await?;
 
         Ok(())
     }
