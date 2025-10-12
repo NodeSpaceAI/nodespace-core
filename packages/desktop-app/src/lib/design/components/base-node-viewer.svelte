@@ -55,6 +55,10 @@
   // Cancellation flag to prevent database writes after component unmounts
   let isDestroyed = false;
 
+  // Loading flag to prevent watchers from firing during initial load
+  // Start as true to prevent watcher from firing before loadChildrenForParent() completes
+  let isLoadingInitialNodes = true;
+
   // Time to wait for setRawMarkdown() to complete and create DIV structure
   const DOM_STRUCTURE_SETTLE_DELAY_MS = 20;
 
@@ -157,6 +161,12 @@
       return;
     }
 
+    // Skip if we're still loading initial nodes from database
+    if (isLoadingInitialNodes) {
+      contentSavePhasePromise = Promise.resolve();
+      return;
+    }
+
     // Create a new promise for this content save phase
     // The structural watcher will await this before processing updates
     let resolvePhase: () => void;
@@ -177,6 +187,7 @@
       if (node.content.trim() && node.content !== lastContent) {
         // Check if this is a brand new node (never saved before)
         const isNewNode = lastContent === undefined;
+        console.log('[BaseNodeViewer] Content watcher:', node.id, 'isNewNode:', isNewNode, 'lastContent:', lastContent, 'currentContent:', node.content);
 
         if (isNewNode) {
           // Save immediately without debounce - structural updates may need to reference this node
@@ -524,10 +535,13 @@
 
   async function loadChildrenForParent(parentId: string) {
     try {
-      const allNodes = await sharedNodeStore.loadChildrenForParent(parentId);
+      // Set loading flag to prevent watchers from triggering during initial load
+      isLoadingInitialNodes = true;
 
-      // Clear content tracking
+      // Clear content tracking BEFORE loading to prevent watcher from firing on stale data
       lastSavedContent.clear();
+
+      const allNodes = await sharedNodeStore.loadChildrenForParent(parentId);
 
       // Check if we have any nodes at all
       if (allNodes.length === 0) {
@@ -554,7 +568,8 @@
           }
         );
       } else {
-        // Track initial content of ALL loaded nodes
+        // Track initial content of ALL loaded nodes BEFORE initializing
+        // This prevents the content watcher from thinking these are new nodes
         allNodes.forEach((node) => lastSavedContent.set(node.id, node.content));
 
         // Initialize with ALL nodes
@@ -566,6 +581,9 @@
       }
     } catch (error) {
       console.error('[BaseNodeViewer] Failed to load children for parent:', parentId, error);
+    } finally {
+      // Clear loading flag after nodes are initialized
+      isLoadingInitialNodes = false;
     }
   }
 

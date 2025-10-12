@@ -289,6 +289,8 @@ export class SharedNodeStore {
 
       // Phase 2.4: Persist to database (unless skipped)
       if (!options.skipPersistence && source.type !== 'database') {
+        console.log('[SharedNodeStore] Persisting node update:', nodeId, 'source:', source.type, 'skipPersistence:', options.skipPersistence, 'changes:', Object.keys(changes));
+        console.trace('[SharedNodeStore] Call stack:');
         // Skip persisting empty text nodes - they exist in UI but not in database
         const isEmptyTextNode =
           updatedNode.nodeType === 'text' && updatedNode.content.trim() === '';
@@ -580,12 +582,39 @@ export class SharedNodeStore {
       // Check if node already exists
       const existingNode = this.getNode(nodeId);
       if (existingNode) {
-        // Update existing node
-        this.updateNode(
-          nodeId,
-          { content, nodeType, parentId, containerNodeId, beforeSiblingId },
-          source
-        );
+        // Update existing node - directly persist to database without triggering updateNode()
+        // This prevents duplicate persistence operations
+        await queueDatabaseWrite(nodeId, async () => {
+          try {
+            // Node exists in memory, check if it's been persisted to database
+            const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
+            if (isPersistedToDatabase) {
+              // Update in database
+              await tauriNodeService.updateNode(nodeId, {
+                content,
+                nodeType,
+                parentId,
+                containerNodeId,
+                beforeSiblingId
+              });
+            } else {
+              // Not yet persisted - create in database
+              await tauriNodeService.createNode(node);
+              this.persistedNodeIds.add(nodeId);
+            }
+
+            // Update in-memory store (skip persistence since we just did it)
+            this.updateNode(
+              nodeId,
+              { content, nodeType, parentId, containerNodeId, beforeSiblingId },
+              source,
+              { skipPersistence: true } // CRITICAL: Skip persistence since we already did it above
+            );
+          } catch (error) {
+            console.error('[SharedNodeStore] Failed to save node immediately:', nodeId, error);
+            throw error;
+          }
+        });
       } else {
         // Create new node
         this.setNode(node, source);
