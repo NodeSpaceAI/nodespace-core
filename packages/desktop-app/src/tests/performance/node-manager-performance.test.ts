@@ -110,7 +110,7 @@ describe('NodeManager Performance Tests', () => {
     }
   });
 
-  test('hierarchy operations scale efficiently (< 500ms for 100 operations)', () => {
+  test('hierarchy operations scale efficiently (< 500ms for 100 operations)', async () => {
     // Performance Note: Hierarchy operations have O(n) complexity due to:
     // 1. sortChildrenByBeforeSiblingId - O(n) to rebuild sibling order from linked list
     // 2. Cache lookups reduce repeated sorts but initial operations are expensive
@@ -126,9 +126,9 @@ describe('NodeManager Performance Tests', () => {
     // Test multiple hierarchy operations
     for (let i = 100; i < 200; i++) {
       const nodeId = `node-${i}`;
-      nodeManager.indentNode(nodeId);
+      await nodeManager.indentNode(nodeId);
       if (i % 2 === 0) {
-        nodeManager.outdentNode(nodeId);
+        await nodeManager.outdentNode(nodeId);
       }
     }
 
@@ -196,7 +196,7 @@ describe('NodeManager Performance Tests', () => {
     expect(nodeManager.rootNodeIds.length).toBeGreaterThan(0);
   });
 
-  test('operational efficiency - multiple cycles work correctly', () => {
+  test('operational efficiency - multiple cycles work correctly', async () => {
     // Test that multiple operation cycles work correctly
     // This validates memory handling without requiring process access
 
@@ -209,7 +209,7 @@ describe('NodeManager Performance Tests', () => {
       for (let i = 1; i < 50; i++) {
         nodeManager.createNode(`node-${i}`, `New content ${i}`);
         if (i % 3 === 0) {
-          nodeManager.deleteNode(`node-${i}`);
+          await nodeManager.deleteNode(`node-${i}`);
         }
       }
     }

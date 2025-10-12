@@ -89,7 +89,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([node1, node2]);
 
     // Act: Indent node-2
-    const result = service.indentNode('node-2');
+    const result = await service.indentNode('node-2');
 
     // Verify: Indent succeeded
     expect(result).toBe(true);
@@ -127,7 +127,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([node]);
 
     // Act: Try to indent first node
-    const result = service.indentNode('node-1');
+    const result = await service.indentNode('node-1');
 
     // Verify: Indent failed
     expect(result).toBe(false);
@@ -178,7 +178,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([node1, node2, child], { expanded: true });
 
     // Act: Indent node-2 (with child)
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
 
     // Verify: node-2 depth is 1
     const node2UI = service.getUIState('node-2');
@@ -218,7 +218,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([parent, child], { expanded: true });
 
     // Act: Outdent child
-    const result = service.outdentNode('child');
+    const result = await service.outdentNode('child');
 
     // Verify: Outdent succeeded
     expect(result).toBe(true);
@@ -253,7 +253,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([node]);
 
     // Act: Try to outdent root
-    const result = service.outdentNode('root');
+    const result = await service.outdentNode('root');
 
     // Verify: Outdent failed
     expect(result).toBe(false);
@@ -316,7 +316,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([parent, child1, child2, child3], { expanded: true });
 
     // Act: Outdent child-2 (should take child-3 with it)
-    service.outdentNode('child-2');
+    await service.outdentNode('child-2');
 
     // Verify: child-2 outdented
     const child2Node = service.findNode('child-2');
@@ -360,7 +360,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([parent, child], { expanded: true });
 
     // Act: Outdent child
-    service.outdentNode('child');
+    await service.outdentNode('child');
 
     // Verify: child positioned after parent
     const outdentedChild = service.findNode('child');
@@ -412,7 +412,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([node1, node2, node3]);
 
     // Act: Indent node-2
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
 
     // Verify: node-3 now points to node-1 (bypassing node-2)
     const node3Updated = service.findNode('node-3');
@@ -465,7 +465,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([node1, node2, child], { expanded: true });
 
     // Act: Indent node-2 (which has children)
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
 
     // Verify: node-2 and its children moved
     const node2Updated = service.findNode('node-2');
@@ -523,7 +523,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([node1, existingChild, node2], { expanded: true });
 
     // Act: Indent node-2 (should append after existing child)
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
 
     // Verify: node-2 positioned after existing child
     const node2Updated = service.findNode('node-2');
@@ -577,8 +577,8 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([node1, node2, node3]);
 
     // Act: Indent multiple times
-    service.indentNode('node-2'); // node-2 becomes child of node-1
-    service.indentNode('node-3'); // node-3 becomes child of node-2
+    await service.indentNode('node-2'); // node-2 becomes child of node-1
+    await service.indentNode('node-3'); // node-3 becomes child of node-2
 
     // Verify: Hierarchy built correctly
     const node2Updated = service.findNode('node-2');
@@ -636,8 +636,8 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([node1, node2, node3], { expanded: true });
 
     // Act: Outdent multiple times
-    service.outdentNode('node-3'); // node-3 moves to level 1
-    service.outdentNode('node-3'); // node-3 moves to level 0
+    await service.outdentNode('node-3'); // node-3 moves to level 1
+    await service.outdentNode('node-3'); // node-3 moves to level 0
 
     // Verify: Hierarchy flattened
     const node3Updated = service.findNode('node-3');
@@ -689,7 +689,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([parent, child1, child2], { expanded: true });
 
     // Act: Outdent first child
-    service.outdentNode('child-1');
+    await service.outdentNode('child-1');
 
     // Verify: child-1 outdented
     const child1Node = service.findNode('child-1');
@@ -732,10 +732,10 @@ describe('Indent/Outdent Operations', () => {
     const initialCount = hierarchyChangeCount;
 
     // Act: Indent and outdent
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
     const afterIndent = hierarchyChangeCount;
 
-    service.outdentNode('node-2');
+    await service.outdentNode('node-2');
     const afterOutdent = hierarchyChangeCount;
 
     // Verify: Events emitted

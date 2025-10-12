@@ -805,7 +805,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
   }
 
-  function indentNode(nodeId: string): boolean {
+  async function indentNode(nodeId: string): Promise<boolean> {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return false;
 
@@ -825,8 +825,36 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const prevSibling = sharedNodeStore.getNode(prevSiblingId);
     if (!prevSibling) return false;
 
+    // CRITICAL: Identify nodes that WILL BE AFFECTED in BOTH old and new parent contexts
+    // This prevents "database is locked" errors and FOREIGN KEY violations
+    const nodesToWaitFor = [];
+
+    // Affected nodes in OLD parent context (sibling chain repair)
+    const oldParentSiblings = sharedNodeStore.getNodesForParent(node.parentId);
+    const nextSibling = oldParentSiblings.find((n) => n.beforeSiblingId === nodeId);
+    if (nextSibling) {
+      nodesToWaitFor.push(nextSibling.id);
+    }
+
     // Remove node from current sibling chain BEFORE changing parent
     removeFromSiblingChain(nodeId);
+
+    // Wait for sibling chain repairs in old parent context to complete
+    if (nodesToWaitFor.length > 0) {
+      const persistedNodes = await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
+
+      // Defensive check: ensure all expected nodes were persisted
+      if (persistedNodes.size !== nodesToWaitFor.length) {
+        const failedNodes = nodesToWaitFor.filter((id) => !persistedNodes.has(id));
+        console.error('[indentNode] Some nodes failed to persist before hierarchy change:', {
+          expected: nodesToWaitFor,
+          persisted: Array.from(persistedNodes),
+          failed: failedNodes
+        });
+        // Continue with hierarchy change despite timeout - PersistenceCoordinator has already logged errors
+        // and the operation should complete to avoid leaving UI in inconsistent state
+      }
+    }
 
     // Find the last child of the new parent to insert after
     const existingChildren = sharedNodeStore.getNodesForParent(prevSiblingId).map((n) => n.id);
@@ -889,7 +917,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     return true;
   }
 
-  function outdentNode(nodeId: string): boolean {
+  async function outdentNode(nodeId: string): Promise<boolean> {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node || !node.parentId) return false;
 
@@ -904,8 +932,36 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const nodeIndex = sortedSiblings.indexOf(nodeId);
     const siblingsBelow = nodeIndex >= 0 ? sortedSiblings.slice(nodeIndex + 1) : [];
 
+    // CRITICAL: Identify nodes that WILL BE AFFECTED in BOTH old and new parent contexts
+    // This prevents "database is locked" errors and FOREIGN KEY violations
+    const nodesToWaitFor = [];
+
+    // Affected nodes in OLD parent context (sibling chain repair)
+    const oldParentSiblings = sharedNodeStore.getNodesForParent(node.parentId);
+    const nextSibling = oldParentSiblings.find((n) => n.beforeSiblingId === nodeId);
+    if (nextSibling) {
+      nodesToWaitFor.push(nextSibling.id);
+    }
+
     // Remove node from current sibling chain BEFORE changing parent
     removeFromSiblingChain(nodeId);
+
+    // Wait for sibling chain repairs in old parent context to complete
+    if (nodesToWaitFor.length > 0) {
+      const persistedNodes = await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
+
+      // Defensive check: ensure all expected nodes were persisted
+      if (persistedNodes.size !== nodesToWaitFor.length) {
+        const failedNodes = nodesToWaitFor.filter((id) => !persistedNodes.has(id));
+        console.error('[outdentNode] Some nodes failed to persist before hierarchy change:', {
+          expected: nodesToWaitFor,
+          persisted: Array.from(persistedNodes),
+          failed: failedNodes
+        });
+        // Continue with hierarchy change despite timeout - PersistenceCoordinator has already logged errors
+        // and the operation should complete to avoid leaving UI in inconsistent state
+      }
+    }
 
     const newParentId = parent.parentId || null;
     const uiState = _uiState[nodeId];
@@ -1129,14 +1185,44 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    *
    * @param nodeId - The ID of the node to delete
    */
-  function deleteNode(nodeId: string): void {
+  async function deleteNode(nodeId: string): Promise<void> {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
     cleanupDebouncedOperations(nodeId);
 
+    // CRITICAL: Identify nodes that WILL BE AFFECTED before making changes
+    // This prevents "database is locked" errors and FOREIGN KEY violations
+    const nodesToWaitFor = [];
+    const siblings = sharedNodeStore.getNodesForParent(node.parentId);
+    const nextSibling = siblings.find((n) => n.beforeSiblingId === nodeId);
+    if (nextSibling) {
+      nodesToWaitFor.push(nextSibling.id);
+    }
+    const children = sharedNodeStore.getNodesForParent(nodeId);
+    if (children.length > 0) {
+      nodesToWaitFor.push(...children.map((c) => c.id));
+    }
+
     // Remove node from sibling chain BEFORE deletion to prevent orphans
     removeFromSiblingChain(nodeId);
+
+    // Wait for sibling chain repairs to complete before deletion
+    if (nodesToWaitFor.length > 0) {
+      const persistedNodes = await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
+
+      // Defensive check: ensure all expected nodes were persisted
+      if (persistedNodes.size !== nodesToWaitFor.length) {
+        const failedNodes = nodesToWaitFor.filter((id) => !persistedNodes.has(id));
+        console.error('[deleteNode] Some nodes failed to persist before deletion:', {
+          expected: nodesToWaitFor,
+          persisted: Array.from(persistedNodes),
+          failed: failedNodes
+        });
+        // Continue with deletion despite timeout - PersistenceCoordinator has already logged errors
+        // and the operation should complete to avoid leaving UI in inconsistent state
+      }
+    }
 
     sharedNodeStore.deleteNode(nodeId, viewerSource);
     delete _uiState[nodeId];

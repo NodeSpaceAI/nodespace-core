@@ -843,7 +843,7 @@
       const cursorPosition = saveCursorPosition(nodeId);
 
       // Use NodeManager to handle indentation
-      const success = nodeManager.indentNode(nodeId);
+      const success = await nodeManager.indentNode(nodeId);
 
       if (success) {
         // Persist hierarchy change - AWAIT to ensure it completes
@@ -945,7 +945,7 @@
         .map((n) => n.id);
 
       // Use NodeManager to handle outdentation
-      const success = nodeManager.outdentNode(nodeId);
+      const success = await nodeManager.outdentNode(nodeId);
 
       if (success) {
         // Get children of outdented node AFTER outdenting (includes transferred siblings)
