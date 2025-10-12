@@ -179,6 +179,16 @@ export default defineConfig({
 
     // Keep tests fast and simple
     testTimeout: 5000,
-    hookTimeout: 5000
+    hookTimeout: 5000,
+
+    // Run integration tests sequentially to prevent database race conditions (Issue #255)
+    // Each test swaps the dev-server's database path, so parallel execution causes
+    // "no such table" errors when operations read the wrong database
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        singleFork: true // Run all tests in a single process sequentially
+      }
+    }
   }
 });

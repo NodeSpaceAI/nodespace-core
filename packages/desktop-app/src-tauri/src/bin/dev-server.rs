@@ -88,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("✅ Services initialized");
 
-    // Wrap services in RwLock for dynamic database switching during tests
+    // Wrap services in RwLock for dynamic database switching during tests (Issue #255)
     let db_arc = Arc::new(RwLock::new(Arc::new(db_service)));
     let ns_arc = Arc::new(RwLock::new(Arc::new(node_service)));
 
