@@ -21,7 +21,8 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import {
   createTestDatabase,
   cleanupTestDatabase,
-  initializeTestDatabase
+  initializeTestDatabase,
+  waitForDatabaseWrites
 } from '../utils/test-database';
 import { createAndFetchNode, checkServerHealth } from '../utils/test-node-helpers';
 import { HttpAdapter } from '$lib/services/backend-adapter';
@@ -93,6 +94,9 @@ describe('Indent/Outdent Operations', () => {
 
     // Verify: Indent succeeded
     expect(result).toBe(true);
+
+    // CRITICAL: Wait for async database writes to complete before checking persistence
+    await waitForDatabaseWrites();
 
     // Verify: node-2 is now child of node-1
     const indented = service.findNode('node-2');
@@ -180,6 +184,9 @@ describe('Indent/Outdent Operations', () => {
     // Act: Indent node-2 (with child)
     service.indentNode('node-2');
 
+    // CRITICAL: Wait for async database writes to complete before checking persistence
+    await waitForDatabaseWrites();
+
     // Verify: node-2 depth is 1
     const node2UI = service.getUIState('node-2');
     expect(node2UI?.depth).toBe(1);
@@ -222,6 +229,9 @@ describe('Indent/Outdent Operations', () => {
 
     // Verify: Outdent succeeded
     expect(result).toBe(true);
+
+    // CRITICAL: Wait for async database writes to complete before checking persistence
+    await waitForDatabaseWrites();
 
     // Verify: child is now at root level
     const outdented = service.findNode('child');
@@ -318,6 +328,9 @@ describe('Indent/Outdent Operations', () => {
     // Act: Outdent child-2 (should take child-3 with it)
     service.outdentNode('child-2');
 
+    // CRITICAL: Wait for async database writes to complete before checking persistence
+    await waitForDatabaseWrites();
+
     // Verify: child-2 outdented
     const child2Node = service.findNode('child-2');
     expect(child2Node?.parentId).toBeNull();
@@ -361,6 +374,9 @@ describe('Indent/Outdent Operations', () => {
 
     // Act: Outdent child
     service.outdentNode('child');
+
+    // CRITICAL: Wait for async database writes to complete before checking persistence
+    await waitForDatabaseWrites();
 
     // Verify: child positioned after parent
     const outdentedChild = service.findNode('child');
@@ -414,6 +430,9 @@ describe('Indent/Outdent Operations', () => {
     // Act: Indent node-2
     service.indentNode('node-2');
 
+    // CRITICAL: Wait for async database writes to complete before checking persistence
+    await waitForDatabaseWrites();
+
     // Verify: node-3 now points to node-1 (bypassing node-2)
     const node3Updated = service.findNode('node-3');
     expect(node3Updated?.beforeSiblingId).toBe('node-1');
@@ -466,6 +485,9 @@ describe('Indent/Outdent Operations', () => {
 
     // Act: Indent node-2 (which has children)
     service.indentNode('node-2');
+
+    // CRITICAL: Wait for async database writes to complete before checking persistence
+    await waitForDatabaseWrites();
 
     // Verify: node-2 and its children moved
     const node2Updated = service.findNode('node-2');
@@ -525,6 +547,9 @@ describe('Indent/Outdent Operations', () => {
     // Act: Indent node-2 (should append after existing child)
     service.indentNode('node-2');
 
+    // CRITICAL: Wait for async database writes to complete before checking persistence
+    await waitForDatabaseWrites();
+
     // Verify: node-2 positioned after existing child
     const node2Updated = service.findNode('node-2');
     expect(node2Updated?.parentId).toBe('node-1');
@@ -579,6 +604,9 @@ describe('Indent/Outdent Operations', () => {
     // Act: Indent multiple times
     service.indentNode('node-2'); // node-2 becomes child of node-1
     service.indentNode('node-3'); // node-3 becomes child of node-2
+
+    // CRITICAL: Wait for async database writes to complete before checking persistence
+    await waitForDatabaseWrites();
 
     // Verify: Hierarchy built correctly
     const node2Updated = service.findNode('node-2');
@@ -639,6 +667,9 @@ describe('Indent/Outdent Operations', () => {
     service.outdentNode('node-3'); // node-3 moves to level 1
     service.outdentNode('node-3'); // node-3 moves to level 0
 
+    // CRITICAL: Wait for async database writes to complete before checking persistence
+    await waitForDatabaseWrites();
+
     // Verify: Hierarchy flattened
     const node3Updated = service.findNode('node-3');
     expect(node3Updated?.parentId).toBeNull();
@@ -691,6 +722,9 @@ describe('Indent/Outdent Operations', () => {
     // Act: Outdent first child
     service.outdentNode('child-1');
 
+    // CRITICAL: Wait for async database writes to complete before checking persistence
+    await waitForDatabaseWrites();
+
     // Verify: child-1 outdented
     const child1Node = service.findNode('child-1');
     expect(child1Node?.parentId).toBeNull();
@@ -737,6 +771,9 @@ describe('Indent/Outdent Operations', () => {
 
     service.outdentNode('node-2');
     const afterOutdent = hierarchyChangeCount;
+
+    // CRITICAL: Wait for async database writes to complete before checking persistence
+    await waitForDatabaseWrites();
 
     // Verify: Events emitted
     expect(afterIndent).toBeGreaterThan(initialCount);

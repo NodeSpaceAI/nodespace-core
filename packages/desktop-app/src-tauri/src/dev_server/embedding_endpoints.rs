@@ -49,7 +49,6 @@ use axum::{
     routing::{get, patch, post},
     Router,
 };
-use std::sync::Arc;
 
 use crate::commands::embeddings::{BatchEmbeddingResult, SearchTopicsParams};
 use crate::commands::nodes::CreateContainerNodeInput;
@@ -563,15 +562,7 @@ async fn create_container_node(
         mentioned_by: Vec::new(), // Will be computed from node_mentions table
     };
 
-    let node_service = {
-        let lock = state.node_service.read().map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire node service read lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?;
-        Arc::clone(&*lock)
-    };
+    let node_service = crate::dev_server::node_endpoints::create_node_service(&state).await?;
     node_service
         .create_node(container_node)
         .await
@@ -615,15 +606,7 @@ async fn create_node_mention(
     State(state): State<AppState>,
     Json(payload): Json<CreateMentionRequest>,
 ) -> Result<StatusCode, HttpError> {
-    let node_service = {
-        let lock = state.node_service.read().map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire node service read lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?;
-        Arc::clone(&*lock)
-    };
+    let node_service = crate::dev_server::node_endpoints::create_node_service(&state).await?;
     node_service
         .create_mention(&payload.mentioning_node_id, &payload.mentioned_node_id)
         .await
