@@ -158,10 +158,7 @@ pub async fn start_server(
     node_service: SharedService<NodeService>,
     port: u16,
 ) -> anyhow::Result<()> {
-    let state = AppState {
-        db,
-        node_service,
-    };
+    let state = AppState { db, node_service };
     let app = create_router(state);
 
     let addr = format!("127.0.0.1:{}", port);
