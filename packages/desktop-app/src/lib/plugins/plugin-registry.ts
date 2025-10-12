@@ -308,7 +308,13 @@ export class PluginRegistry {
   }
 }
 
-// Create the global registry instance
+// Create the global registry instance as a simple module-level export
+// This creates a singleton within each module context (Node vs Happy-DOM in tests)
+//
+// IMPORTANT for testing: In Vitest, register plugins in setup.ts (not global-setup.ts)
+// to avoid module duplication between Node and Happy-DOM contexts. Each context gets
+// its own module graph, so setup.ts ensures plugins are registered in the same context
+// as the components that use them.
 export const pluginRegistry = new PluginRegistry({
   onRegister: (plugin) => {
     console.debug(`Plugin registered: ${plugin.name} (${plugin.id})`);

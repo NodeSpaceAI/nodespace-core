@@ -580,7 +580,10 @@ describe('SharedNodeStore', () => {
         store.setNode(node, viewerSource, true); // skipPersistence
 
         // Update content (triggers debounced persistence)
-        store.updateNode('test-node', { content: 'Updated' }, viewerSource);
+        // Note: Use non-viewer source since viewer content changes don't persist
+        // (BaseNodeViewer handles debouncing for viewer sources)
+        const externalSource: UpdateSource = { type: 'external', source: 'test' };
+        store.updateNode('test-node', { content: 'Updated' }, externalSource);
 
         // Should update in memory immediately
         expect(store.getNode('test-node')?.content).toBe('Updated');
