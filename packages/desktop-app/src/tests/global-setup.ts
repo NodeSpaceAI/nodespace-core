@@ -100,5 +100,12 @@ export default async function setup() {
     registerCorePlugins(pluginRegistry);
   }
 
+  // Initialize PersistenceCoordinator for all tests
+  const { PersistenceCoordinator } = await import('$lib/services/persistence-coordinator.svelte');
+  PersistenceCoordinator.resetInstance();
+  const coordinator = PersistenceCoordinator.getInstance();
+  coordinator.enableTestMode(); // Service tests use test mode by default
+
   console.log('✅ Global test setup complete: Plugin registry initialized');
+  console.log('✅ PersistenceCoordinator initialized in test mode');
 }

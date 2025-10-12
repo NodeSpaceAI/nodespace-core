@@ -2,8 +2,9 @@
  * Simplified test setup for NodeSpace
  * Provides basic testing utilities without over-complexity
  */
-import { vi } from 'vitest';
+import { vi, beforeEach, afterEach } from 'vitest';
 import '@testing-library/jest-dom';
+import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
 
 // Ensure global object is available for legacy test compatibility
 // In Vitest/Node.js environment, global should already be available, but provide fallback
@@ -142,3 +143,18 @@ if (typeof window !== 'undefined') {
   // Ensure __TAURI__ is undefined so isTauriEnvironment() returns false
   delete (window as unknown as Record<string, unknown>).__TAURI__;
 }
+
+// PersistenceCoordinator cleanup for each test
+// NOTE: Coordinator runs in test mode (errors caught gracefully)
+// TODO (#248): Future work - Replace test mode with proper vi.mock() of tauriNodeService
+beforeEach(() => {
+  const coordinator = PersistenceCoordinator.getInstance();
+  coordinator.resetTestState();
+});
+
+afterEach(async () => {
+  const coordinator = PersistenceCoordinator.getInstance();
+  // Wait a bit for pending operations to settle
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  coordinator.reset();
+});
