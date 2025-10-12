@@ -230,7 +230,7 @@ describe('Sibling Chain Integrity', () => {
     service.initializeNodes([node1, node2, node3]);
 
     // Act: Delete middle node
-    await service.deleteNode('node-2');
+    service.deleteNode('node-2');
 
     await waitForDatabaseWrites();
     expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
@@ -287,7 +287,7 @@ describe('Sibling Chain Integrity', () => {
     service.initializeNodes([node1, node2, node3]);
 
     // Act: Indent node-2
-    await service.indentNode('node-2');
+    service.indentNode('node-2');
 
     await waitForDatabaseWrites();
     expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
@@ -348,7 +348,7 @@ describe('Sibling Chain Integrity', () => {
     service.initializeNodes([parent, child1, child2], { expanded: true });
 
     // Act: Outdent child-1
-    await service.outdentNode('child-1');
+    service.outdentNode('child-1');
 
     await waitForDatabaseWrites();
     expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
@@ -519,10 +519,10 @@ describe('Sibling Chain Integrity', () => {
 
     // Act: Perform complex sequence
     const node3Id = service.createNode('node-2', 'Node 3', 'text'); // Create
-    await service.indentNode('node-2'); // Indent node-2 under node-1
+    service.indentNode('node-2'); // Indent node-2 under node-1
     const node4Id = service.createNode('node-1', 'Node 4', 'text'); // Create after node-1
-    await service.outdentNode('node-2'); // Outdent node-2 back to root
-    await service.combineNodes(node3Id, 'node-2'); // Combine node-3 into node-2
+    service.outdentNode('node-2'); // Outdent node-2 back to root
+    service.combineNodes(node3Id, 'node-2'); // Combine node-3 into node-2
 
     await waitForDatabaseWrites();
     expect(sharedNodeStore.getTestErrors()).toHaveLength(0);

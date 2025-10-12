@@ -843,7 +843,7 @@
       const cursorPosition = saveCursorPosition(nodeId);
 
       // Use NodeManager to handle indentation
-      const success = await nodeManager.indentNode(nodeId);
+      const success = nodeManager.indentNode(nodeId);
 
       if (success) {
         // Persist hierarchy change - AWAIT to ensure it completes
@@ -945,7 +945,7 @@
         .map((n) => n.id);
 
       // Use NodeManager to handle outdentation
-      const success = await nodeManager.outdentNode(nodeId);
+      const success = nodeManager.outdentNode(nodeId);
 
       if (success) {
         // Get children of outdented node AFTER outdenting (includes transferred siblings)
@@ -1211,7 +1211,7 @@
       }
 
       // Always use combineNodes (handles both empty and non-empty nodes with proper child promotion)
-      await nodeManager.combineNodes(nodeId, previousNode.id);
+      nodeManager.combineNodes(nodeId, previousNode.id);
 
       // For empty nodes, we need to manually request focus since combineNodes doesn't know
       // the node was empty
@@ -1248,7 +1248,7 @@
       }
 
       // Use combineNodes even for empty nodes (handles child promotion properly)
-      await nodeManager.combineNodes(nodeId, previousNode.id);
+      nodeManager.combineNodes(nodeId, previousNode.id);
       requestNodeFocus(previousNode.id, previousNode.content.length);
     } catch (error) {
       console.error('Error during node deletion:', error);

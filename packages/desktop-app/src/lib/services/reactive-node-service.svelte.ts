@@ -19,30 +19,27 @@
  * - Real-time synchronization across multiple viewers
  *
  * ============================================================================
- * ERROR HANDLING PHILOSOPHY - Async Operations (deleteNode, indentNode, outdentNode)
+ * PERSISTENCE COORDINATION - Sibling Chain Operations
  * ============================================================================
  *
- * These operations use `waitForNodeSaves()` to prevent race conditions when modifying
- * sibling chains. The wait can timeout if persistence takes too long (>5 seconds).
+ * Operations that modify sibling chains (deleteNode, indentNode, outdentNode, combineNodes)
+ * use the PersistenceCoordinator's dependency system to prevent race conditions.
  *
- * DESIGN DECISION: Continue operations despite timeout to prevent UI deadlock.
+ * DESIGN PATTERN: Pass dependencies explicitly, let PersistenceCoordinator sequence
  *
- * Rationale:
- * - The persistence layer (via SharedNodeStore) uses eventual consistency with debouncing
- * - Pending operations complete asynchronously in the background
- * - Worst case: Brief data inconsistency that self-heals when operations complete
- * - UI remains responsive and users can continue working
+ * How it works:
+ * 1. Identify affected nodes BEFORE making changes (e.g., nextSibling that will be updated)
+ * 2. Call removeFromSiblingChain() to queue the repair (auto-persists via SharedNodeStore)
+ * 3. Pass affected nodes as dependencies to the structural change operation
+ * 4. PersistenceCoordinator automatically sequences: repair → structural change
  *
- * Alternative Considered: Halt operation and return false/void on timeout.
- * Rejected because:
- * - Leaves UI in confusing limbo state (operation appears to fail)
- * - Blocks user workflow unnecessarily
- * - Doesn't prevent the underlying race condition (operation already queued)
+ * Benefits over manual awaits:
+ * - Declarative: Dependencies are explicit in the code
+ * - Automatic: PersistenceCoordinator handles all sequencing
+ * - Efficient: No manual timeout handling or error catching needed
+ * - Correct: Dependencies ensure proper FOREIGN KEY ordering
  *
- * Trade-off: We favor UI responsiveness over strict consistency, accepting the
- * risk of transient inconsistency that self-heals within seconds.
- *
- * References: See deleteNode(), indentNode(), outdentNode() error handling blocks
+ * References: See deleteNode(), indentNode(), outdentNode(), combineNodes()
  * ============================================================================
  */
 
@@ -734,7 +731,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     });
   }
 
-  async function combineNodes(currentNodeId: string, previousNodeId: string): Promise<void> {
+  function combineNodes(currentNodeId: string, previousNodeId: string): void {
     const currentNode = sharedNodeStore.getNode(currentNodeId);
     const previousNode = sharedNodeStore.getNode(previousNodeId);
 
@@ -766,21 +763,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Queue sibling chain repair (auto-persists via SharedNodeStore)
     removeFromSiblingChain(currentNodeId);
 
-    // Wait for sibling chain repair to persist before deleting
-    if (nodesToWaitFor.length > 0) {
-      try {
-        await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
-      } catch (error) {
-        console.error(
-          '[ReactiveNodeService] Timeout waiting for sibling chain repair in combineNodes:',
-          error
-        );
-        // Continue despite timeout (see error handling philosophy at top of file)
-      }
-    }
-
-    // Delete node through SharedNodeStore (auto-queues persistence)
-    sharedNodeStore.deleteNode(currentNodeId, viewerSource);
+    // Delete node with dependencies - PersistenceCoordinator will wait for dependencies automatically
+    sharedNodeStore.deleteNode(currentNodeId, viewerSource, false, nodesToWaitFor);
 
     delete _uiState[currentNodeId];
 
@@ -839,13 +823,13 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    * Indents a node by making it a child of its previous sibling.
    *
    * The node is inserted as the last child of its previous sibling, maintaining
-   * proper sibling chain integrity using Pattern A (SharedNodeStore + waitForNodeSaves).
+   * proper sibling chain integrity using dependencies passed to PersistenceCoordinator.
    *
    * Race Condition Handling:
    * - Identifies next sibling in OLD parent context (sibling chain repair)
    * - Calls removeFromSiblingChain() which auto-persists the repair via SharedNodeStore
-   * - Waits for repair completion using waitForNodeSaves() before proceeding
-   * - Updates node through SharedNodeStore which auto-queues persistence
+   * - Passes nextSibling as dependency to updateNode()
+   * - PersistenceCoordinator automatically sequences: repair → then → indent
    *
    * @param nodeId - The ID of the node to indent
    * @returns boolean - true if indent succeeded, false if operation invalid
@@ -857,7 +841,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    * // After: A, B (with C as last child of B)
    * ```
    */
-  async function indentNode(nodeId: string): Promise<boolean> {
+  function indentNode(nodeId: string): boolean {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return false;
 
@@ -878,31 +862,18 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (!prevSibling) return false;
 
     // PATTERN A: Identify affected nodes BEFORE making changes
-    // Collect nodes that need to complete persistence before we proceed
+    // Pass them as dependencies so PersistenceCoordinator sequences operations correctly
 
     // Affected nodes in OLD parent context (sibling chain repair)
-    const nodesToWaitFor: string[] = [];
+    const dependencies: string[] = [];
     const oldParentSiblings = sharedNodeStore.getNodesForParent(node.parentId);
     const nextSibling = oldParentSiblings.find((n) => n.beforeSiblingId === nodeId);
     if (nextSibling) {
-      nodesToWaitFor.push(nextSibling.id);
+      dependencies.push(nextSibling.id);
     }
 
     // Queue sibling chain repair (auto-persists via SharedNodeStore)
     removeFromSiblingChain(nodeId);
-
-    // Wait for sibling chain repair to persist
-    if (nodesToWaitFor.length > 0) {
-      try {
-        await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
-      } catch (error) {
-        console.error(
-          '[ReactiveNodeService] Timeout waiting for sibling chain repair in indentNode:',
-          error
-        );
-        // Continue despite timeout (see error handling philosophy at top of file)
-      }
-    }
 
     // Find the last child of the new parent to insert after
     const existingChildren = sharedNodeStore.getNodesForParent(prevSiblingId).map((n) => n.id);
@@ -917,14 +888,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const uiState = _uiState[nodeId];
     const prevSiblingUIState = _uiState[prevSiblingId];
 
-    // Update node through SharedNodeStore (auto-queues persistence)
+    // Update node with dependencies - PersistenceCoordinator will wait for dependencies automatically
     sharedNodeStore.updateNode(
       nodeId,
       {
         parentId: prevSiblingId,
         beforeSiblingId: beforeSiblingId // Insert after last existing child (or null if no children)
       },
-      viewerSource
+      viewerSource,
+      { dependencies }
     );
 
     _uiState[nodeId] = { ...uiState, depth: (prevSiblingUIState?.depth || 0) + 1 };
@@ -972,13 +944,13 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    *
    * The node is positioned immediately after its old parent as a sibling. Any siblings
    * that were below this node become children of the outdented node, maintaining proper
-   * hierarchy and sibling chain integrity using Pattern A (SharedNodeStore + waitForNodeSaves).
+   * hierarchy and sibling chain integrity using dependencies passed to PersistenceCoordinator.
    *
    * Race Condition Handling:
    * - Identifies next sibling in OLD parent context (sibling chain repair)
    * - Calls removeFromSiblingChain() which auto-persists the repair via SharedNodeStore
-   * - Waits for repair completion using waitForNodeSaves() before proceeding
-   * - Updates node and transferred siblings through SharedNodeStore which auto-queues persistence
+   * - Passes nextSibling as dependency to updateNode()
+   * - PersistenceCoordinator automatically sequences: repair → then → outdent → then → transfer siblings
    *
    * @param nodeId - The ID of the node to outdent
    * @returns boolean - true if outdent succeeded, false if operation invalid (e.g., root node)
@@ -990,7 +962,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    * // After: A, B, C (all siblings)
    * ```
    */
-  async function outdentNode(nodeId: string): Promise<boolean> {
+  function outdentNode(nodeId: string): boolean {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node || !node.parentId) return false;
 
@@ -1006,31 +978,18 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const siblingsBelow = nodeIndex >= 0 ? sortedCurrentSiblings.slice(nodeIndex + 1) : [];
 
     // PATTERN A: Identify affected nodes BEFORE making changes
-    // Collect nodes that need to complete persistence before we proceed
+    // Pass them as dependencies so PersistenceCoordinator sequences operations correctly
 
     // Affected nodes in OLD parent context (sibling chain repair)
-    const nodesToWaitFor: string[] = [];
+    const dependencies: string[] = [];
     const oldParentSiblings = sharedNodeStore.getNodesForParent(node.parentId);
     const nextSibling = oldParentSiblings.find((n) => n.beforeSiblingId === nodeId);
     if (nextSibling) {
-      nodesToWaitFor.push(nextSibling.id);
+      dependencies.push(nextSibling.id);
     }
 
     // Queue sibling chain repair (auto-persists via SharedNodeStore)
     removeFromSiblingChain(nodeId);
-
-    // Wait for sibling chain repair to persist
-    if (nodesToWaitFor.length > 0) {
-      try {
-        await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
-      } catch (error) {
-        console.error(
-          '[ReactiveNodeService] Timeout waiting for sibling chain repair in outdentNode:',
-          error
-        );
-        // Continue despite timeout (see error handling philosophy at top of file)
-      }
-    }
 
     // Determine insertion point in NEW parent context
     const newParentId = parent.parentId || null;
@@ -1055,14 +1014,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const uiState = _uiState[nodeId];
     const newDepth = newParentId ? (_uiState[newParentId]?.depth || 0) + 1 : 0;
 
-    // Update node through SharedNodeStore (auto-queues persistence)
+    // Update node with dependencies - PersistenceCoordinator will wait for dependencies automatically
     sharedNodeStore.updateNode(
       nodeId,
       {
         parentId: newParentId,
         beforeSiblingId: positionBeforeSiblingId
       },
-      viewerSource
+      viewerSource,
+      { dependencies }
     );
 
     _uiState[nodeId] = { ...uiState, depth: newDepth };
@@ -1102,44 +1062,36 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         const siblingId = siblingsBelow[i];
         const sibling = sharedNodeStore.getNode(siblingId);
         if (sibling) {
-          // Identify next sibling for this transferring node
-          const transferNodesToWait: string[] = [];
+          // Identify next sibling for this transferring node as dependency
+          const transferDependencies: string[] = [nodeId]; // Must wait for outdented node to be updated
           const siblingsOfTransferring = sharedNodeStore.getNodesForParent(sibling.parentId);
           const nextOfTransferring = siblingsOfTransferring.find(
             (n) => n.beforeSiblingId === siblingId
           );
           if (nextOfTransferring) {
-            transferNodesToWait.push(nextOfTransferring.id);
+            transferDependencies.push(nextOfTransferring.id);
           }
 
           // Queue sibling chain repair (auto-persists)
           removeFromSiblingChain(siblingId);
 
-          // Wait for repair to persist
-          if (transferNodesToWait.length > 0) {
-            try {
-              await sharedNodeStore.waitForNodeSaves(transferNodesToWait);
-            } catch (error) {
-              console.error(
-                '[ReactiveNodeService] Timeout waiting for transfer sibling chain repair in outdentNode:',
-                error
-              );
-              // Continue despite timeout
-            }
-          }
-
           // First transferred sibling points to last existing child (or null)
           // Subsequent siblings point to the previous transferred sibling
           const beforeSiblingId = i === 0 ? lastSiblingId : siblingsBelow[i - 1];
+          if (i > 0) {
+            // If not first, also depends on previous transferred sibling
+            transferDependencies.push(siblingsBelow[i - 1]);
+          }
 
-          // Update through SharedNodeStore (auto-queues persistence)
+          // Update with dependencies - PersistenceCoordinator will wait for dependencies automatically
           sharedNodeStore.updateNode(
             siblingId,
             {
               parentId: nodeId,
               beforeSiblingId
             },
-            viewerSource
+            viewerSource,
+            { dependencies: transferDependencies }
           );
 
           // Update depth for transferred sibling
@@ -1274,45 +1226,38 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    * - Backend operations where child handling is managed separately
    * - Cleanup operations where orphaned children are intentional
    *
+   * Race Condition Handling:
+   * - Identifies next sibling (sibling chain repair target)
+   * - Calls removeFromSiblingChain() which auto-persists the repair
+   * - Passes nextSibling as dependency to deleteNode()
+   * - PersistenceCoordinator automatically sequences: repair → then → delete
+   *
    * @param nodeId - The ID of the node to delete
    */
-  async function deleteNode(nodeId: string): Promise<void> {
+  function deleteNode(nodeId: string): void {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
     cleanupDebouncedOperations(nodeId);
 
     // PATTERN A: Identify affected nodes BEFORE making changes
-    // Collect nodes that need to complete persistence before we proceed
+    // Pass them as dependencies so PersistenceCoordinator sequences operations correctly
     //
-    // We only wait for the NEXT SIBLING because removeFromSiblingChain() only
+    // We only need the NEXT SIBLING because removeFromSiblingChain() only
     // modifies that node (updates its beforeSiblingId to splice out the deleted node).
-    // Children are orphaned but NOT modified, so we don't need to wait for them.
-    const nodesToWaitFor: string[] = [];
+    // Children are orphaned but NOT modified, so we don't need them as dependencies.
+    const dependencies: string[] = [];
     const siblings = sharedNodeStore.getNodesForParent(node.parentId);
     const nextSibling = siblings.find((n) => n.beforeSiblingId === nodeId);
     if (nextSibling) {
-      nodesToWaitFor.push(nextSibling.id);
+      dependencies.push(nextSibling.id);
     }
 
     // Queue sibling chain repair (auto-persists via SharedNodeStore)
     removeFromSiblingChain(nodeId);
 
-    // Wait for sibling chain repair to persist
-    if (nodesToWaitFor.length > 0) {
-      try {
-        await sharedNodeStore.waitForNodeSaves(nodesToWaitFor);
-      } catch (error) {
-        console.error(
-          '[ReactiveNodeService] Timeout waiting for sibling chain repair in deleteNode:',
-          error
-        );
-        // Continue despite timeout (see error handling philosophy at top of file)
-      }
-    }
-
-    // Delete node through SharedNodeStore (auto-queues persistence)
-    sharedNodeStore.deleteNode(nodeId, viewerSource);
+    // Delete node with dependencies - PersistenceCoordinator will wait for dependencies automatically
+    sharedNodeStore.deleteNode(nodeId, viewerSource, false, dependencies);
 
     delete _uiState[nodeId];
 
