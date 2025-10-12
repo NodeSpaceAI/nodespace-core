@@ -31,6 +31,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
+import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
 import { createTestNode } from '../helpers';
 
 describe('Node Ordering Integration Tests', () => {
@@ -46,6 +47,9 @@ describe('Node Ordering Integration Tests', () => {
   beforeEach(() => {
     // Reset singleton state between tests to prevent contamination
     sharedNodeStore.__resetForTesting();
+    // Enable test mode - this test doesn't use a real database, so we need to
+    // gracefully handle database errors (they're caught and ignored in test mode)
+    PersistenceCoordinator.getInstance().enableTestMode();
     nodeService = createReactiveNodeService(mockEvents);
   });
 
