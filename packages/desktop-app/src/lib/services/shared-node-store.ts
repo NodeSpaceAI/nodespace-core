@@ -475,7 +475,7 @@ export class SharedNodeStore {
     nodeId: string,
     source: UpdateSource,
     skipPersistence = false,
-    dependencies?: string[]
+    dependencies: string[] = []
   ): void {
     const node = this.nodes.get(nodeId);
     if (node) {
@@ -497,7 +497,12 @@ export class SharedNodeStore {
 
       // Phase 2.4: Persist deletion to database
       if (!skipPersistence && source.type !== 'database') {
-        // Delegate to PersistenceCoordinator with dependencies
+        // Filter dependencies to only include nodes with pending persistence operations
+        const pendingDeps = dependencies.filter((depId) =>
+          PersistenceCoordinator.getInstance().isPending(depId)
+        );
+
+        // Delegate to PersistenceCoordinator
         PersistenceCoordinator.getInstance().persist(
           nodeId,
           async () => {
@@ -519,7 +524,7 @@ export class SharedNodeStore {
           },
           {
             mode: 'immediate',
-            dependencies: dependencies || []
+            dependencies: pendingDeps.length > 0 ? pendingDeps : undefined
           }
         );
       }

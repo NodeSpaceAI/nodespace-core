@@ -196,7 +196,7 @@ describe('NodeManager Performance Tests', () => {
     expect(nodeManager.rootNodeIds.length).toBeGreaterThan(0);
   });
 
-  test('operational efficiency - multiple cycles work correctly', () => {
+  test('operational efficiency - multiple cycles work correctly', async () => {
     // Test that multiple operation cycles work correctly
     // This validates memory handling without requiring process access
 
@@ -209,7 +209,7 @@ describe('NodeManager Performance Tests', () => {
       for (let i = 1; i < 50; i++) {
         nodeManager.createNode(`node-${i}`, `New content ${i}`);
         if (i % 3 === 0) {
-          nodeManager.deleteNode(`node-${i}`);
+          await nodeManager.deleteNode(`node-${i}`);
         }
       }
     }
