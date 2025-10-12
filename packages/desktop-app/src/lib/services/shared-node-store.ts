@@ -269,25 +269,41 @@ export class SharedNodeStore {
             });
           }
 
-          // Ensure beforeSiblingId node is persisted (FOREIGN KEY constraint)
-          // Only add as dependency if it has a pending persistence operation
+          /**
+           * Ensure containerNodeId is persisted (FOREIGN KEY constraint)
+           *
+           * Backend validates that containerNodeId must reference an existing node.
+           * Add dependency when:
+           * - containerNodeId is set
+           * - Different from parentId (avoids duplicate dependency)
+           * - NOT already persisted to database
+           */
           if (
-            isStructuralChange &&
+            updatedNode.containerNodeId &&
+            updatedNode.containerNodeId !== updatedNode.parentId &&
+            !this.persistedNodeIds.has(updatedNode.containerNodeId)
+          ) {
+            dependencies.push(updatedNode.containerNodeId);
+          }
+
+          /**
+           * Ensure beforeSiblingId is persisted (FOREIGN KEY constraint)
+           *
+           * Backend validates that beforeSiblingId must reference an existing node.
+           * Add dependency when:
+           * - beforeSiblingId is set
+           * - NOT already persisted to database
+           */
+          if (
             updatedNode.beforeSiblingId &&
-            PersistenceCoordinator.getInstance().isPending(updatedNode.beforeSiblingId)
+            !this.persistedNodeIds.has(updatedNode.beforeSiblingId)
           ) {
             dependencies.push(updatedNode.beforeSiblingId);
           }
 
-          // Add user-specified dependencies (e.g., from sibling chain repairs)
-          // Only include nodes that actually have pending persistence operations
-          if (options.dependencies && options.dependencies.length > 0) {
-            const pendingDeps = options.dependencies.filter((depId) =>
-              PersistenceCoordinator.getInstance().isPending(depId)
-            );
-            if (pendingDeps.length > 0) {
-              dependencies.push(...pendingDeps);
-            }
+          // Add any additional dependencies from options
+          if (options.persistenceDependencies) {
+            dependencies.push(...options.persistenceDependencies);
           }
 
           PersistenceCoordinator.getInstance().persist(
@@ -366,14 +382,16 @@ export class SharedNodeStore {
     // IMPORTANT: For NEW nodes from viewer, persist immediately (including empty ones!)
     // For UPDATES from viewer, skip persistence - BaseNodeViewer handles with debouncing
     // This ensures createNode() persistence works while avoiding duplicate writes on updates
+    //
+    // NOTE: Empty nodes MUST be persisted to satisfy FOREIGN KEY constraints.
+    // When a node becomes a parent/container, it must exist in the database for children
+    // to reference it via parentId/containerNodeId. The old logic created a chicken-and-egg
+    // problem where parent nodes couldn't be persisted until they had content, but children
+    // couldn't be persisted without persisted parents. Backend accepts empty content.
     if (!skipPersistence && source.type !== 'database') {
       const shouldPersist = source.type !== 'viewer' || isNewNode;
 
-      // Skip persisting empty text nodes - they exist in UI but not in database
-      // until user adds content (backend validation requires non-empty content)
-      const isEmptyTextNode = node.nodeType === 'text' && node.content.trim() === '';
-
-      if (shouldPersist && !isEmptyTextNode) {
+      if (shouldPersist) {
         // Delegate to PersistenceCoordinator
         const dependencies: Array<string | (() => Promise<void>)> = [];
 
@@ -384,12 +402,32 @@ export class SharedNodeStore {
           });
         }
 
-        // Ensure beforeSiblingId node is persisted (FOREIGN KEY constraint)
-        // Only add as dependency if it has a pending persistence operation
+        /**
+         * Ensure containerNodeId is persisted (FOREIGN KEY constraint)
+         *
+         * Backend validates that containerNodeId must reference an existing node.
+         * Add dependency when:
+         * - containerNodeId is set
+         * - Different from parentId (avoids duplicate dependency)
+         * - NOT already persisted to database
+         */
         if (
-          node.beforeSiblingId &&
-          PersistenceCoordinator.getInstance().isPending(node.beforeSiblingId)
+          node.containerNodeId &&
+          node.containerNodeId !== node.parentId &&
+          !this.persistedNodeIds.has(node.containerNodeId)
         ) {
+          dependencies.push(node.containerNodeId);
+        }
+
+        /**
+         * Ensure beforeSiblingId is persisted (FOREIGN KEY constraint)
+         *
+         * Backend validates that beforeSiblingId must reference an existing node.
+         * Add dependency when:
+         * - beforeSiblingId is set
+         * - NOT already persisted to database
+         */
+        if (node.beforeSiblingId && !this.persistedNodeIds.has(node.beforeSiblingId)) {
           dependencies.push(node.beforeSiblingId);
         }
 

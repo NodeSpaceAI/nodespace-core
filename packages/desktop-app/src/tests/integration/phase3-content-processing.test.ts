@@ -41,6 +41,9 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
     // Clean database between tests to ensure test isolation
     await cleanDatabase(backend);
 
+    // Reset shared node store to clear persistedNodeIds from previous tests
+    sharedNodeStore.__resetForTesting();
+
     // Clear any test errors from previous tests
     sharedNodeStore.clearTestErrors();
   });

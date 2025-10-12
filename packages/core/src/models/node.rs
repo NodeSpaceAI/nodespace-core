@@ -633,6 +633,52 @@ impl NodeUpdate {
     }
 }
 
+/// Result of a delete operation
+///
+/// Provides metadata about the delete operation while maintaining idempotence.
+/// The operation always succeeds (returns Ok), but provides visibility into
+/// whether the node actually existed.
+///
+/// # Idempotence
+///
+/// DELETE operations are idempotent per REST/HTTP standards (RFC 7231).
+/// Deleting a non-existent resource succeeds - the `existed` field provides
+/// debugging/auditing visibility without breaking idempotence.
+///
+/// # Examples
+///
+/// ```rust
+/// use nodespace_core::models::DeleteResult;
+///
+/// // Node existed and was deleted
+/// let result = DeleteResult { existed: true };
+/// assert!(result.existed);
+///
+/// // Node didn't exist (idempotent success)
+/// let result = DeleteResult { existed: false };
+/// assert!(!result.existed);
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeleteResult {
+    /// Whether the node existed before deletion
+    ///
+    /// - `true`: Node existed and was deleted
+    /// - `false`: Node didn't exist (idempotent no-op)
+    pub existed: bool,
+}
+
+impl DeleteResult {
+    /// Create a DeleteResult indicating the node existed
+    pub fn existed() -> Self {
+        Self { existed: true }
+    }
+
+    /// Create a DeleteResult indicating the node didn't exist
+    pub fn not_found() -> Self {
+        Self { existed: false }
+    }
+}
+
 /// Comparison operator for property filters
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FilterOperator {

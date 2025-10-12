@@ -54,6 +54,9 @@ describe('Backspace Operations', () => {
     hierarchyChangeCount = 0;
     focusRequests = [];
 
+    // Reset shared node store to clear persistedNodeIds from previous tests
+    sharedNodeStore.__resetForTesting();
+
     service = createReactiveNodeService({
       focusRequested: (nodeId, position) => focusRequests.push({ nodeId, position }),
       hierarchyChanged: () => hierarchyChangeCount++,

@@ -327,19 +327,17 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
       }
     }, 10000);
 
-    it('should error when deleting non-existent node (documents current non-idempotent behavior)', async () => {
-      // TECHNICAL DEBT: Backend DELETE is not idempotent.
+    it('should be idempotent when deleting non-existent node', async () => {
+      // Backend DELETE is now idempotent (Issue #231).
       //
-      // Current Behavior: DELETE non-existent node → HTTP 500 error
-      // Ideal Behavior:   DELETE non-existent node → HTTP 204 No Content (idempotent)
+      // Current Behavior: DELETE non-existent node → HTTP 200/204 (success)
       //
       // Why Idempotence Matters:
       // - Network retries (e.g., timeout → retry) could double-delete
       // - Distributed systems (future) require idempotent operations
       // - REST/HTTP best practices mandate DELETE idempotence
       //
-      // Decision: Accept for Phase 2, track as technical debt.
-      // Related: Issue #219 - Implement idempotent DELETE
+      // This test verifies idempotent delete behavior.
 
       // Create a node
       const nodeData = TestNodeBuilder.text('To Delete').build();
@@ -358,9 +356,9 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
       const fetchedAfterFirst = await backend.getNode(nodeId);
       expect(fetchedAfterFirst).toBeNull();
 
-      // Delete again - backend returns error for non-existent node
-      // This is current backend behavior (not ideally idempotent, but acceptable for Phase 2)
-      await expect(backend.deleteNode(nodeId)).rejects.toThrow();
+      // Delete again - backend should succeed (idempotent)
+      // No error should be thrown
+      await expect(backend.deleteNode(nodeId)).resolves.not.toThrow();
 
       // Still deleted (verify final state is consistent)
       const fetchedAfterSecond = await backend.getNode(nodeId);

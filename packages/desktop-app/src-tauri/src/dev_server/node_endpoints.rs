@@ -342,12 +342,16 @@ async fn delete_node(
         })?;
         Arc::clone(&*lock)
     };
-    node_service
+    let result = node_service
         .delete_node(&id)
         .await
         .map_err(|e| HttpError::from_anyhow(e.into(), "NODE_SERVICE_ERROR"))?;
 
-    tracing::debug!("✅ Deleted node: {}", id);
+    if result.existed {
+        tracing::debug!("✅ Deleted node: {}", id);
+    } else {
+        tracing::debug!("✅ Delete idempotent (node not found): {}", id);
+    }
 
     Ok(StatusCode::OK)
 }

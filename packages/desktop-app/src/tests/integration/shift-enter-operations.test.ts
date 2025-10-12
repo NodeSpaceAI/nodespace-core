@@ -29,6 +29,7 @@ import { createAndFetchNode, checkServerHealth } from '../utils/test-node-helper
 import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
+import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
 
 describe('Shift+Enter Key Operations', () => {
   let dbPath: string;
@@ -37,9 +38,17 @@ describe('Shift+Enter Key Operations', () => {
   let hierarchyChangeCount: number;
 
   beforeAll(async () => {
+    // Disable test mode for integration tests - we want real database operations
+    PersistenceCoordinator.getInstance().disableTestMode();
+
     // Verify HTTP dev server is running before running any tests
     const healthCheckAdapter = new HttpAdapter('http://localhost:3001');
     await checkServerHealth(healthCheckAdapter);
+  });
+
+  afterAll(() => {
+    // Reset to default test mode state to prevent test ordering dependencies
+    PersistenceCoordinator.getInstance().enableTestMode();
   });
 
   beforeEach(async () => {
@@ -50,6 +59,9 @@ describe('Shift+Enter Key Operations', () => {
     adapter = new HttpAdapter('http://localhost:3001');
 
     hierarchyChangeCount = 0;
+
+    // Reset shared node store to clear persistedNodeIds from previous tests
+    sharedNodeStore.__resetForTesting();
 
     service = createReactiveNodeService({
       focusRequested: vi.fn(),
