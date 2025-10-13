@@ -852,12 +852,6 @@ export class ContentEditableController {
     syntaxMarkers.forEach((marker) => marker.remove());
     let result = '';
 
-    console.log('[convertHtmlToTextWithNewlines] Processing DIV structure', {
-      nodeId: this.nodeId,
-      innerHTML: tempDiv.innerHTML,
-      childNodesCount: tempDiv.childNodes.length
-    });
-
     // Walk through all child nodes
     const childNodes = Array.from(tempDiv.childNodes);
 
@@ -895,13 +889,6 @@ export class ContentEditableController {
         }
       }
     }
-
-    console.log('[convertHtmlToTextWithNewlines] Result', {
-      nodeId: this.nodeId,
-      result,
-      resultLength: result.length,
-      endsWithNewline: result.endsWith('\n')
-    });
 
     return result;
   }
@@ -1862,17 +1849,6 @@ export class ContentEditableController {
       // Store this as last known valid position (for future blank line navigation)
       this.lastKnownPixelOffset = pixelOffset;
 
-      // Debug logging
-      console.log('[getCurrentPixelOffset]', {
-        nodeId: this.nodeId,
-        isOnBlankLine,
-        cursorLeft: cursorRect.left,
-        scrollX: window.scrollX,
-        pixelOffset,
-        lastKnown: this.lastKnownPixelOffset,
-        containerType: range.startContainer.nodeName
-      });
-
       // Return absolute pixel position including horizontal scroll offset
       // This maintains horizontal position when navigating between nodes with different font sizes
       // and accounts for viewport scroll state
@@ -2023,15 +1999,6 @@ export class ContentEditableController {
 
     // Get the current line index using a more robust approach
     const currentLineIndex = this.getCurrentLineIndex(range);
-
-    // Debug logging
-    console.log('[isAtFirstLine]', {
-      nodeId: this.nodeId,
-      currentLineIndex,
-      result: currentLineIndex === 0,
-      container: range.startContainer.nodeName,
-      offset: range.startOffset
-    });
 
     // If we can determine the line index, check if it's 0 (first line)
     if (currentLineIndex !== -1) {

@@ -126,7 +126,6 @@ export class TauriNodeService {
   async createNode(node: Omit<Node, 'createdAt' | 'modifiedAt'>): Promise<string> {
     this.ensureInitialized();
     const nodeId = await this.adapter.createNode(node);
-    console.log('[TauriNodeService] Created node:', nodeId);
     return nodeId;
   }
 
@@ -154,7 +153,6 @@ export class TauriNodeService {
   async updateNode(id: string, update: NodeUpdate): Promise<void> {
     this.ensureInitialized();
     await this.adapter.updateNode(id, update);
-    console.log('[TauriNodeService] Updated node:', id);
   }
 
   /**
@@ -168,7 +166,6 @@ export class TauriNodeService {
   async deleteNode(id: string): Promise<void> {
     this.ensureInitialized();
     await this.adapter.deleteNode(id);
-    console.log('[TauriNodeService] Deleted node:', id);
   }
 
   /**
