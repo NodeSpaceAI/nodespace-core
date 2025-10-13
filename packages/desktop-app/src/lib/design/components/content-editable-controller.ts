@@ -132,6 +132,9 @@ export class ContentEditableController {
   // Track if we're being focused via arrow navigation (to prevent cursor jumping)
   private focusedViaArrowNavigation: boolean = false;
 
+  // Track last known valid horizontal pixel position for blank line navigation
+  private lastKnownPixelOffset: number = 0;
+
   // Track if slash command dropdown is currently active
   public slashCommandDropdownActive: boolean = false;
   // Track if autocomplete dropdown is currently active
@@ -504,16 +507,30 @@ export class ContentEditableController {
     if (this.config.allowMultiline) {
       if (this.isEditing) {
         // During editing: convert \n to <div> structure for native browser editing
-        // Trim leading/trailing newlines - let browser handle blank lines naturally
-        const trimmedHtml = html.replace(/^\n+|\n+$/g, '');
-        const lines = trimmedHtml.split('\n');
+        // One newline = one line break, not two (Test\n → Test + empty line, not Test + two empty lines)
+        const lines = html.split('\n');
+        console.log('[setLiveFormattedContent] EDITING MODE', {
+          nodeId: this.nodeId,
+          content,
+          htmlBeforeSplit: html,
+          lines,
+          linesLength: lines.length
+        });
         if (lines.length > 1) {
+          // Convert each line to a DIV (empty strings become empty DIVs for blank lines)
+          // "Test\n" → ["Test", ""] → "<div>Test</div><div></div>" (text + blank line)
+          // "\nTest" → ["", "Test"] → "<div></div><div>Test</div>" (blank line + text)
+          // "Test\n\nMore" → ["Test", "", "More"] → three DIVs (text + blank + text)
           html = lines.map((line) => `<div>${line}</div>`).join('');
-        } else {
-          html = trimmedHtml; // Single line, no DIV needed
+          console.log('[setLiveFormattedContent] AFTER DIV CONVERSION', {
+            lines,
+            finalHtml: html
+          });
         }
+        // For single line, no DIV structure needed - leave as is
       } else {
-        // During display: convert \n to <br> tags for formatted display
+        // During display: convert \n to <br> tags
+        // Browser will naturally handle trailing/leading whitespace on blur
         html = html.replace(/\n/g, '<br>');
       }
     }
@@ -783,13 +800,14 @@ export class ContentEditableController {
       // For non-headers: show formatted HTML with custom styling (bold, italic, code, strikethrough)
       let htmlContent = this.markdownToDisplayHtml(content);
 
-      // For multiline nodes: ensure newlines are preserved as <br> tags
+      // For multiline nodes: ensure newlines are preserved as <div> tags
       if (this.config.allowMultiline) {
-        // Convert any remaining \n characters to <br> tags for display
-        htmlContent = htmlContent.replace(/\n/g, '<br>');
-
-        // Let browser handle trailing/leading blank lines naturally
-        // Don't try to preserve them with &nbsp; or other tricks
+        // Convert newlines to DIVs for consistent height rendering
+        // This matches the editing mode structure and prevents visual collapse
+        const lines = htmlContent.split('\n');
+        if (lines.length > 1) {
+          htmlContent = lines.map((line) => `<div>${line || '<br>'}</div>`).join('');
+        }
       }
 
       this.element.innerHTML = htmlContent;
@@ -845,6 +863,12 @@ export class ContentEditableController {
     syntaxMarkers.forEach((marker) => marker.remove());
     let result = '';
 
+    console.log('[convertHtmlToTextWithNewlines] Processing DIV structure', {
+      nodeId: this.nodeId,
+      innerHTML: tempDiv.innerHTML,
+      childNodesCount: tempDiv.childNodes.length
+    });
+
     // Walk through all child nodes
     const childNodes = Array.from(tempDiv.childNodes);
 
@@ -868,7 +892,8 @@ export class ContentEditableController {
           const divContent = this.getTextContentIgnoringSyntax(element);
 
           // If this is not the first DIV, add a newline before it
-          if (i > 0 && result.length > 0) {
+          // Always add newline for subsequent DIVs, even if previous DIVs were empty (blank lines)
+          if (i > 0) {
             result += '\n';
           }
 
@@ -881,6 +906,13 @@ export class ContentEditableController {
         }
       }
     }
+
+    console.log('[convertHtmlToTextWithNewlines] Result', {
+      nodeId: this.nodeId,
+      result,
+      resultLength: result.length,
+      endsWithNewline: result.endsWith('\n')
+    });
 
     return result;
   }
@@ -1195,90 +1227,17 @@ export class ContentEditableController {
       }
 
       if (event.shiftKey && this.config.allowMultiline) {
-        // Shift+Enter for multiline nodes
-        event.preventDefault();
+        // Shift+Enter for multiline nodes: let browser handle newline insertion naturally
+        // Don't preventDefault() - browser will insert <br> or <div> as appropriate
+        // The handleInput event will capture the change and update content
 
-        // Get the raw markdown content
-        const currentContent = this.getMarkdownContent();
-        const cursorPosition = this.getCursorPositionInMarkdown();
+        // Set flag briefly to prevent live formatting from interfering
+        this.recentShiftEnter = true;
+        setTimeout(() => {
+          this.recentShiftEnter = false;
+        }, 100);
 
-        // Check if we're inside inline formatting (bold, italic, code, strikethrough)
-        // by looking for formatting markers around the cursor position
-        const hasInlineFormatting = this.isInsideInlineFormatting(currentContent, cursorPosition);
-
-        if (hasInlineFormatting) {
-          // Use markdown-aware splitting to preserve inline formatting across lines
-          const splitResult = splitMarkdownContent(currentContent, cursorPosition);
-
-          // Defensive validation: ensure split result is valid before proceeding
-          if (!splitResult || typeof splitResult.beforeContent !== 'string') {
-            console.error('Invalid split result from splitMarkdownContent', {
-              currentContent,
-              cursorPosition
-            });
-            return; // Gracefully abort Shift+Enter operation
-          }
-
-          // Update content to show both lines with proper formatting
-          const newContent = splitResult.beforeContent + '\n' + splitResult.afterContent;
-
-          // Update content in three stages to maintain dual-representation consistency:
-          // 1. Store markdown (originalContent) - source of truth for raw content
-          // 2. Set text content - clears formatted HTML and prepares for conversion
-          // 3. Apply live formatting - converts \n to <div> structure with syntax highlighting
-          this.originalContent = newContent;
-          this.element.textContent = newContent;
-          this.setLiveFormattedContent(newContent);
-
-          // Position cursor in the second line (after opening markers)
-          requestAnimationFrame(() => {
-            const divs = this.element.querySelectorAll('div');
-            if (divs.length >= ContentEditableController.MIN_DIV_COUNT_FOR_MULTILINE) {
-              this.restoreCursorPosition(
-                splitResult.newNodeCursorPosition,
-                ContentEditableController.SECOND_LINE_INDEX
-              );
-            } else {
-              // Fallback: position linearly if DIV structure doesn't exist
-              this.restoreCursorPosition(
-                splitResult.beforeContent.length + 1 + splitResult.newNodeCursorPosition
-              );
-            }
-          });
-
-          // Notify of content change
-          this.events.contentChanged(newContent);
-        } else {
-          // No inline formatting - use simple line break insertion for block-level syntax
-          // This preserves the behavior from PR #176 for headers, tasks, quotes, etc.
-          document.execCommand('insertLineBreak');
-
-          // Set flag to prevent live formatting from interfering with the newline structure
-          this.recentShiftEnter = true;
-          setTimeout(() => {
-            this.recentShiftEnter = false;
-          }, 100);
-
-          // Position cursor correctly on the new line
-          // Browser may position after leading whitespace; we want it at position 0
-          setTimeout(() => {
-            const selection = window.getSelection();
-            if (!selection || selection.rangeCount === 0) return;
-
-            const range = selection.getRangeAt(0);
-
-            // If cursor is in a text node and not at position 0, move it to position 0
-            if (range.startContainer.nodeType === Node.TEXT_NODE && range.startOffset > 0) {
-              const newRange = document.createRange();
-              newRange.setStart(range.startContainer, 0);
-              newRange.collapse(true);
-              selection.removeAllRanges();
-              selection.addRange(newRange);
-            }
-          }, 0);
-        }
-
-        return;
+        return; // Let browser handle the newline insertion
       }
 
       if (!event.shiftKey) {
@@ -1794,11 +1753,57 @@ export class ContentEditableController {
    */
   public getCurrentPixelOffset(): number {
     const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) return 0;
+    if (!selection || selection.rangeCount === 0) return this.lastKnownPixelOffset;
 
     const range = selection.getRangeAt(0);
 
     try {
+      // Special case: if cursor is on/near a blank line (just a <br>), use last known position
+      // This handles cases where cursor is before/after a <br> element
+      let isOnBlankLine = false;
+
+      // Case 1: Cursor directly on a BR element
+      if (range.startContainer.nodeType === Node.ELEMENT_NODE &&
+          (range.startContainer as Element).tagName === 'BR') {
+        isOnBlankLine = true;
+      }
+
+      // Case 2: Cursor is inside a DIV that contains only a BR (blank line from Shift+Enter)
+      if (range.startContainer.nodeType === Node.ELEMENT_NODE &&
+          (range.startContainer as Element).tagName === 'DIV') {
+        const div = range.startContainer as Element;
+        // Check if this div contains only a BR
+        if (div.childNodes.length === 1 &&
+            div.firstChild?.nodeType === Node.ELEMENT_NODE &&
+            (div.firstChild as Element).tagName === 'BR') {
+          isOnBlankLine = true;
+        }
+      }
+
+      // Case 3: Cursor is at position in parent element, check if next/prev sibling is BR
+      if (range.startContainer === this.element) {
+        const childAtOffset = this.element.childNodes[range.startOffset];
+        const prevChild = range.startOffset > 0 ? this.element.childNodes[range.startOffset - 1] : null;
+
+        // Check if we're right before a BR or right after a BR
+        if ((childAtOffset && childAtOffset.nodeType === Node.ELEMENT_NODE && (childAtOffset as Element).tagName === 'BR') ||
+            (prevChild && prevChild.nodeType === Node.ELEMENT_NODE && (prevChild as Element).tagName === 'BR')) {
+          isOnBlankLine = true;
+        }
+      }
+
+      if (isOnBlankLine) {
+        // Return last known valid horizontal position (from when cursor was on text)
+        // If we don't have a last known position (user went straight to blank line),
+        // measure from the blank line's container element
+        if (this.lastKnownPixelOffset === 0 && range.startContainer.nodeType === Node.ELEMENT_NODE) {
+          const container = range.startContainer as Element;
+          const rect = container.getBoundingClientRect();
+          return rect.left + window.scrollX;
+        }
+        return this.lastKnownPixelOffset;
+      }
+
       // Measure where cursor is currently
       const cursorRange = document.createRange();
       cursorRange.setStart(range.startContainer, range.startOffset);
@@ -1806,18 +1811,35 @@ export class ContentEditableController {
 
       // Check if getBoundingClientRect is available (not in jsdom tests)
       if (typeof cursorRange.getBoundingClientRect !== 'function') {
-        return 0;
+        return this.lastKnownPixelOffset;
       }
 
       const cursorRect = cursorRange.getBoundingClientRect();
 
+      // Calculate absolute pixel position including horizontal scroll offset
+      const pixelOffset = cursorRect.left + window.scrollX;
+
+      // Store this as last known valid position (for future blank line navigation)
+      this.lastKnownPixelOffset = pixelOffset;
+
+      // Debug logging
+      console.log('[getCurrentPixelOffset]', {
+        nodeId: this.nodeId,
+        isOnBlankLine,
+        cursorLeft: cursorRect.left,
+        scrollX: window.scrollX,
+        pixelOffset,
+        lastKnown: this.lastKnownPixelOffset,
+        containerType: range.startContainer.nodeName,
+      });
+
       // Return absolute pixel position including horizontal scroll offset
       // This maintains horizontal position when navigating between nodes with different font sizes
       // and accounts for viewport scroll state
-      return cursorRect.left + window.scrollX;
+      return pixelOffset;
     } catch (e) {
       console.warn('[getCurrentPixelOffset] Error measuring pixel offset:', e);
-      return 0;
+      return this.lastKnownPixelOffset;
     }
   }
 
@@ -1962,6 +1984,15 @@ export class ContentEditableController {
     // Get the current line index using a more robust approach
     const currentLineIndex = this.getCurrentLineIndex(range);
 
+    // Debug logging
+    console.log('[isAtFirstLine]', {
+      nodeId: this.nodeId,
+      currentLineIndex,
+      result: currentLineIndex === 0,
+      container: range.startContainer.nodeName,
+      offset: range.startOffset,
+    });
+
     // If we can determine the line index, check if it's 0 (first line)
     if (currentLineIndex !== -1) {
       return currentLineIndex === 0;
@@ -2020,6 +2051,24 @@ export class ContentEditableController {
     // Additional fallback: if cursor is at the very beginning of the element
     if (range.startContainer === this.element && range.startOffset === 0) {
       return true;
+    }
+
+    // Check if cursor is on a leading <br> element (Shift+Enter at start creates this)
+    // Special case: if we're right BEFORE a leading <br> (offset 0), return false
+    // This lets browser handle ArrowUp within the blank line structure naturally
+    if (range.startContainer === this.element && range.startOffset === 0) {
+      const firstChild = this.element.firstChild;
+      if (firstChild && firstChild.nodeType === Node.ELEMENT_NODE && (firstChild as Element).tagName === 'BR') {
+        return false; // On leading blank line, don't navigate away - stay in node
+      }
+    }
+
+    // If cursor is right after a leading <br> (offset 1), we're on first line but past the blank
+    if (range.startContainer === this.element && range.startOffset === 1) {
+      const firstChild = this.element.firstChild;
+      if (firstChild && firstChild.nodeType === Node.ELEMENT_NODE && (firstChild as Element).tagName === 'BR') {
+        return true; // Cursor is right after leading <br>, still first line
+      }
     }
 
     // If no div structure found, assume single line (first line)
