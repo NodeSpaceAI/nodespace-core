@@ -509,23 +509,12 @@ export class ContentEditableController {
         // During editing: convert \n to <div> structure for native browser editing
         // One newline = one line break, not two (Test\n → Test + empty line, not Test + two empty lines)
         const lines = html.split('\n');
-        console.log('[setLiveFormattedContent] EDITING MODE', {
-          nodeId: this.nodeId,
-          content,
-          htmlBeforeSplit: html,
-          lines,
-          linesLength: lines.length
-        });
         if (lines.length > 1) {
           // Convert each line to a DIV (empty strings become empty DIVs for blank lines)
           // "Test\n" → ["Test", ""] → "<div>Test</div><div></div>" (text + blank line)
           // "\nTest" → ["", "Test"] → "<div></div><div>Test</div>" (blank line + text)
           // "Test\n\nMore" → ["Test", "", "More"] → three DIVs (text + blank + text)
           html = lines.map((line) => `<div>${line}</div>`).join('');
-          console.log('[setLiveFormattedContent] AFTER DIV CONVERSION', {
-            lines,
-            finalHtml: html
-          });
         }
         // For single line, no DIV structure needed - leave as is
       } else {

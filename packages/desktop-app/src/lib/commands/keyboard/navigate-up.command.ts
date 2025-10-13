@@ -48,32 +48,18 @@ export class NavigateUpCommand implements KeyboardCommand {
       const hasBrTags = element.innerHTML.includes('<br>');
       const hasMultipleLines = lineElements.length > 0 || hasBrTags;
 
-      console.log('[NavigateUpCommand.canExecute] Multiline node check', {
-        nodeId: context.nodeId,
-        allowMultiline: context.allowMultiline,
-        lineElementsCount: lineElements.length,
-        hasBrTags,
-        hasMultipleLines,
-        innerHTML: element.innerHTML
-      });
-
       if (hasMultipleLines) {
         // For nodes with actual multiple lines, let browser handle all navigation
         // Only intercept when we're at the absolute start (no content above cursor)
         const atAbsoluteStart = this.isAtAbsoluteStart(context);
-        console.log('[NavigateUpCommand.canExecute] Has multiple lines, checking absolute start', {
-          atAbsoluteStart
-        });
         return atAbsoluteStart;
       } else {
         // Node supports multiline but currently has only single line
         // Allow navigation from anywhere (like single-line nodes)
-        console.log('[NavigateUpCommand.canExecute] Single line, allowing navigation');
         return true;
       }
     } else {
       // For single-line nodes, always navigate on arrow up
-      console.log('[NavigateUpCommand.canExecute] Not multiline, allowing navigation');
       return true;
     }
   }
