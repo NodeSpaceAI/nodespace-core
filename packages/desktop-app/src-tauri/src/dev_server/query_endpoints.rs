@@ -6,7 +6,7 @@
 //! # Endpoints
 //!
 //! - `GET /api/nodes/query` - Query nodes by parent, container, or other criteria
-//! - `GET /api/nodes/by-origin/:origin_id` - Get nodes by origin ID
+//! - `GET /api/nodes/by-container/:container_id` - Get nodes by container ID
 //!
 //! # Usage
 //!
@@ -187,25 +187,37 @@ async fn query_nodes_simple(
 ///
 /// # Path Parameters
 ///
-/// - `origin_id`: Origin ID to search for
+/// - `container_id`: Container ID to search for
 ///
 /// # Example
 ///
 /// ```bash
-/// curl http://localhost:3001/api/nodes/by-origin/original-node-123
+/// curl http://localhost:3001/api/nodes/by-container/2025-10-13
 /// ```
-async fn get_nodes_by_origin_id(
-    State(_state): State<AppState>,
-    Path(origin_id): Path<String>,
+async fn get_nodes_by_container_id(
+    State(state): State<AppState>,
+    Path(container_id): Path<String>,
 ) -> Result<Json<Vec<Node>>, HttpError> {
-    tracing::debug!("Get nodes by origin: {}", origin_id);
+    tracing::debug!("Get nodes by container: {}", container_id);
 
-    // NodeFilter doesn't have origin_id field yet
-    // Return explicit error to indicate unimplemented functionality
-    Err(HttpError::new(
-        "Origin ID queries not yet implemented - NodeFilter missing origin_id field",
-        "NOT_IMPLEMENTED",
-    ))
+    // Get node service from state
+    let node_service = {
+        let lock = state.node_service.read().map_err(|e| {
+            HttpError::new(
+                format!("Failed to acquire node service read lock: {}", e),
+                "LOCK_ERROR",
+            )
+        })?;
+        Arc::clone(&*lock)
+    };
+
+    // Call NodeService method
+    let nodes = node_service
+        .get_nodes_by_container_id(&container_id)
+        .await
+        .map_err(|e| HttpError::from_anyhow(e.into(), "QUERY_FAILED"))?;
+
+    Ok(Json(nodes))
 }
 
 /// Create router with all Phase 2 query endpoints
@@ -216,8 +228,8 @@ pub fn routes(state: AppState) -> Router {
     Router::new()
         .route("/api/nodes/query", get(query_nodes_simple))
         .route(
-            "/api/nodes/by-origin/:origin_id",
-            get(get_nodes_by_origin_id),
+            "/api/nodes/by-container/:container_id",
+            get(get_nodes_by_container_id),
         )
         .with_state(state)
 }

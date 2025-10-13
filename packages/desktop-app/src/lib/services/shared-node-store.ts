@@ -589,14 +589,14 @@ export class SharedNodeStore {
 
   /**
    * Load child nodes from database for a parent
-   * Replaces BaseNodeViewer's direct databaseService.getNodesByOriginId() call
+   * Replaces BaseNodeViewer's direct databaseService.getNodesByContainerId() call
    *
    * @param parentId - The parent/container node ID
    * @returns Array of child nodes loaded from database
    */
   async loadChildrenForParent(parentId: string): Promise<Node[]> {
     try {
-      const nodes = await tauriNodeService.getNodesByOriginId(parentId);
+      const nodes = await tauriNodeService.getNodesByContainerId(parentId);
 
       // Add nodes to store with database source (skips persistence)
       const databaseSource = { type: 'database' as const, reason: 'loaded-from-db' };

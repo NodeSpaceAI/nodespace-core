@@ -578,12 +578,12 @@ impl NodeService {
     /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
     /// # let service = NodeService::new(db)?;
     /// // Fetch all nodes for a date page
-    /// let nodes = service.get_nodes_by_origin_id("2025-10-05").await?;
+    /// let nodes = service.get_nodes_by_container_id("2025-10-05").await?;
     /// println!("Found {} nodes in this document", nodes.len());
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn get_nodes_by_origin_id(
+    pub async fn get_nodes_by_container_id(
         &self,
         container_node_id: &str,
     ) -> Result<Vec<Node>, NodeServiceError> {
@@ -2321,10 +2321,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_nodes_by_origin_id() {
+    async fn test_get_nodes_by_container_id() {
         let (service, _temp) = create_test_service().await;
 
-        // Create a date node (acts as origin)
+        // Create a date node (acts as container)
         let date_node = Node::new_with_id(
             "2025-10-05".to_string(),
             "date".to_string(),
@@ -2381,7 +2381,10 @@ mod tests {
         service.create_node(other_child).await.unwrap();
 
         // Bulk fetch should return only the 3 children with container_node_id = "2025-10-05"
-        let nodes = service.get_nodes_by_origin_id("2025-10-05").await.unwrap();
+        let nodes = service
+            .get_nodes_by_container_id("2025-10-05")
+            .await
+            .unwrap();
 
         assert_eq!(nodes.len(), 3, "Should return exactly 3 nodes");
         assert!(

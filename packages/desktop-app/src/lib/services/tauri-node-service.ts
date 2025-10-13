@@ -189,24 +189,16 @@ export class TauriNodeService {
    * Bulk fetch all nodes belonging to an origin node (viewer/page)
    *
    * This is the efficient way to load a complete document tree:
-   * - Single database query fetches all nodes with the same origin_node_id
+   * - Single database query fetches all nodes with the same container_node_id
    * - Frontend can reconstruct hierarchy using parent_id and before_sibling_id
    *
-   * @param containerNodeId - ID of the origin node (e.g., date page ID like "2025-10-05")
-   * @returns Array of all nodes belonging to this origin
+   * @param containerNodeId - ID of the container node (e.g., date page ID like "2025-10-05")
+   * @returns Array of all nodes belonging to this container
    * @throws NodeOperationError if operation fails
    */
-  async getNodesByOriginId(containerNodeId: string): Promise<Node[]> {
+  async getNodesByContainerId(containerNodeId: string): Promise<Node[]> {
     this.ensureInitialized();
-
-    try {
-      const nodes = await universalInvoke<Node[]>('get_nodes_by_origin_id', { containerNodeId });
-      return nodes;
-    } catch (error) {
-      const err = toError(error);
-      console.error('[TauriNodeService] Failed to get nodes by origin ID:', containerNodeId, err);
-      throw new NodeOperationError(err.message, containerNodeId, 'getNodesByOriginId');
-    }
+    return await this.adapter.getNodesByContainerId(containerNodeId);
   }
 
   /**

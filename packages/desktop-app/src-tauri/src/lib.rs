@@ -96,7 +96,7 @@ pub fn run() {
             commands::nodes::update_node,
             commands::nodes::delete_node,
             commands::nodes::get_children,
-            commands::nodes::get_nodes_by_origin_id,
+            commands::nodes::get_nodes_by_container_id,
             commands::nodes::query_nodes_simple,
             commands::nodes::save_node_with_parent,
         ])

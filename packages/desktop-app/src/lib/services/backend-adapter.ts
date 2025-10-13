@@ -178,6 +178,14 @@ export interface BackendAdapter {
    */
   queryNodes(params: QueryNodesParams): Promise<Node[]>;
 
+  /**
+   * Get nodes by container ID (Phase 2)
+   * @since Phase 2
+   * @param containerId - Container node ID (e.g., date string like "2025-10-13")
+   * @returns Array of nodes belonging to this container
+   */
+  getNodesByContainerId(containerId: string): Promise<Node[]>;
+
   // === Phase 3: Embedding Operations ===
 
   /**
@@ -421,6 +429,15 @@ export class TauriAdapter implements BackendAdapter {
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, params.parentId ?? 'query', 'queryNodes');
+    }
+  }
+
+  async getNodesByContainerId(containerId: string): Promise<Node[]> {
+    try {
+      return await invoke<Node[]>('get_nodes_by_container_id', { containerNodeId: containerId });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, containerId, 'getNodesByContainerId');
     }
   }
 
@@ -775,6 +792,18 @@ export class HttpAdapter implements BackendAdapter {
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, params.parentId ?? 'query', 'queryNodes');
+    }
+  }
+
+  async getNodesByContainerId(containerId: string): Promise<Node[]> {
+    try {
+      const response = await globalThis.fetch(
+        `${this.baseUrl}/api/nodes/by-container/${encodeURIComponent(containerId)}`
+      );
+      return await this.handleResponse<Node[]>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, containerId, 'getNodesByContainerId');
     }
   }
 

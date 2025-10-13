@@ -387,23 +387,23 @@ pub async fn get_children(
 /// * `container_node_id` - ID of the origin node (e.g., date page ID)
 ///
 /// # Returns
-/// * `Ok(Vec<Node>)` - All nodes belonging to this origin
+/// * `Ok(Vec<Node>)` - All nodes belonging to this container
 /// * `Err(CommandError)` - Error with details if operation fails
 ///
 /// # Example Frontend Usage
 /// ```typescript
-/// const nodes = await invoke('get_nodes_by_origin_id', {
-///   originNodeId: '2025-10-05'
+/// const nodes = await invoke('get_nodes_by_container_id', {
+///   containerNodeId: '2025-10-05'
 /// });
 /// console.log(`Loaded ${nodes.length} nodes for this date`);
 /// ```
 #[tauri::command]
-pub async fn get_nodes_by_origin_id(
+pub async fn get_nodes_by_container_id(
     service: State<'_, NodeService>,
     container_node_id: String,
 ) -> Result<Vec<Node>, CommandError> {
     service
-        .get_nodes_by_origin_id(&container_node_id)
+        .get_nodes_by_container_id(&container_node_id)
         .await
         .map_err(Into::into)
 }
