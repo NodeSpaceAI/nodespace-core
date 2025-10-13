@@ -99,6 +99,126 @@ const mockIntersectionObserver = vi.fn(() => ({
   globalThis as typeof globalThis & { IntersectionObserver: typeof mockIntersectionObserver }
 ).IntersectionObserver = mockIntersectionObserver;
 
+// Mock window.getSelection for testing
+// This eliminates "Not implemented: window.getSelection" warnings from Happy-DOM
+if (typeof window !== 'undefined' && !window.getSelection) {
+  class MockSelection {
+    anchorNode: Node | null = null;
+    anchorOffset: number = 0;
+    focusNode: Node | null = null;
+    focusOffset: number = 0;
+    isCollapsed: boolean = true;
+    rangeCount: number = 0;
+    type: string = 'None';
+    private ranges: Range[] = [];
+
+    addRange(range: Range): void {
+      this.ranges.push(range);
+      this.rangeCount = this.ranges.length;
+      this.anchorNode = range.startContainer;
+      this.anchorOffset = range.startOffset;
+      this.focusNode = range.endContainer;
+      this.focusOffset = range.endOffset;
+      this.isCollapsed = range.collapsed;
+      this.type = range.collapsed ? 'Caret' : 'Range';
+    }
+
+    getRangeAt(index: number): Range {
+      if (index < 0 || index >= this.ranges.length) {
+        throw new Error('IndexSizeError: Index out of range');
+      }
+      return this.ranges[index];
+    }
+
+    removeAllRanges(): void {
+      this.ranges = [];
+      this.rangeCount = 0;
+      this.anchorNode = null;
+      this.anchorOffset = 0;
+      this.focusNode = null;
+      this.focusOffset = 0;
+      this.isCollapsed = true;
+      this.type = 'None';
+    }
+
+    removeRange(range: Range): void {
+      const index = this.ranges.indexOf(range);
+      if (index !== -1) {
+        this.ranges.splice(index, 1);
+        this.rangeCount = this.ranges.length;
+        if (this.rangeCount === 0) {
+          this.removeAllRanges();
+        }
+      }
+    }
+
+    collapse(node: Node | null, offset?: number): void {
+      this.removeAllRanges();
+      if (node) {
+        const range = document.createRange();
+        range.setStart(node, offset || 0);
+        range.setEnd(node, offset || 0);
+        this.addRange(range);
+      }
+    }
+
+    collapseToStart(): void {
+      if (this.rangeCount > 0) {
+        const range = this.ranges[0];
+        this.collapse(range.startContainer, range.startOffset);
+      }
+    }
+
+    collapseToEnd(): void {
+      if (this.rangeCount > 0) {
+        const range = this.ranges[0];
+        this.collapse(range.endContainer, range.endOffset);
+      }
+    }
+
+    extend(node: Node, offset?: number): void {
+      if (this.rangeCount > 0) {
+        const range = this.ranges[0];
+        range.setEnd(node, offset || 0);
+        this.focusNode = node;
+        this.focusOffset = offset || 0;
+        this.isCollapsed = range.collapsed;
+        this.type = range.collapsed ? 'Caret' : 'Range';
+      }
+    }
+
+    selectAllChildren(node: Node): void {
+      this.removeAllRanges();
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      this.addRange(range);
+    }
+
+    setBaseAndExtent(
+      anchorNode: Node,
+      anchorOffset: number,
+      focusNode: Node,
+      focusOffset: number
+    ): void {
+      this.removeAllRanges();
+      const range = document.createRange();
+      range.setStart(anchorNode, anchorOffset);
+      range.setEnd(focusNode, focusOffset);
+      this.addRange(range);
+    }
+
+    toString(): string {
+      if (this.rangeCount === 0) {
+        return '';
+      }
+      return this.ranges.map((range) => range.toString()).join('');
+    }
+  }
+
+  const mockSelection = new MockSelection();
+  window.getSelection = vi.fn(() => mockSelection as unknown as Selection);
+}
+
 // Basic global test setup
 interface MockResizeObserver {
   observe: () => void;
