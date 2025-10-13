@@ -57,10 +57,9 @@ describe('SharedNodeStore', () => {
     store.clearAll();
     SharedNodeStore.resetInstance();
 
-    // Reset PersistenceCoordinator (wait a bit for pending operations to settle)
+    // Reset PersistenceCoordinator and wait for cancellation cleanup
     const coordinator = PersistenceCoordinator.getInstance();
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    coordinator.reset();
+    await coordinator.reset(); // Now properly waits for all cancellations
     PersistenceCoordinator.resetInstance();
   });
 

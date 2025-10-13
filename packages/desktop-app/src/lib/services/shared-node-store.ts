@@ -24,7 +24,7 @@
 
 import { eventBus } from './event-bus';
 import { tauriNodeService } from './tauri-node-service';
-import { PersistenceCoordinator } from './persistence-coordinator.svelte';
+import { PersistenceCoordinator, OperationCancelledError } from './persistence-coordinator.svelte';
 import type { Node } from '$lib/types';
 import type {
   NodeUpdate,
@@ -315,7 +315,8 @@ export class SharedNodeStore {
             dependencies.push(...options.persistenceDependencies);
           }
 
-          PersistenceCoordinator.getInstance().persist(
+          // Capture handle to catch cancellation errors
+          const handle = PersistenceCoordinator.getInstance().persist(
             nodeId,
             async () => {
               try {
@@ -349,6 +350,16 @@ export class SharedNodeStore {
               dependencies: dependencies.length > 0 ? dependencies : undefined
             }
           );
+
+          // Handle cancellation errors (expected when operations are superseded)
+          handle.promise.catch((err) => {
+            if (err instanceof OperationCancelledError) {
+              // Operation was cancelled by a newer operation - this is expected
+              return;
+            }
+            // Real errors are logged by PersistenceCoordinator
+            // Re-throw would create unhandled rejection, so we silently handle
+          });
         }
       }
     } catch (error) {
@@ -440,7 +451,8 @@ export class SharedNodeStore {
           dependencies.push(node.beforeSiblingId);
         }
 
-        PersistenceCoordinator.getInstance().persist(
+        // Capture handle to catch cancellation errors
+        const handle = PersistenceCoordinator.getInstance().persist(
           node.id,
           async () => {
             try {
@@ -468,6 +480,16 @@ export class SharedNodeStore {
             dependencies: dependencies.length > 0 ? dependencies : undefined
           }
         );
+
+        // Handle cancellation errors (expected when operations are superseded)
+        handle.promise.catch((err) => {
+          if (err instanceof OperationCancelledError) {
+            // Operation was cancelled by a newer operation - this is expected
+            return;
+          }
+          // Real errors are logged by PersistenceCoordinator
+          // Re-throw would create unhandled rejection, so we silently handle
+        });
       }
     }
   }
@@ -511,8 +533,8 @@ export class SharedNodeStore {
           PersistenceCoordinator.getInstance().isPending(depId)
         );
 
-        // Delegate to PersistenceCoordinator
-        PersistenceCoordinator.getInstance().persist(
+        // Capture handle to catch cancellation errors
+        const handle = PersistenceCoordinator.getInstance().persist(
           nodeId,
           async () => {
             try {
@@ -536,6 +558,16 @@ export class SharedNodeStore {
             dependencies: pendingDeps.length > 0 ? pendingDeps : undefined
           }
         );
+
+        // Handle cancellation errors (expected when operations are superseded)
+        handle.promise.catch((err) => {
+          if (err instanceof OperationCancelledError) {
+            // Operation was cancelled by a newer operation - this is expected
+            return;
+          }
+          // Real errors are logged by PersistenceCoordinator
+          // Re-throw would create unhandled rejection, so we silently handle
+        });
       }
     }
   }

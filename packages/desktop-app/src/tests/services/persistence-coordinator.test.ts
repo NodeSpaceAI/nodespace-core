@@ -26,8 +26,8 @@ describe('PersistenceCoordinator', () => {
     coordinator.resetTestState();
   });
 
-  afterEach(() => {
-    coordinator.reset();
+  afterEach(async () => {
+    await coordinator.reset();
   });
 
   // ========================================================================
@@ -777,7 +777,7 @@ describe('PersistenceCoordinator', () => {
       expect(metricsBefore.completedOperations).toBeGreaterThan(0);
 
       // Reset
-      coordinator.reset();
+      await coordinator.reset();
 
       const metricsAfter = coordinator.getMetrics();
       expect(metricsAfter.totalOperations).toBe(0);

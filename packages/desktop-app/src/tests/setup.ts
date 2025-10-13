@@ -178,7 +178,6 @@ beforeEach(() => {
 
 afterEach(async () => {
   const coordinator = PersistenceCoordinator.getInstance();
-  // Wait a bit for pending operations to settle
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  coordinator.reset();
+  // Reset and wait for cancellation cleanup
+  await coordinator.reset();
 });
