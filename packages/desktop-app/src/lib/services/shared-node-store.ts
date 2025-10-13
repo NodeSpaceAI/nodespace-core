@@ -258,18 +258,23 @@ export class SharedNodeStore {
       // - Content changes persist in debounced mode
       // This ensures hierarchy operations work while debouncing rapid typing
       if (!options.skipPersistence && source.type !== 'database') {
-        // CRITICAL: Check if beforeSiblingId references an unpersisted node BEFORE building updatedNode
-        // If it does, remove it from changes to avoid FOREIGN KEY constraint violations
+        // CRITICAL: Check if beforeSiblingId references an unpersisted placeholder
+        // Placeholders use skipPersistence, so there's no operation to wait for
+        // Remove beforeSiblingId from changes to avoid FOREIGN KEY constraint violation
         if ('beforeSiblingId' in changes && changes.beforeSiblingId) {
           const isPersisted = this.persistedNodeIds.has(changes.beforeSiblingId);
-
-          // Skip persisting beforeSiblingId if the referenced node hasn't been persisted yet
-          // This prevents FOREIGN KEY constraint violations when creating nodes in quick succession
           if (!isPersisted) {
-            // Remove beforeSiblingId from changes that will be persisted
-            // It will be updated later when the referenced node is persisted
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            delete (changes as any).beforeSiblingId;
+            // Check if there's a pending operation for this node (would mean it's being persisted)
+            const coordinator = PersistenceCoordinator.getInstance();
+            const hasPendingOp = coordinator.isPending(changes.beforeSiblingId);
+
+            if (!hasPendingOp) {
+              // No pending operation means this is a placeholder that won't be persisted yet
+              // Remove beforeSiblingId to avoid FOREIGN KEY error
+              // It will be set later when the placeholder gets content and is persisted
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              delete (changes as any).beforeSiblingId;
+            }
           }
         }
 
@@ -377,6 +382,11 @@ export class SharedNodeStore {
                   // Node doesn't exist yet (was a placeholder or new node)
                   await tauriNodeService.createNode(updatedNode);
                   this.persistedNodeIds.add(nodeId); // Track as persisted
+
+                  // CRITICAL: After persisting a placeholder that now has content,
+                  // update any nodes that reference this node in their beforeSiblingId
+                  // (these updates were skipped earlier to avoid FOREIGN KEY violations)
+                  this.updateDeferredSiblingReferences(nodeId);
                 }
                 // Mark update as persisted
                 this.markUpdatePersisted(nodeId, update);
@@ -744,6 +754,63 @@ export class SharedNodeStore {
     } else if (this.hasPendingSave(nodeId)) {
       // Node has a pending save operation, wait for it
       await this.waitForNodeSaves([nodeId]);
+    }
+  }
+
+  /**
+   * Update deferred sibling references after a placeholder is persisted
+   *
+   * ARCHITECTURAL DECISION:
+   * Placeholders use skipPersistence to avoid backend validation errors (empty content).
+   * When they're later persisted (user adds content), we must manually update any
+   * sibling nodes that reference them in beforeSiblingId. These updates were deferred
+   * earlier to avoid FOREIGN KEY constraint violations.
+   *
+   * This is simpler than conditional persistence and avoids circular dependencies.
+   * Alternative approaches (conditional persistence, polling) add complexity without
+   * significant benefit. This manual reconciliation is a proven pattern.
+   *
+   * @param newlyPersistedNodeId - ID of the node that was just persisted
+   */
+  private updateDeferredSiblingReferences(newlyPersistedNodeId: string): void {
+    // Find all nodes in memory that have this node as their beforeSiblingId
+    // but haven't persisted that reference yet (due to FOREIGN KEY constraints)
+    const nodesToUpdate: string[] = [];
+    for (const [id, node] of this.nodes.entries()) {
+      if (node.beforeSiblingId === newlyPersistedNodeId && this.persistedNodeIds.has(id)) {
+        // This persisted node references the newly-persisted node
+        nodesToUpdate.push(id);
+      }
+    }
+
+    if (nodesToUpdate.length === 0) {
+      return; // No deferred updates needed
+    }
+
+    console.log(
+      `[SharedNodeStore] Reconciling ${nodesToUpdate.length} deferred sibling references to ${newlyPersistedNodeId}`
+    );
+
+    // Update each node's beforeSiblingId through normal updateNode flow
+    // Use 'external' source to trigger persistence while avoiding viewer-specific logic
+    const reconciliationSource: UpdateSource = {
+      type: 'external',
+      source: 'SharedNodeStore',
+      description: 'deferred-sibling-reference-reconciliation'
+    };
+
+    for (const nodeId of nodesToUpdate) {
+      // Trigger update through SharedNodeStore (not direct database call)
+      // This respects the architecture: SharedNodeStore → PersistenceCoordinator → Database
+      this.updateNode(
+        nodeId,
+        { beforeSiblingId: newlyPersistedNodeId },
+        reconciliationSource,
+        { skipConflictDetection: true } // Skip conflict detection for reconciliation
+      );
+      console.log(
+        `[SharedNodeStore] Queued deferred beforeSiblingId update: ${nodeId} -> ${newlyPersistedNodeId}`
+      );
     }
   }
 

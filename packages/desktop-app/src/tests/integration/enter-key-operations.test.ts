@@ -210,6 +210,34 @@ describe('Enter Key Operations', () => {
 
     // Verify no errors occurred during the operation
     expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+    // PART 2: Verify deferred update happens when placeholder gets content
+    // This is the critical part - the sibling relationship must be established in DB
+    // when the placeholder becomes a real node
+
+    // Add content to the placeholder node
+    service.updateNodeContent(newNodeId, 'New content above');
+    await waitForDatabaseWrites();
+
+    // CRITICAL ASSERTION: New node should NOW exist in database
+    const dbNewNodeAfterContent = await adapter.getNode(newNodeId);
+    expect(dbNewNodeAfterContent).toBeDefined();
+    expect(dbNewNodeAfterContent?.content).toBe('New content above');
+
+    // CRITICAL ASSERTION: Original node's beforeSiblingId should NOW be updated in database
+    // The deferred update should have been triggered when the placeholder was persisted
+    const dbExistingNodeAfterContent = await adapter.getNode('existing-node');
+    expect(dbExistingNodeAfterContent).toBeDefined();
+    expect(dbExistingNodeAfterContent?.beforeSiblingId).toBe(newNodeId);
+
+    // Verify the complete sibling chain is correct
+    // - New node above: beforeSiblingId = null (first in list)
+    // - Existing node below: beforeSiblingId = newNodeId (points to node above)
+    expect(dbNewNodeAfterContent?.beforeSiblingId).toBeNull();
+    expect(dbExistingNodeAfterContent?.beforeSiblingId).toBe(newNodeId);
+
+    // Verify no errors during the deferred update
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
   });
 
   it('should use insertAtBeginning flag to insert node before current', async () => {
