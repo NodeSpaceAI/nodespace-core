@@ -1287,7 +1287,7 @@
   const minDepth = $derived(() => {
     const nodes = nodeManager.visibleNodes;
     if (nodes.length === 0) return 0;
-    return Math.min(...nodes.map(n => n.depth || 0));
+    return Math.min(...nodes.map((n) => n.depth || 0));
   });
 
   // Clear focusedNodeId after a delay to prevent permanent focus

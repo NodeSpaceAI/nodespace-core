@@ -1613,6 +1613,22 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         inheritHeaderLevel?: number;
       }
     ): void {
+      // Clear existing unpersisted placeholder nodes for the current view parent from SharedNodeStore
+      // This prevents duplicate placeholder nodes when navigating between different parent contexts
+      // Only deletes empty text placeholders (not persisted to database) to maintain multi-tab safety
+      // TODO: Implement proper reference counting for full multi-tab/multi-pane support (see Issue #206)
+      if (_viewParentId !== null) {
+        const existingNodes = sharedNodeStore.getNodesForParent(_viewParentId);
+        const databaseSource = { type: 'database' as const, reason: 'view-cleanup' };
+        for (const node of existingNodes) {
+          // Only delete unpersisted placeholders (empty text nodes)
+          // Persisted nodes will be reloaded from database if needed
+          if (node.content === '' && node.nodeType === 'text') {
+            sharedNodeStore.deleteNode(node.id, databaseSource);
+          }
+        }
+      }
+
       // Clear existing state
       Object.keys(_uiState).forEach((id) => delete _uiState[id]);
       _rootNodeIds = [];
