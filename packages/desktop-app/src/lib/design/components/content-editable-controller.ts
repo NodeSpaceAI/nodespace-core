@@ -1763,19 +1763,25 @@ export class ContentEditableController {
       let isOnBlankLine = false;
 
       // Case 1: Cursor directly on a BR element
-      if (range.startContainer.nodeType === Node.ELEMENT_NODE &&
-          (range.startContainer as Element).tagName === 'BR') {
+      if (
+        range.startContainer.nodeType === Node.ELEMENT_NODE &&
+        (range.startContainer as Element).tagName === 'BR'
+      ) {
         isOnBlankLine = true;
       }
 
       // Case 2: Cursor is inside a DIV that contains only a BR (blank line from Shift+Enter)
-      if (range.startContainer.nodeType === Node.ELEMENT_NODE &&
-          (range.startContainer as Element).tagName === 'DIV') {
+      if (
+        range.startContainer.nodeType === Node.ELEMENT_NODE &&
+        (range.startContainer as Element).tagName === 'DIV'
+      ) {
         const div = range.startContainer as Element;
         // Check if this div contains only a BR
-        if (div.childNodes.length === 1 &&
-            div.firstChild?.nodeType === Node.ELEMENT_NODE &&
-            (div.firstChild as Element).tagName === 'BR') {
+        if (
+          div.childNodes.length === 1 &&
+          div.firstChild?.nodeType === Node.ELEMENT_NODE &&
+          (div.firstChild as Element).tagName === 'BR'
+        ) {
           isOnBlankLine = true;
         }
       }
@@ -1783,11 +1789,18 @@ export class ContentEditableController {
       // Case 3: Cursor is at position in parent element, check if next/prev sibling is BR
       if (range.startContainer === this.element) {
         const childAtOffset = this.element.childNodes[range.startOffset];
-        const prevChild = range.startOffset > 0 ? this.element.childNodes[range.startOffset - 1] : null;
+        const prevChild =
+          range.startOffset > 0 ? this.element.childNodes[range.startOffset - 1] : null;
 
         // Check if we're right before a BR or right after a BR
-        if ((childAtOffset && childAtOffset.nodeType === Node.ELEMENT_NODE && (childAtOffset as Element).tagName === 'BR') ||
-            (prevChild && prevChild.nodeType === Node.ELEMENT_NODE && (prevChild as Element).tagName === 'BR')) {
+        if (
+          (childAtOffset &&
+            childAtOffset.nodeType === Node.ELEMENT_NODE &&
+            (childAtOffset as Element).tagName === 'BR') ||
+          (prevChild &&
+            prevChild.nodeType === Node.ELEMENT_NODE &&
+            (prevChild as Element).tagName === 'BR')
+        ) {
           isOnBlankLine = true;
         }
       }
@@ -1796,7 +1809,10 @@ export class ContentEditableController {
         // Return last known valid horizontal position (from when cursor was on text)
         // If we don't have a last known position (user went straight to blank line),
         // measure from the blank line's container element
-        if (this.lastKnownPixelOffset === 0 && range.startContainer.nodeType === Node.ELEMENT_NODE) {
+        if (
+          this.lastKnownPixelOffset === 0 &&
+          range.startContainer.nodeType === Node.ELEMENT_NODE
+        ) {
           const container = range.startContainer as Element;
           const rect = container.getBoundingClientRect();
           return rect.left + window.scrollX;
@@ -1830,7 +1846,7 @@ export class ContentEditableController {
         scrollX: window.scrollX,
         pixelOffset,
         lastKnown: this.lastKnownPixelOffset,
-        containerType: range.startContainer.nodeName,
+        containerType: range.startContainer.nodeName
       });
 
       // Return absolute pixel position including horizontal scroll offset
@@ -1990,7 +2006,7 @@ export class ContentEditableController {
       currentLineIndex,
       result: currentLineIndex === 0,
       container: range.startContainer.nodeName,
-      offset: range.startOffset,
+      offset: range.startOffset
     });
 
     // If we can determine the line index, check if it's 0 (first line)
@@ -2058,7 +2074,11 @@ export class ContentEditableController {
     // This lets browser handle ArrowUp within the blank line structure naturally
     if (range.startContainer === this.element && range.startOffset === 0) {
       const firstChild = this.element.firstChild;
-      if (firstChild && firstChild.nodeType === Node.ELEMENT_NODE && (firstChild as Element).tagName === 'BR') {
+      if (
+        firstChild &&
+        firstChild.nodeType === Node.ELEMENT_NODE &&
+        (firstChild as Element).tagName === 'BR'
+      ) {
         return false; // On leading blank line, don't navigate away - stay in node
       }
     }
@@ -2066,7 +2086,11 @@ export class ContentEditableController {
     // If cursor is right after a leading <br> (offset 1), we're on first line but past the blank
     if (range.startContainer === this.element && range.startOffset === 1) {
       const firstChild = this.element.firstChild;
-      if (firstChild && firstChild.nodeType === Node.ELEMENT_NODE && (firstChild as Element).tagName === 'BR') {
+      if (
+        firstChild &&
+        firstChild.nodeType === Node.ELEMENT_NODE &&
+        (firstChild as Element).tagName === 'BR'
+      ) {
         return true; // Cursor is right after leading <br>, still first line
       }
     }
