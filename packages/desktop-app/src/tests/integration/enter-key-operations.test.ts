@@ -156,6 +156,62 @@ describe('Enter Key Operations', () => {
     expect(dbNode?.content).toMatch(/^##\s+/);
   });
 
+  it('should NOT persist beforeSiblingId when creating placeholder node above (FOREIGN KEY regression)', async () => {
+    // Regression test for Issue #208: FOREIGN KEY constraint violation
+    // When creating a node above (Enter at beginning), the new node is a placeholder
+    // that won't be persisted until it gets content. We must NOT update the original
+    // node's beforeSiblingId to point to the unpersisted placeholder.
+
+    // Setup: Create root-level existing node (simpler test without parent dependencies)
+    const existingNode = await createAndFetchNode(adapter, {
+      id: 'existing-node',
+      nodeType: 'text',
+      content: '# Hello',
+      parentId: null,
+      containerNodeId: null,
+      beforeSiblingId: null,
+      properties: {},
+      embeddingVector: null,
+      mentions: []
+    });
+    expect(existingNode).toBeDefined();
+
+    // Initialize service with the existing node
+    service.initializeNodes([existingNode]);
+    await waitForDatabaseWrites();
+
+    // Create a placeholder node above (insertAtBeginning=true)
+    // This simulates pressing Enter at the beginning of the line
+    const newNodeId = service.createPlaceholderNode(
+      'existing-node',
+      'text',
+      1, // Header level
+      true, // insertAtBeginning - creates node ABOVE
+      '# Hello' // Original content
+    );
+
+    // Wait for any persistence attempts
+    await waitForDatabaseWrites();
+
+    // CRITICAL ASSERTION: The new placeholder should NOT exist in database
+    const dbNewNode = await adapter.getNode(newNodeId);
+    expect(dbNewNode).toBeNull(); // Placeholder not persisted
+
+    // CRITICAL ASSERTION: The existing node should NOT have beforeSiblingId updated in database
+    // because that would reference a non-existent node (FOREIGN KEY violation)
+    const dbExistingNode = await adapter.getNode('existing-node');
+    expect(dbExistingNode).toBeDefined();
+    // beforeSiblingId should still be null (or whatever it was), NOT pointing to newNodeId
+    expect(dbExistingNode?.beforeSiblingId).not.toBe(newNodeId);
+
+    // Verify: In-memory state DOES have the relationship (for UI rendering)
+    const memoryExistingNode = service.nodes.get('existing-node');
+    expect(memoryExistingNode?.beforeSiblingId).toBe(newNodeId); // UI state is correct
+
+    // Verify no errors occurred during the operation
+    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+  });
+
   it('should use insertAtBeginning flag to insert node before current', async () => {
     // Setup: Create two nodes
     const node1 = await createAndFetchNode(adapter, {

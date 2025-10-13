@@ -258,6 +258,21 @@ export class SharedNodeStore {
       // - Content changes persist in debounced mode
       // This ensures hierarchy operations work while debouncing rapid typing
       if (!options.skipPersistence && source.type !== 'database') {
+        // CRITICAL: Check if beforeSiblingId references an unpersisted node BEFORE building updatedNode
+        // If it does, remove it from changes to avoid FOREIGN KEY constraint violations
+        if ('beforeSiblingId' in changes && changes.beforeSiblingId) {
+          const isPersisted = this.persistedNodeIds.has(changes.beforeSiblingId);
+
+          // Skip persisting beforeSiblingId if the referenced node hasn't been persisted yet
+          // This prevents FOREIGN KEY constraint violations when creating nodes in quick succession
+          if (!isPersisted) {
+            // Remove beforeSiblingId from changes that will be persisted
+            // It will be updated later when the referenced node is persisted
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            delete (changes as any).beforeSiblingId;
+          }
+        }
+
         const isStructuralChange =
           'parentId' in changes || 'beforeSiblingId' in changes || 'containerNodeId' in changes;
         const isContentChange = 'content' in changes;
@@ -303,6 +318,8 @@ export class SharedNodeStore {
            * Add dependency when:
            * - beforeSiblingId is set
            * - NOT already persisted to database
+           *
+           * NOTE: Placeholder check is done earlier (line 263-274) to avoid FOREIGN KEY violations
            */
           if (
             updatedNode.beforeSiblingId &&
@@ -328,7 +345,34 @@ export class SharedNodeStore {
                 );
 
                 if (isPersistedToDatabase) {
-                  await tauriNodeService.updateNode(nodeId, updatedNode);
+                  // IMPORTANT: For UPDATE, only send the changes (Partial<Node>), not the full node
+                  // The backend expects NodeUpdate which is a partial update of specific fields
+                  // Convert nullable fields properly (undefined = don't update, null = set to null)
+                  const updatePayload: Partial<Node> = {};
+                  for (const [key, value] of Object.entries(changes)) {
+                    // @ts-expect-error - Dynamic key access is safe here for partial update
+                    updatePayload[key] = value;
+                  }
+
+                  try {
+                    await tauriNodeService.updateNode(nodeId, updatePayload);
+                  } catch (updateError) {
+                    // If UPDATE fails because node doesn't exist (NodeNotFound), try CREATE instead
+                    // This handles cases where persistedNodeIds is out of sync (page reload, database reset)
+                    if (
+                      updateError instanceof Error &&
+                      updateError.message.includes('NodeNotFound')
+                    ) {
+                      console.warn(
+                        `[SharedNodeStore] Node ${nodeId} not found in database, creating instead of updating`
+                      );
+                      await tauriNodeService.createNode(updatedNode);
+                      this.persistedNodeIds.add(nodeId); // Now it's persisted
+                    } else {
+                      // Re-throw other errors
+                      throw updateError;
+                    }
+                  }
                 } else {
                   // Node doesn't exist yet (was a placeholder or new node)
                   await tauriNodeService.createNode(updatedNode);
