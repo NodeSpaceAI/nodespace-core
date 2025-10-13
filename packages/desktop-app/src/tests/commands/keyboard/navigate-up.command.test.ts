@@ -206,6 +206,155 @@ describe('NavigateUpCommand', () => {
     });
   });
 
+  describe('Edge Cases - Blank Line Navigation (Regression Tests)', () => {
+    it('should allow navigation through leading blank DIV when cursor in second DIV (ELEMENT_NODE)', () => {
+      const context = createContext({
+        key: 'ArrowUp',
+        allowMultiline: true
+      });
+
+      // Create scenario: <div><br></div><div>Text</div>
+      // Cursor is at start of second DIV (ELEMENT_NODE case)
+      const div1 = document.createElement('div');
+      const br = document.createElement('br');
+      div1.appendChild(br);
+      const div2 = document.createElement('div');
+      div2.textContent = 'Text';
+      mockController.element?.appendChild(div1);
+      mockController.element?.appendChild(div2);
+
+      // Mock selection where cursor is in the DIV itself (ELEMENT_NODE), not in text node
+      const mockRange = {
+        startContainer: div2, // ELEMENT_NODE, not TEXT_NODE
+        startOffset: 0,
+        cloneRange: vi.fn().mockReturnValue({
+          selectNodeContents: vi.fn(),
+          setEnd: vi.fn(),
+          toString: vi.fn().mockReturnValue('\n') // Content before cursor (empty div = newline)
+        })
+      };
+      const mockSelection = {
+        rangeCount: 1,
+        getRangeAt: vi.fn().mockReturnValue(mockRange)
+      };
+      vi.spyOn(window, 'getSelection').mockReturnValue(mockSelection as unknown as Selection);
+
+      // Should return false to let browser handle navigation to previous DIV
+      expect(command.canExecute(context)).toBe(false);
+    });
+
+    it('should allow navigation through leading blank DIV when cursor at start of text in second DIV', () => {
+      const context = createContext({
+        key: 'ArrowUp',
+        allowMultiline: true
+      });
+
+      // Create scenario: <div><br></div><div>Text</div>
+      // Cursor is at start of "Text" (TEXT_NODE case, offset 0)
+      const div1 = document.createElement('div');
+      const br = document.createElement('br');
+      div1.appendChild(br);
+      const div2 = document.createElement('div');
+      const textNode = document.createTextNode('Text');
+      div2.appendChild(textNode);
+      mockController.element?.appendChild(div1);
+      mockController.element?.appendChild(div2);
+
+      // Mock selection where cursor is in text node at offset 0
+      const mockRange = {
+        startContainer: textNode, // TEXT_NODE
+        startOffset: 0,
+        cloneRange: vi.fn().mockReturnValue({
+          selectNodeContents: vi.fn(),
+          setEnd: vi.fn(),
+          toString: vi.fn().mockReturnValue('\n') // Content before cursor
+        })
+      };
+      const mockSelection = {
+        rangeCount: 1,
+        getRangeAt: vi.fn().mockReturnValue(mockRange)
+      };
+      vi.spyOn(window, 'getSelection').mockReturnValue(mockSelection as unknown as Selection);
+
+      // Should return false to let browser handle navigation to previous DIV
+      expect(command.canExecute(context)).toBe(false);
+    });
+
+    it('should navigate to previous node when at absolute start (first DIV)', () => {
+      const context = createContext({
+        key: 'ArrowUp',
+        allowMultiline: true
+      });
+
+      // Create scenario: <div>Text</div><div>More</div>
+      // Cursor is at start of first DIV
+      const div1 = document.createElement('div');
+      const textNode = document.createTextNode('Text');
+      div1.appendChild(textNode);
+      const div2 = document.createElement('div');
+      div2.textContent = 'More';
+      mockController.element?.appendChild(div1);
+      mockController.element?.appendChild(div2);
+
+      // Mock selection where cursor is at start of first DIV's text
+      const mockRange = {
+        startContainer: textNode,
+        startOffset: 0,
+        cloneRange: vi.fn().mockReturnValue({
+          selectNodeContents: vi.fn(),
+          setEnd: vi.fn(),
+          toString: vi.fn().mockReturnValue('') // No content before cursor
+        })
+      };
+      const mockSelection = {
+        rangeCount: 1,
+        getRangeAt: vi.fn().mockReturnValue(mockRange)
+      };
+      vi.spyOn(window, 'getSelection').mockReturnValue(mockSelection as unknown as Selection);
+
+      // Should return true to navigate to previous node
+      expect(command.canExecute(context)).toBe(true);
+    });
+
+    it('should handle trailing blank DIVs correctly when navigating up', () => {
+      const context = createContext({
+        key: 'ArrowUp',
+        allowMultiline: true
+      });
+
+      // Create scenario: <div>Text</div><div><br></div><div><br></div>
+      // Cursor is in last DIV (trailing blank)
+      const div1 = document.createElement('div');
+      div1.textContent = 'Text';
+      const div2 = document.createElement('div');
+      div2.innerHTML = '<br>';
+      const div3 = document.createElement('div');
+      div3.innerHTML = '<br>';
+      mockController.element?.appendChild(div1);
+      mockController.element?.appendChild(div2);
+      mockController.element?.appendChild(div3);
+
+      // Mock selection where cursor is in third DIV
+      const mockRange = {
+        startContainer: div3,
+        startOffset: 0,
+        cloneRange: vi.fn().mockReturnValue({
+          selectNodeContents: vi.fn(),
+          setEnd: vi.fn(),
+          toString: vi.fn().mockReturnValue('Text\n\n') // Content before cursor
+        })
+      };
+      const mockSelection = {
+        rangeCount: 1,
+        getRangeAt: vi.fn().mockReturnValue(mockRange)
+      };
+      vi.spyOn(window, 'getSelection').mockReturnValue(mockSelection as unknown as Selection);
+
+      // Should return false to let browser handle navigation to previous DIV
+      expect(command.canExecute(context)).toBe(false);
+    });
+  });
+
   // Helper function to create mock context
   function createContext(options: {
     key: string;
