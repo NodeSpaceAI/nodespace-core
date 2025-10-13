@@ -1282,6 +1282,14 @@
   // Track focused node for autoFocus after node type changes
   let focusedNodeId = $state<string | null>(null);
 
+  // Calculate minimum depth for relative positioning
+  // Children of a container node should start at depth 0 in the viewer
+  const minDepth = $derived(() => {
+    const nodes = nodeManager.visibleNodes;
+    if (nodes.length === 0) return 0;
+    return Math.min(...nodes.map(n => n.depth || 0));
+  });
+
   // Clear focusedNodeId after a delay to prevent permanent focus
   $effect(() => {
     if (focusedNodeId) {
@@ -1378,10 +1386,11 @@
   <!-- Scrollable Node Content Area (children structure) -->
   <div class="node-content-area">
     {#each nodeManager.visibleNodes as node (node.id)}
+      {@const relativeDepth = (node.depth || 0) - minDepth()}
       <div
         class="node-container"
         data-has-children={node.children?.length > 0}
-        style="margin-left: {(node.depth || 0) * 2.5}rem"
+        style="margin-left: {relativeDepth * 2.5}rem"
       >
         <div class="node-content-wrapper">
           <!-- Chevron for parent nodes using design system approach -->
