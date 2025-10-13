@@ -58,7 +58,7 @@ describe('NavigateUpCommand', () => {
       expect(command.canExecute(context)).toBe(true);
     });
 
-    it('should not execute for ArrowUp when not at first line in multiline node with multiple lines', () => {
+    it('should not execute for ArrowUp when not at absolute start in multiline node with multiple lines', () => {
       const context = createContext({
         key: 'ArrowUp',
         allowMultiline: true
@@ -66,13 +66,27 @@ describe('NavigateUpCommand', () => {
 
       // Mock that node has multiple lines (DIVs exist)
       const div1 = document.createElement('div');
+      div1.textContent = 'First line';
       const div2 = document.createElement('div');
+      div2.textContent = 'Second line';
       mockController.element?.appendChild(div1);
       mockController.element?.appendChild(div2);
 
-      // Mock that we're NOT at first line
-      // @ts-expect-error - vi.fn() creates a mock with mockReturnValue
-      mockController.isAtFirstLine.mockReturnValue(false);
+      // Mock window.getSelection to indicate cursor is in second DIV (not at absolute start)
+      const mockRange = {
+        startContainer: div2.firstChild,
+        startOffset: 0,
+        cloneRange: vi.fn().mockReturnValue({
+          selectNodeContents: vi.fn(),
+          setEnd: vi.fn(),
+          toString: vi.fn().mockReturnValue('First line\n') // Content before cursor
+        })
+      };
+      const mockSelection = {
+        rangeCount: 1,
+        getRangeAt: vi.fn().mockReturnValue(mockRange)
+      };
+      vi.spyOn(window, 'getSelection').mockReturnValue(mockSelection as any);
 
       expect(command.canExecute(context)).toBe(false);
     });
