@@ -25,6 +25,30 @@ use std::sync::Arc;
 /// The backend converts this to NULL in the database for proper relational semantics.
 const ROOT_CONTAINER_ID: &str = "root";
 
+/// Check if a string matches date node format: YYYY-MM-DD
+///
+/// Valid examples: "2025-10-13", "2024-01-01"
+/// Invalid examples: "abcd-ef-gh", "2025-10-1", "25-10-13"
+fn is_date_node_id(id: &str) -> bool {
+    // Must be exactly 10 characters: YYYY-MM-DD
+    if id.len() != 10 {
+        return false;
+    }
+
+    // Check format: 4 digits, dash, 2 digits, dash, 2 digits
+    let bytes = id.as_bytes();
+    bytes[0].is_ascii_digit()
+        && bytes[1].is_ascii_digit()
+        && bytes[2].is_ascii_digit()
+        && bytes[3].is_ascii_digit()
+        && bytes[4] == b'-'
+        && bytes[5].is_ascii_digit()
+        && bytes[6].is_ascii_digit()
+        && bytes[7] == b'-'
+        && bytes[8].is_ascii_digit()
+        && bytes[9].is_ascii_digit()
+}
+
 /// Parse timestamp from database - handles both SQLite and RFC3339 formats
 fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, String> {
     // Try SQLite format first: "YYYY-MM-DD HH:MM:SS"
@@ -163,7 +187,7 @@ impl NodeService {
             let parent_exists = self.node_exists(parent_id).await?;
             if !parent_exists {
                 // Check if this is a date node (format: YYYY-MM-DD)
-                if parent_id.len() == 10 && parent_id.chars().filter(|c| *c == '-').count() == 2 {
+                if is_date_node_id(parent_id) {
                     // Auto-create the date node
                     let date_node = Node {
                         id: parent_id.clone(),

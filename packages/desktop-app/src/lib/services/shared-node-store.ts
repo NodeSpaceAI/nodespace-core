@@ -272,8 +272,9 @@ export class SharedNodeStore {
               // No pending operation means this is a placeholder that won't be persisted yet
               // Remove beforeSiblingId to avoid FOREIGN KEY error
               // It will be set later when the placeholder gets content and is persisted
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              delete (changes as any).beforeSiblingId;
+              // Use proper type guard to allow deletion from Partial<Node>
+              type MutablePartialNode = { [K in keyof Partial<Node>]: Partial<Node>[K] };
+              delete (changes as MutablePartialNode).beforeSiblingId;
             }
           }
         }
@@ -345,9 +346,6 @@ export class SharedNodeStore {
               try {
                 // Check if node has been persisted - use in-memory tracking to avoid database query
                 const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
-                console.log(
-                  `[SharedNodeStore] Persisting node ${nodeId}: ${isPersistedToDatabase ? 'UPDATE' : 'CREATE'}`
-                );
 
                 if (isPersistedToDatabase) {
                   // IMPORTANT: For UPDATE, only send the changes (Partial<Node>), not the full node
@@ -731,7 +729,6 @@ export class SharedNodeStore {
     if (!this.persistedNodeIds.has(nodeId)) {
       // Node was never persisted (e.g., placeholder node created with skipPersistence)
       // Force persist it now before any child operations that reference it
-      console.log(`[SharedNodeStore] Force-persisting unpersisted node: ${nodeId}`);
 
       // Trigger persistence via PersistenceCoordinator
       const handle = PersistenceCoordinator.getInstance().persist(
@@ -746,7 +743,6 @@ export class SharedNodeStore {
         await handle.promise;
         // Mark as persisted on success
         this.persistedNodeIds.add(nodeId);
-        console.log(`[SharedNodeStore] Successfully persisted node: ${nodeId}`);
       } catch (error) {
         console.error(`[SharedNodeStore] Failed to persist node ${nodeId}:`, error);
         throw error;
@@ -787,10 +783,6 @@ export class SharedNodeStore {
       return; // No deferred updates needed
     }
 
-    console.log(
-      `[SharedNodeStore] Reconciling ${nodesToUpdate.length} deferred sibling references to ${newlyPersistedNodeId}`
-    );
-
     // Update each node's beforeSiblingId through normal updateNode flow
     // Use 'external' source to trigger persistence while avoiding viewer-specific logic
     const reconciliationSource: UpdateSource = {
@@ -807,9 +799,6 @@ export class SharedNodeStore {
         { beforeSiblingId: newlyPersistedNodeId },
         reconciliationSource,
         { skipConflictDetection: true } // Skip conflict detection for reconciliation
-      );
-      console.log(
-        `[SharedNodeStore] Queued deferred beforeSiblingId update: ${nodeId} -> ${newlyPersistedNodeId}`
       );
     }
   }
