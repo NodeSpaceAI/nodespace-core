@@ -119,18 +119,22 @@ export class NavigateUpCommand implements KeyboardCommand {
 
     // Special case: If cursor is at the start of a DIV that's not the first DIV,
     // let browser handle (it should navigate to previous line)
-    if (range.startContainer.nodeType === Node.TEXT_NODE) {
-      const textNode = range.startContainer;
-      const parentDiv = textNode.parentElement;
+    let currentDiv: Element | null = null;
 
-      if (parentDiv && parentDiv.tagName === 'DIV' && range.startOffset === 0) {
-        // Cursor is at start of text within a DIV
-        // Check if this DIV is the first child
-        const divIndex = Array.from(controller.element.children).indexOf(parentDiv);
-        if (divIndex > 0) {
-          // Not the first DIV, let browser navigate to previous line
-          return false;
-        }
+    if (range.startContainer.nodeType === Node.TEXT_NODE) {
+      currentDiv = range.startContainer.parentElement;
+    } else if (range.startContainer.nodeType === Node.ELEMENT_NODE) {
+      // Cursor might be directly in the DIV (e.g., at start of <br>)
+      currentDiv = range.startContainer as Element;
+    }
+
+    if (currentDiv && currentDiv.tagName === 'DIV' && range.startOffset === 0) {
+      // Cursor is at start of a DIV
+      // Check if this DIV is the first child
+      const divIndex = Array.from(controller.element.children).indexOf(currentDiv);
+      if (divIndex > 0) {
+        // Not the first DIV, let browser navigate to previous line
+        return false;
       }
     }
 

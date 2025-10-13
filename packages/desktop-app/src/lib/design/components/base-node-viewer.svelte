@@ -60,9 +60,6 @@
   // Start as true to prevent watcher from firing before loadChildrenForParent() completes
   let isLoadingInitialNodes = true;
 
-  // Time to wait for setRawMarkdown() to complete and create DIV structure
-  const DOM_STRUCTURE_SETTLE_DELAY_MS = 20;
-
   // Set view context and load children when parentId changes
   $effect(() => {
     nodeManager.setViewParentId(parentId);
@@ -1165,9 +1162,10 @@
 
       targetElement.focus();
 
-      // Wait for DOM to update after focus (transition to editing mode creates DIV structure)
-      // Increased delay to ensure setRawMarkdown() completes and DIVs are created
-      setTimeout(() => {
+      // Wait for DOM to update after focus
+      // With DIVs in both display and editing modes, structure is already ready
+      // Use requestAnimationFrame for minimal delay (next paint frame)
+      requestAnimationFrame(() => {
         // Check if multiline or single-line
         const divElements = targetElement.querySelectorAll(':scope > div');
         const isMultiline = divElements.length > 0;
@@ -1187,7 +1185,7 @@
 
         // Show caret after positioning is complete
         targetElement.style.caretColor = '';
-      }, DOM_STRUCTURE_SETTLE_DELAY_MS);
+      });
     }, 0);
 
     return true;

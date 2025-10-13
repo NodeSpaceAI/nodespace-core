@@ -86,7 +86,7 @@ describe('NavigateUpCommand', () => {
         rangeCount: 1,
         getRangeAt: vi.fn().mockReturnValue(mockRange)
       };
-      vi.spyOn(window, 'getSelection').mockReturnValue(mockSelection as any);
+      vi.spyOn(window, 'getSelection').mockReturnValue(mockSelection as unknown as Selection);
 
       expect(command.canExecute(context)).toBe(false);
     });
