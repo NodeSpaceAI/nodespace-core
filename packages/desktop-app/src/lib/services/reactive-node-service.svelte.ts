@@ -1643,11 +1643,16 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
       // First pass: Add all nodes to SharedNodeStore
       // Auto-detect source: empty text nodes are placeholders (viewer), others are from database
+      const databaseSource = { type: 'database' as const, reason: 'initialization' };
+      const viewerSource = {
+        type: 'viewer' as const,
+        viewerId: 'base-node-viewer',
+        reason: 'placeholder-initialization'
+      };
+
       for (const node of nodes) {
         const isPlaceholder = node.nodeType === 'text' && node.content.trim() === '';
-        const source = isPlaceholder
-          ? { type: 'viewer' as const, reason: 'placeholder-initialization' }
-          : { type: 'database' as const, reason: 'initialization' };
+        const source = isPlaceholder ? viewerSource : databaseSource;
 
         sharedNodeStore.setNode(node, source);
         _uiState[node.id] = createDefaultUIState(node.id, {

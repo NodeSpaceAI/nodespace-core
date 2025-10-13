@@ -404,7 +404,11 @@ export class SharedNodeStore {
     }
 
     // Check if node is a placeholder (empty content text node from viewer)
-    const isPlaceholder = node.nodeType === 'text' && node.content.trim() === '' && source.type === 'viewer' && isNewNode;
+    const isPlaceholder =
+      node.nodeType === 'text' &&
+      node.content.trim() === '' &&
+      source.type === 'viewer' &&
+      isNewNode;
 
     // Phase 2.4: Persist to database
     // IMPORTANT: For NEW nodes from viewer, persist immediately (including empty ones!)
@@ -678,7 +682,9 @@ export class SharedNodeStore {
       // Trigger persistence via PersistenceCoordinator
       const handle = PersistenceCoordinator.getInstance().persist(
         nodeId,
-        () => tauriNodeService.createNode(node),
+        async () => {
+          await tauriNodeService.createNode(node);
+        },
         { mode: 'immediate' } // Use immediate mode for structural operations
       );
 
