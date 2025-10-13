@@ -546,28 +546,41 @@
 
       // Check if we have any nodes at all
       if (allNodes.length === 0) {
-        // No nodes - create placeholder
-        const placeholderId = globalThis.crypto.randomUUID();
-        nodeManager.initializeNodes(
-          [
-            {
-              id: placeholderId,
-              nodeType: 'text',
-              content: '',
-              parentId: parentId,
-              containerNodeId: parentId,
-              beforeSiblingId: null,
-              createdAt: new Date().toISOString(),
-              modifiedAt: new Date().toISOString(),
-              properties: {}
-            }
-          ],
-          {
+        // Check if placeholder already exists (reuse for multi-tab support)
+        const existingNodes = sharedNodeStore.getNodesForParent(parentId);
+
+        if (existingNodes.length === 0) {
+          // No placeholder exists - create one
+          const placeholderId = globalThis.crypto.randomUUID();
+          const placeholder: Node = {
+            id: placeholderId,
+            nodeType: 'text',
+            content: '',
+            parentId: parentId,
+            containerNodeId: parentId,
+            beforeSiblingId: null,
+            createdAt: new Date().toISOString(),
+            modifiedAt: new Date().toISOString(),
+            properties: {},
+            mentions: []
+          };
+
+          // Initialize with placeholder
+          // initializeNodes() will auto-detect this is a placeholder and use viewer source
+          nodeManager.initializeNodes([placeholder], {
             expanded: true,
             autoFocus: true,
             inheritHeaderLevel: 0
-          }
-        );
+          });
+        } else {
+          // Placeholder exists - initialize UI with existing placeholder
+          // initializeNodes() will auto-detect placeholders and use viewer source
+          nodeManager.initializeNodes(existingNodes, {
+            expanded: true,
+            autoFocus: true,
+            inheritHeaderLevel: 0
+          });
+        }
       } else {
         // Track initial content of ALL loaded nodes BEFORE initializing
         // This prevents the content watcher from thinking these are new nodes

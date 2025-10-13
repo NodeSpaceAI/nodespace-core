@@ -255,12 +255,13 @@ export class SharedNodeStore {
       // Phase 2.4: Persist to database (unless skipped)
       // IMPORTANT: For viewer-sourced updates:
       // - Structural changes (parentId, beforeSiblingId, containerNodeId) persist immediately
-      // - Content changes skip persistence - BaseNodeViewer handles with debouncing
-      // This ensures hierarchy operations work while avoiding duplicate writes on content edits
+      // - Content changes persist in debounced mode
+      // This ensures hierarchy operations work while debouncing rapid typing
       if (!options.skipPersistence && source.type !== 'database') {
         const isStructuralChange =
           'parentId' in changes || 'beforeSiblingId' in changes || 'containerNodeId' in changes;
-        const shouldPersist = source.type !== 'viewer' || isStructuralChange;
+        const isContentChange = 'content' in changes;
+        const shouldPersist = source.type !== 'viewer' || isStructuralChange || isContentChange;
 
         // Skip persisting empty text nodes - they exist in UI but not in database
         const isEmptyTextNode =
@@ -322,6 +323,10 @@ export class SharedNodeStore {
               try {
                 // Check if node has been persisted - use in-memory tracking to avoid database query
                 const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
+                console.log(
+                  `[SharedNodeStore] Persisting node ${nodeId}: ${isPersistedToDatabase ? 'UPDATE' : 'CREATE'}`
+                );
+
                 if (isPersistedToDatabase) {
                   await tauriNodeService.updateNode(nodeId, updatedNode);
                 } else {
@@ -398,17 +403,16 @@ export class SharedNodeStore {
       this.persistedNodeIds.add(node.id);
     }
 
+    // Check if node is a placeholder (empty content text node from viewer)
+    const isPlaceholder = node.nodeType === 'text' && node.content.trim() === '' && source.type === 'viewer' && isNewNode;
+
     // Phase 2.4: Persist to database
     // IMPORTANT: For NEW nodes from viewer, persist immediately (including empty ones!)
     // For UPDATES from viewer, skip persistence - BaseNodeViewer handles with debouncing
     // This ensures createNode() persistence works while avoiding duplicate writes on updates
     //
-    // NOTE: Empty nodes MUST be persisted to satisfy FOREIGN KEY constraints.
-    // When a node becomes a parent/container, it must exist in the database for children
-    // to reference it via parentId/containerNodeId. The old logic created a chicken-and-egg
-    // problem where parent nodes couldn't be persisted until they had content, but children
-    // couldn't be persisted without persisted parents. Backend accepts empty content.
-    if (!skipPersistence && source.type !== 'database') {
+    // EXCEPTION: Placeholders (empty text nodes) should NOT persist until user adds content
+    if (!skipPersistence && !isPlaceholder && source.type !== 'database') {
       const shouldPersist = source.type !== 'viewer' || isNewNode;
 
       if (shouldPersist) {
@@ -613,6 +617,15 @@ export class SharedNodeStore {
   }
 
   /**
+   * Check if a node has been persisted to the database
+   * @param nodeId - Node ID to check
+   * @returns True if node exists in database, false if only in memory
+   */
+  isNodePersisted(nodeId: string): boolean {
+    return this.persistedNodeIds.has(nodeId);
+  }
+
+  /**
    * Check if a node has a pending save operation
    * Delegates to PersistenceCoordinator
    *
@@ -656,8 +669,30 @@ export class SharedNodeStore {
       await this.ensureAncestorChainPersisted(node.parentId);
     }
 
-    // Wait for this node to be persisted (if it has a pending operation)
-    if (this.hasPendingSave(nodeId)) {
+    // Check if node needs to be persisted
+    if (!this.persistedNodeIds.has(nodeId)) {
+      // Node was never persisted (e.g., placeholder node created with skipPersistence)
+      // Force persist it now before any child operations that reference it
+      console.log(`[SharedNodeStore] Force-persisting unpersisted node: ${nodeId}`);
+
+      // Trigger persistence via PersistenceCoordinator
+      const handle = PersistenceCoordinator.getInstance().persist(
+        nodeId,
+        () => tauriNodeService.createNode(node),
+        { mode: 'immediate' } // Use immediate mode for structural operations
+      );
+
+      try {
+        await handle.promise;
+        // Mark as persisted on success
+        this.persistedNodeIds.add(nodeId);
+        console.log(`[SharedNodeStore] Successfully persisted node: ${nodeId}`);
+      } catch (error) {
+        console.error(`[SharedNodeStore] Failed to persist node ${nodeId}:`, error);
+        throw error;
+      }
+    } else if (this.hasPendingSave(nodeId)) {
+      // Node has a pending save operation, wait for it
       await this.waitForNodeSaves([nodeId]);
     }
   }

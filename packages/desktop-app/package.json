@@ -6,6 +6,7 @@
   "scripts": {
     "preinstall": "node ../../enforce-bun.js",
     "dev": "bunx vite dev",
+    "dev:web": "bunx vite dev --port 1421",
     "build": "bunx vite build",
     "preview": "bunx vite preview",
     "check": "bunx svelte-kit sync && bunx svelte-check --tsconfig ./tsconfig.json",

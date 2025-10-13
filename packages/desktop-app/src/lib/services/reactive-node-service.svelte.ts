@@ -434,7 +434,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       ? siblings.find((n) => n.beforeSiblingId === afterNodeId)
       : null;
 
-    sharedNodeStore.setNode(newNode, viewerSource);
+    // Skip persistence for placeholder nodes - they'll be saved when user types content
+    // This prevents backend validation errors for empty text nodes
+    const skipPersistence = isPlaceholder;
+    sharedNodeStore.setNode(newNode, viewerSource, skipPersistence);
     _uiState[nodeId] = newUIState;
 
     // Update sibling linked list
@@ -1613,21 +1616,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         inheritHeaderLevel?: number;
       }
     ): void {
-      // Clear existing unpersisted placeholder nodes for the current view parent from SharedNodeStore
-      // This prevents duplicate placeholder nodes when navigating between different parent contexts
-      // Only deletes empty text placeholders (not persisted to database) to maintain multi-tab safety
-      // TODO: Implement proper reference counting for full multi-tab/multi-pane support (see Issue #206)
-      if (_viewParentId !== null) {
-        const existingNodes = sharedNodeStore.getNodesForParent(_viewParentId);
-        const databaseSource = { type: 'database' as const, reason: 'view-cleanup' };
-        for (const node of existingNodes) {
-          // Only delete unpersisted placeholders (empty text nodes)
-          // Persisted nodes will be reloaded from database if needed
-          if (node.content === '' && node.nodeType === 'text') {
-            sharedNodeStore.deleteNode(node.id, databaseSource);
-          }
-        }
-      }
+      // NOTE: We no longer cleanup unpersisted nodes here
+      // Instead, BaseNodeViewer reuses existing placeholders when database returns 0 nodes
+      // This supports multi-tab/multi-pane scenarios where multiple viewers may share the same placeholder
+      // See base-node-viewer.svelte loadChildrenForParent() for placeholder reuse logic
 
       // Clear existing state
       Object.keys(_uiState).forEach((id) => delete _uiState[id]);
@@ -1650,10 +1642,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       };
 
       // First pass: Add all nodes to SharedNodeStore
-      // Use database source to prevent write-back (nodes are already in database)
-      const databaseSource = { type: 'database' as const, reason: 'initialization' };
+      // Auto-detect source: empty text nodes are placeholders (viewer), others are from database
       for (const node of nodes) {
-        sharedNodeStore.setNode(node, databaseSource);
+        const isPlaceholder = node.nodeType === 'text' && node.content.trim() === '';
+        const source = isPlaceholder
+          ? { type: 'viewer' as const, reason: 'placeholder-initialization' }
+          : { type: 'database' as const, reason: 'initialization' };
+
+        sharedNodeStore.setNode(node, source);
         _uiState[node.id] = createDefaultUIState(node.id, {
           depth: 0, // Will be computed in second pass
           expanded: defaults.expanded,
