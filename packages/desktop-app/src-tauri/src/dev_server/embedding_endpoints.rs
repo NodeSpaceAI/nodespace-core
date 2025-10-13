@@ -23,14 +23,14 @@
 //!
 //! # Implementation Status
 //!
-//! **NOTE**: This module contains placeholder implementations because the TopicEmbeddingService
+//! **NOTE**: This module contains placeholder implementations because the NodeEmbeddingService
 //! is not yet integrated into AppState. All endpoints return NOT_IMPLEMENTED errors with
 //! clear messages indicating what needs to be added.
 //!
 //! **TODO for Phase 3 completion**:
-//! 1. Add `embedding_service: Arc<TopicEmbeddingService>` to AppState in mod.rs
+//! 1. Add `embedding_service: Arc<NodeEmbeddingService>` to AppState in mod.rs
 //! 2. Replace placeholder handlers with actual service calls
-//! 3. Initialize TopicEmbeddingService in dev-server binary
+//! 3. Initialize NodeEmbeddingService in dev-server binary
 //! 4. Update tests to use the real service
 //!
 //! # Security (Production Considerations)
@@ -50,7 +50,7 @@ use axum::{
     Router,
 };
 
-use crate::commands::embeddings::{BatchEmbeddingResult, SearchTopicsParams};
+use crate::commands::embeddings::{BatchEmbeddingResult, SearchContainersParams};
 use crate::commands::nodes::CreateContainerNodeInput;
 use crate::dev_server::{AppState, HttpError};
 use nodespace_core::Node;
@@ -62,20 +62,20 @@ use std::sync::Arc;
 
 /// Generate embedding for a topic node
 ///
-/// Calls the TopicEmbeddingService to create a vector embedding for the specified
+/// Calls the NodeEmbeddingService to create a vector embedding for the specified
 /// topic node. The embedding is generated from the topic's content and child nodes.
 ///
 /// # Request Body
 ///
 /// JSON object with:
-/// - `topicId` (string): ID of the topic node to embed
+/// - `containerId` (string): ID of the topic node to embed
 ///
 /// # Example
 ///
 /// ```bash
 /// curl -X POST http://localhost:3001/api/embeddings/generate \
 ///   -H "Content-Type: application/json" \
-///   -d '{"topicId": "topic-uuid-123"}'
+///   -d '{"containerId": "topic-uuid-123"}'
 /// ```
 ///
 /// # Errors
@@ -85,33 +85,33 @@ use std::sync::Arc;
 ///
 /// # TODO
 ///
-/// Replace placeholder with actual TopicEmbeddingService call once added to AppState.
-async fn generate_topic_embedding(
+/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
+async fn generate_container_embedding(
     State(_state): State<AppState>,
     Json(payload): Json<GenerateEmbeddingRequest>,
 ) -> Result<StatusCode, HttpError> {
-    // Validate topic_id is not empty
-    if payload.topic_id.is_empty() {
+    // Validate container_id is not empty
+    if payload.container_id.is_empty() {
         return Err(HttpError::with_details(
             "Topic ID cannot be empty",
             "INVALID_INPUT",
-            "topic_id must be a non-empty string",
+            "container_id must be a non-empty string",
         ));
     }
 
     // TODO: Replace with actual service call
-    // state.embedding_service.embed_topic(&payload.topic_id).await
+    // state.embedding_service.embed_topic(&payload.container_id).await
     //     .map_err(|e| HttpError::from_anyhow(e.into(), "EMBEDDING_GENERATION_FAILED"))?;
 
     tracing::warn!(
-        topic_id = %payload.topic_id,
-        "generate_topic_embedding called but TopicEmbeddingService not in AppState"
+        container_id = %payload.container_id,
+        "generate_container_embedding called but NodeEmbeddingService not in AppState"
     );
 
     Err(HttpError::with_details(
         "Embedding service not yet integrated into dev server",
         "NOT_IMPLEMENTED",
-        "TODO: Add TopicEmbeddingService to AppState in mod.rs",
+        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
     ))
 }
 
@@ -119,7 +119,7 @@ async fn generate_topic_embedding(
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GenerateEmbeddingRequest {
-    topic_id: String,
+    container_id: String,
 }
 
 /// Search topics by semantic similarity
@@ -154,10 +154,10 @@ struct GenerateEmbeddingRequest {
 ///
 /// # TODO
 ///
-/// Replace placeholder with actual TopicEmbeddingService call once added to AppState.
-async fn search_topics(
+/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
+async fn search_containers(
     State(_state): State<AppState>,
-    Json(params): Json<SearchTopicsParams>,
+    Json(params): Json<SearchContainersParams>,
 ) -> Result<Json<Vec<Node>>, HttpError> {
     // TODO: Replace with actual service call
     // let threshold = params.threshold.unwrap_or(0.7);
@@ -165,22 +165,22 @@ async fn search_topics(
     // let exact = params.exact.unwrap_or(false);
     //
     // let results = if exact {
-    //     state.embedding_service.exact_search_topics(&params.query, threshold, limit).await
+    //     state.embedding_service.exact_search_containers(&params.query, threshold, limit).await
     // } else {
-    //     state.embedding_service.search_topics(&params.query, threshold, limit).await
+    //     state.embedding_service.search_containers(&params.query, threshold, limit).await
     // };
     //
     // results.map_err(|e| HttpError::from_anyhow(e.into(), "TOPIC_SEARCH_FAILED"))
 
     tracing::warn!(
         query = %params.query,
-        "search_topics called but TopicEmbeddingService not in AppState"
+        "search_containers called but NodeEmbeddingService not in AppState"
     );
 
     Err(HttpError::with_details(
         "Embedding service not yet integrated into dev server",
         "NOT_IMPLEMENTED",
-        "TODO: Add TopicEmbeddingService to AppState in mod.rs",
+        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
     ))
 }
 
@@ -188,7 +188,7 @@ async fn search_topics(
 ///
 /// Re-generates the embedding for a topic node. Use this for explicit user actions
 /// like "Regenerate Embedding" button. For automatic updates on content changes,
-/// use the smart triggers (on_topic_closed, on_topic_idle) instead.
+/// use the smart triggers (on_container_closed, on_container_idle) instead.
 ///
 /// # Path Parameters
 ///
@@ -202,33 +202,33 @@ async fn search_topics(
 ///
 /// # TODO
 ///
-/// Replace placeholder with actual TopicEmbeddingService call once added to AppState.
-async fn update_topic_embedding(
+/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
+async fn update_container_embedding(
     State(_state): State<AppState>,
-    Path(topic_id): Path<String>,
+    Path(container_id): Path<String>,
 ) -> Result<StatusCode, HttpError> {
-    // Validate topic_id is not empty
-    if topic_id.is_empty() {
+    // Validate container_id is not empty
+    if container_id.is_empty() {
         return Err(HttpError::with_details(
             "Topic ID cannot be empty",
             "INVALID_INPUT",
-            "topic_id must be a non-empty string",
+            "container_id must be a non-empty string",
         ));
     }
 
     // TODO: Replace with actual service call
-    // state.embedding_service.embed_topic(&topic_id).await
+    // state.embedding_service.embed_topic(&container_id).await
     //     .map_err(|e| HttpError::from_anyhow(e.into(), "EMBEDDING_UPDATE_FAILED"))?;
 
     tracing::warn!(
-        topic_id = %topic_id,
-        "update_topic_embedding called but TopicEmbeddingService not in AppState"
+        container_id = %container_id,
+        "update_container_embedding called but NodeEmbeddingService not in AppState"
     );
 
     Err(HttpError::with_details(
         "Embedding service not yet integrated into dev server",
         "NOT_IMPLEMENTED",
-        "TODO: Add TopicEmbeddingService to AppState in mod.rs",
+        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
     ))
 }
 
@@ -240,7 +240,7 @@ async fn update_topic_embedding(
 /// # Request Body
 ///
 /// JSON object with:
-/// - `topicIds` (array of strings): Topic IDs to embed
+/// - `containerIds` (array of strings): Topic IDs to embed
 ///
 /// # Returns
 ///
@@ -253,18 +253,18 @@ async fn update_topic_embedding(
 /// ```bash
 /// curl -X POST http://localhost:3001/api/embeddings/batch \
 ///   -H "Content-Type: application/json" \
-///   -d '{"topicIds": ["topic-1", "topic-2", "topic-3"]}'
+///   -d '{"containerIds": ["topic-1", "topic-2", "topic-3"]}'
 /// ```
 ///
 /// # TODO
 ///
-/// Replace placeholder with actual TopicEmbeddingService call once added to AppState.
+/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn batch_generate_embeddings(
     State(_state): State<AppState>,
     Json(payload): Json<BatchGenerateRequest>,
 ) -> Result<Json<BatchEmbeddingResult>, HttpError> {
-    // Validate topic_ids array is not empty
-    if payload.topic_ids.is_empty() {
+    // Validate container_ids array is not empty
+    if payload.container_ids.is_empty() {
         return Err(HttpError::with_details(
             "Topic IDs array cannot be empty",
             "INVALID_INPUT",
@@ -276,13 +276,13 @@ async fn batch_generate_embeddings(
     // let mut success_count = 0;
     // let mut failed_embeddings = Vec::new();
     //
-    // for topic_id in payload.topic_ids {
-    //     match state.embedding_service.embed_topic(&topic_id).await {
+    // for container_id in payload.container_ids {
+    //     match state.embedding_service.embed_topic(&container_id).await {
     //         Ok(()) => success_count += 1,
     //         Err(e) => {
-    //             tracing::error!("Failed to embed topic {}: {}", topic_id, e);
+    //             tracing::error!("Failed to embed topic {}: {}", container_id, e);
     //             failed_embeddings.push(BatchEmbeddingError {
-    //                 topic_id: topic_id.clone(),
+    //                 container_id: container_id.clone(),
     //                 error: e.to_string(),
     //             });
     //         }
@@ -295,14 +295,14 @@ async fn batch_generate_embeddings(
     // }))
 
     tracing::warn!(
-        count = payload.topic_ids.len(),
-        "batch_generate_embeddings called but TopicEmbeddingService not in AppState"
+        count = payload.container_ids.len(),
+        "batch_generate_embeddings called but NodeEmbeddingService not in AppState"
     );
 
     Err(HttpError::with_details(
         "Embedding service not yet integrated into dev server",
         "NOT_IMPLEMENTED",
-        "TODO: Add TopicEmbeddingService to AppState in mod.rs",
+        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
     ))
 }
 
@@ -310,7 +310,7 @@ async fn batch_generate_embeddings(
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BatchGenerateRequest {
-    topic_ids: Vec<String>,
+    container_ids: Vec<String>,
 }
 
 /// Get count of stale topics needing re-embedding
@@ -326,19 +326,21 @@ struct BatchGenerateRequest {
 ///
 /// # TODO
 ///
-/// Replace placeholder with actual TopicEmbeddingService call once added to AppState.
-async fn get_stale_topic_count(State(_state): State<AppState>) -> Result<Json<usize>, HttpError> {
+/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
+async fn get_stale_container_count(
+    State(_state): State<AppState>,
+) -> Result<Json<usize>, HttpError> {
     // TODO: Replace with actual service call
     // let topics = state.embedding_service.get_all_stale_topics().await
     //     .map_err(|e| HttpError::from_anyhow(e.into(), "STALE_COUNT_FAILED"))?;
     // Ok(Json(topics.len()))
 
-    tracing::warn!("get_stale_topic_count called but TopicEmbeddingService not in AppState");
+    tracing::warn!("get_stale_container_count called but NodeEmbeddingService not in AppState");
 
     Err(HttpError::with_details(
         "Embedding service not yet integrated into dev server",
         "NOT_IMPLEMENTED",
-        "TODO: Add TopicEmbeddingService to AppState in mod.rs",
+        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
     ))
 }
 
@@ -350,45 +352,45 @@ async fn get_stale_topic_count(State(_state): State<AppState>) -> Result<Json<us
 /// # Request Body
 ///
 /// JSON object with:
-/// - `topicId` (string): ID of the topic that was closed
+/// - `containerId` (string): ID of the topic that was closed
 ///
 /// # Example
 ///
 /// ```bash
 /// curl -X POST http://localhost:3001/api/embeddings/on-topic-closed \
 ///   -H "Content-Type: application/json" \
-///   -d '{"topicId": "topic-uuid-123"}'
+///   -d '{"containerId": "topic-uuid-123"}'
 /// ```
 ///
 /// # TODO
 ///
-/// Replace placeholder with actual TopicEmbeddingService call once added to AppState.
-async fn on_topic_closed(
+/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
+async fn on_container_closed(
     State(_state): State<AppState>,
     Json(payload): Json<TopicIdRequest>,
 ) -> Result<StatusCode, HttpError> {
-    // Validate topic_id is not empty
-    if payload.topic_id.is_empty() {
+    // Validate container_id is not empty
+    if payload.container_id.is_empty() {
         return Err(HttpError::with_details(
             "Topic ID cannot be empty",
             "INVALID_INPUT",
-            "topic_id must be a non-empty string",
+            "container_id must be a non-empty string",
         ));
     }
 
     // TODO: Replace with actual service call
-    // state.embedding_service.on_topic_closed(&payload.topic_id).await
+    // state.embedding_service.on_container_closed(&payload.container_id).await
     //     .map_err(|e| HttpError::from_anyhow(e.into(), "TOPIC_CLOSE_FAILED"))?;
 
     tracing::warn!(
-        topic_id = %payload.topic_id,
-        "on_topic_closed called but TopicEmbeddingService not in AppState"
+        container_id = %payload.container_id,
+        "on_container_closed called but NodeEmbeddingService not in AppState"
     );
 
     Err(HttpError::with_details(
         "Embedding service not yet integrated into dev server",
         "NOT_IMPLEMENTED",
-        "TODO: Add TopicEmbeddingService to AppState in mod.rs",
+        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
     ))
 }
 
@@ -400,7 +402,7 @@ async fn on_topic_closed(
 /// # Request Body
 ///
 /// JSON object with:
-/// - `topicId` (string): ID of the topic to check
+/// - `containerId` (string): ID of the topic to check
 ///
 /// # Returns
 ///
@@ -411,39 +413,39 @@ async fn on_topic_closed(
 /// ```bash
 /// curl -X POST http://localhost:3001/api/embeddings/on-topic-idle \
 ///   -H "Content-Type: application/json" \
-///   -d '{"topicId": "topic-uuid-123"}'
+///   -d '{"containerId": "topic-uuid-123"}'
 /// ```
 ///
 /// # TODO
 ///
-/// Replace placeholder with actual TopicEmbeddingService call once added to AppState.
-async fn on_topic_idle(
+/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
+async fn on_container_idle(
     State(_state): State<AppState>,
     Json(payload): Json<TopicIdRequest>,
 ) -> Result<Json<bool>, HttpError> {
-    // Validate topic_id is not empty
-    if payload.topic_id.is_empty() {
+    // Validate container_id is not empty
+    if payload.container_id.is_empty() {
         return Err(HttpError::with_details(
             "Topic ID cannot be empty",
             "INVALID_INPUT",
-            "topic_id must be a non-empty string",
+            "container_id must be a non-empty string",
         ));
     }
 
     // TODO: Replace with actual service call
-    // let was_embedded = state.embedding_service.on_idle_timeout(&payload.topic_id).await
+    // let was_embedded = state.embedding_service.on_idle_timeout(&payload.container_id).await
     //     .map_err(|e| HttpError::from_anyhow(e.into(), "IDLE_TIMEOUT_FAILED"))?;
     // Ok(Json(was_embedded))
 
     tracing::warn!(
-        topic_id = %payload.topic_id,
-        "on_topic_idle called but TopicEmbeddingService not in AppState"
+        container_id = %payload.container_id,
+        "on_container_idle called but NodeEmbeddingService not in AppState"
     );
 
     Err(HttpError::with_details(
         "Embedding service not yet integrated into dev server",
         "NOT_IMPLEMENTED",
-        "TODO: Add TopicEmbeddingService to AppState in mod.rs",
+        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
     ))
 }
 
@@ -464,19 +466,19 @@ async fn on_topic_idle(
 ///
 /// # TODO
 ///
-/// Replace placeholder with actual TopicEmbeddingService call once added to AppState.
+/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn sync_embeddings(State(_state): State<AppState>) -> Result<Json<usize>, HttpError> {
     // TODO: Replace with actual service call
     // let count = state.embedding_service.sync_all_stale_topics().await
     //     .map_err(|e| HttpError::from_anyhow(e.into(), "SYNC_FAILED"))?;
     // Ok(Json(count))
 
-    tracing::warn!("sync_embeddings called but TopicEmbeddingService not in AppState");
+    tracing::warn!("sync_embeddings called but NodeEmbeddingService not in AppState");
 
     Err(HttpError::with_details(
         "Embedding service not yet integrated into dev server",
         "NOT_IMPLEMENTED",
-        "TODO: Add TopicEmbeddingService to AppState in mod.rs",
+        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
     ))
 }
 
@@ -484,7 +486,7 @@ async fn sync_embeddings(State(_state): State<AppState>) -> Result<Json<usize>, 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TopicIdRequest {
-    topic_id: String,
+    container_id: String,
 }
 
 // ============================================================================
@@ -657,13 +659,19 @@ struct CreateMentionRequest {
 pub fn routes(state: AppState) -> Router {
     Router::new()
         // Embedding endpoints
-        .route("/api/embeddings/generate", post(generate_topic_embedding))
-        .route("/api/embeddings/search", post(search_topics))
-        .route("/api/embeddings/:id", patch(update_topic_embedding))
+        .route(
+            "/api/embeddings/generate",
+            post(generate_container_embedding),
+        )
+        .route("/api/embeddings/search", post(search_containers))
+        .route("/api/embeddings/:id", patch(update_container_embedding))
         .route("/api/embeddings/batch", post(batch_generate_embeddings))
-        .route("/api/embeddings/stale-count", get(get_stale_topic_count))
-        .route("/api/embeddings/on-topic-closed", post(on_topic_closed))
-        .route("/api/embeddings/on-topic-idle", post(on_topic_idle))
+        .route(
+            "/api/embeddings/stale-count",
+            get(get_stale_container_count),
+        )
+        .route("/api/embeddings/on-topic-closed", post(on_container_closed))
+        .route("/api/embeddings/on-topic-idle", post(on_container_idle))
         .route("/api/embeddings/sync", post(sync_embeddings))
         // Node mention endpoints
         .route("/api/nodes/container", post(create_container_node))

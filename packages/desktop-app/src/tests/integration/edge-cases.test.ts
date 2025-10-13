@@ -51,9 +51,9 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
 
   describe('Invalid input handling', () => {
     it('should reject empty topic IDs in embedding operations', async () => {
-      // Test generateTopicEmbedding with empty string
+      // Test generateContainerEmbedding with empty string
       try {
-        await backend.generateTopicEmbedding('');
+        await backend.generateContainerEmbedding('');
         // Should have thrown
         expect(true).toBe(false);
       } catch (error) {
@@ -62,7 +62,7 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
 
       // Test updateTopicEmbedding with empty string
       try {
-        await backend.updateTopicEmbedding('');
+        await backend.updateContainerEmbedding('');
         // Should have thrown
         expect(true).toBe(false);
       } catch (error) {
@@ -71,7 +71,7 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
 
       // Test onTopicClosed with empty string
       try {
-        await backend.onTopicClosed('');
+        await backend.onContainerClosed('');
         // Should have thrown
         expect(true).toBe(false);
       } catch (error) {
@@ -80,7 +80,7 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
 
       // Test onTopicIdle with empty string
       try {
-        await backend.onTopicIdle('');
+        await backend.onContainerIdle('');
         // Should have thrown
         expect(true).toBe(false);
       } catch (error) {
@@ -105,12 +105,12 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
     it('should handle malformed search parameters', async () => {
       // Test with empty query string
       await expect(async () => {
-        await backend.searchTopics({ query: '' });
+        await backend.searchContainers({ query: '' });
       }).rejects.toThrow();
 
       // Test with invalid threshold (negative)
       try {
-        await backend.searchTopics({ query: 'test', threshold: -0.5 });
+        await backend.searchContainers({ query: 'test', threshold: -0.5 });
       } catch (error) {
         // Should handle invalid threshold gracefully
         expect(error).toBeTruthy();
@@ -118,7 +118,7 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
 
       // Test with invalid threshold (> 1.0)
       try {
-        await backend.searchTopics({ query: 'test', threshold: 1.5 });
+        await backend.searchContainers({ query: 'test', threshold: 1.5 });
       } catch (error) {
         // Should handle invalid threshold gracefully
         expect(error).toBeTruthy();
@@ -126,7 +126,7 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
 
       // Test with invalid limit (negative)
       try {
-        await backend.searchTopics({ query: 'test', limit: -10 });
+        await backend.searchContainers({ query: 'test', limit: -10 });
       } catch (error) {
         // Should handle invalid limit gracefully
         expect(error).toBeTruthy();
@@ -134,7 +134,7 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
 
       // Test with zero limit
       try {
-        await backend.searchTopics({ query: 'test', limit: 0 });
+        await backend.searchContainers({ query: 'test', limit: 0 });
       } catch (error) {
         // Should handle zero limit gracefully
         expect(error).toBeTruthy();
@@ -211,7 +211,7 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
       // Attempt operation (will be fast with placeholder)
       const startTime = performance.now();
       try {
-        await backend.generateTopicEmbedding(topicId);
+        await backend.generateContainerEmbedding(topicId);
       } catch (error) {
         const duration = performance.now() - startTime;
 
@@ -268,7 +268,7 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
       const nonExistentId = 'non-existent-topic-id-12345';
 
       try {
-        await backend.generateTopicEmbedding(nonExistentId);
+        await backend.generateContainerEmbedding(nonExistentId);
         // If it doesn't throw, test should fail
         expect(true).toBe(false);
       } catch (error) {
@@ -278,7 +278,7 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
         // Check if it's NodeOperationError
         if (error instanceof NodeOperationError) {
           expect(error.nodeId).toBe(nonExistentId);
-          expect(error.operation).toBe('generateTopicEmbedding');
+          expect(error.operation).toBe('generateContainerEmbedding');
           expect(error.message).toBeTruthy();
         }
 
@@ -303,9 +303,9 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
         // Verify failed embeddings contain error details
         if (result.failedEmbeddings.length > 0) {
           for (const failed of result.failedEmbeddings) {
-            expect(failed.topicId).toBeTruthy();
+            expect(failed.containerId).toBeTruthy();
             expect(failed.error).toBeTruthy();
-            expect(typeof failed.topicId).toBe('string');
+            expect(typeof failed.containerId).toBe('string');
             expect(typeof failed.error).toBe('string');
             expect(failed.error.length).toBeGreaterThan(0);
           }

@@ -2,7 +2,7 @@
 
 use crate::commands::embeddings::EmbeddingState;
 use nodespace_core::services::{
-    EmbeddingProcessor, EmbeddingProcessorConfig, TopicEmbeddingService,
+    EmbeddingProcessor, EmbeddingProcessorConfig, NodeEmbeddingService,
 };
 use nodespace_core::{DatabaseService, NodeService};
 use std::path::{Path, PathBuf};
@@ -138,7 +138,7 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
         .map_err(|e| format!("Failed to initialize node service: {}", e))?;
 
     // Initialize embedding service (creates its own NLP engine internally)
-    let embedding_service = TopicEmbeddingService::new_with_defaults(db_arc.clone())
+    let embedding_service = NodeEmbeddingService::new_with_defaults(db_arc.clone())
         .map_err(|e| format!("Failed to initialize embedding service: {}", e))?;
     let embedding_service_arc = Arc::new(embedding_service);
 

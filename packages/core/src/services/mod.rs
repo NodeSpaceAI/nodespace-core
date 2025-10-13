@@ -3,8 +3,8 @@
 //! This module contains the core business logic services:
 //!
 //! - `NodeService` - CRUD operations and hierarchy management
-//! - `TopicEmbeddingService` - Embedding generation and semantic search
-//! - `EmbeddingProcessor` - Background task for processing stale topic embeddings
+//! - `NodeEmbeddingService` - Embedding generation and semantic search
+//! - `EmbeddingProcessor` - Background task for processing stale container embeddings
 //! - `SchemaService` - Dynamic schema creation and validation (planned)
 //! - `SearchService` - Semantic search and query operations (planned)
 //!
@@ -17,6 +17,6 @@ pub mod error;
 pub mod node_service;
 
 pub use embedding_processor::{EmbeddingProcessor, EmbeddingProcessorConfig};
-pub use embedding_service::{TopicEmbeddingService, EMBEDDING_DIMENSION};
+pub use embedding_service::{NodeEmbeddingService, EMBEDDING_DIMENSION};
 pub use error::NodeServiceError;
 pub use node_service::NodeService;

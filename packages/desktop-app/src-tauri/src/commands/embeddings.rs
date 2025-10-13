@@ -7,21 +7,21 @@
 
 use crate::commands::nodes::CommandError;
 use nodespace_core::models::Node;
-use nodespace_core::services::TopicEmbeddingService;
+use nodespace_core::services::NodeEmbeddingService;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
 
 /// Application state containing embedding service
 pub struct EmbeddingState {
-    pub service: Arc<TopicEmbeddingService>,
+    pub service: Arc<NodeEmbeddingService>,
 }
 
 /// Generate embedding for a topic node
 ///
 /// # Arguments
 ///
-/// * `topic_id` - ID of the topic node to embed
+/// * `container_id` - ID of the topic node to embed
 ///
 /// # Errors
 ///
@@ -35,18 +35,18 @@ pub struct EmbeddingState {
 /// ```typescript
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
-/// await invoke('generate_topic_embedding', {
-///   topicId: 'topic-uuid-123'
+/// await invoke('generate_container_embedding', {
+///   containerId: 'topic-uuid-123'
 /// });
 /// ```
 #[tauri::command]
-pub async fn generate_topic_embedding(
+pub async fn generate_container_embedding(
     state: State<'_, EmbeddingState>,
-    topic_id: String,
+    container_id: String,
 ) -> Result<(), CommandError> {
     state
         .service
-        .embed_topic(&topic_id)
+        .embed_container(&container_id)
         .await
         .map_err(|e| CommandError {
             message: format!("Failed to generate embedding: {}", e),
@@ -60,7 +60,7 @@ pub async fn generate_topic_embedding(
 /// Search parameters for topic similarity search
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SearchTopicsParams {
+pub struct SearchContainersParams {
     /// Search query text
     pub query: String,
 
@@ -98,7 +98,7 @@ pub struct SearchTopicsParams {
 /// ```typescript
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
-/// const results = await invoke('search_topics', {
+/// const results = await invoke('search_containers', {
 ///   params: {
 ///     query: 'machine learning',
 ///     threshold: 0.7,
@@ -110,9 +110,9 @@ pub struct SearchTopicsParams {
 /// console.log(`Found ${results.length} similar topics`);
 /// ```
 #[tauri::command]
-pub async fn search_topics(
+pub async fn search_containers(
     state: State<'_, EmbeddingState>,
-    params: SearchTopicsParams,
+    params: SearchContainersParams,
 ) -> Result<Vec<Node>, CommandError> {
     let threshold = params.threshold.unwrap_or(0.7);
     let limit = params.limit.unwrap_or(20);
@@ -121,12 +121,12 @@ pub async fn search_topics(
     let results = if exact {
         state
             .service
-            .exact_search_topics(&params.query, threshold, limit)
+            .exact_search_containers(&params.query, threshold, limit)
             .await
     } else {
         state
             .service
-            .search_topics(&params.query, threshold, limit)
+            .search_containers(&params.query, threshold, limit)
             .await
     };
 
@@ -141,11 +141,11 @@ pub async fn search_topics(
 ///
 /// Use this for explicit user actions like "Regenerate Embedding" button.
 /// For automatic updates on content changes, use the smart triggers
-/// (on_topic_closed, on_topic_idle) instead.
+/// (on_container_closed, on_container_idle) instead.
 ///
 /// # Arguments
 ///
-/// * `topic_id` - ID of the topic node to update
+/// * `container_id` - ID of the topic node to update
 ///
 /// # Example (from frontend)
 ///
@@ -153,19 +153,19 @@ pub async fn search_topics(
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
 /// // User clicks "Regenerate Embedding" button
-/// await invoke('update_topic_embedding', {
-///   topicId: 'topic-uuid-123'
+/// await invoke('update_container_embedding', {
+///   containerId: 'topic-uuid-123'
 /// });
 /// ```
 #[tauri::command]
-pub async fn update_topic_embedding(
+pub async fn update_container_embedding(
     state: State<'_, EmbeddingState>,
-    topic_id: String,
+    container_id: String,
 ) -> Result<(), CommandError> {
     // Re-embed and mark as fresh
     state
         .service
-        .embed_topic(&topic_id)
+        .embed_container(&container_id)
         .await
         .map_err(|e| CommandError {
             message: format!("Failed to update embedding: {}", e),
@@ -179,7 +179,7 @@ pub async fn update_topic_embedding(
 /// Schedule a debounced embedding update (DEPRECATED - Will be removed in v0.2.0)
 ///
 /// **DEPRECATED**: This command will be removed in version 0.2.0.
-/// Use `on_topic_closed` or `on_topic_idle` smart triggers instead.
+/// Use `on_container_closed` or `on_container_idle` smart triggers instead.
 ///
 /// This is now a no-op. Content changes automatically mark topics as stale in the backend.
 /// The stale flag system replaces the old debounce approach.
@@ -188,16 +188,16 @@ pub async fn update_topic_embedding(
 ///
 /// Replace:
 /// ```typescript
-/// await invoke('schedule_topic_embedding_update', { topicId });
+/// await invoke('schedule_container_embedding_update', { containerId });
 /// ```
 ///
 /// With:
 /// ```typescript
 /// // When topic is closed/unfocused:
-/// await invoke('on_topic_closed', { topicId });
+/// await invoke('on_container_closed', { containerId });
 ///
 /// // After 30 seconds of idle time:
-/// await invoke('on_topic_idle', { topicId });
+/// await invoke('on_container_idle', { containerId });
 /// ```
 ///
 /// # Deprecation Timeline
@@ -207,16 +207,16 @@ pub async fn update_topic_embedding(
 #[tauri::command]
 #[deprecated(
     since = "0.1.0",
-    note = "Use on_topic_closed or on_topic_idle smart triggers instead. Will be removed in v0.2.0."
+    note = "Use on_container_closed or on_container_idle smart triggers instead. Will be removed in v0.2.0."
 )]
-pub async fn schedule_topic_embedding_update(
+pub async fn schedule_container_embedding_update(
     _state: State<'_, EmbeddingState>,
-    topic_id: String,
+    container_id: String,
 ) -> Result<(), CommandError> {
     // Log deprecation warning
     tracing::warn!(
-        topic_id = %topic_id,
-        "DEPRECATED: schedule_topic_embedding_update called. Use on_topic_closed or on_topic_idle instead. This command will be removed in v0.2.0."
+        container_id = %container_id,
+        "DEPRECATED: schedule_container_embedding_update called. Use on_container_closed or on_container_idle instead. This command will be removed in v0.2.0."
     );
 
     // No-op for backward compatibility
@@ -231,7 +231,7 @@ pub async fn schedule_topic_embedding_update(
 ///
 /// # Arguments
 ///
-/// * `topic_id` - ID of the topic that was closed
+/// * `container_id` - ID of the topic that was closed
 ///
 /// # Example (from frontend)
 ///
@@ -239,16 +239,16 @@ pub async fn schedule_topic_embedding_update(
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
 /// // User closes topic page or switches to another topic
-/// await invoke('on_topic_closed', { topicId: 'topic-uuid-123' });
+/// await invoke('on_container_closed', { containerId: 'topic-uuid-123' });
 /// ```
 #[tauri::command]
-pub async fn on_topic_closed(
+pub async fn on_container_closed(
     state: State<'_, EmbeddingState>,
-    topic_id: String,
+    container_id: String,
 ) -> Result<(), CommandError> {
     state
         .service
-        .on_topic_closed(&topic_id)
+        .on_container_closed(&container_id)
         .await
         .map_err(|e| CommandError {
             message: format!("Failed to process topic close: {}", e),
@@ -266,7 +266,7 @@ pub async fn on_topic_closed(
 ///
 /// # Arguments
 ///
-/// * `topic_id` - ID of the topic to check
+/// * `container_id` - ID of the topic to check
 ///
 /// # Returns
 ///
@@ -278,19 +278,19 @@ pub async fn on_topic_closed(
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
 /// // After 30 seconds of idle time
-/// const wasEmbedded = await invoke('on_topic_idle', {
-///   topicId: 'topic-uuid-123'
+/// const wasEmbedded = await invoke('on_container_idle', {
+///   containerId: 'topic-uuid-123'
 /// });
 /// console.log(`Re-embedded: ${wasEmbedded}`);
 /// ```
 #[tauri::command]
-pub async fn on_topic_idle(
+pub async fn on_container_idle(
     state: State<'_, EmbeddingState>,
-    topic_id: String,
+    container_id: String,
 ) -> Result<bool, CommandError> {
     state
         .service
-        .on_idle_timeout(&topic_id)
+        .on_idle_timeout(&container_id)
         .await
         .map_err(|e| CommandError {
             message: format!("Failed to process idle timeout: {}", e),
@@ -321,7 +321,7 @@ pub async fn on_topic_idle(
 pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<usize, CommandError> {
     state
         .service
-        .sync_all_stale_topics()
+        .sync_all_stale_containers()
         .await
         .map_err(|e| CommandError {
             message: format!("Failed to sync embeddings: {}", e),
@@ -340,16 +340,16 @@ pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<usize, 
 /// ```typescript
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
-/// const count = await invoke('get_stale_topic_count');
+/// const count = await invoke('get_stale_container_count');
 /// // Display badge: "${count} topics need indexing"
 /// ```
 #[tauri::command]
-pub async fn get_stale_topic_count(
+pub async fn get_stale_container_count(
     state: State<'_, EmbeddingState>,
 ) -> Result<usize, CommandError> {
     let topics = state
         .service
-        .get_all_stale_topics()
+        .get_all_stale_containers()
         .await
         .map_err(|e| CommandError {
             message: format!("Failed to get stale count: {}", e),
@@ -365,7 +365,7 @@ pub async fn get_stale_topic_count(
 ///
 /// # Arguments
 ///
-/// * `topic_ids` - Vector of topic IDs to embed
+/// * `container_ids` - Vector of topic IDs to embed
 ///
 /// # Returns
 ///
@@ -376,25 +376,25 @@ pub async fn get_stale_topic_count(
 /// ```typescript
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
-/// const topicIds = ['topic-1', 'topic-2', 'topic-3'];
-/// const result = await invoke('batch_generate_embeddings', { topicIds });
-/// console.log(`Embedded ${result.success_count} out of ${topicIds.length} topics`);
+/// const containerIds = ['topic-1', 'topic-2', 'topic-3'];
+/// const result = await invoke('batch_generate_embeddings', { containerIds });
+/// console.log(`Embedded ${result.success_count} out of ${containerIds.length} topics`);
 /// ```
 #[tauri::command]
 pub async fn batch_generate_embeddings(
     state: State<'_, EmbeddingState>,
-    topic_ids: Vec<String>,
+    container_ids: Vec<String>,
 ) -> Result<BatchEmbeddingResult, CommandError> {
     let mut success_count = 0;
     let mut failed_embeddings = Vec::new();
 
-    for topic_id in topic_ids {
-        match state.service.embed_topic(&topic_id).await {
+    for container_id in container_ids {
+        match state.service.embed_container(&container_id).await {
             Ok(()) => success_count += 1,
             Err(e) => {
-                tracing::error!("Failed to embed topic {}: {}", topic_id, e);
+                tracing::error!("Failed to embed topic {}: {}", container_id, e);
                 failed_embeddings.push(BatchEmbeddingError {
-                    topic_id: topic_id.clone(),
+                    container_id: container_id.clone(),
                     error: e.to_string(),
                 });
             }
@@ -412,7 +412,7 @@ pub async fn batch_generate_embeddings(
 #[serde(rename_all = "camelCase")]
 pub struct BatchEmbeddingError {
     /// ID of the topic that failed to embed
-    pub topic_id: String,
+    pub container_id: String,
 
     /// Error message describing the failure
     pub error: String,
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn test_search_params_defaults() {
-        let params = SearchTopicsParams {
+        let params = SearchContainersParams {
             query: "test".to_string(),
             threshold: None,
             limit: None,
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_search_params_custom() {
-        let params = SearchTopicsParams {
+        let params = SearchContainersParams {
             query: "test".to_string(),
             threshold: Some(0.8),
             limit: Some(50),

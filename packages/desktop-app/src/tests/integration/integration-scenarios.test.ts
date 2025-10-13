@@ -150,9 +150,9 @@ describe.sequential('Section 11: Integration Scenarios', () => {
       // Step 2: Generate embeddings for all topics
       // Note: Placeholder implementation will return NOT_IMPLEMENTED
       try {
-        await backend.generateTopicEmbedding(topic1Id);
-        await backend.generateTopicEmbedding(topic2Id);
-        await backend.generateTopicEmbedding(topic3Id);
+        await backend.generateContainerEmbedding(topic1Id);
+        await backend.generateContainerEmbedding(topic2Id);
+        await backend.generateContainerEmbedding(topic3Id);
       } catch (error) {
         // Expected: NOT_IMPLEMENTED until TopicEmbeddingService is integrated
         expect(error).toBeTruthy();
@@ -172,7 +172,7 @@ describe.sequential('Section 11: Integration Scenarios', () => {
 
       // Step 4: Trigger re-embedding (smart trigger: on topic closed)
       try {
-        await backend.onTopicClosed(topic1Id);
+        await backend.onContainerClosed(topic1Id);
       } catch (error) {
         // Expected: NOT_IMPLEMENTED
         expect(error).toBeTruthy();
@@ -180,7 +180,7 @@ describe.sequential('Section 11: Integration Scenarios', () => {
 
       // Step 5: Search for related topics
       try {
-        const searchResults = await backend.searchTopics({
+        const searchResults = await backend.searchContainers({
           query: 'machine learning',
           threshold: 0.7,
           limit: 10
@@ -203,7 +203,7 @@ describe.sequential('Section 11: Integration Scenarios', () => {
 
       // Step 6: Check stale count
       try {
-        const staleCount = await backend.getStaleTopicCount();
+        const staleCount = await backend.getStaleContainerCount();
         expect(typeof staleCount).toBe('number');
         expect(staleCount).toBeGreaterThanOrEqual(0);
       } catch (error) {
@@ -245,7 +245,7 @@ describe.sequential('Section 11: Integration Scenarios', () => {
 
       // Step 2: Generate initial embedding
       try {
-        await backend.generateTopicEmbedding(topicId);
+        await backend.generateContainerEmbedding(topicId);
       } catch (error) {
         // Expected: NOT_IMPLEMENTED
         expect(error).toBeTruthy();
@@ -265,7 +265,7 @@ describe.sequential('Section 11: Integration Scenarios', () => {
 
       // Step 4: Check stale count (should be at least 1)
       try {
-        const staleCount = await backend.getStaleTopicCount();
+        const staleCount = await backend.getStaleContainerCount();
         expect(typeof staleCount).toBe('number');
 
         // In real implementation, should be >= 1 after content changes
@@ -277,7 +277,7 @@ describe.sequential('Section 11: Integration Scenarios', () => {
 
       // Step 5: Trigger re-embedding via idle timeout
       try {
-        const wasTriggered = await backend.onTopicIdle(topicId);
+        const wasTriggered = await backend.onContainerIdle(topicId);
         expect(typeof wasTriggered).toBe('boolean');
 
         // In real implementation:
@@ -303,7 +303,7 @@ describe.sequential('Section 11: Integration Scenarios', () => {
 
       // Step 7: Trigger re-embedding via topic closed
       try {
-        await backend.onTopicClosed(topicId);
+        await backend.onContainerClosed(topicId);
       } catch (error) {
         // Expected: NOT_IMPLEMENTED
         expect(error).toBeTruthy();
@@ -311,7 +311,7 @@ describe.sequential('Section 11: Integration Scenarios', () => {
 
       // Step 8: Check stale count again (should be 0 after re-embedding)
       try {
-        const staleCountAfter = await backend.getStaleTopicCount();
+        const staleCountAfter = await backend.getStaleContainerCount();
         expect(typeof staleCountAfter).toBe('number');
 
         // In real implementation, should be 0 after successful re-embedding

@@ -62,16 +62,16 @@ export interface QueryNodesParams {
  *
  * @example
  * ```typescript
- * const params: SearchTopicsParams = {
+ * const params: SearchContainersParams = {
  *   query: "machine learning",
  *   threshold: 0.7,
  *   limit: 20,
  *   exact: false
  * };
- * const results = await adapter.searchTopics(params);
+ * const results = await adapter.searchContainers(params);
  * ```
  */
-export interface SearchTopicsParams {
+export interface SearchContainersParams {
   query: string;
   threshold?: number;
   limit?: number;
@@ -97,7 +97,7 @@ export interface SearchTopicsParams {
 export interface BatchEmbeddingResult {
   successCount: number;
   failedEmbeddings: Array<{
-    topicId: string;
+    containerId: string;
     error: string;
   }>;
 }
@@ -182,10 +182,10 @@ export interface BackendAdapter {
 
   /**
    * Generate embedding for a topic node
-   * @param topicId - ID of the topic node to embed
+   * @param containerId - ID of the topic node to embed
    * @throws {NodeOperationError} If embedding generation fails
    */
-  generateTopicEmbedding(topicId: string): Promise<void>;
+  generateContainerEmbedding(containerId: string): Promise<void>;
 
   /**
    * Search topics by semantic similarity
@@ -193,44 +193,44 @@ export interface BackendAdapter {
    * @returns Array of matching topic nodes sorted by similarity score (highest first)
    * @throws {NodeOperationError} If search operation fails
    */
-  searchTopics(params: SearchTopicsParams): Promise<Node[]>;
+  searchContainers(params: SearchContainersParams): Promise<Node[]>;
 
   /**
    * Update topic embedding immediately
-   * @param topicId - ID of the topic to update
+   * @param containerId - ID of the topic to update
    * @throws {NodeOperationError} If embedding update fails
    */
-  updateTopicEmbedding(topicId: string): Promise<void>;
+  updateContainerEmbedding(containerId: string): Promise<void>;
 
   /**
    * Batch generate embeddings for multiple topics
-   * @param topicIds - Array of topic IDs to embed
+   * @param containerIds - Array of topic IDs to embed
    * @returns Result object containing success count and array of failed embeddings with error details
    * @throws {NodeOperationError} If batch operation fails completely
    */
-  batchGenerateEmbeddings(topicIds: string[]): Promise<BatchEmbeddingResult>;
+  batchGenerateEmbeddings(containerIds: string[]): Promise<BatchEmbeddingResult>;
 
   /**
    * Get count of stale topics needing re-embedding
    * @returns Number of topics that have been modified but not yet re-embedded
    * @throws {NodeOperationError} If count retrieval fails
    */
-  getStaleTopicCount(): Promise<number>;
+  getStaleContainerCount(): Promise<number>;
 
   /**
    * Smart trigger: Topic closed/unfocused
-   * @param topicId - ID of the topic that was closed
+   * @param containerId - ID of the topic that was closed
    * @throws {NodeOperationError} If trigger operation fails
    */
-  onTopicClosed(topicId: string): Promise<void>;
+  onContainerClosed(containerId: string): Promise<void>;
 
   /**
    * Smart trigger: Idle timeout (30s of no activity)
-   * @param topicId - ID of the topic to check
+   * @param containerId - ID of the topic to check
    * @returns True if re-embedding was triggered, false if topic was not stale
    * @throws {NodeOperationError} If trigger operation fails
    */
-  onTopicIdle(topicId: string): Promise<boolean>;
+  onContainerIdle(containerId: string): Promise<boolean>;
 
   /**
    * Manually sync all stale topics
@@ -426,66 +426,66 @@ export class TauriAdapter implements BackendAdapter {
 
   // === Phase 3: Embedding Operations ===
 
-  async generateTopicEmbedding(topicId: string): Promise<void> {
+  async generateContainerEmbedding(containerId: string): Promise<void> {
     try {
-      await invoke<void>('generate_topic_embedding', { topicId });
+      await invoke<void>('generate_topic_embedding', { containerId });
     } catch (error) {
       const err = toError(error);
-      throw new NodeOperationError(err.message, topicId, 'generateTopicEmbedding');
+      throw new NodeOperationError(err.message, containerId, 'generateContainerEmbedding');
     }
   }
 
-  async searchTopics(params: SearchTopicsParams): Promise<Node[]> {
+  async searchContainers(params: SearchContainersParams): Promise<Node[]> {
     try {
       return await invoke<Node[]>('search_topics', { params });
     } catch (error) {
       const err = toError(error);
-      throw new NodeOperationError(err.message, params.query, 'searchTopics');
+      throw new NodeOperationError(err.message, params.query, 'searchContainers');
     }
   }
 
-  async updateTopicEmbedding(topicId: string): Promise<void> {
+  async updateContainerEmbedding(containerId: string): Promise<void> {
     try {
-      await invoke<void>('update_topic_embedding', { topicId });
+      await invoke<void>('update_topic_embedding', { containerId });
     } catch (error) {
       const err = toError(error);
-      throw new NodeOperationError(err.message, topicId, 'updateTopicEmbedding');
+      throw new NodeOperationError(err.message, containerId, 'updateContainerEmbedding');
     }
   }
 
-  async batchGenerateEmbeddings(topicIds: string[]): Promise<BatchEmbeddingResult> {
+  async batchGenerateEmbeddings(containerIds: string[]): Promise<BatchEmbeddingResult> {
     try {
-      return await invoke<BatchEmbeddingResult>('batch_generate_embeddings', { topicIds });
+      return await invoke<BatchEmbeddingResult>('batch_generate_embeddings', { containerIds });
     } catch (error) {
       const err = toError(error);
-      throw new NodeOperationError(err.message, topicIds.join(','), 'batchGenerateEmbeddings');
+      throw new NodeOperationError(err.message, containerIds.join(','), 'batchGenerateEmbeddings');
     }
   }
 
-  async getStaleTopicCount(): Promise<number> {
+  async getStaleContainerCount(): Promise<number> {
     try {
       return await invoke<number>('get_stale_topic_count');
     } catch (error) {
       const err = toError(error);
-      throw new NodeOperationError(err.message, '', 'getStaleTopicCount');
+      throw new NodeOperationError(err.message, '', 'getStaleContainerCount');
     }
   }
 
-  async onTopicClosed(topicId: string): Promise<void> {
+  async onContainerClosed(containerId: string): Promise<void> {
     try {
-      await invoke<void>('on_topic_closed', { topicId });
+      await invoke<void>('on_topic_closed', { containerId });
     } catch (error) {
       const err = toError(error);
-      throw new NodeOperationError(err.message, topicId, 'onTopicClosed');
+      throw new NodeOperationError(err.message, containerId, 'onContainerClosed');
     }
   }
 
-  async onTopicIdle(topicId: string): Promise<boolean> {
+  async onContainerIdle(containerId: string): Promise<boolean> {
     try {
-      return await invoke<boolean>('on_topic_idle', { topicId });
+      return await invoke<boolean>('on_topic_idle', { containerId });
     } catch (error) {
       const err = toError(error);
-      throw new NodeOperationError(err.message, topicId, 'onTopicIdle');
+      throw new NodeOperationError(err.message, containerId, 'onContainerIdle');
     }
   }
 
@@ -820,26 +820,26 @@ export class HttpAdapter implements BackendAdapter {
     }
   }
 
-  async generateTopicEmbedding(topicId: string): Promise<void> {
+  async generateContainerEmbedding(containerId: string): Promise<void> {
     try {
       const response = await this.fetchWithTimeout(
         `${this.baseUrl}/api/embeddings/generate`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ topicId })
+          body: JSON.stringify({ containerId })
         },
         'Embedding generation',
-        topicId
+        containerId
       );
       await this.handleResponse<void>(response);
     } catch (error) {
       const err = toError(error);
-      throw new NodeOperationError(err.message, topicId, 'generateTopicEmbedding');
+      throw new NodeOperationError(err.message, containerId, 'generateContainerEmbedding');
     }
   }
 
-  async searchTopics(params: SearchTopicsParams): Promise<Node[]> {
+  async searchContainers(params: SearchContainersParams): Promise<Node[]> {
     try {
       const response = await this.fetchWithTimeout(
         `${this.baseUrl}/api/embeddings/search`,
@@ -854,35 +854,35 @@ export class HttpAdapter implements BackendAdapter {
       return await this.handleResponse<Node[]>(response);
     } catch (error) {
       const err = toError(error);
-      throw new NodeOperationError(err.message, params.query, 'searchTopics');
+      throw new NodeOperationError(err.message, params.query, 'searchContainers');
     }
   }
 
-  async updateTopicEmbedding(topicId: string): Promise<void> {
+  async updateContainerEmbedding(containerId: string): Promise<void> {
     try {
       const response = await this.fetchWithTimeout(
-        `${this.baseUrl}/api/embeddings/${encodeURIComponent(topicId)}`,
+        `${this.baseUrl}/api/embeddings/${encodeURIComponent(containerId)}`,
         {
           method: 'PATCH'
         },
         'Embedding update',
-        topicId
+        containerId
       );
       await this.handleResponse<void>(response);
     } catch (error) {
       const err = toError(error);
-      throw new NodeOperationError(err.message, topicId, 'updateTopicEmbedding');
+      throw new NodeOperationError(err.message, containerId, 'updateContainerEmbedding');
     }
   }
 
-  async batchGenerateEmbeddings(topicIds: string[]): Promise<BatchEmbeddingResult> {
+  async batchGenerateEmbeddings(containerIds: string[]): Promise<BatchEmbeddingResult> {
     try {
       const response = await this.fetchWithTimeout(
         `${this.baseUrl}/api/embeddings/batch`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ topicIds })
+          body: JSON.stringify({ containerIds })
         },
         'Batch embedding',
         'batch'
@@ -894,51 +894,51 @@ export class HttpAdapter implements BackendAdapter {
     }
   }
 
-  async getStaleTopicCount(): Promise<number> {
+  async getStaleContainerCount(): Promise<number> {
     try {
       const response = await globalThis.fetch(`${this.baseUrl}/api/embeddings/stale-count`);
       return await this.handleResponse<number>(response);
     } catch (error) {
       const err = toError(error);
-      throw new NodeOperationError(err.message, 'stale-count', 'getStaleTopicCount');
+      throw new NodeOperationError(err.message, 'stale-count', 'getStaleContainerCount');
     }
   }
 
-  async onTopicClosed(topicId: string): Promise<void> {
+  async onContainerClosed(containerId: string): Promise<void> {
     try {
       const response = await this.fetchWithTimeout(
         `${this.baseUrl}/api/embeddings/on-topic-closed`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ topicId })
+          body: JSON.stringify({ containerId })
         },
         'Topic closed trigger',
-        topicId
+        containerId
       );
       await this.handleResponse<void>(response);
     } catch (error) {
       const err = toError(error);
-      throw new NodeOperationError(err.message, topicId, 'onTopicClosed');
+      throw new NodeOperationError(err.message, containerId, 'onContainerClosed');
     }
   }
 
-  async onTopicIdle(topicId: string): Promise<boolean> {
+  async onContainerIdle(containerId: string): Promise<boolean> {
     try {
       const response = await this.fetchWithTimeout(
         `${this.baseUrl}/api/embeddings/on-topic-idle`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ topicId })
+          body: JSON.stringify({ containerId })
         },
         'Topic idle trigger',
-        topicId
+        containerId
       );
       return await this.handleResponse<boolean>(response);
     } catch (error) {
       const err = toError(error);
-      throw new NodeOperationError(err.message, topicId, 'onTopicIdle');
+      throw new NodeOperationError(err.message, containerId, 'onContainerIdle');
     }
   }
 

@@ -1,6 +1,6 @@
-//! Topic Embedding Service
+//! Node Embedding Service
 //!
-//! This module provides embedding generation for topic nodes with adaptive chunking
+//! This module provides embedding generation for nodes with adaptive chunking
 //! based on content size. It integrates with the NLP engine and Turso's native
 //! vector search capabilities.
 //!
@@ -14,12 +14,12 @@
 //!
 //! # Architecture
 //!
-//! Topic nodes (@ mention pages) are the primary semantic search targets.
+//! Container nodes (@ mention pages, date nodes) are the primary semantic search targets.
 //! Embeddings are stored in the `embedding_vector` column as F32_BLOB(384).
 //!
 //! # Chunking Strategies
 //!
-//! - **< 512 tokens**: Single embedding for entire topic
+//! - **< 512 tokens**: Single embedding for entire container
 //! - **512-2048 tokens**: Summary embedding + top-level section embeddings
 //! - **> 2048 tokens**: Summary embedding + hierarchical section embeddings
 
@@ -36,17 +36,17 @@ use tracing::error;
 /// Embedding vector dimension for BAAI/bge-small-en-v1.5 model
 pub const EMBEDDING_DIMENSION: usize = 384;
 
-/// Time window (in seconds) to consider a topic "recently edited" after closing
+/// Time window (in seconds) to consider a container "recently edited" after closing
 const RECENTLY_EDITED_THRESHOLD_SECS: i64 = 30;
 
 /// Idle timeout (in seconds) before triggering re-embedding
 const IDLE_TIMEOUT_THRESHOLD_SECS: i64 = 30;
 
-/// Time window (in seconds) for critical topics on app shutdown
+/// Time window (in seconds) for critical containers on app shutdown
 const SHUTDOWN_CRITICAL_WINDOW_SECS: i64 = 300; // 5 minutes
 
-/// Topic embedding service with adaptive chunking
-pub struct TopicEmbeddingService {
+/// Node embedding service with adaptive chunking
+pub struct NodeEmbeddingService {
     /// NLP engine for generating embeddings
     nlp_engine: Arc<EmbeddingService>,
 
@@ -54,8 +54,8 @@ pub struct TopicEmbeddingService {
     db: Arc<DatabaseService>,
 }
 
-impl TopicEmbeddingService {
-    /// Create a new TopicEmbeddingService
+impl NodeEmbeddingService {
+    /// Create a new NodeEmbeddingService
     ///
     /// # Arguments
     ///
@@ -65,7 +65,7 @@ impl TopicEmbeddingService {
     /// # Examples
     ///
     /// ```no_run
-    /// use nodespace_core::services::TopicEmbeddingService;
+    /// use nodespace_core::services::NodeEmbeddingService;
     /// use nodespace_core::db::DatabaseService;
     /// use nodespace_nlp_engine::{EmbeddingService, EmbeddingConfig};
     /// use std::sync::Arc;
@@ -79,7 +79,7 @@ impl TopicEmbeddingService {
     /// nlp_engine.initialize()?;
     /// let nlp_engine = Arc::new(nlp_engine);
     ///
-    /// let service = TopicEmbeddingService::new(nlp_engine, db);
+    /// let service = NodeEmbeddingService::new(nlp_engine, db);
     /// # Ok(())
     /// # }
     /// ```
@@ -87,7 +87,7 @@ impl TopicEmbeddingService {
         Self { nlp_engine, db }
     }
 
-    /// Create a new TopicEmbeddingService with default configuration
+    /// Create a new NodeEmbeddingService with default configuration
     ///
     /// Automatically initializes the NLP engine with default settings.
     ///
@@ -102,7 +102,7 @@ impl TopicEmbeddingService {
     /// # Examples
     ///
     /// ```no_run
-    /// use nodespace_core::services::TopicEmbeddingService;
+    /// use nodespace_core::services::NodeEmbeddingService;
     /// use nodespace_core::db::DatabaseService;
     /// use std::sync::Arc;
     /// use std::path::PathBuf;
@@ -110,7 +110,7 @@ impl TopicEmbeddingService {
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let db = Arc::new(DatabaseService::new(PathBuf::from("./data/test.db")).await?);
-    /// let service = TopicEmbeddingService::new_with_defaults(db)?;
+    /// let service = NodeEmbeddingService::new_with_defaults(db)?;
     /// # Ok(())
     /// # }
     /// ```
@@ -124,29 +124,29 @@ impl TopicEmbeddingService {
         Ok(Self::new(nlp_engine, db))
     }
 
-    /// Generate embedding for a topic node with adaptive chunking
+    /// Generate embedding for a container node with adaptive chunking
     ///
     /// # Arguments
     ///
-    /// * `topic_id` - ID of the topic node to embed
+    /// * `container_id` - ID of the container node to embed
     ///
     /// # Errors
     ///
     /// Returns `NodeServiceError` if:
-    /// - Topic node not found
+    /// - Container node not found
     /// - Embedding generation fails
     /// - Database update fails
     ///
     /// # Chunking Strategy
     ///
-    /// - **< 512 tokens**: Embed complete topic as single unit
+    /// - **< 512 tokens**: Embed complete container as single unit
     /// - **512-2048 tokens**: Embed summary + top-level sections
     /// - **> 2048 tokens**: Embed summary + hierarchical sections (recursive)
     ///
     /// # Examples
     ///
     /// ```no_run
-    /// # use nodespace_core::services::TopicEmbeddingService;
+    /// # use nodespace_core::services::NodeEmbeddingService;
     /// # use nodespace_core::db::DatabaseService;
     /// # use nodespace_nlp_engine::{EmbeddingService, EmbeddingConfig};
     /// # use std::sync::Arc;
@@ -157,31 +157,31 @@ impl TopicEmbeddingService {
     /// # let mut nlp_engine = EmbeddingService::new(EmbeddingConfig::default())?;
     /// # nlp_engine.initialize()?;
     /// # let nlp_engine = Arc::new(nlp_engine);
-    /// # let service = TopicEmbeddingService::new(nlp_engine, db);
-    /// service.embed_topic("topic-node-id").await?;
+    /// # let service = NodeEmbeddingService::new(nlp_engine, db);
+    /// service.embed_container("topic-node-id").await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn embed_topic(&self, topic_id: &str) -> Result<(), NodeServiceError> {
+    pub async fn embed_container(&self, container_id: &str) -> Result<(), NodeServiceError> {
         // 1. Fetch topic and children
-        let topic = self.get_node(topic_id).await?;
-        let children = self.get_children(topic_id).await?;
+        let container = self.get_node(container_id).await?;
+        let children = self.get_children(container_id).await?;
 
         // 2. Estimate total tokens
-        let total_tokens = self.estimate_topic_tokens(&topic, &children);
+        let total_tokens = self.estimate_container_tokens(&container, &children);
 
         // 3. Apply adaptive chunking strategy
         match total_tokens {
             0..512 => {
-                self.embed_complete_topic(topic_id, &topic, &children)
+                self.embed_complete_container(container_id, &container, &children)
                     .await?;
             }
             512..2048 => {
-                self.embed_with_sections(topic_id, &topic, &children, false)
+                self.embed_with_sections(container_id, &container, &children, false)
                     .await?;
             }
             _ => {
-                self.embed_with_sections(topic_id, &topic, &children, true)
+                self.embed_with_sections(container_id, &container, &children, true)
                     .await?;
             }
         }
@@ -189,7 +189,7 @@ impl TopicEmbeddingService {
         Ok(())
     }
 
-    /// Search topics using Turso's native vector similarity search
+    /// Search containers using Turso's native vector similarity search
     ///
     /// Uses DiskANN algorithm for fast approximate nearest neighbors.
     ///
@@ -201,12 +201,12 @@ impl TopicEmbeddingService {
     ///
     /// # Returns
     ///
-    /// Vector of topic nodes sorted by similarity (most similar first)
+    /// Vector of container nodes sorted by similarity (most similar first)
     ///
     /// # Examples
     ///
     /// ```no_run
-    /// # use nodespace_core::services::TopicEmbeddingService;
+    /// # use nodespace_core::services::NodeEmbeddingService;
     /// # use nodespace_core::db::DatabaseService;
     /// # use nodespace_nlp_engine::{EmbeddingService, EmbeddingConfig};
     /// # use std::sync::Arc;
@@ -217,15 +217,15 @@ impl TopicEmbeddingService {
     /// # let mut nlp_engine = EmbeddingService::new(EmbeddingConfig::default())?;
     /// # nlp_engine.initialize()?;
     /// # let nlp_engine = Arc::new(nlp_engine);
-    /// # let service = TopicEmbeddingService::new(nlp_engine, db);
-    /// let results = service.search_topics("machine learning", 0.7, 20).await?;
+    /// # let service = NodeEmbeddingService::new(nlp_engine, db);
+    /// let results = service.search_containers("machine learning", 0.7, 20).await?;
     /// for node in results {
     ///     println!("Found: {} ({})", node.content, node.id);
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn search_topics(
+    pub async fn search_containers(
         &self,
         query: &str,
         threshold: f32,
@@ -290,8 +290,8 @@ impl TopicEmbeddingService {
     ///
     /// # Returns
     ///
-    /// Vector of topic nodes sorted by similarity (most similar first)
-    pub async fn exact_search_topics(
+    /// Vector of container nodes sorted by similarity (most similar first)
+    pub async fn exact_search_containers(
         &self,
         query: &str,
         threshold: f32,
@@ -349,19 +349,19 @@ impl TopicEmbeddingService {
         Ok(nodes)
     }
 
-    /// Smart trigger: Re-embed topic when it's closed (if recently edited)
+    /// Smart trigger: Re-embed container when it's closed (if recently edited)
     ///
-    /// This is called when a user closes a topic page. If the topic was edited
+    /// This is called when a user closes a container page. If the topic was edited
     /// within the last 30 seconds, it triggers immediate re-embedding.
     ///
     /// # Arguments
     ///
-    /// * `topic_id` - ID of the topic node that was closed
+    /// * `container_id` - ID of the container node that was closed
     ///
     /// # Examples
     ///
     /// ```no_run
-    /// # use nodespace_core::services::TopicEmbeddingService;
+    /// # use nodespace_core::services::NodeEmbeddingService;
     /// # use nodespace_core::db::DatabaseService;
     /// # use nodespace_nlp_engine::{EmbeddingService, EmbeddingConfig};
     /// # use std::sync::Arc;
@@ -372,96 +372,96 @@ impl TopicEmbeddingService {
     /// # let mut nlp_engine = EmbeddingService::new(EmbeddingConfig::default())?;
     /// # nlp_engine.initialize()?;
     /// # let nlp_engine = Arc::new(nlp_engine);
-    /// # let service = TopicEmbeddingService::new(nlp_engine, db);
-    /// // User closes topic page
-    /// service.on_topic_closed("topic-id").await?;
+    /// # let service = NodeEmbeddingService::new(nlp_engine, db);
+    /// // User closes container page
+    /// service.on_container_closed("topic-id").await?;
     /// # Ok(())
     /// # }
     /// # ```
-    pub async fn on_topic_closed(&self, topic_id: &str) -> Result<(), NodeServiceError> {
+    pub async fn on_container_closed(&self, container_id: &str) -> Result<(), NodeServiceError> {
         // Check if topic was recently edited (within configured threshold)
         let recently_edited = self
-            .was_recently_edited(topic_id, RECENTLY_EDITED_THRESHOLD_SECS)
+            .was_recently_edited(container_id, RECENTLY_EDITED_THRESHOLD_SECS)
             .await?;
 
         if recently_edited {
             // Re-embed immediately
-            self.embed_topic(topic_id).await?;
-            self.mark_topic_embedded(topic_id).await?;
+            self.embed_container(container_id).await?;
+            self.mark_container_embedded(container_id).await?;
         }
 
         Ok(())
     }
 
-    /// Smart trigger: Re-embed topic after idle timeout (30 seconds of no edits)
+    /// Smart trigger: Re-embed container after idle timeout (30 seconds of no edits)
     ///
-    /// This should be called periodically by the frontend to check if a topic
+    /// This should be called periodically by the frontend to check if a container
     /// has been idle long enough to warrant re-embedding.
     ///
     /// # Arguments
     ///
-    /// * `topic_id` - ID of the topic node to check
+    /// * `container_id` - ID of the container node to check
     ///
     /// # Returns
     ///
     /// `true` if re-embedding was triggered, `false` if not needed
-    pub async fn on_idle_timeout(&self, topic_id: &str) -> Result<bool, NodeServiceError> {
-        // Check if topic is stale and was last edited > configured idle threshold
+    pub async fn on_idle_timeout(&self, container_id: &str) -> Result<bool, NodeServiceError> {
+        // Check if container is stale and was last edited > configured idle threshold
         let should_embed = self
-            .should_embed_after_idle(topic_id, IDLE_TIMEOUT_THRESHOLD_SECS)
+            .should_embed_after_idle(container_id, IDLE_TIMEOUT_THRESHOLD_SECS)
             .await?;
 
         if should_embed {
-            self.embed_topic(topic_id).await?;
-            self.mark_topic_embedded(topic_id).await?;
+            self.embed_container(container_id).await?;
+            self.mark_container_embedded(container_id).await?;
             Ok(true)
         } else {
             Ok(false)
         }
     }
 
-    /// Manually sync all stale topics (for explicit user action)
+    /// Manually sync all stale containers (for explicit user action)
     ///
-    /// This processes all stale topics immediately.
+    /// This processes all stale containers immediately.
     ///
     /// # Returns
     ///
-    /// Number of topics re-embedded
-    pub async fn sync_all_stale_topics(&self) -> Result<usize, NodeServiceError> {
-        let stale_topics = self.get_all_stale_topics().await?;
-        let count = stale_topics.len();
+    /// Number of containers re-embedded
+    pub async fn sync_all_stale_containers(&self) -> Result<usize, NodeServiceError> {
+        let stale_containers = self.get_all_stale_containers().await?;
+        let count = stale_containers.len();
 
-        for topic_id in stale_topics {
-            if let Err(e) = self.embed_topic(&topic_id).await {
-                error!("Failed to embed topic {}: {}", topic_id, e);
+        for container_id in stale_containers {
+            if let Err(e) = self.embed_container(&container_id).await {
+                error!("Failed to embed container {}: {}", container_id, e);
                 continue;
             }
-            self.mark_topic_embedded(&topic_id).await?;
+            self.mark_container_embedded(&container_id).await?;
         }
 
         Ok(count)
     }
 
-    /// Sync critical topics before app shutdown
+    /// Sync critical containers before app shutdown
     ///
-    /// Re-embeds topics that were edited within the last 5 minutes.
+    /// Re-embeds containers that were edited within the last 5 minutes.
     ///
     /// # Returns
     ///
-    /// Number of topics re-embedded
+    /// Number of containers re-embedded
     pub async fn on_app_shutdown(&self) -> Result<usize, NodeServiceError> {
         // Get topics edited within configured shutdown window
-        let critical_topics = self
-            .get_recently_edited_topics(SHUTDOWN_CRITICAL_WINDOW_SECS)
+        let critical_containers = self
+            .get_recently_edited_containers(SHUTDOWN_CRITICAL_WINDOW_SECS)
             .await?;
-        let count = critical_topics.len();
+        let count = critical_containers.len();
 
-        for topic_id in critical_topics {
-            if let Err(e) = self.embed_topic(&topic_id).await {
-                error!("Failed to embed topic {}: {}", topic_id, e);
+        for container_id in critical_containers {
+            if let Err(e) = self.embed_container(&container_id).await {
+                error!("Failed to embed container {}: {}", container_id, e);
                 continue;
             }
-            self.mark_topic_embedded(&topic_id).await?;
+            self.mark_container_embedded(&container_id).await?;
         }
 
         Ok(count)
@@ -486,26 +486,26 @@ impl TopicEmbeddingService {
         ((content.len() as f32 / 3.5) * 1.2).ceil() as usize
     }
 
-    /// Estimate total tokens for a topic (including all children)
-    fn estimate_topic_tokens(&self, topic: &Node, children: &[Node]) -> usize {
-        let topic_tokens = self.estimate_tokens(&topic.content);
+    /// Estimate total tokens for a container (including all children)
+    fn estimate_container_tokens(&self, container: &Node, children: &[Node]) -> usize {
+        let container_tokens = self.estimate_tokens(&container.content);
         let children_tokens: usize = children
             .iter()
             .map(|n| self.estimate_tokens(&n.content))
             .sum();
 
-        topic_tokens + children_tokens
+        container_tokens + children_tokens
     }
 
-    /// Embed complete topic as single unit (< 512 tokens)
-    async fn embed_complete_topic(
+    /// Embed complete container as single unit (< 512 tokens)
+    async fn embed_complete_container(
         &self,
-        topic_id: &str,
-        topic: &Node,
+        container_id: &str,
+        container: &Node,
         children: &[Node],
     ) -> Result<(), NodeServiceError> {
         // Combine all content
-        let content = self.combine_content(topic, children);
+        let content = self.combine_content(container, children);
 
         // Generate embedding
         let embedding = self.nlp_engine.generate_embedding(&content).map_err(|e| {
@@ -516,24 +516,24 @@ impl TopicEmbeddingService {
 
         // Store with metadata
         let metadata = json!({
-            "type": "complete_topic",
+            "type": "complete_container",
             "generated_at": Utc::now().to_rfc3339(),
             "token_count": self.estimate_tokens(&content),
         });
 
-        self.store_embedding(topic_id, blob, metadata).await
+        self.store_embedding(container_id, blob, metadata).await
     }
 
-    /// Embed topic with sections (512-2048 tokens or > 2048 tokens)
+    /// Embed container with sections (512-2048 tokens or > 2048 tokens)
     async fn embed_with_sections(
         &self,
-        topic_id: &str,
-        topic: &Node,
+        container_id: &str,
+        container: &Node,
         children: &[Node],
         hierarchical: bool,
     ) -> Result<(), NodeServiceError> {
         // 1. Generate summary (simple truncation for MVP)
-        let full_content = self.combine_content(topic, children);
+        let full_content = self.combine_content(container, children);
         let summary = self.simple_summarize(&full_content, 512);
 
         // 2. Embed summary
@@ -544,21 +544,22 @@ impl TopicEmbeddingService {
         let summary_blob = EmbeddingService::to_blob(&summary_embedding);
 
         let summary_metadata = json!({
-            "type": "topic_summary",
-            "parent_topic": topic_id,
+            "type": "container_summary",
+            "parent_container": container_id,
             "generated_at": Utc::now().to_rfc3339(),
             "token_count": self.estimate_tokens(&summary),
         });
 
-        self.store_embedding(topic_id, summary_blob, summary_metadata)
+        self.store_embedding(container_id, summary_blob, summary_metadata)
             .await?;
 
         // 3. Embed sections
         if hierarchical {
-            self.embed_sections_hierarchical(topic_id, children, 0)
+            self.embed_sections_hierarchical(container_id, children, 0)
                 .await?;
         } else {
-            self.embed_top_level_sections(topic_id, children).await?;
+            self.embed_top_level_sections(container_id, children)
+                .await?;
         }
 
         Ok(())
@@ -567,7 +568,7 @@ impl TopicEmbeddingService {
     /// Embed top-level sections only (512-2048 tokens)
     async fn embed_top_level_sections(
         &self,
-        topic_id: &str,
+        container_id: &str,
         children: &[Node],
     ) -> Result<(), NodeServiceError> {
         for child in children {
@@ -581,8 +582,8 @@ impl TopicEmbeddingService {
             let blob = EmbeddingService::to_blob(&embedding);
 
             let metadata = json!({
-                "type": "topic_section",
-                "parent_topic": topic_id,
+                "type": "container_section",
+                "parent_container": container_id,
                 "depth": 0,
                 "generated_at": Utc::now().to_rfc3339(),
             });
@@ -595,7 +596,7 @@ impl TopicEmbeddingService {
     /// Embed sections hierarchically (> 2048 tokens)
     fn embed_sections_hierarchical<'a>(
         &'a self,
-        topic_id: &'a str,
+        container_id: &'a str,
         children: &'a [Node],
         depth: usize,
     ) -> std::pin::Pin<
@@ -616,8 +617,8 @@ impl TopicEmbeddingService {
                 let blob = EmbeddingService::to_blob(&embedding);
 
                 let metadata = json!({
-                    "type": "topic_section",
-                    "parent_topic": topic_id,
+                    "type": "container_section",
+                    "parent_container": container_id,
                     "depth": depth,
                     "generated_at": Utc::now().to_rfc3339(),
                 });
@@ -627,7 +628,7 @@ impl TopicEmbeddingService {
                 // Recurse for nested sections
                 let grandchildren = self.get_children(&child.id).await?;
                 if !grandchildren.is_empty() {
-                    self.embed_sections_hierarchical(topic_id, &grandchildren, depth + 1)
+                    self.embed_sections_hierarchical(container_id, &grandchildren, depth + 1)
                         .await?;
                 }
             }
@@ -635,9 +636,9 @@ impl TopicEmbeddingService {
         })
     }
 
-    /// Combine topic and children content
-    fn combine_content(&self, topic: &Node, children: &[Node]) -> String {
-        let mut content = topic.content.clone();
+    /// Combine container and children content
+    fn combine_content(&self, container: &Node, children: &[Node]) -> String {
+        let mut content = container.content.clone();
 
         for child in children {
             content.push('\n');
@@ -649,7 +650,7 @@ impl TopicEmbeddingService {
 
     /// Simple summarization by truncation (MVP approach)
     ///
-    /// For topics > 2048 tokens, we truncate to max_tokens * 4 characters.
+    /// For containers > 2048 tokens, we truncate to max_tokens * 4 characters.
     /// Future enhancement: Use Gemma 3 4B-QAT for intelligent summarization.
     fn simple_summarize(&self, content: &str, max_tokens: usize) -> String {
         let max_chars = max_tokens * 4;
@@ -815,10 +816,10 @@ impl TopicEmbeddingService {
         })
     }
 
-    /// Check if a topic was recently edited (within N seconds)
+    /// Check if a container was recently edited (within N seconds)
     async fn was_recently_edited(
         &self,
-        topic_id: &str,
+        container_id: &str,
         seconds: i64,
     ) -> Result<bool, NodeServiceError> {
         let conn = self.db.connect_with_timeout().await.map_err(|e| {
@@ -837,7 +838,7 @@ impl TopicEmbeddingService {
             })?;
 
         let mut rows = stmt
-            .query(params![topic_id])
+            .query(params![container_id])
             .await
             .map_err(|e| NodeServiceError::QueryFailed(format!("Query execution failed: {}", e)))?;
 
@@ -859,7 +860,7 @@ impl TopicEmbeddingService {
     /// Check if topic should be embedded after idle period
     async fn should_embed_after_idle(
         &self,
-        topic_id: &str,
+        container_id: &str,
         idle_seconds: i64,
     ) -> Result<bool, NodeServiceError> {
         let conn = self.db.connect_with_timeout().await.map_err(|e| {
@@ -878,7 +879,7 @@ impl TopicEmbeddingService {
             })?;
 
         let mut rows = stmt
-            .query(params![topic_id])
+            .query(params![container_id])
             .await
             .map_err(|e| NodeServiceError::QueryFailed(format!("Query execution failed: {}", e)))?;
 
@@ -900,8 +901,8 @@ impl TopicEmbeddingService {
         }
     }
 
-    /// Get all stale topics
-    pub async fn get_all_stale_topics(&self) -> Result<Vec<String>, NodeServiceError> {
+    /// Get all stale containers
+    pub async fn get_all_stale_containers(&self) -> Result<Vec<String>, NodeServiceError> {
         let conn = self.db.connect_with_timeout().await.map_err(|e| {
             NodeServiceError::QueryFailed(format!("Database connection failed: {}", e))
         })?;
@@ -922,7 +923,7 @@ impl TopicEmbeddingService {
             .await
             .map_err(|e| NodeServiceError::QueryFailed(format!("Query execution failed: {}", e)))?;
 
-        let mut topic_ids = Vec::new();
+        let mut container_ids = Vec::new();
         while let Some(row) = rows
             .next()
             .await
@@ -931,14 +932,14 @@ impl TopicEmbeddingService {
             let id: String = row
                 .get(0)
                 .map_err(|e| NodeServiceError::QueryFailed(format!("Failed to get id: {}", e)))?;
-            topic_ids.push(id);
+            container_ids.push(id);
         }
 
-        Ok(topic_ids)
+        Ok(container_ids)
     }
 
-    /// Get recently edited topics (within N seconds)
-    async fn get_recently_edited_topics(
+    /// Get recently edited containers (within N seconds)
+    async fn get_recently_edited_containers(
         &self,
         seconds: i64,
     ) -> Result<Vec<String>, NodeServiceError> {
@@ -965,7 +966,7 @@ impl TopicEmbeddingService {
             .await
             .map_err(|e| NodeServiceError::QueryFailed(format!("Query execution failed: {}", e)))?;
 
-        let mut topic_ids = Vec::new();
+        let mut container_ids = Vec::new();
         while let Some(row) = rows
             .next()
             .await
@@ -974,14 +975,14 @@ impl TopicEmbeddingService {
             let id: String = row
                 .get(0)
                 .map_err(|e| NodeServiceError::QueryFailed(format!("Failed to get id: {}", e)))?;
-            topic_ids.push(id);
+            container_ids.push(id);
         }
 
-        Ok(topic_ids)
+        Ok(container_ids)
     }
 
-    /// Mark topic as freshly embedded (clear stale flag)
-    async fn mark_topic_embedded(&self, topic_id: &str) -> Result<(), NodeServiceError> {
+    /// Mark container as freshly embedded (clear stale flag)
+    async fn mark_container_embedded(&self, container_id: &str) -> Result<(), NodeServiceError> {
         let conn = self.db.connect_with_timeout().await.map_err(|e| {
             NodeServiceError::QueryFailed(format!("Database connection failed: {}", e))
         })?;
@@ -991,11 +992,11 @@ impl TopicEmbeddingService {
              SET embedding_stale = FALSE,
                  last_embedding_update = CURRENT_TIMESTAMP
              WHERE id = ?",
-            params![topic_id],
+            params![container_id],
         )
         .await
         .map_err(|e| {
-            NodeServiceError::QueryFailed(format!("Failed to mark topic as embedded: {}", e))
+            NodeServiceError::QueryFailed(format!("Failed to mark container as embedded: {}", e))
         })?;
 
         Ok(())
@@ -1003,7 +1004,7 @@ impl TopicEmbeddingService {
 }
 
 /// Clone implementation for spawning async tasks
-impl Clone for TopicEmbeddingService {
+impl Clone for NodeEmbeddingService {
     fn clone(&self) -> Self {
         Self {
             nlp_engine: Arc::clone(&self.nlp_engine),

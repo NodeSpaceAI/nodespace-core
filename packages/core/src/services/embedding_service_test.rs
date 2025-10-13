@@ -1,4 +1,4 @@
-//! Comprehensive tests for TopicEmbeddingService
+//! Comprehensive tests for NodeEmbeddingService
 //!
 //! Tests cover:
 //! - Token estimation and chunking strategies
@@ -11,7 +11,7 @@
 mod tests {
     use crate::db::DatabaseService;
     use crate::models::Node;
-    use crate::services::{TopicEmbeddingService, EMBEDDING_DIMENSION};
+    use crate::services::{NodeEmbeddingService, EMBEDDING_DIMENSION};
     use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
     use serde_json::json;
     use std::sync::Arc;
@@ -19,7 +19,7 @@ mod tests {
 
     /// Helper to create test services
     /// Returns (db, service, _temp_dir) - temp_dir must be kept alive for test duration
-    async fn create_test_services() -> (Arc<DatabaseService>, Arc<TopicEmbeddingService>, TempDir) {
+    async fn create_test_services() -> (Arc<DatabaseService>, Arc<NodeEmbeddingService>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
 
@@ -29,7 +29,7 @@ mod tests {
         nlp_engine.initialize().unwrap();
         let nlp_engine = Arc::new(nlp_engine);
 
-        let embedding_service = Arc::new(TopicEmbeddingService::new(
+        let embedding_service = Arc::new(NodeEmbeddingService::new(
             nlp_engine,
             Arc::clone(&db_service),
         ));
@@ -81,10 +81,10 @@ mod tests {
 
         // Create topic with < 512 tokens (< 2048 chars)
         let small_content = "This is a small topic.".to_string();
-        let topic_id = create_test_topic(&db, small_content).await.unwrap();
+        let container_id = create_test_topic(&db, small_content).await.unwrap();
 
         // Embed topic
-        service.embed_topic(&topic_id).await.unwrap();
+        service.embed_container(&container_id).await.unwrap();
 
         // Verify embedding was stored
         let conn = db.connect_with_timeout().await.unwrap();
@@ -92,7 +92,10 @@ mod tests {
             .prepare("SELECT embedding_vector, properties FROM nodes WHERE id = ?")
             .await
             .unwrap();
-        let mut rows = stmt.query(libsql::params![topic_id.clone()]).await.unwrap();
+        let mut rows = stmt
+            .query(libsql::params![container_id.clone()])
+            .await
+            .unwrap();
 
         let row = rows.next().await.unwrap().unwrap();
         let embedding: Option<Vec<u8>> = row.get(0).unwrap();
@@ -110,10 +113,10 @@ mod tests {
 
         // Create topic with 512-2048 tokens (2048-8192 chars)
         let medium_content = "x".repeat(3000); // ~750 tokens
-        let topic_id = create_test_topic(&db, medium_content).await.unwrap();
+        let container_id = create_test_topic(&db, medium_content).await.unwrap();
 
         // Embed topic
-        service.embed_topic(&topic_id).await.unwrap();
+        service.embed_container(&container_id).await.unwrap();
 
         // Verify embedding was stored
         let conn = db.connect_with_timeout().await.unwrap();
@@ -121,7 +124,10 @@ mod tests {
             .prepare("SELECT embedding_vector, properties FROM nodes WHERE id = ?")
             .await
             .unwrap();
-        let mut rows = stmt.query(libsql::params![topic_id.clone()]).await.unwrap();
+        let mut rows = stmt
+            .query(libsql::params![container_id.clone()])
+            .await
+            .unwrap();
 
         let row = rows.next().await.unwrap().unwrap();
         let embedding: Option<Vec<u8>> = row.get(0).unwrap();
@@ -139,10 +145,10 @@ mod tests {
 
         // Create topic with > 2048 tokens (> 8192 chars)
         let large_content = "y".repeat(10000); // ~2500 tokens
-        let topic_id = create_test_topic(&db, large_content).await.unwrap();
+        let container_id = create_test_topic(&db, large_content).await.unwrap();
 
         // Embed topic
-        service.embed_topic(&topic_id).await.unwrap();
+        service.embed_container(&container_id).await.unwrap();
 
         // Verify embedding was stored
         let conn = db.connect_with_timeout().await.unwrap();
@@ -150,7 +156,10 @@ mod tests {
             .prepare("SELECT embedding_vector, properties FROM nodes WHERE id = ?")
             .await
             .unwrap();
-        let mut rows = stmt.query(libsql::params![topic_id.clone()]).await.unwrap();
+        let mut rows = stmt
+            .query(libsql::params![container_id.clone()])
+            .await
+            .unwrap();
 
         let row = rows.next().await.unwrap().unwrap();
         let embedding: Option<Vec<u8>> = row.get(0).unwrap();
@@ -180,14 +189,14 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Integration test: requires NLP model files. Run with: cargo test -- --ignored"]
-    async fn test_re_embed_topic() {
+    async fn test_re_embed_container() {
         let (db, service, _temp_dir) = create_test_services().await;
 
         let content = "Original content".to_string();
-        let topic_id = create_test_topic(&db, content).await.unwrap();
+        let container_id = create_test_topic(&db, content).await.unwrap();
 
         // Generate initial embedding
-        service.embed_topic(&topic_id).await.unwrap();
+        service.embed_container(&container_id).await.unwrap();
 
         // Get initial embedding
         let conn = db.connect_with_timeout().await.unwrap();
@@ -195,27 +204,33 @@ mod tests {
             .prepare("SELECT embedding_vector FROM nodes WHERE id = ?")
             .await
             .unwrap();
-        let mut rows = stmt.query(libsql::params![topic_id.clone()]).await.unwrap();
+        let mut rows = stmt
+            .query(libsql::params![container_id.clone()])
+            .await
+            .unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let initial_embedding: Option<Vec<u8>> = row.get(0).unwrap();
 
         // Update content and re-embed
         conn.execute(
             "UPDATE nodes SET content = ? WHERE id = ?",
-            libsql::params!["Updated content", topic_id.clone()],
+            libsql::params!["Updated content", container_id.clone()],
         )
         .await
         .unwrap();
 
         // Re-embed directly
-        service.embed_topic(&topic_id).await.unwrap();
+        service.embed_container(&container_id).await.unwrap();
 
         // Get updated embedding
         let mut stmt = conn
             .prepare("SELECT embedding_vector FROM nodes WHERE id = ?")
             .await
             .unwrap();
-        let mut rows = stmt.query(libsql::params![topic_id.clone()]).await.unwrap();
+        let mut rows = stmt
+            .query(libsql::params![container_id.clone()])
+            .await
+            .unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let updated_embedding: Option<Vec<u8>> = row.get(0).unwrap();
 
@@ -231,16 +246,16 @@ mod tests {
         let (db, service, _temp_dir) = create_test_services().await;
 
         let content = "Test content".to_string();
-        let topic_id = create_test_topic(&db, content).await.unwrap();
+        let container_id = create_test_topic(&db, content).await.unwrap();
 
         // Generate initial embedding
-        service.embed_topic(&topic_id).await.unwrap();
+        service.embed_container(&container_id).await.unwrap();
 
         // Mark as embedded (should clear stale flag)
         let conn = db.connect_with_timeout().await.unwrap();
         conn.execute(
             "UPDATE nodes SET embedding_stale = FALSE, last_embedding_update = CURRENT_TIMESTAMP WHERE id = ?",
-            libsql::params![topic_id.clone()],
+            libsql::params![container_id.clone()],
         )
         .await
         .unwrap();
@@ -250,7 +265,10 @@ mod tests {
             .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
             .await
             .unwrap();
-        let mut rows = stmt.query(libsql::params![topic_id.clone()]).await.unwrap();
+        let mut rows = stmt
+            .query(libsql::params![container_id.clone()])
+            .await
+            .unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let is_stale: bool = row.get(0).unwrap();
         assert!(!is_stale);
@@ -258,7 +276,7 @@ mod tests {
         // Update content (should mark as stale in real implementation)
         conn.execute(
             "UPDATE nodes SET content = ?, embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
-            libsql::params!["Updated content", topic_id.clone()],
+            libsql::params!["Updated content", container_id.clone()],
         )
         .await
         .unwrap();
@@ -268,7 +286,10 @@ mod tests {
             .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
             .await
             .unwrap();
-        let mut rows = stmt.query(libsql::params![topic_id.clone()]).await.unwrap();
+        let mut rows = stmt
+            .query(libsql::params![container_id.clone()])
+            .await
+            .unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let is_stale: bool = row.get(0).unwrap();
         assert!(is_stale);
@@ -280,9 +301,9 @@ mod tests {
         let (db, service, _temp_dir) = create_test_services().await;
 
         let content = "Test embedding storage".to_string();
-        let topic_id = create_test_topic(&db, content).await.unwrap();
+        let container_id = create_test_topic(&db, content).await.unwrap();
 
-        service.embed_topic(&topic_id).await.unwrap();
+        service.embed_container(&container_id).await.unwrap();
 
         // Verify embedding is stored as F32_BLOB format
         let conn = db.connect_with_timeout().await.unwrap();
@@ -290,7 +311,10 @@ mod tests {
             .prepare("SELECT embedding_vector FROM nodes WHERE id = ?")
             .await
             .unwrap();
-        let mut rows = stmt.query(libsql::params![topic_id.clone()]).await.unwrap();
+        let mut rows = stmt
+            .query(libsql::params![container_id.clone()])
+            .await
+            .unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let embedding_blob: Vec<u8> = row.get(0).unwrap();
 
@@ -308,10 +332,10 @@ mod tests {
         let (db, service, _temp_dir) = create_test_services().await;
 
         let content = "Performance test content".repeat(100);
-        let topic_id = create_test_topic(&db, content).await.unwrap();
+        let container_id = create_test_topic(&db, content).await.unwrap();
 
         let start = std::time::Instant::now();
-        service.embed_topic(&topic_id).await.unwrap();
+        service.embed_container(&container_id).await.unwrap();
         let duration = start.elapsed();
 
         // Should complete in reasonable time (< 5 seconds even on CPU)
@@ -339,18 +363,21 @@ mod tests {
             .unwrap();
 
         // Embed all topics
-        service.embed_topic(&topic1_id).await.unwrap();
-        service.embed_topic(&topic2_id).await.unwrap();
-        service.embed_topic(&topic3_id).await.unwrap();
+        service.embed_container(&topic1_id).await.unwrap();
+        service.embed_container(&topic2_id).await.unwrap();
+        service.embed_container(&topic3_id).await.unwrap();
 
         // Verify all have embeddings
         let conn = db.connect_with_timeout().await.unwrap();
-        for topic_id in [&topic1_id, &topic2_id, &topic3_id] {
+        for container_id in [&topic1_id, &topic2_id, &topic3_id] {
             let mut stmt = conn
                 .prepare("SELECT embedding_vector FROM nodes WHERE id = ?")
                 .await
                 .unwrap();
-            let mut rows = stmt.query(libsql::params![topic_id.clone()]).await.unwrap();
+            let mut rows = stmt
+                .query(libsql::params![container_id.clone()])
+                .await
+                .unwrap();
             let row = rows.next().await.unwrap().unwrap();
             let embedding: Option<Vec<u8>> = row.get(0).unwrap();
             assert!(embedding.is_some());
@@ -363,7 +390,7 @@ mod tests {
         let (_db, service, _temp_dir) = create_test_services().await;
 
         // Try to embed non-existent topic
-        let result = service.embed_topic("non-existent-id").await;
+        let result = service.embed_container("non-existent-id").await;
         assert!(result.is_err());
     }
 
@@ -379,8 +406,8 @@ mod tests {
                 "Topic {} about various subjects including technology, science, and culture",
                 i
             );
-            let topic_id = create_test_topic(&db, content).await.unwrap();
-            service.embed_topic(&topic_id).await.unwrap();
+            let container_id = create_test_topic(&db, content).await.unwrap();
+            service.embed_container(&container_id).await.unwrap();
 
             if i % 1000 == 0 {
                 println!("  Created {} nodes...", i);
@@ -394,7 +421,7 @@ mod tests {
         for _ in 0..5 {
             let start = std::time::Instant::now();
             let results = service
-                .search_topics("technology science", 0.7, 20)
+                .search_containers("technology science", 0.7, 20)
                 .await
                 .unwrap();
             let duration = start.elapsed();
@@ -480,12 +507,15 @@ mod tests {
         let db = Arc::clone(&_db);
 
         // Step 1: Create a topic with initial content
-        let topic_id = create_test_topic(&db, "Initial content".to_string())
+        let container_id = create_test_topic(&db, "Initial content".to_string())
             .await
             .unwrap();
 
         // Step 2: Generate initial embedding
-        embedding_service.embed_topic(&topic_id).await.unwrap();
+        embedding_service
+            .embed_container(&container_id)
+            .await
+            .unwrap();
 
         // Verify initial state: NOT stale
         let conn = db.connect_with_timeout().await.unwrap();
@@ -493,7 +523,7 @@ mod tests {
             .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
             .await
             .unwrap();
-        let mut rows = stmt.query(params![topic_id.clone()]).await.unwrap();
+        let mut rows = stmt.query(params![container_id.clone()]).await.unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let is_stale: bool = row.get(0).unwrap();
         assert!(
@@ -510,7 +540,7 @@ mod tests {
                  embedding_stale = TRUE,
                  last_content_update = CURRENT_TIMESTAMP
              WHERE id = ?",
-            params!["Updated content with more text", topic_id.clone()],
+            params!["Updated content with more text", container_id.clone()],
         )
         .await
         .unwrap();
@@ -520,7 +550,7 @@ mod tests {
             .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
             .await
             .unwrap();
-        let mut rows = stmt.query(params![topic_id.clone()]).await.unwrap();
+        let mut rows = stmt.query(params![container_id.clone()]).await.unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let is_stale: bool = row.get(0).unwrap();
         assert!(
@@ -529,12 +559,15 @@ mod tests {
         );
 
         // Step 4: Background processor re-embeds stale topic
-        embedding_service.embed_topic(&topic_id).await.unwrap();
+        embedding_service
+            .embed_container(&container_id)
+            .await
+            .unwrap();
 
         // Step 5: Mark as embedded (what processor would do)
         conn.execute(
             "UPDATE nodes SET embedding_stale = FALSE, last_embedding_update = CURRENT_TIMESTAMP WHERE id = ?",
-            params![topic_id.clone()],
+            params![container_id.clone()],
         )
         .await
         .unwrap();
@@ -544,7 +577,7 @@ mod tests {
             .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
             .await
             .unwrap();
-        let mut rows = stmt.query(params![topic_id.clone()]).await.unwrap();
+        let mut rows = stmt.query(params![container_id.clone()]).await.unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let is_stale: bool = row.get(0).unwrap();
         assert!(
@@ -557,7 +590,7 @@ mod tests {
             .prepare("SELECT last_content_update, last_embedding_update FROM nodes WHERE id = ?")
             .await
             .unwrap();
-        let mut rows = stmt.query(params![topic_id.clone()]).await.unwrap();
+        let mut rows = stmt.query(params![container_id.clone()]).await.unwrap();
         let row = rows.next().await.unwrap().unwrap();
         let last_content: Option<String> = row.get(0).unwrap();
         let last_embedding: Option<String> = row.get(1).unwrap();

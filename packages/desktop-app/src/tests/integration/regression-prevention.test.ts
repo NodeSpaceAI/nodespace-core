@@ -471,7 +471,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
         expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         try {
-          await backend.generateTopicEmbedding(topicId);
+          await backend.generateContainerEmbedding(topicId);
         } catch {
           // Expected: NOT_IMPLEMENTED
         }
@@ -486,7 +486,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
 
         // Check stale count
         try {
-          const staleCount = await backend.getStaleTopicCount();
+          const staleCount = await backend.getStaleContainerCount();
           expect(typeof staleCount).toBe('number');
 
           // In real implementation, should be >= 1 after content change
@@ -518,7 +518,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
         expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         try {
-          await backend.generateTopicEmbedding(topicId);
+          await backend.generateContainerEmbedding(topicId);
         } catch {
           // Expected: NOT_IMPLEMENTED
         }
@@ -533,7 +533,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
 
         // Trigger on_topic_closed (should re-embed)
         try {
-          await backend.onTopicClosed(topicId);
+          await backend.onContainerClosed(topicId);
 
           // In real implementation, embedding should be updated
           console.log('Topic closed trigger executed');
@@ -568,7 +568,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
         expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
         try {
-          await backend.generateTopicEmbedding(topicId);
+          await backend.generateContainerEmbedding(topicId);
         } catch {
           // Expected: NOT_IMPLEMENTED
         }
@@ -597,7 +597,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
 
         // Trigger on_topic_idle (simulates 30s idle timeout)
         try {
-          const wasTriggered = await backend.onTopicIdle(topicId);
+          const wasTriggered = await backend.onContainerIdle(topicId);
           expect(typeof wasTriggered).toBe('boolean');
 
           // In real implementation:

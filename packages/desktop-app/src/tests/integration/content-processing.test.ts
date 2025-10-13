@@ -166,7 +166,7 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
 
       // Generate initial embedding
       try {
-        await backend.generateTopicEmbedding(topicId);
+        await backend.generateContainerEmbedding(topicId);
       } catch (error) {
         // Expected: NOT_IMPLEMENTED or 404 until TopicEmbeddingService is integrated
         expect(error).toBeTruthy();
@@ -203,7 +203,7 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
       // When service is integrated, this should mark the topic as stale
       // and trigger re-embedding
       try {
-        await backend.updateTopicEmbedding(topicId);
+        await backend.updateContainerEmbedding(topicId);
       } catch (error) {
         // Expected: NOT_IMPLEMENTED until TopicEmbeddingService is integrated
         expect(error).toBeTruthy();
@@ -283,7 +283,7 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
           for (const failed of result.failedEmbeddings) {
             expect(failed).toHaveProperty('topicId');
             expect(failed).toHaveProperty('error');
-            expect(typeof failed.topicId).toBe('string');
+            expect(typeof failed.containerId).toBe('string');
             expect(typeof failed.error).toBe('string');
           }
         }
@@ -317,7 +317,7 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
         expect(totalProcessed).toBe(topicIds.length);
 
         // Each failed embedding should have unique topicId
-        const failedIds = new Set(result.failedEmbeddings.map((f) => f.topicId));
+        const failedIds = new Set(result.failedEmbeddings.map((f) => f.containerId));
         expect(failedIds.size).toBe(result.failedEmbeddings.length);
       } catch (error) {
         // Expected: NOT_IMPLEMENTED until TopicEmbeddingService is integrated
