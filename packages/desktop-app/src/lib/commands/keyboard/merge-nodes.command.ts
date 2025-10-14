@@ -105,15 +105,30 @@ export class MergeNodesCommand implements KeyboardCommand {
   private isAtStart(context: KeyboardContext): boolean {
     // Check selection if available
     const selection = context.selection || window.getSelection();
+    let range: Range | null = null;
     if (selection && selection.rangeCount > 0) {
-      const range = selection.getRangeAt(0);
+      range = selection.getRangeAt(0);
       if (!range.collapsed) {
         return false; // Not at start if there's a selection
       }
     }
 
     // Use cursor position from context
-    return context.cursorPosition === 0;
+    const isAtStart = context.cursorPosition === 0;
+
+    // Debug logging for backspace merge issue with asterisk syntax
+    if (context.content.startsWith('*') || context.content.startsWith('~')) {
+      console.log('[MergeNodesCommand] Backspace at start check:', {
+        nodeId: context.nodeId,
+        contentStart: context.content.substring(0, 20),
+        cursorPosition: context.cursorPosition,
+        isAtStart,
+        selectionStart: range?.startContainer,
+        selectionOffset: range?.startOffset
+      });
+    }
+
+    return isAtStart;
   }
 
   /**

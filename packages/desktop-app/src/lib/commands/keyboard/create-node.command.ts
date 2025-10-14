@@ -90,7 +90,8 @@ export class CreateNodeCommand implements KeyboardCommand {
         newContent: splitResult.afterContent,
         originalContent: currentContent, // Pass original content before split for inheritance
         cursorAtBeginning: false,
-        insertAtBeginning: false // Normal splitting creates nodes after, not above
+        insertAtBeginning: false, // Normal splitting creates nodes after, not above
+        newNodeCursorPosition: splitResult.newNodeCursorPosition // Position cursor after opening markers
       });
     }
 

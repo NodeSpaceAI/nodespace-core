@@ -750,6 +750,7 @@
       cursorAtBeginning?: boolean;
       insertAtBeginning?: boolean;
       focusOriginalNode?: boolean;
+      newNodeCursorPosition?: number;
     }>
   ) {
     const {
@@ -760,7 +761,8 @@
       originalContent,
       inheritHeaderLevel,
       insertAtBeginning,
-      focusOriginalNode
+      focusOriginalNode,
+      newNodeCursorPosition
     } = event.detail;
 
     // Validate node creation parameters
@@ -814,6 +816,11 @@
     if (!newNodeId || !nodeManager.nodes.has(newNodeId)) {
       console.error('Node creation failed for afterNodeId:', afterNodeId, 'newNodeId:', newNodeId);
       return;
+    }
+
+    // Set cursor position for new node if provided (e.g., after splitting inline formatted text)
+    if (newNodeCursorPosition !== undefined && !focusOriginalNode) {
+      pendingCursorPositions.set(newNodeId, newNodeCursorPosition);
     }
 
     // Handle focus direction based on focusOriginalNode parameter
