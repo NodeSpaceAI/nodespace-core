@@ -1406,6 +1406,14 @@ export class ContentEditableController {
 
     const range = selection.getRangeAt(0);
 
+    // Debug: log what we're calculating
+    const debugContent = this.element.textContent?.substring(0, 30) || '';
+    console.log('[getCurrentColumn] Starting calculation', {
+      nodeId: this.nodeId,
+      contentPreview: debugContent,
+      innerHTML: this.element.innerHTML.substring(0, 100)
+    });
+
     // For multiline nodes, we need to calculate position in the same way we extract content
     // (using convertHtmlToTextWithNewlines which adds \n between DIVs)
     if (this.config.allowMultiline) {
@@ -1438,6 +1446,7 @@ export class ContentEditableController {
           }
         }
 
+        console.log('[getCurrentColumn] Multiline result:', { position });
         return position;
       }
 
@@ -1521,6 +1530,7 @@ export class ContentEditableController {
         }
       }
 
+      console.log('[getCurrentColumn] Multiline final result:', { position });
       return position;
     }
 
@@ -1529,7 +1539,9 @@ export class ContentEditableController {
     preCaretRange.selectNodeContents(this.element);
     preCaretRange.setEnd(range.startContainer, range.startOffset);
 
-    return preCaretRange.toString().length;
+    const position = preCaretRange.toString().length;
+    console.log('[getCurrentColumn] Single-line result:', { position });
+    return position;
   }
 
   private isAtEnd(): boolean {
