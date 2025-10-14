@@ -6,22 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { JSDOM } from 'jsdom';
 import { ContentEditableController } from '../../lib/design/components/content-editable-controller';
-
-// Setup DOM environment
-const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>');
-globalThis.document = dom.window.document;
-globalThis.window = dom.window as unknown as Window & typeof globalThis;
-globalThis.HTMLElement = dom.window.HTMLElement;
-globalThis.Text = dom.window.Text;
-globalThis.Range = dom.window.Range;
-globalThis.Selection = dom.window.Selection;
-globalThis.Event = dom.window.Event;
-globalThis.FocusEvent = dom.window.FocusEvent;
-globalThis.KeyboardEvent = dom.window.KeyboardEvent;
-globalThis.InputEvent = dom.window.InputEvent;
-globalThis.NodeFilter = dom.window.NodeFilter;
 
 interface EventCallRecord {
   createNewNode?: Array<{
