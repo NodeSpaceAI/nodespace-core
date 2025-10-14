@@ -1486,7 +1486,7 @@ export class ContentEditableController {
                 found = true;
               } else {
                 // Target is inside this DIV - walk through child nodes
-                // Must mirror getTextContentIgnoringSyntax logic to handle BR elements
+                // Must mirror getTextContentIgnoringSyntax logic to handle BR elements AND markdown-syntax
                 for (const childNode of Array.from(element.childNodes)) {
                   if (found) break;
 
@@ -1502,6 +1502,30 @@ export class ContentEditableController {
                     if (childElement.tagName === 'BR') {
                       // BR elements count as newline characters (must match getTextContentIgnoringSyntax)
                       position += 1;
+                    } else if (childElement.classList.contains('markdown-syntax')) {
+                      // Special handling for markdown-syntax spans - skip marker text nodes
+                      // This mirrors the getTextContentIgnoringSyntax implementation
+                      let nestedPosition = 0;
+                      for (const nestedChild of Array.from(childElement.childNodes)) {
+                        if (nestedChild.nodeType === Node.ELEMENT_NODE) {
+                          const nestedElement = nestedChild as Element;
+                          const nestedContent = this.getTextContentIgnoringSyntax(nestedElement);
+                          if (
+                            nestedElement.contains(targetContainer) ||
+                            nestedElement === targetContainer
+                          ) {
+                            position += nestedContent.length;
+                            found = true;
+                            break;
+                          } else {
+                            nestedPosition += nestedContent.length;
+                          }
+                        }
+                        // Skip text nodes (these are the ** markers)
+                      }
+                      if (!found) {
+                        position += nestedPosition;
+                      }
                     } else {
                       // For other nested elements, check if target is inside
                       if (
