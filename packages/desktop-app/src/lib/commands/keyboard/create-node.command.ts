@@ -115,13 +115,17 @@ export class CreateNodeCommand implements KeyboardCommand {
 
   /**
    * Get cursor position from context
-   * Uses controller's getCurrentColumn method for accuracy
+   * CRITICAL: Must use getCursorPositionInMarkdown for markdown-aware splitting
+   *
+   * getCurrentColumn() returns position in plain text (e.g., "bold" in visual)
+   * getCursorPositionInMarkdown() returns position in raw markdown (e.g., "**bold**")
+   * splitMarkdownContent() requires raw markdown positions to work correctly
    */
   private getCursorPosition(context: KeyboardContext): number {
-    // Access controller's getCurrentColumn method for precise position
-    const getCurrentColumn = context.controller.getCurrentColumn;
-    if (getCurrentColumn) {
-      return getCurrentColumn.call(context.controller);
+    // Use markdown-aware cursor position for proper splitting
+    const getCursorInMarkdown = context.controller.getCursorPositionInMarkdown;
+    if (getCursorInMarkdown) {
+      return getCursorInMarkdown.call(context.controller);
     }
     return context.cursorPosition;
   }

@@ -30,7 +30,11 @@ describe('CreateNodeCommand', () => {
         textContent: 'test content',
         innerHTML: 'test content'
       },
-      setLiveFormattedContent: vi.fn() // Mock for inline formatting preservation
+      setLiveFormattedContent: vi.fn(), // Mock for inline formatting preservation
+      getCursorPositionInMarkdown: vi.fn().mockImplementation(function (this: unknown) {
+        // Return the cursor position from context (simulating markdown-aware position)
+        return (this as { cursorPosition?: number })?.cursorPosition ?? 0;
+      })
     } as unknown as ContentEditableControllerExtended;
   });
 
@@ -283,8 +287,8 @@ describe('CreateNodeCommand', () => {
       preventDefault: options.preventDefault || vi.fn()
     } as unknown as KeyboardEvent;
 
-    // Add getCurrentColumn mock to controller
-    mockController.getCurrentColumn = vi.fn(() => options.cursorPosition || 0);
+    // Mock getCursorPositionInMarkdown (used for markdown-aware splitting)
+    mockController.getCursorPositionInMarkdown = vi.fn(() => options.cursorPosition || 0);
 
     return {
       event,

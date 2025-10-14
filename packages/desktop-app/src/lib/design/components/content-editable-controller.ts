@@ -1216,17 +1216,52 @@ export class ContentEditableController {
       }
 
       if (event.shiftKey && this.config.allowMultiline) {
-        // Shift+Enter for multiline nodes: let browser handle newline insertion naturally
-        // Don't preventDefault() - browser will insert <br> or <div> as appropriate
-        // The handleInput event will capture the change and update content
+        // Shift+Enter for multiline nodes: insert newline with markdown-aware splitting
+        event.preventDefault();
 
-        // Set flag briefly to prevent live formatting from interfering
-        this.recentShiftEnter = true;
-        setTimeout(() => {
-          this.recentShiftEnter = false;
-        }, 100);
+        // Get the raw markdown content
+        const currentContent = this.getMarkdownContent();
+        const cursorPosition = this.getCursorPositionInMarkdown();
 
-        return; // Let browser handle the newline insertion
+        // Use markdown-aware splitting to preserve inline formatting across lines
+        const splitResult = splitMarkdownContent(currentContent, cursorPosition);
+
+        // Defensive validation
+        if (!splitResult || typeof splitResult.beforeContent !== 'string') {
+          console.error('Invalid split result from splitMarkdownContent', {
+            currentContent,
+            cursorPosition
+          });
+          return;
+        }
+
+        // Update content with both lines (closing markers on first, opening on second)
+        const newContent = splitResult.beforeContent + '\n' + splitResult.afterContent;
+
+        // Three-stage update for dual-representation consistency
+        this.originalContent = newContent;
+        this.element.textContent = newContent;
+        this.setLiveFormattedContent(newContent);
+
+        // Position cursor in second line after opening markers
+        requestAnimationFrame(() => {
+          const divs = this.element.querySelectorAll('div');
+          if (divs.length >= ContentEditableController.MIN_DIV_COUNT_FOR_MULTILINE) {
+            this.restoreCursorPosition(
+              splitResult.newNodeCursorPosition,
+              ContentEditableController.SECOND_LINE_INDEX
+            );
+          } else {
+            // Fallback for linear positioning
+            this.restoreCursorPosition(
+              splitResult.beforeContent.length + 1 + splitResult.newNodeCursorPosition
+            );
+          }
+        });
+
+        // Notify of content change
+        this.events.contentChanged(newContent);
+        return;
       }
 
       if (!event.shiftKey) {
@@ -1312,7 +1347,7 @@ export class ContentEditableController {
    * Get cursor position in the raw markdown content (including syntax markers)
    * This is needed for markdown-aware splitting which operates on the full markdown string
    */
-  private getCursorPositionInMarkdown(): number {
+  public getCursorPositionInMarkdown(): number {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return 0;
 
