@@ -143,12 +143,16 @@ export class CreateNodeCommand implements KeyboardCommand {
   /**
    * Update element content immediately
    * Reflects the split in the DOM before event processing
+   *
+   * CRITICAL: Must call setLiveFormattedContent to preserve inline markdown formatting
+   * Without it, textContent strips formatting and displays raw markdown (e.g., **bo** as plain text)
    */
   private updateElementContent(context: KeyboardContext, newContent: string): void {
     const controller = context.controller;
     if (controller && controller.element) {
       controller.originalContent = newContent;
-      controller.element.textContent = newContent;
+      controller.element.textContent = newContent; // Clear existing HTML
+      controller.setLiveFormattedContent(newContent); // Re-apply markdown formatting
     }
   }
 

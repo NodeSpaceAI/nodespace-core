@@ -29,7 +29,8 @@ describe('CreateNodeCommand', () => {
       element: {
         textContent: 'test content',
         innerHTML: 'test content'
-      }
+      },
+      setLiveFormattedContent: vi.fn() // Mock for inline formatting preservation
     } as unknown as ContentEditableControllerExtended;
   });
 

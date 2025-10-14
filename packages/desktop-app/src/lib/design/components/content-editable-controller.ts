@@ -497,7 +497,7 @@ export class ContentEditableController {
     }
   }
 
-  private setLiveFormattedContent(content: string): void {
+  public setLiveFormattedContent(content: string): void {
     // Apply live formatting while preserving markdown syntax for editing
     // Use sequential parser to handle nested patterns correctly
     const escapedContent = this.escapeHtml(content);
