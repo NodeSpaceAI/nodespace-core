@@ -5,7 +5,7 @@
  * verifying all core features from Issue #73 specification.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { NodeReferenceService } from '../../lib/services/node-reference-service';
 import {
   createReactiveNodeService,
