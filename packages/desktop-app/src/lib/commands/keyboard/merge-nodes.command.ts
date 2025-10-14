@@ -114,21 +114,7 @@ export class MergeNodesCommand implements KeyboardCommand {
     }
 
     // Use cursor position from context
-    const isAtStart = context.cursorPosition === 0;
-
-    // Debug logging for backspace merge issue with asterisk syntax
-    if (context.content.startsWith('*') || context.content.startsWith('~')) {
-      console.log('[MergeNodesCommand] Backspace at start check:', {
-        nodeId: context.nodeId,
-        contentStart: context.content.substring(0, 20),
-        cursorPosition: context.cursorPosition,
-        isAtStart,
-        selectionStart: range?.startContainer,
-        selectionOffset: range?.startOffset
-      });
-    }
-
-    return isAtStart;
+    return context.cursorPosition === 0;
   }
 
   /**

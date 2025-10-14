@@ -990,7 +990,19 @@ export class ContentEditableController {
         if (childElement.tagName === 'BR') {
           result += '\n';
         }
-        // Skip syntax marker elements
+        // Special handling for inline markdown syntax wrappers
+        else if (childElement.classList.contains('markdown-syntax')) {
+          // For markdown-syntax spans, skip text nodes (the ** markers)
+          // but process nested elements (the actual content)
+          for (const child of Array.from(childElement.childNodes)) {
+            if (child.nodeType === Node.ELEMENT_NODE) {
+              // Process nested elements recursively (e.g., <span class="markdown-bold">)
+              result += this.getTextContentIgnoringSyntax(child as Element);
+            }
+            // Skip text nodes (these are the ** markers)
+          }
+        }
+        // Skip other syntax marker elements
         else if (
           !childElement.classList.contains('code-marker') &&
           !childElement.classList.contains('quote-marker') &&
