@@ -11,11 +11,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NavigateUpCommand } from '$lib/commands/keyboard/navigate-up.command';
 import type { KeyboardContext } from '$lib/services/keyboard-command-registry';
-import type { ContentEditableControllerExtended } from '$lib/services/keyboard-command-registry';
+import type { TextareaController } from '$lib/design/components/textarea-controller';
 
 describe('NavigateUpCommand', () => {
   let command: NavigateUpCommand;
-  let mockController: ContentEditableControllerExtended;
+  let mockController: TextareaController;
   let navigateArrowSpy: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -32,7 +32,7 @@ describe('NavigateUpCommand', () => {
       autocompleteDropdownActive: false,
       isAtFirstLine: vi.fn(() => true),
       getCurrentPixelOffset: vi.fn(() => 100)
-    } as unknown as ContentEditableControllerExtended;
+    } as unknown as TextareaController;
   });
 
   describe('canExecute', () => {
@@ -372,7 +372,7 @@ describe('NavigateUpCommand', () => {
 
     return {
       event,
-      controller: mockController as ContentEditableControllerExtended,
+      controller: mockController as TextareaController,
       nodeId: 'test-node',
       nodeType: 'text',
       content: '',

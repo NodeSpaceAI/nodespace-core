@@ -69,9 +69,12 @@
    * Handle keyboard navigation for date switching
    */
   function handleKeydown(event: KeyboardEvent) {
-    // Only handle if focus is not on contenteditable elements
+    // Only handle if focus is not on editable elements (contenteditable or textarea/input)
     const activeElement = document.activeElement as HTMLElement;
-    const isTextEditor = activeElement && activeElement.contentEditable === 'true';
+    const isContentEditable = activeElement && activeElement.contentEditable === 'true';
+    const isTextInput =
+      activeElement && (activeElement.tagName === 'TEXTAREA' || activeElement.tagName === 'INPUT');
+    const isTextEditor = isContentEditable || isTextInput;
 
     if (isTextEditor) return;
 

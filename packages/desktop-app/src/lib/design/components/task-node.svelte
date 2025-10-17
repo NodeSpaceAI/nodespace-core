@@ -24,7 +24,6 @@
     nodeType = 'task',
     autoFocus = false,
     content = '',
-    headerLevel = 0,
     children = [],
     metadata = {}
   }: {
@@ -32,7 +31,6 @@
     nodeType?: string;
     autoFocus?: boolean;
     content?: string;
-    headerLevel?: number;
     children?: string[];
     metadata?: Record<string, unknown>;
   } = $props();
@@ -50,10 +48,8 @@
   // Task-specific state management - prioritize metadata over content parsing
   let taskState = $state<NodeState>((metadata.taskState as NodeState) || parseTaskState(content));
 
-  // TaskNodes should never allow multi-line editing - always single line
-  const editableConfig = $derived({
-    allowMultiline: false // Tasks are always single-line with text wrapping
-  });
+  // TaskNodes use default single-line editing
+  const editableConfig = {};
 
   // Create reactive metadata object
   let taskMetadata = $derived({ taskState });
@@ -178,7 +174,6 @@
     {nodeType}
     {autoFocus}
     bind:content={internalContent}
-    {headerLevel}
     {children}
     {editableConfig}
     metadata={taskMetadata}

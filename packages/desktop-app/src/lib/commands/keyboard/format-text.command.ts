@@ -7,7 +7,6 @@
  * Behavior:
  * - Cmd+B / Ctrl+B: Toggle bold formatting (**)
  * - Cmd+I / Ctrl+I: Toggle italic formatting (*)
- * - Cmd+U / Ctrl+U: Toggle underline formatting (__)
  * - Uses controller's toggleFormatting method for advanced nested formatting support
  * - Prevents default browser formatting behavior
  *
@@ -75,7 +74,7 @@ export class FormatTextCommand implements KeyboardCommand {
 
     // Access the controller's toggleFormatting method
     const controller = context.controller;
-    if (controller.toggleFormatting && controller.isEditing) {
+    if (controller.toggleFormatting) {
       controller.toggleFormatting(this.marker);
       return true;
     }

@@ -7,10 +7,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { MergeNodesCommand } from '$lib/commands/keyboard/merge-nodes.command';
 import type { KeyboardContext } from '$lib/services/keyboard-command-registry';
-import type { ContentEditableControllerExtended } from '$lib/services/keyboard-command-registry';
+import type { TextareaController } from '$lib/design/components/textarea-controller';
 
 describe('MergeNodesCommand', () => {
-  let mockController: ContentEditableControllerExtended;
+  let mockController: TextareaController;
   let deleteNodeSpy: ReturnType<typeof vi.fn>;
   let combineWithPreviousSpy: ReturnType<typeof vi.fn>;
 
@@ -26,7 +26,7 @@ describe('MergeNodesCommand', () => {
       element: {
         textContent: 'test content'
       } as HTMLDivElement
-    } as unknown as ContentEditableControllerExtended;
+    } as unknown as TextareaController;
   });
 
   describe('direction: up (Backspace)', () => {
@@ -197,7 +197,7 @@ describe('MergeNodesCommand', () => {
 
     return {
       event,
-      controller: mockController as ContentEditableControllerExtended,
+      controller: mockController as TextareaController,
       nodeId: 'test-node',
       nodeType: 'text',
       content: '',

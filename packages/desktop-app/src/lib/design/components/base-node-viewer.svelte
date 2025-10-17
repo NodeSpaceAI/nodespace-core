@@ -14,6 +14,8 @@
   import TextNodeViewer from '$lib/components/viewers/text-node-viewer.svelte';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { sharedNodeStore } from '$lib/services/shared-node-store';
+  import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
+  import { focusManager } from '$lib/services/focus-manager.svelte';
   import type { Node } from '$lib/types';
   import type { UpdateSource } from '$lib/types/update-protocol';
   import type { Snippet } from 'svelte';
@@ -43,12 +45,6 @@
     type: 'viewer',
     viewerId: parentId || 'root'
   };
-
-  // Map to store cursor positions during node type changes
-  const pendingCursorPositions = new Map<string, number>();
-
-  // Simple debounce map - one timeout per node
-  const saveTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
 
   // Track last saved content to detect actual changes
   const lastSavedContent = new Map<string, string>();
@@ -660,61 +656,84 @@
 
   // Focus handling function with proper cursor positioning using tree walker
   function requestNodeFocus(nodeId: string, position: number) {
-    // Find the target node
-    const node = nodeManager.findNode(nodeId);
-    if (!node) {
-      console.error(`Node ${nodeId} not found for focus request`);
-      return;
-    }
+    // Use FocusManager as single source of truth for focus management
+    // This replaces the old DOM-based focus approach
+    focusManager.setEditingNode(nodeId, position);
 
-    // Use DOM API to focus the node directly with cursor positioning
+    // Force textarea update to ensure merged content is visible immediately
+    // Especially important for Safari which doesn't always reactive-update properly
     setTimeout(() => {
-      const nodeElement = document.querySelector(
-        `[data-node-id="${nodeId}"] [contenteditable]`
-      ) as HTMLElement;
-      if (nodeElement) {
-        nodeElement.focus();
-
-        // Set cursor position using tree walker (same approach as controller)
-        if (position >= 0) {
-          const selection = window.getSelection();
-          if (!selection) return;
-
-          // Use tree walker to find the correct text node and offset
-          const walker = document.createTreeWalker(nodeElement, NodeFilter.SHOW_TEXT, null);
-
-          let currentOffset = 0;
-          let currentNode;
-
-          while ((currentNode = walker.nextNode())) {
-            const nodeLength = currentNode.textContent?.length || 0;
-
-            if (currentOffset + nodeLength >= position) {
-              const range = document.createRange();
-              const offsetInNode = position - currentOffset;
-              range.setStart(currentNode, Math.min(offsetInNode, nodeLength));
-              range.setEnd(currentNode, Math.min(offsetInNode, nodeLength));
-
-              selection.removeAllRanges();
-              selection.addRange(range);
-              return;
-            }
-
-            currentOffset += nodeLength;
-          }
-
-          // If we didn't find the position, position at the end
-          const range = document.createRange();
-          range.selectNodeContents(nodeElement);
-          range.collapse(false);
-          selection.removeAllRanges();
-          selection.addRange(range);
+      const node = nodeManager.nodes.get(nodeId);
+      if (node) {
+        const textarea = document.querySelector(
+          `textarea[id="textarea-${nodeId}"]`
+        ) as HTMLTextAreaElement;
+        if (textarea && textarea.value !== node.content) {
+          textarea.value = node.content;
+          textarea.selectionStart = position;
+          textarea.selectionEnd = position;
         }
-      } else {
-        console.error(`Could not find contenteditable element for node ${nodeId}`);
       }
     }, 10);
   }
+
+  // OLD IMPLEMENTATION - REPLACED BY FOCUSMANAGER
+  // function requestNodeFocus(nodeId: string, position: number) {
+  //   // Find the target node
+  //   const node = nodeManager.findNode(nodeId);
+  //   if (!node) {
+  //     console.error(`Node ${nodeId} not found for focus request`);
+  //     return;
+  //   }
+  //
+  //   // Use DOM API to focus the node directly with cursor positioning
+  //   setTimeout(() => {
+  //     const nodeElement = document.querySelector(
+  //       `[data-node-id="${nodeId}"] [contenteditable]`
+  //     ) as HTMLElement;
+  //     if (nodeElement) {
+  //       nodeElement.focus();
+  //
+  //       // Set cursor position using tree walker (same approach as controller)
+  //       if (position >= 0) {
+  //         const selection = window.getSelection();
+  //         if (!selection) return;
+  //
+  //         // Use tree walker to find the correct text node and offset
+  //         const walker = document.createTreeWalker(nodeElement, NodeFilter.SHOW_TEXT, null);
+  //
+  //         let currentOffset = 0;
+  //         let currentNode;
+  //
+  //         while ((currentNode = walker.nextNode())) {
+  //           const nodeLength = currentNode.textContent?.length || 0;
+  //
+  //           if (currentOffset + nodeLength >= position) {
+  //             const range = document.createRange();
+  //             const offsetInNode = position - currentOffset;
+  //             range.setStart(currentNode, Math.min(offsetInNode, nodeLength));
+  //             range.setEnd(currentNode, Math.min(offsetInNode, nodeLength));
+  //
+  //             selection.removeAllRanges();
+  //             selection.addRange(range);
+  //             return;
+  //           }
+  //
+  //           currentOffset += nodeLength;
+  //         }
+  //
+  //         // If we didn't find the position, position at the end
+  //         const range = document.createRange();
+  //         range.selectNodeContents(nodeElement);
+  //         range.collapse(false);
+  //         selection.removeAllRanges();
+  //         selection.addRange(range);
+  //       }
+  //     } else {
+  //       console.error(`Could not find contenteditable element for node ${nodeId}`);
+  //     }
+  //   }, 10);
+  // }
 
   /**
    * Add appropriate formatting syntax to content based on node type
@@ -818,9 +837,9 @@
       return;
     }
 
-    // Set cursor position for new node if provided (e.g., after splitting inline formatted text)
+    // Set cursor position using FocusManager (single source of truth)
     if (newNodeCursorPosition !== undefined && !focusOriginalNode) {
-      pendingCursorPositions.set(newNodeId, newNodeCursorPosition);
+      focusManager.setEditingNode(newNodeId, newNodeCursorPosition);
     }
 
     // Handle focus direction based on focusOriginalNode parameter
@@ -1017,6 +1036,34 @@
     }
   }
 
+  /**
+   * Navigate to a target node using FocusManager (reactive approach)
+   * Passes arrow navigation context to FocusManager for pixel-accurate positioning
+   *
+   * @param targetNodeId The node to navigate to
+   * @param direction Navigation direction ('up' or 'down')
+   * @param pixelOffset Horizontal pixel offset to maintain
+   */
+  function handleNavigateToNode(
+    targetNodeId: string,
+    direction: 'up' | 'down',
+    pixelOffset: number
+  ): void {
+    // Find the target node
+    const targetNode = nodeManager.findNode(targetNodeId);
+    if (!targetNode) {
+      console.warn(`[Navigation] Target node ${targetNodeId} not found`);
+      return;
+    }
+
+    // Use FocusManager with arrow navigation context
+    // This triggers reactive effects that handle:
+    // 1. Switching from view mode to edit mode (isEditing derived value)
+    // 2. Focusing the textarea (autoFocus effect in base-node.svelte)
+    // 3. Calling controller.enterFromArrowNavigation() with pixel-accurate positioning
+    focusManager.setEditingNodeFromArrowNavigation(targetNodeId, direction, pixelOffset);
+  }
+
   // Handle arrow key navigation between nodes using entry/exit methods
   function handleArrowNavigation(
     event: CustomEvent<{
@@ -1039,166 +1086,20 @@
     while (targetIndex >= 0 && targetIndex < currentVisibleNodes.length) {
       const candidateNode = currentVisibleNodes[targetIndex];
 
-      // Check if this node accepts navigation (skip if it doesn\'t)
+      // Check if this node accepts navigation (skip if it doesn't)
       // For now, assume all nodes accept navigation (will be refined per node type)
       const acceptsNavigation = true; // candidateNode.navigationMethods?.canAcceptNavigation() ?? true;
 
       if (acceptsNavigation) {
-        // Found a node that accepts navigation - try to enter it
-        const success = enterNodeAtPosition(candidateNode.id, direction, pixelOffset);
-        if (success) return;
+        // Navigate using reactive approach (FocusManager)
+        handleNavigateToNode(candidateNode.id, direction, pixelOffset);
+        return;
       }
 
-      // This node doesn\'t accept navigation or entry failed - try next one
+      // This node doesn't accept navigation - try next one
       targetIndex = direction === 'up' ? targetIndex - 1 : targetIndex + 1;
     }
   }
-
-  /**
-   * Position cursor at a target pixel offset within a line by iterating through characters.
-   * Uses viewport-relative positioning to maintain horizontal position across nodes with different font sizes.
-   */
-  function setCursorAtPixelOffset(
-    element: HTMLElement,
-    lineElement: Element,
-    targetPixelOffset: number
-  ) {
-    const textNodes = getTextNodes(lineElement as HTMLElement);
-    if (textNodes.length === 0) {
-      // Empty line - position at start
-      const selection = window.getSelection();
-      if (selection) {
-        const range = document.createRange();
-        range.selectNodeContents(lineElement);
-        range.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(range);
-      }
-      return;
-    }
-
-    // Linear search through character positions to find closest to target pixel offset
-    // Target is viewport-relative (including scroll offset), so compare with testRect.left + scrollX
-    let bestOffset = 0;
-    let bestDistance = Infinity;
-    let bestNode: Text | null = null;
-
-    for (const textNode of textNodes) {
-      const textContent = textNode.textContent || '';
-      for (let i = 0; i <= textContent.length; i++) {
-        try {
-          const testRange = document.createRange();
-          testRange.setStart(textNode, i);
-          testRange.setEnd(textNode, i);
-          const testRect = testRange.getBoundingClientRect();
-          const currentPixel = testRect.left + window.scrollX;
-          const distance = Math.abs(currentPixel - targetPixelOffset);
-
-          if (distance < bestDistance) {
-            bestDistance = distance;
-            bestOffset = i;
-            bestNode = textNode;
-          }
-
-          // Early exit if we've gone past the target
-          if (currentPixel > targetPixelOffset) break;
-        } catch {
-          // Skip invalid positions
-        }
-      }
-    }
-
-    // Set cursor at best position
-    const selection = window.getSelection();
-    if (selection && bestNode) {
-      const range = document.createRange();
-      range.setStart(bestNode, bestOffset);
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
-    } else if (selection) {
-      // Defensive fallback: ensure lineElement is valid before using it
-      if (lineElement && lineElement.nodeType === Node.ELEMENT_NODE) {
-        const range = document.createRange();
-        range.selectNodeContents(lineElement);
-        range.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(range);
-      } else {
-        // Ultimate fallback: position at element start if lineElement is invalid
-        const range = document.createRange();
-        range.selectNodeContents(element);
-        range.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(range);
-      }
-    }
-  }
-
-  // Enter a node using its entry methods or fallback positioning
-  function enterNodeAtPosition(
-    targetNodeId: string,
-    direction: 'up' | 'down',
-    pixelOffset: number
-  ): boolean {
-    // Try component-level navigation methods first (future enhancement)
-    // const nodeComponent = getNodeComponent(targetNodeId);
-    // if (nodeComponent?.navigationMethods) {
-    //   return direction === 'up'
-    //     ? nodeComponent.navigationMethods.enterFromBottom(columnHint)
-    //     : nodeComponent.navigationMethods.enterFromTop(columnHint);
-    // }
-
-    // Pixel-based positioning - works correctly with proportional fonts
-    setTimeout(() => {
-      const targetElement = document.getElementById(`contenteditable-${targetNodeId}`);
-      if (!targetElement) return;
-
-      // Prepare the controller for arrow navigation to prevent content update
-      const controller = (
-        targetElement as unknown as {
-          _contentEditableController?: { prepareForArrowNavigation?: () => void };
-        }
-      )._contentEditableController;
-      if (controller && typeof controller.prepareForArrowNavigation === 'function') {
-        controller.prepareForArrowNavigation();
-      }
-
-      // Hide caret during navigation to prevent visible cursor bounce
-      targetElement.style.caretColor = 'transparent';
-
-      targetElement.focus();
-
-      // Wait for DOM to update after focus
-      // With DIVs in both display and editing modes, structure is already ready
-      // Use requestAnimationFrame for minimal delay (next paint frame)
-      requestAnimationFrame(() => {
-        // Check if multiline or single-line
-        const divElements = targetElement.querySelectorAll(':scope > div');
-        const isMultiline = divElements.length > 0;
-
-        if (isMultiline) {
-          // For multiline: position cursor at pixelOffset within the first/last line
-          const lineElement =
-            direction === 'up'
-              ? divElements[divElements.length - 1] // Last line when entering from bottom
-              : divElements[0]; // First line when entering from top
-
-          setCursorAtPixelOffset(targetElement, lineElement, pixelOffset);
-        } else {
-          // For single-line: position cursor at pixelOffset within the single line
-          setCursorAtPixelOffset(targetElement, targetElement, pixelOffset);
-        }
-
-        // Show caret after positioning is complete
-        targetElement.style.caretColor = '';
-      });
-    }, 0);
-
-    return true;
-  }
-
-  // Utility to set cursor position in any contenteditable element
 
   // Handle combining current node with previous node (Backspace at start of node)
   // CLEAN DELEGATION: All logic handled by NodeManager
@@ -1206,7 +1107,7 @@
     event: CustomEvent<{ nodeId: string; currentContent: string }>
   ) {
     try {
-      const { nodeId, currentContent } = event.detail;
+      const { nodeId } = event.detail;
 
       // Validate node exists before combining
       if (!nodeManager.nodes.has(nodeId)) {
@@ -1228,14 +1129,21 @@
         return;
       }
 
+      // Store the original content length before merge (this is where cursor should be positioned)
+      const cursorPositionAfterMerge = previousNode.content.length;
+
       // Always use combineNodes (handles both empty and non-empty nodes with proper child promotion)
       nodeManager.combineNodes(nodeId, previousNode.id);
 
-      // For empty nodes, we need to manually request focus since combineNodes doesn't know
-      // the node was empty
-      if (currentContent.trim() === '') {
-        requestNodeFocus(previousNode.id, previousNode.content.length);
-      }
+      // Always request focus at the merge point (end of original previous node content)
+      // Use setTimeout to ensure DOM has updated after the merge operation
+      // This ensures:
+      // 1. Cursor is positioned at the merge point (not at beginning)
+      // 2. Textarea updates to show merged content immediately (via forced update)
+      // 3. Consistent behavior for both empty and non-empty node merges
+      setTimeout(() => {
+        requestNodeFocus(previousNode.id, cursorPositionAfterMerge);
+      }, 0);
     } catch (error) {
       console.error('Error during node combination:', error);
     }
@@ -1297,9 +1205,6 @@
   // Proper Svelte 5 reactivity: use object instead of Map for reactive tracking
   let loadedNodes = $state<Record<string, unknown>>({});
 
-  // Track focused node for autoFocus after node type changes
-  let focusedNodeId = $state<string | null>(null);
-
   // Calculate minimum depth for relative positioning
   // Children of a container node should start at depth 0 in the viewer
   const minDepth = $derived(() => {
@@ -1308,35 +1213,11 @@
     return Math.min(...nodes.map((n) => n.depth || 0));
   });
 
-  // Clear focusedNodeId after a delay to prevent permanent focus
-  $effect(() => {
-    if (focusedNodeId) {
-      // Check if there's a pending cursor position for this node
-      const pendingPosition = pendingCursorPositions.get(focusedNodeId);
-      if (pendingPosition !== undefined) {
-        // Use requestNodeFocus to position cursor precisely
-        // This bypasses autoFocus to avoid conflicts
-        requestNodeFocus(focusedNodeId, pendingPosition);
-        // Clear the pending position
-        pendingCursorPositions.delete(focusedNodeId);
-        // Clear focusedNodeId immediately since we've handled the focus
-        focusedNodeId = null;
-        return;
-      }
-
-      const timeoutId = setTimeout(() => {
-        focusedNodeId = null;
-      }, 100); // Clear after 100ms to allow autoFocus to trigger
-
-      return () => clearTimeout(timeoutId);
-    }
-  });
-
   // Pre-load components when component mounts
   onMount(async () => {
     async function preloadComponents() {
       // Pre-load all known types
-      const knownTypes = ['text', 'date', 'task', 'ai-chat'];
+      const knownTypes = ['text', 'header', 'date', 'task', 'ai-chat'];
 
       for (const nodeType of knownTypes) {
         // Load viewers
@@ -1375,16 +1256,41 @@
     await preloadComponents();
   });
 
-  // Clean up pending timeouts on component unmount to prevent memory leaks
+  // Reactively load components when node types change
+  $effect(() => {
+    const visibleNodes = nodeManager.visibleNodes;
+
+    // Collect all unique node types
+    const nodeTypes = new Set(visibleNodes.map((node) => node.nodeType));
+
+    // Load components for any new node types
+    for (const nodeType of nodeTypes) {
+      if (!(nodeType in loadedNodes)) {
+        // Load asynchronously
+        (async () => {
+          try {
+            const customNode = await pluginRegistry.getNodeComponent(nodeType);
+            if (customNode) {
+              loadedNodes[nodeType] = customNode;
+            } else {
+              loadedNodes[nodeType] = BaseNode;
+            }
+          } catch (error) {
+            console.error(`💥 Error loading node component for ${nodeType}:`, error);
+            loadedNodes[nodeType] = BaseNode;
+          }
+        })();
+      }
+    }
+  });
+
+  // Clean up on component unmount and flush pending saves
   onDestroy(() => {
+    // Flush pending debounced saves to prevent data loss
+    PersistenceCoordinator.getInstance().flushPending();
+
     // Set cancellation flag to prevent stale writes
     isDestroyed = true;
-
-    // Clear all pending debounce timeouts
-    for (const timeout of saveTimeouts.values()) {
-      clearTimeout(timeout);
-    }
-    saveTimeouts.clear();
 
     // Clear pending promise tracking to prevent memory leaks
     pendingContentSavePromises.clear();
@@ -1438,8 +1344,7 @@
               <TextNodeViewer
                 nodeId={node.id}
                 nodeType={node.nodeType}
-                autoFocus={(node.autoFocus || node.id === focusedNodeId) &&
-                  !pendingCursorPositions.has(node.id)}
+                autoFocus={node.autoFocus}
                 content={node.content}
                 inheritHeaderLevel={node.inheritHeaderLevel || 0}
                 children={node.children}
@@ -1456,11 +1361,6 @@
                 on:slashCommandSelected={(
                   e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
                 ) => {
-                  // Store cursor position before node type change
-                  if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
-                    pendingCursorPositions.set(node.id, e.detail.cursorPosition);
-                  }
-
                   if (node.isPlaceholder) {
                     // For placeholder nodes, just update the nodeType locally
                     if ('updatePlaceholderNodeType' in nodeManager) {
@@ -1471,42 +1371,24 @@
                     nodeManager.updateNodeType(node.id, e.detail.nodeType);
                   }
 
-                  // Set autoFocus to restore focus after nodeType change
-                  focusedNodeId = node.id;
+                  // Set editing state with cursor position using FocusManager
+                  focusManager.setEditingNode(node.id, e.detail.cursorPosition);
                 }}
                 on:nodeTypeChanged={(
                   e: CustomEvent<{ nodeType: string; cleanedContent?: string }>
                 ) => {
                   const newNodeType = e.detail.nodeType;
-                  const cleanedContent = e.detail.cleanedContent;
-                  const targetNode = nodeManager.nodes.get(node.id);
-                  if (targetNode) {
-                    // Update both the node manager and local state
-                    targetNode.nodeType = newNodeType;
 
-                    // If cleanedContent is provided, update the node content too
-                    if (cleanedContent !== undefined) {
-                      // Use requestAnimationFrame to ensure the update happens after component mounting
-                      requestAnimationFrame(() => {
-                        // Use proper node manager method to trigger reactivity
-                        nodeManager.updateNodeContent(node.id, cleanedContent);
-                      });
-                    }
+                  // Use nodeManager.updateNodeType for proper reactivity
+                  // This triggers SharedNodeStore updates and Svelte reactivity
+                  requestAnimationFrame(() => {
+                    // Update the node type through the proper API
+                    // This will trigger _updateTrigger and re-compute visibleNodes
+                    nodeManager.updateNodeType(node.id, newNodeType);
 
-                    // Clean up task-specific properties when converting to text
-                    if (newNodeType === 'text' && targetNode.properties.taskState) {
-                      const { taskState, ...cleanProperties } = targetNode.properties;
-                      void taskState; // Intentionally unused - extracted to remove from properties
-                      targetNode.properties = { ...cleanProperties, _forceUpdate: Date.now() };
-                    } else {
-                      targetNode.properties = {
-                        ...targetNode.properties,
-                        _forceUpdate: Date.now()
-                      };
-                    }
-                    nodeManager.updateNodeContent(targetNode.id, targetNode.content);
-                  }
-                  focusedNodeId = node.id;
+                    // Focus is now set by updateNodeType via FocusManager
+                    // No need to set focusedNodeId here
+                  });
                 }}
                 on:combineWithPrevious={handleCombineWithPrevious}
                 on:deleteNode={handleDeleteNode}
@@ -1520,10 +1402,8 @@
                 <NodeComponent
                   nodeId={node.id}
                   nodeType={node.nodeType}
-                  autoFocus={(node.autoFocus || node.id === focusedNodeId) &&
-                    !pendingCursorPositions.has(node.id)}
+                  autoFocus={node.autoFocus}
                   content={node.content}
-                  headerLevel={node.inheritHeaderLevel || 0}
                   children={node.children}
                   metadata={node.properties || {}}
                   editableConfig={{ allowMultiline: true }}
@@ -1535,61 +1415,48 @@
                     const content = e.detail.content;
                     // Update node content (placeholder flag is handled automatically)
                     nodeManager.updateNodeContent(node.id, content);
-                    // Set autoFocus to restore focus after nodeType change
-                    focusedNodeId = node.id;
+                    // Focus management handled by FocusManager (single source of truth)
                   }}
                   on:headerLevelChanged={() => {
                     // Header level change is handled automatically through content updates
-                    // Just restore focus after the change
-                    focusedNodeId = node.id;
+                    // Focus management handled by FocusManager (single source of truth)
                   }}
                   on:nodeTypeChanged={(
                     e: CustomEvent<{ nodeType: string; cleanedContent?: string }>
                   ) => {
                     const nodeType = e.detail.nodeType;
-                    const cleanedContent = e.detail.cleanedContent;
                     const targetNode = nodeManager.nodes.get(node.id);
                     if (targetNode) {
-                      // Update the node type
-                      targetNode.nodeType = nodeType;
+                      // Wrap mutations in requestAnimationFrame to avoid Svelte 5 state_unsafe_mutation error
+                      requestAnimationFrame(() => {
+                        // Update the node type only - don't touch the content during conversion
+                        targetNode.nodeType = nodeType;
 
-                      // If cleanedContent is provided, update the node content too
-                      if (cleanedContent !== undefined) {
-                        // Use requestAnimationFrame to ensure the update happens after component mounting
-                        requestAnimationFrame(() => {
-                          // Use proper node manager method to trigger reactivity
-                          nodeManager.updateNodeContent(node.id, cleanedContent);
-                        });
-                      }
+                        // Don't update content here - it stays as the user typed it
+                        // cleanedContent will be applied when saving to database on blur
 
-                      // CRITICAL: Clean up type-specific properties when changing node types
-                      if (nodeType === 'text' && targetNode.properties.taskState) {
-                        // When converting from task to text, remove task-specific properties
-                        const { taskState, ...cleanProperties } = targetNode.properties;
-                        void taskState; // Intentionally unused - extracted to remove from properties
-                        targetNode.properties = { ...cleanProperties, _forceUpdate: Date.now() };
-                      } else {
-                        // For other conversions, just force update
-                        targetNode.properties = {
-                          ...targetNode.properties,
-                          _forceUpdate: Date.now()
-                        };
-                      }
+                        // CRITICAL: Clean up type-specific properties when changing node types
+                        if (nodeType === 'text' && targetNode.properties.taskState) {
+                          // When converting from task to text, remove task-specific properties
+                          const { taskState, ...cleanProperties } = targetNode.properties;
+                          void taskState; // Intentionally unused - extracted to remove from properties
+                          targetNode.properties = { ...cleanProperties, _forceUpdate: Date.now() };
+                        } else {
+                          // For other conversions, just force update
+                          targetNode.properties = {
+                            ...targetNode.properties,
+                            _forceUpdate: Date.now()
+                          };
+                        }
 
-                      // Use the working sync mechanism from taskStateChanged
-                      nodeManager.updateNodeContent(targetNode.id, targetNode.content);
+                        // Focus management handled by FocusManager (single source of truth)
+                        focusManager.setEditingNode(node.id);
+                      });
                     }
-                    // Set autoFocus to restore focus after nodeType change
-                    focusedNodeId = node.id;
                   }}
                   on:slashCommandSelected={(
                     e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
                   ) => {
-                    // Store cursor position before node type change
-                    if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
-                      pendingCursorPositions.set(node.id, e.detail.cursorPosition);
-                    }
-
                     if (node.isPlaceholder) {
                       // For placeholder nodes, just update the nodeType locally
                       if ('updatePlaceholderNodeType' in nodeManager) {
@@ -1600,8 +1467,8 @@
                       nodeManager.updateNodeType(node.id, e.detail.nodeType);
                     }
 
-                    // Set autoFocus to restore focus after nodeType change
-                    focusedNodeId = node.id;
+                    // Set editing state with cursor position using FocusManager
+                    focusManager.setEditingNode(node.id, e.detail.cursorPosition);
                   }}
                   on:iconClick={handleIconClick}
                   on:taskStateChanged={(e) => {
@@ -1623,10 +1490,8 @@
                 <BaseNode
                   nodeId={node.id}
                   nodeType={node.nodeType}
-                  autoFocus={(node.autoFocus || node.id === focusedNodeId) &&
-                    !pendingCursorPositions.has(node.id)}
+                  autoFocus={node.autoFocus}
                   content={node.content}
-                  headerLevel={node.inheritHeaderLevel || 0}
                   children={node.children}
                   metadata={node.properties || {}}
                   editableConfig={{ allowMultiline: true }}
@@ -1643,11 +1508,6 @@
                   on:slashCommandSelected={(
                     e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
                   ) => {
-                    // Store cursor position before node type change
-                    if (e.detail.cursorPosition !== null && e.detail.cursorPosition !== undefined) {
-                      pendingCursorPositions.set(node.id, e.detail.cursorPosition);
-                    }
-
                     if (node.isPlaceholder) {
                       // For placeholder nodes, just update the nodeType locally
                       if ('updatePlaceholderNodeType' in nodeManager) {
@@ -1658,8 +1518,8 @@
                       nodeManager.updateNodeType(node.id, e.detail.nodeType);
                     }
 
-                    // Set autoFocus to restore focus after nodeType change
-                    focusedNodeId = node.id;
+                    // Set editing state with cursor position using FocusManager
+                    focusManager.setEditingNode(node.id, e.detail.cursorPosition);
                   }}
                   on:iconClick={handleIconClick}
                   on:taskStateChanged={(e) => {

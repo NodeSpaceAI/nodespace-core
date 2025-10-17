@@ -18,11 +18,11 @@ import { MergeNodesCommand } from '$lib/commands/keyboard/merge-nodes.command';
 import { NavigateUpCommand } from '$lib/commands/keyboard/navigate-up.command';
 import { NavigateDownCommand } from '$lib/commands/keyboard/navigate-down.command';
 import { FormatTextCommand } from '$lib/commands/keyboard/format-text.command';
-import type { ContentEditableControllerExtended } from '$lib/services/keyboard-command-registry';
+import type { TextareaController } from '$lib/design/components/textarea-controller';
 
 describe('Keyboard Command Integration', () => {
   let registry: KeyboardCommandRegistry;
-  let mockController: ContentEditableControllerExtended;
+  let mockController: TextareaController;
   let mockEvents: {
     createNewNode: ReturnType<typeof vi.fn>;
     indentNode: ReturnType<typeof vi.fn>;
@@ -59,7 +59,7 @@ describe('Keyboard Command Integration', () => {
       isAtLastLine: vi.fn(() => true),
       getCurrentPixelOffset: vi.fn(() => 100),
       toggleFormatting: vi.fn()
-    } as unknown as ContentEditableControllerExtended;
+    } as unknown as TextareaController;
 
     // Add text content to element
     mockController.element.textContent = 'test content';
@@ -79,8 +79,6 @@ describe('Keyboard Command Integration', () => {
     registry.register({ key: 'b', ctrl: true }, new FormatTextCommand('bold'));
     registry.register({ key: 'i', meta: true }, new FormatTextCommand('italic'));
     registry.register({ key: 'i', ctrl: true }, new FormatTextCommand('italic'));
-    registry.register({ key: 'u', meta: true }, new FormatTextCommand('underline'));
-    registry.register({ key: 'u', ctrl: true }, new FormatTextCommand('underline'));
   });
 
   afterEach(() => {
@@ -258,7 +256,7 @@ describe('Keyboard Command Integration', () => {
       // Verify all commands are registered (Phase 1, 2, and 3)
       const commands = registry.getCommands();
 
-      expect(commands.size).toBe(12); // 4 basic + 2 navigation + 6 formatting (3 types x 2 modifiers each)
+      expect(commands.size).toBe(10); // 4 basic + 2 navigation + 4 formatting (2 types x 2 modifiers each)
       expect(commands.has('Enter')).toBe(true);
       expect(commands.has('Tab')).toBe(true);
       expect(commands.has('Shift+Tab')).toBe(true);
@@ -269,8 +267,6 @@ describe('Keyboard Command Integration', () => {
       expect(commands.has('Ctrl+b')).toBe(true);
       expect(commands.has('Meta+i')).toBe(true);
       expect(commands.has('Ctrl+i')).toBe(true);
-      expect(commands.has('Meta+u')).toBe(true);
-      expect(commands.has('Ctrl+u')).toBe(true);
     });
   });
 
@@ -387,42 +383,6 @@ describe('Keyboard Command Integration', () => {
 
       expect(handled).toBe(true);
       expect(mockController.toggleFormatting).toHaveBeenCalledWith('*');
-    });
-
-    it('should execute FormatTextCommand for Cmd+U (underline)', async () => {
-      const event = new KeyboardEvent('keydown', { key: 'u', metaKey: true });
-      const context = {
-        nodeId: 'test-node',
-        nodeType: 'text',
-        content: 'test content',
-        cursorPosition: 5,
-        allowMultiline: false,
-        metadata: {}
-      };
-
-      const handled = await registry.execute(event, mockController, context);
-
-      expect(handled).toBe(true);
-      expect(mockController.toggleFormatting).toHaveBeenCalledWith('__');
-    });
-
-    it('should not execute FormatTextCommand when not editing', async () => {
-      mockController.isEditing = false;
-
-      const event = new KeyboardEvent('keydown', { key: 'b', metaKey: true });
-      const context = {
-        nodeId: 'test-node',
-        nodeType: 'text',
-        content: 'test content',
-        cursorPosition: 5,
-        allowMultiline: false,
-        metadata: {}
-      };
-
-      const handled = await registry.execute(event, mockController, context);
-
-      expect(handled).toBe(false);
-      expect(mockController.toggleFormatting).not.toHaveBeenCalled();
     });
   });
 

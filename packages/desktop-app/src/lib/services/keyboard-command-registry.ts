@@ -5,36 +5,7 @@
  * Provides a singleton registry for keyboard commands that can be extended by plugins.
  */
 
-import type { ContentEditableController } from '$lib/design/components/content-editable-controller';
-
-/**
- * Extended controller interface for keyboard commands
- * Provides access to methods and properties needed by commands
- * All properties are optional to support partial mocking in tests
- */
-export type ContentEditableControllerExtended = ContentEditableController & {
-  element?: HTMLDivElement;
-  justCreated?: boolean;
-  isAtFirstLine?(): boolean;
-  isAtLastLine?(): boolean;
-  getCurrentPixelOffset?(): number;
-  getCurrentColumn?(): number;
-  convertHtmlToTextWithNewlines?(html: string): string;
-  recentEnter?: boolean;
-  originalContent?: string;
-  toggleFormatting?(marker: string): void;
-  isEditing?: boolean;
-  slashCommandDropdownActive?: boolean;
-  autocompleteDropdownActive?: boolean;
-  events?: {
-    createNewNode?(data: unknown): void;
-    indentNode?(data: unknown): void;
-    outdentNode?(data: unknown): void;
-    combineWithPrevious?(data: unknown): void;
-    deleteNode?(data: unknown): void;
-    navigateArrow?(data: unknown): void;
-  };
-};
+import type { TextareaController } from '$lib/design/components/textarea-controller';
 
 /**
  * Context provided to keyboard commands during execution
@@ -44,8 +15,8 @@ export interface KeyboardContext {
   /** The original keyboard event */
   event: KeyboardEvent;
 
-  /** Reference to the ContentEditableController */
-  controller: ContentEditableControllerExtended;
+  /** Reference to the TextareaController */
+  controller: TextareaController;
 
   /** Current node ID */
   nodeId: string;
@@ -163,7 +134,7 @@ export class KeyboardCommandRegistry {
    */
   public async execute(
     event: KeyboardEvent,
-    controller: ContentEditableController,
+    controller: TextareaController,
     additionalContext: Partial<KeyboardContext> = {}
   ): Promise<boolean> {
     const keyCombination = this.extractKeyCombination(event);
@@ -251,7 +222,7 @@ export class KeyboardCommandRegistry {
    */
   private buildContext(
     event: KeyboardEvent,
-    controller: ContentEditableController,
+    controller: TextareaController,
     additionalContext: Partial<KeyboardContext>
   ): KeyboardContext {
     const selection = window.getSelection();

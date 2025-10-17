@@ -11,11 +11,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { CreateNodeCommand } from '$lib/commands/keyboard/create-node.command';
 import type { KeyboardContext } from '$lib/services/keyboard-command-registry';
-import type { ContentEditableControllerExtended } from '$lib/services/keyboard-command-registry';
+import type { TextareaController } from '$lib/design/components/textarea-controller';
 
 describe('CreateNodeCommand', () => {
   let command: CreateNodeCommand;
-  let mockController: Partial<ContentEditableControllerExtended>;
+  let mockController: Partial<TextareaController>;
   let createNewNodeSpy: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -35,7 +35,7 @@ describe('CreateNodeCommand', () => {
         // Return the cursor position from context (simulating markdown-aware position)
         return (this as { cursorPosition?: number })?.cursorPosition ?? 0;
       })
-    } as unknown as ContentEditableControllerExtended;
+    } as unknown as TextareaController;
   });
 
   describe('canExecute', () => {
@@ -107,7 +107,8 @@ describe('CreateNodeCommand', () => {
         newContent: 'World',
         originalContent: 'Hello World',
         cursorAtBeginning: false,
-        insertAtBeginning: false
+        insertAtBeginning: false,
+        newNodeCursorPosition: 0
       });
     });
 
@@ -150,7 +151,8 @@ describe('CreateNodeCommand', () => {
         newContent: '',
         originalContent: 'Hello World',
         cursorAtBeginning: false,
-        insertAtBeginning: false
+        insertAtBeginning: false,
+        newNodeCursorPosition: 0
       });
     });
   });
@@ -210,7 +212,8 @@ describe('CreateNodeCommand', () => {
         expect.objectContaining({
           currentContent: '# Header ', // Includes the space after 'Header'
           newContent: '# Text',
-          insertAtBeginning: false
+          insertAtBeginning: false,
+          newNodeCursorPosition: 2
         })
       );
     });
@@ -251,7 +254,8 @@ describe('CreateNodeCommand', () => {
         expect.objectContaining({
           currentContent: '**bold **', // Includes the space after 'bold'
           newContent: '**text**',
-          insertAtBeginning: false
+          insertAtBeginning: false,
+          newNodeCursorPosition: 2
         })
       );
     });
@@ -292,7 +296,7 @@ describe('CreateNodeCommand', () => {
 
     return {
       event,
-      controller: mockController as ContentEditableControllerExtended,
+      controller: mockController as TextareaController,
       nodeId: 'test-node',
       nodeType: 'text',
       content: options.content || '',

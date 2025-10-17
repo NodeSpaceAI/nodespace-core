@@ -10,7 +10,7 @@ import {
   type KeyboardCommand,
   type KeyboardContext
 } from '$lib/services/keyboard-command-registry';
-import type { ContentEditableController } from '$lib/design/components/content-editable-controller';
+import type { TextareaController } from '$lib/design/components/textarea-controller';
 
 describe('KeyboardCommandRegistry', () => {
   let registry: KeyboardCommandRegistry;
@@ -150,7 +150,7 @@ describe('KeyboardCommandRegistry', () => {
       registry.register({ key: 'Enter' }, mockCommand);
 
       const mockEvent = new KeyboardEvent('keydown', { key: 'Enter' });
-      const mockController = {} as ContentEditableController;
+      const mockController = {} as TextareaController;
 
       const result = await registry.execute(mockEvent, mockController);
 
@@ -171,7 +171,7 @@ describe('KeyboardCommandRegistry', () => {
       registry.register({ key: 'Enter' }, mockCommand);
 
       const mockEvent = new KeyboardEvent('keydown', { key: 'Enter' });
-      const mockController = {} as ContentEditableController;
+      const mockController = {} as TextareaController;
 
       const result = await registry.execute(mockEvent, mockController);
 
@@ -181,7 +181,7 @@ describe('KeyboardCommandRegistry', () => {
 
     it('should return false when no command is registered', async () => {
       const mockEvent = new KeyboardEvent('keydown', { key: 'Enter' });
-      const mockController = {} as ContentEditableController;
+      const mockController = {} as TextareaController;
 
       const result = await registry.execute(mockEvent, mockController);
 
@@ -202,7 +202,7 @@ describe('KeyboardCommandRegistry', () => {
 
       // Event without Ctrl - should not execute
       const event1 = new KeyboardEvent('keydown', { key: 'b' });
-      const mockController = {} as ContentEditableController;
+      const mockController = {} as TextareaController;
 
       const result1 = await registry.execute(event1, mockController);
       expect(result1).toBe(false);
@@ -230,7 +230,7 @@ describe('KeyboardCommandRegistry', () => {
       registry.register({ key: 'Enter' }, mockCommand);
 
       const mockEvent = new KeyboardEvent('keydown', { key: 'Enter' });
-      const mockController = {} as ContentEditableController;
+      const mockController = {} as TextareaController;
 
       const result = await registry.execute(mockEvent, mockController);
 
@@ -261,7 +261,7 @@ describe('KeyboardCommandRegistry', () => {
       registry.register({ key: 'Enter' }, mockCommand);
 
       const mockEvent = new KeyboardEvent('keydown', { key: 'Enter' });
-      const mockController = {} as ContentEditableController;
+      const mockController = {} as TextareaController;
 
       await registry.execute(mockEvent, mockController, {
         nodeId: 'test-node',
@@ -297,7 +297,7 @@ describe('KeyboardCommandRegistry', () => {
       registry.register({ key: 'Enter' }, mockCommand);
 
       const mockEvent = new KeyboardEvent('keydown', { key: 'Enter' });
-      const mockController = {} as ContentEditableController;
+      const mockController = {} as TextareaController;
 
       await registry.execute(mockEvent, mockController);
 

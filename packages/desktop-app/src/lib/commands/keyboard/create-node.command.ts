@@ -80,8 +80,11 @@ export class CreateNodeCommand implements KeyboardCommand {
       // Normal splitting behavior for middle/end positions
       const splitResult = splitMarkdownContent(currentContent, cursorPosition);
 
-      // Update current element immediately to show completed syntax
-      this.updateElementContent(context, splitResult.beforeContent);
+      // NOTE: We don't update the element content here because:
+      // 1. Direct DOM manipulation can cause focus issues
+      // 2. The recentEnter flag prevents updateContent from working anyway
+      // 3. The reactive system will update it via nodeManager.updateNodeContent in handleCreateNewNode
+      // The currentContent in the event triggers the proper update via the reactive flow
 
       context.controller.events.createNewNode({
         afterNodeId: context.nodeId,
@@ -155,9 +158,13 @@ export class CreateNodeCommand implements KeyboardCommand {
   private updateElementContent(context: KeyboardContext, newContent: string): void {
     const controller = context.controller;
     if (controller && controller.element) {
-      controller.originalContent = newContent;
-      controller.element.textContent = newContent; // Clear existing HTML
-      controller.setLiveFormattedContent(newContent); // Re-apply markdown formatting
+      // CRITICAL: Blur the element FIRST before updating its value
+      // Updating a focused textarea's value can cause focus issues
+      controller.element.blur();
+
+      // Now update the value safely (element is no longer focused)
+      controller.element.value = newContent;
+      controller.adjustHeight();
     }
   }
 

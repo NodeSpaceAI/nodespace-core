@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PluginRegistry } from '$lib/plugins/plugin-registry';
 import {
   textNodePlugin,
+  headerNodePlugin,
   taskNodePlugin,
   aiChatNodePlugin,
   dateNodePlugin,
@@ -41,12 +42,24 @@ describe('Core Plugins Integration', () => {
       expect(textNodePlugin.id).toBe('text');
       expect(textNodePlugin.name).toBe('Text Node');
       expect(textNodePlugin.version).toBe('1.0.0');
-      expect(textNodePlugin.config.slashCommands).toHaveLength(4); // text, h1, h2, h3
+      expect(textNodePlugin.config.slashCommands).toHaveLength(1); // just text command
       expect(textNodePlugin.viewer).toBeDefined();
       expect(textNodePlugin.reference).toBeDefined();
 
-      // Check header commands are included from recent BasicNodeTypeRegistry work
-      const commands = textNodePlugin.config.slashCommands;
+      const textCommand = textNodePlugin.config.slashCommands[0];
+      expect(textCommand.id).toBe('text');
+    });
+
+    it('should have valid headerNodePlugin definition', () => {
+      expect(headerNodePlugin.id).toBe('header');
+      expect(headerNodePlugin.name).toBe('Header Node');
+      expect(headerNodePlugin.version).toBe('1.0.0');
+      expect(headerNodePlugin.config.slashCommands).toHaveLength(3); // h1, h2, h3
+      expect(headerNodePlugin.node).toBeDefined(); // Header uses 'node' not 'viewer'
+      expect(headerNodePlugin.reference).toBeDefined();
+
+      // Check header commands
+      const commands = headerNodePlugin.config.slashCommands;
       expect(commands.find((cmd) => cmd.id === 'header1')).toBeDefined();
       expect(commands.find((cmd) => cmd.id === 'header2')).toBeDefined();
       expect(commands.find((cmd) => cmd.id === 'header3')).toBeDefined();
@@ -104,8 +117,9 @@ describe('Core Plugins Integration', () => {
 
   describe('Core Plugins Collection', () => {
     it('should export all core plugins in corePlugins array', () => {
-      expect(corePlugins).toHaveLength(6);
+      expect(corePlugins).toHaveLength(7);
       expect(corePlugins).toContain(textNodePlugin);
+      expect(corePlugins).toContain(headerNodePlugin);
       expect(corePlugins).toContain(taskNodePlugin);
       expect(corePlugins).toContain(aiChatNodePlugin);
       expect(corePlugins).toContain(dateNodePlugin);
@@ -125,7 +139,7 @@ describe('Core Plugins Integration', () => {
     it('should register all core plugins successfully', () => {
       registerCorePlugins(registry);
 
-      expect(registry.getAllPlugins()).toHaveLength(6);
+      expect(registry.getAllPlugins()).toHaveLength(7);
 
       // Verify each core plugin is registered
       for (const plugin of corePlugins) {
@@ -140,10 +154,10 @@ describe('Core Plugins Integration', () => {
       expect(consoleSpy).toHaveBeenCalledWith(
         '[UnifiedPluginRegistry] Core plugins registered:',
         expect.objectContaining({
-          plugins: 6,
+          plugins: 7, // text, header, task, ai-chat, date, user, document
           slashCommands: expect.any(Number),
-          viewers: 3, // text, task, ai-chat (date is a node, not a viewer)
-          references: 6 // all plugins have references
+          viewers: 3, // text, task, ai-chat (date and header are nodes, not viewers)
+          references: 7 // all plugins have references
         })
       );
     });
@@ -153,7 +167,7 @@ describe('Core Plugins Integration', () => {
 
       const stats = registry.getStats();
 
-      // text: 4 commands, task: 1, ai-chat: 1, date: 0, user: 0, document: 0 = 6 total
+      // text: 1 command, header: 3, task: 1, ai-chat: 1, date: 0, user: 0, document: 0 = 6 total
       expect(stats.slashCommandsCount).toBe(6);
     });
 
@@ -345,7 +359,9 @@ describe('Core Plugins Integration', () => {
       // Should reduce available commands
       const commands = registry.getAllSlashCommands();
       expect(commands.find((cmd) => cmd.id === 'text')).toBeUndefined();
-      expect(commands.find((cmd) => cmd.id === 'header1')).toBeUndefined();
+
+      // Header commands should still be available (separate plugin)
+      expect(commands.find((cmd) => cmd.id === 'header1')).toBeDefined();
     });
 
     it('should re-enable disabled plugins', () => {
@@ -357,7 +373,7 @@ describe('Core Plugins Integration', () => {
     });
 
     it('should handle registry clearing', () => {
-      expect(registry.getAllPlugins()).toHaveLength(6);
+      expect(registry.getAllPlugins()).toHaveLength(7);
 
       registry.clear();
 

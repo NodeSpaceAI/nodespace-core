@@ -400,6 +400,28 @@ export class PersistenceCoordinator {
   }
 
   /**
+   * Flush all pending debounced operations immediately
+   * Used during component unmount or page unload to prevent data loss
+   *
+   * NOTE: This is synchronous best-effort - operations execute immediately
+   * but we don't wait for them to complete (to avoid blocking unmount)
+   */
+  flushPending(): void {
+    const pendingOps = Array.from(this.operations.values()).filter((op) => op.status === 'pending');
+
+    for (const op of pendingOps) {
+      // Clear the debounce timer if one exists
+      if (op.timer !== undefined) {
+        clearTimeout(op.timer);
+        op.timer = undefined;
+      }
+
+      // Execute immediately (fire-and-forget for unmount scenarios)
+      this.executeOperation(op);
+    }
+  }
+
+  /**
    * Cancel pending operation for a node
    */
   cancelPending(nodeId: string): void {

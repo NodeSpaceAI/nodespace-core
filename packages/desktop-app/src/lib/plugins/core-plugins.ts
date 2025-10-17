@@ -18,7 +18,7 @@ import BaseNodeReference from '../components/base-node-reference.svelte';
 export const textNodePlugin: PluginDefinition = {
   id: 'text',
   name: 'Text Node',
-  description: 'Create a text node with optional header formatting',
+  description: 'Create a plain text node',
   version: '1.0.0',
   config: {
     slashCommands: [
@@ -28,27 +28,6 @@ export const textNodePlugin: PluginDefinition = {
         description: 'Create a text node',
         contentTemplate: '',
         nodeType: 'text' // Explicit nodeType for proper visual updates
-      },
-      {
-        id: 'header1',
-        name: 'Header 1',
-        description: 'Create a large header',
-        shortcut: '#',
-        contentTemplate: '# '
-      },
-      {
-        id: 'header2',
-        name: 'Header 2',
-        description: 'Create a medium header',
-        shortcut: '##',
-        contentTemplate: '## '
-      },
-      {
-        id: 'header3',
-        name: 'Header 3',
-        description: 'Create a small header',
-        shortcut: '###',
-        contentTemplate: '### '
       }
     ],
     canHaveChildren: true,
@@ -56,6 +35,51 @@ export const textNodePlugin: PluginDefinition = {
   },
   viewer: {
     lazyLoad: () => import('../components/viewers/text-node-viewer.svelte'),
+    priority: 1
+  },
+  reference: {
+    component: BaseNodeReference as NodeReferenceComponent,
+    priority: 1
+  }
+};
+
+export const headerNodePlugin: PluginDefinition = {
+  id: 'header',
+  name: 'Header Node',
+  description: 'Create a header with customizable level (1-6)',
+  version: '1.0.0',
+  config: {
+    slashCommands: [
+      {
+        id: 'header1',
+        name: 'Header 1',
+        description: 'Create a large header',
+        shortcut: '#',
+        contentTemplate: '# ',
+        nodeType: 'header'
+      },
+      {
+        id: 'header2',
+        name: 'Header 2',
+        description: 'Create a medium header',
+        shortcut: '##',
+        contentTemplate: '## ',
+        nodeType: 'header'
+      },
+      {
+        id: 'header3',
+        name: 'Header 3',
+        description: 'Create a small header',
+        shortcut: '###',
+        contentTemplate: '### ',
+        nodeType: 'header'
+      }
+    ],
+    canHaveChildren: true,
+    canBeChild: true
+  },
+  node: {
+    lazyLoad: () => import('../design/components/header-node.svelte'),
     priority: 1
   },
   reference: {
@@ -184,6 +208,7 @@ export const documentNodePlugin: PluginDefinition = {
 // like WhiteBoardNode, CodeNode, ImageNode, etc. in separate packages
 export const corePlugins = [
   textNodePlugin,
+  headerNodePlugin,
   taskNodePlugin,
   aiChatNodePlugin,
   dateNodePlugin,

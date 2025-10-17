@@ -20,7 +20,6 @@
     content = '',
     autoFocus = false,
     nodeType = 'task',
-    inheritHeaderLevel = 0,
     children = []
   }: NodeViewerProps = $props();
 
@@ -168,7 +167,6 @@
       {nodeType}
       {autoFocus}
       {content}
-      headerLevel={inheritHeaderLevel}
       {children}
       editableConfig={{ allowMultiline: true }}
       on:createNewNode={forwardEvent('createNewNode')}

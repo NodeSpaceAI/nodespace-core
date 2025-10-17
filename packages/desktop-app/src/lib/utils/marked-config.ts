@@ -53,7 +53,7 @@ marked.use({
     }
   },
   // Configure options
-  breaks: false, // Don't convert \n to <br>
+  breaks: true, // Convert \n to <br> for proper line break rendering
   gfm: true // GitHub Flavored Markdown
 });
 
@@ -68,8 +68,8 @@ export function markdownToHtml(markdown: string): string {
     const html = marked(markdown);
     // Handle both sync and async returns from marked()
     if (typeof html === 'string') {
-      // Remove any trailing whitespace/newlines and strip <p> tags
-      return html.trim().replace(/^<p>|<\/p>$/g, '');
+      // Strip <p> tags but preserve leading/trailing whitespace
+      return html.replace(/^<p>|<\/p>$/g, '');
     } else {
       // If marked returns a Promise (shouldn't happen with our config, but handle it)
       console.warn('marked() returned Promise unexpectedly, falling back to plain text');

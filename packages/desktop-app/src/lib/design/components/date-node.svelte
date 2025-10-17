@@ -19,7 +19,6 @@
     content = '',
     autoFocus = false,
     nodeType = 'date',
-    inheritHeaderLevel = 0,
     children = []
   }: NodeViewerProps = $props();
 
@@ -64,7 +63,6 @@
     content={displayContent}
     {autoFocus}
     {nodeType}
-    headerLevel={inheritHeaderLevel}
     {children}
     on:createNewNode
     on:contentChanged={(e) => {

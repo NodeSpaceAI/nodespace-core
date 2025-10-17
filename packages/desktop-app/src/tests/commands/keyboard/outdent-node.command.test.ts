@@ -7,11 +7,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { OutdentNodeCommand } from '$lib/commands/keyboard/outdent-node.command';
 import type { KeyboardContext } from '$lib/services/keyboard-command-registry';
-import type { ContentEditableControllerExtended } from '$lib/services/keyboard-command-registry';
+import type { TextareaController } from '$lib/design/components/textarea-controller';
 
 describe('OutdentNodeCommand', () => {
   let command: OutdentNodeCommand;
-  let mockController: Partial<ContentEditableControllerExtended>;
+  let mockController: Partial<TextareaController>;
   let outdentNodeSpy: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -22,7 +22,7 @@ describe('OutdentNodeCommand', () => {
       events: {
         outdentNode: outdentNodeSpy
       }
-    } as unknown as ContentEditableControllerExtended;
+    } as unknown as TextareaController;
   });
 
   describe('canExecute', () => {
@@ -90,7 +90,7 @@ describe('OutdentNodeCommand', () => {
 
     return {
       event,
-      controller: mockController as ContentEditableControllerExtended,
+      controller: mockController as TextareaController,
       nodeId: 'test-node',
       nodeType: 'text',
       content: '',

@@ -40,20 +40,30 @@ export class NavigateDownCommand implements KeyboardCommand {
 
     // Determine if we should navigate between nodes
     if (context.allowMultiline) {
-      // Check if the node actually has multiple lines (DIVs exist)
+      // Check if this is a textarea or contenteditable
       const element = controller.element;
-      const lineElements = Array.from(element.children).filter(
-        (child: Element) => child.tagName === 'DIV'
-      );
-      const hasMultipleLines = lineElements.length > 0;
+      const isTextarea = element.tagName === 'TEXTAREA';
 
-      if (hasMultipleLines) {
-        // For nodes with actual multiple lines, navigate only when on last line
-        return this.isAtLastLine(context);
+      if (isTextarea) {
+        // Textarea: Use isAtLastLine() method which checks for \n newlines
+        // Only navigate if cursor is on the last line
+        const atLastLine = controller.isAtLastLine ? controller.isAtLastLine() : true;
+        return atLastLine;
       } else {
-        // Node supports multiline but currently has only single line
-        // Allow navigation from anywhere (like single-line nodes)
-        return true;
+        // ContentEditable: Check if the node actually has multiple lines (DIVs exist)
+        const lineElements = Array.from(element.children).filter(
+          (child: Element) => child.tagName === 'DIV'
+        );
+        const hasMultipleLines = lineElements.length > 0;
+
+        if (hasMultipleLines) {
+          // For nodes with actual multiple lines, navigate only when on last line
+          return this.isAtLastLine(context);
+        } else {
+          // Node supports multiline but currently has only single line
+          // Allow navigation from anywhere (like single-line nodes)
+          return true;
+        }
       }
     } else {
       // For single-line nodes, always navigate on arrow down

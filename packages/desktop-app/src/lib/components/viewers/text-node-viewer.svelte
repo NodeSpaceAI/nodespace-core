@@ -37,10 +37,10 @@
     internalContent = content;
   });
 
-  // Smart multiline logic - headers are single-line only, regular text allows multiline
-  const editableConfig = $derived({
-    allowMultiline: headerLevel === 0 // Only allow multiline for regular text (headerLevel 0)
-  });
+  // Text nodes always allow multiline editing
+  const editableConfig = {
+    allowMultiline: true
+  };
 
   // Event dispatcher - explicitly typed with all events this component can dispatch
   const dispatch = createEventDispatcher<{
@@ -103,7 +103,6 @@
   {nodeType}
   {autoFocus}
   content={internalContent}
-  {headerLevel}
   {children}
   {editableConfig}
   on:createNewNode={(e) =>

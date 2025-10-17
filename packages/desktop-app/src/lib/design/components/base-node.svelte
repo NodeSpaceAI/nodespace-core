@@ -1,32 +1,37 @@
 <!--
   BaseNode - Abstract Core Component (Internal Use Only)
-  
+
   IMPORTANT: This component should NOT be used directly in application code.
-  It serves as the abstract foundation for all node viewers and should only 
+  It serves as the abstract foundation for all node viewers and should only
   be consumed by concrete node viewer implementations like TextNodeViewer.
-  
+
   Core Features:
-  - ContentEditableController integration for markdown syntax handling
-  - Dual-representation with focus/blur state management
+  - TextareaController integration for markdown editing (textarea-based)
+  - Edit/view mode switching on focus/blur
   - Universal keyboard shortcuts (Enter, Backspace, Cmd+B/I, etc.)
   - Node reference autocomplete system (@-trigger)
   - Base styling and layout for all node types
-  
+
   Architecture:
   - Abstract Base: Provides core functionality but should not be instantiated directly
   - Concrete Viewers: TextNodeViewer, TaskNodeViewer, etc. wrap this component
   - Plugin System: Registered viewers extend this base with type-specific logic
+
+  Migration Note:
+  - Replaced ContentEditableController with TextareaController (Issue #274)
+  - Single source of truth: textarea.value (no dual representation)
+  - Simpler state management and cursor positioning
 -->
 
 <script lang="ts">
-  import { createEventDispatcher, onDestroy } from 'svelte';
+  import { createEventDispatcher, onDestroy, untrack } from 'svelte';
   // import { type NodeType } from '$lib/design/icons'; // Unused but preserved for future use
 
   import {
-    ContentEditableController,
-    type ContentEditableEvents,
-    type ContentEditableConfig
-  } from './content-editable-controller.js';
+    TextareaController,
+    type TextareaControllerEvents,
+    type TextareaControllerConfig
+  } from './textarea-controller.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
   import { SlashCommandDropdown } from '$lib/components/ui/slash-command-dropdown';
   import {
@@ -37,6 +42,7 @@
   import type { TriggerContext } from '$lib/services/node-reference-service';
   import { getIconConfig, resolveNodeState, type NodeType } from '$lib/design/icons/registry';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
+  import { focusManager } from '$lib/services/focus-manager.svelte';
 
   // Props (Svelte 5 runes syntax) - nodeReferenceService removed
   let {
@@ -44,7 +50,6 @@
     nodeType = $bindable('text'),
     autoFocus = false,
     content = $bindable(''),
-    headerLevel = 0,
     children = [],
     editableConfig = {},
     metadata = {}
@@ -53,11 +58,14 @@
     nodeType?: string;
     autoFocus?: boolean;
     content?: string;
-    headerLevel?: number;
     children?: string[];
-    editableConfig?: ContentEditableConfig;
+    editableConfig?: TextareaControllerConfig;
     metadata?: Record<string, unknown>;
   } = $props();
+
+  // isEditing is now derived from FocusManager (single source of truth)
+  // This replaces the old bindable prop approach
+  let isEditing = $derived(focusManager.editingNodeId === nodeId);
 
   // Get services from context
   // In test environment, enable mock service to allow autocomplete testing
@@ -68,8 +76,11 @@
     (import.meta.env.VITEST ? ({} as Record<string, never>) : null);
 
   // DOM element and controller - Svelte bind:this assignment
-  let contentEditableElement: HTMLDivElement | undefined = undefined;
-  let controller: ContentEditableController | null = null;
+  let textareaElement = $state<HTMLTextAreaElement | undefined>(undefined);
+  let controller: TextareaController | null = null;
+
+  // View mode element for rendering markdown
+  let viewElement = $state<HTMLDivElement | undefined>(undefined);
 
   // Autocomplete modal state
   let showAutocomplete = $state(false);
@@ -369,6 +380,9 @@
     });
   }
 
+  // Import markdown renderer for view mode
+  import { markdownToHtml } from '$lib/utils/marked-config';
+
   // Event dispatcher - aligned with NodeViewerEventDetails interface
   const dispatch = createEventDispatcher<{
     contentChanged: { content: string };
@@ -396,20 +410,34 @@
   }>();
 
   // Controller event handlers
-  const controllerEvents: ContentEditableEvents = {
+  const controllerEvents: TextareaControllerEvents = {
     contentChanged: (content: string) => dispatch('contentChanged', { content }),
     headerLevelChanged: (level: number) => dispatch('headerLevelChanged', { level }),
-    focus: () => dispatch('focus'),
+    focus: () => {
+      // Use FocusManager as single source of truth
+      // Only update if this node isn't already set as editing
+      // (Don't overwrite arrow navigation context set by setEditingNodeFromArrowNavigation)
+      if (focusManager.editingNodeId !== nodeId) {
+        focusManager.setEditingNode(nodeId);
+      }
+      dispatch('focus');
+    },
     blur: () => {
+      // Use FocusManager as single source of truth
+      // Only clear editing if THIS node is still the editing node
+      // (Don't clear if focus has already moved to another node via arrow navigation)
+      untrack(() => {
+        if (focusManager.editingNodeId === nodeId) {
+          focusManager.clearEditing();
+        }
+      });
+
       // Hide autocomplete modal when losing focus
-      // Delay hiding autocomplete to prevent it from being hidden during DOM manipulation
-      // The DOM updates from setLiveFormattedContent can cause brief focus loss
       setTimeout(() => {
-        // Only hide if autocomplete is still showing and we're not actively typing
         if (showAutocomplete && controller && !controller.isProcessingInput()) {
           showAutocomplete = false;
         }
-      }, 50); // Small delay to let input processing complete
+      }, 50);
       dispatch('blur');
     },
     createNewNode: (data) => dispatch('createNewNode', data),
@@ -482,9 +510,8 @@
       newNodeType: string;
       cleanedContent: string;
     }) => {
-      // Update content to cleaned version
-      dispatch('contentChanged', { content: data.cleanedContent });
-      // Notify parent to handle the node type change AND cleaned content together
+      // Don't dispatch contentChanged here - it causes Svelte 5 state_unsafe_mutation error
+      // The cleaned content is passed in nodeTypeChanged event and handled by parent
       dispatch('nodeTypeChanged', {
         nodeType: data.newNodeType,
         cleanedContent: data.cleanedContent
@@ -492,13 +519,17 @@
     }
   };
 
+  // REMOVED: Manual sync $effect no longer needed
+  // isEditing is now $derived from FocusManager automatically
+  // This ensures perfect sync without manual coordination
+
   // Initialize controller when element is available (Svelte 5 $effect)
-  // Note: Must explicitly access contentEditableElement to track dependency
+  // Note: Must explicitly access textareaElement to track dependency
   $effect(() => {
-    const element = contentEditableElement; // Force dependency tracking
+    const element = textareaElement; // Force dependency tracking
     if (element && !controller) {
       // Create controller immediately - DOM should be ready when effect runs
-      controller = new ContentEditableController(
+      controller = new TextareaController(
         element,
         nodeId,
         nodeType,
@@ -511,6 +542,48 @@
       if (autoFocus) {
         setTimeout(() => controller?.focus(), 10);
       }
+    } else if (!element && controller) {
+      // Element was destroyed (switched to view mode) - clean up controller
+      controller.destroy();
+      controller = null;
+    }
+  });
+
+  // Update view mode rendering when content or editing state changes
+  $effect(() => {
+    if (!isEditing && viewElement) {
+      // IMPORTANT: Process blank lines BEFORE markdownToHtml
+      // marked.js with breaks:true converts all \n to <br>, losing the ability to detect \n\n
+      const BLANK_LINE_PLACEHOLDER = '___BLANK___';
+      let processedContent = content;
+
+      // Replace consecutive newlines with placeholders
+      processedContent = processedContent.replace(/\n\n+/g, (match) => {
+        // Number of blank lines = (number of \n) - 1
+        // "\n\n" = 1 blank line, "\n\n\n" = 2 blank lines
+        const blankLineCount = match.length - 1;
+        return '\n' + BLANK_LINE_PLACEHOLDER.repeat(blankLineCount);
+      });
+
+      // Process markdown (converts \n to <br>, handles formatting)
+      let html = markdownToHtml(processedContent);
+
+      // Replace placeholders with <br> tags for blank lines
+      html = html.replace(new RegExp(BLANK_LINE_PLACEHOLDER, 'g'), '<br>');
+
+      // Preserve leading newlines
+      const leadingNewlines = content.match(/^\n+/);
+      if (leadingNewlines) {
+        html = '<br>'.repeat(leadingNewlines[0].length) + html;
+      }
+
+      // Preserve trailing newlines
+      const trailingNewlines = content.match(/\n+$/);
+      if (trailingNewlines) {
+        html += '<br>'.repeat(trailingNewlines[0].length + 1);
+      }
+
+      viewElement.innerHTML = html;
     }
   });
 
@@ -528,15 +601,54 @@
     }
   });
 
-  // Focus programmatically when autoFocus changes
+  // Track if autoFocus has been processed to prevent re-focusing after blur
+  let autoFocusProcessed = $state(false);
+
+  // Focus programmatically when autoFocus changes (only once)
   $effect(() => {
-    if (controller && autoFocus) {
-      // Use a small delay to ensure DOM is updated after nodeType change
+    if (controller && autoFocus && !autoFocusProcessed) {
+      // Mark as processed immediately to prevent re-triggering
+      autoFocusProcessed = true;
+
+      const pendingPosition = focusManager.pendingCursorPosition;
+      const hasArrowNav =
+        focusManager.arrowNavDirection !== null && focusManager.arrowNavPixelOffset !== null;
+
+      // Skip autoFocus positioning if arrow navigation is handling it
+      if (hasArrowNav) {
+        return;
+      }
+
       setTimeout(() => {
         if (controller) {
           controller.focus();
+
+          if (pendingPosition !== null && focusManager.editingNodeId === nodeId) {
+            controller.setCursorPosition(pendingPosition);
+            focusManager.clearCursorPosition();
+          } else {
+            controller.positionCursorAtLineBeginning(0, true);
+          }
         }
       }, 10);
+    }
+  });
+
+  // Handle arrow navigation cursor positioning
+  $effect(() => {
+    const arrowDirection = focusManager.arrowNavDirection;
+    const arrowPixelOffset = focusManager.arrowNavPixelOffset;
+    const editingNodeId = focusManager.editingNodeId;
+
+    if (
+      controller &&
+      isEditing &&
+      arrowDirection !== null &&
+      arrowPixelOffset !== null &&
+      editingNodeId === nodeId
+    ) {
+      controller.enterFromArrowNavigation(arrowDirection, arrowPixelOffset);
+      focusManager.clearArrowNavigationContext();
     }
   });
 
@@ -589,12 +701,7 @@
 
   // Compute CSS classes
   const containerClasses = $derived(
-    [
-      'node',
-      `node--${nodeType}`,
-      headerLevel > 0 && `node--h${headerLevel}`,
-      children.length > 0 && 'node--has-children'
-    ]
+    ['node', `node--${nodeType}`, children.length > 0 && 'node--has-children']
       .filter(Boolean)
       .join(' ')
   );
@@ -639,15 +746,40 @@
     {/if}
   </div>
 
-  <!-- Content area -->
-  <div
-    bind:this={contentEditableElement}
-    contenteditable="true"
-    class="node__content"
-    id="contenteditable-{nodeId}"
-    role="textbox"
-    tabindex="0"
-  ></div>
+  <!-- Content area: textarea for editing, div for viewing -->
+  {#if isEditing}
+    <textarea
+      bind:this={textareaElement}
+      class="node__content node__content--textarea"
+      id="textarea-{nodeId}"
+      rows="1"
+      tabindex="0"
+    ></textarea>
+  {:else}
+    <div
+      bind:this={viewElement}
+      class="node__content node__content--view"
+      id="view-{nodeId}"
+      tabindex="0"
+      onclick={(e) => {
+        // Use FocusManager instead of directly setting isEditing
+        focusManager.setEditingNode(nodeId);
+        // Don't focus if this is arrow navigation (will be positioned externally)
+        const target = e.currentTarget as HTMLElement;
+        if (!target.dataset.arrowNavigation) {
+          setTimeout(() => controller?.focus(), 0);
+        }
+      }}
+      onkeydown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          // Use FocusManager instead of directly setting isEditing
+          focusManager.setEditingNode(nodeId);
+          setTimeout(() => controller?.focus(), 0);
+        }
+      }}
+      role="button"
+    ></div>
+  {/if}
 </div>
 
 <!-- Professional Node Autocomplete Component -->
@@ -705,7 +837,7 @@
     */
 
     /* Default values for normal text - dynamic font-responsive alignment */
-    --line-height: 1.6;
+    --line-height: 1.5;
     --font-size: 1rem;
     /* Note: --icon-vertical-position is defined globally in app.css */
   }
@@ -738,17 +870,38 @@
     min-height: 1.25rem;
     padding: 0;
     border: none;
+    border-radius: 0;
     background: transparent;
     font-family: inherit;
     font-size: 1rem;
-    line-height: 1.6;
+    line-height: 1.5; /* Unified line-height: 16px * 1.5 = 24px (prevents layout shift between modes) */
     color: hsl(var(--foreground));
     outline: none;
     white-space: pre-wrap;
     word-wrap: break-word;
+    box-sizing: border-box; /* Match textarea box model to prevent subpixel shifts */
+    transform: translateZ(0); /* Force GPU rendering for pixel-perfect positioning */
   }
 
-  .node__content:empty {
+  .node__content--textarea {
+    /* Textarea-specific styles */
+    resize: none;
+    overflow: hidden;
+    width: 100%;
+    /* Explicitly set line-height to match view div */
+    line-height: 1.5;
+    box-sizing: border-box;
+    /* Match view div display to prevent layout shift */
+    display: block;
+  }
+
+  .node__content--view {
+    /* View mode styles */
+    cursor: text;
+  }
+
+  .node__content:empty,
+  .node__content--view:empty {
     /* Ensure empty nodes maintain their height and are clickable */
     min-height: 1.25rem;
     cursor: text;

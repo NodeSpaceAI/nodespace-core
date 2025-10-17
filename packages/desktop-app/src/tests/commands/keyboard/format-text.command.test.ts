@@ -11,19 +11,18 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { FormatTextCommand } from '$lib/commands/keyboard/format-text.command';
 import type { KeyboardContext } from '$lib/services/keyboard-command-registry';
-import type { ContentEditableControllerExtended } from '$lib/services/keyboard-command-registry';
+import type { TextareaController } from '$lib/design/components/textarea-controller';
 
 describe('FormatTextCommand', () => {
-  let mockController: Partial<ContentEditableControllerExtended>;
+  let mockController: Partial<TextareaController>;
   let toggleFormattingSpy: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     toggleFormattingSpy = vi.fn();
 
     mockController = {
-      isEditing: true,
       toggleFormatting: toggleFormattingSpy
-    } as unknown as ContentEditableControllerExtended;
+    } as unknown as TextareaController;
   });
 
   describe('Bold formatting', () => {
@@ -106,20 +105,6 @@ describe('FormatTextCommand', () => {
 
       expect(result).toBe(true);
     });
-
-    it('should return false when controller is not editing', async () => {
-      mockController.isEditing = false;
-
-      const context = createContext({
-        key: 'b',
-        metaKey: true
-      });
-
-      const result = await command.execute(context);
-
-      expect(result).toBe(false);
-      expect(toggleFormattingSpy).not.toHaveBeenCalled();
-    });
   });
 
   describe('Italic formatting', () => {
@@ -164,48 +149,6 @@ describe('FormatTextCommand', () => {
     });
   });
 
-  describe('Underline formatting', () => {
-    let command: FormatTextCommand;
-
-    beforeEach(() => {
-      command = new FormatTextCommand('underline');
-    });
-
-    it('should have correct id and description', () => {
-      expect(command.id).toBe('format-text-underline');
-      expect(command.description).toBe('Toggle underline formatting');
-    });
-
-    it('should execute for Cmd+U on Mac', () => {
-      const context = createContext({
-        key: 'u',
-        metaKey: true
-      });
-
-      expect(command.canExecute(context)).toBe(true);
-    });
-
-    it('should execute for Ctrl+U on Windows/Linux', () => {
-      const context = createContext({
-        key: 'u',
-        ctrlKey: true
-      });
-
-      expect(command.canExecute(context)).toBe(true);
-    });
-
-    it('should call toggleFormatting with __ marker', async () => {
-      const context = createContext({
-        key: 'u',
-        metaKey: true
-      });
-
-      await command.execute(context);
-
-      expect(toggleFormattingSpy).toHaveBeenCalledWith('__');
-    });
-  });
-
   // Helper function to create mock context
   function createContext(options: {
     key: string;
@@ -224,7 +167,7 @@ describe('FormatTextCommand', () => {
 
     return {
       event,
-      controller: mockController as ContentEditableControllerExtended,
+      controller: mockController as TextareaController,
       nodeId: 'test-node',
       nodeType: 'text',
       content: '',

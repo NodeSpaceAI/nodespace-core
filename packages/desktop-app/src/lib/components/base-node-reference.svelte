@@ -7,18 +7,34 @@ Minimal version for testing compatibility.
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
 
-  export let nodeId: string = '';
-  export let nodeType: string = 'text';
-  export let title: string = '';
-  export let content: string = '';
-  export let uri: string = '';
-  export let icon: string = '📝';
-  export let color: string = '';
-  export let ariaLabel: string = '';
-  export let metadata: Record<string, unknown> = {};
-  export let displayContext: 'inline' | 'popup' | 'preview' = 'inline';
-  export let href: string = uri || '';
-  export let className: string = '';
+  // Svelte 5 runes: Props destructuring with defaults
+  let {
+    nodeId = '',
+    nodeType = 'text',
+    title = '',
+    content = '',
+    uri = '',
+    icon = '📝',
+    color = '',
+    ariaLabel = '',
+    metadata = {},
+    displayContext = 'inline' as 'inline' | 'popup' | 'preview',
+    href = uri || '',
+    className = ''
+  }: {
+    nodeId?: string;
+    nodeType?: string;
+    title?: string;
+    content?: string;
+    uri?: string;
+    icon?: string;
+    color?: string;
+    ariaLabel?: string;
+    metadata?: Record<string, unknown>;
+    displayContext?: 'inline' | 'popup' | 'preview';
+    href?: string;
+    className?: string;
+  } = $props();
 
   const dispatch = createEventDispatcher<{
     navigate: { nodeId: string; uri: string };
@@ -39,12 +55,14 @@ Minimal version for testing compatibility.
     dispatch('focus', { nodeId });
   }
 
-  $: computedAriaLabel = ariaLabel || `${nodeType}: ${title}`;
-  $: displayText = title || content || nodeId || 'Unknown Node';
-  $: finalHref = href || uri || '#';
-  $: displayStyle =
-    displayContext === 'popup' ? 'popup' : displayContext === 'preview' ? 'preview' : 'inline';
-  $: colorStyle = color ? `color: ${color};` : '';
+  // Svelte 5 runes: Derived reactive values
+  let computedAriaLabel = $derived(ariaLabel || `${nodeType}: ${title}`);
+  let displayText = $derived(title || content || nodeId || 'Unknown Node');
+  let finalHref = $derived(href || uri || '#');
+  let displayStyle = $derived(
+    displayContext === 'popup' ? 'popup' : displayContext === 'preview' ? 'preview' : 'inline'
+  );
+  let colorStyle = $derived(color ? `color: ${color};` : '');
 </script>
 
 <a
@@ -55,9 +73,9 @@ Minimal version for testing compatibility.
   data-uri={uri}
   aria-label={computedAriaLabel}
   style={colorStyle}
-  on:click={handleClick}
-  on:mouseenter={handleMouseEnter}
-  on:focus={handleFocus}
+  onclick={handleClick}
+  onmouseenter={handleMouseEnter}
+  onfocus={handleFocus}
   tabindex="0"
 >
   <span aria-hidden="true">{icon}</span>

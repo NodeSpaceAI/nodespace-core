@@ -23,6 +23,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { ContentProcessor } from './content-processor';
 import { eventBus } from './event-bus';
 import { sharedNodeStore } from './shared-node-store';
+import { getFocusManager } from './focus-manager.svelte';
 import type { Node, NodeUIState } from '$lib/types';
 import { createDefaultUIState } from '$lib/types';
 import type { UpdateSource } from '$lib/types/update-protocol';
@@ -46,6 +47,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     type: 'viewer',
     viewerId
   };
+
+  // Focus management - single source of truth
+  const focusManager = getFocusManager();
 
   // UI state only - node data stored in SharedNodeStore
   const _uiState = $state<Record<string, NodeUIState>>({});
@@ -260,13 +264,16 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         // Sort children according to beforeSiblingId linked list
         const children = sortChildrenByBeforeSiblingId(childIds, nodeId);
 
+        // Derive autoFocus from FocusManager (single source of truth)
+        const autoFocus = focusManager.editingNodeId === nodeId;
+
         // Merge Node with UI state for components
         result.push({
           ...node,
           depth: uiState?.depth || 0,
           children,
           expanded: uiState?.expanded || false,
-          autoFocus: uiState?.autoFocus || false,
+          autoFocus,
           inheritHeaderLevel: uiState?.inheritHeaderLevel || 0,
           isPlaceholder: uiState?.isPlaceholder || false
         });
@@ -307,13 +314,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     return sharedNodeStore.getNode(nodeId) || null;
   }
 
-  function clearAllAutoFocus(): void {
-    for (const [nodeId, state] of Object.entries(_uiState)) {
-      if (state.autoFocus) {
-        _uiState[nodeId] = { ...state, autoFocus: false };
-      }
-    }
-  }
+  // DEPRECATED: clearAllAutoFocus() removed
+  // Focus is now managed by FocusManager (single source of truth)
+  // Use focusManager.setEditingNode(nodeId) or focusManager.clearEditing() instead
 
   function createNode(
     afterNodeId: string,
@@ -329,9 +332,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       return '';
     }
 
-    clearAllAutoFocus();
-
     const nodeId = uuidv4();
+
+    // Focus management now handled by FocusManager (single source of truth)
+    // No need to clear autoFocus flags - derived from focusManager.editingNodeId
     const afterUIState = _uiState[afterNodeId] || createDefaultUIState(afterNodeId);
     let newDepth: number;
     let newParentId: string | null;
@@ -419,11 +423,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       mentions: []
     };
 
-    // Create UI state
+    // Create UI state (autoFocus removed - now derived from FocusManager)
     const newUIState = createDefaultUIState(nodeId, {
       depth: newDepth,
       expanded: true,
-      autoFocus: shouldFocusNewNode,
       inheritHeaderLevel: headerLevel !== undefined ? headerLevel : afterUIState.inheritHeaderLevel,
       isPlaceholder
     });
@@ -439,6 +442,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const skipPersistence = isPlaceholder;
     sharedNodeStore.setNode(newNode, viewerSource, skipPersistence);
     _uiState[nodeId] = newUIState;
+
+    // Set focus using FocusManager (single source of truth)
+    // This replaces manual autoFocus flag manipulation
+    if (shouldFocusNewNode) {
+      focusManager.setEditingNode(nodeId);
+    }
 
     // Update sibling linked list
     if (insertAtBeginning) {
@@ -547,8 +556,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     emitReferenceUpdateNeeded(nodeId);
 
+    // If we're not focusing the new node, keep focus on the original node
     if (!shouldFocusNewNode && afterNode) {
-      _uiState[afterNodeId] = { ..._uiState[afterNodeId], autoFocus: true };
+      focusManager.setEditingNode(afterNodeId);
     }
 
     return nodeId;
@@ -607,19 +617,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (!node) return;
 
     sharedNodeStore.updateNode(nodeId, { nodeType }, viewerSource);
-    _uiState[nodeId] = { ..._uiState[nodeId], autoFocus: true };
 
-    _updateTrigger++;
+    // Set focus using FocusManager (single source of truth)
+    // This replaces the setTimeout-based autoFocus clearing logic
+    focusManager.setEditingNode(nodeId);
 
     emitNodeUpdated(nodeId, 'nodeType', nodeType);
-
-    setTimeout(() => {
-      const state = _uiState[nodeId];
-      if (state?.autoFocus) {
-        _uiState[nodeId] = { ...state, autoFocus: false };
-      }
-    }, 250);
-
     scheduleContentProcessing(nodeId, node.content);
   }
 
@@ -798,7 +801,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     invalidateSortedChildrenCache(currentNode.parentId);
     invalidateSortedChildrenCache(currentNodeId);
 
-    clearAllAutoFocus();
+    // Set focus on the previous node using FocusManager
+    focusManager.setEditingNode(previousNodeId);
     events.focusRequested(previousNodeId, mergePosition);
     events.nodeDeleted(currentNodeId);
     events.hierarchyChanged();

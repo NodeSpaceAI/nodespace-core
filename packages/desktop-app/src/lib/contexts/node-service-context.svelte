@@ -52,6 +52,7 @@
   import { NodeOperationsService } from '$lib/services/node-operations-service';
   import { tauriNodeService } from '$lib/services/tauri-node-service';
   import { ContentProcessor } from '$lib/services/content-processor';
+  import { focusManager } from '$lib/services/focus-manager.svelte';
 
   // Props
   let {
@@ -85,52 +86,9 @@
       // Create node manager events
       const nodeManagerEvents = {
         focusRequested: (nodeId: string, position?: number) => {
-          // Use DOM API to focus the node directly with cursor positioning
-          setTimeout(() => {
-            const nodeElement = document.querySelector(
-              `[data-node-id="${nodeId}"] [contenteditable]`
-            ) as HTMLElement;
-            if (nodeElement) {
-              nodeElement.focus();
-
-              // Set cursor position using proven algorithm from working version
-              if (position !== undefined && position >= 0) {
-                const selection = window.getSelection();
-                if (!selection) return;
-
-                const walker = document.createTreeWalker(nodeElement, NodeFilter.SHOW_TEXT, null);
-
-                let currentOffset = 0;
-                let currentNode;
-
-                while ((currentNode = walker.nextNode())) {
-                  const nodeLength = currentNode.textContent?.length || 0;
-
-                  if (currentOffset + nodeLength >= position) {
-                    const range = document.createRange();
-                    const offsetInNode = position - currentOffset;
-                    range.setStart(currentNode, Math.min(offsetInNode, nodeLength));
-                    range.setEnd(currentNode, Math.min(offsetInNode, nodeLength));
-
-                    selection.removeAllRanges();
-                    selection.addRange(range);
-                    return;
-                  }
-
-                  currentOffset += nodeLength;
-                }
-
-                // Fallback: place cursor at end
-                const range = document.createRange();
-                range.selectNodeContents(nodeElement);
-                range.collapse(false);
-                selection.removeAllRanges();
-                selection.addRange(range);
-              }
-            } else {
-              console.error(`❌ Could not find contenteditable element for node ${nodeId}`);
-            }
-          }, 10);
+          // Use FocusManager as single source of truth for focus management
+          // This replaces the old DOM-based contenteditable selector approach
+          focusManager.setEditingNode(nodeId, position);
         },
         hierarchyChanged: () => {
           // Hierarchy change handling logic here if needed
