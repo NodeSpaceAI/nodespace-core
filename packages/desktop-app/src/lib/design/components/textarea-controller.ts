@@ -24,6 +24,7 @@ import { NavigateUpCommand } from '$lib/commands/keyboard/navigate-up.command';
 import { NavigateDownCommand } from '$lib/commands/keyboard/navigate-down.command';
 import { FormatTextCommand } from '$lib/commands/keyboard/format-text.command';
 import { CursorPositioningService } from '$lib/services/cursor-positioning-service';
+import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { untrack } from 'svelte';
 
 // Module-level command singletons - created once and reused
@@ -89,6 +90,7 @@ export interface TextareaControllerEvents {
     nodeId: string;
     newNodeType: string;
     cleanedContent: string;
+    cursorPosition: number; // Cursor position at time of conversion
   }) => void;
 }
 
@@ -100,10 +102,6 @@ export class TextareaController {
   // Cursor positioning service
   private cursorService = CursorPositioningService.getInstance();
 
-  // Syntax detection patterns
-  private static readonly HEADER_PATTERN = /^(#{1,6})\s/;
-  private static readonly CHECKBOX_PATTERN = /^\[\s*[x\s]\s*\]\s/i;
-  private static readonly QUOTE_PATTERN = /^>\s/;
   // Maximum autocomplete query length (reasonable UX limit, prevents performance issues)
   private static readonly MAX_QUERY_LENGTH = 100;
 
@@ -271,6 +269,13 @@ export class TextareaController {
       this.adjustHeight();
       this.setCursorPosition(content.length); // Position at end
     });
+  }
+
+  /**
+   * Update the node type (called after successful node type conversion)
+   */
+  public updateNodeType(newNodeType: string): void {
+    this.nodeType = newNodeType;
   }
 
   /**
@@ -736,52 +741,67 @@ export class TextareaController {
   }
 
   /**
-   * Detect node type conversion patterns
+   * Detect node type conversion patterns using plugin registry
+   * Replaces hardcoded pattern detection with extensible plugin-based system
+   *
+   * Handles bidirectional conversion:
+   * - Pattern match → Convert to specialized node type (e.g., text → header)
+   * - Pattern removed → Convert back to text node (e.g., header → text)
    */
   private detectNodeTypeConversion(content: string): void {
-    // Detect header pattern FIRST (before trimming) - `# ` to `###### `
-    // Don't trim - we need to preserve trailing spaces for detection
-    const headerMatch = content.match(TextareaController.HEADER_PATTERN);
-    if (headerMatch) {
-      const level = headerMatch[1].length;
+    // Use plugin registry to detect patterns
+    const detection = pluginRegistry.detectPatternInContent(content);
+
+    if (detection) {
+      // Pattern detected - convert to specialized node type
+      const { config, match, metadata } = detection;
+
+      // CRITICAL: Capture cursor position BEFORE event emission
+      const cursorPosition = this.getCursorPosition();
+
+      // Calculate cleaned content based on plugin config
+      const cleanedContent = config.cleanContent
+        ? content.replace(match[0], '') // Remove pattern from content
+        : content; // Keep pattern in content (e.g., headers keep "# ")
 
       // Use untrack to prevent Svelte 5 reactive tracking during event emission
       // This prevents state_unsafe_mutation errors when parent components update state
       // in response to these events during their own reactive updates
       untrack(() => {
-        this.events.headerLevelChanged(level);
+        // Emit header level changed event if metadata contains headerLevel
+        if (metadata.headerLevel !== undefined) {
+          this.events.headerLevelChanged(metadata.headerLevel as number);
+        }
+
+        // Emit node type conversion event with cursor position
         this.events.nodeTypeConversionDetected({
           nodeId: this.nodeId,
-          newNodeType: 'header',
-          cleanedContent: content // Keep the full content with "# " for editing
+          newNodeType: config.targetNodeType,
+          cleanedContent: cleanedContent,
+          cursorPosition: cursorPosition
         });
-      });
-      return;
-    }
 
-    // For other patterns, trim is OK
-    const trimmed = content.trim();
-
-    // Detect task node pattern: `- [ ]` or `- [x]`
-    if (TextareaController.CHECKBOX_PATTERN.test(trimmed)) {
-      const cleanedContent = trimmed.replace(TextareaController.CHECKBOX_PATTERN, '');
-      this.events.nodeTypeConversionDetected({
-        nodeId: this.nodeId,
-        newNodeType: 'task',
-        cleanedContent: cleanedContent
+        // CRITICAL: Update internal nodeType so reverse conversion can detect it
+        this.nodeType = config.targetNodeType;
       });
-      return;
-    }
+    } else if (this.nodeType !== 'text') {
+      // No pattern detected AND current node is NOT text
+      // This means user removed the pattern (e.g., backspaced "## " to "##")
+      // CRITICAL: Capture cursor position BEFORE event emission
+      const cursorPosition = this.getCursorPosition();
 
-    // Detect quote pattern: `> `
-    if (TextareaController.QUOTE_PATTERN.test(trimmed)) {
-      const cleanedContent = trimmed.replace(TextareaController.QUOTE_PATTERN, '');
-      this.events.nodeTypeConversionDetected({
-        nodeId: this.nodeId,
-        newNodeType: 'quote',
-        cleanedContent: cleanedContent
+      // Convert back to plain text node
+      untrack(() => {
+        this.events.nodeTypeConversionDetected({
+          nodeId: this.nodeId,
+          newNodeType: 'text',
+          cleanedContent: content,
+          cursorPosition: cursorPosition
+        });
+
+        // CRITICAL: Update internal nodeType so future conversions work correctly
+        this.nodeType = 'text';
       });
-      return;
     }
   }
 

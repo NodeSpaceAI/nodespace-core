@@ -7,9 +7,10 @@
 ///
 /// Currently supported node types:
 /// - "text": Plain text nodes
+/// - "header": Markdown headers (h1-h6)
 /// - "task": Task/todo nodes with completion status
 /// - "date": Date-based nodes for daily notes
 ///
 /// Used by both Tauri IPC commands and HTTP dev server endpoints
 /// to ensure consistent validation.
-pub const ALLOWED_NODE_TYPES: &[&str] = &["text", "task", "date"];
+pub const ALLOWED_NODE_TYPES: &[&str] = &["text", "header", "task", "date"];

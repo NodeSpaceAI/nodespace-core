@@ -508,6 +508,24 @@ impl DatabaseService {
             DatabaseError::sql_execution(format!("Failed to seed text schema: {}", e))
         })?;
 
+        // Header schema (markdown headers h1-h6)
+        let header_schema = json!({
+            "is_core": true,
+            "fields": [
+                {"name": "headerLevel", "type": "number", "indexed": false}
+            ]
+        });
+
+        conn.execute(
+            "INSERT OR IGNORE INTO nodes (id, node_type, content, properties, created_at, modified_at)
+             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            ("header", "schema", "Header", header_schema.to_string()),
+        )
+        .await
+        .map_err(|e| {
+            DatabaseError::sql_execution(format!("Failed to seed header schema: {}", e))
+        })?;
+
         Ok(())
     }
 

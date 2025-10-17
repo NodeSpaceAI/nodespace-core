@@ -15,6 +15,7 @@ import type {
   NodeComponent,
   NodeReferenceComponent,
   SlashCommandDefinition,
+  PatternDetectionConfig,
   RegistryStats,
   PluginLifecycleEvents
 } from './types';
@@ -279,6 +280,54 @@ export class PluginRegistry {
   hasReferenceComponent(nodeType: string): boolean {
     const plugin = this.plugins.get(nodeType);
     return !!(plugin && this.enabledPlugins.has(nodeType) && plugin.reference);
+  }
+
+  /**
+   * Get all pattern detection configs from enabled plugins
+   * Used by TextareaController to detect node type conversions
+   */
+  getAllPatternDetectionConfigs(): PatternDetectionConfig[] {
+    const patterns: PatternDetectionConfig[] = [];
+
+    for (const [pluginId, plugin] of this.plugins.entries()) {
+      if (this.enabledPlugins.has(pluginId) && plugin.config.patternDetection) {
+        patterns.push(...plugin.config.patternDetection);
+      }
+    }
+
+    // Sort by priority (higher priority first)
+    return patterns.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+  }
+
+  /**
+   * Detect node type from content using registered patterns
+   * Returns the pattern config and match result if a pattern is detected
+   *
+   * @param content - The content to check for patterns
+   * @returns Object with pattern config, match result, and extracted metadata, or null if no pattern matches
+   */
+  detectPatternInContent(content: string): {
+    config: PatternDetectionConfig;
+    match: RegExpMatchArray;
+    metadata: Record<string, unknown>;
+  } | null {
+    const patterns = this.getAllPatternDetectionConfigs();
+
+    for (const config of patterns) {
+      // Convert string pattern to RegExp if needed
+      const pattern =
+        typeof config.pattern === 'string' ? new RegExp(config.pattern) : config.pattern;
+
+      const match = content.match(pattern);
+      if (match) {
+        // Extract metadata if extractor function is provided
+        const metadata = config.extractMetadata ? config.extractMetadata(match) : {};
+
+        return { config, match, metadata };
+      }
+    }
+
+    return null;
   }
 
   /**

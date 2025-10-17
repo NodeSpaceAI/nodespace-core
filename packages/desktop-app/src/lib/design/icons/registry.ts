@@ -68,6 +68,15 @@ class IconRegistry {
       hasRingEffect: true
     });
 
+    // Header nodes - similar to text with ring effect for children
+    this.register('header', {
+      component: CircleIcon,
+      semanticClass: 'node-icon',
+      colorVar: 'currentColor',
+      hasState: false,
+      hasRingEffect: true
+    });
+
     // Document nodes - similar to text but potentially different semantics
     this.register('document', {
       component: CircleIcon,

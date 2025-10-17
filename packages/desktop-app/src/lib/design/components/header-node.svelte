@@ -40,8 +40,18 @@
   let internalContent = $state(content);
 
   // Sync internalContent when content prop changes externally
+  // Apply header-specific content transformations (strip newlines for single-line headers)
   $effect(() => {
-    internalContent = content;
+    let cleanedContent = content;
+
+    // Headers are single-line - strip newlines when converting from multiline text nodes
+    if (cleanedContent.includes('\n')) {
+      cleanedContent = cleanedContent.replace(/\n+/g, ' '); // Replace newlines with spaces
+      // Update parent with cleaned content
+      dispatch('contentChanged', { content: cleanedContent });
+    }
+
+    internalContent = cleanedContent;
   });
 
   // Header level - derived from markdown syntax (#, ##, ###, etc.)
@@ -64,14 +74,29 @@
   // Compute wrapper classes with header level
   const wrapperClasses = $derived(`header-node-wrapper header-h${headerLevel}`);
 
+  // Compute display content for blur mode (strip hashtags)
+  let displayContent = $derived(internalContent.replace(/^#{1,6}\s+/, ''));
+
   /**
    * Parse header level from markdown syntax
-   * Returns 1-6 for valid headers, or 1 as default
+   * Returns 1-6 for valid headers, counting hashtags even without space
    */
   function parseHeaderLevel(content: string): number {
     const trimmed = content.trim();
-    const match = trimmed.match(/^(#{1,6})\s/);
-    return match ? match[1].length : 1;
+    // First try to match with space (complete pattern)
+    const matchWithSpace = trimmed.match(/^(#{1,6})\s/);
+    if (matchWithSpace) {
+      return matchWithSpace[1].length;
+    }
+
+    // Fallback: count hashtags at start (for incomplete pattern like "###")
+    const matchHashtags = trimmed.match(/^(#{1,6})/);
+    if (matchHashtags) {
+      return matchHashtags[1].length;
+    }
+
+    // Default to h1 if no hashtags found
+    return 1;
   }
 
   /**
@@ -106,6 +131,7 @@
     {nodeType}
     {autoFocus}
     bind:content={internalContent}
+    {displayContent}
     {children}
     {editableConfig}
     metadata={headerMetadata}
@@ -127,6 +153,12 @@
 </div>
 
 <style>
+  /* Header wrapper must take full available width to prevent content cutoff */
+  .header-node-wrapper {
+    width: 100%;
+    display: block;
+  }
+
   /* Header-specific typography and icon positioning */
   .header-h1 {
     --font-size: 2rem;

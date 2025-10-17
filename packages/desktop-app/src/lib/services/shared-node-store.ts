@@ -282,7 +282,9 @@ export class SharedNodeStore {
         const isStructuralChange =
           'parentId' in changes || 'beforeSiblingId' in changes || 'containerNodeId' in changes;
         const isContentChange = 'content' in changes;
-        const shouldPersist = source.type !== 'viewer' || isStructuralChange || isContentChange;
+        const isNodeTypeChange = 'nodeType' in changes;
+        const shouldPersist =
+          source.type !== 'viewer' || isStructuralChange || isContentChange || isNodeTypeChange;
 
         // Skip persisting empty text nodes - they exist in UI but not in database
         const isEmptyTextNode =
@@ -1019,6 +1021,14 @@ export class SharedNodeStore {
         const overlap = [...incomingFields].some((field) => pendingFields.has(field));
 
         if (overlap) {
+          // SPECIAL CASE: NodeType changes with content are not conflicts - they're pattern-triggered conversions
+          // Allow nodeType updates to proceed even if content overlaps with pending update
+          const isNodeTypeConversion = 'nodeType' in incomingUpdate.changes;
+          if (isNodeTypeConversion) {
+            // Allow this update - it's a pattern-triggered conversion, not a conflict
+            continue;
+          }
+
           return {
             nodeId,
             localUpdate: pendingUpdate,

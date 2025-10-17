@@ -338,6 +338,60 @@ impl NodeBehavior for TextNodeBehavior {
     }
 }
 
+/// Built-in behavior for header nodes
+///
+/// Header nodes represent markdown headers (h1-h6) with content stored including
+/// the hash symbols (e.g., "## Hello" for h2).
+///
+/// # Examples
+///
+/// ```rust
+/// use nodespace_core::behaviors::{NodeBehavior, HeaderNodeBehavior};
+/// use nodespace_core::models::Node;
+/// use serde_json::json;
+///
+/// let behavior = HeaderNodeBehavior;
+/// let node = Node::new(
+///     "header".to_string(),
+///     "## Hello World".to_string(),
+///     None,
+///     json!({"headerLevel": 2}),
+/// );
+/// assert!(behavior.validate(&node).is_ok());
+/// ```
+pub struct HeaderNodeBehavior;
+
+impl NodeBehavior for HeaderNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "header"
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // Header nodes must have content (same validation as text nodes)
+        if is_empty_or_whitespace(&node.content) {
+            return Err(NodeValidationError::MissingField(
+                "Header nodes must have content".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn can_have_children(&self) -> bool {
+        true
+    }
+
+    fn supports_markdown(&self) -> bool {
+        true
+    }
+
+    fn default_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "headerLevel": 1,
+            "markdown_enabled": true
+        })
+    }
+}
+
 /// Built-in behavior for task nodes
 ///
 /// Task nodes represent actionable items with status tracking.
@@ -570,6 +624,7 @@ impl NodeBehaviorRegistry {
 
         // Register built-in types
         registry.register(Arc::new(TextNodeBehavior));
+        registry.register(Arc::new(HeaderNodeBehavior));
         registry.register(Arc::new(TaskNodeBehavior));
         registry.register(Arc::new(DateNodeBehavior));
 

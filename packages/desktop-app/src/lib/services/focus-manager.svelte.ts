@@ -63,6 +63,10 @@ let _pendingCursorPosition = $state<number | null>(null);
 let _arrowNavDirection = $state<'up' | 'down' | null>(null);
 let _arrowNavPixelOffset = $state<number | null>(null);
 
+// Optional node type conversion context for cursor preservation during type changes
+// Separate from pendingCursorPosition to avoid conflicts with autoFocus
+let _nodeTypeConversionCursorPosition = $state<number | null>(null);
+
 export const focusManager = {
   /**
    * Public reactive getter for editing node ID
@@ -103,6 +107,13 @@ export const focusManager = {
   },
 
   /**
+   * Public reactive getter for node type conversion cursor position
+   */
+  get nodeTypeConversionCursorPosition(): number | null {
+    return _nodeTypeConversionCursorPosition;
+  },
+
+  /**
    * Set which node is being edited
    * @param nodeId - The node to edit, or null to clear editing state
    * @param cursorPosition - Optional cursor position for precise positioning
@@ -129,6 +140,20 @@ export const focusManager = {
     _pendingCursorPosition = null; // Clear cursor position when using arrow navigation
     _arrowNavDirection = direction;
     _arrowNavPixelOffset = pixelOffset;
+    _nodeTypeConversionCursorPosition = null; // Clear node type conversion position
+  },
+
+  /**
+   * Set which node is being edited during node type conversion with cursor preservation
+   * @param nodeId - The node to edit
+   * @param cursorPosition - Cursor position to restore after conversion
+   */
+  setEditingNodeFromTypeConversion(nodeId: string, cursorPosition: number): void {
+    _editingNodeId = nodeId;
+    _pendingCursorPosition = null; // Clear pending position
+    _arrowNavDirection = null; // Clear arrow navigation
+    _arrowNavPixelOffset = null;
+    _nodeTypeConversionCursorPosition = cursorPosition; // Set conversion-specific position
   },
 
   /**
@@ -139,6 +164,7 @@ export const focusManager = {
     _pendingCursorPosition = null;
     _arrowNavDirection = null;
     _arrowNavPixelOffset = null;
+    _nodeTypeConversionCursorPosition = null;
   },
 
   /**
@@ -146,6 +172,13 @@ export const focusManager = {
    */
   clearCursorPosition(): void {
     _pendingCursorPosition = null;
+  },
+
+  /**
+   * Clear node type conversion cursor position after it's been consumed
+   */
+  clearNodeTypeConversionCursorPosition(): void {
+    _nodeTypeConversionCursorPosition = null;
   },
 
   /**
