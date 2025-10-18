@@ -144,6 +144,36 @@
   }
 
   /**
+   * Handle Shift+Enter to automatically add "> " prefix to new lines
+   */
+  function handleKeyDown(event: KeyboardEvent) {
+    if (event.key === 'Enter' && event.shiftKey) {
+      event.preventDefault();
+
+      const textarea = event.target as HTMLTextAreaElement;
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const value = textarea.value;
+
+      // Insert newline with "> " prefix
+      const newValue = value.substring(0, start) + '\n> ' + value.substring(end);
+      const newCursorPos = start + 3; // Position after "\n> "
+
+      // Update content
+      internalContent = newValue;
+
+      // Set cursor position after the "> "
+      setTimeout(() => {
+        textarea.selectionStart = newCursorPos;
+        textarea.selectionEnd = newCursorPos;
+      }, 0);
+
+      // Dispatch content change to trigger save
+      dispatch('contentChanged', { content: newValue });
+    }
+  }
+
+  /**
    * Forward all other events to parent components
    */
   function forwardEvent<T>(eventName: string) {
@@ -152,7 +182,8 @@
 </script>
 
 <!-- Wrap BaseNode with quote-block-specific styling -->
-<div class="quote-block-node-wrapper">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="quote-block-node-wrapper" onkeydown={handleKeyDown}>
   <BaseNode
     {nodeId}
     {nodeType}

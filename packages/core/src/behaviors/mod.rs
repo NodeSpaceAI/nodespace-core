@@ -561,11 +561,24 @@ impl NodeBehavior for QuoteBlockNodeBehavior {
     }
 
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // Quote blocks must have content (at minimum "> ")
-        // Note: Frontend manages empty placeholders, backend rejects truly empty content
-        if is_empty_or_whitespace(&node.content) {
+        // Quote blocks must have actual content beyond the "> " prefix
+        // Strip "> " or ">" from all lines and check if any content remains
+        let content_without_prefix: String = node
+            .content
+            .lines()
+            .map(|line| {
+                // Remove "> " or ">" from start of each line using strip_prefix
+                line.strip_prefix("> ")
+                    .or_else(|| line.strip_prefix('>'))
+                    .unwrap_or(line)
+            })
+            .collect::<Vec<&str>>()
+            .join("\n");
+
+        // Check if there's any actual content after stripping prefixes
+        if is_empty_or_whitespace(&content_without_prefix) {
             return Err(NodeValidationError::MissingField(
-                "Quote block nodes must have content".to_string(),
+                "Quote block nodes must have content beyond the '> ' prefix".to_string(),
             ));
         }
         Ok(())
