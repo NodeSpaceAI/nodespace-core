@@ -11,7 +11,8 @@
 /// - "task": Task/todo nodes with completion status
 /// - "date": Date-based nodes for daily notes
 /// - "code-block": Code blocks with language selection
+/// - "quote": Quote block nodes with markdown styling
 ///
 /// Used by both Tauri IPC commands and HTTP dev server endpoints
 /// to ensure consistent validation.
-pub const ALLOWED_NODE_TYPES: &[&str] = &["text", "header", "task", "date", "code-block"];
+pub const ALLOWED_NODE_TYPES: &[&str] = &["text", "header", "task", "date", "code-block", "quote"];

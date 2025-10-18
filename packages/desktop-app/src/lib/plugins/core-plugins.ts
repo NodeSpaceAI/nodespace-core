@@ -241,6 +241,45 @@ export const codeBlockNodePlugin: PluginDefinition = {
   }
 };
 
+export const quoteBlockNodePlugin: PluginDefinition = {
+  id: 'quote',
+  name: 'Quote Block Node',
+  description: 'Block quote with markdown styling conventions',
+  version: '1.0.0',
+  config: {
+    slashCommands: [
+      {
+        id: 'quote',
+        name: 'Quote Block',
+        description: 'Create a block quote with markdown styling',
+        shortcut: '>',
+        contentTemplate: '> ',
+        nodeType: 'quote'
+      }
+    ],
+    // Pattern detection for > auto-conversion
+    patternDetection: [
+      {
+        pattern: /^>\s/,
+        targetNodeType: 'quote',
+        cleanContent: false, // Keep > prefix in content
+        extractMetadata: () => ({}),
+        priority: 10
+      }
+    ],
+    canHaveChildren: true, // Quote blocks can have children
+    canBeChild: true
+  },
+  node: {
+    lazyLoad: () => import('../design/components/quote-block-node.svelte'),
+    priority: 1
+  },
+  reference: {
+    component: BaseNodeReference as NodeReferenceComponent,
+    priority: 1
+  }
+};
+
 // Additional node types for reference system (no viewers currently)
 export const userNodePlugin: PluginDefinition = {
   id: 'user',
@@ -284,6 +323,7 @@ export const corePlugins = [
   aiChatNodePlugin,
   dateNodePlugin,
   codeBlockNodePlugin,
+  quoteBlockNodePlugin,
   userNodePlugin,
   documentNodePlugin
 ];
