@@ -478,6 +478,60 @@ impl NodeBehavior for TaskNodeBehavior {
     }
 }
 
+/// Built-in behavior for code block nodes
+///
+/// Code block nodes contain code snippets with language selection.
+/// Content includes the markdown fence syntax (e.g., "```javascript\ncode here").
+///
+/// # Examples
+///
+/// ```rust
+/// use nodespace_core::behaviors::{NodeBehavior, CodeBlockNodeBehavior};
+/// use nodespace_core::models::Node;
+/// use serde_json::json;
+///
+/// let behavior = CodeBlockNodeBehavior;
+/// let node = Node::new(
+///     "code-block".to_string(),
+///     "```javascript\nconst x = 1;".to_string(),
+///     None,
+///     json!({"language": "javascript"}),
+/// );
+/// assert!(behavior.validate(&node).is_ok());
+/// ```
+pub struct CodeBlockNodeBehavior;
+
+impl NodeBehavior for CodeBlockNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "code-block"
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // Code blocks must have content
+        // Note: Frontend manages empty placeholders, backend rejects truly empty content
+        if is_empty_or_whitespace(&node.content) {
+            return Err(NodeValidationError::MissingField(
+                "Code block nodes must have content".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn can_have_children(&self) -> bool {
+        false // Code blocks are leaf nodes
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false // Code blocks display raw text, no markdown formatting
+    }
+
+    fn default_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "language": "plaintext"
+        })
+    }
+}
+
 /// Built-in behavior for date nodes
 ///
 /// Date nodes use deterministic IDs in YYYY-MM-DD format and serve as
@@ -626,6 +680,7 @@ impl NodeBehaviorRegistry {
         registry.register(Arc::new(TextNodeBehavior));
         registry.register(Arc::new(HeaderNodeBehavior));
         registry.register(Arc::new(TaskNodeBehavior));
+        registry.register(Arc::new(CodeBlockNodeBehavior));
         registry.register(Arc::new(DateNodeBehavior));
 
         registry
@@ -1013,9 +1068,11 @@ mod tests {
         let types = registry.get_all_types();
 
         assert!(types.contains(&"text".to_string()));
+        assert!(types.contains(&"header".to_string()));
         assert!(types.contains(&"task".to_string()));
+        assert!(types.contains(&"code-block".to_string()));
         assert!(types.contains(&"date".to_string()));
-        assert_eq!(types.len(), 3);
+        assert_eq!(types.len(), 5);
     }
 
     #[test]

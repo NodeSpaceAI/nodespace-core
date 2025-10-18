@@ -199,6 +199,48 @@ export const dateNodePlugin: PluginDefinition = {
   }
 };
 
+export const codeBlockNodePlugin: PluginDefinition = {
+  id: 'code-block',
+  name: 'Code Block Node',
+  description: 'Code snippet with language selection and syntax',
+  version: '1.0.0',
+  config: {
+    slashCommands: [
+      {
+        id: 'code',
+        name: 'Code Block',
+        description: 'Create a code block with language selection',
+        shortcut: '```',
+        contentTemplate: '```plaintext\n\n```',
+        nodeType: 'code-block'
+      }
+    ],
+    // Pattern detection for ``` auto-conversion
+    // Requires newline: user types ```, then presses Shift+Enter to trigger
+    patternDetection: [
+      {
+        pattern: /^```(\w+)?\n/,
+        targetNodeType: 'code-block',
+        cleanContent: false, // Keep ``` in content for language parsing
+        extractMetadata: (match: RegExpMatchArray) => ({
+          language: match[1]?.toLowerCase() || 'plaintext'
+        }),
+        priority: 10
+      }
+    ],
+    canHaveChildren: false, // Code blocks are leaf nodes
+    canBeChild: true
+  },
+  node: {
+    lazyLoad: () => import('../design/components/code-block-node.svelte'),
+    priority: 1
+  },
+  reference: {
+    component: BaseNodeReference as NodeReferenceComponent,
+    priority: 1
+  }
+};
+
 // Additional node types for reference system (no viewers currently)
 export const userNodePlugin: PluginDefinition = {
   id: 'user',
@@ -234,13 +276,14 @@ export const documentNodePlugin: PluginDefinition = {
 
 // Export all core plugins
 // These are the foundation plugins - external developers can create additional plugins
-// like WhiteBoardNode, CodeNode, ImageNode, etc. in separate packages
+// like WhiteBoardNode, ImageNode, etc. in separate packages
 export const corePlugins = [
   textNodePlugin,
   headerNodePlugin,
   taskNodePlugin,
   aiChatNodePlugin,
   dateNodePlugin,
+  codeBlockNodePlugin,
   userNodePlugin,
   documentNodePlugin
 ];

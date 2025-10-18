@@ -556,25 +556,40 @@
   // Update view mode rendering when content or editing state changes
   $effect(() => {
     if (!isEditing && viewElement) {
-      // IMPORTANT: Process blank lines BEFORE markdownToHtml
-      // marked.js with breaks:true converts all \n to <br>, losing the ability to detect \n\n
-      const BLANK_LINE_PLACEHOLDER = '___BLANK___';
       // Use displayContent if provided (for node types that strip syntax in blur mode), otherwise use content
       let processedContent = displayContent ?? content;
 
-      // Replace consecutive newlines with placeholders
-      processedContent = processedContent.replace(/\n\n+/g, (match) => {
-        // Number of blank lines = (number of \n) - 1
-        // "\n\n" = 1 blank line, "\n\n\n" = 2 blank lines
-        const blankLineCount = match.length - 1;
-        return '\n' + BLANK_LINE_PLACEHOLDER.repeat(blankLineCount);
-      });
+      // Check if markdown processing should be disabled (e.g., for code blocks)
+      const disableMarkdown = metadata?.disableMarkdown === true;
 
-      // Process markdown (converts \n to <br>, handles formatting)
-      let html = markdownToHtml(processedContent);
+      let html: string;
 
-      // Replace placeholders with <br> tags for blank lines
-      html = html.replace(new RegExp(BLANK_LINE_PLACEHOLDER, 'g'), '<br>');
+      if (disableMarkdown) {
+        // Raw text mode - just convert newlines to <br>, no markdown processing
+        html = processedContent
+          .split('\n')
+          .map((line) => line || '') // Keep empty lines
+          .join('<br>');
+      } else {
+        // Normal markdown processing for text/header/task nodes
+        // IMPORTANT: Process blank lines BEFORE markdownToHtml
+        // marked.js with breaks:true converts all \n to <br>, losing the ability to detect \n\n
+        const BLANK_LINE_PLACEHOLDER = '___BLANK___';
+
+        // Replace consecutive newlines with placeholders
+        processedContent = processedContent.replace(/\n\n+/g, (match) => {
+          // Number of blank lines = (number of \n) - 1
+          // "\n\n" = 1 blank line, "\n\n\n" = 2 blank lines
+          const blankLineCount = match.length - 1;
+          return '\n' + BLANK_LINE_PLACEHOLDER.repeat(blankLineCount);
+        });
+
+        // Process markdown (converts \n to <br>, handles formatting)
+        html = markdownToHtml(processedContent);
+
+        // Replace placeholders with <br> tags for blank lines
+        html = html.replace(new RegExp(BLANK_LINE_PLACEHOLDER, 'g'), '<br>');
+      }
 
       // Preserve leading newlines
       const leadingNewlines = content.match(/^\n+/);

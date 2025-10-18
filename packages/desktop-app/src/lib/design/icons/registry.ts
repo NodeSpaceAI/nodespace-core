@@ -11,19 +11,24 @@
  * - Scalable architecture for future node types
  */
 
-import type { ComponentType } from 'svelte';
+import type { Component, ComponentType } from 'svelte';
 import CircleIcon from './components/circle-icon.svelte';
 import TaskIcon from './components/task-icon.svelte';
 import AIIcon from './components/ai-icon.svelte';
+import CodeBlockIcon from './components/code-block-icon.svelte';
 
 // Dynamic node types - can be extended by plugins
 export type NodeType = string;
 
 export type NodeState = 'pending' | 'inProgress' | 'completed' | 'default';
 
+// Svelte 5 Component type (modern) or Svelte 4 ComponentType (legacy)
+// This allows the registry to support both Svelte 4 and Svelte 5 components
+export type IconComponentType = ComponentType | Component<Record<string, unknown>>;
+
 export interface IconConfig {
-  /** Svelte component reference for the icon */
-  component: ComponentType;
+  /** Svelte component reference for the icon (supports both Svelte 4 and 5) */
+  component: IconComponentType;
   /** Semantic CSS class from design system */
   semanticClass: 'node-icon' | 'task-icon' | 'ai-icon';
   /** Default color theme from design system */
@@ -138,6 +143,15 @@ class IconRegistry {
       colorVar: 'hsl(var(--node-query, 200 40% 45%))',
       hasState: false,
       hasRingEffect: true
+    });
+
+    // Code block nodes - for code snippets with language selection
+    this.register('code-block', {
+      component: CodeBlockIcon,
+      semanticClass: 'node-icon',
+      colorVar: 'hsl(var(--node-text, 200 40% 45%))',
+      hasState: false,
+      hasRingEffect: false // Code blocks are leaf nodes (no children)
     });
   }
 
