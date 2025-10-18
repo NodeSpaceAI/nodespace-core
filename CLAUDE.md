@@ -7,17 +7,18 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 ## Getting Started as an Agent
 
 > ## 🚨 MANDATORY FIRST STEPS FOR EVERY TASK 🚨
-> 
+>
 > **BEFORE ANY IMPLEMENTATION WORK - COMPLETE THIS EXACT SEQUENCE:**
-> 
+>
 > 1. **Check git status**: `git status` - commit any pending changes first
-> 2. **Determine branching strategy**: Check parent issue for specified approach (single branch vs. individual branches)
-> 3. **Create/switch to branch**: Based on strategy - either `git checkout -b feature/issue-<number>-brief-description` OR switch to existing parent issue branch
-> 4. **Assign issue**: `bun run gh:assign <number> "@me"`  
-> 5. **Update project status**: `bun run gh:status <number> "In Progress"`
-> 6. **Select subagent**: Choose appropriate specialized agent based on task complexity and type
-> 7. **Read issue requirements**: Understand all acceptance criteria
-> 8. **Plan implementation**: Self-contained approach with appropriate subagent
+> 2. **Pull latest changes**: `git fetch origin && git pull origin main` - ensure you're working from the latest codebase
+> 3. **Determine branching strategy**: Check parent issue for specified approach (single branch vs. individual branches)
+> 4. **Create/switch to branch**: Based on strategy - either `git checkout -b feature/issue-<number>-brief-description` OR switch to existing parent issue branch
+> 5. **Assign issue**: `bun run gh:assign <number> "@me"`
+> 6. **Update project status**: `bun run gh:status <number> "In Progress"`
+> 7. **Select subagent**: Choose appropriate specialized agent based on task complexity and type
+> 8. **Read issue requirements**: Understand all acceptance criteria
+> 9. **Plan implementation**: Self-contained approach with appropriate subagent
 > 
 > **🔴 CRITICAL PROCESS VIOLATIONS**
 > 
@@ -27,8 +28,9 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 > 3. Restart implementation with proper branch and issue assignment
 > 
 > **Common mistakes agents make:**
+> - **Skipping `git pull`** - Starting work without pulling latest changes leads to merge conflicts
 > - Reading files before creating feature branch
-> - Planning implementation before assigning issue  
+> - Planning implementation before assigning issue
 > - Using TodoWrite without including startup sequence as first item
 > - Skipping git checkout step entirely
 
@@ -220,14 +222,14 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    - All quality gates and review requirements apply universally to AI agents and human reviewers
 
 **TodoWrite Tool Users - UPDATED:**
-- Your **FIRST todo item** must be: "Complete startup sequence: git status, branch strategy, create branch, assign issue (bun run gh:assign N '@me'), update status (bun run gh:status N 'In Progress'), select subagent"
+- Your **FIRST todo item** must be: "Complete startup sequence: git status, pull latest (git fetch origin && git pull origin main), branch strategy, create branch, assign issue (bun run gh:assign N '@me'), update status (bun run gh:status N 'In Progress'), select subagent"
 - Your **LAST todo items** must include: "Run quality:fix and commit changes" and "Create PR"
 - All GitHub operations now use **bun commands** (no Claude Code approval prompts)
 - Do NOT break the startup sequence into separate todo items
 - Only after completing the startup sequence should you add implementation todos
 
 **Before Starting Any Task:**
-1. **COMPLETE THE MANDATORY STARTUP SEQUENCE** (steps 1-8 above)
+1. **COMPLETE THE MANDATORY STARTUP SEQUENCE** (steps 1-9 above, including pulling latest changes)
 2. **READ THE DEVELOPMENT PROCESS DOCUMENTATION** - Start with the [overview](docs/architecture/development/overview.md) and [startup sequence](docs/architecture/development/process/startup-sequence.md)
 3. **Select appropriate subagent** based on task complexity and type
 4. Check issue acceptance criteria and requirements
@@ -280,8 +282,9 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 
 **EVERY AGENT MUST COMPLETE THIS CHECKLIST FOR EACH TASK:**
 
-**Startup Sequence (MANDATORY - Steps 1-8 from above):**
+**Startup Sequence (MANDATORY - Steps 1-9 from above):**
 - [ ] Checked git status and committed any pending changes
+- [ ] **Pulled latest changes** (`git fetch origin && git pull origin main`)
 - [ ] Determined branching strategy from parent issue (single branch vs. individual branches)
 - [ ] Created/switched to appropriate branch based on strategy
 - [ ] Assigned issue to self (`bun run gh:assign <number> "@me"`)
