@@ -25,6 +25,7 @@
 import { eventBus } from './event-bus';
 import { tauriNodeService } from './tauri-node-service';
 import { PersistenceCoordinator, OperationCancelledError } from './persistence-coordinator.svelte';
+import { isPlaceholderNode } from '$lib/utils/placeholder-detection';
 import type { Node } from '$lib/types';
 import type {
   NodeUpdate,
@@ -286,11 +287,11 @@ export class SharedNodeStore {
         const shouldPersist =
           source.type !== 'viewer' || isStructuralChange || isContentChange || isNodeTypeChange;
 
-        // Skip persisting empty text nodes - they exist in UI but not in database
-        const isEmptyTextNode =
-          updatedNode.nodeType === 'text' && updatedNode.content.trim() === '';
+        // Skip persisting placeholder nodes - they exist in UI but not in database
+        // Placeholders are nodes with only type-specific prefixes and no actual content
+        const isPlaceholder = isPlaceholderNode(updatedNode);
 
-        if (shouldPersist && !isEmptyTextNode) {
+        if (shouldPersist && !isPlaceholder) {
           // Delegate to PersistenceCoordinator for coordinated persistence
           // Use debounced mode for content changes (typing), immediate for structural changes
           const dependencies: Array<string | (() => Promise<void>)> = [];
@@ -457,19 +458,15 @@ export class SharedNodeStore {
       this.persistedNodeIds.add(node.id);
     }
 
-    // Check if node is a placeholder (empty content text node from viewer)
-    const isPlaceholder =
-      node.nodeType === 'text' &&
-      node.content.trim() === '' &&
-      source.type === 'viewer' &&
-      isNewNode;
+    // Check if node is a placeholder (node with only type-specific prefix, no actual content)
+    const isPlaceholder = isPlaceholderNode(node) && source.type === 'viewer' && isNewNode;
 
     // Phase 2.4: Persist to database
     // IMPORTANT: For NEW nodes from viewer, persist immediately (including empty ones!)
     // For UPDATES from viewer, skip persistence - BaseNodeViewer handles with debouncing
     // This ensures createNode() persistence works while avoiding duplicate writes on updates
     //
-    // EXCEPTION: Placeholders (empty text nodes) should NOT persist until user adds content
+    // EXCEPTION: Placeholders (nodes with only prefixes) should NOT persist until user adds content
     if (!skipPersistence && !isPlaceholder && source.type !== 'database') {
       const shouldPersist = source.type !== 'viewer' || isNewNode;
 

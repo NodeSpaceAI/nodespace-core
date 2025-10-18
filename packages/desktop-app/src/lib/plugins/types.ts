@@ -67,6 +67,13 @@ export interface PatternDetectionConfig {
    * Useful when patterns might overlap
    */
   priority?: number;
+
+  /**
+   * Desired cursor position after pattern detection and conversion
+   * If specified, cursor will be placed at this position after conversion
+   * Example: For "> " pattern, set to 2 to place cursor after "> "
+   */
+  desiredCursorPosition?: number;
 }
 
 // Slash command definition

@@ -532,6 +532,73 @@ impl NodeBehavior for CodeBlockNodeBehavior {
     }
 }
 
+/// Built-in behavior for quote block nodes
+///
+/// Quote block nodes represent block quotes with markdown styling conventions.
+/// Content includes the > prefix (e.g., "> Quote text").
+///
+/// # Examples
+///
+/// ```rust
+/// use nodespace_core::behaviors::{NodeBehavior, QuoteBlockNodeBehavior};
+/// use nodespace_core::models::Node;
+/// use serde_json::json;
+///
+/// let behavior = QuoteBlockNodeBehavior;
+/// let node = Node::new(
+///     "quote-block".to_string(),
+///     "> Hello world".to_string(),
+///     None,
+///     json!({}),
+/// );
+/// assert!(behavior.validate(&node).is_ok());
+/// ```
+pub struct QuoteBlockNodeBehavior;
+
+impl NodeBehavior for QuoteBlockNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "quote-block"
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // Quote blocks must have actual content beyond the "> " prefix
+        // Strip "> " or ">" from all lines and check if any content remains
+        let content_without_prefix: String = node
+            .content
+            .lines()
+            .map(|line| {
+                // Remove "> " or ">" from start of each line using strip_prefix
+                line.strip_prefix("> ")
+                    .or_else(|| line.strip_prefix('>'))
+                    .unwrap_or(line)
+            })
+            .collect::<Vec<&str>>()
+            .join("\n");
+
+        // Check if there's any actual content after stripping prefixes
+        if is_empty_or_whitespace(&content_without_prefix) {
+            return Err(NodeValidationError::MissingField(
+                "Quote block nodes must have content beyond the '> ' prefix".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn can_have_children(&self) -> bool {
+        true // Quote blocks can have children
+    }
+
+    fn supports_markdown(&self) -> bool {
+        true // Quote blocks support inline markdown formatting
+    }
+
+    fn default_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "markdown_enabled": true
+        })
+    }
+}
+
 /// Built-in behavior for date nodes
 ///
 /// Date nodes use deterministic IDs in YYYY-MM-DD format and serve as
@@ -681,6 +748,7 @@ impl NodeBehaviorRegistry {
         registry.register(Arc::new(HeaderNodeBehavior));
         registry.register(Arc::new(TaskNodeBehavior));
         registry.register(Arc::new(CodeBlockNodeBehavior));
+        registry.register(Arc::new(QuoteBlockNodeBehavior));
         registry.register(Arc::new(DateNodeBehavior));
 
         registry
@@ -1071,8 +1139,9 @@ mod tests {
         assert!(types.contains(&"header".to_string()));
         assert!(types.contains(&"task".to_string()));
         assert!(types.contains(&"code-block".to_string()));
+        assert!(types.contains(&"quote-block".to_string()));
         assert!(types.contains(&"date".to_string()));
-        assert_eq!(types.len(), 5);
+        assert_eq!(types.len(), 6);
     }
 
     #[test]

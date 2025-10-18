@@ -241,6 +241,59 @@ export const codeBlockNodePlugin: PluginDefinition = {
   }
 };
 
+export const quoteBlockNodePlugin: PluginDefinition = {
+  id: 'quote-block',
+  name: 'Quote Block Node',
+  description: 'Block quote with markdown styling conventions',
+  version: '1.0.0',
+  config: {
+    slashCommands: [
+      {
+        id: 'quote',
+        name: 'Quote Block',
+        description: 'Create a block quote with markdown styling',
+        shortcut: '>',
+        contentTemplate: '> ',
+        nodeType: 'quote-block'
+      }
+    ],
+    // Pattern detection for > auto-conversion
+    patternDetection: [
+      {
+        pattern: /^>\s/,
+        targetNodeType: 'quote-block',
+        /**
+         * cleanContent: false - CRITICAL: Quote block content MUST retain "> " prefix
+         *
+         * Unlike headers (which strip "# "), quote blocks store the prefix in database.
+         * This allows multiline quotes where each line has "> " prefix.
+         *
+         * Why this matters:
+         * - Backend validation requires "> " prefix to identify quote blocks
+         * - Multiline quotes need per-line prefix tracking ("> Line1\n> Line2")
+         * - Conversion back to text requires knowing which lines were quoted
+         *
+         * Removing this flag would break quote-block persistence entirely.
+         */
+        cleanContent: false,
+        extractMetadata: () => ({}),
+        priority: 10,
+        desiredCursorPosition: 2 // Place cursor after "> "
+      }
+    ],
+    canHaveChildren: true, // Quote blocks can have children
+    canBeChild: true
+  },
+  node: {
+    lazyLoad: () => import('../design/components/quote-block-node.svelte'),
+    priority: 1
+  },
+  reference: {
+    component: BaseNodeReference as NodeReferenceComponent,
+    priority: 1
+  }
+};
+
 // Additional node types for reference system (no viewers currently)
 export const userNodePlugin: PluginDefinition = {
   id: 'user',
@@ -284,6 +337,7 @@ export const corePlugins = [
   aiChatNodePlugin,
   dateNodePlugin,
   codeBlockNodePlugin,
+  quoteBlockNodePlugin,
   userNodePlugin,
   documentNodePlugin
 ];
