@@ -763,7 +763,7 @@ mod tests {
         let db_service = DatabaseService::new(db_path).await.unwrap();
         let conn = db_service.connect().unwrap();
 
-        // Verify all 5 core schemas exist
+        // Verify all 6 core schemas exist
         let mut stmt = conn
             .prepare(
                 "SELECT id, node_type, content FROM nodes WHERE node_type = 'schema' ORDER BY id",
@@ -774,6 +774,7 @@ mod tests {
 
         let expected_schemas = vec![
             ("date", "Date"),
+            ("header", "Header"),
             ("person", "Person"),
             ("project", "Project"),
             ("task", "Task"),
@@ -851,7 +852,7 @@ mod tests {
 
         let conn = db_service2.connect().unwrap();
 
-        // Should still have exactly 5 schema nodes
+        // Should still have exactly 6 schema nodes
         let mut stmt = conn
             .prepare("SELECT COUNT(*) FROM nodes WHERE node_type = 'schema'")
             .await
@@ -860,7 +861,7 @@ mod tests {
         let row = rows.next().await.unwrap().unwrap();
         let count: i64 = row.get(0).unwrap();
 
-        assert_eq!(count, 5);
+        assert_eq!(count, 6);
     }
 
     #[tokio::test]

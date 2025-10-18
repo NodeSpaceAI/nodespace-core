@@ -37,6 +37,10 @@
 
   const dispatch = createEventDispatcher();
 
+  // Cursor positioning constants for Shift+Enter behavior
+  const NEWLINE_LENGTH = 1; // \n character
+  const QUOTE_PREFIX_LENGTH = 2; // "> " prefix
+
   // Internal reactive state - sync with content prop changes
   let internalContent = $state(content);
 
@@ -124,8 +128,8 @@
       const cursorPos = textarea.selectionStart;
 
       // After the \n is inserted and "> " is added, cursor should be at:
-      // current position + 1 (for \n) + 2 (for "> " that will be added)
-      pendingCursorAdjustment = cursorPos + 3;
+      // current position + NEWLINE_LENGTH + QUOTE_PREFIX_LENGTH
+      pendingCursorAdjustment = cursorPos + NEWLINE_LENGTH + QUOTE_PREFIX_LENGTH;
     }
   }
 

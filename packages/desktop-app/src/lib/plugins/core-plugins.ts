@@ -262,7 +262,20 @@ export const quoteBlockNodePlugin: PluginDefinition = {
       {
         pattern: /^>\s/,
         targetNodeType: 'quote-block',
-        cleanContent: false, // Keep > prefix in content
+        /**
+         * cleanContent: false - CRITICAL: Quote block content MUST retain "> " prefix
+         *
+         * Unlike headers (which strip "# "), quote blocks store the prefix in database.
+         * This allows multiline quotes where each line has "> " prefix.
+         *
+         * Why this matters:
+         * - Backend validation requires "> " prefix to identify quote blocks
+         * - Multiline quotes need per-line prefix tracking ("> Line1\n> Line2")
+         * - Conversion back to text requires knowing which lines were quoted
+         *
+         * Removing this flag would break quote-block persistence entirely.
+         */
+        cleanContent: false,
         extractMetadata: () => ({}),
         priority: 10,
         desiredCursorPosition: 2 // Place cursor after "> "

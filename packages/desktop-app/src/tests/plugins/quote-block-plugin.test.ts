@@ -59,7 +59,7 @@ describe('QuoteBlockNode Plugin', () => {
     });
 
     it('should have node component configured for lazy loading', () => {
-      const plugin = pluginRegistry.getPlugin('quote');
+      const plugin = pluginRegistry.getPlugin('quote-block');
       expect(plugin?.node?.lazyLoad).toBeDefined();
     });
   });

@@ -1,7 +1,7 @@
 /**
  * Placeholder Node Detection Tests
  *
- * Tests for the isPlaceholderNode() logic in SharedNodeStore that prevents
+ * Tests for the isPlaceholderNode() utility that prevents
  * empty/prefix-only nodes from persisting to the database.
  *
  * Architecture: Frontend manages placeholder nodes in memory until user adds
@@ -9,70 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-
-// Test the placeholder detection logic directly
-function isPlaceholderNode(node: { nodeType: string; content: string }): boolean {
-  const trimmedContent = node.content.trim();
-
-  switch (node.nodeType) {
-    case 'text': {
-      // Text nodes: empty content is a placeholder
-      if (trimmedContent === '') {
-        return true;
-      }
-
-      // Text nodes that contain ONLY pattern prefixes are also placeholders
-      // These are text nodes in the process of being converted to specialized types
-      // Check for common patterns: "> " (quote), "# " (header), "```" (code)
-      if (
-        trimmedContent === '>' ||
-        trimmedContent.match(/^>\s*$/) || // "> " or ">  " etc
-        trimmedContent.match(/^#{1,6}\s*$/) || // "# " or "## " etc
-        trimmedContent.match(/^```\w*\s*$/) // "```" or "```js " etc
-      ) {
-        return true;
-      }
-
-      return false;
-    }
-
-    case 'quote-block': {
-      // Quote-block nodes: only "> " prefix (no actual content after) is a placeholder
-      // Strip "> " or ">" from all lines and check if any content remains
-      const contentWithoutPrefix = trimmedContent
-        .split('\n')
-        .map((line) => line.replace(/^>\s?/, ''))
-        .join('\n')
-        .trim();
-      return contentWithoutPrefix === '';
-    }
-
-    case 'header': {
-      // Header nodes: only "# " prefix (no actual content after) is a placeholder
-      // Strip hashtags and space, check if content remains
-      const contentWithoutHashtags = trimmedContent.replace(/^#{1,6}\s*/, '');
-      return contentWithoutHashtags === '';
-    }
-
-    case 'code-block': {
-      // Code-block nodes: only "```" prefix (no actual code) is a placeholder
-      // Strip backticks and language identifier, check if code remains
-      const contentWithoutBackticks = trimmedContent
-        .replace(/^```\w*\s*/, '')
-        .replace(/```$/, '');
-      return contentWithoutBackticks.trim() === '';
-    }
-
-    case 'task':
-      // Task nodes: empty content (regardless of checkbox) is a placeholder
-      // The backend validates task description separately
-      return trimmedContent === '';
-
-    default:
-      // For unknown node types, use simple empty check
-      return trimmedContent === '';
-  }
-}
+import { isPlaceholderNode } from '$lib/utils/placeholder-detection';
 
 describe('Placeholder Node Detection', () => {
   describe('Text Node Placeholders', () => {
