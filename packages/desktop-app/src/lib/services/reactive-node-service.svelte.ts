@@ -24,6 +24,7 @@ import { ContentProcessor } from './content-processor';
 import { eventBus } from './event-bus';
 import { sharedNodeStore } from './shared-node-store';
 import { getFocusManager } from './focus-manager.svelte';
+import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import type { Node, NodeUIState } from '$lib/types';
 import { createDefaultUIState } from '$lib/types';
 import type { UpdateSource } from '$lib/types/update-protocol';
@@ -899,6 +900,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const prevSiblingId = siblings[nodeIndex - 1];
     const prevSibling = sharedNodeStore.getNode(prevSiblingId);
     if (!prevSibling) return false;
+
+    // Check if previous sibling can have children
+    if (!pluginRegistry.canHaveChildren(prevSibling.nodeType)) {
+      return false; // Silently prevent indent (matches merge prevention UX)
+    }
 
     // Indent target is ALWAYS the previous sibling directly
     // The node becomes a child of the previous sibling, positioned after any existing children

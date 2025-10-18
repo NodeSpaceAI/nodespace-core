@@ -788,4 +788,174 @@ describe('Indent/Outdent Operations', () => {
     expect(afterIndent).toBeGreaterThan(initialCount);
     expect(afterOutdent).toBeGreaterThan(afterIndent);
   });
+
+  it('should prevent indent when previous sibling is code-block (canHaveChildren: false)', async () => {
+    // Setup: Create code-block followed by text node
+    const codeBlock = await createAndFetchNode(adapter, {
+      id: 'code-1',
+      nodeType: 'code-block',
+      content: '```js\nconsole.log("test");\n```',
+      parentId: null,
+      containerNodeId: null,
+      beforeSiblingId: null,
+      properties: { language: 'javascript' },
+      embeddingVector: null,
+      mentions: []
+    });
+
+    const textNode = await createAndFetchNode(adapter, {
+      id: 'text-1',
+      nodeType: 'text',
+      content: 'Some text',
+      parentId: null,
+      containerNodeId: null,
+      beforeSiblingId: 'code-1',
+      properties: {},
+      embeddingVector: null,
+      mentions: []
+    });
+
+    service.initializeNodes([codeBlock, textNode]);
+
+    // Act: Try to indent text node into code-block
+    const result = service.indentNode('text-1');
+
+    // Verify: Indent was prevented
+    expect(result).toBe(false);
+
+    // Verify: Text node unchanged
+    const unchanged = service.findNode('text-1');
+    expect(unchanged?.parentId).toBeNull();
+    expect(unchanged?.beforeSiblingId).toBe('code-1');
+
+    // Verify: Code-block has no children
+    const children = service.visibleNodes.filter((n) => n.parentId === 'code-1');
+    expect(children).toHaveLength(0);
+  });
+
+  it('should allow indent when previous sibling is text node (canHaveChildren: true)', async () => {
+    // Setup: Create text node followed by another text node
+    const textNode1 = await createAndFetchNode(adapter, {
+      id: 'text-1',
+      nodeType: 'text',
+      content: 'First text',
+      parentId: null,
+      containerNodeId: null,
+      beforeSiblingId: null,
+      properties: {},
+      embeddingVector: null,
+      mentions: []
+    });
+
+    const textNode2 = await createAndFetchNode(adapter, {
+      id: 'text-2',
+      nodeType: 'text',
+      content: 'Second text',
+      parentId: null,
+      containerNodeId: null,
+      beforeSiblingId: 'text-1',
+      properties: {},
+      embeddingVector: null,
+      mentions: []
+    });
+
+    service.initializeNodes([textNode1, textNode2]);
+
+    // Act: Indent text-2 into text-1
+    const result = service.indentNode('text-2');
+
+    // Verify: Indent succeeded
+    expect(result).toBe(true);
+
+    // CRITICAL: Wait for async database writes to complete
+    await waitForDatabaseWrites();
+
+    // Verify: text-2 is now child of text-1
+    const indented = service.findNode('text-2');
+    expect(indented?.parentId).toBe('text-1');
+  });
+
+  it('should allow indent when previous sibling is header node (canHaveChildren: true)', async () => {
+    // Setup: Create header followed by text node
+    const headerNode = await createAndFetchNode(adapter, {
+      id: 'header-1',
+      nodeType: 'header',
+      content: 'Header',
+      parentId: null,
+      containerNodeId: null,
+      beforeSiblingId: null,
+      properties: { level: 1 },
+      embeddingVector: null,
+      mentions: []
+    });
+
+    const textNode = await createAndFetchNode(adapter, {
+      id: 'text-1',
+      nodeType: 'text',
+      content: 'Content',
+      parentId: null,
+      containerNodeId: null,
+      beforeSiblingId: 'header-1',
+      properties: {},
+      embeddingVector: null,
+      mentions: []
+    });
+
+    service.initializeNodes([headerNode, textNode]);
+
+    // Act: Indent text into header
+    const result = service.indentNode('text-1');
+
+    // Verify: Indent succeeded
+    expect(result).toBe(true);
+
+    // CRITICAL: Wait for async database writes to complete
+    await waitForDatabaseWrites();
+
+    // Verify: text-1 is now child of header-1
+    const indented = service.findNode('text-1');
+    expect(indented?.parentId).toBe('header-1');
+  });
+
+  it('should allow indent when previous sibling is task node (canHaveChildren: true)', async () => {
+    // Setup: Create task followed by text node
+    const taskNode = await createAndFetchNode(adapter, {
+      id: 'task-1',
+      nodeType: 'task',
+      content: 'Task item',
+      parentId: null,
+      containerNodeId: null,
+      beforeSiblingId: null,
+      properties: { completed: false },
+      embeddingVector: null,
+      mentions: []
+    });
+
+    const textNode = await createAndFetchNode(adapter, {
+      id: 'text-1',
+      nodeType: 'text',
+      content: 'Task details',
+      parentId: null,
+      containerNodeId: null,
+      beforeSiblingId: 'task-1',
+      properties: {},
+      embeddingVector: null,
+      mentions: []
+    });
+
+    service.initializeNodes([taskNode, textNode]);
+
+    // Act: Indent text into task
+    const result = service.indentNode('text-1');
+
+    // Verify: Indent succeeded
+    expect(result).toBe(true);
+
+    // CRITICAL: Wait for async database writes to complete
+    await waitForDatabaseWrites();
+
+    // Verify: text-1 is now child of task-1
+    const indented = service.findNode('text-1');
+    expect(indented?.parentId).toBe('task-1');
+  });
 });
