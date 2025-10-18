@@ -203,7 +203,7 @@
     white-space: pre-wrap;
   }
 
-  /* Straight vertical line (4px primary color) */
+  /* Straight vertical line (4px primary color) - always visible */
   .quote-block-node-wrapper :global(.node__content)::before {
     content: '';
     position: absolute;
