@@ -40,6 +40,9 @@
   // Internal reactive state - sync with content prop changes
   let internalContent = $state(content);
 
+  // Track if we just added prefixes (for cursor adjustment)
+  let pendingCursorAdjustment = $state<number | null>(null);
+
   // Sync internalContent when content prop changes externally
   $effect(() => {
     internalContent = content;
@@ -72,11 +75,58 @@
   let displayContent = $derived(extractQuoteForDisplay(internalContent));
 
   /**
-   * Handle content changes from BaseNode (via bind:content)
-   * Forward to parent component
+   * Handle content changes from BaseNode
+   * Add "> " prefix to all lines before saving (users only type it on first line)
    */
-  function handleContentChange() {
-    dispatch('contentChanged', { content: internalContent });
+  function handleContentChange(event: CustomEvent<{ content: string }>) {
+    const userContent = event.detail.content;
+
+    // Add "> " prefix to every line that doesn't have it
+    const lines = userContent.split('\n');
+    const prefixedLines = lines.map((line) => {
+      const trimmed = line.trim();
+
+      if (trimmed === '') {
+        return '> '; // Empty line becomes "> " (with space for cursor)
+      }
+      if (trimmed.startsWith('> ')) {
+        return line; // Already has "> " (with space)
+      }
+      if (trimmed.startsWith('>')) {
+        // Has ">" but no space - add space
+        return line.replace(/^>/, '> ');
+      }
+      // Add "> " prefix
+      return `> ${line}`;
+    });
+    const prefixedContent = prefixedLines.join('\n');
+
+    internalContent = prefixedContent;
+    dispatch('contentChanged', { content: prefixedContent });
+
+    // If we have a pending cursor adjustment (from Shift+Enter), apply it
+    if (pendingCursorAdjustment !== null) {
+      import('$lib/services/focus-manager.svelte').then(({ focusManager }) => {
+        focusManager.focusNodeAtPosition(nodeId, pendingCursorAdjustment!);
+        pendingCursorAdjustment = null; // Clear after use
+      });
+    }
+  }
+
+  /**
+   * Handle Shift+Enter to position cursor after auto-added "> " prefix
+   */
+  function handleKeyDown(event: KeyboardEvent) {
+    if (event.key === 'Enter' && event.shiftKey) {
+      // Let the default happen (inserts \n), but track cursor position
+      // After handleContentChange adds "> ", we'll reposition cursor
+      const textarea = event.target as HTMLTextAreaElement;
+      const cursorPos = textarea.selectionStart;
+
+      // After the \n is inserted and "> " is added, cursor should be at:
+      // current position + 1 (for \n) + 2 (for "> " that will be added)
+      pendingCursorAdjustment = cursorPos + 3;
+    }
   }
 
   /**
@@ -120,57 +170,10 @@
   function handleNodeTypeChanged(event: CustomEvent) {
     const detail = event.detail;
 
-    // First dispatch the event as-is
+    // Just dispatch the event as-is
+    // Pattern detection already handles keeping the "> " prefix (cleanContent: false)
+    // So we don't need to add it here - it's already in the content
     dispatch('nodeTypeChanged', detail);
-
-    // Auto-add > prefix if converting to quote-block and content doesn't have it
-    if (detail.newNodeType === 'quote-block') {
-      const cleaned = detail.cleanedContent || '';
-
-      if (!cleaned.startsWith('>')) {
-        // Add > prefix to all lines
-        const withPrefix = cleaned
-          .split('\n')
-          .map((line: string) => (line.trim() ? `> ${line}` : '>'))
-          .join('\n');
-
-        // Schedule update for next tick
-        setTimeout(() => {
-          internalContent = withPrefix;
-          dispatch('contentChanged', { content: withPrefix });
-        }, 0);
-      }
-    }
-  }
-
-  /**
-   * Handle Shift+Enter to automatically add "> " prefix to new lines
-   */
-  function handleKeyDown(event: KeyboardEvent) {
-    if (event.key === 'Enter' && event.shiftKey) {
-      event.preventDefault();
-
-      const textarea = event.target as HTMLTextAreaElement;
-      const start = textarea.selectionStart;
-      const end = textarea.selectionEnd;
-      const value = textarea.value;
-
-      // Insert newline with "> " prefix
-      const newValue = value.substring(0, start) + '\n> ' + value.substring(end);
-      const newCursorPos = start + 3; // Position after "\n> "
-
-      // Update content
-      internalContent = newValue;
-
-      // Set cursor position after the "> "
-      setTimeout(() => {
-        textarea.selectionStart = newCursorPos;
-        textarea.selectionEnd = newCursorPos;
-      }, 0);
-
-      // Dispatch content change to trigger save
-      dispatch('contentChanged', { content: newValue });
-    }
   }
 
   /**
@@ -188,7 +191,7 @@
     {nodeId}
     {nodeType}
     {autoFocus}
-    bind:content={internalContent}
+    content={internalContent}
     {displayContent}
     {children}
     {editableConfig}

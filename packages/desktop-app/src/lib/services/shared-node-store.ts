@@ -286,11 +286,11 @@ export class SharedNodeStore {
         const shouldPersist =
           source.type !== 'viewer' || isStructuralChange || isContentChange || isNodeTypeChange;
 
-        // Skip persisting empty text nodes - they exist in UI but not in database
-        const isEmptyTextNode =
-          updatedNode.nodeType === 'text' && updatedNode.content.trim() === '';
+        // Skip persisting placeholder nodes - they exist in UI but not in database
+        // Placeholders are nodes with only type-specific prefixes and no actual content
+        const isPlaceholderNode = this.isPlaceholderNode(updatedNode);
 
-        if (shouldPersist && !isEmptyTextNode) {
+        if (shouldPersist && !isPlaceholderNode) {
           // Delegate to PersistenceCoordinator for coordinated persistence
           // Use debounced mode for content changes (typing), immediate for structural changes
           const dependencies: Array<string | (() => Promise<void>)> = [];
@@ -457,19 +457,15 @@ export class SharedNodeStore {
       this.persistedNodeIds.add(node.id);
     }
 
-    // Check if node is a placeholder (empty content text node from viewer)
-    const isPlaceholder =
-      node.nodeType === 'text' &&
-      node.content.trim() === '' &&
-      source.type === 'viewer' &&
-      isNewNode;
+    // Check if node is a placeholder (node with only type-specific prefix, no actual content)
+    const isPlaceholder = this.isPlaceholderNode(node) && source.type === 'viewer' && isNewNode;
 
     // Phase 2.4: Persist to database
     // IMPORTANT: For NEW nodes from viewer, persist immediately (including empty ones!)
     // For UPDATES from viewer, skip persistence - BaseNodeViewer handles with debouncing
     // This ensures createNode() persistence works while avoiding duplicate writes on updates
     //
-    // EXCEPTION: Placeholders (empty text nodes) should NOT persist until user adds content
+    // EXCEPTION: Placeholders (nodes with only prefixes) should NOT persist until user adds content
     if (!skipPersistence && !isPlaceholder && source.type !== 'database') {
       const shouldPersist = source.type !== 'viewer' || isNewNode;
 
@@ -704,6 +700,78 @@ export class SharedNodeStore {
    */
   async waitForNodeSaves(nodeIds: string[], timeoutMs = 5000): Promise<Set<string>> {
     return PersistenceCoordinator.getInstance().waitForPersistence(nodeIds, timeoutMs);
+  }
+
+  /**
+   * Check if a node is a placeholder (has only type-specific prefix, no actual content)
+   *
+   * Placeholders exist in the UI to provide smooth UX when user creates new nodes,
+   * but should not be persisted to the database until user adds actual content.
+   *
+   * @param node - Node to check
+   * @returns true if node is a placeholder (should not persist), false otherwise
+   */
+  private isPlaceholderNode(node: Node): boolean {
+    const trimmedContent = node.content.trim();
+
+    switch (node.nodeType) {
+      case 'text': {
+        // Text nodes: empty content is a placeholder
+        if (trimmedContent === '') {
+          return true;
+        }
+
+        // Text nodes that contain ONLY pattern prefixes are also placeholders
+        // These are text nodes in the process of being converted to specialized types
+        // Check for common patterns: "> " (quote), "# " (header), "```" (code)
+        if (
+          trimmedContent === '>' ||
+          trimmedContent.match(/^>\s*$/) || // "> " or ">  " etc
+          trimmedContent.match(/^#{1,6}\s*$/) || // "# " or "## " etc
+          trimmedContent.match(/^```\w*\s*$/) // "```" or "```js " etc
+        ) {
+          return true;
+        }
+
+        return false;
+      }
+
+      case 'quote-block': {
+        // Quote-block nodes: only "> " prefix (no actual content after) is a placeholder
+        // Strip "> " or ">" from all lines and check if any content remains
+        const contentWithoutPrefix = trimmedContent
+          .split('\n')
+          .map((line) => line.replace(/^>\s?/, ''))
+          .join('\n')
+          .trim();
+        return contentWithoutPrefix === '';
+      }
+
+      case 'header': {
+        // Header nodes: only "# " prefix (no actual content after) is a placeholder
+        // Strip hashtags and space, check if content remains
+        const contentWithoutHashtags = trimmedContent.replace(/^#{1,6}\s*/, '');
+        return contentWithoutHashtags === '';
+      }
+
+      case 'code-block': {
+        // Code-block nodes: only "```" prefix (no actual code) is a placeholder
+        // Strip backticks and language identifier, check if code remains
+        const contentWithoutBackticks = trimmedContent
+          .replace(/^```\w*\s*/, '')
+          .replace(/```$/, '');
+        return contentWithoutBackticks.trim() === '';
+      }
+
+      case 'task':
+        // Task nodes: empty content (regardless of checkbox) is a placeholder
+        // The backend validates task description separately
+        return trimmedContent === '';
+
+      default:
+        // For unknown node types, use simple empty check
+        return trimmedContent === '';
+    }
   }
 
   /**
