@@ -283,6 +283,18 @@ export class PluginRegistry {
   }
 
   /**
+   * Check if a node type can have children
+   * Returns true by default if plugin not found or canHaveChildren not specified
+   */
+  canHaveChildren(nodeType: string): boolean {
+    const plugin = this.plugins.get(nodeType);
+    if (!plugin || !this.enabledPlugins.has(nodeType)) {
+      return true; // Default to true for unknown or disabled plugins
+    }
+    return plugin.config.canHaveChildren ?? true; // Default to true if not specified
+  }
+
+  /**
    * Get all pattern detection configs from enabled plugins
    * Used by TextareaController to detect node type conversions
    */
