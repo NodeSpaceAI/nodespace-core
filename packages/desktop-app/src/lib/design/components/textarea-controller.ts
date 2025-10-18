@@ -757,7 +757,11 @@ export class TextareaController {
       const { config, match, metadata } = detection;
 
       // CRITICAL: Capture cursor position BEFORE event emission
-      const cursorPosition = this.getCursorPosition();
+      // Use desiredCursorPosition from config if specified, otherwise preserve current position
+      const cursorPosition =
+        config.desiredCursorPosition !== undefined
+          ? config.desiredCursorPosition
+          : this.getCursorPosition();
 
       // Calculate cleaned content based on plugin config
       const cleanedContent = config.cleanContent

@@ -264,7 +264,8 @@ export const quoteBlockNodePlugin: PluginDefinition = {
         targetNodeType: 'quote',
         cleanContent: false, // Keep > prefix in content
         extractMetadata: () => ({}),
-        priority: 10
+        priority: 10,
+        desiredCursorPosition: 2 // Place cursor after "> "
       }
     ],
     canHaveChildren: true, // Quote blocks can have children
