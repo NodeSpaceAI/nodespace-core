@@ -180,6 +180,10 @@
           role="option"
           aria-selected={selectedIndex === index}
           tabindex={selectedIndex === index ? 0 : -1}
+          on:mousedown={(e) => {
+            e.preventDefault(); // Prevent blur event from closing dropdown
+            e.stopPropagation();
+          }}
           on:click={() => selectCommand(command)}
           on:mouseover={() => (selectedIndex = index)}
           on:mouseenter={() => {

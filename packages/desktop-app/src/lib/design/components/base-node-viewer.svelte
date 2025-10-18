@@ -1361,6 +1361,13 @@
                 on:slashCommandSelected={(
                   e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
                 ) => {
+                  // Use cursor position from event (captured by TextareaController)
+                  const cursorPosition = e.detail.cursorPosition ?? 0;
+
+                  // CRITICAL: Set editing state BEFORE updating node type
+                  // This ensures focus manager state is ready when the new component mounts
+                  focusManager.setEditingNodeFromTypeConversion(node.id, cursorPosition);
+
                   if (node.isPlaceholder) {
                     // For placeholder nodes, just update the nodeType locally
                     if ('updatePlaceholderNodeType' in nodeManager) {
@@ -1370,9 +1377,6 @@
                     // For real nodes, update node type with full persistence
                     nodeManager.updateNodeType(node.id, e.detail.nodeType);
                   }
-
-                  // Set editing state with cursor position using FocusManager
-                  focusManager.setEditingNode(node.id, e.detail.cursorPosition);
                 }}
                 on:nodeTypeChanged={(
                   e: CustomEvent<{
@@ -1444,6 +1448,13 @@
                   on:slashCommandSelected={(
                     e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
                   ) => {
+                    // Use cursor position from event (captured by TextareaController)
+                    const cursorPosition = e.detail.cursorPosition ?? 0;
+
+                    // CRITICAL: Set editing state BEFORE updating node type
+                    // This ensures focus manager state is ready when the new component mounts
+                    focusManager.setEditingNodeFromTypeConversion(node.id, cursorPosition);
+
                     if (node.isPlaceholder) {
                       // For placeholder nodes, just update the nodeType locally
                       if ('updatePlaceholderNodeType' in nodeManager) {
@@ -1453,9 +1464,6 @@
                       // For real nodes, update node type with full persistence
                       nodeManager.updateNodeType(node.id, e.detail.nodeType);
                     }
-
-                    // Set editing state with cursor position using FocusManager
-                    focusManager.setEditingNode(node.id, e.detail.cursorPosition);
                   }}
                   on:iconClick={handleIconClick}
                   on:taskStateChanged={(e) => {
@@ -1495,6 +1503,13 @@
                   on:slashCommandSelected={(
                     e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
                   ) => {
+                    // Use cursor position from event (captured by TextareaController)
+                    const cursorPosition = e.detail.cursorPosition ?? 0;
+
+                    // CRITICAL: Set editing state BEFORE updating node type
+                    // This ensures focus manager state is ready when the new component mounts
+                    focusManager.setEditingNodeFromTypeConversion(node.id, cursorPosition);
+
                     if (node.isPlaceholder) {
                       // For placeholder nodes, just update the nodeType locally
                       if ('updatePlaceholderNodeType' in nodeManager) {
@@ -1504,9 +1519,6 @@
                       // For real nodes, update node type with full persistence
                       nodeManager.updateNodeType(node.id, e.detail.nodeType);
                     }
-
-                    // Set editing state with cursor position using FocusManager
-                    focusManager.setEditingNode(node.id, e.detail.cursorPosition);
                   }}
                   on:iconClick={handleIconClick}
                   on:taskStateChanged={(e) => {

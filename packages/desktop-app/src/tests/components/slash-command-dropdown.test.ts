@@ -8,10 +8,10 @@
  * - Component lifecycle (event listener cleanup)
  * - Smart positioning logic
  * - Accessibility (ARIA attributes, tabindex management)
- * - Mouse interactions (click, hover, mouseenter)
+ * - Mouse interactions (click, hover, mouseenter, mousedown blur prevention)
  * - Edge cases and error conditions
  *
- * Total: 39 test cases covering all component functionality
+ * Total: 40 test cases covering all component functionality
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -843,6 +843,38 @@ describe('SlashCommandDropdown', () => {
       await waitForEffects();
 
       expect(onSelect).toHaveBeenCalledWith(mockCommands[1]);
+    });
+
+    it('should prevent default on mousedown to avoid blur event', async () => {
+      render(SlashCommandDropdown, {
+        props: {
+          visible: true,
+          position: defaultPosition,
+          query: 'heading',
+          commands: mockCommands,
+          loading: false,
+          onselect: onSelect
+        }
+      });
+
+      const options = screen.getAllByRole('option');
+
+      // Create a mousedown event with preventDefault spy
+      const preventDefaultSpy = vi.fn();
+      const stopPropagationSpy = vi.fn();
+      const mousedownEvent = new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true
+      });
+      mousedownEvent.preventDefault = preventDefaultSpy;
+      mousedownEvent.stopPropagation = stopPropagationSpy;
+
+      options[1].dispatchEvent(mousedownEvent);
+      await waitForEffects();
+
+      // Verify preventDefault was called to prevent blur
+      expect(preventDefaultSpy).toHaveBeenCalled();
+      expect(stopPropagationSpy).toHaveBeenCalled();
     });
 
     it('should update selection on hover', async () => {

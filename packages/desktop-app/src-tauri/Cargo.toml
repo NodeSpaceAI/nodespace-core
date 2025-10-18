@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "NodeSpace AI-Native Knowledge Management Desktop Application"
 authors = ["NodeSpace Team"]
 edition = "2021"
+default-run = "nodespace-app"
 
 [lib]
 name = "nodespace_app_lib"
@@ -15,6 +16,10 @@ tauri-build = { version = "2", features = [] }
 [features]
 # Development-only HTTP server for web-mode testing
 dev-server = ["axum", "tower-http", "tracing-subscriber"]
+
+[[bin]]
+name = "nodespace-app"
+path = "src/main.rs"
 
 [[bin]]
 name = "dev-server"
