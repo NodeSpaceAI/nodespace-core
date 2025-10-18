@@ -85,6 +85,12 @@ export interface SlashCommandDefinition {
   contentTemplate: string;
   nodeType?: string; // Target node type when this command is selected
   priority?: number;
+  /**
+   * Desired cursor position after slash command insertion
+   * If specified, cursor will be placed at this position after insertion
+   * Example: For code-block with '```plaintext\n\n```', set to 13 to place cursor after first fence line
+   */
+  desiredCursorPosition?: number;
 }
 
 // Node type configuration

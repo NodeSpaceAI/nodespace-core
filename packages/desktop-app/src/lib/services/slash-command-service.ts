@@ -157,6 +157,7 @@ export class SlashCommandService {
     content: string;
     nodeType: string;
     headerLevel?: number;
+    desiredCursorPosition?: number;
   } {
     // Find the original plugin command definition
     const pluginCommand = pluginRegistry.findSlashCommand(command.id);
@@ -165,7 +166,8 @@ export class SlashCommandService {
       return {
         content: pluginCommand.contentTemplate || '',
         nodeType: command.nodeType,
-        headerLevel: command.headerLevel
+        headerLevel: command.headerLevel,
+        desiredCursorPosition: pluginCommand.desiredCursorPosition
       };
     }
 

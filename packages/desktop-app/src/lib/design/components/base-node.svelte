@@ -334,7 +334,7 @@
 
   // Slash command event handlers
   function handleSlashCommandSelect(command: SlashCommand) {
-    let calculatedCursorPosition = 0;
+    let finalCursorPosition = 0;
 
     if (controller) {
       // Execute the command and get the content to insert
@@ -343,11 +343,15 @@
       // Insert the command content and get the calculated cursor position
       // Skip cursor positioning here since the component will re-render and we'll position via requestNodeFocus
       // Pass the target node type so insertSlashCommand can clean header syntax appropriately
-      calculatedCursorPosition = controller.insertSlashCommand(
+      const calculatedCursorPosition = controller.insertSlashCommand(
         result.content,
         true,
         result.nodeType
       );
+
+      // Use explicit desiredCursorPosition from plugin definition if available,
+      // otherwise fall back to calculated position from insertSlashCommand
+      finalCursorPosition = result.desiredCursorPosition ?? calculatedCursorPosition;
 
       // Don't update nodeType locally - let parent handle it to avoid double re-renders
       // The parent (base-node-viewer) will update nodeType via nodeManager and trigger autoFocus
@@ -373,7 +377,7 @@
     dispatch('slashCommandSelected', {
       command: command.id,
       nodeType: command.nodeType,
-      cursorPosition: calculatedCursorPosition // Use the calculated position from controller
+      cursorPosition: finalCursorPosition // Use plugin's desired position or fallback to calculated
     });
   }
 

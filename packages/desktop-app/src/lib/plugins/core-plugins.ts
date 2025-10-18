@@ -212,7 +212,8 @@ export const codeBlockNodePlugin: PluginDefinition = {
         description: 'Create a code block with language selection',
         shortcut: '```',
         contentTemplate: '```plaintext\n\n```',
-        nodeType: 'code-block'
+        nodeType: 'code-block',
+        desiredCursorPosition: 13 // Position cursor after "```plaintext\n" (on the empty line)
       }
     ],
     // Pattern detection for ``` auto-conversion
@@ -254,7 +255,8 @@ export const quoteBlockNodePlugin: PluginDefinition = {
         description: 'Create a block quote with markdown styling',
         shortcut: '>',
         contentTemplate: '> ',
-        nodeType: 'quote-block'
+        nodeType: 'quote-block',
+        desiredCursorPosition: 2 // Position cursor after "> " prefix
       }
     ],
     // Pattern detection for > auto-conversion
