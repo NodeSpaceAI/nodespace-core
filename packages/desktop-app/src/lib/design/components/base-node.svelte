@@ -43,6 +43,7 @@
   import { getIconConfig, resolveNodeState, type NodeType } from '$lib/design/icons/registry';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { focusManager } from '$lib/services/focus-manager.svelte';
+  import { positionCursor } from '$lib/actions/position-cursor';
 
   // Props (Svelte 5 runes syntax) - nodeReferenceService removed
   let {
@@ -69,6 +70,12 @@
   // This replaces the old bindable prop approach
   let isEditing = $derived(focusManager.editingNodeId === nodeId);
 
+  // Derive cursor positioning data for the action (reactive architecture)
+  // Only provide cursor data when this node is actively being edited
+  let cursorPositionData = $derived(
+    isEditing && focusManager.editingNodeId === nodeId ? focusManager.cursorPosition : null
+  );
+
   // Get services from context
   // In test environment, enable mock service to allow autocomplete testing
   // In production, use real service from context
@@ -79,7 +86,7 @@
 
   // DOM element and controller - Svelte bind:this assignment
   let textareaElement = $state<HTMLTextAreaElement | undefined>(undefined);
-  let controller: TextareaController | null = null;
+  let controller = $state<TextareaController | null>(null);
 
   // View mode element for rendering markdown
   let viewElement = $state<HTMLDivElement | undefined>(undefined);
@@ -621,92 +628,9 @@
     }
   });
 
-  // Track if autoFocus has been processed to prevent re-focusing after blur
-  let autoFocusProcessed = $state(false);
-
-  // Focus programmatically when autoFocus changes (only once)
-  $effect(() => {
-    if (controller && autoFocus && !autoFocusProcessed) {
-      // Mark as processed immediately to prevent re-triggering
-      autoFocusProcessed = true;
-
-      const pendingPosition = focusManager.pendingCursorPosition;
-      const hasArrowNav =
-        focusManager.arrowNavDirection !== null && focusManager.arrowNavPixelOffset !== null;
-
-      // Skip autoFocus positioning if arrow navigation is handling it
-      if (hasArrowNav) {
-        return;
-      }
-
-      setTimeout(() => {
-        if (controller) {
-          controller.focus();
-
-          if (pendingPosition !== null && focusManager.editingNodeId === nodeId) {
-            controller.setCursorPosition(pendingPosition);
-            focusManager.clearCursorPosition();
-          } else {
-            controller.positionCursorAtLineBeginning(0, true);
-          }
-        }
-      }, 10);
-    }
-  });
-
-  // Handle cursor positioning during node type conversion (similar to arrow navigation)
-  $effect(() => {
-    const conversionCursorPos = focusManager.nodeTypeConversionCursorPosition;
-    const editingNodeId = focusManager.editingNodeId;
-
-    // Only apply if we have a valid controller instance and all conditions are met
-    // The check for controller being truthy ensures this only runs on the NEW component
-    // instance after type conversion, not on the old component during cleanup
-    if (controller && isEditing && conversionCursorPos !== null && editingNodeId === nodeId) {
-      // Use requestAnimationFrame to ensure DOM has fully settled after component switch
-      requestAnimationFrame(() => {
-        if (controller) {
-          // Focus the textarea first to ensure it receives the cursor position
-          controller.focus();
-          // Then set the cursor position
-          controller.setCursorPosition(conversionCursorPos);
-
-          // Some component switches may reset cursor - verify and retry if needed
-          setTimeout(() => {
-            const textarea = document.activeElement as HTMLTextAreaElement;
-            if (
-              controller &&
-              textarea &&
-              textarea.tagName === 'TEXTAREA' &&
-              textarea.selectionStart !== conversionCursorPos
-            ) {
-              controller.setCursorPosition(conversionCursorPos);
-            }
-          }, 10);
-
-          focusManager.clearNodeTypeConversionCursorPosition();
-        }
-      });
-    }
-  });
-
-  // Handle arrow navigation cursor positioning
-  $effect(() => {
-    const arrowDirection = focusManager.arrowNavDirection;
-    const arrowPixelOffset = focusManager.arrowNavPixelOffset;
-    const editingNodeId = focusManager.editingNodeId;
-
-    if (
-      controller &&
-      isEditing &&
-      arrowDirection !== null &&
-      arrowPixelOffset !== null &&
-      editingNodeId === nodeId
-    ) {
-      controller.enterFromArrowNavigation(arrowDirection, arrowPixelOffset);
-      focusManager.clearArrowNavigationContext();
-    }
-  });
+  // REMOVED: Old imperative $effect blocks for cursor positioning
+  // Replaced with declarative positionCursor action (see template below)
+  // The action reactively positions the cursor based on cursorPositionData from FocusManager
 
   // Update controller when slash command dropdown state changes
   $effect(() => {
@@ -806,6 +730,7 @@
   {#if isEditing}
     <textarea
       bind:this={textareaElement}
+      use:positionCursor={{ data: cursorPositionData, controller }}
       class="node__content node__content--textarea"
       id="textarea-{nodeId}"
       rows="1"
