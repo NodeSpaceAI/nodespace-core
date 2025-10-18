@@ -65,35 +65,9 @@
   // Internal reactive state - sync with content prop changes
   let internalContent = $state(content);
 
-  // Track whether content change is from user editing (to prevent auto-complete during backspace)
-  let isUserEditing = $state(false);
-
   // Sync internalContent when content prop changes externally
-  // Auto-complete if content doesn't have closing fence (but NOT during user editing)
   $effect(() => {
-    // Skip auto-completion if user is actively editing
-    if (isUserEditing) {
-      internalContent = content;
-      return;
-    }
-
-    if (content && content.startsWith('```') && !content.includes('\n```')) {
-      // Missing closing fence - auto-complete
-      const afterFence = content.substring(3); // Content after ```
-
-      if (afterFence === '' || afterFence === '\n' || afterFence === '\n\n') {
-        // Empty or just newlines
-        internalContent = '```plaintext\n\n```';
-      } else {
-        // Has content - add closing fence
-        internalContent = `${content}\n\`\`\``;
-      }
-
-      // Update parent
-      dispatch('contentChanged', { content: internalContent });
-    } else {
-      internalContent = content;
-    }
+    internalContent = content;
   });
 
   // Parse language from opening fence (```language or just ```)
@@ -191,9 +165,6 @@
    */
   function handleContentChange(event: CustomEvent<{ content: string }>) {
     const userContent = event.detail.content;
-
-    // Mark as user editing to prevent auto-completion during typing/backspace
-    isUserEditing = true;
 
     // Inject language into opening fence
     const withLanguage = userContent.replace(/^```/, `\`\`\`${language}`);
@@ -303,22 +274,6 @@
   }
 
   /**
-   * Handle focus event - mark as editing
-   */
-  function handleFocus(event: CustomEvent) {
-    isUserEditing = true;
-    dispatch('focus', event.detail);
-  }
-
-  /**
-   * Handle blur event - stop editing, allow auto-completion
-   */
-  function handleBlur(event: CustomEvent) {
-    isUserEditing = false;
-    dispatch('blur', event.detail);
-  }
-
-  /**
    * Forward all other events to parent components
    */
   function forwardEvent<T>(eventName: string) {
@@ -344,8 +299,8 @@
     on:navigateArrow={forwardEvent('navigateArrow')}
     on:combineWithPrevious={forwardEvent('combineWithPrevious')}
     on:deleteNode={forwardEvent('deleteNode')}
-    on:focus={handleFocus}
-    on:blur={handleBlur}
+    on:focus={forwardEvent('focus')}
+    on:blur={forwardEvent('blur')}
     on:nodeReferenceSelected={forwardEvent('nodeReferenceSelected')}
     on:slashCommandSelected={forwardEvent('slashCommandSelected')}
     on:nodeTypeChanged={handleNodeTypeChanged}
