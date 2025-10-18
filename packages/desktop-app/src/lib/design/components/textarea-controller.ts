@@ -756,22 +756,24 @@ export class TextareaController {
       // Pattern detected - convert to specialized node type
       const { config, match, metadata } = detection;
 
+      // CRITICAL: Only emit conversion event if node type is ACTUALLY changing
+      // This prevents cursor resets when typing in an already-converted node
+      if (this.nodeType === config.targetNodeType) {
+        // Already the correct type - just update metadata if needed (e.g., header level changes)
+        untrack(() => {
+          if (metadata.headerLevel !== undefined) {
+            this.events.headerLevelChanged(metadata.headerLevel as number);
+          }
+        });
+        return; // Skip conversion event - no type change needed
+      }
+
       // CRITICAL: Capture cursor position BEFORE event emission
       // Use desiredCursorPosition from config if specified, otherwise preserve current position
       const cursorPosition =
         config.desiredCursorPosition !== undefined
           ? config.desiredCursorPosition
           : this.getCursorPosition();
-
-      // DEBUG: Log cursor position for quote blocks
-      if (config.targetNodeType === 'quote-block') {
-        console.log('[QuoteBlock] Pattern detected:', {
-          desiredCursorPosition: config.desiredCursorPosition,
-          currentCursorPosition: this.getCursorPosition(),
-          finalCursorPosition: cursorPosition,
-          content: content
-        });
-      }
 
       // Calculate cleaned content based on plugin config
       const cleanedContent = config.cleanContent

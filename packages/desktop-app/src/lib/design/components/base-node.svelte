@@ -659,18 +659,6 @@
     const conversionCursorPos = focusManager.nodeTypeConversionCursorPosition;
     const editingNodeId = focusManager.editingNodeId;
 
-    // DEBUG: Log cursor positioning for quote blocks
-    if (nodeType === 'quote-block' && conversionCursorPos !== null) {
-      console.log('[BaseNode-QuoteBlock] Cursor positioning effect:', {
-        nodeId,
-        nodeType,
-        conversionCursorPos,
-        editingNodeId,
-        isEditing,
-        hasController: !!controller
-      });
-    }
-
     // Only apply if we have a valid controller instance and all conditions are met
     // The check for controller being truthy ensures this only runs on the NEW component
     // instance after type conversion, not on the old component during cleanup
@@ -683,11 +671,6 @@
           // Then set the cursor position
           controller.setCursorPosition(conversionCursorPos);
 
-          // DEBUG: Log after setting cursor
-          if (nodeType === 'quote-block') {
-            console.log('[BaseNode-QuoteBlock] Cursor set to:', conversionCursorPos);
-          }
-
           // Some component switches may reset cursor - verify and retry if needed
           setTimeout(() => {
             const textarea = document.activeElement as HTMLTextAreaElement;
@@ -698,11 +681,6 @@
               textarea.selectionStart !== conversionCursorPos
             ) {
               controller.setCursorPosition(conversionCursorPos);
-
-              // DEBUG: Log retry
-              if (nodeType === 'quote-block') {
-                console.log('[BaseNode-QuoteBlock] Cursor retry - was:', textarea.selectionStart, 'setting to:', conversionCursorPos);
-              }
             }
           }, 10);
 

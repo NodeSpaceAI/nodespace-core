@@ -54,34 +54,29 @@
   });
 
   /**
-   * Extract quote content for editing (keep > prefixes visible)
-   * User sees and edits: > Line 1\n> Line 2
-   */
-  function extractQuoteForEditing(content: string): string {
-    return content; // Show > prefixes in edit mode
-  }
-
-  /**
-   * Extract quote content for display (show > prefixes with formatting)
-   * View mode: Show > prefixes with content, markdown rendered
+   * Extract quote content for display (strip > prefixes from each line)
+   * Edit mode: > Hello world
+   * Display mode: Hello world (> prefix hidden, but accent line visible)
    */
   function extractQuoteForDisplay(content: string): string {
-    return content; // Show > prefixes in display mode with formatting
+    // Strip "> " or ">" from the beginning of each line
+    // Preserve empty lines (trailing "> " becomes "" but newline preserved)
+    const lines = content.split('\n');
+    const strippedLines = lines.map((line) => line.replace(/^>\s?/, ''));
+
+    // Join with newlines, preserving structure
+    return strippedLines.join('\n');
   }
 
-  // Edit mode: Show > prefixes
-  // View mode: Show > prefixes with markdown rendered
-  let editContent = $derived(extractQuoteForEditing(internalContent));
+  // Display content: Strip > prefixes for blur mode
   let displayContent = $derived(extractQuoteForDisplay(internalContent));
 
   /**
-   * Handle content changes from BaseNode
-   * Automatically add > prefix to new lines when Shift+Enter is pressed
+   * Handle content changes from BaseNode (via bind:content)
+   * Forward to parent component
    */
-  function handleContentChange(event: CustomEvent<{ content: string }>) {
-    const userContent = event.detail.content;
-    internalContent = userContent;
-    dispatch('contentChanged', { content: userContent });
+  function handleContentChange() {
+    dispatch('contentChanged', { content: internalContent });
   }
 
   /**
@@ -162,7 +157,7 @@
     {nodeId}
     {nodeType}
     {autoFocus}
-    content={editContent}
+    bind:content={internalContent}
     {displayContent}
     {children}
     {editableConfig}

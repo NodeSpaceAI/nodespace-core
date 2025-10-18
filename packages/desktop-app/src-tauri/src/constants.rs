@@ -15,4 +15,11 @@
 ///
 /// Used by both Tauri IPC commands and HTTP dev server endpoints
 /// to ensure consistent validation.
-pub const ALLOWED_NODE_TYPES: &[&str] = &["text", "header", "task", "date", "code-block", "quote-block"];
+pub const ALLOWED_NODE_TYPES: &[&str] = &[
+    "text",
+    "header",
+    "task",
+    "date",
+    "code-block",
+    "quote-block",
+];
