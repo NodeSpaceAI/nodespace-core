@@ -158,11 +158,11 @@
       });
     }
 
-    // For quote blocks: Enter at end creates text node, Enter in middle creates new quote line
+    // For quote blocks: Enter creates new quote-block below with "> " prefix
     if (detail.nodeType === 'quote-block') {
-      // The default behavior from BaseNode will handle this correctly
-      // - If at end: create text node below
-      // - If in middle: split and create new quote node
+      detail.currentContent = internalContent; // Keep current node unchanged
+      detail.newContent = '> '; // New quote-block with "> " prefix ready
+      detail.newNodeCursorPosition = 2; // Cursor after "> "
     }
 
     dispatch('createNewNode', detail);
