@@ -18,6 +18,8 @@ export default [
       },
       globals: {
         console: 'readonly',
+        global: 'readonly',
+        globalThis: 'readonly',
         window: 'readonly',
         Window: 'readonly',
         document: 'readonly',
@@ -104,6 +106,8 @@ export default [
       },
       globals: {
         console: 'readonly',
+        global: 'readonly',
+        globalThis: 'readonly',
         window: 'readonly',
         Window: 'readonly',
         document: 'readonly',
@@ -145,6 +149,8 @@ export default [
       },
       globals: {
         console: 'readonly',
+        global: 'readonly',
+        globalThis: 'readonly',
         window: 'readonly',
         Window: 'readonly',
         document: 'readonly',
@@ -227,6 +233,8 @@ export default [
       },
       globals: {
         console: 'readonly',
+        global: 'readonly',
+        globalThis: 'readonly',
         window: 'readonly',
         Window: 'readonly',
         document: 'readonly',

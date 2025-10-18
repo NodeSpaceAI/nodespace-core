@@ -572,6 +572,50 @@ export class HttpAdapter implements BackendAdapter {
     return await response.json();
   }
 
+  /**
+   * Retries a fetch operation with exponential backoff on HTTP 500 errors.
+   *
+   * Used to handle transient SQLite "database is locked" errors from dev-server
+   * during high concurrency (parallel tests). These errors are test infrastructure
+   * artifacts and don't reflect production behavior (Tauri IPC, single-user, human-speed).
+   *
+   * @param operation - The fetch operation to retry
+   * @param maxRetries - Maximum retry attempts (default: 3)
+   * @param baseDelayMs - Base delay for exponential backoff (default: 50ms)
+   * @returns The result of the operation
+   * @throws The last error if all retries exhausted
+   */
+  private async retryOnTransientError<T>(
+    operation: () => Promise<T>,
+    maxRetries: number = 3,
+    baseDelayMs: number = 50
+  ): Promise<T> {
+    let lastError: Error | undefined;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        // Only retry on HTTP 500 errors (SQLite "database is locked")
+        // Don't retry validation errors (400), not found (404), etc.
+        const isTransientError =
+          lastError.message.includes('500') || lastError.message.includes('database is locked');
+
+        if (!isTransientError || attempt === maxRetries) {
+          throw lastError;
+        }
+
+        // Exponential backoff: 50ms, 100ms, 200ms
+        const delayMs = baseDelayMs * Math.pow(2, attempt - 1);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+
+    throw lastError!;
+  }
+
   async initializeDatabase(dbPath?: string): Promise<string> {
     try {
       const url = new URL(`${this.baseUrl}/api/database/init`);
@@ -593,15 +637,18 @@ export class HttpAdapter implements BackendAdapter {
 
   async createNode(node: Omit<Node, 'createdAt' | 'modifiedAt'>): Promise<string> {
     try {
-      const response = await globalThis.fetch(`${this.baseUrl}/api/nodes`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(node)
-      });
+      // Wrap the HTTP write operation with retry logic
+      const nodeId = await this.retryOnTransientError(async () => {
+        const response = await globalThis.fetch(`${this.baseUrl}/api/nodes`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(node)
+        });
 
-      const nodeId = await this.handleResponse<string>(response);
+        return await this.handleResponse<string>(response);
+      });
 
       // Emit node:created event
       eventBus.emit<NodeCreatedEvent>({
@@ -645,18 +692,21 @@ export class HttpAdapter implements BackendAdapter {
 
   async updateNode(id: string, update: NodeUpdate): Promise<void> {
     try {
-      const response = await globalThis.fetch(
-        `${this.baseUrl}/api/nodes/${encodeURIComponent(id)}`,
-        {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(update)
-        }
-      );
+      // Wrap the HTTP write operation with retry logic
+      await this.retryOnTransientError(async () => {
+        const response = await globalThis.fetch(
+          `${this.baseUrl}/api/nodes/${encodeURIComponent(id)}`,
+          {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(update)
+          }
+        );
 
-      await this.handleResponse<void>(response);
+        return await this.handleResponse<void>(response);
+      });
 
       // Determine update type based on what fields were updated
       let updateType: 'content' | 'hierarchy' | 'status' | 'metadata' | 'nodeType' = 'content';
@@ -708,14 +758,17 @@ export class HttpAdapter implements BackendAdapter {
       // If node doesn't exist, getNode returns null but doesn't throw
       const nodeBeforeDeletion = await this.getNode(id);
 
-      const response = await globalThis.fetch(
-        `${this.baseUrl}/api/nodes/${encodeURIComponent(id)}`,
-        {
-          method: 'DELETE'
-        }
-      );
+      // Wrap the HTTP write operation with retry logic
+      await this.retryOnTransientError(async () => {
+        const response = await globalThis.fetch(
+          `${this.baseUrl}/api/nodes/${encodeURIComponent(id)}`,
+          {
+            method: 'DELETE'
+          }
+        );
 
-      await this.handleResponse<void>(response);
+        return await this.handleResponse<void>(response);
+      });
 
       // Only emit events if node existed (successful deletion)
       // Note: This handles the backend's non-idempotent DELETE behavior

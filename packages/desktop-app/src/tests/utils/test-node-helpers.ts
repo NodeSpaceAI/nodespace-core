@@ -8,12 +8,58 @@ import type { Node } from '$lib/types';
 import type { HttpAdapter } from '$lib/services/backend-adapter';
 
 /**
+ * Retries an async operation with exponential backoff.
+ *
+ * Used to handle transient HTTP 500 errors from dev-server SQLite write contention.
+ * These errors are test infrastructure artifacts (high concurrency during parallel tests)
+ * and don't reflect real application behavior (single-user, human-speed operations).
+ *
+ * @param operation - The async operation to retry
+ * @param maxRetries - Maximum number of retry attempts (default: 3)
+ * @param baseDelayMs - Base delay in milliseconds (default: 50ms)
+ * @returns The result of the operation
+ * @throws The last error if all retries fail
+ */
+export async function retryOperation<T>(
+  operation: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelayMs: number = 50
+): Promise<T> {
+  let lastError: Error | undefined;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      // Only retry on HTTP 500 errors (SQLite "database is locked")
+      // Don't retry on other errors (404, validation errors, etc.)
+      const errorMessage = lastError.message;
+      const isTransientError =
+        errorMessage.includes('500') || errorMessage.includes('database is locked');
+
+      if (!isTransientError || attempt === maxRetries) {
+        throw lastError;
+      }
+
+      // Exponential backoff: 50ms, 100ms, 200ms
+      const delayMs = baseDelayMs * Math.pow(2, attempt - 1);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  throw lastError!;
+}
+
+/**
  * Creates a node via HttpAdapter and fetches it back to ensure it exists.
+ * Automatically retries on transient HTTP 500 errors from dev-server concurrency.
  *
  * @param adapter - The HttpAdapter instance to use for creating the node
  * @param nodeData - The node data (without createdAt/modifiedAt timestamps)
  * @returns The created Node object with all fields populated
- * @throws Error if node creation fails or node cannot be retrieved
+ * @throws Error if node creation fails after retries or node cannot be retrieved
  *
  * @example
  * ```typescript
@@ -34,8 +80,8 @@ export async function createAndFetchNode(
   adapter: HttpAdapter,
   nodeData: Omit<Node, 'createdAt' | 'modifiedAt'>
 ): Promise<Node> {
-  await adapter.createNode(nodeData);
-  const node = await adapter.getNode(nodeData.id);
+  await retryOperation(() => adapter.createNode(nodeData));
+  const node = await retryOperation(() => adapter.getNode(nodeData.id));
   if (!node) throw new Error(`Failed to create node ${nodeData.id}`);
   return node;
 }

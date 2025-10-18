@@ -34,6 +34,7 @@ use axum::{
     Router,
 };
 use std::sync::{Arc, RwLock};
+use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 
 use nodespace_core::{DatabaseService, NodeService};
@@ -71,10 +72,25 @@ type SharedService<T> = Arc<RwLock<Arc<T>>>;
 /// 3. Atomically swap the services
 ///
 /// This ensures proper synchronization without stale connections.
+///
+/// # SQLite Write Serialization (Issue #266)
+///
+/// The `write_lock` mutex serializes all database write operations (create, update, delete)
+/// to reduce SQLite write contention under rapid concurrent operations. This significantly
+/// improves test reliability but does NOT completely eliminate occasional "database is locked"
+/// errors due to SQLite's internal locking behavior.
+///
+/// **Known Limitation**: SQLite can still report "database is locked" even with request-level
+/// serialization due to connection management, WAL mode checkpoints, and busy timeout settings.
+/// Tests may still fail intermittently (~10-20% of runs). For 100% reliability, see Issue #285
+/// (refactor integration tests to use in-memory database instead of HTTP dev-server).
+///
+/// Read operations do NOT acquire the write lock and can execute concurrently.
 #[derive(Clone)]
 pub struct AppState {
     pub db: SharedService<DatabaseService>,
     pub node_service: SharedService<NodeService>,
+    pub write_lock: Arc<Mutex<()>>,
 }
 
 /// Create the main application router with all endpoint modules
@@ -158,7 +174,11 @@ pub async fn start_server(
     node_service: SharedService<NodeService>,
     port: u16,
 ) -> anyhow::Result<()> {
-    let state = AppState { db, node_service };
+    let state = AppState {
+        db,
+        node_service,
+        write_lock: Arc::new(Mutex::new(())),
+    };
     let app = create_router(state);
 
     let addr = format!("127.0.0.1:{}", port);

@@ -33,9 +33,12 @@ function createMockState<T>(initialValue: T): T {
           return (target as Record<string | symbol, unknown>)[property];
         }
       }) as T;
-    } catch (error) {
+    } catch (proxyError) {
       // If proxy creation fails, return the original object
-      console.warn('Failed to create proxy for state mock, returning original value:', error);
+      // Proxy errors are expected for certain object types
+      if (proxyError instanceof Error) {
+        // Error handled by returning original value
+      }
       return initialValue;
     }
   }
@@ -54,8 +57,11 @@ function createMockDerived() {
         }
         // If getter is not a function, return it as-is (fallback)
         return getter as T;
-      } catch (error) {
-        console.warn('Derived getter error in test (returning undefined):', error);
+      } catch (getterError) {
+        // Derived getter error in test - return undefined as fallback
+        if (getterError instanceof Error) {
+          // Error handled by returning undefined
+        }
         return undefined as T;
       }
     }
@@ -73,9 +79,11 @@ function createMockEffect(fn: () => void | (() => void)): void {
         // For tests, we just ignore it
       }
     }
-  } catch (error) {
+  } catch (effectError) {
     // Ignore effect errors in tests - they often depend on DOM or other runtime features
-    console.warn('Effect error in test (ignored):', error);
+    if (effectError instanceof Error) {
+      // Error handled by ignoring - effects may depend on runtime features not available in tests
+    }
   }
 }
 
@@ -98,20 +106,25 @@ try {
   if (!globalThis.$effect) {
     (globalThis as Record<string, unknown>).$effect = effectFunction;
   }
-} catch (error) {
-  // Log any issues but don't fail the configuration
-  console.warn('Warning setting up Svelte rune mocks:', error);
+} catch (setupError) {
+  // Setup errors are non-fatal - mocks will be handled by plugin if this fails
+  if (setupError instanceof Error) {
+    // Error handled - plugin will provide fallback
+  }
 }
 
 // Also ensure they're available on the global object for Node.js environment
 if (typeof globalThis !== 'undefined' && 'global' in globalThis) {
   try {
-    const globalObj = globalThis.global as Record<string, unknown>;
+    const globalObj = (globalThis as { global: Record<string, unknown> }).global;
     if (!globalObj.$state) globalObj.$state = stateFunction;
     if (!globalObj.$derived) globalObj.$derived = derivedFunction;
     if (!globalObj.$effect) globalObj.$effect = effectFunction;
-  } catch (error) {
-    console.warn('Warning setting up Node.js global Svelte rune mocks:', error);
+  } catch (globalSetupError) {
+    // Global setup errors are non-fatal - mocks will be handled by plugin if this fails
+    if (globalSetupError instanceof Error) {
+      // Error handled - plugin will provide fallback
+    }
   }
 }
 

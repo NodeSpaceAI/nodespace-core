@@ -95,6 +95,9 @@ async fn init_database(
     use std::path::PathBuf;
     use tokio::fs;
 
+    // Acquire write lock to serialize database initialization (Issue #266)
+    let _write_guard = state.write_lock.lock().await;
+
     // Determine database path
     let db_path = if let Some(custom_path) = params.db_path {
         PathBuf::from(custom_path)
@@ -175,6 +178,7 @@ async fn init_database(
     Ok(Json(InitDbResponse {
         db_path: db_path_str,
     }))
+    // Write lock is automatically released when _write_guard goes out of scope
 }
 
 /// Create a new node
@@ -204,6 +208,9 @@ async fn create_node(
 ) -> Result<Json<String>, HttpError> {
     use crate::constants::ALLOWED_NODE_TYPES;
     use chrono::Utc;
+
+    // Acquire write lock to serialize database writes (Issue #266)
+    let _write_guard = state.write_lock.lock().await;
 
     // Validate node type (same as Tauri command)
     if !ALLOWED_NODE_TYPES.contains(&node.node_type.as_str()) {
@@ -255,6 +262,7 @@ async fn create_node(
     tracing::debug!("✅ Created node: {}", node.id);
 
     Ok(Json(node.id))
+    // Write lock is automatically released when _write_guard goes out of scope
 }
 
 /// Get a node by ID
@@ -312,6 +320,9 @@ async fn update_node(
     Path(id): Path<String>,
     Json(update): Json<NodeUpdate>,
 ) -> Result<StatusCode, HttpError> {
+    // Acquire write lock to serialize database writes (Issue #266)
+    let _write_guard = state.write_lock.lock().await;
+
     tracing::info!(
         "📝 UPDATE request for node: {} with update: {:?}",
         id,
@@ -339,6 +350,7 @@ async fn update_node(
             Err(HttpError::from_anyhow(e.into(), "NODE_SERVICE_ERROR"))
         }
     }
+    // Write lock is automatically released when _write_guard goes out of scope
 }
 
 /// Delete a node by ID
@@ -356,6 +368,9 @@ async fn delete_node(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, HttpError> {
+    // Acquire write lock to serialize database writes (Issue #266)
+    let _write_guard = state.write_lock.lock().await;
+
     let node_service = {
         let lock = state.node_service.read().map_err(|e| {
             HttpError::new(
@@ -378,6 +393,7 @@ async fn delete_node(
     }
 
     Ok(StatusCode::OK)
+    // Write lock is automatically released when _write_guard goes out of scope
 }
 
 /// Get child nodes of a parent node
