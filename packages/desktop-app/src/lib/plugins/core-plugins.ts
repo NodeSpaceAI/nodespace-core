@@ -211,9 +211,9 @@ export const codeBlockNodePlugin: PluginDefinition = {
         name: 'Code Block',
         description: 'Create a code block with language selection',
         shortcut: '```',
-        contentTemplate: '```plaintext\n\n```',
+        contentTemplate: '```\n\n```',
         nodeType: 'code-block',
-        desiredCursorPosition: 13 // Position cursor after "```plaintext\n" (on the empty line)
+        desiredCursorPosition: 4 // Position cursor after "```\n" (on the empty line)
       }
     ],
     // Pattern detection for ``` auto-conversion
