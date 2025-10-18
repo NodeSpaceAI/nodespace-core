@@ -23,7 +23,7 @@
   // Props using Svelte 5 runes mode - same interface as BaseNode
   let {
     nodeId,
-    nodeType = 'quote',
+    nodeType = 'quote-block',
     autoFocus = false,
     content = '',
     children = []
@@ -110,7 +110,7 @@
     }
 
     // For quote blocks: Enter at end creates text node, Enter in middle creates new quote line
-    if (detail.nodeType === 'quote') {
+    if (detail.nodeType === 'quote-block') {
       // The default behavior from BaseNode will handle this correctly
       // - If at end: create text node below
       // - If in middle: split and create new quote node
@@ -128,8 +128,8 @@
     // First dispatch the event as-is
     dispatch('nodeTypeChanged', detail);
 
-    // Auto-add > prefix if converting to quote and content doesn't have it
-    if (detail.newNodeType === 'quote') {
+    // Auto-add > prefix if converting to quote-block and content doesn't have it
+    if (detail.newNodeType === 'quote-block') {
       const cleaned = detail.cleanedContent || '';
 
       if (!cleaned.startsWith('>')) {

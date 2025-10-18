@@ -763,6 +763,16 @@ export class TextareaController {
           ? config.desiredCursorPosition
           : this.getCursorPosition();
 
+      // DEBUG: Log cursor position for quote blocks
+      if (config.targetNodeType === 'quote-block') {
+        console.log('[QuoteBlock] Pattern detected:', {
+          desiredCursorPosition: config.desiredCursorPosition,
+          currentCursorPosition: this.getCursorPosition(),
+          finalCursorPosition: cursorPosition,
+          content: content
+        });
+      }
+
       // Calculate cleaned content based on plugin config
       const cleanedContent = config.cleanContent
         ? content.replace(match[0], '') // Remove pattern from content

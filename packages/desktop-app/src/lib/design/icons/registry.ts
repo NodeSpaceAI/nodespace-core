@@ -156,7 +156,7 @@ class IconRegistry {
     });
 
     // Quote block nodes - for block quotes with markdown styling
-    this.register('quote', {
+    this.register('quote-block', {
       component: QuoteBlockIcon,
       semanticClass: 'node-icon',
       colorVar: 'hsl(var(--node-text, 200 40% 45%))',

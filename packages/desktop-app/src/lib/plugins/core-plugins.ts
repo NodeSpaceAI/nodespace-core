@@ -242,7 +242,7 @@ export const codeBlockNodePlugin: PluginDefinition = {
 };
 
 export const quoteBlockNodePlugin: PluginDefinition = {
-  id: 'quote',
+  id: 'quote-block',
   name: 'Quote Block Node',
   description: 'Block quote with markdown styling conventions',
   version: '1.0.0',
@@ -254,14 +254,14 @@ export const quoteBlockNodePlugin: PluginDefinition = {
         description: 'Create a block quote with markdown styling',
         shortcut: '>',
         contentTemplate: '> ',
-        nodeType: 'quote'
+        nodeType: 'quote-block'
       }
     ],
     // Pattern detection for > auto-conversion
     patternDetection: [
       {
         pattern: /^>\s/,
-        targetNodeType: 'quote',
+        targetNodeType: 'quote-block',
         cleanContent: false, // Keep > prefix in content
         extractMetadata: () => ({}),
         priority: 10,
