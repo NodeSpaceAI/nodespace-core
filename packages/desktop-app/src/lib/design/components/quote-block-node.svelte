@@ -198,19 +198,9 @@
     border-radius: var(--radius);
     border-top-left-radius: 0;
     border-bottom-left-radius: 0;
+    border-left: 4px solid hsl(var(--primary)); /* Straight vertical line */
     position: relative;
     line-height: 1.6;
     white-space: pre-wrap;
-  }
-
-  /* Straight vertical line (4px primary color) - always visible */
-  .quote-block-node-wrapper :global(.node__content)::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: 4px;
-    background: hsl(var(--primary));
   }
 </style>
