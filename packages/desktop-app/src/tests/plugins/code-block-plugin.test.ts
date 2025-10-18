@@ -90,7 +90,7 @@ describe('CodeBlockNode Plugin', () => {
       expect(codeCommand).toBeDefined();
       expect(codeCommand?.name).toBe('Code Block');
       expect(codeCommand?.shortcut).toBe('```');
-      expect(codeCommand?.contentTemplate).toBe('```plaintext\n\n```');
+      expect(codeCommand?.contentTemplate).toBe('```\n\n```');
       expect(codeCommand?.nodeType).toBe('code-block');
     });
   });

@@ -100,16 +100,33 @@ export class MergeNodesCommand implements KeyboardCommand {
 
   /**
    * Check if cursor is at the start of the node
-   * Uses the same logic as ContentEditableController.isAtStart()
+   * IMPORTANT: Only returns true when cursor is at start with NO SELECTION
+   * If there's a selection, this returns false so browser can handle text deletion naturally
    */
   private isAtStart(context: KeyboardContext): boolean {
-    // Check selection if available
+    // For textarea-based controllers, use native selection API
+    const controller = context.controller;
+    const element = controller?.element;
+
+    if (element && 'selectionStart' in element) {
+      // Textarea: check if cursor at start AND no selection
+      const textarea = element as HTMLTextAreaElement;
+      const hasSelection = textarea.selectionStart !== textarea.selectionEnd;
+
+      if (hasSelection) {
+        return false; // Let browser delete the selection, don't merge
+      }
+
+      return textarea.selectionStart === 0;
+    }
+
+    // Fallback: use DOM selection for contenteditable
     const selection = context.selection || window.getSelection();
-    let range: Range | null = null;
     if (selection && selection.rangeCount > 0) {
-      range = selection.getRangeAt(0);
+      const range = selection.getRangeAt(0);
+
       if (!range.collapsed) {
-        return false; // Not at start if there's a selection
+        return false; // Has selection - let browser delete it, don't merge
       }
     }
 

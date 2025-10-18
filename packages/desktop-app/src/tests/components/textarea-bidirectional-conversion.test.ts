@@ -209,10 +209,10 @@ describe('TextareaController - Bidirectional Conversion', () => {
       element.dispatchEvent(new Event('input', { bubbles: true }));
       await new Promise((resolve) => setTimeout(resolve, 10));
 
-      // Should still be header but with updated level
-      // Pattern detection re-runs and detects h3
-      expect(conversionEvents[0].newNodeType).toBe('header');
-      expect(conversionEvents[0].cleanedContent).toBe('### ');
+      // Should NOT emit conversion event (already a header)
+      // Only headerLevelChanged event fires (not tested here but happens)
+      // This prevents cursor resets when typing in an already-converted node
+      expect(conversionEvents).toHaveLength(0);
     });
   });
 
@@ -239,10 +239,9 @@ describe('TextareaController - Bidirectional Conversion', () => {
       element.dispatchEvent(new Event('input', { bubbles: true }));
       await new Promise((resolve) => setTimeout(resolve, 10));
 
-      // Should emit conversion event to update level (pattern re-detection)
-      // But since we started as header and pattern still matches, it converts to header again
-      expect(conversionEvents).toHaveLength(1);
-      expect(conversionEvents[0].newNodeType).toBe('header');
+      // Should NOT emit conversion event (already a header)
+      // This prevents cursor resets when typing in an already-converted node
+      expect(conversionEvents).toHaveLength(0);
     });
   });
 });

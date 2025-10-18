@@ -45,6 +45,13 @@
     'typescript'
   ];
 
+  /**
+   * Template for empty code blocks
+   * Language is managed separately via dropdown state (defaults to 'plaintext')
+   * Format: opening fence, two newlines (empty content line), closing fence
+   */
+  const EMPTY_CODE_BLOCK_TEMPLATE = '```\n\n```';
+
   // Props using Svelte 5 runes mode - same interface as BaseNode
   let {
     nodeId,
@@ -74,7 +81,8 @@
   let language = $state<string>(parseLanguage(content));
 
   // Code blocks use multiline editing (Shift+Enter for new lines, Enter creates new node)
-  const editableConfig = { allowMultiline: true };
+  // Prevent merging into code-blocks (structured content can't accept arbitrary merges)
+  const editableConfig = { allowMultiline: true, allowMergeInto: false };
 
   // Check if this node is being edited (from FocusManager)
   let isEditing = $derived(focusManager.editingNodeId === nodeId);
@@ -228,7 +236,7 @@
     // For code-blocks: no splitting, create blank code-block below with cursor ready
     if (detail.nodeType === 'code-block') {
       detail.currentContent = internalContent; // Keep current node unchanged
-      detail.newContent = '```plaintext\n\n```'; // New blank code-block with template
+      detail.newContent = EMPTY_CODE_BLOCK_TEMPLATE; // New blank code-block (language managed by dropdown state)
       // Cursor position is for edit content (```\n|\n```) which is position 4
       detail.newNodeCursorPosition = 4; // After ```\n, on the empty line
     }
@@ -258,12 +266,12 @@
 
           let completedContent;
           if (afterFence === '' || afterFence === '\n') {
-            // Empty: ```plaintext\n\n```
-            completedContent = '```plaintext\n\n```';
+            // Empty: use template (language managed by dropdown)
+            completedContent = EMPTY_CODE_BLOCK_TEMPLATE;
           } else {
-            // Has content: ```plaintext\nContent\n```
+            // Has content: ```\nContent\n``` (language managed by dropdown)
             const contentLines = afterFence.split('\n').filter((line: string) => line.trim());
-            completedContent = `\`\`\`plaintext\n${contentLines.join('\n')}\n\`\`\``;
+            completedContent = `\`\`\`\n${contentLines.join('\n')}\n\`\`\``;
           }
 
           internalContent = completedContent;

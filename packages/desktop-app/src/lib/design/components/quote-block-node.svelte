@@ -53,7 +53,8 @@
   });
 
   // Quote blocks use multiline editing (Shift+Enter for new lines with auto > prefix)
-  const editableConfig = { allowMultiline: true };
+  // Prevent merging into quote-blocks (structured content can't accept arbitrary merges)
+  const editableConfig = { allowMultiline: true, allowMergeInto: false };
 
   // Quote metadata - enable markdown processing
   let quoteMetadata = $derived({

@@ -815,8 +815,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
   function stripFormattingSyntax(content: string): string {
     let cleaned = content;
+    // Strip header prefixes (# , ## , etc.)
     cleaned = cleaned.replace(/^#{1,6}\s+/, '');
+    // Strip task checkbox ([ ] , [x] , etc.)
     cleaned = cleaned.replace(/^\[\s*[x\s]*\]\s*/, '');
+    // Strip quote-block prefixes (> ) from all lines
+    cleaned = cleaned
+      .split('\n')
+      .map((line) => line.replace(/^>\s?/, ''))
+      .join('\n');
     return cleaned.trim();
   }
 

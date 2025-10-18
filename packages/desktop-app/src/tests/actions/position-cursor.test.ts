@@ -15,6 +15,15 @@ describe('positionCursor action', () => {
   let rafSpy: any;
 
   beforeEach(() => {
+    // Ensure requestAnimationFrame exists in test environment
+    if (!globalThis.requestAnimationFrame) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      globalThis.requestAnimationFrame = ((cb: any) => {
+        cb(0);
+        return 0;
+      }) as typeof requestAnimationFrame;
+    }
+
     // Create textarea element
     textarea = document.createElement('textarea');
     textarea.value = 'Line 1\nLine 2\nLine 3';
@@ -43,14 +52,16 @@ describe('positionCursor action', () => {
     });
 
     // Spy on requestAnimationFrame
-    rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+    rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
       cb(0);
       return 0;
     });
   });
 
   afterEach(() => {
-    rafSpy.mockRestore();
+    if (rafSpy) {
+      rafSpy.mockRestore();
+    }
     controller.destroy();
     document.body.removeChild(textarea);
   });

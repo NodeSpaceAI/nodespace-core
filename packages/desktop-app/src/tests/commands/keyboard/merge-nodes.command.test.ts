@@ -89,6 +89,44 @@ describe('MergeNodesCommand', () => {
 
         expect(command.canExecute(context)).toBe(false);
       });
+
+      it('should not execute when text is selected (let browser delete selection)', () => {
+        // Create textarea with selection
+        const textarea = document.createElement('textarea');
+        textarea.value = 'Hello World';
+        textarea.selectionStart = 0;
+        textarea.selectionEnd = 5; // "Hello" selected
+
+        mockController.element = textarea;
+
+        const context = createContext({
+          key: 'Backspace',
+          cursorPosition: 0,
+          allowMultiline: false
+        });
+
+        // Should not execute - browser will delete the selection instead
+        expect(command.canExecute(context)).toBe(false);
+      });
+
+      it('should execute when cursor at start with no selection', () => {
+        // Create textarea with cursor at start, no selection
+        const textarea = document.createElement('textarea');
+        textarea.value = 'Hello World';
+        textarea.selectionStart = 0;
+        textarea.selectionEnd = 0; // No selection
+
+        mockController.element = textarea;
+
+        const context = createContext({
+          key: 'Backspace',
+          cursorPosition: 0,
+          allowMultiline: false
+        });
+
+        // Should execute - cursor at start with no selection
+        expect(command.canExecute(context)).toBe(true);
+      });
     });
 
     describe('execute - empty node', () => {
