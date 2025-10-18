@@ -125,7 +125,7 @@ describe('SlashCommandService Registry Integration', () => {
 
       expect(result).toEqual({
         content: '# ',
-        nodeType: 'text',
+        nodeType: 'header', // Headers use 'header' nodeType (not 'text')
         headerLevel: 1
       });
     });
@@ -173,9 +173,9 @@ describe('SlashCommandService Registry Integration', () => {
       // Test all hardcoded commands can be found
       const testCases = [
         { id: 'text', nodeType: 'text', headerLevel: 0 },
-        { id: 'header1', nodeType: 'text', headerLevel: 1 },
-        { id: 'header2', nodeType: 'text', headerLevel: 2 },
-        { id: 'header3', nodeType: 'text', headerLevel: 3 },
+        { id: 'header1', nodeType: 'header', headerLevel: 1 }, // Headers use 'header' nodeType
+        { id: 'header2', nodeType: 'header', headerLevel: 2 },
+        { id: 'header3', nodeType: 'header', headerLevel: 3 },
         { id: 'task', nodeType: 'task' },
         { id: 'ai-chat', nodeType: 'ai-chat' }
       ];

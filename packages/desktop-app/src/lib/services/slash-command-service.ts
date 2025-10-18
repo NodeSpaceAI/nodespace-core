@@ -62,6 +62,11 @@ export class SlashCommandService {
   private inferNodeTypeFromCommand(
     cmd: import('$lib/plugins/types').SlashCommandDefinition
   ): string {
+    // FIRST: Use explicitly defined nodeType if available
+    if (cmd.nodeType) {
+      return cmd.nodeType;
+    }
+
     // For header commands, they create text nodes
     if (cmd.id.startsWith('header')) {
       return 'text';
