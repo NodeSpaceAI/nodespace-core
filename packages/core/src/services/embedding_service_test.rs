@@ -19,12 +19,20 @@ mod tests {
     use tempfile::TempDir;
 
     fn model_exists() -> bool {
-        // Check if model exists at ~/.nodespace/models/BAAI-bge-small-en-v1.5/model.onnx
-        if let Ok(home) = std::env::var("HOME") {
-            let model_path = PathBuf::from(home)
+        // Check if model exists at ~/.nodespace/models/BAAI-bge-small-en-v1.5/onnx/model.onnx
+        // Platform-agnostic: uses HOME on Unix/macOS, USERPROFILE on Windows
+        let home = if cfg!(windows) {
+            std::env::var("USERPROFILE").ok()
+        } else {
+            std::env::var("HOME").ok()
+        };
+
+        if let Some(home_dir) = home {
+            let model_path = PathBuf::from(home_dir)
                 .join(".nodespace")
                 .join("models")
                 .join("BAAI-bge-small-en-v1.5")
+                .join("onnx")
                 .join("model.onnx");
             model_path.exists()
         } else {
@@ -39,6 +47,7 @@ mod tests {
                  Download the model with: bun run download:models\n\
                  See: packages/nlp-engine/models/README.md\n"
             );
+            panic!("Test skipped: ONNX model not found");
         }
     }
 
@@ -92,8 +101,8 @@ mod tests {
         skip_if_no_model();
         let (_db, service, _temp_dir) = create_test_services().await;
 
-        // Conservative estimate: (len / 3.5) * 1.2
-        // "test" = 4 chars → (4/3.5)*1.2 = 1.37 → ceils to 2
+        // Conservative estimate: ((len / 3.5) * 1.2).ceil()
+        // "test" = 4 chars → ((4/3.5)*1.2).ceil() = 1.371.ceil() = 2
         assert_eq!(service.estimate_tokens("test"), 2);
         assert_eq!(service.estimate_tokens("hello world"), 4);
         assert_eq!(service.estimate_tokens(&"a".repeat(400)), 138);
@@ -227,7 +236,7 @@ mod tests {
         skip_if_no_model();
         let (db, service, _temp_dir) = create_test_services().await;
 
-        // Use distinctly different content to ensure different embeddings
+        // Use semantically distinct content for different embeddings
         let content = "Machine learning is a fascinating field of artificial intelligence focused on algorithms and statistical models.".to_string();
         let container_id = create_test_topic(&db, content).await.unwrap();
 
@@ -374,8 +383,7 @@ mod tests {
         service.embed_container(&container_id).await.unwrap();
         let duration = start.elapsed();
 
-        // Should complete in reasonable time (< 30 seconds even on slower CPUs)
-        // Note: First run may be slower due to model loading
+        // Should complete in reasonable time (< 30s on slower CPUs, first run may be slower due to model loading)
         assert!(
             duration.as_secs() < 30,
             "Embedding took too long: {:?}",
