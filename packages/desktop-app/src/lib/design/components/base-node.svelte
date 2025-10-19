@@ -44,6 +44,8 @@
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { focusManager } from '$lib/services/focus-manager.svelte';
   import { positionCursor } from '$lib/actions/position-cursor';
+  import { createMockElementForView, findCharacterFromClickFast } from './cursor-positioning';
+  import { mapViewPositionToEditPosition } from '$lib/utils/view-edit-mapper';
 
   // Props (Svelte 5 runes syntax) - nodeReferenceService removed
   let {
@@ -83,6 +85,26 @@
   const nodeReferenceService =
     services?.nodeReferenceService ||
     (import.meta.env.VITEST ? ({} as Record<string, never>) : null);
+
+  /**
+   * Extract text from view element while preserving line breaks from <br> tags
+   * @param element - The view div element
+   * @returns Text content with \n for each <br> tag
+   */
+  function extractTextWithLineBreaks(element: HTMLElement): string {
+    let text = '';
+    const walk = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        text += node.textContent || '';
+      } else if (node.nodeName === 'BR') {
+        text += '\n';
+      } else if (node.childNodes) {
+        node.childNodes.forEach(walk);
+      }
+    };
+    walk(element);
+    return text;
+  }
 
   // DOM element and controller - Svelte bind:this assignment
   let textareaElement = $state<HTMLTextAreaElement | undefined>(undefined);
@@ -747,13 +769,39 @@
       id="view-{nodeId}"
       tabindex="0"
       onclick={(e) => {
-        // Use FocusManager instead of directly setting isEditing
-        focusManager.setEditingNode(nodeId);
-        // Don't focus if this is arrow navigation (will be positioned externally)
-        const target = e.currentTarget as HTMLElement;
-        if (!target.dataset.arrowNavigation) {
-          setTimeout(() => controller?.focus(), 0);
-        }
+        // Capture click coordinates
+        const clickX = e.pageX;
+        const clickY = e.pageY;
+
+        // Get the actual rendered text from the view element
+        // This is what the user sees (syntax stripped by markdown renderer)
+        // IMPORTANT: We need to preserve line breaks from <br> tags
+        const viewText = extractTextWithLineBreaks(viewElement!);
+
+        // Create temporary mock element with character spans using the rendered view text
+        const mockElement = createMockElementForView(viewElement!, viewText);
+        const mockRect = mockElement.getBoundingClientRect();
+
+        // Find character position in VIEW content
+        const viewPositionResult = findCharacterFromClickFast(mockElement, clickX, clickY, {
+          left: mockRect.left,
+          top: mockRect.top,
+          width: mockRect.width,
+          height: mockRect.height
+        });
+
+        // Clean up mock element immediately
+        mockElement.remove();
+
+        // Map view position → edit position (accounting for syntax)
+        const editPosition = mapViewPositionToEditPosition(
+          viewPositionResult.index,
+          viewText, // View content (actual rendered text)
+          content // Edit content (with syntax)
+        );
+
+        // Set focus with cursor position via FocusManager
+        focusManager.focusNodeAtPosition(nodeId, editPosition);
       }}
       onkeydown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {

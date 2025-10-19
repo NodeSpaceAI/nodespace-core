@@ -74,83 +74,6 @@ export function findCharacterFromClick(
 }
 
 /**
- * Enhanced positioning for multi-line text with line-aware logic
- * @param mockElement - The hidden mock element with character spans
- * @param clickX - Click X coordinate relative to the page
- * @param clickY - Click Y coordinate relative to the page
- * @param editableRect - Bounding rectangle of the target editable element
- * @param content - The text content for line-based calculations
- * @returns Character index with multi-line optimization
- */
-export function findCharacterFromClickMultiline(
-  mockElement: HTMLDivElement,
-  clickX: number,
-  clickY: number,
-  editableRect: { left: number; top: number; width: number; height: number },
-  _content: string
-): PositionResult {
-  const relativeX = clickX - editableRect.left;
-  const relativeY = clickY - editableRect.top;
-
-  const allSpans = mockElement.querySelectorAll('[data-position]');
-  if (allSpans.length === 0) {
-    return { index: 0, distance: 0, accuracy: 'approximate' };
-  }
-
-  // Group spans by their Y position to identify lines
-  const spansByLine = new Map<number, HTMLElement[]>();
-  const mockRect = mockElement.getBoundingClientRect();
-
-  for (let i = 0; i < allSpans.length; i++) {
-    const span = allSpans[i] as HTMLElement;
-    const rect = span.getBoundingClientRect();
-    const spanY = Math.round(rect.top - mockRect.top);
-
-    if (!spansByLine.has(spanY)) {
-      spansByLine.set(spanY, []);
-    }
-    spansByLine.get(spanY)!.push(span);
-  }
-
-  // Sort lines by Y position
-  const sortedLines = Array.from(spansByLine.entries()).sort((a, b) => a[0] - b[0]);
-
-  // Find the line closest to the click Y position
-  let closestLineY = sortedLines[0][0];
-  let closestLineDistance = Math.abs(relativeY - closestLineY);
-
-  for (const [lineY] of sortedLines) {
-    const distance = Math.abs(relativeY - lineY);
-    if (distance < closestLineDistance) {
-      closestLineDistance = distance;
-      closestLineY = lineY;
-    }
-  }
-
-  // Find best character within the target line
-  const targetLineSpans = spansByLine.get(closestLineY) || [];
-  let bestMatch: PositionResult = { index: 0, distance: Infinity, accuracy: 'approximate' };
-
-  for (const span of targetLineSpans) {
-    const rect = span.getBoundingClientRect();
-    const spanX = rect.left - mockRect.left + rect.width / 2; // Use center of character
-
-    const distance = Math.abs(spanX - relativeX);
-
-    if (distance < bestMatch.distance) {
-      const position = parseInt(span.dataset.position || '0');
-      bestMatch = {
-        index: position,
-        distance,
-        accuracy: distance < 3 ? 'exact' : 'approximate'
-      };
-    }
-  }
-
-  return bestMatch;
-}
-
-/**
  * Performance-optimized position finding with early exit conditions
  * @param mockElement - The hidden mock element with character spans
  * @param clickX - Click X coordinate relative to the page
@@ -243,8 +166,15 @@ export function findCharacterFromClickFast(
   const duration = performance.now() - startTime;
   performanceMonitor.recordMeasurement(duration);
 
-  if (duration > 50) {
-    console.warn(`Cursor positioning took ${duration}ms, exceeding 50ms target`);
+  // Use performance monitor for consistent logging
+  if (performanceMonitor.shouldWarnAboutPerformance()) {
+    const stats = performanceMonitor.getStats();
+    console.warn(
+      `Cursor positioning performance degrading: ` +
+        `avg=${stats.average.toFixed(2)}ms, ` +
+        `recent=${stats.recent.toFixed(2)}ms, ` +
+        `max=${stats.max.toFixed(2)}ms`
+    );
   }
 
   return bestMatch;
@@ -325,6 +255,84 @@ export class PositioningPerformanceMonitor {
 
 // Global performance monitor instance
 export const performanceMonitor = new PositioningPerformanceMonitor();
+
+/**
+ * Create temporary mock element with character spans for view div
+ * Mirrors exact rendering from view mode for accurate click positioning
+ *
+ * IMPORTANT: Caller must call mockElement.remove() after use!
+ *
+ * @param viewElement - The view div element to mirror
+ * @param content - The view content to wrap in character spans
+ * @returns Mock div element with character spans (caller must remove!)
+ */
+export function createMockElementForView(
+  viewElement: HTMLDivElement,
+  content: string
+): HTMLDivElement {
+  const mockElement = document.createElement('div');
+
+  // Position mock element at same location as view element for accurate coordinate matching
+  const viewRect = viewElement.getBoundingClientRect();
+  let cssText = `
+    position: absolute;
+    visibility: hidden;
+    top: ${viewRect.top}px;
+    left: ${viewRect.left}px;
+    width: ${viewRect.width}px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  `;
+
+  // Feature detection - getComputedStyle may not be available in test environments
+  try {
+    if (typeof window !== 'undefined' && window.getComputedStyle) {
+      const computedStyle = window.getComputedStyle(viewElement);
+      cssText += `
+        font-family: ${computedStyle.fontFamily};
+        font-size: ${computedStyle.fontSize};
+        font-weight: ${computedStyle.fontWeight};
+        line-height: ${computedStyle.lineHeight};
+        letter-spacing: ${computedStyle.letterSpacing};
+        padding: ${computedStyle.padding};
+      `;
+    }
+  } catch (e) {
+    // Gracefully handle errors in test environments
+    console.warn('Could not copy computed styles for mock element:', e);
+  }
+
+  mockElement.style.cssText = cssText;
+
+  // Wrap each character in span with data-position attribute
+  // This allows findCharacterFromClickFast to map coordinates → position
+  content.split('').forEach((char, index) => {
+    if (char === '\n') {
+      // Handle newlines: add span + <br> (matches view rendering)
+      const span = document.createElement('span');
+      span.dataset.position = String(index);
+      span.textContent = '0'; // Placeholder character for height calculation
+      mockElement.appendChild(span);
+      mockElement.appendChild(document.createElement('br'));
+    } else {
+      // Regular character
+      const span = document.createElement('span');
+      span.dataset.position = String(index);
+      span.textContent = char;
+      mockElement.appendChild(span);
+    }
+  });
+
+  // Append to body for rendering (required for getBoundingClientRect)
+  // Error handling for edge cases where document.body might not be available
+  if (typeof document === 'undefined' || !document.body) {
+    throw new Error(
+      'Cannot create mock element for cursor positioning: document.body not available'
+    );
+  }
+  document.body.appendChild(mockElement);
+  return mockElement;
+}
 
 /**
  * Validate if click is within reasonable bounds of the text area
