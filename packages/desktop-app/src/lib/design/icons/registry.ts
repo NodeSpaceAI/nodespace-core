@@ -17,6 +17,7 @@ import TaskIcon from './components/task-icon.svelte';
 import AIIcon from './components/ai-icon.svelte';
 import CodeBlockIcon from './components/code-block-icon.svelte';
 import QuoteBlockIcon from './components/quote-block-icon.svelte';
+import OrderedListIcon from './components/ordered-list-icon.svelte';
 
 // Dynamic node types - can be extended by plugins
 export type NodeType = string;
@@ -162,6 +163,15 @@ class IconRegistry {
       colorVar: 'hsl(var(--node-text, 200 40% 45%))',
       hasState: false,
       hasRingEffect: true // Quote blocks can have children
+    });
+
+    // Ordered list nodes - for auto-numbered ordered list items
+    this.register('ordered-list', {
+      component: OrderedListIcon,
+      semanticClass: 'node-icon',
+      colorVar: 'hsl(var(--node-text, 200 40% 45%))',
+      hasState: false,
+      hasRingEffect: false // Ordered lists are leaf nodes (no children)
     });
   }
 

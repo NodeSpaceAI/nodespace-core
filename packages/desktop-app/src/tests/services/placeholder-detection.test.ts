@@ -114,6 +114,25 @@ describe('Placeholder Node Detection', () => {
     });
   });
 
+  describe('Ordered-List Node Placeholders', () => {
+    it('should detect ordered-list with only "1. " as placeholder', () => {
+      expect(isPlaceholderNode({ nodeType: 'ordered-list', content: '1. ' })).toBe(true);
+      expect(isPlaceholderNode({ nodeType: 'ordered-list', content: '1.  ' })).toBe(true);
+    });
+
+    it('should detect ordered-list with only "1." (no content) as placeholder', () => {
+      expect(isPlaceholderNode({ nodeType: 'ordered-list', content: '1.' })).toBe(true);
+    });
+
+    it('should NOT detect ordered-list with actual content as placeholder', () => {
+      expect(isPlaceholderNode({ nodeType: 'ordered-list', content: '1. First item' })).toBe(false);
+      expect(isPlaceholderNode({ nodeType: 'ordered-list', content: '1. Hello world' })).toBe(
+        false
+      );
+      expect(isPlaceholderNode({ nodeType: 'ordered-list', content: '1. A' })).toBe(false);
+    });
+  });
+
   describe('Task Node Placeholders', () => {
     it('should detect empty task as placeholder', () => {
       expect(isPlaceholderNode({ nodeType: 'task', content: '' })).toBe(true);

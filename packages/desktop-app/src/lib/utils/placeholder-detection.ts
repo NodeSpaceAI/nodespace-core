@@ -36,6 +36,12 @@ export interface PlaceholderCheckable {
  *
  * // Quote-block with actual content
  * isPlaceholderNode({ nodeType: 'quote-block', content: '> Hello world' }) // false
+ *
+ * // Ordered-list with only "1. " prefix
+ * isPlaceholderNode({ nodeType: 'ordered-list', content: '1. ' }) // true
+ *
+ * // Ordered-list with actual content
+ * isPlaceholderNode({ nodeType: 'ordered-list', content: '1. First item' }) // false
  * ```
  */
 export function isPlaceholderNode(node: PlaceholderCheckable): boolean {
@@ -86,6 +92,13 @@ export function isPlaceholderNode(node: PlaceholderCheckable): boolean {
       // Strip backticks and language identifier, check if code remains
       const contentWithoutBackticks = trimmedContent.replace(/^```\w*\s*/, '').replace(/```$/, '');
       return contentWithoutBackticks.trim() === '';
+    }
+
+    case 'ordered-list': {
+      // Ordered-list nodes: only "1. " prefix (no actual content after) is a placeholder
+      // Strip "1. " prefix and check if content remains
+      const contentWithoutPrefix = trimmedContent.replace(/^1\.\s*/, '');
+      return contentWithoutPrefix === '';
     }
 
     case 'task':

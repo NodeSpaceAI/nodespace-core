@@ -298,6 +298,58 @@ export const quoteBlockNodePlugin: PluginDefinition = {
   }
 };
 
+export const orderedListNodePlugin: PluginDefinition = {
+  id: 'ordered-list',
+  name: 'Ordered List Node',
+  description: 'Auto-numbered ordered list items',
+  version: '1.0.0',
+  config: {
+    slashCommands: [
+      {
+        id: 'ordered-list',
+        name: 'Ordered List',
+        description: 'Create an auto-numbered list item',
+        shortcut: '1.',
+        contentTemplate: '1. ',
+        nodeType: 'ordered-list',
+        desiredCursorPosition: 3 // Position cursor after "1. " prefix
+      }
+    ],
+    // Pattern detection for "1. " auto-conversion
+    patternDetection: [
+      {
+        pattern: /^1\.\s/,
+        targetNodeType: 'ordered-list',
+        /**
+         * cleanContent: false - CRITICAL: Content MUST retain "1. " prefix
+         *
+         * Similar to quote-block ("> "), ordered lists store prefix in database.
+         * The "1. " prefix is:
+         * - Stored in database for round-trip consistency
+         * - Stripped in view mode for auto-numbering display
+         * - Shown in edit mode for user visibility
+         *
+         * Auto-numbering (1, 2, 3...) happens via CSS counters during rendering.
+         */
+        cleanContent: false,
+        extractMetadata: () => ({}),
+        priority: 10,
+        desiredCursorPosition: 3 // Place cursor after "1. "
+      }
+    ],
+    canHaveChildren: false, // Simple flat lists only (no nesting)
+    canBeChild: true
+  },
+  node: {
+    lazyLoad: () => import('../design/components/ordered-list-node.svelte'),
+    priority: 1
+  },
+  reference: {
+    component: BaseNodeReference as NodeReferenceComponent,
+    priority: 1
+  }
+};
+
 // Additional node types for reference system (no viewers currently)
 export const userNodePlugin: PluginDefinition = {
   id: 'user',
@@ -342,6 +394,7 @@ export const corePlugins = [
   dateNodePlugin,
   codeBlockNodePlugin,
   quoteBlockNodePlugin,
+  orderedListNodePlugin,
   userNodePlugin,
   documentNodePlugin
 ];

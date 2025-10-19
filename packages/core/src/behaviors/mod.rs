@@ -599,6 +599,63 @@ impl NodeBehavior for QuoteBlockNodeBehavior {
     }
 }
 
+/// Built-in behavior for ordered list nodes
+///
+/// Ordered list nodes represent auto-numbered list items with CSS counter-based
+/// numbering in the UI. Content includes the "1. " prefix (e.g., "1. First item").
+///
+/// # Examples
+///
+/// ```rust
+/// use nodespace_core::behaviors::{NodeBehavior, OrderedListNodeBehavior};
+/// use nodespace_core::models::Node;
+/// use serde_json::json;
+///
+/// let behavior = OrderedListNodeBehavior;
+/// let node = Node::new(
+///     "ordered-list".to_string(),
+///     "1. Hello world".to_string(),
+///     None,
+///     json!({}),
+/// );
+/// assert!(behavior.validate(&node).is_ok());
+/// ```
+pub struct OrderedListNodeBehavior;
+
+impl NodeBehavior for OrderedListNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "ordered-list"
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // Ordered list items must have actual content beyond the "1. " prefix
+        // Strip "1. " from the content and check if any content remains
+        let content_without_prefix = node.content.strip_prefix("1. ").unwrap_or(&node.content);
+
+        // Check if there's any actual content after stripping prefix
+        if is_empty_or_whitespace(content_without_prefix) {
+            return Err(NodeValidationError::MissingField(
+                "Ordered list nodes must have content beyond the '1. ' prefix".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn can_have_children(&self) -> bool {
+        false // Ordered lists are leaf nodes
+    }
+
+    fn supports_markdown(&self) -> bool {
+        true // Ordered lists support inline markdown formatting
+    }
+
+    fn default_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "markdown_enabled": true
+        })
+    }
+}
+
 /// Built-in behavior for date nodes
 ///
 /// Date nodes use deterministic IDs in YYYY-MM-DD format and serve as
@@ -749,6 +806,7 @@ impl NodeBehaviorRegistry {
         registry.register(Arc::new(TaskNodeBehavior));
         registry.register(Arc::new(CodeBlockNodeBehavior));
         registry.register(Arc::new(QuoteBlockNodeBehavior));
+        registry.register(Arc::new(OrderedListNodeBehavior));
         registry.register(Arc::new(DateNodeBehavior));
 
         registry
@@ -1140,8 +1198,9 @@ mod tests {
         assert!(types.contains(&"task".to_string()));
         assert!(types.contains(&"code-block".to_string()));
         assert!(types.contains(&"quote-block".to_string()));
+        assert!(types.contains(&"ordered-list".to_string()));
         assert!(types.contains(&"date".to_string()));
-        assert_eq!(types.len(), 6);
+        assert_eq!(types.len(), 7);
     }
 
     #[test]
