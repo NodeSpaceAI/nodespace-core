@@ -1415,12 +1415,18 @@
                   }>
                 ) => {
                   const newNodeType = e.detail.nodeType;
+                  const cleanedContent = e.detail.cleanedContent;
                   // Use cursor position from event (captured by TextareaController)
                   const cursorPosition = e.detail.cursorPosition ?? 0;
 
                   // CRITICAL: Set editing state BEFORE updating node type
                   // This ensures focus manager state is ready when the new component mounts
                   focusManager.setEditingNodeFromTypeConversion(node.id, cursorPosition);
+
+                  // Update content if cleanedContent is provided (e.g., from contentTemplate)
+                  if (cleanedContent !== undefined) {
+                    nodeManager.updateNodeContent(node.id, cleanedContent);
+                  }
 
                   // Update node type through proper API (triggers component re-render)
                   nodeManager.updateNodeType(node.id, newNodeType);
@@ -1464,12 +1470,18 @@
                     }>
                   ) => {
                     const newNodeType = e.detail.nodeType;
+                    const cleanedContent = e.detail.cleanedContent;
                     // Use cursor position from event (captured by TextareaController)
                     const cursorPosition = e.detail.cursorPosition ?? 0;
 
                     // CRITICAL: Set editing state BEFORE updating node type
                     // This ensures focus manager state is ready when the new component mounts
                     focusManager.setEditingNodeFromTypeConversion(node.id, cursorPosition);
+
+                    // Update content if cleanedContent is provided (e.g., from contentTemplate)
+                    if (cleanedContent !== undefined) {
+                      nodeManager.updateNodeContent(node.id, cleanedContent);
+                    }
 
                     // Update node type through proper API (triggers component re-render)
                     nodeManager.updateNodeType(node.id, newNodeType);

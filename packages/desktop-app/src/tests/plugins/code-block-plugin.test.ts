@@ -106,4 +106,49 @@ describe('CodeBlockNode Plugin', () => {
       expect(plugin?.config.canBeChild).toBe(true);
     });
   });
+
+  describe('Auto-completion', () => {
+    it('should have cleanContent set to false (keeps fence for auto-completion)', () => {
+      const patterns = pluginRegistry.getAllPatternDetectionConfigs();
+      const codeBlockPattern = patterns.find((p) => p.targetNodeType === 'code-block');
+
+      expect(codeBlockPattern).toBeDefined();
+      expect(codeBlockPattern?.cleanContent).toBe(false);
+    });
+
+    it('should have contentTemplate configured for auto-completion', () => {
+      const patterns = pluginRegistry.getAllPatternDetectionConfigs();
+      const codeBlockPattern = patterns.find((p) => p.targetNodeType === 'code-block');
+
+      expect(codeBlockPattern).toBeDefined();
+      expect(codeBlockPattern?.contentTemplate).toBe('```\n\n```');
+    });
+
+    it('should have desiredCursorPosition set to 4 (after opening fence)', () => {
+      const patterns = pluginRegistry.getAllPatternDetectionConfigs();
+      const codeBlockPattern = patterns.find((p) => p.targetNodeType === 'code-block');
+
+      expect(codeBlockPattern).toBeDefined();
+      expect(codeBlockPattern?.desiredCursorPosition).toBe(4);
+    });
+
+    it('pattern detection should preserve opening fence for auto-completion logic', () => {
+      const content = '```\n';
+      const detection = pluginRegistry.detectPatternInContent(content);
+
+      expect(detection).not.toBeNull();
+      expect(detection?.config.cleanContent).toBe(false);
+      expect(detection?.config.contentTemplate).toBe('```\n\n```');
+    });
+
+    it('pattern detection should preserve language in fence', () => {
+      const content = '```javascript\n';
+      const detection = pluginRegistry.detectPatternInContent(content);
+
+      expect(detection).not.toBeNull();
+      expect(detection?.metadata.language).toBe('javascript');
+      expect(detection?.config.cleanContent).toBe(false);
+      expect(detection?.config.contentTemplate).toBe('```\n\n```');
+    });
+  });
 });

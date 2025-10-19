@@ -223,10 +223,12 @@ export const codeBlockNodePlugin: PluginDefinition = {
         pattern: /^```(\w+)?\n/,
         targetNodeType: 'code-block',
         cleanContent: false, // Keep ``` in content for language parsing
+        contentTemplate: '```\n\n```', // Auto-complete with closing fence
         extractMetadata: (match: RegExpMatchArray) => ({
           language: match[1]?.toLowerCase() || 'plaintext'
         }),
-        priority: 10
+        priority: 10,
+        desiredCursorPosition: 4 // Position cursor after "```\n" (on the empty line)
       }
     ],
     canHaveChildren: false, // Code blocks are leaf nodes

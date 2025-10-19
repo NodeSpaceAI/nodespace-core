@@ -245,40 +245,10 @@
   }
 
   /**
-   * Handle node type conversion - auto-complete structure when converting to code-block
+   * Forward node type change events to parent
    */
   function handleNodeTypeChanged(event: CustomEvent) {
-    const detail = event.detail;
-
-    // First dispatch the event as-is
-    dispatch('nodeTypeChanged', detail);
-
-    // Then auto-complete if needed (after node is converted)
-    if (detail.newNodeType === 'code-block') {
-      const cleaned = detail.cleanedContent || '';
-
-      // Check if it needs auto-completion (doesn't have closing fence)
-      if (!cleaned.includes('```', 3)) {
-        // Check for closing fence (skip first ```)
-        // Schedule auto-completion for next tick
-        setTimeout(() => {
-          const afterFence = cleaned.substring(3).trim(); // Content after ```
-
-          let completedContent;
-          if (afterFence === '' || afterFence === '\n') {
-            // Empty: use template (language managed by dropdown)
-            completedContent = EMPTY_CODE_BLOCK_TEMPLATE;
-          } else {
-            // Has content: ```\nContent\n``` (language managed by dropdown)
-            const contentLines = afterFence.split('\n').filter((line: string) => line.trim());
-            completedContent = `\`\`\`\n${contentLines.join('\n')}\n\`\`\``;
-          }
-
-          internalContent = completedContent;
-          dispatch('contentChanged', { content: completedContent });
-        }, 0);
-      }
-    }
+    dispatch('nodeTypeChanged', event.detail);
   }
 
   /**

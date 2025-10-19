@@ -785,9 +785,17 @@ export class TextareaController {
           : this.getCursorPosition();
 
       // Calculate cleaned content based on plugin config
-      const cleanedContent = config.cleanContent
-        ? content.replace(match[0], '') // Remove pattern from content
-        : content; // Keep pattern in content (e.g., headers keep "# ")
+      let cleanedContent: string;
+      if (config.contentTemplate) {
+        // Use template if provided (e.g., code-block: "```\n" → "```\n\n```")
+        cleanedContent = config.contentTemplate;
+      } else if (config.cleanContent) {
+        // Remove pattern from content (e.g., task: "[ ] text" → "text")
+        cleanedContent = content.replace(match[0], '');
+      } else {
+        // Keep pattern in content (e.g., headers: "# Hello" → "# Hello")
+        cleanedContent = content;
+      }
 
       // Use untrack to prevent Svelte 5 reactive tracking during event emission
       // This prevents state_unsafe_mutation errors when parent components update state

@@ -74,6 +74,14 @@ export interface PatternDetectionConfig {
    * Example: For "> " pattern, set to 2 to place cursor after "> "
    */
   desiredCursorPosition?: number;
+
+  /**
+   * Optional content template to apply when pattern is detected
+   * If specified, this template will replace the matched content
+   * Useful for completing structures like code blocks: "```\n" → "```\n\n```"
+   * Example: For code-block pattern, set to '```\n\n```' to auto-complete closing fence
+   */
+  contentTemplate?: string;
 }
 
 // Slash command definition
