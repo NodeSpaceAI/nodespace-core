@@ -1,13 +1,30 @@
 <script lang="ts">
-  import DateNodeViewer from '$lib/components/viewers/date-node-viewer.svelte';
   import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import { toggleTheme } from '$lib/design/theme.js';
   import { tabState, updateTabTitle } from '$lib/stores/navigation.js';
+  import { pluginRegistry } from '$lib/plugins/plugin-registry';
 
   // Derive tab state using Svelte 5 $derived
   const tabs = $derived($tabState.tabs);
   const activeTabId = $derived($tabState.activeTabId);
   const activeTab = $derived(tabs.find((t) => t.id === activeTabId));
+
+  // Track loaded viewer components by nodeType
+  let viewerComponents = $state<Map<string, unknown>>(new Map());
+
+  // Load viewer for active tab's node type
+  $effect(() => {
+    const nodeType = activeTab?.content?.nodeType;
+    if (nodeType && !viewerComponents.has(nodeType)) {
+      (async () => {
+        const viewer = await pluginRegistry.getViewer(nodeType);
+        if (viewer) {
+          viewerComponents.set(nodeType, viewer);
+          viewerComponents = new Map(viewerComponents); // Trigger reactivity
+        }
+      })();
+    }
+  });
 
   // Global keyboard shortcuts
   function handleKeydown(event: KeyboardEvent) {
@@ -22,23 +39,16 @@
 <svelte:window on:keydown={handleKeydown} />
 
 {#if activeTab?.content}
-  <!-- Route based on nodeType -->
+  <!-- Dynamic viewer routing via plugin registry -->
+  <!-- Falls back to BaseNodeViewer if no custom viewer registered -->
   {@const content = activeTab.content}
+  {@const ViewerComponent = (viewerComponents.get(content.nodeType ?? 'text') ??
+    BaseNodeViewer) as typeof BaseNodeViewer}
 
-  {#if content.nodeType === 'date'}
-    <!-- DateNodeViewer: Page-level viewer with date navigation UI -->
-    <DateNodeViewer
-      nodeId={content.nodeId}
-      onTitleChange={(title) => updateTabTitle(activeTabId, title)}
-    />
-  {:else}
-    <!-- BaseNodeViewer: Default fallback for all other node types -->
-    <!-- Shows the node in context with its children -->
-    <BaseNodeViewer
-      nodeId={content.nodeId}
-      onTitleChange={(title) => updateTabTitle(activeTabId, title)}
-    />
-  {/if}
+  <ViewerComponent
+    nodeId={content.nodeId}
+    onTitleChange={(title: string) => updateTabTitle(activeTabId, title)}
+  />
 {:else if activeTab}
   <!-- Placeholder content for tabs without node content -->
   <div class="placeholder-content">

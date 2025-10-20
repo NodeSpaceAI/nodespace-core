@@ -189,12 +189,10 @@ export const dateNodePlugin: PluginDefinition = {
     lazyLoad: () => import('../design/components/date-node.svelte'),
     priority: 1
   },
-  // DateNodeViewer has custom props (tabId, initialDate) incompatible with NodeViewerProps
-  // Hardcoded in +page.svelte for now - need PageViewerComponent interface
-  // viewer: {
-  //   lazyLoad: () => import('../components/viewers/date-node-viewer.svelte'),
-  //   priority: 1
-  // },
+  viewer: {
+    lazyLoad: () => import('../components/viewers/date-node-viewer.svelte'),
+    priority: 1
+  },
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
