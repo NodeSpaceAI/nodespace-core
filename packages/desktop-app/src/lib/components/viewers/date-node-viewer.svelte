@@ -42,13 +42,8 @@
   let currentDate = $state(parseDateFromNodeId(nodeId));
 
   // Sync currentDate when nodeId prop changes (e.g., tab switching, link clicks)
-  // Using untrack() to prevent reactivity cycles
   $effect(() => {
-    const newDate = parseDateFromNodeId(nodeId);
-    // Only update if date actually changed (prevents unnecessary reactivity)
-    if (newDate.getTime() !== currentDate.getTime()) {
-      currentDate = newDate;
-    }
+    currentDate = parseDateFromNodeId(nodeId);
   });
 
   // Format date for display (e.g., "September 7, 2025") using Svelte 5 $derived
