@@ -19,6 +19,11 @@ import { addTab, tabState, updateTabContent } from '$lib/stores/navigation';
 import { sharedNodeStore } from './shared-node-store';
 import { get } from 'svelte/store';
 import type { Node } from '$lib/types';
+import { formatDateTitle, isValidDateString } from '$lib/utils/date-formatting';
+
+// Constants
+const MAX_TAB_TITLE_LENGTH = 40;
+const LOG_PREFIX = '[NavigationService]';
 
 export interface NavigationTarget {
   nodeId: string;
@@ -47,20 +52,17 @@ export class NavigationService {
    * Regular nodes are fetched from store (sync) or backend (async) if not in store.
    */
   async resolveNodeTarget(nodeId: string): Promise<NavigationTarget | null> {
-    // Check if it's a date node (format: YYYY-MM-DD)
-    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    const isDateNode = dateRegex.test(nodeId);
-
-    if (isDateNode) {
+    // Check if it's a date node (format: YYYY-MM-DD with semantic validation)
+    if (isValidDateString(nodeId)) {
       // Date nodes are virtual - they don't need to exist in database
       // DateNodeViewer will use getNodesForParent(nodeId) to fetch children
       const date = new Date(nodeId);
-      console.log(`[NavigationService] Virtual date node: ${nodeId}`);
+      console.log(`${LOG_PREFIX} Virtual date node: ${nodeId}`);
 
       return {
         nodeId: nodeId,
         nodeType: 'date',
-        title: this.formatDateTitle(date)
+        title: formatDateTitle(date)
       };
     }
 
@@ -69,13 +71,13 @@ export class NavigationService {
 
     if (!node) {
       // Not in store, fetch from backend
-      console.log(`[NavigationService] Node ${nodeId} not in store, fetching from backend...`);
+      console.log(`${LOG_PREFIX} Node ${nodeId} not in store, fetching from backend...`);
       const { backendAdapter } = await import('./backend-adapter');
 
       try {
         const fetchedNode = await backendAdapter.getNode(nodeId);
         if (!fetchedNode) {
-          console.error(`[NavigationService] Node ${nodeId} not found in backend`);
+          console.error(`${LOG_PREFIX} Node ${nodeId} not found in backend`);
           return null;
         }
         node = fetchedNode;
@@ -87,7 +89,7 @@ export class NavigationService {
           true // skipPersistence - already in backend
         );
       } catch (error) {
-        console.error(`[NavigationService] Failed to fetch node ${nodeId}:`, error);
+        console.error(`${LOG_PREFIX} Failed to fetch node ${nodeId}:`, error);
         return null;
       }
     }
@@ -110,40 +112,20 @@ export class NavigationService {
           ? node.properties.date
           : Date.now();
       const date = new Date(dateValue as string | number);
-      return this.formatDateTitle(date);
+      return formatDateTitle(date);
     }
 
-    // For other nodes, use first line of content (max 40 chars)
+    // For other nodes, use first line of content (max MAX_TAB_TITLE_LENGTH chars)
     if (node.content && typeof node.content === 'string') {
       const firstLine = node.content.split('\n')[0].trim();
-      return firstLine.length > 40 ? firstLine.substring(0, 37) + '...' : firstLine;
+      if (firstLine.length > MAX_TAB_TITLE_LENGTH) {
+        return firstLine.substring(0, MAX_TAB_TITLE_LENGTH - 3) + '...';
+      }
+      return firstLine;
     }
 
     // Fallback to node type
     return `${node.nodeType} Node`;
-  }
-
-  private formatDateTitle(date: Date): string {
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-
-    const normalizeDate = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    const targetDate = normalizeDate(date);
-    const todayNormalized = normalizeDate(today);
-    const tomorrowNormalized = normalizeDate(tomorrow);
-    const yesterdayNormalized = normalizeDate(yesterday);
-
-    if (targetDate.getTime() === todayNormalized.getTime()) return 'Today';
-    if (targetDate.getTime() === tomorrowNormalized.getTime()) return 'Tomorrow';
-    if (targetDate.getTime() === yesterdayNormalized.getTime()) return 'Yesterday';
-
-    const year = targetDate.getFullYear();
-    const month = String(targetDate.getMonth() + 1).padStart(2, '0');
-    const day = String(targetDate.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
   }
 
   /**

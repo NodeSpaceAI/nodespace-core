@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { formatDateISO } from '$lib/utils/date-formatting';
 
 export interface Tab {
   id: string;
@@ -18,11 +19,7 @@ export interface TabState {
 
 // Helper to get today's date in YYYY-MM-DD format
 function getTodayDateId(): string {
-  const today = new Date();
-  const year = today.getFullYear();
-  const month = String(today.getMonth() + 1).padStart(2, '0');
-  const day = String(today.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return formatDateISO(new Date());
 }
 
 // Stable ID for the Daily Journal tab (accessed via sidebar)
@@ -94,32 +91,5 @@ export function updateTabContent(tabId: string, content: { nodeId: string; nodeT
   }));
 }
 
-// Helper function to format date for tab title
-export function getDateTabTitle(date: Date): string {
-  const today = new Date();
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-
-  // Normalize dates to compare only year, month, day (ignore time)
-  const normalizeDate = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const targetDate = normalizeDate(date);
-  const todayNormalized = normalizeDate(today);
-  const tomorrowNormalized = normalizeDate(tomorrow);
-  const yesterdayNormalized = normalizeDate(yesterday);
-
-  if (targetDate.getTime() === todayNormalized.getTime()) {
-    return 'Today';
-  } else if (targetDate.getTime() === tomorrowNormalized.getTime()) {
-    return 'Tomorrow';
-  } else if (targetDate.getTime() === yesterdayNormalized.getTime()) {
-    return 'Yesterday';
-  } else {
-    // Format as YYYY-MM-DD using local timezone (not UTC)
-    const year = targetDate.getFullYear();
-    const month = String(targetDate.getMonth() + 1).padStart(2, '0');
-    const day = String(targetDate.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  }
-}
+// Re-export from shared utility for backward compatibility
+export { formatDateTitle as getDateTabTitle } from '$lib/utils/date-formatting';

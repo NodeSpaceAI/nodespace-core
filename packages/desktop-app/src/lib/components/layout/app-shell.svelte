@@ -9,6 +9,10 @@
   import { layoutState, toggleSidebar } from '$lib/stores/layout';
   import { registerCorePlugins } from '$lib/plugins/core-plugins';
   import { pluginRegistry } from '$lib/plugins/index';
+  import { isValidDateString } from '$lib/utils/date-formatting';
+
+  // Constants
+  const LOG_PREFIX = '[AppShell]';
 
   // TypeScript compatibility for Tauri window check
 
@@ -31,7 +35,7 @@
       });
     }
 
-    // PHASE 1: Global click handler for nodespace:// and node:// links (console.log only)
+    // Global click handler for nodespace:// links
     const handleLinkClick = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
 
@@ -40,18 +44,18 @@
       if (!anchor) return;
 
       const href = anchor.getAttribute('href');
-      // Handle both node:// and nodespace:// protocols
-      if (!href || (!href.startsWith('nodespace://') && !href.startsWith('node://'))) return;
+
+      // Only support nodespace:// protocol
+      if (!href || !href.startsWith('nodespace://')) return;
 
       // Prevent default browser navigation
       event.preventDefault();
       event.stopPropagation();
 
-      // Extract node UUID from various formats:
-      // - node://uuid (current format)
-      // - nodespace://uuid (alternative format)
+      // Extract node ID from various formats:
+      // - nodespace://uuid (standard format)
       // - nodespace://node/uuid (full URI format)
-      let nodeId = href.replace('nodespace://', '').replace('node://', '');
+      let nodeId = href.replace('nodespace://', '');
 
       // Handle nodespace://node/uuid format
       if (nodeId.startsWith('node/')) {
@@ -66,9 +70,8 @@
 
       // Validate node ID format (UUID or date format YYYY-MM-DD)
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-      if (!uuidRegex.test(nodeId) && !dateRegex.test(nodeId)) {
-        console.error(`[NavigationService] Invalid node ID format: ${nodeId}`);
+      if (!uuidRegex.test(nodeId) && !isValidDateString(nodeId)) {
+        console.error(`${LOG_PREFIX} Invalid node ID format: ${nodeId}`);
         return;
       }
 

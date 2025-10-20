@@ -15,9 +15,11 @@
 -->
 
 <script lang="ts">
+  import { untrack } from 'svelte';
   import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import Icon from '$lib/design/icons/icon.svelte';
   import { getDateTabTitle } from '$lib/stores/navigation.js';
+  import { parseDateString, formatDateISO, normalizeDate } from '$lib/utils/date-formatting';
 
   // Props using Svelte 5 runes mode - unified NodeViewerProps interface
   let {
@@ -30,31 +32,22 @@
     onNodeIdChange?: (_nodeId: string) => void;
   } = $props();
 
-  // Normalize date to midnight local time (ignore time components)
-  function normalizeDate(d: Date): Date {
-    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  }
-
   // Parse date from nodeId prop (format: YYYY-MM-DD)
   function parseDateFromNodeId(dateString: string): Date {
-    // Parse YYYY-MM-DD format
-    const [year, month, day] = dateString.split('-').map(Number);
-    if (year && month && day) {
-      return normalizeDate(new Date(year, month - 1, day)); // month is 0-indexed
-    }
-    return normalizeDate(new Date()); // Fallback to today if invalid
+    const parsed = parseDateString(dateString);
+    return parsed ?? normalizeDate(new Date()); // Fallback to today if invalid
   }
 
   // Current date state - initialized from nodeId prop
   let currentDate = $state(parseDateFromNodeId(nodeId));
 
   // Sync currentDate when nodeId prop changes (e.g., tab switching, link clicks)
-  // Track previous nodeId to avoid triggering onNodeIdChange callback on external updates
-  let previousNodeId = nodeId;
+  // Using untrack() to prevent reactivity cycles
   $effect(() => {
-    if (nodeId !== previousNodeId) {
-      currentDate = parseDateFromNodeId(nodeId);
-      previousNodeId = nodeId;
+    const newDate = parseDateFromNodeId(nodeId);
+    // Only update if date actually changed (prevents unnecessary reactivity)
+    if (newDate.getTime() !== currentDate.getTime()) {
+      currentDate = newDate;
     }
   });
 
@@ -68,23 +61,25 @@
   );
 
   // Derive current date ID from currentDate (using local timezone, not UTC)
-  const currentDateId = $derived(
-    `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`
-  );
+  const currentDateId = $derived(formatDateISO(currentDate));
 
-  // Update tab title when date changes
+  // Update tab title and notify parent of changes
+  // Use untrack() to prevent infinite loops when syncing with parent
   $effect(() => {
     const newTitle = getDateTabTitle(currentDate);
-    onTitleChange?.(newTitle);
-  });
+    const newDateId = currentDateId;
 
-  // Only notify parent of nodeId changes from user navigation (not prop updates)
-  // This prevents infinite loop: nodeId prop → currentDate → onNodeIdChange → nodeId prop
-  $effect(() => {
-    if (currentDateId !== nodeId) {
-      // currentDate changed due to user navigation (arrows, etc.)
-      onNodeIdChange?.(currentDateId);
-    }
+    // Update title unconditionally (always show current date in tab)
+    onTitleChange?.(newTitle);
+
+    // Only notify parent of nodeId changes from user navigation (not prop updates)
+    // Use untrack() to check the prop value without creating a dependency
+    untrack(() => {
+      if (newDateId !== nodeId) {
+        // currentDate changed due to user navigation (arrows, etc.)
+        onNodeIdChange?.(newDateId);
+      }
+    });
   });
 
   /**
