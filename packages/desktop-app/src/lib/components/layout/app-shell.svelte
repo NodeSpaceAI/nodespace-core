@@ -31,7 +31,7 @@
       });
     }
 
-    // PHASE 1: Global click handler for nodespace:// links (console.log only)
+    // PHASE 1: Global click handler for nodespace:// and node:// links (console.log only)
     const handleLinkClick = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
 
@@ -40,18 +40,20 @@
       if (!anchor) return;
 
       const href = anchor.getAttribute('href');
-      if (!href || !href.startsWith('nodespace://')) return;
+      // Handle both node:// and nodespace:// protocols
+      if (!href || (!href.startsWith('nodespace://') && !href.startsWith('node://'))) return;
 
       // Prevent default browser navigation
       event.preventDefault();
       event.stopPropagation();
 
-      // Extract node UUID from nodespace://uuid or nodespace://node/uuid
-      let nodeId = href.replace('nodespace://', '');
+      // Extract node UUID from various formats:
+      // - node://uuid (current format)
+      // - nodespace://uuid (alternative format)
+      // - nodespace://node/uuid (full URI format)
+      let nodeId = href.replace('nodespace://', '').replace('node://', '');
 
-      // Handle both formats:
-      // - nodespace://uuid (old format)
-      // - nodespace://node/uuid (new format from content-processor)
+      // Handle nodespace://node/uuid format
       if (nodeId.startsWith('node/')) {
         nodeId = nodeId.replace('node/', '');
       }
