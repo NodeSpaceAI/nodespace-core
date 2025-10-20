@@ -33,8 +33,9 @@ export const textNodePlugin: PluginDefinition = {
     canHaveChildren: true,
     canBeChild: true
   },
-  viewer: {
-    lazyLoad: () => import('../components/viewers/text-node-viewer.svelte'),
+  // No viewer - text nodes use BaseNodeViewer (default)
+  node: {
+    lazyLoad: () => import('../components/text-node.svelte'),
     priority: 1
   },
   reference: {

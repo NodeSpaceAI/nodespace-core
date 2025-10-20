@@ -1,41 +1,113 @@
 <!--
-  TextNode Component - Legacy Compatibility Wrapper
-  
-  DEPRECATED: This component is now a compatibility wrapper around TextNodeViewer.
-  New code should use the plugin system and TextNodeViewer directly.
-  
-  This wrapper preserves the original TextNode API while internally using
-  the new plugin architecture for consistency and the smart multiline behavior.
+  TextNode - Wraps BaseNode for text content editing
+
+  Individual text node component that provides smart multiline behavior
+  based on header level:
+  - Headers (h1-h6): Single-line only for semantic integrity
+  - Regular text: Multi-line with Shift+Enter support
 -->
 
 <script lang="ts">
-  import TextNodeViewer from '$lib/components/viewers/text-node-viewer.svelte';
+  import { createEventDispatcher } from 'svelte';
+  import BaseNode from '$lib/design/components/base-node.svelte';
+  import { contentProcessor } from '$lib/services/content-processor.js';
+  import type { NodeViewerProps } from '../types/node-viewers';
 
-  // Props - maintain original TextNode API for backward compatibility
-  export let nodeId: string;
-  export let autoFocus: boolean = false;
-  export let content: string = '';
-  export let inheritHeaderLevel: number = 0;
-  export let children: string[] = [];
+  // Props - implements NodeViewerProps interface
+  let {
+    nodeId,
+    autoFocus = false,
+    content = '',
+    nodeType = 'text',
+    inheritHeaderLevel = 0,
+    children = []
+  }: NodeViewerProps = $props();
 
-  // This wrapper directly forwards events from TextNodeViewer
+  // Internal reactive state
+  let internalContent = $state(content);
+  let headerLevel = $state(contentProcessor.parseHeaderLevel(content) || inheritHeaderLevel);
+
+  // Sync internalContent when content prop changes externally
+  $effect(() => {
+    internalContent = content;
+  });
+
+  // Text nodes always allow multiline editing
+  const editableConfig = {
+    allowMultiline: true
+  };
+
+  // Event dispatcher
+  const dispatch = createEventDispatcher<{
+    createNewNode: {
+      afterNodeId: string;
+      nodeType: string;
+      currentContent?: string;
+      newContent?: string;
+      inheritHeaderLevel?: number;
+      cursorAtBeginning?: boolean;
+    };
+    contentChanged: { content: string };
+    indentNode: { nodeId: string };
+    outdentNode: { nodeId: string };
+    navigateArrow: {
+      nodeId: string;
+      direction: 'up' | 'down';
+      pixelOffset: number;
+    };
+    combineWithPrevious: {
+      nodeId: string;
+      currentContent: string;
+    };
+    slashCommandSelected: {
+      command: string;
+      nodeType: string;
+      cursorPosition?: number;
+    };
+    deleteNode: { nodeId: string };
+    nodeTypeChanged: { nodeType: string; cleanedContent?: string };
+    focus: void;
+    blur: void;
+  }>();
+
+  function handleFocus() {
+    dispatch('focus');
+  }
+
+  function handleBlur() {
+    dispatch('blur');
+  }
+
+  function handleContentChange(event: CustomEvent<{ content: string }>) {
+    const newContent = event.detail.content;
+    internalContent = newContent;
+    dispatch('contentChanged', { content: newContent });
+  }
+
+  function handleHeaderLevelChange(event: CustomEvent<{ level: number }>) {
+    const newLevel = event.detail.level !== undefined ? event.detail.level : inheritHeaderLevel;
+    headerLevel = newLevel;
+  }
 </script>
 
-<!-- Direct passthrough to TextNodeViewer -->
-<TextNodeViewer
+<BaseNode
   {nodeId}
+  {nodeType}
   {autoFocus}
-  {content}
-  nodeType="text"
-  {inheritHeaderLevel}
+  content={internalContent}
   {children}
-  on:createNewNode
-  on:contentChanged
-  on:indentNode
-  on:outdentNode
-  on:navigateArrow
-  on:combineWithPrevious
-  on:deleteNode
-  on:focus
-  on:blur
+  {editableConfig}
+  on:createNewNode={(e) =>
+    dispatch('createNewNode', { ...e.detail, inheritHeaderLevel: headerLevel })}
+  on:contentChanged={handleContentChange}
+  on:headerLevelChanged={handleHeaderLevelChange}
+  on:indentNode={(e) => dispatch('indentNode', e.detail)}
+  on:outdentNode={(e) => dispatch('outdentNode', e.detail)}
+  on:navigateArrow={(e) => dispatch('navigateArrow', e.detail)}
+  on:combineWithPrevious={(e) => dispatch('combineWithPrevious', e.detail)}
+  on:slashCommandSelected={(e) => dispatch('slashCommandSelected', e.detail)}
+  on:nodeTypeChanged={(e) => dispatch('nodeTypeChanged', e.detail)}
+  on:deleteNode={(e) => dispatch('deleteNode', e.detail)}
+  on:focus={handleFocus}
+  on:blur={handleBlur}
 />

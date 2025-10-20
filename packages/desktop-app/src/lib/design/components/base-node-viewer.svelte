@@ -11,7 +11,6 @@
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
   import { pluginRegistry } from '$lib/components/viewers/index';
   import BaseNode from '$lib/design/components/base-node.svelte';
-  import TextNodeViewer from '$lib/components/viewers/text-node-viewer.svelte';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { sharedNodeStore } from '$lib/services/shared-node-store';
   import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
@@ -1370,18 +1369,17 @@
           <!-- Node viewer with stable component references -->
           {#if node.nodeType === 'text'}
             {#key node.id}
-              <TextNodeViewer
+              <BaseNode
                 nodeId={node.id}
                 nodeType={node.nodeType}
                 autoFocus={node.autoFocus}
                 content={node.content}
-                inheritHeaderLevel={node.inheritHeaderLevel || 0}
                 children={node.children}
                 on:createNewNode={handleCreateNewNode}
                 on:indentNode={handleIndentNode}
                 on:outdentNode={handleOutdentNode}
                 on:navigateArrow={handleArrowNavigation}
-                on:contentChanged={(e) => {
+                on:contentChanged={(e: CustomEvent<{ content: string }>) => {
                   const content = e.detail.content;
 
                   // Update node content (placeholder flag is handled automatically)

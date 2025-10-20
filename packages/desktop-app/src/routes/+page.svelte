@@ -1,6 +1,6 @@
 <script lang="ts">
   import DateNodeViewer from '$lib/components/viewers/date-node-viewer.svelte';
-  import TextNodeViewer from '$lib/components/viewers/text-node-viewer.svelte';
+  import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import { toggleTheme } from '$lib/design/theme.js';
   import { tabState } from '$lib/stores/navigation.js';
 
@@ -23,18 +23,9 @@
 {#if activeTab}
   {#if activeTab.type === 'date' || activeTabId === 'today'}
     <DateNodeViewer tabId={activeTabId} />
-  {:else if activeTab.type === 'node' && activeTab.content && typeof activeTab.content === 'object' && 'nodeType' in activeTab.content && 'nodeId' in activeTab.content}
-    <!-- Dynamic node viewer based on nodeType -->
-    {#if activeTab.content.nodeType === 'text'}
-      <TextNodeViewer nodeId={String(activeTab.content.nodeId)} />
-    {:else}
-      <!-- For now, show placeholder for other node types -->
-      <div class="placeholder-content">
-        <h2>{activeTab.title}</h2>
-        <p>Node type "{activeTab.content.nodeType}" viewer coming soon...</p>
-        <p class="node-id">Node ID: {activeTab.content.nodeId}</p>
-      </div>
-    {/if}
+  {:else if activeTab.type === 'node' && activeTab.content && typeof activeTab.content === 'object' && 'nodeId' in activeTab.content}
+    <!-- All node types use BaseNodeViewer (shows container with children) -->
+    <BaseNodeViewer parentId={String(activeTab.content.nodeId)} />
   {:else}
     <!-- Placeholder content for other tab types -->
     <div class="placeholder-content">
@@ -64,12 +55,6 @@
   .placeholder-content p {
     margin: 0.5rem 0;
     color: hsl(var(--muted-foreground));
-  }
-
-  .placeholder-content .node-id {
-    font-family: monospace;
-    font-size: 0.875rem;
-    color: hsl(var(--muted-foreground) / 0.7);
   }
 
   /* Empty state */
