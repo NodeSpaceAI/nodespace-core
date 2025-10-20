@@ -14,6 +14,7 @@
     "dev": "bun run --cwd packages/desktop-app dev",
     "build": "bun run --cwd packages/desktop-app build",
     "test": "bun run --cwd packages/desktop-app test",
+    "test:all": "bun run test && bun run rust:test",
     "check": "bun run --cwd packages/desktop-app check",
     "check:watch": "bun run --cwd packages/desktop-app check:watch",
     "tauri:dev": "cd packages/desktop-app && bun run tauri:dev",
