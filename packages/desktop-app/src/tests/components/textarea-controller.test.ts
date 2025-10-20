@@ -683,7 +683,7 @@ describe('TextareaController', () => {
       // Insert node reference
       controller.insertNodeReference('node-123', 'My Node');
 
-      expect(element.value).toContain('[@My Node](node://node-123)');
+      expect(element.value).toContain('[@My Node](nodespace://node-123)');
     });
 
     it('should insert slash command content correctly', () => {
