@@ -165,47 +165,48 @@ export class NavigationService {
 
     console.log(`[NavigationService] Resolved target:`, target);
 
-    // Check if tab already exists for this node
-    const currentState = get(tabState);
+    // Only create new tabs on Cmd+Click
+    // Regular clicks always switch to existing tab or Daily Journal for today
+    if (!openInNewTab) {
+      const currentState = get(tabState);
 
-    // Special case: Check if clicking today's date
-    // Reuse the stable "daily-journal" tab instead of creating a new one
-    // Use local timezone, not UTC
-    const today = new Date();
-    const todayDateId = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-    const isTodayDate = nodeId === todayDateId;
+      // Check if clicking today's date - reuse Daily Journal tab
+      const today = new Date();
+      const todayDateId = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      const isTodayDate = nodeId === todayDateId;
 
-    console.log(
-      `[NavigationService] Today check: nodeId=${nodeId}, todayDateId=${todayDateId}, isTodayDate=${isTodayDate}`
-    );
+      console.log(
+        `[NavigationService] Today check: nodeId=${nodeId}, todayDateId=${todayDateId}, isTodayDate=${isTodayDate}`
+      );
 
-    if (isTodayDate && !openInNewTab) {
-      const { DAILY_JOURNAL_TAB_ID } = await import('$lib/stores/navigation');
-      const dailyJournalTab = currentState.tabs.find((tab) => tab.id === DAILY_JOURNAL_TAB_ID);
+      if (isTodayDate) {
+        const { DAILY_JOURNAL_TAB_ID } = await import('$lib/stores/navigation');
+        const dailyJournalTab = currentState.tabs.find((tab) => tab.id === DAILY_JOURNAL_TAB_ID);
 
-      if (dailyJournalTab) {
-        // Switch to existing Daily Journal tab
-        setActiveTab(dailyJournalTab.id);
-        console.log(`[NavigationService] Switched to Daily Journal tab for today`);
+        if (dailyJournalTab) {
+          // Switch to existing Daily Journal tab
+          setActiveTab(dailyJournalTab.id);
+          console.log(`[NavigationService] Switched to Daily Journal tab for today`);
+          return;
+        }
+      }
+
+      // Check for existing tab with this nodeId (any date)
+      const existingTab = currentState.tabs.find(
+        (tab) => tab.content && (tab.content as { nodeId?: string }).nodeId === nodeId
+      );
+
+      if (existingTab) {
+        // Switch to existing tab
+        setActiveTab(existingTab.id);
+        console.log(
+          `[NavigationService] Switched to existing tab: ${existingTab.title}, nodeId: ${nodeId}`
+        );
         return;
       }
     }
 
-    // Check for existing node-based tabs (for other dates or Cmd+Click on today)
-    const existingTab = currentState.tabs.find(
-      (tab) => tab.content && (tab.content as { nodeId?: string }).nodeId === nodeId
-    );
-
-    if (existingTab && !openInNewTab) {
-      // Switch to existing tab
-      setActiveTab(existingTab.id);
-      console.log(
-        `[NavigationService] Switched to existing tab: ${existingTab.title}, nodeId: ${nodeId}`
-      );
-      return;
-    }
-
-    // Create new tab (for past/future dates or Cmd+Click)
+    // Create new tab (only on Cmd+Click or if no existing tab)
     const newTab = {
       id: uuidv4(),
       title: target.title,
