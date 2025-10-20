@@ -204,3 +204,8 @@ impl MCPResponse {
         }
     }
 }
+
+// Include tests
+#[cfg(test)]
+#[path = "types_test.rs"]
+mod types_test;

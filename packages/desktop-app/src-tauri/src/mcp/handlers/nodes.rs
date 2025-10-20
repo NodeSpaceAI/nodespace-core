@@ -258,3 +258,8 @@ pub async fn handle_query_nodes(
         "count": nodes.len()
     }))
 }
+
+// Include tests
+#[cfg(test)]
+#[path = "nodes_test.rs"]
+mod nodes_test;
