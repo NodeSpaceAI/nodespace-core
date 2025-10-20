@@ -31,11 +31,51 @@
       });
     }
 
+    // PHASE 1: Global click handler for nodespace:// links (console.log only)
+    const handleLinkClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+
+      // Find closest anchor element (handles clicking on children of <a>)
+      const anchor = target.closest('a');
+      if (!anchor) return;
+
+      const href = anchor.getAttribute('href');
+      if (!href || !href.startsWith('nodespace://')) return;
+
+      // Prevent default browser navigation
+      event.preventDefault();
+
+      // Extract node UUID from nodespace://uuid
+      const nodeId = href.replace('nodespace://', '');
+
+      // Validate UUID format (basic check)
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(nodeId)) {
+        console.error(`[Phase 1] Invalid UUID format: ${nodeId}`);
+        return;
+      }
+
+      // Check for Cmd+Click (Mac) or Ctrl+Click (Windows/Linux)
+      const openInNewTab = event.metaKey || event.ctrlKey;
+
+      // Log the click (no actual navigation yet - Phase 1)
+      console.log(`[Phase 1] nodespace:// link clicked:`, {
+        nodeId,
+        openInNewTab,
+        href
+      });
+    };
+
+    // Attach global event listener
+    document.addEventListener('click', handleLinkClick);
+
     return async () => {
       cleanup?.();
       if (unlistenMenu) {
         (await unlistenMenu)();
       }
+      // Cleanup click handler
+      document.removeEventListener('click', handleLinkClick);
     };
   });
 
