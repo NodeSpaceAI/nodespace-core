@@ -20,8 +20,15 @@
   import { getDateTabTitle } from '$lib/stores/navigation.js';
 
   // Props using Svelte 5 runes mode - unified NodeViewerProps interface
-  let { nodeId, onTitleChange }: { nodeId: string; onTitleChange?: (_title: string) => void } =
-    $props();
+  let {
+    nodeId,
+    onTitleChange,
+    onNodeIdChange
+  }: {
+    nodeId: string;
+    onTitleChange?: (_title: string) => void;
+    onNodeIdChange?: (_nodeId: string) => void;
+  } = $props();
 
   // Normalize date to midnight local time (ignore time components)
   function normalizeDate(d: Date): Date {
@@ -60,10 +67,13 @@
     `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`
   );
 
-  // Update tab title when date changes using Svelte 5 $effect
+  // Update tab title and nodeId when date changes using Svelte 5 $effect
   $effect(() => {
     const newTitle = getDateTabTitle(currentDate);
     onTitleChange?.(newTitle);
+
+    // Also notify parent of nodeId change (for tab state persistence)
+    onNodeIdChange?.(currentDateId);
   });
 
   /**

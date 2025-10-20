@@ -1,7 +1,7 @@
 <script lang="ts">
   import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import { toggleTheme } from '$lib/design/theme.js';
-  import { tabState, updateTabTitle } from '$lib/stores/navigation.js';
+  import { tabState, updateTabTitle, updateTabContent } from '$lib/stores/navigation.js';
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
 
   // Derive tab state using Svelte 5 $derived
@@ -48,6 +48,8 @@
   <ViewerComponent
     nodeId={content.nodeId}
     onTitleChange={(title: string) => updateTabTitle(activeTabId, title)}
+    onNodeIdChange={(newNodeId: string) =>
+      updateTabContent(activeTabId, { nodeId: newNodeId, nodeType: content.nodeType })}
   />
 {:else if activeTab}
   <!-- Placeholder content for tabs without node content -->

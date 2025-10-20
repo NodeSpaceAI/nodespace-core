@@ -23,11 +23,13 @@
   let {
     header,
     nodeId = null,
-    onTitleChange // eslint-disable-line no-unused-vars -- Accepted for future use
+    onTitleChange, // eslint-disable-line no-unused-vars -- Accepted for future use
+    onNodeIdChange // eslint-disable-line no-unused-vars -- Accepted for future use
   }: {
     header?: Snippet;
     nodeId?: string | null;
     onTitleChange?: (_title: string) => void;
+    onNodeIdChange?: (_nodeId: string) => void;
   } = $props();
 
   // Get nodeManager from shared context
