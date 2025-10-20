@@ -44,9 +44,23 @@
 
       // Prevent default browser navigation
       event.preventDefault();
+      event.stopPropagation();
 
-      // Extract node UUID from nodespace://uuid
-      const nodeId = href.replace('nodespace://', '');
+      // Extract node UUID from nodespace://uuid or nodespace://node/uuid
+      let nodeId = href.replace('nodespace://', '');
+
+      // Handle both formats:
+      // - nodespace://uuid (old format)
+      // - nodespace://node/uuid (new format from content-processor)
+      if (nodeId.startsWith('node/')) {
+        nodeId = nodeId.replace('node/', '');
+      }
+
+      // Remove query parameters if present (e.g., ?hierarchy=true)
+      const queryIndex = nodeId.indexOf('?');
+      if (queryIndex !== -1) {
+        nodeId = nodeId.substring(0, queryIndex);
+      }
 
       // Validate UUID format (basic check)
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -66,16 +80,17 @@
       });
     };
 
-    // Attach global event listener
-    document.addEventListener('click', handleLinkClick);
+    // Attach global event listener in capture phase (fires before bubble phase)
+    // This ensures we catch the event before any other handlers
+    document.addEventListener('click', handleLinkClick, true);
 
     return async () => {
       cleanup?.();
       if (unlistenMenu) {
         (await unlistenMenu)();
       }
-      // Cleanup click handler
-      document.removeEventListener('click', handleLinkClick);
+      // Cleanup click handler (must match capture phase flag)
+      document.removeEventListener('click', handleLinkClick, true);
     };
   });
 
