@@ -2,20 +2,52 @@
 //!
 //! Parses markdown content and creates hierarchical NodeSpace nodes.
 //! Preserves heading hierarchy and list indentation as parent-child relationships.
+//!
+//! # Examples
+//!
+//! ```rust,no_run
+//! use serde_json::json;
+//! use std::sync::Arc;
+//! # use crate::services::NodeService;
+//! # use crate::mcp::handlers::markdown::handle_create_nodes_from_markdown;
+//!
+//! # async fn example(service: Arc<NodeService>) -> Result<(), Box<dyn std::error::Error>> {
+//! let params = json!({
+//!     "markdown_content": "# My Document\n\n- Task 1\n- Task 2",
+//!     "container_title": "Imported Notes"
+//! });
+//! let result = handle_create_nodes_from_markdown(&service, params).await?;
+//! println!("Created {} nodes", result["nodes_created"]);
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::mcp::types::MCPError;
 use crate::models::Node;
 use crate::services::NodeService;
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
+
+/// Maximum markdown content size (1MB) to prevent resource exhaustion
+const MAX_MARKDOWN_SIZE: usize = 1_000_000;
+
+/// Maximum number of nodes that can be created in a single import
+const MAX_NODES_PER_IMPORT: usize = 1000;
 
 /// Parameters for create_nodes_from_markdown method
 #[derive(Debug, Deserialize)]
 pub struct CreateNodesFromMarkdownParams {
     pub markdown_content: String,
     pub container_title: String,
+}
+
+/// Metadata for a created node (id + type)
+#[derive(Debug, Clone, Serialize)]
+pub struct NodeMetadata {
+    pub id: String,
+    pub node_type: String,
 }
 
 /// Tracks a node in the hierarchy during parsing
@@ -33,11 +65,13 @@ struct ParserContext {
     list_stack: Vec<HierarchyNode>,
     /// Last sibling at current level for ordering
     last_sibling: Option<String>,
-    /// All created node IDs
+    /// All created node IDs (for backward compatibility)
     node_ids: Vec<String>,
+    /// All created nodes with metadata (id + type)
+    nodes: Vec<NodeMetadata>,
     /// Container node ID (all nodes belong to this container)
     container_node_id: String,
-    /// Current list item counter for ordered lists
+    /// Current list item counter for ordered lists (tracks the number prefix for ordered lists)
     ordered_list_counter: usize,
     /// Whether we're in an ordered list
     in_ordered_list: bool,
@@ -50,6 +84,10 @@ impl ParserContext {
             list_stack: Vec::new(),
             last_sibling: None,
             node_ids: vec![container_node_id.clone()],
+            nodes: vec![NodeMetadata {
+                id: container_node_id.clone(),
+                node_type: "text".to_string(),
+            }],
             container_node_id,
             ordered_list_counter: 0,
             in_ordered_list: false,
@@ -96,9 +134,13 @@ impl ParserContext {
     }
 
     /// Track a node for sibling ordering
-    fn track_node(&mut self, node_id: String) {
+    fn track_node(&mut self, node_id: String, node_type: String) {
         self.last_sibling = Some(node_id.clone());
-        self.node_ids.push(node_id);
+        self.node_ids.push(node_id.clone());
+        self.nodes.push(NodeMetadata {
+            id: node_id,
+            node_type,
+        });
     }
 }
 
@@ -110,6 +152,15 @@ pub async fn handle_create_nodes_from_markdown(
     let params: CreateNodesFromMarkdownParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
+    // Validate markdown content size
+    if params.markdown_content.len() > MAX_MARKDOWN_SIZE {
+        return Err(MCPError::invalid_params(format!(
+            "Markdown content exceeds maximum size of {} bytes (got {} bytes)",
+            MAX_MARKDOWN_SIZE,
+            params.markdown_content.len()
+        )));
+    }
+
     // Create container node
     let container_node = Node::new(
         "text".to_string(),
@@ -119,22 +170,54 @@ pub async fn handle_create_nodes_from_markdown(
     );
 
     let container_node_id = service.create_node(container_node).await.map_err(|e| {
-        MCPError::node_creation_failed(format!("Failed to create container node: {}", e))
+        MCPError::node_creation_failed(format!(
+            "Failed to create container node '{}': {}",
+            params.container_title, e
+        ))
     })?;
 
     // Parse markdown and create nodes
     let mut context = ParserContext::new(container_node_id.clone());
     parse_markdown(&params.markdown_content, service, &mut context).await?;
 
+    // Validate we didn't exceed max nodes
+    if context.nodes.len() > MAX_NODES_PER_IMPORT {
+        return Err(MCPError::invalid_params(format!(
+            "Import created {} nodes, exceeding maximum of {}",
+            context.nodes.len(),
+            MAX_NODES_PER_IMPORT
+        )));
+    }
+
     Ok(json!({
         "success": true,
         "container_node_id": container_node_id,
-        "nodes_created": context.node_ids.len(),
-        "node_ids": context.node_ids
+        "nodes_created": context.nodes.len(),
+        "node_ids": context.node_ids,
+        "nodes": context.nodes
     }))
 }
 
 /// Parse markdown content and create nodes
+///
+/// This function processes markdown using pulldown-cmark's event stream parser
+/// and creates hierarchical NodeSpace nodes with proper parent-child relationships.
+///
+/// # Arguments
+///
+/// * `markdown` - The markdown content to parse
+/// * `service` - NodeService for creating nodes in the database
+/// * `context` - Parser context tracking hierarchy and node state
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success, or an `MCPError` if node creation fails.
+///
+/// # Hierarchy Tracking
+///
+/// - **Heading hierarchy**: h1 → h2 → h3 tracked via heading_stack
+/// - **List hierarchy**: Indentation levels tracked via list_stack
+/// - **List context takes precedence**: Items nested in lists use list parent, not heading parent
 async fn parse_markdown(
     markdown: &str,
     service: &Arc<NodeService>,
@@ -194,7 +277,7 @@ async fn parse_markdown(
                         .await?;
 
                         context.push_heading(node_id.clone(), heading_level);
-                        context.track_node(node_id);
+                        context.track_node(node_id, "header".to_string());
                     }
 
                     TagEnd::Paragraph => {
@@ -214,7 +297,7 @@ async fn parse_markdown(
                                 context.last_sibling.clone(),
                             )
                             .await?;
-                            context.track_node(node_id);
+                            context.track_node(node_id, "text".to_string());
                         }
                     }
 
@@ -235,7 +318,7 @@ async fn parse_markdown(
                             context.last_sibling.clone(),
                         )
                         .await?;
-                        context.track_node(node_id);
+                        context.track_node(node_id, "code-block".to_string());
                         code_lang.clear();
                     }
 
@@ -257,7 +340,7 @@ async fn parse_markdown(
                                 context.last_sibling.clone(),
                             )
                             .await?;
-                            context.track_node(node_id);
+                            context.track_node(node_id, "quote-block".to_string());
                         }
                     }
 
@@ -269,7 +352,9 @@ async fn parse_markdown(
                                 // Task node with checkbox
                                 ("task", format!("- {} {}", task_state, content))
                             } else if context.in_ordered_list {
-                                // Ordered list item
+                                // Ordered list item with number prefix
+                                // The counter tracks the sequence (1., 2., 3., etc.) and increments
+                                // after each item to maintain proper markdown numbering
                                 let formatted =
                                     format!("{}. {}", context.ordered_list_counter, content);
                                 context.ordered_list_counter += 1;
@@ -292,7 +377,7 @@ async fn parse_markdown(
                             // Update list hierarchy based on indentation level
                             let list_level = context.list_stack.len();
                             context.push_list(node_id.clone(), list_level);
-                            context.track_node(node_id);
+                            context.track_node(node_id, node_type.to_string());
 
                             in_task_item = false;
                             task_state.clear();
@@ -363,10 +448,25 @@ async fn create_node(
         ..node
     };
 
-    service
-        .create_node(node)
-        .await
-        .map_err(|e| MCPError::node_creation_failed(format!("Failed to create node: {}", e)))
+    // Create node and provide contextual error on failure
+    service.create_node(node).await.map_err(|e| {
+        // Create preview of content for error message (avoid multi-line content in error)
+        let content_preview: String = content
+            .chars()
+            .take(40)
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        let content_display = if content.len() > 40 {
+            format!("{}...", content_preview)
+        } else {
+            content_preview
+        };
+
+        MCPError::node_creation_failed(format!(
+            "Failed to create {} node '{}': {}",
+            node_type, content_display, e
+        ))
+    })
 }
 
 /// Convert HeadingLevel to usize (1-6)
