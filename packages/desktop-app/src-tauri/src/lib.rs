@@ -33,6 +33,7 @@ mod tests;
 /// and spawns the MCP server task with it, ensuring MCP and Tauri commands
 /// operate on the same database.
 pub fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
+    use futures::FutureExt;
     use nodespace_core::NodeService;
     use std::sync::Arc;
     use tauri::Manager;
@@ -49,12 +50,15 @@ pub fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
     // Spawn MCP stdio server task with Tauri event emissions
     // Uses panic protection to prevent silent background task failures
     tauri::async_runtime::spawn(async move {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            // Use block_on since catch_unwind requires FnOnce() not async
-            tauri::async_runtime::block_on(async {
-                mcp_integration::run_mcp_server_with_events(node_service_arc, app).await
-            })
-        }));
+        // Use FutureExt::catch_unwind for proper async panic catching
+        // This avoids the deadlock risk of using block_on inside an async task
+        // AssertUnwindSafe is needed because NodeService contains non-UnwindSafe types
+        let result = std::panic::AssertUnwindSafe(mcp_integration::run_mcp_server_with_events(
+            node_service_arc,
+            app,
+        ))
+        .catch_unwind()
+        .await;
 
         match result {
             Ok(Ok(_)) => {
