@@ -48,9 +48,14 @@
   // Current date state - initialized from nodeId prop
   let currentDate = $state(parseDateFromNodeId(nodeId));
 
-  // Sync currentDate when nodeId prop changes (e.g., tab switching)
+  // Sync currentDate when nodeId prop changes (e.g., tab switching, link clicks)
+  // Track previous nodeId to avoid triggering onNodeIdChange callback on external updates
+  let previousNodeId = nodeId;
   $effect(() => {
-    currentDate = parseDateFromNodeId(nodeId);
+    if (nodeId !== previousNodeId) {
+      currentDate = parseDateFromNodeId(nodeId);
+      previousNodeId = nodeId;
+    }
   });
 
   // Format date for display (e.g., "September 7, 2025") using Svelte 5 $derived
@@ -67,13 +72,19 @@
     `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`
   );
 
-  // Update tab title and nodeId when date changes using Svelte 5 $effect
+  // Update tab title when date changes
   $effect(() => {
     const newTitle = getDateTabTitle(currentDate);
     onTitleChange?.(newTitle);
+  });
 
-    // Also notify parent of nodeId change (for tab state persistence)
-    onNodeIdChange?.(currentDateId);
+  // Only notify parent of nodeId changes from user navigation (not prop updates)
+  // This prevents infinite loop: nodeId prop → currentDate → onNodeIdChange → nodeId prop
+  $effect(() => {
+    if (currentDateId !== nodeId) {
+      // currentDate changed due to user navigation (arrows, etc.)
+      onNodeIdChange?.(currentDateId);
+    }
   });
 
   /**
