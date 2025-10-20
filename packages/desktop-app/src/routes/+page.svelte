@@ -29,7 +29,7 @@
     {#if content.nodeType === 'date'}
       <DateNodeViewer tabId={activeTabId} initialDate={content.nodeId} />
     {:else}
-      <!-- All other node types use BaseNodeViewer (shows container with children) -->
+      <!-- All node types use BaseNodeViewer (shows node in context with its children) -->
       <BaseNodeViewer parentId={content.nodeId} />
     {/if}
   {:else}
