@@ -1,13 +1,12 @@
 //! MCP stdio Server
 //!
 //! Async Tokio task that handles JSON-RPC 2.0 requests over stdin/stdout.
-//! Runs as a background task in the Tauri application process.
+//! Pure protocol implementation with no framework dependencies.
 
 use crate::mcp::handlers::nodes;
 use crate::mcp::types::{MCPError, MCPRequest, MCPResponse};
-use nodespace_core::NodeService;
+use crate::services::NodeService;
 use std::sync::Arc;
-use tauri::AppHandle;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tracing::{debug, error, info, warn};
 
@@ -19,12 +18,11 @@ use tracing::{debug, error, info, warn};
 /// # Arguments
 ///
 /// * `node_service` - Shared NodeService instance
-/// * `app` - Tauri AppHandle for event emission
 ///
 /// # Returns
 ///
 /// Returns Ok(()) when stdin is closed, or Err on fatal errors
-pub async fn run_mcp_server(node_service: Arc<NodeService>, app: AppHandle) -> anyhow::Result<()> {
+pub async fn run_mcp_server(node_service: Arc<NodeService>) -> anyhow::Result<()> {
     info!("🔌 MCP stdio server started");
 
     let stdin = tokio::io::stdin();
@@ -55,7 +53,7 @@ pub async fn run_mcp_server(node_service: Arc<NodeService>, app: AppHandle) -> a
         let method = request.method.clone();
 
         // Handle request
-        let response = handle_request(&node_service, &app, request).await;
+        let response = handle_request(&node_service, request).await;
 
         debug!(
             "📤 MCP response for method '{}' (id={})",
@@ -71,16 +69,12 @@ pub async fn run_mcp_server(node_service: Arc<NodeService>, app: AppHandle) -> a
 }
 
 /// Handle a JSON-RPC request and return a response
-async fn handle_request(
-    service: &Arc<NodeService>,
-    app: &AppHandle,
-    request: MCPRequest,
-) -> MCPResponse {
+async fn handle_request(service: &Arc<NodeService>, request: MCPRequest) -> MCPResponse {
     let result = match request.method.as_str() {
-        "create_node" => nodes::handle_create_node(service, app, request.params).await,
+        "create_node" => nodes::handle_create_node(service, request.params).await,
         "get_node" => nodes::handle_get_node(service, request.params).await,
-        "update_node" => nodes::handle_update_node(service, app, request.params).await,
-        "delete_node" => nodes::handle_delete_node(service, app, request.params).await,
+        "update_node" => nodes::handle_update_node(service, request.params).await,
+        "delete_node" => nodes::handle_delete_node(service, request.params).await,
         "query_nodes" => nodes::handle_query_nodes(service, request.params).await,
         _ => {
             warn!("⚠️  Unknown MCP method: {}", request.method);

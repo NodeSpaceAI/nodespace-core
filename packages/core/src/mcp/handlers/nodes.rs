@@ -1,15 +1,14 @@
 //! MCP Node CRUD Handlers
 //!
 //! Wraps NodeService operations for MCP protocol access.
-//! Emits Tauri events for UI reactivity after operations.
+//! Pure business logic - no Tauri dependencies.
 
 use crate::mcp::types::MCPError;
-use nodespace_core::models::{Node, NodeFilter, NodeUpdate, OrderBy};
-use nodespace_core::NodeService;
-use serde::{Deserialize, Serialize};
+use crate::models::{Node, NodeFilter, NodeUpdate, OrderBy};
+use crate::services::NodeService;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
 
 /// Parameters for create_node method
 #[derive(Debug, Deserialize)]
@@ -65,29 +64,9 @@ pub struct QueryNodesParams {
     pub offset: Option<usize>,
 }
 
-/// Event payload for node-created event
-#[derive(Debug, Serialize)]
-struct NodeCreatedEvent {
-    node_id: String,
-    node_type: String,
-}
-
-/// Event payload for node-updated event
-#[derive(Debug, Serialize)]
-struct NodeUpdatedEvent {
-    node_id: String,
-}
-
-/// Event payload for node-deleted event
-#[derive(Debug, Serialize)]
-struct NodeDeletedEvent {
-    node_id: String,
-}
-
 /// Handle create_node MCP request
 pub async fn handle_create_node(
     service: &Arc<NodeService>,
-    app: &AppHandle,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: CreateNodeParams = serde_json::from_value(params)
@@ -114,15 +93,9 @@ pub async fn handle_create_node(
         .await
         .map_err(|e| MCPError::node_creation_failed(format!("Failed to create node: {}", e)))?;
 
-    // Emit Tauri event for UI reactivity
-    let event = NodeCreatedEvent {
-        node_id: node_id.clone(),
-        node_type: params.node_type,
-    };
-    app.emit("node-created", &event).ok();
-
     Ok(json!({
         "node_id": node_id,
+        "node_type": params.node_type,
         "success": true
     }))
 }
@@ -151,7 +124,6 @@ pub async fn handle_get_node(service: &Arc<NodeService>, params: Value) -> Resul
 /// Handle update_node MCP request
 pub async fn handle_update_node(
     service: &Arc<NodeService>,
-    app: &AppHandle,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: UpdateNodeParams = serde_json::from_value(params)
@@ -174,13 +146,8 @@ pub async fn handle_update_node(
         .await
         .map_err(|e| MCPError::node_update_failed(format!("Failed to update node: {}", e)))?;
 
-    // Emit Tauri event for UI reactivity
-    let event = NodeUpdatedEvent {
-        node_id: params.node_id.clone(),
-    };
-    app.emit("node-updated", &event).ok();
-
     Ok(json!({
+        "node_id": params.node_id,
         "success": true
     }))
 }
@@ -188,7 +155,6 @@ pub async fn handle_update_node(
 /// Handle delete_node MCP request
 pub async fn handle_delete_node(
     service: &Arc<NodeService>,
-    app: &AppHandle,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: DeleteNodeParams = serde_json::from_value(params)
@@ -200,13 +166,8 @@ pub async fn handle_delete_node(
         .await
         .map_err(|e| MCPError::node_delete_failed(format!("Failed to delete node: {}", e)))?;
 
-    // Emit Tauri event for UI reactivity
-    let event = NodeDeletedEvent {
-        node_id: params.node_id.clone(),
-    };
-    app.emit("node-deleted", &event).ok();
-
     Ok(json!({
+        "node_id": params.node_id,
         "success": true
     }))
 }

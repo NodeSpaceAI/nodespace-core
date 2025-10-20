@@ -8,8 +8,8 @@ pub mod constants;
 #[cfg(feature = "dev-server")]
 pub mod dev_server;
 
-// MCP (Model Context Protocol) stdio server module
-pub mod mcp;
+// MCP Tauri integration (wraps core MCP with event emissions)
+pub mod mcp_integration;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -56,9 +56,9 @@ async fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
 
     tracing::info!("✅ Services initialized, spawning MCP stdio task...");
 
-    // Spawn MCP stdio server task
+    // Spawn MCP stdio server task with Tauri event emissions
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = mcp::run_mcp_server(node_service, app).await {
+        if let Err(e) = mcp_integration::run_mcp_server_with_events(node_service, app).await {
             tracing::error!("❌ MCP server error: {}", e);
         }
     });
