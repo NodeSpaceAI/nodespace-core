@@ -310,10 +310,9 @@
 
       const nodeManager = services.nodeManager;
       const { v4: uuidv4 } = await import('uuid');
-      const { invoke } = await import('@tauri-apps/api/core');
+      const { backendAdapter } = await import('$lib/services/backend-adapter');
 
       const newNodeId = uuidv4();
-      const now = new Date().toISOString();
 
       // Find the last root node to get the correct order
       const allNodes = Array.from(nodeManager.nodes.values());
@@ -321,31 +320,20 @@
       const lastRootNode = rootNodes[rootNodes.length - 1];
       const beforeSiblingId = lastRootNode ? lastRootNode.id : null;
 
-      // Create node directly in database with null parent_id and container_node_id
-      await invoke('create_node', {
-        id: newNodeId,
-        content: title,
-        node_type: 'text',
-        parent_id: null,
-        container_node_id: null,
-        before_sibling_id: beforeSiblingId,
-        properties: {},
-        embedding_vector: null
-      });
-
-      // Add the node to the nodeManager's state
-      nodeManager.nodes.set(newNodeId, {
+      // Create node using backend adapter (works in both Tauri and browser)
+      await backendAdapter.createNode({
         id: newNodeId,
         content: title,
         nodeType: 'text',
         parentId: null,
         containerNodeId: null,
         beforeSiblingId: beforeSiblingId,
-        createdAt: now,
-        modifiedAt: now,
         properties: {},
         embeddingVector: null
       });
+
+      // The backend adapter emits events that update nodeManager automatically
+      // So we don't need to manually update nodeManager.nodes here
 
       return newNodeId;
     } catch (error) {
