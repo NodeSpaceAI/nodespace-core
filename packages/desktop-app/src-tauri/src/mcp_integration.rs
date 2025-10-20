@@ -73,6 +73,27 @@ fn emit_event_for_method(app: &AppHandle, method: &str, result: &Value) {
                 }
             }
         }
+        "create_nodes_from_markdown" => {
+            // Emit node-created event for each node in the nodes array
+            if let Some(nodes) = result["nodes"].as_array() {
+                for node in nodes {
+                    if let (Some(node_id), Some(node_type)) =
+                        (node["id"].as_str(), node["node_type"].as_str())
+                    {
+                        let event = NodeCreatedEvent {
+                            node_id: node_id.to_string(),
+                            node_type: node_type.to_string(),
+                        };
+                        if let Err(e) = app.emit("node-created", &event) {
+                            warn!(
+                                "Failed to emit node-created event for markdown import node {}: {}",
+                                node_id, e
+                            );
+                        }
+                    }
+                }
+            }
+        }
         "update_node" => {
             if let Some(node_id) = result["node_id"].as_str() {
                 let event = NodeUpdatedEvent {
