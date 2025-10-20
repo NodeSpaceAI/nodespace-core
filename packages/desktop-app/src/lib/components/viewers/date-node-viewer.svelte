@@ -20,15 +20,27 @@
   import { updateTabTitle, getDateTabTitle } from '$lib/stores/navigation.js';
 
   // Props using Svelte 5 runes mode
-  let { tabId = 'today' }: { tabId?: string } = $props();
+  let { tabId = 'today', initialDate }: { tabId?: string; initialDate?: string } = $props();
 
   // Normalize date to midnight local time (ignore time components)
   function normalizeDate(d: Date): Date {
     return new Date(d.getFullYear(), d.getMonth(), d.getDate());
   }
 
-  // Current date state - defaults to today, normalized to midnight
-  let currentDate = $state(normalizeDate(new Date()));
+  // Parse initial date from prop (format: YYYY-MM-DD) or default to today
+  function parseInitialDate(dateString?: string): Date {
+    if (dateString) {
+      // Parse YYYY-MM-DD format
+      const [year, month, day] = dateString.split('-').map(Number);
+      if (year && month && day) {
+        return normalizeDate(new Date(year, month - 1, day)); // month is 0-indexed
+      }
+    }
+    return normalizeDate(new Date()); // Default to today
+  }
+
+  // Current date state - initialized from prop or defaults to today
+  let currentDate = $state(parseInitialDate(initialDate));
 
   // Format date for display (e.g., "September 7, 2025") using Svelte 5 $derived
   const formattedDate = $derived(

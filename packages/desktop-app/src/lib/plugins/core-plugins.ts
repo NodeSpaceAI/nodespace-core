@@ -194,6 +194,11 @@ export const dateNodePlugin: PluginDefinition = {
     lazyLoad: () => import('../design/components/date-node.svelte'),
     priority: 1
   },
+  // TODO: Add viewer registration (has type incompatibility with NodeViewerComponent)
+  // viewer: {
+  //   lazyLoad: () => import('../components/viewers/date-node-viewer.svelte'),
+  //   priority: 1
+  // },
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1

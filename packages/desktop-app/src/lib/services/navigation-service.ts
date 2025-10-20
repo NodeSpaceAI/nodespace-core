@@ -46,8 +46,30 @@ export class NavigationService {
     // First check store (synchronous)
     let node = sharedNodeStore.getNode(nodeId);
 
-    // If not in store, fetch from backend
-    if (!node) {
+    // If not in store, check if it's a date node (format: YYYY-MM-DD)
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    const isDateNode = dateRegex.test(nodeId);
+
+    if (!node && isDateNode) {
+      // Date nodes are virtual - they always exist even without database entry
+      // Create a synthetic date node
+      const date = new Date(nodeId);
+      const now = new Date().toISOString();
+      node = {
+        id: nodeId,
+        nodeType: 'date',
+        content: '',
+        parentId: null,
+        containerNodeId: null,
+        beforeSiblingId: null,
+        properties: { date: date.toISOString() },
+        embeddingVector: null,
+        createdAt: now,
+        modifiedAt: now
+      } as Node;
+      console.log(`[NavigationService] Created synthetic date node for ${nodeId}`);
+    } else if (!node) {
+      // For non-date nodes, fetch from backend
       console.log(`[NavigationService] Node ${nodeId} not in store, fetching from backend...`);
       const { backendAdapter } = await import('./backend-adapter');
 
@@ -140,6 +162,20 @@ export class NavigationService {
 
     // Check if tab already exists for this node
     const currentState = get(tabState);
+
+    // Special case: Check if clicking today's date and "Today" tab exists
+    const todayDateId = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const isTodayDate = nodeId === todayDateId;
+    const todayTab = isTodayDate ? currentState.tabs.find((tab) => tab.id === 'today') : null;
+
+    if (todayTab && !openInNewTab) {
+      // Switch to existing "Today" tab
+      setActiveTab(todayTab.id);
+      console.log(`[NavigationService] Switched to existing "Today" tab`);
+      return;
+    }
+
+    // Check for existing node-based tabs
     const existingTab = currentState.tabs.find(
       (tab) => tab.content && (tab.content as { nodeId?: string }).nodeId === nodeId
     );

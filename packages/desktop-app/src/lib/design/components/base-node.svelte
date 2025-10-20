@@ -443,14 +443,23 @@
       if (focusManager.editingNodeId !== nodeId) {
         focusManager.setEditingNode(nodeId);
       }
+
+      // CRITICAL: Clear node type conversion flag after successful focus
+      // This allows normal blur behavior to resume after the conversion is complete
+      if (focusManager.cursorPosition?.type === 'node-type-conversion') {
+        focusManager.clearNodeTypeConversionCursorPosition();
+      }
+
       dispatch('focus');
     },
     blur: () => {
       // Use FocusManager as single source of truth
       // Only clear editing if THIS node is still the editing node
       // (Don't clear if focus has already moved to another node via arrow navigation)
+      // CRITICAL: Don't clear if this is a node type conversion (component is re-mounting)
       untrack(() => {
-        if (focusManager.editingNodeId === nodeId) {
+        const isNodeTypeConversion = focusManager.cursorPosition?.type === 'node-type-conversion';
+        if (focusManager.editingNodeId === nodeId && !isNodeTypeConversion) {
           focusManager.clearEditing();
         }
       });

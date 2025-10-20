@@ -24,8 +24,14 @@
   {#if activeTab.type === 'date' || activeTabId === 'today'}
     <DateNodeViewer tabId={activeTabId} />
   {:else if activeTab.type === 'node' && activeTab.content && typeof activeTab.content === 'object' && 'nodeId' in activeTab.content}
-    <!-- All node types use BaseNodeViewer (shows container with children) -->
-    <BaseNodeViewer parentId={String(activeTab.content.nodeId)} />
+    <!-- Route based on nodeType -->
+    {@const content = activeTab.content as { nodeId: string; nodeType?: string }}
+    {#if content.nodeType === 'date'}
+      <DateNodeViewer tabId={activeTabId} initialDate={content.nodeId} />
+    {:else}
+      <!-- All other node types use BaseNodeViewer (shows container with children) -->
+      <BaseNodeViewer parentId={content.nodeId} />
+    {/if}
   {:else}
     <!-- Placeholder content for other tab types -->
     <div class="placeholder-content">

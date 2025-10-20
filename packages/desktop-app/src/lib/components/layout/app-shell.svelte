@@ -64,10 +64,11 @@
         nodeId = nodeId.substring(0, queryIndex);
       }
 
-      // Validate UUID format (basic check)
+      // Validate node ID format (UUID or date format YYYY-MM-DD)
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (!uuidRegex.test(nodeId)) {
-        console.error(`[Phase 1] Invalid UUID format: ${nodeId}`);
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!uuidRegex.test(nodeId) && !dateRegex.test(nodeId)) {
+        console.error(`[NavigationService] Invalid node ID format: ${nodeId}`);
         return;
       }
 
