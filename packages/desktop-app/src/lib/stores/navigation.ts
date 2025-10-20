@@ -3,8 +3,11 @@ import { writable } from 'svelte/store';
 export interface Tab {
   id: string;
   title: string;
-  type: 'date' | 'placeholder' | 'node';
-  content?: unknown;
+  type: 'node' | 'placeholder';
+  content?: {
+    nodeId: string;
+    nodeType?: string;
+  };
   closeable: boolean;
 }
 
@@ -13,10 +16,28 @@ export interface TabState {
   activeTabId: string;
 }
 
+// Helper to get today's date in YYYY-MM-DD format
+function getTodayDateId(): string {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 // Tab state store
 const initialTabState: TabState = {
   tabs: [
-    { id: 'today', title: 'Today', type: 'date', closeable: false },
+    {
+      id: 'today',
+      title: 'Today', // Initial title, will be updated by DateNodeViewer
+      type: 'node',
+      content: {
+        nodeId: getTodayDateId(), // e.g., "2025-10-20"
+        nodeType: 'date'
+      },
+      closeable: false
+    },
     { id: 'project', title: 'Product Launch Strategy', type: 'placeholder', closeable: true },
     { id: 'social', title: 'Social Media Plan', type: 'placeholder', closeable: true }
   ],

@@ -21,15 +21,14 @@
 <svelte:window on:keydown={handleKeydown} />
 
 {#if activeTab}
-  {#if activeTab.type === 'date' || activeTabId === 'today'}
-    <DateNodeViewer tabId={activeTabId} />
-  {:else if activeTab.type === 'node' && activeTab.content && typeof activeTab.content === 'object' && 'nodeId' in activeTab.content}
-    <!-- Route based on nodeType -->
-    {@const content = activeTab.content as { nodeId: string; nodeType?: string }}
+  {#if activeTab.type === 'node' && activeTab.content}
+    <!-- Route based on nodeType - each viewer is responsible for its own tab title -->
+    {@const content = activeTab.content}
     {#if content.nodeType === 'date'}
+      <!-- DateNodeViewer sets tab title to "Today", "Tomorrow", or formatted date -->
       <DateNodeViewer tabId={activeTabId} initialDate={content.nodeId} />
     {:else}
-      <!-- All node types use BaseNodeViewer (shows node in context with its children) -->
+      <!-- BaseNodeViewer sets tab title to node content (first line) -->
       <BaseNodeViewer parentId={content.nodeId} />
     {/if}
   {:else}
