@@ -37,14 +37,9 @@
     return parsed ?? normalizeDate(new Date()); // Fallback to today if invalid
   }
 
-  // Internal state for current date
-  // Needs to be $state (not $derived) because navigateDate() mutates it
-  let currentDate = $state(parseDateFromNodeId(nodeId));
-
-  // Sync when nodeId prop changes (external navigation: tab switch, link click)
-  $effect(() => {
-    currentDate = parseDateFromNodeId(nodeId);
-  });
+  // Derive current date from nodeId prop (single source of truth)
+  // Frontend-architect recommendation: Use $derived instead of $state
+  const currentDate = $derived(parseDateFromNodeId(nodeId));
 
   // Format date for display (e.g., "September 7, 2025")
   const formattedDate = $derived(
@@ -58,21 +53,15 @@
   // Derive current date ID from currentDate (using local timezone, not UTC)
   const currentDateId = $derived(formatDateISO(currentDate));
 
-  // Notify parent of internal changes (button clicks, keyboard navigation)
-  // This $effect runs when currentDate changes from user actions
+  // Single $effect for legitimate side effect: updating tab title
   $effect(() => {
-    const newTitle = getDateTabTitle(currentDate);
-    onTitleChange?.(newTitle);
-
-    // Only notify if different from prop (prevents echoing back parent's own update)
-    if (currentDateId !== nodeId) {
-      onNodeIdChange?.(currentDateId);
-    }
+    onTitleChange?.(getDateTabTitle(currentDate));
   });
 
   /**
    * Navigate to previous or next day
-   * Mutates internal state - $effect will notify parent
+   * Frontend-architect recommendation: Call parent callback directly
+   * Parent updates nodeId prop which flows back down as $derived
    */
   function navigateDate(direction: 'prev' | 'next') {
     const newDate = new Date(currentDate);
@@ -81,7 +70,10 @@
     } else {
       newDate.setDate(newDate.getDate() + 1);
     }
-    currentDate = normalizeDate(newDate);
+    const newNodeId = formatDateISO(normalizeDate(newDate));
+
+    // Call parent callback directly - parent will update nodeId prop
+    onNodeIdChange?.(newNodeId);
   }
 
   /**
