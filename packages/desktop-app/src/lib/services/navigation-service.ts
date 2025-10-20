@@ -162,19 +162,24 @@ export class NavigationService {
     // Check if tab already exists for this node
     const currentState = get(tabState);
 
-    // Special case: Check if clicking today's date and "Today" tab exists
+    // Special case: Check if clicking today's date
+    // Reuse the stable "daily-journal" tab instead of creating a new one
     const todayDateId = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
     const isTodayDate = nodeId === todayDateId;
-    const todayTab = isTodayDate ? currentState.tabs.find((tab) => tab.id === 'today') : null;
 
-    if (todayTab && !openInNewTab) {
-      // Switch to existing "Today" tab
-      setActiveTab(todayTab.id);
-      console.log(`[NavigationService] Switched to existing "Today" tab`);
-      return;
+    if (isTodayDate && !openInNewTab) {
+      const { DAILY_JOURNAL_TAB_ID } = await import('$lib/stores/navigation');
+      const dailyJournalTab = currentState.tabs.find((tab) => tab.id === DAILY_JOURNAL_TAB_ID);
+
+      if (dailyJournalTab) {
+        // Switch to existing Daily Journal tab
+        setActiveTab(dailyJournalTab.id);
+        console.log(`[NavigationService] Switched to Daily Journal tab for today`);
+        return;
+      }
     }
 
-    // Check for existing node-based tabs
+    // Check for existing node-based tabs (for other dates or Cmd+Click on today)
     const existingTab = currentState.tabs.find(
       (tab) => tab.content && (tab.content as { nodeId?: string }).nodeId === nodeId
     );
@@ -186,7 +191,7 @@ export class NavigationService {
       return;
     }
 
-    // Create new tab
+    // Create new tab (for past/future dates or Cmd+Click)
     const newTab = {
       id: uuidv4(),
       title: target.title,

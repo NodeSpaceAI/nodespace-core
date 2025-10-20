@@ -25,23 +25,24 @@ function getTodayDateId(): string {
   return `${year}-${month}-${day}`;
 }
 
+// Stable ID for the Daily Journal tab (accessed via sidebar)
+export const DAILY_JOURNAL_TAB_ID = 'daily-journal';
+
 // Tab state store
 const initialTabState: TabState = {
   tabs: [
     {
-      id: 'today',
-      title: 'Today', // Initial title, will be updated by DateNodeViewer
+      id: DAILY_JOURNAL_TAB_ID, // Stable ID for sidebar navigation
+      title: 'Daily Journal', // DateNodeViewer will update based on current date
       type: 'node',
       content: {
-        nodeId: getTodayDateId(), // e.g., "2025-10-20"
+        nodeId: getTodayDateId(), // Starts with today, but user can navigate to any date
         nodeType: 'date'
       },
       closeable: false
-    },
-    { id: 'project', title: 'Product Launch Strategy', type: 'placeholder', closeable: true },
-    { id: 'social', title: 'Social Media Plan', type: 'placeholder', closeable: true }
+    }
   ],
-  activeTabId: 'today'
+  activeTabId: DAILY_JOURNAL_TAB_ID
 };
 
 export const tabState = writable<TabState>(initialTabState);
