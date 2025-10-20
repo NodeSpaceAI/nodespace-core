@@ -40,36 +40,35 @@ export class NavigationService {
 
   /**
    * Resolve a node UUID to navigation target information
-   * Fetches from backend if not in store
+   *
+   * Date nodes (YYYY-MM-DD format) are virtual and don't need to exist in the store.
+   * They are created on-demand when children are added.
+   *
+   * Regular nodes are fetched from store (sync) or backend (async) if not in store.
    */
   async resolveNodeTarget(nodeId: string): Promise<NavigationTarget | null> {
-    // First check store (synchronous)
-    let node = sharedNodeStore.getNode(nodeId);
-
-    // If not in store, check if it's a date node (format: YYYY-MM-DD)
+    // Check if it's a date node (format: YYYY-MM-DD)
     const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
     const isDateNode = dateRegex.test(nodeId);
 
-    if (!node && isDateNode) {
-      // Date nodes are virtual - they always exist even without database entry
-      // Create a synthetic date node
+    if (isDateNode) {
+      // Date nodes are virtual - they don't need to exist in database
+      // DateNodeViewer will use getNodesForParent(nodeId) to fetch children
       const date = new Date(nodeId);
-      const now = new Date().toISOString();
-      node = {
-        id: nodeId,
+      console.log(`[NavigationService] Virtual date node: ${nodeId}`);
+
+      return {
+        nodeId: nodeId,
         nodeType: 'date',
-        content: '',
-        parentId: null,
-        containerNodeId: null,
-        beforeSiblingId: null,
-        properties: { date: date.toISOString() },
-        embeddingVector: null,
-        createdAt: now,
-        modifiedAt: now
-      } as Node;
-      console.log(`[NavigationService] Created synthetic date node for ${nodeId}`);
-    } else if (!node) {
-      // For non-date nodes, fetch from backend
+        title: this.formatDateTitle(date)
+      };
+    }
+
+    // For regular nodes, check store first (synchronous)
+    let node = sharedNodeStore.getNode(nodeId);
+
+    if (!node) {
+      // Not in store, fetch from backend
       console.log(`[NavigationService] Node ${nodeId} not in store, fetching from backend...`);
       const { backendAdapter } = await import('./backend-adapter');
 
