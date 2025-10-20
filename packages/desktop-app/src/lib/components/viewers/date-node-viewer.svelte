@@ -41,6 +41,11 @@
   // Current date state - initialized from nodeId prop
   let currentDate = $state(parseDateFromNodeId(nodeId));
 
+  // Sync currentDate when nodeId prop changes (e.g., tab switching)
+  $effect(() => {
+    currentDate = parseDateFromNodeId(nodeId);
+  });
+
   // Format date for display (e.g., "September 7, 2025") using Svelte 5 $derived
   const formattedDate = $derived(
     currentDate.toLocaleDateString('en-US', {

@@ -152,6 +152,10 @@ export class NavigationService {
    * @param openInNewTab - If true, always create a new tab. If false, switch to existing tab if present.
    */
   async navigateToNode(nodeId: string, openInNewTab: boolean = false): Promise<void> {
+    console.log(
+      `[NavigationService] navigateToNode called with nodeId: ${nodeId}, openInNewTab: ${openInNewTab}`
+    );
+
     const target = await this.resolveNodeTarget(nodeId);
 
     if (!target) {
@@ -159,13 +163,21 @@ export class NavigationService {
       return;
     }
 
+    console.log(`[NavigationService] Resolved target:`, target);
+
     // Check if tab already exists for this node
     const currentState = get(tabState);
 
     // Special case: Check if clicking today's date
     // Reuse the stable "daily-journal" tab instead of creating a new one
-    const todayDateId = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    // Use local timezone, not UTC
+    const today = new Date();
+    const todayDateId = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
     const isTodayDate = nodeId === todayDateId;
+
+    console.log(
+      `[NavigationService] Today check: nodeId=${nodeId}, todayDateId=${todayDateId}, isTodayDate=${isTodayDate}`
+    );
 
     if (isTodayDate && !openInNewTab) {
       const { DAILY_JOURNAL_TAB_ID } = await import('$lib/stores/navigation');
@@ -187,7 +199,9 @@ export class NavigationService {
     if (existingTab && !openInNewTab) {
       // Switch to existing tab
       setActiveTab(existingTab.id);
-      console.log(`[NavigationService] Switched to existing tab: ${existingTab.title}`);
+      console.log(
+        `[NavigationService] Switched to existing tab: ${existingTab.title}, nodeId: ${nodeId}`
+      );
       return;
     }
 
@@ -203,6 +217,7 @@ export class NavigationService {
       closeable: true
     };
 
+    console.log(`[NavigationService] Creating new tab:`, newTab);
     addTab(newTab);
     console.log(`[NavigationService] Created new tab: ${newTab.title}`);
   }
