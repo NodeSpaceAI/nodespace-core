@@ -15,7 +15,6 @@
 -->
 
 <script lang="ts">
-  import { untrack } from 'svelte';
   import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import Icon from '$lib/design/icons/icon.svelte';
   import { getDateTabTitle } from '$lib/stores/navigation.js';
@@ -38,15 +37,16 @@
     return parsed ?? normalizeDate(new Date()); // Fallback to today if invalid
   }
 
-  // Current date state - initialized from nodeId prop
+  // Internal state for current date
+  // Needs to be $state (not $derived) because navigateDate() mutates it
   let currentDate = $state(parseDateFromNodeId(nodeId));
 
-  // Sync currentDate when nodeId prop changes (e.g., tab switching, link clicks)
+  // Sync when nodeId prop changes (external navigation: tab switch, link click)
   $effect(() => {
     currentDate = parseDateFromNodeId(nodeId);
   });
 
-  // Format date for display (e.g., "September 7, 2025") using Svelte 5 $derived
+  // Format date for display (e.g., "September 7, 2025")
   const formattedDate = $derived(
     currentDate.toLocaleDateString('en-US', {
       year: 'numeric',
@@ -58,27 +58,21 @@
   // Derive current date ID from currentDate (using local timezone, not UTC)
   const currentDateId = $derived(formatDateISO(currentDate));
 
-  // Update tab title and notify parent of changes
-  // Use untrack() to prevent infinite loops when syncing with parent
+  // Notify parent of internal changes (button clicks, keyboard navigation)
+  // This $effect runs when currentDate changes from user actions
   $effect(() => {
     const newTitle = getDateTabTitle(currentDate);
-    const newDateId = currentDateId;
-
-    // Update title unconditionally (always show current date in tab)
     onTitleChange?.(newTitle);
 
-    // Only notify parent of nodeId changes from user navigation (not prop updates)
-    // Use untrack() to check the prop value without creating a dependency
-    untrack(() => {
-      if (newDateId !== nodeId) {
-        // currentDate changed due to user navigation (arrows, etc.)
-        onNodeIdChange?.(newDateId);
-      }
-    });
+    // Only notify if different from prop (prevents echoing back parent's own update)
+    if (currentDateId !== nodeId) {
+      onNodeIdChange?.(currentDateId);
+    }
   });
 
   /**
    * Navigate to previous or next day
+   * Mutates internal state - $effect will notify parent
    */
   function navigateDate(direction: 'prev' | 'next') {
     const newDate = new Date(currentDate);
