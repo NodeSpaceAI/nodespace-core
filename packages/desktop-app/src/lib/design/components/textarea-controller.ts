@@ -886,7 +886,7 @@ export class TextareaController {
     const after = content.substring(this.getCursorPosition());
 
     // Insert node reference in markdown format
-    const reference = `[@${nodeTitle}](node://${nodeId})`;
+    const reference = `[@${nodeTitle}](nodespace://${nodeId})`;
     const newContent = before + reference + after;
 
     this.element.value = newContent;

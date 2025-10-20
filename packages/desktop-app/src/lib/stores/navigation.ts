@@ -1,10 +1,14 @@
 import { writable } from 'svelte/store';
+import { formatDateISO } from '$lib/utils/date-formatting';
 
 export interface Tab {
   id: string;
   title: string;
-  type: 'date' | 'placeholder';
-  content?: unknown;
+  type: 'node' | 'placeholder';
+  content?: {
+    nodeId: string;
+    nodeType?: string;
+  };
   closeable: boolean;
 }
 
@@ -13,14 +17,29 @@ export interface TabState {
   activeTabId: string;
 }
 
+// Helper to get today's date in YYYY-MM-DD format
+function getTodayDateId(): string {
+  return formatDateISO(new Date());
+}
+
+// Stable ID for the Daily Journal tab (accessed via sidebar)
+export const DAILY_JOURNAL_TAB_ID = 'daily-journal';
+
 // Tab state store
 const initialTabState: TabState = {
   tabs: [
-    { id: 'today', title: 'Today', type: 'date', closeable: false },
-    { id: 'project', title: 'Product Launch Strategy', type: 'placeholder', closeable: true },
-    { id: 'social', title: 'Social Media Plan', type: 'placeholder', closeable: true }
+    {
+      id: DAILY_JOURNAL_TAB_ID, // Stable ID for sidebar navigation
+      title: 'Daily Journal', // DateNodeViewer will update based on current date
+      type: 'node',
+      content: {
+        nodeId: getTodayDateId(), // Starts with today, but user can navigate to any date
+        nodeType: 'date'
+      },
+      closeable: false
+    }
   ],
-  activeTabId: 'today'
+  activeTabId: DAILY_JOURNAL_TAB_ID
 };
 
 export const tabState = writable<TabState>(initialTabState);
@@ -65,32 +84,12 @@ export function updateTabTitle(tabId: string, newTitle: string) {
   }));
 }
 
-// Helper function to format date for tab title
-export function getDateTabTitle(date: Date): string {
-  const today = new Date();
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-
-  // Normalize dates to compare only year, month, day (ignore time)
-  const normalizeDate = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const targetDate = normalizeDate(date);
-  const todayNormalized = normalizeDate(today);
-  const tomorrowNormalized = normalizeDate(tomorrow);
-  const yesterdayNormalized = normalizeDate(yesterday);
-
-  if (targetDate.getTime() === todayNormalized.getTime()) {
-    return 'Today';
-  } else if (targetDate.getTime() === tomorrowNormalized.getTime()) {
-    return 'Tomorrow';
-  } else if (targetDate.getTime() === yesterdayNormalized.getTime()) {
-    return 'Yesterday';
-  } else {
-    // Format as YYYY-MM-DD using local timezone (not UTC)
-    const year = targetDate.getFullYear();
-    const month = String(targetDate.getMonth() + 1).padStart(2, '0');
-    const day = String(targetDate.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  }
+export function updateTabContent(tabId: string, content: { nodeId: string; nodeType?: string }) {
+  tabState.update((state) => ({
+    ...state,
+    tabs: state.tabs.map((tab) => (tab.id === tabId ? { ...tab, content } : tab))
+  }));
 }
+
+// Re-export from shared utility for backward compatibility
+export { formatDateTitle as getDateTabTitle } from '$lib/utils/date-formatting';

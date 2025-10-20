@@ -6,11 +6,11 @@
  */
 
 import type { SvelteComponent, Component } from 'svelte';
-import type { NodeViewerProps } from '../types/node-viewers';
+import type { NodeViewerProps, NodeComponentProps } from '../types/node-viewers';
 
 // Base component types - match existing nodeViewers.ts definitions
-export type NodeViewerComponent = Component<NodeViewerProps>;
-export type NodeComponent = Component<NodeViewerProps>; // Individual node components (TaskNode, TextNode, etc.)
+export type NodeViewerComponent = Component<NodeViewerProps>; // Page-level viewers (DateNodeViewer, BaseNodeViewer)
+export type NodeComponent = Component<NodeComponentProps>; // Individual node components (TaskNode, TextNode, etc.)
 export type NodeReferenceComponent = new (...args: unknown[]) => SvelteComponent;
 
 // Plugin component registration types

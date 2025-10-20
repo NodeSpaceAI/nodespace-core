@@ -33,8 +33,9 @@ export const textNodePlugin: PluginDefinition = {
     canHaveChildren: true,
     canBeChild: true
   },
-  viewer: {
-    lazyLoad: () => import('../components/viewers/text-node-viewer.svelte'),
+  // No viewer - text nodes use BaseNodeViewer (default)
+  node: {
+    lazyLoad: () => import('../components/text-node.svelte'),
     priority: 1
   },
   reference: {
@@ -140,10 +141,7 @@ export const taskNodePlugin: PluginDefinition = {
     lazyLoad: () => import('../design/components/task-node.svelte'),
     priority: 1
   },
-  viewer: {
-    lazyLoad: () => import('../components/viewers/task-node-viewer.svelte'),
-    priority: 1
-  },
+  // No viewer - task nodes use BaseNodeViewer (default) for page-level display
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
@@ -168,10 +166,8 @@ export const aiChatNodePlugin: PluginDefinition = {
     canHaveChildren: true,
     canBeChild: true
   },
-  viewer: {
-    lazyLoad: () => import('../components/viewers/ai-chat-node-viewer.svelte'),
-    priority: 1
-  },
+  // No viewer - ai-chat nodes use BaseNodeViewer (default) for page-level display
+  // No node component yet - needs to be created
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
@@ -191,6 +187,10 @@ export const dateNodePlugin: PluginDefinition = {
   },
   node: {
     lazyLoad: () => import('../design/components/date-node.svelte'),
+    priority: 1
+  },
+  viewer: {
+    lazyLoad: () => import('../components/viewers/date-node-viewer.svelte'),
     priority: 1
   },
   reference: {

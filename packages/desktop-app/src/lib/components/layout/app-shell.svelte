@@ -9,6 +9,10 @@
   import { layoutState, toggleSidebar } from '$lib/stores/layout';
   import { registerCorePlugins } from '$lib/plugins/core-plugins';
   import { pluginRegistry } from '$lib/plugins/index';
+  import { isValidDateString } from '$lib/utils/date-formatting';
+
+  // Constants
+  const LOG_PREFIX = '[AppShell]';
 
   // TypeScript compatibility for Tauri window check
 
@@ -31,11 +35,68 @@
       });
     }
 
+    // Global click handler for nodespace:// links
+    const handleLinkClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+
+      // Find closest anchor element (handles clicking on children of <a>)
+      const anchor = target.closest('a');
+      if (!anchor) return;
+
+      const href = anchor.getAttribute('href');
+
+      // Only support nodespace:// protocol
+      if (!href || !href.startsWith('nodespace://')) return;
+
+      // Prevent default browser navigation
+      event.preventDefault();
+      event.stopPropagation();
+
+      // Extract node ID from various formats:
+      // - nodespace://uuid (standard format)
+      // - nodespace://node/uuid (full URI format)
+      let nodeId = href.replace('nodespace://', '');
+
+      // Handle nodespace://node/uuid format
+      if (nodeId.startsWith('node/')) {
+        nodeId = nodeId.replace('node/', '');
+      }
+
+      // Remove query parameters if present (e.g., ?hierarchy=true)
+      const queryIndex = nodeId.indexOf('?');
+      if (queryIndex !== -1) {
+        nodeId = nodeId.substring(0, queryIndex);
+      }
+
+      // Validate node ID format (UUID or date format YYYY-MM-DD)
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(nodeId) && !isValidDateString(nodeId)) {
+        console.error(`${LOG_PREFIX} Invalid node ID format: ${nodeId}`);
+        return;
+      }
+
+      // Check for Cmd+Click (Mac) or Ctrl+Click (Windows/Linux)
+      const openInNewTab = event.metaKey || event.ctrlKey;
+
+      // Phase 2-3: Actually navigate using NavigationService (lazy import)
+      (async () => {
+        const { getNavigationService } = await import('$lib/services/navigation-service');
+        const navService = getNavigationService();
+        navService.navigateToNode(nodeId, openInNewTab);
+      })();
+    };
+
+    // Attach global event listener in capture phase (fires before bubble phase)
+    // This ensures we catch the event before any other handlers
+    document.addEventListener('click', handleLinkClick, true);
+
     return async () => {
       cleanup?.();
       if (unlistenMenu) {
         (await unlistenMenu)();
       }
+      // Cleanup click handler (must match capture phase flag)
+      document.removeEventListener('click', handleLinkClick, true);
     };
   });
 

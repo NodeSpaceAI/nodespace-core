@@ -43,7 +43,9 @@ describe('Core Plugins Integration', () => {
       expect(textNodePlugin.name).toBe('Text Node');
       expect(textNodePlugin.version).toBe('1.0.0');
       expect(textNodePlugin.config.slashCommands).toHaveLength(1); // just text command
-      expect(textNodePlugin.viewer).toBeDefined();
+      // Text nodes use BaseNodeViewer (default) - no custom viewer needed
+      expect(textNodePlugin.viewer).toBeUndefined();
+      expect(textNodePlugin.node).toBeDefined(); // Has node component instead
       expect(textNodePlugin.reference).toBeDefined();
 
       const textCommand = textNodePlugin.config.slashCommands[0];
@@ -70,7 +72,9 @@ describe('Core Plugins Integration', () => {
       expect(taskNodePlugin.id).toBe('task');
       expect(taskNodePlugin.name).toBe('Task Node');
       expect(taskNodePlugin.config.slashCommands).toHaveLength(1);
-      expect(taskNodePlugin.viewer).toBeDefined();
+      // Task nodes use BaseNodeViewer (default) - no custom viewer needed
+      expect(taskNodePlugin.viewer).toBeUndefined();
+      expect(taskNodePlugin.node).toBeDefined(); // Has node component instead
       expect(taskNodePlugin.reference).toBeDefined();
 
       const taskCommand = taskNodePlugin.config.slashCommands[0];
@@ -82,7 +86,10 @@ describe('Core Plugins Integration', () => {
       expect(aiChatNodePlugin.id).toBe('ai-chat');
       expect(aiChatNodePlugin.name).toBe('AI Chat Node');
       expect(aiChatNodePlugin.config.slashCommands).toHaveLength(1);
-      expect(aiChatNodePlugin.viewer).toBeDefined();
+      // AI chat nodes use BaseNodeViewer (default) - no custom viewer needed yet
+      expect(aiChatNodePlugin.viewer).toBeUndefined();
+      // No node component yet either - will be created in future
+      expect(aiChatNodePlugin.node).toBeUndefined();
       expect(aiChatNodePlugin.reference).toBeDefined();
 
       const chatCommand = aiChatNodePlugin.config.slashCommands[0];
@@ -156,7 +163,7 @@ describe('Core Plugins Integration', () => {
         expect.objectContaining({
           plugins: 10, // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, user, document
           slashCommands: expect.any(Number),
-          viewers: 3, // text, task, ai-chat (date, header, code-block, quote-block, ordered-list are nodes, not viewers)
+          viewers: 1, // Only date has custom viewer - others use BaseNodeViewer (default)
           references: 10 // all plugins have references
         })
       );
@@ -197,14 +204,23 @@ describe('Core Plugins Integration', () => {
     });
 
     it('should resolve viewer components for plugins with viewers', async () => {
-      // Test plugins with viewers (date is a node component, not a viewer)
-      const viewerPlugins = ['text', 'task', 'ai-chat'];
+      // Only date has a custom viewer - text, task, ai-chat use BaseNodeViewer (default)
+      const viewerPlugins = ['date'];
 
       for (const pluginId of viewerPlugins) {
         expect(registry.hasViewer(pluginId)).toBe(true);
 
         const viewer = await registry.getViewer(pluginId);
         expect(viewer).toBeDefined();
+      }
+
+      // These plugins intentionally have no custom viewer - they use BaseNodeViewer
+      const noViewerPlugins = ['text', 'task', 'ai-chat'];
+      for (const pluginId of noViewerPlugins) {
+        expect(registry.hasViewer(pluginId)).toBe(false);
+
+        const viewer = await registry.getViewer(pluginId);
+        expect(viewer).toBeNull();
       }
     });
 
@@ -405,11 +421,18 @@ describe('Core Plugins Integration', () => {
     it('should maintain all functionality from old ViewerRegistry', () => {
       registerCorePlugins(registry);
 
-      // Verify all original ViewerRegistry types have viewers (date is now a node, not a viewer)
-      const expectedViewerTypes = ['text', 'task', 'ai-chat'];
+      // Architecture changed: text, task, ai-chat now use BaseNodeViewer (default)
+      // Only date has a custom viewer for specialized navigation UI
+      const customViewerTypes = ['date'];
 
-      for (const viewerType of expectedViewerTypes) {
+      for (const viewerType of customViewerTypes) {
         expect(registry.hasViewer(viewerType)).toBe(true);
+      }
+
+      // These types use BaseNodeViewer fallback (no custom viewer registered)
+      const baseViewerTypes = ['text', 'task', 'ai-chat'];
+      for (const viewerType of baseViewerTypes) {
+        expect(registry.hasViewer(viewerType)).toBe(false);
       }
     });
 

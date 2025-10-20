@@ -1,40 +1,66 @@
 <!--
-  TextNode Component - Legacy Compatibility Wrapper
-  
-  DEPRECATED: This component is now a compatibility wrapper around TextNodeViewer.
-  New code should use the plugin system and TextNodeViewer directly.
-  
-  This wrapper preserves the original TextNode API while internally using
-  the new plugin architecture for consistency and the smart multiline behavior.
+  TextNode - Wraps BaseNode for text content editing
+
+  Individual text node component that provides smart multiline behavior
+  based on header level:
+  - Headers (h1-h6): Single-line only for semantic integrity
+  - Regular text: Multi-line with Shift+Enter support
 -->
 
 <script lang="ts">
-  import TextNodeViewer from '$lib/components/viewers/text-node-viewer.svelte';
+  import { createEventDispatcher } from 'svelte';
+  import BaseNode from '$lib/design/components/base-node.svelte';
 
-  // Props - maintain original TextNode API for backward compatibility
-  export let nodeId: string;
-  export let autoFocus: boolean = false;
-  export let content: string = '';
-  export let inheritHeaderLevel: number = 0;
-  export let children: string[] = [];
+  // Props
+  let {
+    nodeId,
+    autoFocus = false,
+    content = '',
+    nodeType = 'text',
+    children = []
+  }: {
+    nodeId: string;
+    autoFocus?: boolean;
+    content?: string;
+    nodeType?: string;
+    children?: string[];
+  } = $props();
 
-  // This wrapper directly forwards events from TextNodeViewer
+  // Internal reactive state
+  let internalContent = $state(content);
+
+  // Sync internalContent when content prop changes externally
+  $effect(() => {
+    internalContent = content;
+  });
+
+  // Text nodes always allow multiline editing
+  const editableConfig = {
+    allowMultiline: true
+  };
+
+  // Event dispatcher - just forward all BaseNode events
+  const dispatch = createEventDispatcher();
 </script>
 
-<!-- Direct passthrough to TextNodeViewer -->
-<TextNodeViewer
+<BaseNode
   {nodeId}
+  {nodeType}
   {autoFocus}
-  {content}
-  nodeType="text"
-  {inheritHeaderLevel}
+  content={internalContent}
   {children}
+  {editableConfig}
   on:createNewNode
-  on:contentChanged
+  on:contentChanged={(e) => {
+    internalContent = e.detail.content;
+    dispatch('contentChanged', e.detail);
+  }}
   on:indentNode
   on:outdentNode
   on:navigateArrow
   on:combineWithPrevious
+  on:slashCommandSelected
+  on:nodeTypeChanged
   on:deleteNode
   on:focus
   on:blur
