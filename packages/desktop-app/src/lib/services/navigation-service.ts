@@ -152,18 +152,12 @@ export class NavigationService {
    * @param openInNewTab - If true, always create a new tab. If false, switch to existing tab if present.
    */
   async navigateToNode(nodeId: string, openInNewTab: boolean = false): Promise<void> {
-    console.log(
-      `[NavigationService] navigateToNode called with nodeId: ${nodeId}, openInNewTab: ${openInNewTab}`
-    );
-
     const target = await this.resolveNodeTarget(nodeId);
 
     if (!target) {
       // Error already logged in resolveNodeTarget
       return;
     }
-
-    console.log(`[NavigationService] Resolved target:`, target);
 
     const currentState = get(tabState);
 
@@ -180,7 +174,6 @@ export class NavigationService {
         closeable: true
       };
 
-      console.log(`[NavigationService] Cmd+Click: Creating new tab:`, newTab);
       addTab(newTab);
       return;
     }
@@ -188,10 +181,6 @@ export class NavigationService {
     // Regular click: Navigate within current tab
     // Update the active tab's content to show the clicked node
     const activeTabId = currentState.activeTabId;
-
-    console.log(
-      `[NavigationService] Regular click: Navigating current tab (${activeTabId}) to ${nodeId}`
-    );
 
     updateTabContent(activeTabId, {
       nodeId: target.nodeId,
