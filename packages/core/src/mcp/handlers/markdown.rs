@@ -140,7 +140,13 @@ async fn parse_markdown(
     service: &Arc<NodeService>,
     context: &mut ParserContext,
 ) -> Result<(), MCPError> {
-    let parser = Parser::new(markdown);
+    // Enable GitHub Flavored Markdown extensions (tables, strikethrough, task lists, etc.)
+    let mut options = pulldown_cmark::Options::empty();
+    options.insert(pulldown_cmark::Options::ENABLE_TABLES);
+    options.insert(pulldown_cmark::Options::ENABLE_STRIKETHROUGH);
+    options.insert(pulldown_cmark::Options::ENABLE_TASKLISTS);
+
+    let parser = Parser::new_ext(markdown, options);
 
     let mut current_text = String::new();
     let mut current_tag: Option<Tag> = None;
