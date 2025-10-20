@@ -74,12 +74,12 @@
       // Check for Cmd+Click (Mac) or Ctrl+Click (Windows/Linux)
       const openInNewTab = event.metaKey || event.ctrlKey;
 
-      // Log the click (no actual navigation yet - Phase 1)
-      console.log(`[Phase 1] nodespace:// link clicked:`, {
-        nodeId,
-        openInNewTab,
-        href
-      });
+      // Phase 2-3: Actually navigate using NavigationService (lazy import)
+      (async () => {
+        const { getNavigationService } = await import('$lib/services/navigation-service');
+        const navService = getNavigationService();
+        navService.navigateToNode(nodeId, openInNewTab);
+      })();
     };
 
     // Attach global event listener in capture phase (fires before bubble phase)

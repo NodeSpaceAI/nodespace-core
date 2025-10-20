@@ -3,7 +3,7 @@ import { writable } from 'svelte/store';
 export interface Tab {
   id: string;
   title: string;
-  type: 'date' | 'placeholder';
+  type: 'date' | 'placeholder' | 'node';
   content?: unknown;
   closeable: boolean;
 }
