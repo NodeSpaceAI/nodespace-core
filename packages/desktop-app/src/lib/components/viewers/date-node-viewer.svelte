@@ -17,30 +17,29 @@
 <script lang="ts">
   import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import Icon from '$lib/design/icons/icon.svelte';
-  import { updateTabTitle, getDateTabTitle } from '$lib/stores/navigation.js';
+  import { getDateTabTitle } from '$lib/stores/navigation.js';
 
-  // Props using Svelte 5 runes mode
-  let { tabId = 'today', initialDate }: { tabId?: string; initialDate?: string } = $props();
+  // Props using Svelte 5 runes mode - unified NodeViewerProps interface
+  let { nodeId, onTitleChange }: { nodeId: string; onTitleChange?: (_title: string) => void } =
+    $props();
 
   // Normalize date to midnight local time (ignore time components)
   function normalizeDate(d: Date): Date {
     return new Date(d.getFullYear(), d.getMonth(), d.getDate());
   }
 
-  // Parse initial date from prop (format: YYYY-MM-DD) or default to today
-  function parseInitialDate(dateString?: string): Date {
-    if (dateString) {
-      // Parse YYYY-MM-DD format
-      const [year, month, day] = dateString.split('-').map(Number);
-      if (year && month && day) {
-        return normalizeDate(new Date(year, month - 1, day)); // month is 0-indexed
-      }
+  // Parse date from nodeId prop (format: YYYY-MM-DD)
+  function parseDateFromNodeId(dateString: string): Date {
+    // Parse YYYY-MM-DD format
+    const [year, month, day] = dateString.split('-').map(Number);
+    if (year && month && day) {
+      return normalizeDate(new Date(year, month - 1, day)); // month is 0-indexed
     }
-    return normalizeDate(new Date()); // Default to today
+    return normalizeDate(new Date()); // Fallback to today if invalid
   }
 
-  // Current date state - initialized from prop or defaults to today
-  let currentDate = $state(parseInitialDate(initialDate));
+  // Current date state - initialized from nodeId prop
+  let currentDate = $state(parseDateFromNodeId(nodeId));
 
   // Format date for display (e.g., "September 7, 2025") using Svelte 5 $derived
   const formattedDate = $derived(
@@ -58,10 +57,8 @@
 
   // Update tab title when date changes using Svelte 5 $effect
   $effect(() => {
-    if (tabId) {
-      const newTitle = getDateTabTitle(currentDate);
-      updateTabTitle(tabId, newTitle);
-    }
+    const newTitle = getDateTabTitle(currentDate);
+    onTitleChange?.(newTitle);
   });
 
   /**
@@ -103,7 +100,7 @@
 <!-- Keyboard event listener -->
 <svelte:window on:keydown={handleKeydown} />
 
-<BaseNodeViewer parentId={currentDateId}>
+<BaseNodeViewer nodeId={currentDateId} {onTitleChange}>
   {#snippet header()}
     <!-- Date Navigation Header - inherits base styling from BaseNodeViewer -->
     <div class="date-nav-container">

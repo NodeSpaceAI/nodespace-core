@@ -11,16 +11,16 @@
   import { createEventDispatcher } from 'svelte';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import Icon from '$lib/design/icons/icon.svelte';
-  import type { NodeViewerProps } from '$lib/types/node-viewers.js';
+  import type { NodeComponentProps } from '$lib/types/node-viewers.js';
 
-  // Props following the NodeViewer interface
+  // Props following the NodeComponentProps interface (for individual node components)
   let {
     nodeId,
     content = '',
     autoFocus = false,
     nodeType = 'date',
     children = []
-  }: NodeViewerProps = $props();
+  }: NodeComponentProps = $props();
 
   const dispatch = createEventDispatcher();
 

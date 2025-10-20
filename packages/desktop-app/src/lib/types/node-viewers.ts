@@ -2,9 +2,26 @@
  * Type definitions for the node viewer plugin system
  */
 
-import type { Component } from 'svelte';
+import type { Component, Snippet } from 'svelte';
 
+/**
+ * Unified interface for page-level node viewers
+ * Used by: DateNodeViewer, BaseNodeViewer, and future custom viewers
+ *
+ * Viewers are decoupled from the tab system - they report their title via callback
+ * and the parent component decides what to do with it.
+ */
 export interface NodeViewerProps {
+  nodeId: string; // The node to display (date string "2025-10-20", UUID, etc.)
+  onTitleChange?: (title: string) => void; // Callback when viewer wants to update its title
+  header?: Snippet; // Optional custom header snippet
+}
+
+/**
+ * Legacy interface for individual node components (TaskNode, TextNode, etc.)
+ * These wrap BaseNode and are used WITHIN BaseNodeViewer
+ */
+export interface NodeComponentProps {
   nodeId: string;
   autoFocus?: boolean;
   content?: string;

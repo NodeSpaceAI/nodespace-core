@@ -141,10 +141,7 @@ export const taskNodePlugin: PluginDefinition = {
     lazyLoad: () => import('../design/components/task-node.svelte'),
     priority: 1
   },
-  viewer: {
-    lazyLoad: () => import('../components/viewers/task-node-viewer.svelte'),
-    priority: 1
-  },
+  // No viewer - task nodes use BaseNodeViewer (default) for page-level display
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
@@ -169,10 +166,8 @@ export const aiChatNodePlugin: PluginDefinition = {
     canHaveChildren: true,
     canBeChild: true
   },
-  viewer: {
-    lazyLoad: () => import('../components/viewers/ai-chat-node-viewer.svelte'),
-    priority: 1
-  },
+  // No viewer - ai-chat nodes use BaseNodeViewer (default) for page-level display
+  // No node component yet - needs to be created
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
@@ -194,7 +189,8 @@ export const dateNodePlugin: PluginDefinition = {
     lazyLoad: () => import('../design/components/date-node.svelte'),
     priority: 1
   },
-  // TODO: Add viewer registration (has type incompatibility with NodeViewerComponent)
+  // DateNodeViewer has custom props (tabId, initialDate) incompatible with NodeViewerProps
+  // Hardcoded in +page.svelte for now - need PageViewerComponent interface
   // viewer: {
   //   lazyLoad: () => import('../components/viewers/date-node-viewer.svelte'),
   //   priority: 1

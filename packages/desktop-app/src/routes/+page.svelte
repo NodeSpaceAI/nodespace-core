@@ -2,11 +2,12 @@
   import DateNodeViewer from '$lib/components/viewers/date-node-viewer.svelte';
   import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import { toggleTheme } from '$lib/design/theme.js';
-  import { tabState } from '$lib/stores/navigation.js';
+  import { tabState, updateTabTitle } from '$lib/stores/navigation.js';
 
-  // Subscribe to tab state from store
-  $: ({ tabs, activeTabId } = $tabState);
-  $: activeTab = tabs.find((t) => t.id === activeTabId);
+  // Derive tab state using Svelte 5 $derived
+  const tabs = $derived($tabState.tabs);
+  const activeTabId = $derived($tabState.activeTabId);
+  const activeTab = $derived(tabs.find((t) => t.id === activeTabId));
 
   // Global keyboard shortcuts
   function handleKeydown(event: KeyboardEvent) {
@@ -20,24 +21,30 @@
 
 <svelte:window on:keydown={handleKeydown} />
 
-{#if activeTab}
-  {#if activeTab.type === 'node' && activeTab.content}
-    <!-- Route based on nodeType - each viewer is responsible for its own tab title -->
-    {@const content = activeTab.content}
-    {#if content.nodeType === 'date'}
-      <!-- DateNodeViewer sets tab title to "Today", "Tomorrow", or formatted date -->
-      <DateNodeViewer tabId={activeTabId} initialDate={content.nodeId} />
-    {:else}
-      <!-- BaseNodeViewer sets tab title to node content (first line) -->
-      <BaseNodeViewer parentId={content.nodeId} />
-    {/if}
+{#if activeTab?.content}
+  <!-- Route based on nodeType -->
+  {@const content = activeTab.content}
+
+  {#if content.nodeType === 'date'}
+    <!-- DateNodeViewer: Page-level viewer with date navigation UI -->
+    <DateNodeViewer
+      nodeId={content.nodeId}
+      onTitleChange={(title) => updateTabTitle(activeTabId, title)}
+    />
   {:else}
-    <!-- Placeholder content for other tab types -->
-    <div class="placeholder-content">
-      <h2>{activeTab.title}</h2>
-      <p>This is a placeholder tab. Content will be implemented later.</p>
-    </div>
+    <!-- BaseNodeViewer: Default fallback for all other node types -->
+    <!-- Shows the node in context with its children -->
+    <BaseNodeViewer
+      nodeId={content.nodeId}
+      onTitleChange={(title) => updateTabTitle(activeTabId, title)}
+    />
   {/if}
+{:else if activeTab}
+  <!-- Placeholder content for tabs without node content -->
+  <div class="placeholder-content">
+    <h2>{activeTab.title}</h2>
+    <p>This is a placeholder tab. Content will be implemented later.</p>
+  </div>
 {:else}
   <!-- No active tab -->
   <div class="empty-state">

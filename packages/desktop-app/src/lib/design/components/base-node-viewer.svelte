@@ -22,10 +22,12 @@
   // Props
   let {
     header,
-    parentId = null
+    nodeId = null,
+    onTitleChange // eslint-disable-line no-unused-vars -- Accepted for future use
   }: {
     header?: Snippet;
-    parentId?: string | null;
+    nodeId?: string | null;
+    onTitleChange?: (_title: string) => void;
   } = $props();
 
   // Get nodeManager from shared context
@@ -42,7 +44,7 @@
   // Using 'viewer' type to indicate updates originating from this UI component
   const VIEWER_SOURCE: UpdateSource = {
     type: 'viewer',
-    viewerId: parentId || 'root'
+    viewerId: nodeId || 'root'
   };
 
   // Track last saved content to detect actual changes
@@ -55,12 +57,12 @@
   // Start as true to prevent watcher from firing before loadChildrenForParent() completes
   let isLoadingInitialNodes = true;
 
-  // Set view context and load children when parentId changes
+  // Set view context and load children when nodeId changes
   $effect(() => {
-    nodeManager.setViewParentId(parentId);
+    nodeManager.setViewParentId(nodeId);
 
-    if (parentId) {
-      loadChildrenForParent(parentId);
+    if (nodeId) {
+      loadChildrenForParent(nodeId);
     }
   });
 
@@ -164,7 +166,7 @@
   // This prevents FOREIGN KEY constraint errors.
   // ============================================================================
   $effect.pre(() => {
-    if (!parentId) {
+    if (!nodeId) {
       contentSavePhasePromise = Promise.resolve();
       return;
     }
@@ -213,8 +215,8 @@
               id: node.id,
               nodeType: node.nodeType,
               content: node.content,
-              parentId: node.parentId || parentId,
-              containerNodeId: node.containerNodeId || parentId!,
+              parentId: node.parentId || nodeId,
+              containerNodeId: node.containerNodeId || nodeId!,
               beforeSiblingId: node.beforeSiblingId,
               createdAt: node.createdAt || new Date().toISOString(),
               modifiedAt: new Date().toISOString(),
@@ -255,7 +257,7 @@
   let previousNodeIds = new Set<string>();
 
   $effect(() => {
-    if (!parentId) return;
+    if (!nodeId) return;
 
     const currentNodeIds = new Set(nodeManager.visibleNodes.map((n) => n.id));
 
@@ -405,7 +407,7 @@
   }
 
   $effect.pre(() => {
-    if (!parentId) return;
+    if (!nodeId) return;
 
     const visibleNodes = nodeManager.visibleNodes;
 
@@ -478,7 +480,7 @@
         const result = await sharedNodeStore.updateStructuralChangesValidated(
           validUpdates,
           VIEWER_SOURCE,
-          parentId
+          nodeId
         );
 
         // Update tracking for succeeded updates
@@ -541,7 +543,7 @@
     }
   });
 
-  async function loadChildrenForParent(parentId: string) {
+  async function loadChildrenForParent(nodeId: string) {
     try {
       // Set loading flag to prevent watchers from triggering during initial load
       isLoadingInitialNodes = true;
@@ -549,12 +551,12 @@
       // Clear content tracking BEFORE loading to prevent watcher from firing on stale data
       lastSavedContent.clear();
 
-      const allNodes = await sharedNodeStore.loadChildrenForParent(parentId);
+      const allNodes = await sharedNodeStore.loadChildrenForParent(nodeId);
 
       // Check if we have any nodes at all
       if (allNodes.length === 0) {
         // Check if placeholder already exists (reuse for multi-tab support)
-        const existingNodes = sharedNodeStore.getNodesForParent(parentId);
+        const existingNodes = sharedNodeStore.getNodesForParent(nodeId);
 
         if (existingNodes.length === 0) {
           // No placeholder exists - create one
@@ -563,8 +565,8 @@
             id: placeholderId,
             nodeType: 'text',
             content: '',
-            parentId: parentId,
-            containerNodeId: parentId,
+            parentId: nodeId,
+            containerNodeId: nodeId,
             beforeSiblingId: null,
             createdAt: new Date().toISOString(),
             modifiedAt: new Date().toISOString(),
@@ -601,7 +603,7 @@
         });
       }
     } catch (error) {
-      console.error('[BaseNodeViewer] Failed to load children for parent:', parentId, error);
+      console.error('[BaseNodeViewer] Failed to load children for parent:', nodeId, error);
     } finally {
       // Clear loading flag after nodes are initialized
       isLoadingInitialNodes = false;
@@ -630,18 +632,18 @@
    * Delegates to SharedNodeStore for persistence.
    * Skips placeholder nodes - they should not be persisted yet
    */
-  async function saveHierarchyChange(nodeId: string) {
-    if (!parentId) return;
+  async function saveHierarchyChange(childNodeId: string) {
+    if (!nodeId) return;
 
     try {
-      const node = nodeManager.findNode(nodeId);
+      const node = nodeManager.findNode(childNodeId);
       if (!node) {
-        console.error('[BaseNodeViewer] Cannot save hierarchy - node not found:', nodeId);
+        console.error('[BaseNodeViewer] Cannot save hierarchy - node not found:', childNodeId);
         return;
       }
 
       // Check if node is a placeholder by looking at visibleNodes which includes UI state
-      const visibleNode = nodeManager.visibleNodes.find((n) => n.id === nodeId);
+      const visibleNode = nodeManager.visibleNodes.find((n) => n.id === childNodeId);
       const isPlaceholder = visibleNode?.isPlaceholder || false;
 
       // Skip placeholder nodes - they should not be persisted yet
@@ -651,11 +653,11 @@
 
       // Update node with structural changes (was saveNodeImmediately)
       const fullNode: Node = {
-        id: nodeId,
+        id: childNodeId,
         nodeType: node.nodeType,
         content: node.content,
-        parentId: node.parentId || parentId,
-        containerNodeId: node.containerNodeId || parentId,
+        parentId: node.parentId || nodeId,
+        containerNodeId: node.containerNodeId || nodeId,
         beforeSiblingId: node.beforeSiblingId,
         createdAt: node.createdAt || new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -664,7 +666,7 @@
       };
       sharedNodeStore.setNode(fullNode, VIEWER_SOURCE);
     } catch (error) {
-      console.error('[BaseNodeViewer] Failed to save hierarchy change:', nodeId, error);
+      console.error('[BaseNodeViewer] Failed to save hierarchy change:', childNodeId, error);
     }
   }
 
