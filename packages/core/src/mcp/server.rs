@@ -114,6 +114,13 @@ async fn handle_request(service: &Arc<NodeService>, request: MCPRequest) -> MCPR
         "update_node" => nodes::handle_update_node(service, request.params).await,
         "delete_node" => nodes::handle_delete_node(service, request.params).await,
         "query_nodes" => nodes::handle_query_nodes(service, request.params).await,
+        "create_nodes_from_markdown" => {
+            crate::mcp::handlers::markdown::handle_create_nodes_from_markdown(
+                service,
+                request.params,
+            )
+            .await
+        }
         _ => {
             warn!("⚠️  Unknown MCP method: {}", request.method);
             Err(MCPError::method_not_found(&request.method))
