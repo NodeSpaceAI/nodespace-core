@@ -55,7 +55,6 @@
     internalContent = e.detail.content;
     dispatch('contentChanged', e.detail);
   }}
-  on:headerLevelChanged
   on:indentNode
   on:outdentNode
   on:navigateArrow
