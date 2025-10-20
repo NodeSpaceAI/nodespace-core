@@ -26,6 +26,10 @@ name = "dev-server"
 path = "src/bin/dev-server.rs"
 required-features = ["dev-server"]
 
+[[example]]
+name = "mcp_test_client"
+path = "examples/mcp_test_client.rs"
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"

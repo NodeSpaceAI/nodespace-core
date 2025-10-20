@@ -8,6 +8,9 @@ pub mod constants;
 #[cfg(feature = "dev-server")]
 pub mod dev_server;
 
+// MCP (Model Context Protocol) stdio server module
+pub mod mcp;
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -22,6 +25,46 @@ fn toggle_sidebar() -> String {
 // Include test module
 #[cfg(test)]
 mod tests;
+
+/// Initialize MCP server with database and NodeService
+async fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
+    use nodespace_core::{DatabaseService, NodeService};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    tracing::info!("🔧 Initializing MCP server...");
+
+    // Determine database path (use dev-specific database)
+    let home_dir =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Failed to get home directory"))?;
+
+    let db_path: PathBuf = home_dir
+        .join(".nodespace")
+        .join("database")
+        .join("nodespace-dev.db");
+
+    // Ensure database directory exists
+    if let Some(parent) = db_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    tracing::info!("📦 MCP using database: {}", db_path.display());
+
+    // Initialize services (same pattern as dev-server.rs)
+    let db_service = DatabaseService::new(db_path.clone()).await?;
+    let node_service = Arc::new(NodeService::new(db_service)?);
+
+    tracing::info!("✅ Services initialized, spawning MCP stdio task...");
+
+    // Spawn MCP stdio server task
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = mcp::run_mcp_server(node_service, app).await {
+            tracing::error!("❌ MCP server error: {}", e);
+        }
+    });
+
+    Ok(())
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -56,6 +99,15 @@ pub fn run() {
 
             // Set the menu
             app.set_menu(menu)?;
+
+            // Initialize database and services for MCP
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match initialize_mcp_server(app_handle).await {
+                    Ok(_) => tracing::info!("✅ MCP server initialized successfully"),
+                    Err(e) => tracing::error!("❌ Failed to initialize MCP server: {}", e),
+                }
+            });
 
             Ok(())
         })
