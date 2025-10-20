@@ -26,35 +26,25 @@ fn toggle_sidebar() -> String {
 #[cfg(test)]
 mod tests;
 
-/// Initialize MCP server with database and NodeService
-async fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
-    use nodespace_core::{DatabaseService, NodeService};
-    use std::path::PathBuf;
+/// Initialize MCP server with shared NodeService from Tauri state
+///
+/// This must be called AFTER the database is initialized and NodeService
+/// is available in Tauri's managed state. It retrieves the shared NodeService
+/// and spawns the MCP server task with it, ensuring MCP and Tauri commands
+/// operate on the same database.
+pub fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
+    use nodespace_core::NodeService;
     use std::sync::Arc;
+    use tauri::Manager;
 
     tracing::info!("🔧 Initializing MCP server...");
 
-    // Determine database path (use dev-specific database)
-    let home_dir =
-        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Failed to get home directory"))?;
+    // Get shared NodeService from Tauri state
+    // This ensures MCP uses the same database as Tauri commands
+    let node_service: tauri::State<NodeService> = app.state();
+    let node_service_arc = Arc::new(node_service.inner().clone());
 
-    let db_path: PathBuf = home_dir
-        .join(".nodespace")
-        .join("database")
-        .join("nodespace-dev.db");
-
-    // Ensure database directory exists
-    if let Some(parent) = db_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-
-    tracing::info!("📦 MCP using database: {}", db_path.display());
-
-    // Initialize services (same pattern as dev-server.rs)
-    let db_service = DatabaseService::new(db_path.clone()).await?;
-    let node_service = Arc::new(NodeService::new(db_service)?);
-
-    tracing::info!("✅ Services initialized, spawning MCP stdio task...");
+    tracing::info!("✅ Using shared NodeService, spawning MCP stdio task...");
 
     // Spawn MCP stdio server task with Tauri event emissions
     // Uses panic protection to prevent silent background task failures
@@ -62,7 +52,7 @@ async fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Use block_on since catch_unwind requires FnOnce() not async
             tauri::async_runtime::block_on(async {
-                mcp_integration::run_mcp_server_with_events(node_service, app).await
+                mcp_integration::run_mcp_server_with_events(node_service_arc, app).await
             })
         }));
 
@@ -118,14 +108,9 @@ pub fn run() {
             // Set the menu
             app.set_menu(menu)?;
 
-            // Initialize database and services for MCP
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                match initialize_mcp_server(app_handle).await {
-                    Ok(_) => tracing::info!("✅ MCP server initialized successfully"),
-                    Err(e) => tracing::error!("❌ Failed to initialize MCP server: {}", e),
-                }
-            });
+            // Note: MCP server initialization is deferred until database is initialized
+            // See commands/db.rs::init_services() which calls initialize_mcp_server()
+            // after NodeService is available in Tauri state
 
             Ok(())
         })

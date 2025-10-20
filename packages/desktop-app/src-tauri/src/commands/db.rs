@@ -161,6 +161,13 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     });
     app.manage(processor);
 
+    // Initialize MCP server now that NodeService is available
+    // MCP will use the same NodeService as Tauri commands
+    if let Err(e) = crate::initialize_mcp_server(app.clone()) {
+        tracing::error!("❌ Failed to initialize MCP server: {}", e);
+        // Don't fail database init if MCP fails - MCP is optional
+    }
+
     Ok(())
 }
 
