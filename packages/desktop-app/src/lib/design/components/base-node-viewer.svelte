@@ -23,13 +23,12 @@
   let {
     header,
     nodeId = null,
-    onTitleChange, // eslint-disable-line no-unused-vars -- Accepted for future use
-    onNodeIdChange // eslint-disable-line no-unused-vars -- Accepted for future use
+    onTitleChange
   }: {
     header?: Snippet;
     nodeId?: string | null;
     onTitleChange?: (_title: string) => void;
-    onNodeIdChange?: (_nodeId: string) => void;
+    onNodeIdChange?: (_nodeId: string) => void; // In type for interface, not used by BaseNodeViewer
   } = $props();
 
   // Get nodeManager from shared context
@@ -65,6 +64,16 @@
 
     if (nodeId) {
       loadChildrenForParent(nodeId);
+
+      // Set tab title to node content (first line)
+      if (onTitleChange) {
+        const node = sharedNodeStore.getNode(nodeId);
+        if (node && node.content) {
+          const firstLine = node.content.split('\n')[0].trim();
+          const title = firstLine.length > 40 ? firstLine.substring(0, 37) + '...' : firstLine;
+          onTitleChange(title || 'Untitled');
+        }
+      }
     }
   });
 
