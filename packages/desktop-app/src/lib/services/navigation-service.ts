@@ -15,7 +15,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { addTab, setActiveTab, tabState } from '$lib/stores/navigation';
+import { addTab, tabState, updateTabContent } from '$lib/stores/navigation';
 import { sharedNodeStore } from './shared-node-store';
 import { get } from 'svelte/store';
 import type { Node } from '$lib/types';
@@ -165,62 +165,38 @@ export class NavigationService {
 
     console.log(`[NavigationService] Resolved target:`, target);
 
-    // Only create new tabs on Cmd+Click
-    // Regular clicks always switch to existing tab or Daily Journal for today
-    if (!openInNewTab) {
-      const currentState = get(tabState);
+    const currentState = get(tabState);
 
-      // Check if clicking today's date - reuse Daily Journal tab
-      const today = new Date();
-      const todayDateId = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-      const isTodayDate = nodeId === todayDateId;
+    if (openInNewTab) {
+      // Cmd+Click: Always create new tab
+      const newTab = {
+        id: uuidv4(),
+        title: target.title,
+        type: 'node' as const,
+        content: {
+          nodeId: target.nodeId,
+          nodeType: target.nodeType
+        },
+        closeable: true
+      };
 
-      console.log(
-        `[NavigationService] Today check: nodeId=${nodeId}, todayDateId=${todayDateId}, isTodayDate=${isTodayDate}`
-      );
-
-      if (isTodayDate) {
-        const { DAILY_JOURNAL_TAB_ID } = await import('$lib/stores/navigation');
-        const dailyJournalTab = currentState.tabs.find((tab) => tab.id === DAILY_JOURNAL_TAB_ID);
-
-        if (dailyJournalTab) {
-          // Switch to existing Daily Journal tab
-          setActiveTab(dailyJournalTab.id);
-          console.log(`[NavigationService] Switched to Daily Journal tab for today`);
-          return;
-        }
-      }
-
-      // Check for existing tab with this nodeId (any date)
-      const existingTab = currentState.tabs.find(
-        (tab) => tab.content && (tab.content as { nodeId?: string }).nodeId === nodeId
-      );
-
-      if (existingTab) {
-        // Switch to existing tab
-        setActiveTab(existingTab.id);
-        console.log(
-          `[NavigationService] Switched to existing tab: ${existingTab.title}, nodeId: ${nodeId}`
-        );
-        return;
-      }
+      console.log(`[NavigationService] Cmd+Click: Creating new tab:`, newTab);
+      addTab(newTab);
+      return;
     }
 
-    // Create new tab (only on Cmd+Click or if no existing tab)
-    const newTab = {
-      id: uuidv4(),
-      title: target.title,
-      type: 'node' as const,
-      content: {
-        nodeId: target.nodeId,
-        nodeType: target.nodeType
-      },
-      closeable: true
-    };
+    // Regular click: Navigate within current tab
+    // Update the active tab's content to show the clicked node
+    const activeTabId = currentState.activeTabId;
 
-    console.log(`[NavigationService] Creating new tab:`, newTab);
-    addTab(newTab);
-    console.log(`[NavigationService] Created new tab: ${newTab.title}`);
+    console.log(
+      `[NavigationService] Regular click: Navigating current tab (${activeTabId}) to ${nodeId}`
+    );
+
+    updateTabContent(activeTabId, {
+      nodeId: target.nodeId,
+      nodeType: target.nodeType
+    });
   }
 }
 

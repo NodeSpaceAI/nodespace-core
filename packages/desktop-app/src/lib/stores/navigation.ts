@@ -87,6 +87,13 @@ export function updateTabTitle(tabId: string, newTitle: string) {
   }));
 }
 
+export function updateTabContent(tabId: string, content: { nodeId: string; nodeType?: string }) {
+  tabState.update((state) => ({
+    ...state,
+    tabs: state.tabs.map((tab) => (tab.id === tabId ? { ...tab, content } : tab))
+  }));
+}
+
 // Helper function to format date for tab title
 export function getDateTabTitle(date: Date): string {
   const today = new Date();
