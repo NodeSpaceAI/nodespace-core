@@ -57,9 +57,27 @@ async fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
     tracing::info!("✅ Services initialized, spawning MCP stdio task...");
 
     // Spawn MCP stdio server task with Tauri event emissions
+    // Uses panic protection to prevent silent background task failures
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = mcp_integration::run_mcp_server_with_events(node_service, app).await {
-            tracing::error!("❌ MCP server error: {}", e);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Use block_on since catch_unwind requires FnOnce() not async
+            tauri::async_runtime::block_on(async {
+                mcp_integration::run_mcp_server_with_events(node_service, app).await
+            })
+        }));
+
+        match result {
+            Ok(Ok(_)) => {
+                tracing::info!("✅ MCP server exited normally (stdin closed)");
+            }
+            Ok(Err(e)) => {
+                tracing::error!("❌ MCP server error: {}", e);
+                // TODO: Consider emitting Tauri event to notify UI of MCP failure
+            }
+            Err(panic_info) => {
+                tracing::error!("💥 MCP server panicked: {:?}", panic_info);
+                // TODO: Consider attempting automatic restart or notifying user
+            }
         }
     });
 

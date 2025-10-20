@@ -37,5 +37,5 @@ pub mod handlers;
 pub mod server;
 pub mod types;
 
-pub use server::run_mcp_server;
+pub use server::{run_mcp_server, run_mcp_server_with_callback, ResponseCallback};
 pub use types::{MCPError, MCPRequest, MCPResponse};

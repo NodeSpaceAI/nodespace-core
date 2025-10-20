@@ -6,9 +6,16 @@
 use crate::mcp::handlers::nodes;
 use crate::mcp::types::{MCPError, MCPRequest, MCPResponse};
 use crate::services::NodeService;
+use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
+
+/// Callback type for handling successful responses
+///
+/// Receives (method_name, result_value) after successful operation execution.
+/// Useful for event emissions or logging in framework integrations.
+pub type ResponseCallback = Arc<dyn Fn(&str, &Value) + Send + Sync>;
 
 /// Run the MCP stdio server
 ///
@@ -22,7 +29,30 @@ use tracing::{debug, error, info, warn};
 /// # Returns
 ///
 /// Returns Ok(()) when stdin is closed, or Err on fatal errors
+#[instrument(skip(node_service))]
 pub async fn run_mcp_server(node_service: Arc<NodeService>) -> anyhow::Result<()> {
+    run_mcp_server_with_callback(node_service, None).await
+}
+
+/// Run the MCP stdio server with an optional response callback
+///
+/// Same as `run_mcp_server` but allows providing a callback function that
+/// will be invoked after each successful operation. This is useful for
+/// framework integrations that need to emit events or perform side effects.
+///
+/// # Arguments
+///
+/// * `node_service` - Shared NodeService instance
+/// * `callback` - Optional callback invoked with (method, result) on success
+///
+/// # Returns
+///
+/// Returns Ok(()) when stdin is closed, or Err on fatal errors
+#[instrument(skip(node_service, callback))]
+pub async fn run_mcp_server_with_callback(
+    node_service: Arc<NodeService>,
+    callback: Option<ResponseCallback>,
+) -> anyhow::Result<()> {
     info!("🔌 MCP stdio server started");
 
     let stdin = tokio::io::stdin();
@@ -55,6 +85,13 @@ pub async fn run_mcp_server(node_service: Arc<NodeService>) -> anyhow::Result<()
         // Handle request
         let response = handle_request(&node_service, request).await;
 
+        // Invoke callback on successful response
+        if let Some(ref callback) = callback {
+            if let Some(ref result) = response.result {
+                callback(&method, result);
+            }
+        }
+
         debug!(
             "📤 MCP response for method '{}' (id={})",
             method, request_id
@@ -69,6 +106,7 @@ pub async fn run_mcp_server(node_service: Arc<NodeService>) -> anyhow::Result<()
 }
 
 /// Handle a JSON-RPC request and return a response
+#[instrument(skip(service), fields(method = %request.method, id = %request.id))]
 async fn handle_request(service: &Arc<NodeService>, request: MCPRequest) -> MCPResponse {
     let result = match request.method.as_str() {
         "create_node" => nodes::handle_create_node(service, request.params).await,

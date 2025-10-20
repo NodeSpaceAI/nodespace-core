@@ -129,15 +129,23 @@ pub async fn handle_update_node(
     let params: UpdateNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    // Build NodeUpdate
+    // Build NodeUpdate with intentional field restrictions
+    //
+    // MCP update_node intentionally restricts certain fields for data integrity:
+    // - parent_id: Changing parent requires hierarchy validation and UI coordination
+    // - container_node_id: Container changes affect multiple systems (embeddings, UI state)
+    // - before_sibling_id: Ordering is managed by UI drag-drop interactions, not MCP
+    // - embedding_vector: Embeddings are auto-generated from content via background jobs
+    //
+    // Use MCP only for content/property updates. Use Tauri commands for structural changes.
     let update = NodeUpdate {
         node_type: params.node_type,
         content: params.content,
         properties: params.properties,
-        parent_id: None,         // Don't update parent through MCP
-        container_node_id: None, // Don't update container through MCP
-        before_sibling_id: None, // Don't update ordering through MCP
-        embedding_vector: None,  // Don't update embedding through MCP
+        parent_id: None,
+        container_node_id: None,
+        before_sibling_id: None,
+        embedding_vector: None,
     };
 
     // Update node via NodeService

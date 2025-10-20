@@ -22,8 +22,10 @@ use serde_json::Value;
 /// }
 /// ```
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MCPRequest {
-    /// JSON-RPC version (must be "2.0")
+    /// JSON-RPC version (must be exactly "2.0")
+    #[serde(deserialize_with = "validate_jsonrpc_version")]
     pub jsonrpc: String,
 
     /// Request identifier (used to match responses)
@@ -34,6 +36,21 @@ pub struct MCPRequest {
 
     /// Method parameters as JSON value
     pub params: Value,
+}
+
+/// Validates that JSON-RPC version is exactly "2.0"
+fn validate_jsonrpc_version<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    if s != "2.0" {
+        return Err(serde::de::Error::custom(format!(
+            "Invalid JSON-RPC version: expected '2.0', got '{}'",
+            s
+        )));
+    }
+    Ok(s)
 }
 
 /// JSON-RPC 2.0 response structure
