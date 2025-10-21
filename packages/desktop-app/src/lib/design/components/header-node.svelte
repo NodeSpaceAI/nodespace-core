@@ -48,26 +48,12 @@
 
   const dispatch = createEventDispatcher();
 
-  // Internal reactive state - sync with content prop changes
+  // REFACTOR (Issue #316 Phase 2): Removed $effect for prop sync
+  // Newline stripping now happens in event handler for clearer event flow
   let internalContent = $state(content);
 
-  // Sync internalContent when content prop changes externally
-  // Apply header-specific content transformations (strip newlines for single-line headers)
-  $effect(() => {
-    let cleanedContent = content;
-
-    // Headers are single-line - strip newlines when converting from multiline text nodes
-    if (cleanedContent.includes('\n')) {
-      cleanedContent = cleanedContent.replace(/\n+/g, ' '); // Replace newlines with spaces
-      // Update parent with cleaned content
-      dispatch('contentChanged', { content: cleanedContent });
-    }
-
-    internalContent = cleanedContent;
-  });
-
   // Header level - derived from markdown syntax (#, ##, ###, etc.)
-  // REFACTOR (Issue #316): Replaced $effect with $derived for pure reactive computation
+  // REFACTOR (Issue #316 Phase 1): Replaced $effect with $derived for pure reactive computation
   let headerLevel = $derived(parseHeaderLevel(internalContent));
 
   // Headers use default single-line editing
@@ -106,9 +92,18 @@
 
   /**
    * Handle content changes and sync with parent
+   * REFACTOR (Issue #316 Phase 2): Moved newline stripping from $effect to event handler
+   * This makes side effects explicit and event-driven instead of reactive
    */
   function handleContentChange(event: CustomEvent<{ content: string }>) {
-    const newContent = event.detail.content;
+    let newContent = event.detail.content;
+
+    // Headers are single-line - strip newlines when they're entered
+    // This happens when converting from multiline text nodes or pasting multiline content
+    if (newContent.includes('\n')) {
+      newContent = newContent.replace(/\n+/g, ' '); // Replace newlines with spaces
+    }
+
     internalContent = newContent;
     dispatch('contentChanged', { content: newContent });
   }
