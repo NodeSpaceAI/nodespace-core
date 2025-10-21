@@ -69,28 +69,28 @@ struct ParserContext {
     node_ids: Vec<String>,
     /// All created nodes with metadata (id + type)
     nodes: Vec<NodeMetadata>,
-    /// Container node ID (all nodes belong to this container)
-    container_node_id: String,
+    /// Container node ID (first node created becomes the container)
+    container_node_id: Option<String>,
     /// Current list item counter for ordered lists (tracks the number prefix for ordered lists)
     ordered_list_counter: usize,
     /// Whether we're in an ordered list
     in_ordered_list: bool,
+    /// Whether the first node has been created (becomes the container)
+    first_node_created: bool,
 }
 
 impl ParserContext {
-    fn new(container_node_id: String) -> Self {
+    fn new_empty() -> Self {
         Self {
             heading_stack: Vec::new(),
             list_stack: Vec::new(),
             last_sibling: None,
-            node_ids: vec![container_node_id.clone()],
-            nodes: vec![NodeMetadata {
-                id: container_node_id.clone(),
-                node_type: "text".to_string(),
-            }],
-            container_node_id,
+            node_ids: Vec::new(),
+            nodes: Vec::new(),
+            container_node_id: None,
             ordered_list_counter: 0,
             in_ordered_list: false,
+            first_node_created: false,
         }
     }
 
@@ -135,12 +135,23 @@ impl ParserContext {
 
     /// Track a node for sibling ordering
     fn track_node(&mut self, node_id: String, node_type: String) {
+        // If this is the first node, it becomes the container
+        if !self.first_node_created {
+            self.container_node_id = Some(node_id.clone());
+            self.first_node_created = true;
+        }
+
         self.last_sibling = Some(node_id.clone());
         self.node_ids.push(node_id.clone());
         self.nodes.push(NodeMetadata {
             id: node_id,
             node_type,
         });
+    }
+
+    /// Check if this is the first node being created
+    fn is_first_node(&self) -> bool {
+        !self.first_node_created
     }
 }
 
@@ -161,23 +172,9 @@ pub async fn handle_create_nodes_from_markdown(
         )));
     }
 
-    // Create container node
-    let container_node = Node::new(
-        "text".to_string(),
-        params.container_title.clone(),
-        None,
-        json!({}),
-    );
-
-    let container_node_id = service.create_node(container_node).await.map_err(|e| {
-        MCPError::node_creation_failed(format!(
-            "Failed to create container node '{}': {}",
-            params.container_title, e
-        ))
-    })?;
-
     // Parse markdown and create nodes
-    let mut context = ParserContext::new(container_node_id.clone());
+    // The first element will become the container node
+    let mut context = ParserContext::new_empty();
     parse_markdown(&params.markdown_content, service, &mut context).await?;
 
     // Validate we didn't exceed max nodes
@@ -188,6 +185,11 @@ pub async fn handle_create_nodes_from_markdown(
             MAX_NODES_PER_IMPORT
         )));
     }
+
+    // Get the container node ID (first created node)
+    let container_node_id = context
+        .container_node_id
+        .ok_or_else(|| MCPError::internal_error("No container node created".to_string()))?;
 
     Ok(json!({
         "success": true,
@@ -271,8 +273,9 @@ async fn parse_markdown(
                             "header",
                             &content,
                             context.current_parent_id(),
-                            Some(context.container_node_id.clone()),
+                            context.container_node_id.clone(),
                             context.last_sibling.clone(),
+                            context.is_first_node(),
                         )
                         .await?;
 
@@ -293,8 +296,9 @@ async fn parse_markdown(
                                 "text",
                                 content,
                                 context.current_parent_id(),
-                                Some(context.container_node_id.clone()),
+                                context.container_node_id.clone(),
                                 context.last_sibling.clone(),
+                                context.is_first_node(),
                             )
                             .await?;
                             context.track_node(node_id, "text".to_string());
@@ -314,8 +318,9 @@ async fn parse_markdown(
                             "code-block",
                             &content,
                             context.current_parent_id(),
-                            Some(context.container_node_id.clone()),
+                            context.container_node_id.clone(),
                             context.last_sibling.clone(),
+                            context.is_first_node(),
                         )
                         .await?;
                         context.track_node(node_id, "code-block".to_string());
@@ -336,8 +341,9 @@ async fn parse_markdown(
                                 "quote-block",
                                 &content,
                                 context.current_parent_id(),
-                                Some(context.container_node_id.clone()),
+                                context.container_node_id.clone(),
                                 context.last_sibling.clone(),
+                                context.is_first_node(),
                             )
                             .await?;
                             context.track_node(node_id, "quote-block".to_string());
@@ -369,8 +375,9 @@ async fn parse_markdown(
                                 node_type,
                                 &formatted_content,
                                 context.current_parent_id(),
-                                Some(context.container_node_id.clone()),
+                                context.container_node_id.clone(),
                                 context.last_sibling.clone(),
+                                context.is_first_node(),
                             )
                             .await?;
 
@@ -434,6 +441,7 @@ async fn create_node(
     parent_id: Option<String>,
     container_node_id: Option<String>,
     before_sibling_id: Option<String>,
+    is_first_node: bool,
 ) -> Result<String, MCPError> {
     let node = Node::new(
         node_type.to_string(),
@@ -442,10 +450,20 @@ async fn create_node(
         json!({}),
     );
 
-    let node = Node {
-        container_node_id,
-        before_sibling_id,
-        ..node
+    // First node becomes the container (no container_node_id for itself)
+    // All subsequent nodes belong to that container
+    let node = if is_first_node {
+        Node {
+            container_node_id: None, // First node IS the container
+            before_sibling_id,
+            ..node
+        }
+    } else {
+        Node {
+            container_node_id,
+            before_sibling_id,
+            ..node
+        }
     };
 
     // Create node and provide contextual error on failure
@@ -479,6 +497,261 @@ fn heading_level_to_usize(level: HeadingLevel) -> usize {
         HeadingLevel::H5 => 5,
         HeadingLevel::H6 => 6,
     }
+}
+
+// ============================================================================
+// Markdown Export (get_markdown_from_node_id)
+// ============================================================================
+
+/// Parameters for get_markdown_from_node_id method
+#[derive(Debug, Deserialize)]
+pub struct GetMarkdownParams {
+    /// Root node ID to export
+    pub node_id: String,
+
+    /// Include children recursively (default: true)
+    #[serde(default = "default_include_children")]
+    pub include_children: bool,
+
+    /// Maximum recursion depth to prevent infinite loops (default: 20)
+    #[serde(default = "default_max_depth")]
+    pub max_depth: usize,
+}
+
+fn default_include_children() -> bool {
+    true
+}
+fn default_max_depth() -> usize {
+    20
+}
+
+/// Export node hierarchy as markdown with minimal metadata
+///
+/// Returns clean markdown with HTML comments containing only node IDs.
+/// This format is optimized for AI reading and understanding.
+///
+/// # Example Output
+///
+/// ```markdown
+/// <!-- container-abc123 -->
+/// # Project Plan
+///
+/// <!-- header-def456 -->
+/// ## Phase 1
+///
+/// <!-- task-ghi789 -->
+/// - [ ] Review architecture
+/// ```
+pub async fn handle_get_markdown_from_node_id(
+    service: &Arc<NodeService>,
+    params: Value,
+) -> Result<Value, MCPError> {
+    // Parse parameters
+    let params: GetMarkdownParams = serde_json::from_value(params)
+        .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
+
+    // Fetch the root node first to validate it exists
+    let root_node = service
+        .get_node(&params.node_id)
+        .await
+        .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?
+        .ok_or_else(|| MCPError::node_not_found(&params.node_id))?;
+
+    // Bulk fetch all child nodes in this container (efficient single query)
+    use crate::models::{NodeFilter, OrderBy};
+    let filter = NodeFilter::new()
+        .with_container_node_id(root_node.id.clone())
+        .with_order_by(OrderBy::CreatedAsc);
+
+    let all_nodes = service
+        .query_nodes(filter)
+        .await
+        .map_err(|e| MCPError::internal_error(format!("Failed to query container nodes: {}", e)))?;
+
+    // Build a lookup map for efficient hierarchy reconstruction
+    // Include the root node in the map for complete hierarchy
+    use std::collections::HashMap;
+    let mut nodes_map: HashMap<String, Node> =
+        all_nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
+
+    // Add root node to the map
+    nodes_map.insert(root_node.id.clone(), root_node.clone());
+
+    // Build markdown by traversing hierarchy in memory
+    let mut markdown = String::new();
+
+    // Export the container node itself
+    markdown.push_str(&format!("<!-- {} -->\n", root_node.id));
+    markdown.push_str(&root_node.content);
+    markdown.push_str("\n\n");
+
+    // Export children if requested
+    if params.include_children {
+        // Find direct children of the container node
+        // Note: With first-element-as-container model, children have parent_id = container_id
+        // (not None - the container itself has parent_id = None or points to its parent)
+        let mut top_level_nodes: Vec<&Node> = nodes_map
+            .values()
+            .filter(|n| n.parent_id.as_ref() == Some(&root_node.id))
+            .collect();
+
+        // Sort by sibling order
+        sort_by_sibling_chain(&mut top_level_nodes);
+
+        // Export each top-level node and its descendants
+        for node in top_level_nodes {
+            export_node_hierarchy(
+                node,
+                &nodes_map,
+                &mut markdown,
+                1, // Start at depth 1 (container is depth 0)
+                params.max_depth,
+                true, // Always include children when recursing
+            )?;
+        }
+    }
+
+    // Return result
+    Ok(json!({
+        "markdown": markdown,
+        "root_node_id": params.node_id,
+        "node_count": count_nodes_in_markdown(&markdown)
+    }))
+}
+
+/// Recursively export node hierarchy to markdown using in-memory node map
+fn export_node_hierarchy(
+    node: &Node,
+    nodes_map: &std::collections::HashMap<String, Node>,
+    output: &mut String,
+    current_depth: usize,
+    max_depth: usize,
+    include_children: bool,
+) -> Result<(), MCPError> {
+    // Prevent infinite recursion
+    if current_depth >= max_depth {
+        let content_preview: String = node.content.chars().take(50).collect();
+        tracing::warn!(
+            "Max depth {} reached at node {} (content: {}{})",
+            max_depth,
+            node.id,
+            content_preview,
+            if node.content.len() > 50 { "..." } else { "" }
+        );
+        return Ok(());
+    }
+
+    // Add minimal metadata comment (just ID)
+    output.push_str(&format!("<!-- {} -->\n", node.id));
+
+    // Add content
+    output.push_str(&node.content);
+    output.push_str("\n\n");
+
+    // Recursively export children (if enabled)
+    if include_children {
+        // Find all children of this node from the in-memory map
+        let mut children: Vec<&Node> = nodes_map
+            .values()
+            .filter(|n| n.parent_id.as_ref() == Some(&node.id))
+            .collect();
+
+        // Sort children by sibling order (reconstruct before_sibling_id chain)
+        sort_by_sibling_chain(&mut children);
+
+        for child in children {
+            export_node_hierarchy(
+                child,
+                nodes_map,
+                output,
+                current_depth + 1,
+                max_depth,
+                include_children,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Sort nodes by their before_sibling_id chain to maintain visual order
+///
+/// This function reconstructs the sibling order by following the before_sibling_id chain.
+/// The before_sibling_id field means "I come AFTER this node", so we build a forward map
+/// to traverse from head to tail.
+fn sort_by_sibling_chain(nodes: &mut Vec<&Node>) {
+    if nodes.is_empty() {
+        return;
+    }
+
+    // Build forward map: before_sibling_id -> nodes that come after it
+    // Using Vec to detect duplicates (multiple nodes with same before_sibling_id)
+    use std::collections::HashMap;
+    let mut after_map: HashMap<Option<String>, Vec<&Node>> = HashMap::new();
+
+    for node in nodes.iter() {
+        after_map
+            .entry(node.before_sibling_id.clone())
+            .or_default()
+            .push(*node);
+    }
+
+    // Detect duplicate before_sibling_ids (data integrity issue)
+    for (before_id, nodes_after) in &after_map {
+        if nodes_after.len() > 1 {
+            tracing::warn!(
+                "Multiple nodes have same before_sibling_id: {:?}. This indicates corrupted sibling chain data.",
+                before_id
+            );
+        }
+    }
+
+    // Find head: node with None or before_sibling not in this set
+    use std::collections::HashSet;
+    let node_ids: HashSet<_> = nodes.iter().map(|n| &n.id).collect();
+    let head = nodes
+        .iter()
+        .find(|n| {
+            n.before_sibling_id.is_none()
+                || !node_ids.contains(n.before_sibling_id.as_ref().unwrap())
+        })
+        .copied();
+
+    if let Some(mut current) = head {
+        let mut sorted = vec![current];
+        let mut visited: HashSet<&str> = HashSet::new();
+        visited.insert(&current.id);
+
+        // Follow the chain forward using after_map
+        // Use visited set to detect cycles
+        while let Some(next_nodes) = after_map.get(&Some(current.id.clone())) {
+            if let Some(&next) = next_nodes.first() {
+                // Cycle detection: if we've seen this node before, we have a circular reference
+                if visited.contains(next.id.as_str()) {
+                    tracing::error!(
+                        "Circular sibling chain detected at node {}. This is a data corruption issue.",
+                        next.id
+                    );
+                    break;
+                }
+
+                visited.insert(&next.id);
+                sorted.push(next);
+                current = next;
+            } else {
+                break;
+            }
+        }
+
+        // Replace the original vector with sorted nodes
+        nodes.clear();
+        nodes.extend(sorted);
+    }
+}
+
+/// Count number of nodes in markdown (by counting HTML comments)
+fn count_nodes_in_markdown(markdown: &str) -> usize {
+    markdown.matches("<!--").count()
 }
 
 // Include tests

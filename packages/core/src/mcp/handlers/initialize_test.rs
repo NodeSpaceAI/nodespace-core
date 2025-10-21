@@ -84,7 +84,7 @@ fn test_all_expected_tools_present() {
     let result = handle_initialize(params).unwrap();
     let tools = result["capabilities"]["tools"].as_array().unwrap();
 
-    // Verify all 6 expected methods are present
+    // Verify all expected methods are present
     let expected_tools = [
         "create_node",
         "get_node",
@@ -92,6 +92,7 @@ fn test_all_expected_tools_present() {
         "delete_node",
         "query_nodes",
         "create_nodes_from_markdown",
+        "get_markdown_from_node_id",
     ];
 
     for expected_tool in &expected_tools {
@@ -102,8 +103,8 @@ fn test_all_expected_tools_present() {
         );
     }
 
-    // Verify we have exactly 6 tools
-    assert_eq!(tools.len(), 6, "Expected exactly 6 tools");
+    // Verify we have exactly 7 tools
+    assert_eq!(tools.len(), 7, "Expected exactly 7 tools");
 }
 
 #[test]

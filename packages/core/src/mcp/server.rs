@@ -195,6 +195,13 @@ async fn handle_request(
             )
             .await
         }
+        "get_markdown_from_node_id" => {
+            crate::mcp::handlers::markdown::handle_get_markdown_from_node_id(
+                service,
+                request.params,
+            )
+            .await
+        }
         _ => {
             warn!("⚠️  Unknown MCP method: {}", request.method);
             Err(MCPError::method_not_found(&request.method))
