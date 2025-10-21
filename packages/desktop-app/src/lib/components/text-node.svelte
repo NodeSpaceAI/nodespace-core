@@ -30,7 +30,9 @@
     allowMultiline: true
   };
 
-  // REFACTOR (Issue #316): No longer need createEventDispatcher - events are forwarded directly
+  // REFACTOR (Issue #316): No longer need createEventDispatcher
+  // Svelte automatically forwards on:* events from child components to parent
+  // when no handler is specified (event forwarding is a built-in Svelte feature)
 </script>
 
 <!-- REFACTOR (Issue #316): Removed $effect and internalContent state, using bind:content instead -->

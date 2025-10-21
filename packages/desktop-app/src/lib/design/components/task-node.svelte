@@ -89,12 +89,23 @@
 
   /**
    * Update task state and sync with node manager
+   *
    * REFACTOR (Issue #316): Removed direct taskState assignment since it's now $derived
    * State updates flow through content/metadata changes, and taskState derives reactively
+   *
+   * WHY THIS FUNCTION STILL EXISTS:
+   * Even though taskState is now a derived value (computed automatically from content/metadata),
+   * we still need this function to:
+   * 1. Handle icon click events (user cycling through states)
+   * 2. Dispatch events to parent components (contentChanged, taskStateChanged)
+   * 3. Clean content when converting from other node types
+   *
+   * The function doesn't SET taskState directly anymore - instead it updates the underlying
+   * content/metadata, and taskState automatically recomputes via $derived.by()
    */
   function updateTaskState(newState: NodeState) {
     // Note: taskState is now $derived, so it will update automatically
-    // when we update the content or metadata
+    // when we update the content or metadata below
 
     // Clean the content if it has any shortcut syntax from node conversion
     const cleanedContent = cleanContentForDisplay(content);

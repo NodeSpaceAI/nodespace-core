@@ -628,15 +628,29 @@ impl NodeBehavior for OrderedListNodeBehavior {
     }
 
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // Allow empty ordered list nodes ("1. ") as placeholders (same as other node types)
-        // Frontend manages placeholder UX, backend stores them in database
+        // ARCHITECTURAL DECISION: Allow ordered list placeholders ("1. " with no content)
         //
-        // This matches the architecture pattern where:
-        // - Frontend creates placeholder nodes when user presses Enter or uses slash command
-        // - Backend accepts and persists placeholder nodes
-        // - User can immediately start typing to add content
+        // Unlike TextNode and HeaderNode which reject empty content after stripping whitespace,
+        // OrderedListNode accepts "1. " as valid placeholder content because:
         //
-        // Note: Content must at least have the "1. " prefix for proper ordered list formatting
+        // 1. The "1. " prefix is STRUCTURAL SYNTAX, not user content
+        //    - Similar to how markdown "# " is structural for headers
+        //    - The prefix defines the node type and formatting
+        //
+        // 2. Empty ordered list items are semantically valid
+        //    - HTML allows <li></li> (empty list items)
+        //    - Markdown allows "1. " as valid syntax
+        //    - Users may intentionally create empty list items as placeholders
+        //
+        // 3. Consistent with frontend UX expectations
+        //    - Pressing Enter creates new list item with "1. " prefix
+        //    - User expects immediate persistence without requiring content first
+        //    - Backend should accept what frontend naturally generates
+        //
+        // This differs from TextNode/HeaderNode where empty content has no semantic meaning.
+        // For ordered lists, "1. " represents a valid empty list item in the list structure.
+        //
+        // Validation: Content must have SOME characters (at minimum the "1. " prefix)
         if node.content.is_empty() {
             return Err(NodeValidationError::MissingField(
                 "Ordered list nodes must have content (at least '1. ' prefix)".to_string(),
