@@ -5,12 +5,18 @@
 
 use crate::mcp::handlers::nodes;
 use crate::mcp::types::{MCPError, MCPNotification, MCPRequest, MCPResponse};
-use crate::services::NodeService;
+use crate::services::{NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tracing::{debug, error, info, instrument, warn};
+
+/// Combined services for MCP handlers
+pub struct McpServices {
+    pub node_service: Arc<NodeService>,
+    pub embedding_service: Arc<NodeEmbeddingService>,
+}
 
 /// Server state tracking initialization status
 struct ServerState {
@@ -31,14 +37,14 @@ pub type ResponseCallback = Arc<dyn Fn(&str, &Value) + Send + Sync>;
 ///
 /// # Arguments
 ///
-/// * `node_service` - Shared NodeService instance
+/// * `services` - Combined McpServices struct with both NodeService and NodeEmbeddingService
 ///
 /// # Returns
 ///
 /// Returns Ok(()) when stdin is closed, or Err on fatal errors
-#[instrument(skip(node_service))]
-pub async fn run_mcp_server(node_service: Arc<NodeService>) -> anyhow::Result<()> {
-    run_mcp_server_with_callback(node_service, None).await
+#[instrument(skip(services))]
+pub async fn run_mcp_server(services: McpServices) -> anyhow::Result<()> {
+    run_mcp_server_with_callback(services, None).await
 }
 
 /// Run the MCP stdio server with an optional response callback
@@ -49,15 +55,15 @@ pub async fn run_mcp_server(node_service: Arc<NodeService>) -> anyhow::Result<()
 ///
 /// # Arguments
 ///
-/// * `node_service` - Shared NodeService instance
+/// * `services` - Combined McpServices struct with both NodeService and NodeEmbeddingService
 /// * `callback` - Optional callback invoked with (method, result) on success
 ///
 /// # Returns
 ///
 /// Returns Ok(()) when stdin is closed, or Err on fatal errors
-#[instrument(skip(node_service, callback))]
+#[instrument(skip(services, callback))]
 pub async fn run_mcp_server_with_callback(
-    node_service: Arc<NodeService>,
+    services: McpServices,
     callback: Option<ResponseCallback>,
 ) -> anyhow::Result<()> {
     info!("🔌 MCP stdio server started");
@@ -84,7 +90,7 @@ pub async fn run_mcp_server_with_callback(
                 let method = request.method.clone();
 
                 // Handle request with state tracking
-                let response = handle_request(&node_service, &state, request).await;
+                let response = handle_request(&services, &state, request).await;
 
                 // Invoke callback on successful response
                 if let Some(ref callback) = callback {
@@ -155,9 +161,9 @@ pub async fn run_mcp_server_with_callback(
 }
 
 /// Handle a JSON-RPC request and return a response
-#[instrument(skip(service, state), fields(method = %request.method, id = %request.id))]
+#[instrument(skip(services, state), fields(method = %request.method, id = %request.id))]
 async fn handle_request(
-    service: &Arc<NodeService>,
+    services: &McpServices,
     state: &ServerState,
     request: MCPRequest,
 ) -> MCPResponse {
@@ -176,32 +182,42 @@ async fn handle_request(
     }
 
     let result = match request.method.as_str() {
-        // CRITICAL: Initialize must be first interaction (doesn't need NodeService)
+        // CRITICAL: Initialize must be first interaction (doesn't need any services)
         "initialize" => crate::mcp::handlers::initialize::handle_initialize(request.params),
 
-        // Ping for connection health checks (doesn't need NodeService or initialization)
+        // Ping for connection health checks (doesn't need services or initialization)
         "ping" => Ok(json!({})),
 
         // Normal node operations (require initialization to have completed first)
-        "create_node" => nodes::handle_create_node(service, request.params).await,
-        "get_node" => nodes::handle_get_node(service, request.params).await,
-        "update_node" => nodes::handle_update_node(service, request.params).await,
-        "delete_node" => nodes::handle_delete_node(service, request.params).await,
-        "query_nodes" => nodes::handle_query_nodes(service, request.params).await,
+        "create_node" => nodes::handle_create_node(&services.node_service, request.params).await,
+        "get_node" => nodes::handle_get_node(&services.node_service, request.params).await,
+        "update_node" => nodes::handle_update_node(&services.node_service, request.params).await,
+        "delete_node" => nodes::handle_delete_node(&services.node_service, request.params).await,
+        "query_nodes" => nodes::handle_query_nodes(&services.node_service, request.params).await,
         "create_nodes_from_markdown" => {
             crate::mcp::handlers::markdown::handle_create_nodes_from_markdown(
-                service,
+                &services.node_service,
                 request.params,
             )
             .await
         }
         "get_markdown_from_node_id" => {
             crate::mcp::handlers::markdown::handle_get_markdown_from_node_id(
-                service,
+                &services.node_service,
                 request.params,
             )
             .await
         }
+
+        // Search operations (require initialization)
+        "search_containers" => {
+            crate::mcp::handlers::search::handle_search_containers(
+                &services.embedding_service,
+                request.params,
+            )
+            .await
+        }
+
         _ => {
             warn!("⚠️  Unknown MCP method: {}", request.method);
             Err(MCPError::method_not_found(&request.method))

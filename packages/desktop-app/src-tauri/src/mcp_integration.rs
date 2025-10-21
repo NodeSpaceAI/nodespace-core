@@ -5,6 +5,7 @@
 //! with the Tauri desktop application.
 
 use nodespace_core::mcp;
+use nodespace_core::services::NodeEmbeddingService;
 use nodespace_core::NodeService;
 use serde::Serialize;
 use serde_json::Value;
@@ -42,6 +43,7 @@ struct NodeDeletedEvent {
 /// method type.
 pub async fn run_mcp_server_with_events(
     node_service: Arc<NodeService>,
+    embedding_service: Arc<NodeEmbeddingService>,
     app: AppHandle,
 ) -> anyhow::Result<()> {
     // Create callback that emits Tauri events
@@ -49,8 +51,14 @@ pub async fn run_mcp_server_with_events(
         emit_event_for_method(&app, method, result);
     });
 
+    // Create combined services struct for MCP
+    let services = mcp::server::McpServices {
+        node_service,
+        embedding_service,
+    };
+
     // Run core MCP server with event-emitting callback
-    mcp::run_mcp_server_with_callback(node_service, Some(callback)).await
+    mcp::run_mcp_server_with_callback(services, Some(callback)).await
 }
 
 /// Emit Tauri event based on MCP method and result

@@ -26,13 +26,14 @@ fn toggle_sidebar() -> String {
 #[cfg(test)]
 mod tests;
 
-/// Initialize MCP server with shared NodeService from Tauri state
+/// Initialize MCP server with shared services from Tauri state
 ///
-/// This must be called AFTER the database is initialized and NodeService
-/// is available in Tauri's managed state. It retrieves the shared NodeService
-/// and spawns the MCP server task with it, ensuring MCP and Tauri commands
-/// operate on the same database.
+/// This must be called AFTER the database is initialized and services
+/// are available in Tauri's managed state. It retrieves the shared NodeService
+/// and NodeEmbeddingService and spawns the MCP server task with them,
+/// ensuring MCP and Tauri commands operate on the same database.
 pub fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
+    use crate::commands::embeddings::EmbeddingState;
     use futures::FutureExt;
     use nodespace_core::NodeService;
     use std::sync::Arc;
@@ -40,21 +41,27 @@ pub fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
 
     tracing::info!("🔧 Initializing MCP server...");
 
-    // Get shared NodeService from Tauri state
-    // This ensures MCP uses the same database as Tauri commands
+    // Get shared services from Tauri state
+    // This ensures MCP uses the same database and embedding service as Tauri commands
     let node_service: tauri::State<NodeService> = app.state();
     let node_service_arc = Arc::new(node_service.inner().clone());
 
-    tracing::info!("✅ Using shared NodeService, spawning MCP stdio task...");
+    let embedding_state: tauri::State<EmbeddingState> = app.state();
+    let embedding_service_arc = embedding_state.service.clone();
+
+    tracing::info!(
+        "✅ Using shared NodeService and NodeEmbeddingService, spawning MCP stdio task..."
+    );
 
     // Spawn MCP stdio server task with Tauri event emissions
     // Uses panic protection to prevent silent background task failures
     tauri::async_runtime::spawn(async move {
         // Use FutureExt::catch_unwind for proper async panic catching
         // This avoids the deadlock risk of using block_on inside an async task
-        // AssertUnwindSafe is needed because NodeService contains non-UnwindSafe types
+        // AssertUnwindSafe is needed because services contain non-UnwindSafe types
         let result = std::panic::AssertUnwindSafe(mcp_integration::run_mcp_server_with_events(
             node_service_arc,
+            embedding_service_arc,
             app,
         ))
         .catch_unwind()
