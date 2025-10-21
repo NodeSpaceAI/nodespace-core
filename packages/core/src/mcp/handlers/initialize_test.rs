@@ -93,6 +93,7 @@ fn test_all_expected_tools_present() {
         "query_nodes",
         "create_nodes_from_markdown",
         "get_markdown_from_node_id",
+        "search_containers",
     ];
 
     for expected_tool in &expected_tools {
@@ -103,8 +104,8 @@ fn test_all_expected_tools_present() {
         );
     }
 
-    // Verify we have exactly 7 tools
-    assert_eq!(tools.len(), 7, "Expected exactly 7 tools");
+    // Verify we have exactly 8 tools
+    assert_eq!(tools.len(), 8, "Expected exactly 8 tools");
 }
 
 #[test]

@@ -35,7 +35,13 @@ pulldown-cmark = "0.11"
 # Logging
 tracing = { workspace = true }
 
+# HTTP server for MCP
+axum = "0.7"
+tower-http = { version = "0.6", features = ["trace"] }
+tower = "0.5"
+
 [dev-dependencies]
 tokio-test = { workspace = true }
+http-body-util = "0.1"
 criterion = { workspace = true }
 tempfile = "3.0"

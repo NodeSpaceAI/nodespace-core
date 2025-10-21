@@ -40,12 +40,21 @@ struct NodeDeletedEvent {
 ///
 /// Implementation: Provides a callback to the core server that inspects
 /// successful responses and emits appropriate Tauri events based on the
-/// method type.
+/// method type. Uses HTTP transport for GUI app integration.
+///
+/// Port configuration: Can be set via `MCP_PORT` environment variable,
+/// defaults to 3001 if not specified.
 pub async fn run_mcp_server_with_events(
     node_service: Arc<NodeService>,
     embedding_service: Arc<NodeEmbeddingService>,
     app: AppHandle,
 ) -> anyhow::Result<()> {
+    // Get port from environment variable or use default
+    let port = std::env::var("MCP_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(3001);
+
     // Create callback that emits Tauri events
     let callback = Arc::new(move |method: &str, result: &Value| {
         emit_event_for_method(&app, method, result);
@@ -57,8 +66,13 @@ pub async fn run_mcp_server_with_events(
         embedding_service,
     };
 
-    // Run core MCP server with event-emitting callback
-    mcp::run_mcp_server_with_callback(services, Some(callback)).await
+    // Run core MCP server with HTTP transport and event-emitting callback
+    mcp::run_mcp_server_with_callback(
+        services,
+        mcp::server::McpTransport::Http { port },
+        Some(callback),
+    )
+    .await
 }
 
 /// Emit Tauri event based on MCP method and result
