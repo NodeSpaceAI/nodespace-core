@@ -100,6 +100,9 @@ export class SharedNodeStore {
   private wildcardSubscriptions = new Set<Subscription>();
   private subscriptionIdCounter = 0;
 
+  // Batch ID counter for unique batch identification
+  private batchIdCounter = 0;
+
   // Conflict resolution
   private conflictResolver: ConflictResolver = createDefaultResolver();
   private conflictWindowMs = 5000; // 5 seconds default for conflict detection
@@ -1481,7 +1484,9 @@ export class SharedNodeStore {
     // This prevents race between old debounced updates and new batch
     PersistenceCoordinator.getInstance().cancelPending(nodeId);
 
-    const batchId = `batch-${nodeId}-${Date.now()}`;
+    // Use counter-based batch ID to prevent timing collisions
+    // (Date.now() can return same value for rapid successive calls)
+    const batchId = `batch-${nodeId}-${this.batchIdCounter++}`;
     const createdAt = Date.now();
 
     // Auto-commit after timeout to prevent abandoned batches
