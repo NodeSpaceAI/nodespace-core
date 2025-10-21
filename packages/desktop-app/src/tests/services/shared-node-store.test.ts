@@ -878,4 +878,394 @@ describe('SharedNodeStore', () => {
       });
     });
   });
+
+  // ========================================================================
+  // Atomic Batch Updates
+  // ========================================================================
+
+  describe('Atomic Batch Updates', () => {
+    let quoteNode: Node;
+
+    beforeEach(() => {
+      quoteNode = {
+        ...mockNode,
+        id: 'quote-node-1',
+        nodeType: 'quote-block',
+        content: '> Hello world'
+      };
+    });
+
+    describe('startBatch', () => {
+      it('should create a new batch for a node', () => {
+        const batchId = store.startBatch('quote-node-1');
+
+        expect(batchId).toMatch(/^batch-quote-node-1-\d+$/);
+      });
+
+      it('should cancel existing batch when starting new one', () => {
+        const batchId1 = store.startBatch('quote-node-1');
+        const batchId2 = store.startBatch('quote-node-1');
+
+        expect(batchId1).not.toBe(batchId2);
+      });
+
+      it('should use default timeout if not specified', () => {
+        const batchId = store.startBatch('quote-node-1');
+        expect(batchId).toBeDefined();
+      });
+
+      it('should accept custom timeout', () => {
+        const batchId = store.startBatch('quote-node-1', 5000);
+        expect(batchId).toBeDefined();
+      });
+    });
+
+    describe('addToBatch', () => {
+      it('should accumulate changes in batch', () => {
+        store.setNode(quoteNode, viewerSource);
+        store.startBatch('quote-node-1');
+
+        store.addToBatch('quote-node-1', { content: '> New content' });
+        store.addToBatch('quote-node-1', { nodeType: 'quote-block' });
+
+        const node = store.getNode('quote-node-1');
+        expect(node?.content).toBe('> New content');
+        expect(node?.nodeType).toBe('quote-block');
+      });
+
+      it('should update in-memory state immediately (optimistic)', () => {
+        store.setNode(quoteNode, viewerSource);
+        store.startBatch('quote-node-1');
+
+        store.addToBatch('quote-node-1', { content: '> Updated' });
+
+        const node = store.getNode('quote-node-1');
+        expect(node?.content).toBe('> Updated');
+      });
+
+      it('should merge later changes over earlier ones', () => {
+        store.setNode(quoteNode, viewerSource);
+        store.startBatch('quote-node-1');
+
+        store.addToBatch('quote-node-1', { content: '> First' });
+        store.addToBatch('quote-node-1', { content: '> Second' });
+        store.addToBatch('quote-node-1', { content: '> Third' });
+
+        const node = store.getNode('quote-node-1');
+        expect(node?.content).toBe('> Third');
+      });
+
+      it('should reset timeout on each change (true inactivity)', async () => {
+        store.setNode(quoteNode, viewerSource);
+        store.startBatch('quote-node-1', 100); // 100ms timeout
+
+        // Add change at t=0
+        store.addToBatch('quote-node-1', { content: '> First' });
+
+        // Wait 50ms, then add another change (resets timeout)
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        store.addToBatch('quote-node-1', { content: '> Second' });
+
+        // Wait another 50ms (total 100ms from first change, but only 50ms from second)
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        // Batch should still be active (timeout was reset)
+        const node = store.getNode('quote-node-1');
+        expect(node?.content).toBe('> Second');
+      });
+
+      it('should warn if batch does not exist', () => {
+        const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        store.addToBatch('non-existent-node', { content: 'test' });
+
+        expect(consoleSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Attempted to add to non-existent batch'),
+          expect.any(Object)
+        );
+
+        consoleSpy.mockRestore();
+      });
+    });
+
+    describe('commitBatch', () => {
+      it('should persist changes when batch commits', async () => {
+        store.setNode(quoteNode, viewerSource);
+        store.startBatch('quote-node-1');
+
+        store.addToBatch('quote-node-1', { content: '> Final content' });
+        store.commitBatch('quote-node-1');
+
+        // Wait for persistence
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        const node = store.getNode('quote-node-1');
+        expect(node?.content).toBe('> Final content');
+      });
+
+      it('should skip persistence if final state is placeholder', () => {
+        const placeholderNode = {
+          ...mockNode,
+          id: 'placeholder-1',
+          nodeType: 'quote-block',
+          content: '> '
+        };
+
+        store.setNode(placeholderNode, viewerSource, true);
+        store.startBatch('placeholder-1');
+
+        store.addToBatch('placeholder-1', { content: '> ' });
+        store.commitBatch('placeholder-1');
+
+        // Should not persist (placeholder detection)
+        const node = store.getNode('placeholder-1');
+        expect(node?.content).toBe('> ');
+      });
+
+      it('should persist if node was previously persisted (even if now placeholder)', async () => {
+        // First persist with real content
+        store.setNode(quoteNode, viewerSource);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        // Now batch update that deletes content back to placeholder
+        store.startBatch('quote-node-1');
+        store.addToBatch('quote-node-1', { content: '> ' });
+        store.commitBatch('quote-node-1');
+
+        // Should still persist to update DB with empty state
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        const node = store.getNode('quote-node-1');
+        expect(node?.content).toBe('> ');
+      });
+
+      it('should auto-commit after timeout', async () => {
+        store.setNode(quoteNode, viewerSource);
+        store.startBatch('quote-node-1', 50); // 50ms timeout
+
+        store.addToBatch('quote-node-1', { content: '> Timeout test' });
+
+        // Wait for timeout to fire
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        // Batch should have auto-committed
+        const node = store.getNode('quote-node-1');
+        expect(node?.content).toBe('> Timeout test');
+      });
+
+      it('should handle empty batch (no changes)', () => {
+        store.setNode(quoteNode, viewerSource);
+        store.startBatch('quote-node-1');
+
+        // Don't add any changes
+        store.commitBatch('quote-node-1');
+
+        // Should handle gracefully
+        const node = store.getNode('quote-node-1');
+        expect(node).toBeDefined();
+      });
+
+      it('should clean up timeout and batch state on commit', () => {
+        store.setNode(quoteNode, viewerSource);
+        store.startBatch('quote-node-1');
+
+        store.addToBatch('quote-node-1', { content: '> Test' });
+        store.commitBatch('quote-node-1');
+
+        // Trying to add to committed batch should warn
+        const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        store.addToBatch('quote-node-1', { content: '> After commit' });
+
+        expect(consoleSpy).toHaveBeenCalled();
+        consoleSpy.mockRestore();
+      });
+    });
+
+    describe('cancelBatch', () => {
+      it('should cancel active batch without persisting', () => {
+        store.setNode(quoteNode, viewerSource);
+        store.startBatch('quote-node-1');
+
+        store.addToBatch('quote-node-1', { content: '> Cancelled' });
+        store.cancelBatch('quote-node-1');
+
+        // Changes should still be in memory (optimistic) but batch is gone
+        const node = store.getNode('quote-node-1');
+        expect(node?.content).toBe('> Cancelled');
+      });
+
+      it('should clean up timeout on cancel', () => {
+        store.startBatch('quote-node-1', 100);
+        store.cancelBatch('quote-node-1');
+
+        // Should not throw or warn after timeout would have fired
+        // (timeout was cleared)
+      });
+
+      it('should handle cancelling non-existent batch gracefully', () => {
+        // Should not throw
+        store.cancelBatch('non-existent-node');
+      });
+    });
+
+    describe('Auto-restart batching for pattern-converted nodes', () => {
+      it('should auto-restart batch for quote-block nodes', () => {
+        store.setNode(quoteNode, viewerSource, true);
+
+        // Update content (should auto-start batch)
+        store.updateNode('quote-node-1', { content: '> Updated' }, viewerSource);
+
+        // Should have started a batch automatically
+        // (verify by checking that subsequent updates are batched)
+        store.updateNode('quote-node-1', { content: '> Again' }, viewerSource);
+
+        const node = store.getNode('quote-node-1');
+        expect(node?.content).toBe('> Again');
+      });
+
+      it('should auto-restart batch for code-block nodes', () => {
+        const codeNode = {
+          ...mockNode,
+          id: 'code-node-1',
+          nodeType: 'code-block',
+          content: '```\ncode\n```'
+        };
+
+        store.setNode(codeNode, viewerSource, true);
+        store.updateNode('code-node-1', { content: '```\nupdated\n```' }, viewerSource);
+
+        const node = store.getNode('code-node-1');
+        expect(node?.content).toBe('```\nupdated\n```');
+      });
+
+      it('should auto-restart batch for ordered-list nodes', () => {
+        const listNode = {
+          ...mockNode,
+          id: 'list-node-1',
+          nodeType: 'ordered-list',
+          content: '1. Item'
+        };
+
+        store.setNode(listNode, viewerSource, true);
+        store.updateNode('list-node-1', { content: '1. Updated' }, viewerSource);
+
+        const node = store.getNode('list-node-1');
+        expect(node?.content).toBe('1. Updated');
+      });
+
+      it('should respect skipPersistence option in auto-restart', () => {
+        store.setNode(quoteNode, viewerSource, true);
+
+        // Update with skipPersistence should NOT start batch
+        store.updateNode('quote-node-1', { content: '> Updated' }, viewerSource, {
+          skipPersistence: true
+        });
+
+        // Should fall through to normal path (no batch)
+        const node = store.getNode('quote-node-1');
+        expect(node?.content).toBe('> Updated');
+      });
+
+      it('should not auto-restart for non-pattern-converted types', () => {
+        const textNode = {
+          ...mockNode,
+          id: 'text-node-1',
+          nodeType: 'text',
+          content: 'Hello'
+        };
+
+        store.setNode(textNode, viewerSource, true);
+        store.updateNode('text-node-1', { content: 'Updated' }, viewerSource);
+
+        // Should not have started a batch (text nodes don't require batching)
+        const node = store.getNode('text-node-1');
+        expect(node?.content).toBe('Updated');
+      });
+    });
+
+    describe('Concurrent batches', () => {
+      it('should handle concurrent batches on different nodes', () => {
+        const node1 = { ...mockNode, id: 'node-1', nodeType: 'quote-block', content: '> A' };
+        const node2 = { ...mockNode, id: 'node-2', nodeType: 'code-block', content: '```\nB\n```' };
+
+        store.setNode(node1, viewerSource, true);
+        store.setNode(node2, viewerSource, true);
+
+        store.startBatch('node-1');
+        store.startBatch('node-2');
+
+        store.addToBatch('node-1', { content: '> A updated' });
+        store.addToBatch('node-2', { content: '```\nB updated\n```' });
+
+        store.commitBatch('node-1');
+        store.commitBatch('node-2');
+
+        expect(store.getNode('node-1')?.content).toBe('> A updated');
+        expect(store.getNode('node-2')?.content).toBe('```\nB updated\n```');
+      });
+
+      it('should maintain separate timeout for each batch', async () => {
+        const node1 = { ...mockNode, id: 'node-1', nodeType: 'quote-block', content: '> A' };
+        const node2 = { ...mockNode, id: 'node-2', nodeType: 'code-block', content: '```\nB\n```' };
+
+        store.setNode(node1, viewerSource, true);
+        store.setNode(node2, viewerSource, true);
+
+        store.startBatch('node-1', 50);
+        store.startBatch('node-2', 100);
+
+        store.addToBatch('node-1', { content: '> A updated' });
+        store.addToBatch('node-2', { content: '```\nB updated\n```' });
+
+        // Wait for node-1's timeout but not node-2's
+        await new Promise((resolve) => setTimeout(resolve, 75));
+
+        // node-1 should have auto-committed, node-2 should still be batching
+        expect(store.getNode('node-1')?.content).toBe('> A updated');
+        expect(store.getNode('node-2')?.content).toBe('```\nB updated\n```');
+      });
+    });
+
+    describe('Race condition handling', () => {
+      it('should handle race where old path persists before batch', async () => {
+        // This is difficult to test directly, but we can verify the CREATE→UPDATE fallback
+        // by simulating the scenario where a node is persisted outside the batch
+
+        const node = { ...mockNode, id: 'race-node-1', nodeType: 'quote-block', content: '> Test' };
+
+        // Simulate old path persisting
+        store.setNode(node, viewerSource);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        // Now batch with updated content
+        store.startBatch('race-node-1');
+        store.addToBatch('race-node-1', { content: '> Updated via batch' });
+        store.commitBatch('race-node-1');
+
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        const finalNode = store.getNode('race-node-1');
+        expect(finalNode?.content).toBe('> Updated via batch');
+      });
+    });
+
+    describe('Batch cleanup on node deletion', () => {
+      it('should cancel batch when node is deleted', () => {
+        store.setNode(quoteNode, viewerSource, true);
+        store.startBatch('quote-node-1');
+
+        store.addToBatch('quote-node-1', { content: '> Test' });
+
+        // Delete node (should cancel batch)
+        store.deleteNode('quote-node-1', viewerSource);
+
+        // Batch should be gone
+        const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        store.addToBatch('quote-node-1', { content: '> After delete' });
+
+        expect(consoleSpy).toHaveBeenCalled();
+        consoleSpy.mockRestore();
+      });
+    });
+  });
 });

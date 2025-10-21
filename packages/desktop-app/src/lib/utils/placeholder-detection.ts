@@ -12,6 +12,26 @@
  */
 
 /**
+ * Node types that are created via pattern conversion (e.g., "> text" → quote-block)
+ * These types require atomic batching to prevent race conditions between content and nodeType updates
+ */
+export const PATTERN_CONVERTED_NODE_TYPES = ['quote-block', 'code-block', 'ordered-list'] as const;
+
+/**
+ * Type helper for pattern-converted node types
+ */
+export type PatternConvertedNodeType = (typeof PATTERN_CONVERTED_NODE_TYPES)[number];
+
+/**
+ * Check if a node type requires atomic batching for pattern conversions
+ * @param nodeType - Node type to check
+ * @returns true if the node type requires batching (was created via pattern conversion)
+ */
+export function requiresAtomicBatching(nodeType: string): boolean {
+  return (PATTERN_CONVERTED_NODE_TYPES as readonly string[]).includes(nodeType);
+}
+
+/**
  * Minimal node interface for placeholder detection
  * Only requires the properties needed to determine placeholder status
  */

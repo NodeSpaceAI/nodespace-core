@@ -1414,9 +1414,9 @@
 
                   // ATOMIC UPDATE: Use batch to ensure content + nodeType persist together
                   // This prevents race conditions where content persists before nodeType changes
-                  // Timeout (2s) auto-resets on each keystroke - only commits after true inactivity
-                  // Batch will auto-commit after 2s of no activity or when user navigates away
-                  sharedNodeStore.startBatch(node.id, 2000);
+                  // Timeout auto-resets on each keystroke - only commits after true inactivity
+                  // Batch will auto-commit after timeout (default 2s) or when user navigates away
+                  sharedNodeStore.startBatch(node.id);
 
                   // Update content if cleanedContent is provided (e.g., from contentTemplate)
                   if (cleanedContent !== undefined) {
