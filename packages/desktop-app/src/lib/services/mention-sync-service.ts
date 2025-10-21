@@ -1,4 +1,4 @@
-import { backendAdapter } from './backend-adapter';
+import { backendAdapter, type BackendAdapter } from './backend-adapter';
 
 /**
  * Service for automatically syncing mention relationships when node content changes.
@@ -26,6 +26,11 @@ import { backendAdapter } from './backend-adapter';
  * ```
  */
 export class MentionSyncService {
+  private adapter: BackendAdapter;
+
+  constructor(adapter?: BackendAdapter) {
+    this.adapter = adapter ?? backendAdapter;
+  }
   /**
    * Extract nodespace:// links from content
    *
@@ -107,7 +112,7 @@ export class MentionSyncService {
     // Update database
     for (const mentionedId of validToAdd) {
       try {
-        await backendAdapter.createNodeMention(nodeId, mentionedId);
+        await this.adapter.createNodeMention(nodeId, mentionedId);
       } catch (error) {
         console.warn(`Failed to create mention: ${nodeId} -> ${mentionedId}`, error);
       }
@@ -115,7 +120,7 @@ export class MentionSyncService {
 
     for (const mentionedId of validToRemove) {
       try {
-        await backendAdapter.deleteNodeMention(nodeId, mentionedId);
+        await this.adapter.deleteNodeMention(nodeId, mentionedId);
       } catch (error) {
         console.warn(`Failed to delete mention: ${nodeId} -> ${mentionedId}`, error);
       }
