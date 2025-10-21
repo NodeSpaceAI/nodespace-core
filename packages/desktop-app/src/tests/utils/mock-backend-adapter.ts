@@ -167,6 +167,18 @@ export class MockBackendAdapter implements BackendAdapter {
     // No-op for sibling chain tests
   }
 
+  async getOutgoingMentions(_nodeId: string): Promise<string[]> {
+    return [];
+  }
+
+  async getIncomingMentions(_nodeId: string): Promise<string[]> {
+    return [];
+  }
+
+  async deleteNodeMention(_mentioningNodeId: string, _mentionedNodeId: string): Promise<void> {
+    // No-op for sibling chain tests
+  }
+
   /**
    * Helper: Clear all nodes (useful for test cleanup)
    */

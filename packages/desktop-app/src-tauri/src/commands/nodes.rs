@@ -515,6 +515,92 @@ pub async fn save_node_with_parent(
         .map_err(Into::into)
 }
 
+/// Get outgoing mentions (nodes that this node mentions)
+///
+/// Retrieves all nodes that are mentioned in this node's content.
+///
+/// # Arguments
+/// * `service` - Node service instance from Tauri state
+/// * `node_id` - ID of the node to query
+///
+/// # Returns
+/// * `Ok(Vec<String>)` - List of mentioned node IDs (empty if no mentions)
+/// * `Err(CommandError)` - Error with details if operation fails
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// const mentions = await invoke('get_outgoing_mentions', {
+///   nodeId: 'node-123'
+/// });
+/// ```
+#[tauri::command]
+pub async fn get_outgoing_mentions(
+    service: State<'_, NodeService>,
+    node_id: String,
+) -> Result<Vec<String>, CommandError> {
+    service.get_mentions(&node_id).await.map_err(Into::into)
+}
+
+/// Get incoming mentions (nodes that mention this node - BACKLINKS)
+///
+/// Retrieves all nodes that mention this node in their content.
+/// This enables bidirectional linking and backlink discovery.
+///
+/// # Arguments
+/// * `service` - Node service instance from Tauri state
+/// * `node_id` - ID of the node to query for backlinks
+///
+/// # Returns
+/// * `Ok(Vec<String>)` - List of node IDs that mention this node (empty if no backlinks)
+/// * `Err(CommandError)` - Error with details if operation fails
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// const backlinks = await invoke('get_incoming_mentions', {
+///   nodeId: 'node-123'
+/// });
+/// ```
+#[tauri::command]
+pub async fn get_incoming_mentions(
+    service: State<'_, NodeService>,
+    node_id: String,
+) -> Result<Vec<String>, CommandError> {
+    service.get_mentioned_by(&node_id).await.map_err(Into::into)
+}
+
+/// Delete a mention relationship between two nodes
+///
+/// Removes the record that one node mentions another.
+/// This is called when mentions are removed from node content.
+///
+/// # Arguments
+/// * `service` - Node service instance from Tauri state
+/// * `mentioning_node_id` - ID of the node that contains the mention
+/// * `mentioned_node_id` - ID of the node being mentioned
+///
+/// # Returns
+/// * `Ok(())` - Mention deleted successfully
+/// * `Err(CommandError)` - Error with details if operation fails
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// await invoke('delete_node_mention', {
+///   mentioningNodeId: 'node-123',
+///   mentionedNodeId: 'node-456'
+/// });
+/// ```
+#[tauri::command]
+pub async fn delete_node_mention(
+    service: State<'_, NodeService>,
+    mentioning_node_id: String,
+    mentioned_node_id: String,
+) -> Result<(), CommandError> {
+    service
+        .remove_mention(&mentioning_node_id, &mentioned_node_id)
+        .await
+        .map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

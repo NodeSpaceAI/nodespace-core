@@ -158,6 +158,9 @@ pub fn run() {
             commands::nodes::get_nodes_by_container_id,
             commands::nodes::query_nodes_simple,
             commands::nodes::save_node_with_parent,
+            commands::nodes::get_outgoing_mentions,
+            commands::nodes::get_incoming_mentions,
+            commands::nodes::delete_node_mention,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

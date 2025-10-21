@@ -26,6 +26,7 @@ import { eventBus } from './event-bus';
 import { tauriNodeService } from './tauri-node-service';
 import { PersistenceCoordinator, OperationCancelledError } from './persistence-coordinator.svelte';
 import { isPlaceholderNode } from '$lib/utils/placeholder-detection';
+import { mentionSyncService } from './mention-sync-service';
 import type { Node } from '$lib/types';
 import type {
   NodeUpdate,
@@ -452,9 +453,18 @@ export class SharedNodeStore {
    */
   setNode(node: Node, source: UpdateSource, skipPersistence = false): void {
     const isNewNode = !this.persistedNodeIds.has(node.id);
+    const oldNode = this.nodes.get(node.id);
     this.nodes.set(node.id, node);
     this.versions.set(node.id, this.getNextVersion(node.id));
     this.notifySubscribers(node.id, node, source);
+
+    // Sync mentions if content changed (async - don't block)
+    if (oldNode?.content !== node.content) {
+      // Fire and forget - mentions sync in background
+      mentionSyncService.syncMentions(node.id, oldNode?.content, node.content).catch((error) => {
+        console.error('[SharedNodeStore] Failed to sync mentions for node', node.id, error);
+      });
+    }
 
     // If source is database, mark node as already persisted
     if (source.type === 'database') {

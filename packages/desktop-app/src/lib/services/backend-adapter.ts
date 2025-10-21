@@ -264,6 +264,30 @@ export interface BackendAdapter {
    * @throws {NodeOperationError} If mention creation fails
    */
   createNodeMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void>;
+
+  /**
+   * Get outgoing mentions (nodes that this node mentions)
+   * @param nodeId - ID of the node to query
+   * @returns List of mentioned node IDs (empty if no mentions)
+   * @throws {NodeOperationError} If query fails
+   */
+  getOutgoingMentions(nodeId: string): Promise<string[]>;
+
+  /**
+   * Get incoming mentions (nodes that mention this node - BACKLINKS)
+   * @param nodeId - ID of the node to query for backlinks
+   * @returns List of node IDs that mention this node (empty if no backlinks)
+   * @throws {NodeOperationError} If query fails
+   */
+  getIncomingMentions(nodeId: string): Promise<string[]>;
+
+  /**
+   * Delete a mention relationship between two nodes
+   * @param mentioningNodeId - ID of the node that contains the mention
+   * @param mentionedNodeId - ID of the node being mentioned
+   * @throws {NodeOperationError} If deletion fails
+   */
+  deleteNodeMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void>;
 }
 
 /**
@@ -538,6 +562,40 @@ export class TauriAdapter implements BackendAdapter {
         err.message,
         `${mentioningNodeId} -> ${mentionedNodeId}`,
         'createNodeMention'
+      );
+    }
+  }
+
+  async getOutgoingMentions(nodeId: string): Promise<string[]> {
+    try {
+      return await invoke<string[]>('get_outgoing_mentions', { nodeId });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, nodeId, 'getOutgoingMentions');
+    }
+  }
+
+  async getIncomingMentions(nodeId: string): Promise<string[]> {
+    try {
+      return await invoke<string[]>('get_incoming_mentions', { nodeId });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, nodeId, 'getIncomingMentions');
+    }
+  }
+
+  async deleteNodeMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
+    try {
+      await invoke<void>('delete_node_mention', {
+        mentioningNodeId,
+        mentionedNodeId
+      });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(
+        err.message,
+        `${mentioningNodeId} -> ${mentionedNodeId}`,
+        'deleteNodeMention'
       );
     }
   }
@@ -1071,6 +1129,54 @@ export class HttpAdapter implements BackendAdapter {
         err.message,
         `${mentioningNodeId} -> ${mentionedNodeId}`,
         'createNodeMention'
+      );
+    }
+  }
+
+  async getOutgoingMentions(nodeId: string): Promise<string[]> {
+    try {
+      const response = await globalThis.fetch(
+        `${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/outgoing-mentions`,
+        {
+          method: 'GET'
+        }
+      );
+      return await this.handleResponse<string[]>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, nodeId, 'getOutgoingMentions');
+    }
+  }
+
+  async getIncomingMentions(nodeId: string): Promise<string[]> {
+    try {
+      const response = await globalThis.fetch(
+        `${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/incoming-mentions`,
+        {
+          method: 'GET'
+        }
+      );
+      return await this.handleResponse<string[]>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, nodeId, 'getIncomingMentions');
+    }
+  }
+
+  async deleteNodeMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
+    try {
+      const response = await globalThis.fetch(`${this.baseUrl}/api/nodes/mention`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mentioningNodeId, mentionedNodeId })
+      });
+      await this.handleResponse<void>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(
+        err.message,
+        `${mentioningNodeId} -> ${mentionedNodeId}`,
+        'deleteNodeMention'
       );
     }
   }
