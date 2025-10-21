@@ -173,14 +173,6 @@
       });
     }
 
-    // For ordered lists: Enter creates new TEXT node below (exits the list)
-    if (detail.nodeType === 'ordered-list') {
-      detail.currentContent = internalContent; // Keep current node unchanged
-      detail.newContent = ''; // New TEXT node (empty)
-      detail.nodeType = 'text'; // Exit list, create text node
-      detail.newNodeCursorPosition = 0; // Cursor at start
-    }
-
     dispatch('createNewNode', detail);
   }
 

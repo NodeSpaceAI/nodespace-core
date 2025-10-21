@@ -289,9 +289,12 @@ export class SharedNodeStore {
 
         // Skip persisting placeholder nodes - they exist in UI but not in database
         // Placeholders are nodes with only type-specific prefixes and no actual content
+        // EXCEPTION: nodeType changes must ALWAYS persist, even for placeholders
+        // This ensures pattern detection (e.g., ``` → code-block) saves the nodeType
         const isPlaceholder = isPlaceholderNode(updatedNode);
+        const persistPlaceholderForNodeType = isPlaceholder && isNodeTypeChange;
 
-        if (shouldPersist && !isPlaceholder) {
+        if (shouldPersist && (!isPlaceholder || persistPlaceholderForNodeType)) {
           // Delegate to PersistenceCoordinator for coordinated persistence
           // Use debounced mode for content changes (typing), immediate for structural changes
           const dependencies: Array<string | (() => Promise<void>)> = [];

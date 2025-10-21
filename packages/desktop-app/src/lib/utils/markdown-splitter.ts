@@ -242,6 +242,56 @@ export function splitMarkdownContent(content: string, position: number): Markdow
     };
   }
 
+  // Check for ordered-list syntax (1. prefix)
+  const orderedListMatch = content.match(/^(1\.\s+)/);
+  if (orderedListMatch) {
+    const listPrefix = orderedListMatch[1]; // e.g., '1. '
+    const listPrefixLength = listPrefix.length;
+
+    if (position <= 0 || position <= listPrefixLength) {
+      // Cursor is at/before/within list syntax - create empty node above
+      return {
+        beforeContent: listPrefix,
+        afterContent: content,
+        newNodeCursorPosition: listPrefixLength
+      };
+    }
+
+    // Cursor is after list syntax - split and add prefix to new content
+    const beforeCursor = content.substring(0, position);
+    const afterCursor = content.substring(position);
+    return {
+      beforeContent: beforeCursor,
+      afterContent: listPrefix + afterCursor,
+      newNodeCursorPosition: listPrefixLength
+    };
+  }
+
+  // Check for quote-block syntax (> prefix)
+  const quoteBlockMatch = content.match(/^(>\s+)/);
+  if (quoteBlockMatch) {
+    const quotePrefix = quoteBlockMatch[1]; // e.g., '> '
+    const quotePrefixLength = quotePrefix.length;
+
+    if (position <= 0 || position <= quotePrefixLength) {
+      // Cursor is at/before/within quote syntax - create empty node above
+      return {
+        beforeContent: quotePrefix,
+        afterContent: content,
+        newNodeCursorPosition: quotePrefixLength
+      };
+    }
+
+    // Cursor is after quote syntax - split and add prefix to new content
+    const beforeCursor = content.substring(0, position);
+    const afterCursor = content.substring(position);
+    return {
+      beforeContent: beforeCursor,
+      afterContent: quotePrefix + afterCursor,
+      newNodeCursorPosition: quotePrefixLength
+    };
+  }
+
   // Handle edge cases for non-header content
   if (position <= 0) {
     return {
