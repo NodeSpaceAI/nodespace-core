@@ -38,6 +38,34 @@ pub struct MCPRequest {
     pub params: Value,
 }
 
+/// JSON-RPC 2.0 notification structure (no id, no response expected)
+///
+/// Notifications are used for events that don't require a response,
+/// such as the "initialized" notification sent after initialization.
+///
+/// # Example
+///
+/// ```json
+/// {
+///     "jsonrpc": "2.0",
+///     "method": "initialized",
+///     "params": {}
+/// }
+/// ```
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MCPNotification {
+    /// JSON-RPC version (must be exactly "2.0")
+    #[serde(deserialize_with = "validate_jsonrpc_version")]
+    pub jsonrpc: String,
+
+    /// Method name
+    pub method: String,
+
+    /// Method parameters as JSON value
+    pub params: Value,
+}
+
 /// Validates that JSON-RPC version is exactly "2.0"
 fn validate_jsonrpc_version<'de, D>(deserializer: D) -> Result<String, D::Error>
 where

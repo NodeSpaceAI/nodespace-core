@@ -5,9 +5,9 @@
 #[cfg(test)]
 mod tests {
     use crate::mcp::types::{
-        MCPError, MCPRequest, MCPResponse, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST,
-        METHOD_NOT_FOUND, NODE_CREATION_FAILED, NODE_DELETE_FAILED, NODE_NOT_FOUND,
-        NODE_UPDATE_FAILED, PARSE_ERROR, VALIDATION_ERROR,
+        MCPError, MCPNotification, MCPRequest, MCPResponse, INTERNAL_ERROR, INVALID_PARAMS,
+        INVALID_REQUEST, METHOD_NOT_FOUND, NODE_CREATION_FAILED, NODE_DELETE_FAILED,
+        NODE_NOT_FOUND, NODE_UPDATE_FAILED, PARSE_ERROR, VALIDATION_ERROR,
     };
     use serde_json::json;
 
@@ -171,5 +171,106 @@ mod tests {
         assert_eq!(error_resp.jsonrpc, "2.0");
         assert!(error_resp.result.is_none());
         assert!(error_resp.error.is_some());
+    }
+
+    // Notification tests
+
+    #[test]
+    fn test_parse_valid_notification() {
+        let json_str = r#"{
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }"#;
+
+        let notification: MCPNotification = serde_json::from_str(json_str).unwrap();
+
+        assert_eq!(notification.jsonrpc, "2.0");
+        assert_eq!(notification.method, "initialized");
+        assert!(notification.params.is_object());
+    }
+
+    #[test]
+    fn test_parse_notification_with_params() {
+        let json_str = r#"{
+            "jsonrpc": "2.0",
+            "method": "progress",
+            "params": {
+                "token": "abc123",
+                "value": 50
+            }
+        }"#;
+
+        let notification: MCPNotification = serde_json::from_str(json_str).unwrap();
+
+        assert_eq!(notification.method, "progress");
+        assert_eq!(notification.params["token"], "abc123");
+        assert_eq!(notification.params["value"], 50);
+    }
+
+    #[test]
+    fn test_notification_missing_jsonrpc() {
+        let json_str = r#"{
+            "method": "initialized",
+            "params": {}
+        }"#;
+
+        let result: Result<MCPNotification, _> = serde_json::from_str(json_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_notification_invalid_jsonrpc_version() {
+        let json_str = r#"{
+            "jsonrpc": "1.0",
+            "method": "initialized",
+            "params": {}
+        }"#;
+
+        let result: Result<MCPNotification, _> = serde_json::from_str(json_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_notification_missing_method() {
+        let json_str = r#"{
+            "jsonrpc": "2.0",
+            "params": {}
+        }"#;
+
+        let result: Result<MCPNotification, _> = serde_json::from_str(json_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_notification_with_id_should_be_request() {
+        // If there's an id field, it should parse as request not notification
+        let json_str = r#"{
+            "jsonrpc": "2.0",
+            "id": 123,
+            "method": "initialize",
+            "params": {}
+        }"#;
+
+        // Should parse as request
+        let request: Result<MCPRequest, _> = serde_json::from_str(json_str);
+        assert!(request.is_ok());
+
+        // Should fail as notification (deny_unknown_fields will reject 'id')
+        let notification: Result<MCPNotification, _> = serde_json::from_str(json_str);
+        assert!(notification.is_err());
+    }
+
+    #[test]
+    fn test_request_without_id_should_fail() {
+        // Requests must have an id field
+        let json_str = r#"{
+            "jsonrpc": "2.0",
+            "method": "create_node",
+            "params": {}
+        }"#;
+
+        let result: Result<MCPRequest, _> = serde_json::from_str(json_str);
+        assert!(result.is_err());
     }
 }
