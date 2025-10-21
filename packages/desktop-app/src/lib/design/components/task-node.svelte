@@ -37,16 +37,15 @@
 
   const dispatch = createEventDispatcher();
 
-  // Internal reactive state - sync with content prop changes like TextNodeViewer
-  let internalContent = $state(content);
+  // REFACTOR (Issue #316): Removed $effect for prop sync, will use bind:content instead
+  // Replaced $effect with $derived.by() for task state detection
 
-  // Sync internalContent when content prop changes externally (e.g., from pattern conversions)
-  $effect(() => {
-    internalContent = content;
+  // Task-specific state management using $derived.by() for reactive computation
+  // When content has task syntax, derive from content; otherwise use metadata
+  let taskState = $derived.by(() => {
+    const hasTaskSyntax = /^\s*-?\s*\[(x|X|~|o|\s)\]/i.test(content.trim());
+    return hasTaskSyntax ? parseTaskState(content) : (metadata.taskState as NodeState) || 'pending';
   });
-
-  // Task-specific state management - prioritize metadata over content parsing
-  let taskState = $state<NodeState>((metadata.taskState as NodeState) || parseTaskState(content));
 
   // TaskNodes use default single-line editing
   const editableConfig = {};
@@ -90,9 +89,12 @@
 
   /**
    * Update task state and sync with node manager
+   * REFACTOR (Issue #316): Removed direct taskState assignment since it's now $derived
+   * State updates flow through content/metadata changes, and taskState derives reactively
    */
   function updateTaskState(newState: NodeState) {
-    taskState = newState;
+    // Note: taskState is now $derived, so it will update automatically
+    // when we update the content or metadata
 
     // Clean the content if it has any shortcut syntax from node conversion
     const cleanedContent = cleanContentForDisplay(content);
@@ -103,7 +105,7 @@
     // Dispatch standard contentChanged event to update node manager
     dispatch('contentChanged', { content: content });
 
-    // Also dispatch specialized taskStateChanged event
+    // Also dispatch specialized taskStateChanged event with the new state
     dispatch('taskStateChanged', {
       nodeId,
       state: newState,
@@ -138,26 +140,9 @@
   }
 
   /**
-   * Update task state when content changes externally (only if content has task syntax)
+   * REFACTOR (Issue #316): Removed $effect - taskState now derives automatically via $derived.by()
+   * No need for manual synchronization - state updates reactively from content/metadata changes
    */
-  $effect(() => {
-    // Only override state if content actually contains task syntax
-    if (/^\s*-?\s*\[(x|X|~|o|\s)\]/i.test(content.trim())) {
-      const newState = parseTaskState(content);
-      if (newState !== taskState) {
-        taskState = newState;
-      }
-    }
-  });
-
-  /**
-   * Handle content changes and sync with parent
-   */
-  function handleContentChange(event: CustomEvent<{ content: string }>) {
-    const newContent = event.detail.content;
-    internalContent = newContent;
-    dispatch('contentChanged', { content: newContent });
-  }
 
   /**
    * Forward all other events to parent components
@@ -168,18 +153,19 @@
 </script>
 
 <!-- Wrap BaseNode with task-specific styling -->
+<!-- REFACTOR (Issue #316): Using bind:content and on:contentChanged instead of internalContent and handleContentChange -->
 <div class="task-node-wrapper" class:task-completed={taskState === 'completed'}>
   <BaseNode
     {nodeId}
     {nodeType}
     {autoFocus}
-    bind:content={internalContent}
+    bind:content
     {children}
     {editableConfig}
     metadata={taskMetadata}
     on:iconClick={handleIconClick}
     on:createNewNode={forwardEvent('createNewNode')}
-    on:contentChanged={handleContentChange}
+    on:contentChanged
     on:indentNode={forwardEvent('indentNode')}
     on:outdentNode={forwardEvent('outdentNode')}
     on:navigateArrow={forwardEvent('navigateArrow')}

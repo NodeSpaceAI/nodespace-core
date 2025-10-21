@@ -67,15 +67,8 @@
   });
 
   // Header level - derived from markdown syntax (#, ##, ###, etc.)
-  let headerLevel = $state(parseHeaderLevel(content));
-
-  // Update header level when content changes
-  $effect(() => {
-    const newLevel = parseHeaderLevel(internalContent);
-    if (newLevel !== headerLevel) {
-      headerLevel = newLevel;
-    }
-  });
+  // REFACTOR (Issue #316): Replaced $effect with $derived for pure reactive computation
+  let headerLevel = $derived(parseHeaderLevel(internalContent));
 
   // Headers use default single-line editing
   const editableConfig = {};
