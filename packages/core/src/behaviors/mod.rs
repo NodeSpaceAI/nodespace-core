@@ -628,14 +628,32 @@ impl NodeBehavior for OrderedListNodeBehavior {
     }
 
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // Ordered list items must have actual content beyond the "1. " prefix
-        // Strip "1. " from the content and check if any content remains
-        let content_without_prefix = node.content.strip_prefix("1. ").unwrap_or(&node.content);
-
-        // Check if there's any actual content after stripping prefix
-        if is_empty_or_whitespace(content_without_prefix) {
+        // ARCHITECTURAL DECISION: Allow ordered list placeholders ("1. " with no content)
+        //
+        // Unlike TextNode and HeaderNode which reject empty content after stripping whitespace,
+        // OrderedListNode accepts "1. " as valid placeholder content because:
+        //
+        // 1. The "1. " prefix is STRUCTURAL SYNTAX, not user content
+        //    - Similar to how markdown "# " is structural for headers
+        //    - The prefix defines the node type and formatting
+        //
+        // 2. Empty ordered list items are semantically valid
+        //    - HTML allows <li></li> (empty list items)
+        //    - Markdown allows "1. " as valid syntax
+        //    - Users may intentionally create empty list items as placeholders
+        //
+        // 3. Consistent with frontend UX expectations
+        //    - Pressing Enter creates new list item with "1. " prefix
+        //    - User expects immediate persistence without requiring content first
+        //    - Backend should accept what frontend naturally generates
+        //
+        // This differs from TextNode/HeaderNode where empty content has no semantic meaning.
+        // For ordered lists, "1. " represents a valid empty list item in the list structure.
+        //
+        // Validation: Content must have SOME characters (at minimum the "1. " prefix)
+        if node.content.is_empty() {
             return Err(NodeValidationError::MissingField(
-                "Ordered list nodes must have content beyond the '1. ' prefix".to_string(),
+                "Ordered list nodes must have content (at least '1. ' prefix)".to_string(),
             ));
         }
         Ok(())

@@ -8,7 +8,6 @@
 -->
 
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
   import BaseNode from '$lib/design/components/base-node.svelte';
 
   // Props
@@ -26,35 +25,26 @@
     children?: string[];
   } = $props();
 
-  // Internal reactive state
-  let internalContent = $state(content);
-
-  // Sync internalContent when content prop changes externally
-  $effect(() => {
-    internalContent = content;
-  });
-
   // Text nodes always allow multiline editing
   const editableConfig = {
     allowMultiline: true
   };
 
-  // Event dispatcher - just forward all BaseNode events
-  const dispatch = createEventDispatcher();
+  // REFACTOR (Issue #316): No longer need createEventDispatcher
+  // Svelte automatically forwards on:* events from child components to parent
+  // when no handler is specified (event forwarding is a built-in Svelte feature)
 </script>
 
+<!-- REFACTOR (Issue #316): Removed $effect and internalContent state, using bind:content instead -->
 <BaseNode
   {nodeId}
   {nodeType}
   {autoFocus}
-  content={internalContent}
+  bind:content
   {children}
   {editableConfig}
   on:createNewNode
-  on:contentChanged={(e) => {
-    internalContent = e.detail.content;
-    dispatch('contentChanged', e.detail);
-  }}
+  on:contentChanged
   on:indentNode
   on:outdentNode
   on:navigateArrow

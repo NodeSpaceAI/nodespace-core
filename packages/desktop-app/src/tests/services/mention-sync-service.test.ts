@@ -163,14 +163,8 @@ describe('MentionSyncService', () => {
 
       await service.syncMentions('source-node', oldContent, newContent);
 
-      expect(createSpy).toHaveBeenCalledWith(
-        'source-node',
-        'bbbbbbbb-e89b-12d3-a456-426614174000'
-      );
-      expect(deleteSpy).toHaveBeenCalledWith(
-        'source-node',
-        'aaaaaaaa-e89b-12d3-a456-426614174000'
-      );
+      expect(createSpy).toHaveBeenCalledWith('source-node', 'bbbbbbbb-e89b-12d3-a456-426614174000');
+      expect(deleteSpy).toHaveBeenCalledWith('source-node', 'aaaaaaaa-e89b-12d3-a456-426614174000');
     });
 
     it('should not modify mentions that remain unchanged', async () => {
