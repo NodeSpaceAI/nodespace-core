@@ -95,6 +95,20 @@ export interface StoreMetrics {
 }
 
 /**
+ * Batch configuration for atomic multi-property updates
+ */
+export interface BatchOptions {
+  /** Explicit batch ID (auto-generated if not provided) */
+  batchId?: string;
+  /** Auto-create batch for this update */
+  autoBatch?: boolean;
+  /** Max time before auto-commit in ms (default: 2000ms = 2 seconds) */
+  batchTimeout?: number;
+  /** Immediately commit batch after this update */
+  commitImmediately?: boolean;
+}
+
+/**
  * Options for updateNode operations
  */
 export interface UpdateOptions {
@@ -114,4 +128,9 @@ export interface UpdateOptions {
    * Use this for fields that are computed from content and shouldn't be persisted directly
    */
   isComputedField?: boolean;
+  /**
+   * Batch configuration for atomic multi-property updates
+   * Used for pattern conversions where content + nodeType must persist together
+   */
+  batch?: BatchOptions;
 }

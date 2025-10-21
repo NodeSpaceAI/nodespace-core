@@ -56,12 +56,13 @@ export function isPlaceholderNode(node: PlaceholderCheckable): boolean {
 
       // Text nodes that contain ONLY pattern prefixes are also placeholders
       // These are text nodes in the process of being converted to specialized types
-      // Check for common patterns: "> " (quote), "# " (header), "```" (code)
+      // Check for common patterns: "> " (quote), "# " (header), "```" (code), "1. " (ordered list)
       if (
         trimmedContent === '>' ||
         trimmedContent.match(/^>\s*$/) || // "> " or ">  " etc
         trimmedContent.match(/^#{1,6}\s*$/) || // "# " or "## " etc
-        trimmedContent.match(/^```\w*\s*$/) // "```" or "```js " etc
+        trimmedContent.match(/^```\w*\s*$/) || // "```" or "```js " etc
+        trimmedContent.match(/^\d+\.\s*$/) // "1. " or "2. " etc
       ) {
         return true;
       }

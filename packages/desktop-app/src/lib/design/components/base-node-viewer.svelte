@@ -1412,6 +1412,12 @@
                   // This ensures focus manager state is ready when the new component mounts
                   focusManager.setEditingNodeFromTypeConversion(node.id, cursorPosition);
 
+                  // ATOMIC UPDATE: Use batch to ensure content + nodeType persist together
+                  // This prevents race conditions where content persists before nodeType changes
+                  // Timeout (2s) auto-resets on each keystroke - only commits after true inactivity
+                  // Batch will auto-commit after 2s of no activity or when user navigates away
+                  sharedNodeStore.startBatch(node.id, 2000);
+
                   // Update content if cleanedContent is provided (e.g., from contentTemplate)
                   if (cleanedContent !== undefined) {
                     nodeManager.updateNodeContent(node.id, cleanedContent);
@@ -1419,6 +1425,9 @@
 
                   // Update node type through proper API (triggers component re-render)
                   nodeManager.updateNodeType(node.id, newNodeType);
+
+                  // Don't commit immediately - let user finish typing
+                  // Batch will auto-commit after timeout or can be manually committed later
                 }}
                 on:slashCommandSelected={(
                   e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>

@@ -99,6 +99,20 @@ export class SharedNodeStore {
   // Test error tracking (populated only in NODE_ENV='test', cleared between tests)
   private testErrors: Error[] = [];
 
+  // Batch update tracking for atomic multi-property updates
+  // Used for pattern conversions where content + nodeType must persist together
+  private activeBatches = new Map<
+    string,
+    {
+      nodeId: string;
+      changes: Partial<Node>;
+      batchId: string;
+      createdAt: number;
+      timeout: ReturnType<typeof setTimeout>;
+      timeoutMs: number;
+    }
+  >();
+
   private constructor() {
     // Private constructor for singleton
   }
@@ -193,6 +207,51 @@ export class SharedNodeStore {
         skipConflictDetection: true
       };
     }
+
+    // ========================================================================
+    // Batch Handling - Route updates through batch system if active
+    // ========================================================================
+
+    // Check if batch is active for this node
+    if (this.activeBatches.has(nodeId)) {
+      // Route through batch system
+      this.addToBatch(nodeId, changes);
+
+      // Auto-commit if requested
+      if (options.batch?.commitImmediately) {
+        this.commitBatch(nodeId);
+      }
+      return;
+    }
+
+    // Check if this update should create a new batch
+    if (options.batch?.autoBatch) {
+      this.startBatch(nodeId, options.batch.batchTimeout);
+      this.addToBatch(nodeId, changes);
+
+      // Auto-commit if requested
+      if (options.batch.commitImmediately) {
+        this.commitBatch(nodeId);
+      }
+      return;
+    }
+
+    // CRITICAL: Auto-restart batch for pattern-converted node types
+    // After a batch commits, subsequent edits should ALSO be batched to maintain consistency
+    // This prevents falling back to old debounced path which can cause partial content loss
+    const existingNode = this.nodes.get(nodeId);
+    const requiresBatching =
+      existingNode && ['quote-block', 'code-block', 'ordered-list'].includes(existingNode.nodeType);
+
+    if (requiresBatching && changes.content !== undefined) {
+      this.startBatch(nodeId, 2000);
+      this.addToBatch(nodeId, changes);
+      return;
+    }
+
+    // ========================================================================
+    // Normal Update Flow (No Batching)
+    // ========================================================================
 
     try {
       // Get existing node
@@ -290,12 +349,14 @@ export class SharedNodeStore {
 
         // Skip persisting placeholder nodes - they exist in UI but not in database
         // Placeholders are nodes with only type-specific prefixes and no actual content
-        // EXCEPTION: nodeType changes must ALWAYS persist, even for placeholders
-        // This ensures pattern detection (e.g., ``` → code-block) saves the nodeType
+        // They will be persisted once user adds real content
         const isPlaceholder = isPlaceholderNode(updatedNode);
-        const persistPlaceholderForNodeType = isPlaceholder && isNodeTypeChange;
 
-        if (shouldPersist && (!isPlaceholder || persistPlaceholderForNodeType)) {
+        // CRITICAL: Skip persistence if batch is active for this node
+        // The batch will handle persistence atomically when committed
+        const hasBatchActive = this.activeBatches.has(nodeId);
+
+        if (shouldPersist && !isPlaceholder && !hasBatchActive) {
           // Delegate to PersistenceCoordinator for coordinated persistence
           // Use debounced mode for content changes (typing), immediate for structural changes
           const dependencies: Array<string | (() => Promise<void>)> = [];
@@ -472,15 +533,16 @@ export class SharedNodeStore {
     }
 
     // Check if node is a placeholder (node with only type-specific prefix, no actual content)
-    const isPlaceholder = isPlaceholderNode(node) && source.type === 'viewer' && isNewNode;
+    const isPlaceholder = isPlaceholderNode(node);
+    const isPlaceholderFromViewer = isPlaceholder && source.type === 'viewer' && isNewNode;
 
     // Phase 2.4: Persist to database
     // IMPORTANT: For NEW nodes from viewer, persist immediately (including empty ones!)
     // For UPDATES from viewer, skip persistence - BaseNodeViewer handles with debouncing
     // This ensures createNode() persistence works while avoiding duplicate writes on updates
     //
-    // EXCEPTION: Placeholders (nodes with only prefixes) should NOT persist until user adds content
-    if (!skipPersistence && !isPlaceholder && source.type !== 'database') {
+    // EXCEPTION: Placeholders should persist nodeType but NOT content (to avoid backend validation errors)
+    if (!skipPersistence && !isPlaceholderFromViewer && source.type !== 'database') {
       const shouldPersist = source.type !== 'viewer' || isNewNode;
 
       if (shouldPersist) {
@@ -523,6 +585,14 @@ export class SharedNodeStore {
           dependencies.push(node.beforeSiblingId);
         }
 
+        // For placeholders with specialized nodeType, filter out content to avoid backend validation
+        let nodeToPersist = node;
+        if (isPlaceholder && node.nodeType !== 'text') {
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          const { content, ...nodeWithoutContent } = node;
+          nodeToPersist = nodeWithoutContent as Node;
+        }
+
         // Capture handle to catch cancellation errors
         const handle = PersistenceCoordinator.getInstance().persist(
           node.id,
@@ -531,9 +601,9 @@ export class SharedNodeStore {
               // Check if node has been persisted - use in-memory tracking to avoid database query
               const isPersistedToDatabase = this.persistedNodeIds.has(node.id);
               if (isPersistedToDatabase) {
-                await tauriNodeService.updateNode(node.id, node);
+                await tauriNodeService.updateNode(node.id, nodeToPersist);
               } else {
-                await tauriNodeService.createNode(node);
+                await tauriNodeService.createNode(nodeToPersist);
                 this.persistedNodeIds.add(node.id); // Track as persisted
               }
             } catch (dbError) {
@@ -580,6 +650,9 @@ export class SharedNodeStore {
     skipPersistence = false,
     dependencies: string[] = []
   ): void {
+    // Cancel any active batch before deletion
+    this.cancelBatch(nodeId);
+
     const node = this.nodes.get(nodeId);
     if (node) {
       this.nodes.delete(nodeId);
@@ -1362,6 +1435,350 @@ export class SharedNodeStore {
   }
 
   // ========================================================================
+  // Atomic Batch Updates
+  // ========================================================================
+
+  /**
+   * Start an atomic batch update for a node
+   * All subsequent updates for this nodeId will be accumulated until commitBatch()
+   *
+   * Use this for pattern conversions where content + nodeType must persist together:
+   * - Quote blocks: content change + nodeType change must be atomic
+   * - Code blocks: content change + nodeType change must be atomic
+   * - Ordered lists: content change + nodeType change must be atomic
+   *
+   * @param nodeId - Node to batch updates for
+   * @param timeoutMs - Auto-commit timeout in ms (default: 2000ms = 2 seconds)
+   * @returns Batch ID for tracking
+   *
+   * @example
+   * ```typescript
+   * const batchId = store.startBatch(nodeId);
+   * store.addToBatch(nodeId, { content: '> Quote text' });
+   * store.addToBatch(nodeId, { nodeType: 'quote-block' });
+   * store.commitBatch(nodeId); // Atomically persists both changes
+   * ```
+   */
+  startBatch(nodeId: string, timeoutMs = 2000): string {
+    // Cancel existing batch if any (ensures clean state)
+    this.cancelBatch(nodeId);
+
+    // CRITICAL: Cancel any pending non-batched persistence operations
+    // This prevents race between old debounced updates and new batch
+    PersistenceCoordinator.getInstance().cancelPending(nodeId);
+
+    const batchId = `batch-${nodeId}-${Date.now()}`;
+
+    // Auto-commit after timeout to prevent abandoned batches
+    const timeout = setTimeout(() => {
+      console.warn(`[SharedNodeStore] Auto-committing abandoned batch: ${batchId}`);
+      this.commitBatch(nodeId);
+    }, timeoutMs);
+
+    this.activeBatches.set(nodeId, {
+      nodeId,
+      changes: {},
+      batchId,
+      createdAt: Date.now(),
+      timeout,
+      timeoutMs
+    });
+
+    return batchId;
+  }
+
+  /**
+   * Add changes to the active batch for a node
+   * Changes are accumulated and merged (later changes override earlier ones)
+   * Updates in-memory state immediately (optimistic update)
+   *
+   * @param nodeId - Node to update
+   * @param changes - Partial node changes to add to batch
+   *
+   * @example
+   * ```typescript
+   * store.startBatch(nodeId);
+   * store.addToBatch(nodeId, { content: '1. ' });         // First change
+   * store.addToBatch(nodeId, { nodeType: 'ordered-list' }); // Second change
+   * store.commitBatch(nodeId); // Both persist atomically
+   * ```
+   */
+  addToBatch(nodeId: string, changes: Partial<Node>): void {
+    const batch = this.activeBatches.get(nodeId);
+    if (!batch) {
+      console.warn(`[SharedNodeStore] No active batch for node ${nodeId}, ignoring addToBatch`);
+      return;
+    }
+
+    // Merge changes into batch (later changes override)
+    Object.assign(batch.changes, changes);
+
+    // Update in-memory state immediately (optimistic)
+    const currentNode = this.nodes.get(nodeId);
+    if (currentNode) {
+      const updatedNode = { ...currentNode, ...changes };
+      this.nodes.set(nodeId, updatedNode);
+
+      // Notify subscribers of optimistic update
+      this.notifySubscribers(nodeId, updatedNode, { type: 'viewer', viewerId: 'batch' });
+    }
+
+    // Reset timeout to extend batch lifetime while user is actively making changes
+    // This ensures batch only commits after true inactivity (no changes for N seconds)
+    this.resetBatchTimeout(nodeId);
+  }
+
+  /**
+   * Commit an active batch atomically
+   * Runs placeholder detection on final state and persists if not a placeholder
+   *
+   * Special handling for referenced placeholders:
+   * - If a placeholder is referenced by other nodes (beforeSiblingId, etc.)
+   * - Persist it anyway with minimal content to satisfy FOREIGN KEY constraints
+   * - Update with real content when available
+   *
+   * @param nodeId - Node whose batch to commit
+   */
+  commitBatch(nodeId: string): void {
+    const batch = this.activeBatches.get(nodeId);
+    if (!batch) {
+      return; // No batch active, nothing to commit
+    }
+
+    // Clear auto-commit timeout
+    clearTimeout(batch.timeout);
+    this.activeBatches.delete(nodeId);
+
+    // Get final node state after all batch changes
+    const finalNode = this.nodes.get(nodeId);
+    if (!finalNode) {
+      console.warn(`[SharedNodeStore] Node ${nodeId} not found during batch commit`);
+      return;
+    }
+
+    // Nothing to persist if batch has no changes
+    if (Object.keys(batch.changes).length === 0) {
+      return;
+    }
+
+    // Check if final state is a placeholder
+    const isPlaceholder = isPlaceholderNode(finalNode);
+
+    // Only persist if node has real content (not a placeholder)
+    // Don't persist placeholders even if referenced - they'll persist when user adds content
+    // beforeSiblingId references will be updated via updateDeferredSiblingReferences()
+    const shouldPersist = !isPlaceholder;
+
+    if (shouldPersist) {
+      // Always persist with full batched changes
+      // This handles both new nodes and fixing race conditions where old path persisted first
+      this.persistBatchedChanges(nodeId, batch.changes, finalNode);
+    }
+  }
+
+  /**
+   * Cancel an active batch without persisting
+   * Used when batch should be abandoned (e.g., node deleted during batch)
+   *
+   * @param nodeId - Node whose batch to cancel
+   */
+  cancelBatch(nodeId: string): void {
+    const batch = this.activeBatches.get(nodeId);
+    if (batch) {
+      clearTimeout(batch.timeout);
+      this.activeBatches.delete(nodeId);
+    }
+  }
+
+  /**
+   * Reset the auto-commit timeout for an active batch
+   * Extends the batch lifetime when user continues making changes
+   *
+   * This implements "true inactivity" timeout:
+   * - Timer resets on every change (content, nodeType, metadata, etc.)
+   * - Batch only commits after N seconds of NO activity
+   * - Prevents premature commits while user is actively typing
+   *
+   * @param nodeId - Node whose batch timeout to reset
+   *
+   * @example
+   * ```typescript
+   * store.startBatch(nodeId, 2000); // Start with 2s timeout
+   * // ... user types ...
+   * store.addToBatch(nodeId, { content: 'new' }); // Resets timeout to 2s
+   * // ... user types more ...
+   * store.addToBatch(nodeId, { content: 'newer' }); // Resets timeout to 2s again
+   * // ... after 2s of no activity, auto-commit fires
+   * ```
+   */
+  private resetBatchTimeout(nodeId: string): void {
+    const batch = this.activeBatches.get(nodeId);
+    if (!batch) {
+      return; // No batch active
+    }
+
+    // Clear existing timeout
+    clearTimeout(batch.timeout);
+
+    // Create new timeout with same duration
+    const timeout = setTimeout(() => {
+      this.commitBatch(nodeId);
+    }, batch.timeoutMs);
+
+    // Update batch with new timeout (keep other properties)
+    batch.timeout = timeout;
+  }
+
+  /**
+   * Check if a node is referenced by other nodes
+   * Used to determine if a placeholder must be persisted for FOREIGN KEY constraints
+   *
+   * @param nodeId - Node to check
+   * @returns true if any other node references this node
+   */
+  private isNodeReferencedByOthers(nodeId: string): boolean {
+    for (const [otherId, node] of this.nodes.entries()) {
+      if (otherId === nodeId) continue;
+
+      if (
+        node.beforeSiblingId === nodeId ||
+        node.parentId === nodeId ||
+        node.containerNodeId === nodeId
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Persist a placeholder node that is referenced by other nodes
+   * Uses empty/minimal content to satisfy FOREIGN KEY constraints
+   * Will be updated with real content when user adds it
+   *
+   * NOTE: Removes beforeSiblingId to avoid FK violations when referenced node is also a placeholder
+   * The beforeSiblingId will be set later when both nodes have real content
+   *
+   * @param nodeId - Placeholder node to persist
+   * @param changes - Batched changes
+   * @param finalNode - Final node state
+   */
+  private persistPlaceholderForReference(
+    nodeId: string,
+    changes: Partial<Node>,
+    finalNode: Node
+  ): void {
+    // Create minimal node for placeholder promotion
+    // Remove beforeSiblingId to avoid cascading FK violations with other placeholders
+    // IMPORTANT: Persist as 'text' nodeType to avoid backend validation errors
+    // The backend may reject placeholder content for specialized types (quote-block, code-block, etc.)
+    // Will be updated to correct nodeType when user adds real content
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { beforeSiblingId, ...nodeWithoutSibling } = finalNode;
+
+    const minimalNode: Node = {
+      ...nodeWithoutSibling,
+      beforeSiblingId: null, // Explicitly set to null (was stripped to avoid FK violations)
+      nodeType: 'text', // Force text nodeType for placeholder promotion
+      content: changes.content || finalNode.content || '' // Use batch content or fallback
+    };
+
+    // Persist as text (will be updated to specialized type when content is added)
+    const minimalChanges: Partial<Node> = {
+      nodeType: 'text',
+      content: minimalNode.content
+    };
+
+    this.persistBatchedChanges(nodeId, minimalChanges, minimalNode);
+  }
+
+  /**
+   * Persist batched changes atomically
+   * Delegates to existing persistence infrastructure
+   *
+   * @param nodeId - Node to persist
+   * @param changes - Accumulated changes from batch
+   * @param finalNode - Final node state after batch
+   */
+  private persistBatchedChanges(nodeId: string, changes: Partial<Node>, finalNode: Node): void {
+    const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
+
+    // Use PersistenceCoordinator for coordinated persistence
+    const dependencies: Array<string | (() => Promise<void>)> = [];
+
+    // Ensure parent chain is persisted (FOREIGN KEY)
+    if (finalNode.parentId) {
+      dependencies.push(async () => {
+        await this.ensureAncestorChainPersisted(finalNode.parentId!);
+      });
+    }
+
+    // Ensure containerNodeId is persisted (FOREIGN KEY)
+    if (
+      finalNode.containerNodeId &&
+      finalNode.containerNodeId !== finalNode.parentId &&
+      !this.persistedNodeIds.has(finalNode.containerNodeId)
+    ) {
+      dependencies.push(finalNode.containerNodeId);
+    }
+
+    // Ensure beforeSiblingId is persisted (FOREIGN KEY)
+    if (finalNode.beforeSiblingId && !this.persistedNodeIds.has(finalNode.beforeSiblingId)) {
+      dependencies.push(finalNode.beforeSiblingId);
+    }
+
+    // Persist with immediate mode (batches should not be debounced)
+    PersistenceCoordinator.getInstance().persist(
+      nodeId,
+      async () => {
+        try {
+          // STRATEGY: Try UPDATE first (handles race conditions where old path persisted)
+          // Fall back to CREATE if node doesn't exist
+          if (isPersistedToDatabase) {
+            await tauriNodeService.updateNode(nodeId, changes);
+          } else {
+            // Try CREATE, but if it fails due to race condition, try UPDATE instead
+            try {
+              await tauriNodeService.createNode(finalNode);
+              this.persistedNodeIds.add(nodeId);
+
+              // Update deferred sibling references
+              this.updateDeferredSiblingReferences(nodeId);
+            } catch (createError) {
+              // If CREATE fails (node already exists from race), try UPDATE with batched changes
+              if (
+                createError instanceof Error &&
+                (createError.message.includes('UNIQUE constraint') ||
+                  createError.message.includes('already exists'))
+              ) {
+                // Race condition: node was persisted by old path, update with batched changes
+                await tauriNodeService.updateNode(nodeId, changes);
+                this.persistedNodeIds.add(nodeId);
+              } else {
+                throw createError;
+              }
+            }
+          }
+        } catch (dbError) {
+          const error = dbError instanceof Error ? dbError : new Error(String(dbError));
+          console.error(`[SharedNodeStore] Batch persistence failed for node ${nodeId}:`, error);
+
+          // Track error in test environment
+          if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
+            this.testErrors.push(error);
+          }
+
+          throw error;
+        }
+      },
+      {
+        mode: 'immediate', // Batches are already accumulated, persist immediately
+        dependencies: dependencies.length > 0 ? dependencies : undefined
+      }
+    );
+  }
+
+  // ========================================================================
   // Test Utilities
   // ========================================================================
 
@@ -1403,6 +1820,13 @@ export class SharedNodeStore {
     this.pendingUpdates.clear();
     this.versions.clear();
     this.testErrors = [];
+
+    // Cancel all active batches
+    for (const [nodeId] of this.activeBatches) {
+      this.cancelBatch(nodeId);
+    }
+    this.activeBatches.clear();
+
     this.metrics = {
       updateCount: 0,
       avgUpdateTime: 0,
