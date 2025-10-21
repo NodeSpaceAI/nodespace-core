@@ -628,14 +628,18 @@ impl NodeBehavior for OrderedListNodeBehavior {
     }
 
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // Ordered list items must have actual content beyond the "1. " prefix
-        // Strip "1. " from the content and check if any content remains
-        let content_without_prefix = node.content.strip_prefix("1. ").unwrap_or(&node.content);
-
-        // Check if there's any actual content after stripping prefix
-        if is_empty_or_whitespace(content_without_prefix) {
+        // Allow empty ordered list nodes ("1. ") as placeholders (same as other node types)
+        // Frontend manages placeholder UX, backend stores them in database
+        //
+        // This matches the architecture pattern where:
+        // - Frontend creates placeholder nodes when user presses Enter or uses slash command
+        // - Backend accepts and persists placeholder nodes
+        // - User can immediately start typing to add content
+        //
+        // Note: Content must at least have the "1. " prefix for proper ordered list formatting
+        if node.content.is_empty() {
             return Err(NodeValidationError::MissingField(
-                "Ordered list nodes must have content beyond the '1. ' prefix".to_string(),
+                "Ordered list nodes must have content (at least '1. ' prefix)".to_string(),
             ));
         }
         Ok(())
