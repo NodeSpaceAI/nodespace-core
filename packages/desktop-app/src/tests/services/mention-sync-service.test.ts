@@ -1,22 +1,19 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-
-// Mock the backend adapter BEFORE importing MentionSyncService
-vi.mock('$lib/services/backend-adapter', () => ({
-  backendAdapter: {
-    createNodeMention: vi.fn(),
-    deleteNodeMention: vi.fn()
-  }
-}));
-
 import { MentionSyncService } from '$lib/services/mention-sync-service';
-import { backendAdapter } from '$lib/services/backend-adapter';
+import type { BackendAdapter } from '$lib/services/backend-adapter';
 
 describe('MentionSyncService', () => {
   let service: MentionSyncService;
+  let mockAdapter: BackendAdapter;
 
   beforeEach(() => {
-    service = new MentionSyncService();
-    vi.clearAllMocks();
+    // Create a mock adapter with spy functions
+    mockAdapter = {
+      createNodeMention: vi.fn().mockResolvedValue(undefined),
+      deleteNodeMention: vi.fn().mockResolvedValue(undefined)
+    } as unknown as BackendAdapter;
+
+    service = new MentionSyncService(mockAdapter);
   });
 
   describe('extractMentions', () => {
@@ -136,7 +133,7 @@ describe('MentionSyncService', () => {
 
   describe('syncMentions', () => {
     it('should add new mentions when content changes', async () => {
-      const createSpy = vi.spyOn(backendAdapter, 'createNodeMention').mockResolvedValue(undefined);
+      const createSpy = vi.spyOn(mockAdapter, 'createNodeMention').mockResolvedValue(undefined);
 
       const oldContent = 'No mentions here';
       const newContent = 'Check [@Node A](nodespace://123e4567-e89b-12d3-a456-426614174000)';
@@ -147,7 +144,7 @@ describe('MentionSyncService', () => {
     });
 
     it('should remove deleted mentions', async () => {
-      const deleteSpy = vi.spyOn(backendAdapter, 'deleteNodeMention').mockResolvedValue(undefined);
+      const deleteSpy = vi.spyOn(mockAdapter, 'deleteNodeMention').mockResolvedValue(undefined);
 
       const oldContent = 'Check [@Node A](nodespace://123e4567-e89b-12d3-a456-426614174000)';
       const newContent = 'No mentions anymore';
@@ -158,27 +155,27 @@ describe('MentionSyncService', () => {
     });
 
     it('should handle both additions and removals', async () => {
-      const createSpy = vi.spyOn(backendAdapter, 'createNodeMention').mockResolvedValue(undefined);
-      const deleteSpy = vi.spyOn(backendAdapter, 'deleteNodeMention').mockResolvedValue(undefined);
+      const createSpy = vi.spyOn(mockAdapter, 'createNodeMention').mockResolvedValue(undefined);
+      const deleteSpy = vi.spyOn(mockAdapter, 'deleteNodeMention').mockResolvedValue(undefined);
 
-      const oldContent = 'Check [@Old](nodespace://old-id-1234567-e89b-12d3-a456-426614174000)';
-      const newContent = 'Check [@New](nodespace://new-id-1234567-e89b-12d3-a456-426614174000)';
+      const oldContent = 'Check [@Old](nodespace://aaaaaaaa-e89b-12d3-a456-426614174000)';
+      const newContent = 'Check [@New](nodespace://bbbbbbbb-e89b-12d3-a456-426614174000)';
 
       await service.syncMentions('source-node', oldContent, newContent);
 
       expect(createSpy).toHaveBeenCalledWith(
         'source-node',
-        'new-id-1234567-e89b-12d3-a456-426614174000'
+        'bbbbbbbb-e89b-12d3-a456-426614174000'
       );
       expect(deleteSpy).toHaveBeenCalledWith(
         'source-node',
-        'old-id-1234567-e89b-12d3-a456-426614174000'
+        'aaaaaaaa-e89b-12d3-a456-426614174000'
       );
     });
 
     it('should not modify mentions that remain unchanged', async () => {
-      const createSpy = vi.spyOn(backendAdapter, 'createNodeMention').mockResolvedValue(undefined);
-      const deleteSpy = vi.spyOn(backendAdapter, 'deleteNodeMention').mockResolvedValue(undefined);
+      const createSpy = vi.spyOn(mockAdapter, 'createNodeMention').mockResolvedValue(undefined);
+      const deleteSpy = vi.spyOn(mockAdapter, 'deleteNodeMention').mockResolvedValue(undefined);
 
       const content = 'Check [@Node A](nodespace://123e4567-e89b-12d3-a456-426614174000)';
 
@@ -189,7 +186,7 @@ describe('MentionSyncService', () => {
     });
 
     it('should not create self-references', async () => {
-      const createSpy = vi.spyOn(backendAdapter, 'createNodeMention').mockResolvedValue(undefined);
+      const createSpy = vi.spyOn(mockAdapter, 'createNodeMention').mockResolvedValue(undefined);
 
       const content = 'Check [@Self](nodespace://my-own-id-234567-e89b-12d3-a456-426614174000)';
 
@@ -203,7 +200,7 @@ describe('MentionSyncService', () => {
     });
 
     it('should handle empty old content (new node)', async () => {
-      const createSpy = vi.spyOn(backendAdapter, 'createNodeMention').mockResolvedValue(undefined);
+      const createSpy = vi.spyOn(mockAdapter, 'createNodeMention').mockResolvedValue(undefined);
 
       const newContent = 'Check [@Node A](nodespace://123e4567-e89b-12d3-a456-426614174000)';
 
@@ -213,7 +210,7 @@ describe('MentionSyncService', () => {
     });
 
     it('should handle content that becomes empty (delete all mentions)', async () => {
-      const deleteSpy = vi.spyOn(backendAdapter, 'deleteNodeMention').mockResolvedValue(undefined);
+      const deleteSpy = vi.spyOn(mockAdapter, 'deleteNodeMention').mockResolvedValue(undefined);
 
       const oldContent = `
         [@A](nodespace://123e4567-e89b-12d3-a456-426614174000)
@@ -226,8 +223,8 @@ describe('MentionSyncService', () => {
     });
 
     it('should continue even if create fails', async () => {
-      vi.spyOn(backendAdapter, 'createNodeMention').mockRejectedValue(new Error('Create failed'));
-      const deleteSpy = vi.spyOn(backendAdapter, 'deleteNodeMention').mockResolvedValue(undefined);
+      vi.spyOn(mockAdapter, 'createNodeMention').mockRejectedValue(new Error('Create failed'));
+      const deleteSpy = vi.spyOn(mockAdapter, 'deleteNodeMention').mockResolvedValue(undefined);
 
       const oldContent = 'Old [@A](nodespace://123e4567-e89b-12d3-a456-426614174000)';
       const newContent = 'New [@B](nodespace://234e5678-e89b-12d3-a456-426614174000)';
@@ -240,8 +237,8 @@ describe('MentionSyncService', () => {
     });
 
     it('should continue even if delete fails', async () => {
-      vi.spyOn(backendAdapter, 'deleteNodeMention').mockRejectedValue(new Error('Delete failed'));
-      const createSpy = vi.spyOn(backendAdapter, 'createNodeMention').mockResolvedValue(undefined);
+      vi.spyOn(mockAdapter, 'deleteNodeMention').mockRejectedValue(new Error('Delete failed'));
+      const createSpy = vi.spyOn(mockAdapter, 'createNodeMention').mockResolvedValue(undefined);
 
       const oldContent = 'Old [@A](nodespace://123e4567-e89b-12d3-a456-426614174000)';
       const newContent = 'New [@B](nodespace://234e5678-e89b-12d3-a456-426614174000)';
@@ -254,8 +251,8 @@ describe('MentionSyncService', () => {
     });
 
     it('should handle multiple simultaneous adds and removes', async () => {
-      const createSpy = vi.spyOn(backendAdapter, 'createNodeMention').mockResolvedValue(undefined);
-      const deleteSpy = vi.spyOn(backendAdapter, 'deleteNodeMention').mockResolvedValue(undefined);
+      const createSpy = vi.spyOn(mockAdapter, 'createNodeMention').mockResolvedValue(undefined);
+      const deleteSpy = vi.spyOn(mockAdapter, 'deleteNodeMention').mockResolvedValue(undefined);
 
       const oldContent = `
         [@A](nodespace://aaa-4567-e89b-12d3-a456-426614174000)
@@ -282,8 +279,8 @@ describe('MentionSyncService', () => {
     });
 
     it('should handle mentions with mixed formats in sync', async () => {
-      const createSpy = vi.spyOn(backendAdapter, 'createNodeMention').mockResolvedValue(undefined);
-      const deleteSpy = vi.spyOn(backendAdapter, 'deleteNodeMention').mockResolvedValue(undefined);
+      const createSpy = vi.spyOn(mockAdapter, 'createNodeMention').mockResolvedValue(undefined);
+      const deleteSpy = vi.spyOn(mockAdapter, 'deleteNodeMention').mockResolvedValue(undefined);
 
       const oldContent = 'Old [@A](nodespace://aaa-4567-e89b-12d3-a456-426614174000)';
       const newContent = 'New nodespace://bbb-5678-e89b-12d3-a456-426614174000 link';
