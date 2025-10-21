@@ -32,7 +32,6 @@ describe('positionCursor action', () => {
     // Create controller
     controller = new TextareaController(textarea, 'test-node', 'text', {
       contentChanged: vi.fn(),
-      headerLevelChanged: vi.fn(),
       focus: vi.fn(),
       blur: vi.fn(),
       createNewNode: vi.fn(),

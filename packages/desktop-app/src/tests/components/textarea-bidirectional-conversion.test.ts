@@ -28,7 +28,6 @@ describe('TextareaController - Bidirectional Conversion', () => {
     // Mock only the conversion event we care about
     mockEvents = {
       contentChanged: () => {},
-      headerLevelChanged: () => {},
       focus: () => {},
       blur: () => {},
       createNewNode: () => {},

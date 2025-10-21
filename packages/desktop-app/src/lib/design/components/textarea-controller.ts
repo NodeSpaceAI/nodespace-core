@@ -12,7 +12,6 @@
  * - ~950 lines (self-contained) vs ~4250 lines (ContentEditableController + dependencies)
  */
 
-import ContentProcessor from '$lib/services/content-processor';
 import type { TriggerContext } from '$lib/services/node-reference-service';
 import type { SlashCommandContext } from '$lib/services/slash-command-service';
 import { KeyboardCommandRegistry } from '$lib/services/keyboard-command-registry';
@@ -41,7 +40,6 @@ const KEYBOARD_COMMANDS = {
 
 export interface TextareaControllerEvents {
   contentChanged: (content: string) => void;
-  headerLevelChanged: (level: number) => void;
   focus: () => void;
   blur: () => void;
   createNewNode: (data: {
@@ -124,7 +122,6 @@ export class TextareaController {
 
   // Single source of truth - no dual representation!
   private isInitialized: boolean = false;
-  private currentHeaderLevel: number = 0;
 
   // Cursor state for arrow navigation
   private lastKnownPixelOffset: number = 0;
@@ -228,9 +225,6 @@ export class TextareaController {
 
     // Set textarea value - single source of truth!
     this.element.value = content;
-
-    // Initialize header level tracking
-    this.currentHeaderLevel = ContentProcessor.getInstance().parseHeaderLevel(content);
 
     if (autoFocus) {
       this.justCreated = true;
@@ -763,17 +757,13 @@ export class TextareaController {
 
     if (detection) {
       // Pattern detected - convert to specialized node type
-      const { config, match, metadata } = detection;
+      const { config, match } = detection;
 
       // CRITICAL: Only emit conversion event if node type is ACTUALLY changing
       // This prevents cursor resets when typing in an already-converted node
       if (this.nodeType === config.targetNodeType) {
-        // Already the correct type - just update metadata if needed (e.g., header level changes)
-        untrack(() => {
-          if (metadata.headerLevel !== undefined) {
-            this.events.headerLevelChanged(metadata.headerLevel as number);
-          }
-        });
+        // Already the correct type - no type change needed
+        // Node-specific components will handle their own metadata updates (e.g., header level)
         return; // Skip conversion event - no type change needed
       }
 
@@ -801,11 +791,6 @@ export class TextareaController {
       // This prevents state_unsafe_mutation errors when parent components update state
       // in response to these events during their own reactive updates
       untrack(() => {
-        // Emit header level changed event if metadata contains headerLevel
-        if (metadata.headerLevel !== undefined) {
-          this.events.headerLevelChanged(metadata.headerLevel as number);
-        }
-
         // Emit node type conversion event with cursor position
         this.events.nodeTypeConversionDetected({
           nodeId: this.nodeId,

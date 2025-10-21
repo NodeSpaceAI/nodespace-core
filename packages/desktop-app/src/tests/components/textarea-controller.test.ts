@@ -82,10 +82,6 @@ describe('TextareaController', () => {
         eventCalls.contentChanged = eventCalls.contentChanged || [];
         eventCalls.contentChanged.push(content);
       },
-      headerLevelChanged: (level: number) => {
-        eventCalls.headerLevelChanged = eventCalls.headerLevelChanged || [];
-        eventCalls.headerLevelChanged.push(level);
-      },
       focus: () => {
         eventCalls.focus = eventCalls.focus || [];
         eventCalls.focus.push(true);
@@ -312,8 +308,8 @@ describe('TextareaController', () => {
       // Wait for setTimeout in detectNodeTypeConversion
       await new Promise((resolve) => setTimeout(resolve, 10));
 
-      expect(eventCalls.headerLevelChanged).toBeDefined();
-      expect(eventCalls.headerLevelChanged?.[0]).toBe(1);
+      // TextareaController no longer emits headerLevelChanged - that's handled by HeaderNode's $effect
+      // It only emits nodeTypeConversionDetected which tells the system to switch to a HeaderNode
       expect(eventCalls.nodeTypeConversionDetected).toBeDefined();
       expect(eventCalls.nodeTypeConversionDetected?.[0]?.newNodeType).toBe('header');
     });
@@ -327,7 +323,10 @@ describe('TextareaController', () => {
 
       await new Promise((resolve) => setTimeout(resolve, 10));
 
-      expect(eventCalls.headerLevelChanged?.[0]).toBe(3);
+      // TextareaController no longer tracks or emits header levels
+      // Header level detection is now the responsibility of HeaderNode component
+      expect(eventCalls.nodeTypeConversionDetected).toBeDefined();
+      expect(eventCalls.nodeTypeConversionDetected?.[0]?.newNodeType).toBe('header');
     });
 
     it('should detect @mention triggers', () => {

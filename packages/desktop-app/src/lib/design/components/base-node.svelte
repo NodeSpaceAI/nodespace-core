@@ -365,11 +365,10 @@
 
       // Don't update nodeType locally - let parent handle it to avoid double re-renders
       // The parent (base-node-viewer) will update nodeType via nodeManager and trigger autoFocus
-
-      // Emit event to notify parent of node type/header level change
-      if (result.headerLevel !== undefined) {
-        dispatch('headerLevelChanged', { level: result.headerLevel });
-      }
+      //
+      // ARCHITECTURE (Issue #311): Header level changes are handled by HeaderNode component via $effect
+      // TextareaController only detects pattern → header conversion, NOT level changes within headers
+      // This separation ensures BaseNode remains node-type agnostic
     }
 
     // Hide slash commands and clear state first
@@ -409,7 +408,6 @@
   // Event dispatcher - aligned with NodeViewerEventDetails interface
   const dispatch = createEventDispatcher<{
     contentChanged: { content: string };
-    headerLevelChanged: { level: number };
     focus: void;
     blur: void;
     createNewNode: {
@@ -435,7 +433,6 @@
   // Controller event handlers
   const controllerEvents: TextareaControllerEvents = {
     contentChanged: (content: string) => dispatch('contentChanged', { content }),
-    headerLevelChanged: (level: number) => dispatch('headerLevelChanged', { level }),
     focus: () => {
       // Use FocusManager as single source of truth
       // Only update if this node isn't already set as editing
@@ -938,84 +935,6 @@
     /* Ensure empty nodes maintain their height and are clickable */
     min-height: 1.25rem;
     cursor: text;
-  }
-
-  /* Header styling with CSS variables for dynamic positioning */
-
-  /* Shared header class - eliminates code duplication */
-  .node--h1,
-  .node--h2,
-  .node--h3,
-  .node--h4,
-  .node--h5,
-  .node--h6 {
-    /* Calculate line-height in pixels for positioning formula */
-    --line-height-px: calc(var(--font-size) * var(--line-height));
-  }
-
-  /* Shared header content styling */
-  .node--h1 .node__content,
-  .node--h2 .node__content,
-  .node--h3 .node__content,
-  .node--h4 .node__content,
-  .node--h5 .node__content,
-  .node--h6 .node__content {
-    font-size: var(--font-size);
-    font-weight: bold;
-    line-height: var(--line-height);
-  }
-
-  /* Header-specific typography variables */
-  .node--h1 {
-    --font-size: 2rem;
-    --line-height: 1.2;
-    /* Line box center: 0.25rem + (fontSize × line-height / 2) = 0.25rem + 1.2rem */
-    --icon-vertical-position: calc(0.25rem + (2rem * 1.2 / 2));
-  }
-
-  .node--h2 {
-    --font-size: 1.5rem;
-    --line-height: 1.3;
-    /* Line box center: 0.25rem + (1.5rem × 1.3 / 2) = 0.25rem + 0.975rem */
-    --icon-vertical-position: calc(0.25rem + (1.5rem * 1.3 / 2));
-  }
-
-  .node--h3 {
-    --font-size: 1.25rem;
-    --line-height: 1.4;
-    /* Line box center: 0.25rem + (1.25rem × 1.4 / 2) = 0.25rem + 0.875rem */
-    --icon-vertical-position: calc(0.25rem + (1.25rem * 1.4 / 2));
-  }
-
-  .node--h4 {
-    --font-size: 1.125rem;
-    --line-height: 1.4;
-    /* Line box center: 0.25rem + (1.125rem × 1.4 / 2) = 0.25rem + 0.7875rem */
-    --icon-vertical-position: calc(0.25rem + (1.125rem * 1.4 / 2));
-  }
-
-  .node--h5 {
-    --font-size: 1rem;
-    --line-height: 1.4;
-    /* Line box center: 0.25rem + (1rem × 1.4 / 2) = 0.25rem + 0.7rem */
-    --icon-vertical-position: calc(0.25rem + (1rem * 1.4 / 2));
-  }
-
-  .node--h6 {
-    --font-size: 0.875rem;
-    --line-height: 1.4;
-    /* Line box center: 0.25rem + (0.875rem × 1.4 / 2) = 0.25rem + 0.6125rem */
-    --icon-vertical-position: calc(0.25rem + (0.875rem * 1.4 / 2));
-  }
-
-  /* Header empty state - ensure proper height */
-  .node--h1 .node__content:empty,
-  .node--h2 .node__content:empty,
-  .node--h3 .node__content:empty,
-  .node--h4 .node__content:empty,
-  .node--h5 .node__content:empty,
-  .node--h6 .node__content:empty {
-    min-height: 1.5rem;
   }
 
   /* Markdown formatting styles */

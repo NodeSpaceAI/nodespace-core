@@ -1,10 +1,22 @@
 <!--
   HeaderNode - Wraps BaseNode with header-specific functionality
 
+  ARCHITECTURE NOTE (Issue #311 Refactor):
+  - Header level detection moved FROM TextareaController TO HeaderNode $effect
+  - CSS styling moved FROM BaseNode TO HeaderNode wrapper classes (.header-h1 through .header-h6)
+  - This ensures proper separation of concerns: BaseNode is node-type agnostic
+
+  Why This Architecture?
+  - Single Responsibility Principle: BaseNode handles core editing, HeaderNode handles header specifics
+  - TextareaController only detects pattern → header conversion, NOT level changes within headers
+  - HeaderNode's $effect watches content changes and updates header level reactively
+  - CSS variables set by HeaderNode wrapper are inherited by nested BaseNode for icon positioning
+
   Responsibilities:
-  - Manages header level (1-6) derived from markdown syntax
-  - Provides header-specific styling based on level
-  - Handles header level detection and updates
+  - Manages header level (1-6) derived from markdown syntax via $effect
+  - Provides header-specific styling based on level through wrapper classes
+  - Handles header level detection and updates independently
+  - Emits headerLevelChanged events for parent components that need them
   - Forwards all other events to BaseNode
 
   Integration:
@@ -109,14 +121,6 @@
   }
 
   /**
-   * Handle header level changes from controller
-   */
-  function handleHeaderLevelChange(event: CustomEvent<{ level: number }>) {
-    headerLevel = event.detail.level;
-    dispatch('headerLevelChanged', { level: event.detail.level });
-  }
-
-  /**
    * Forward all other events to parent components
    */
   function forwardEvent<T>(eventName: string) {
@@ -137,7 +141,6 @@
     metadata={headerMetadata}
     on:createNewNode={forwardEvent('createNewNode')}
     on:contentChanged={handleContentChange}
-    on:headerLevelChanged={handleHeaderLevelChange}
     on:indentNode={forwardEvent('indentNode')}
     on:outdentNode={forwardEvent('outdentNode')}
     on:navigateArrow={forwardEvent('navigateArrow')}

@@ -180,7 +180,6 @@
     on:iconClick={handleIconClick}
     on:createNewNode={forwardEvent('createNewNode')}
     on:contentChanged={handleContentChange}
-    on:headerLevelChanged={forwardEvent('headerLevelChanged')}
     on:indentNode={forwardEvent('indentNode')}
     on:outdentNode={forwardEvent('outdentNode')}
     on:navigateArrow={forwardEvent('navigateArrow')}

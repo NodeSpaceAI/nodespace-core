@@ -250,38 +250,38 @@
     }
   }
 
-  /* Header-level CSS variables - matches base-node.svelte exactly for perfect chevron alignment */
-  .ns-node-tree :global(.node--h1) {
+  /* Header-level CSS variables - matches HeaderNode wrapper classes for perfect chevron alignment (Issue #311) */
+  .ns-node-tree :global(.header-h1) {
     --font-size: 2rem;
     --line-height: 1.2;
     --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 
-  .ns-node-tree :global(.node--h2) {
+  .ns-node-tree :global(.header-h2) {
     --font-size: 1.5rem;
     --line-height: 1.3;
     --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 
-  .ns-node-tree :global(.node--h3) {
+  .ns-node-tree :global(.header-h3) {
     --font-size: 1.25rem;
     --line-height: 1.4;
     --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 
-  .ns-node-tree :global(.node--h4) {
+  .ns-node-tree :global(.header-h4) {
     --font-size: 1.125rem;
     --line-height: 1.4;
     --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 
-  .ns-node-tree :global(.node--h5) {
+  .ns-node-tree :global(.header-h5) {
     --font-size: 1rem;
     --line-height: 1.4;
     --line-height-px: calc(var(--font-size) * var(--line-height));
   }
 
-  .ns-node-tree :global(.node--h6) {
+  .ns-node-tree :global(.header-h6) {
     --font-size: 0.875rem;
     --line-height: 1.4;
     --line-height-px: calc(var(--font-size) * var(--line-height));
