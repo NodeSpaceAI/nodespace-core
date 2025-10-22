@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
+  import { invoke } from '@tauri-apps/api/core';
   import NavigationSidebar from './navigation-sidebar.svelte';
   import TabSystem from './tab-system.svelte';
   import ThemeProvider from '$lib/design/components/theme-provider.svelte';
@@ -10,9 +11,75 @@
   import { registerCorePlugins } from '$lib/plugins/core-plugins';
   import { pluginRegistry } from '$lib/plugins/index';
   import { isValidDateString } from '$lib/utils/date-formatting';
+  import { SharedNodeStore } from '$lib/services/shared-node-store';
+  import { MCP_EVENTS } from '$lib/constants';
+  import type { Node } from '$lib/types';
 
   // Constants
   const LOG_PREFIX = '[AppShell]';
+
+  /**
+   * Sets up MCP event listeners for real-time UI updates
+   *
+   * Listens to Tauri events emitted by the MCP server and updates the SharedNodeStore
+   * to trigger reactive UI updates across all components.
+   *
+   * @param sharedNodeStore - The shared node store instance to update
+   * @returns Cleanup function that removes all MCP event listeners
+   */
+  function setupMCPListeners(sharedNodeStore: SharedNodeStore): () => Promise<void> {
+    // Listen for node creation events from MCP
+    const unlistenNodeCreated = listen<{ node: Node }>(MCP_EVENTS.NODE_CREATED, (event) => {
+      console.log(`${LOG_PREFIX} [MCP] Node created:`, event.payload.node.id);
+      sharedNodeStore.setNode(
+        event.payload.node,
+        { type: 'mcp-server' },
+        false // Don't skip persistence - let store handle it
+      );
+    });
+
+    // Listen for node update events from MCP (hybrid approach - fetch full node)
+    const unlistenNodeUpdated = listen<{ node_id: string }>(
+      MCP_EVENTS.NODE_UPDATED,
+      async (event) => {
+        console.log(`${LOG_PREFIX} [MCP] Node updated:`, event.payload.node_id);
+        try {
+          const node = await invoke<Node>('get_node', { id: event.payload.node_id });
+          if (node) {
+            sharedNodeStore.setNode(node, { type: 'mcp-server' }, false);
+          } else {
+            console.warn(
+              `${LOG_PREFIX} [MCP] Node not found after update event:`,
+              event.payload.node_id
+            );
+          }
+        } catch (error) {
+          console.error(
+            `${LOG_PREFIX} [MCP] Failed to fetch node after update event:`,
+            event.payload.node_id,
+            error
+          );
+        }
+      }
+    );
+
+    // Listen for node deletion events from MCP
+    const unlistenNodeDeleted = listen<{ node_id: string }>(MCP_EVENTS.NODE_DELETED, (event) => {
+      console.log(`${LOG_PREFIX} [MCP] Node deleted:`, event.payload.node_id);
+      sharedNodeStore.deleteNode(
+        event.payload.node_id,
+        { type: 'mcp-server' },
+        false // Don't skip persistence - let store handle it
+      );
+    });
+
+    // Return cleanup function
+    return async () => {
+      (await unlistenNodeCreated)();
+      (await unlistenNodeUpdated)();
+      (await unlistenNodeDeleted)();
+    };
+  }
 
   // TypeScript compatibility for Tauri window check
 
@@ -25,6 +92,7 @@
 
     // Listen for menu events from Tauri (only if running in Tauri environment)
     let unlistenMenu: Promise<() => void> | null = null;
+    let cleanupMCP: (() => Promise<void>) | null = null;
 
     if (
       typeof window !== 'undefined' &&
@@ -33,6 +101,9 @@
       unlistenMenu = listen('menu-toggle-sidebar', () => {
         toggleSidebar();
       });
+
+      // Set up MCP event listeners for real-time UI updates
+      cleanupMCP = setupMCPListeners(SharedNodeStore.getInstance());
     }
 
     // Global click handler for nodespace:// links
@@ -94,6 +165,9 @@
       cleanup?.();
       if (unlistenMenu) {
         (await unlistenMenu)();
+      }
+      if (cleanupMCP) {
+        await cleanupMCP();
       }
       // Cleanup click handler (must match capture phase flag)
       document.removeEventListener('click', handleLinkClick, true);

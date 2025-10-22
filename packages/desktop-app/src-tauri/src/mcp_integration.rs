@@ -6,7 +6,7 @@
 
 use nodespace_core::mcp;
 use nodespace_core::services::NodeEmbeddingService;
-use nodespace_core::NodeService;
+use nodespace_core::{Node, NodeService};
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -16,11 +16,10 @@ use tracing::warn;
 /// Event payload for node-created event
 #[derive(Debug, Serialize)]
 struct NodeCreatedEvent {
-    node_id: String,
-    node_type: String,
+    node: Node,
 }
 
-/// Event payload for node-updated event
+/// Event payload for node-updated event (uses hybrid approach - frontend fetches full node)
 #[derive(Debug, Serialize)]
 struct NodeUpdatedEvent {
     node_id: String,
@@ -80,43 +79,49 @@ pub async fn run_mcp_server_with_events(
 /// Examines the method name and result payload to emit appropriate Tauri
 /// events for UI reactivity. Only mutation operations (create, update, delete)
 /// emit events; read operations (get, query) do not.
+///
+/// For create operations, the full Node is deserialized and emitted to avoid
+/// extra database fetches on the frontend. For update operations, only the
+/// node_id is emitted (hybrid approach - frontend fetches full node).
 fn emit_event_for_method(app: &AppHandle, method: &str, result: &Value) {
     match method {
         "create_node" => {
-            if let (Some(node_id), Some(node_type)) =
-                (result["node_id"].as_str(), result["node_type"].as_str())
-            {
-                let event = NodeCreatedEvent {
-                    node_id: node_id.to_string(),
-                    node_type: node_type.to_string(),
-                };
-                if let Err(e) = app.emit("node-created", &event) {
-                    warn!("Failed to emit node-created event: {}", e);
+            // Deserialize full Node from result and emit
+            match serde_json::from_value::<Node>(result.clone()) {
+                Ok(node) => {
+                    let event = NodeCreatedEvent { node };
+                    if let Err(e) = app.emit("node-created", &event) {
+                        warn!("Failed to emit node-created event: {}", e);
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to deserialize node from create_node result: {}", e);
                 }
             }
         }
         "create_nodes_from_markdown" => {
             // Emit node-created event for each node in the nodes array
             if let Some(nodes) = result["nodes"].as_array() {
-                for node in nodes {
-                    if let (Some(node_id), Some(node_type)) =
-                        (node["id"].as_str(), node["node_type"].as_str())
-                    {
-                        let event = NodeCreatedEvent {
-                            node_id: node_id.to_string(),
-                            node_type: node_type.to_string(),
-                        };
-                        if let Err(e) = app.emit("node-created", &event) {
-                            warn!(
-                                "Failed to emit node-created event for markdown import node {}: {}",
-                                node_id, e
-                            );
+                for node_value in nodes {
+                    match serde_json::from_value::<Node>(node_value.clone()) {
+                        Ok(node) => {
+                            let event = NodeCreatedEvent { node };
+                            if let Err(e) = app.emit("node-created", &event) {
+                                warn!(
+                                    "Failed to emit node-created event for markdown import node {}: {}",
+                                    event.node.id, e
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to deserialize node from markdown import: {}", e);
                         }
                     }
                 }
             }
         }
         "update_node" => {
+            // Hybrid approach: emit only node_id, frontend fetches full node
             if let Some(node_id) = result["node_id"].as_str() {
                 let event = NodeUpdatedEvent {
                     node_id: node_id.to_string(),
