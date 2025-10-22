@@ -16,7 +16,7 @@
  */
 
 import type { KeyboardCommand, KeyboardContext } from '$lib/services/keyboard-command-registry';
-import { splitMarkdownContent } from '$lib/utils/markdown-splitter';
+import { patternSplitter } from '$lib/patterns/splitter';
 
 // Constants for timing coordination
 const ENTER_FLAG_RESET_DELAY_MS = 100; // Timeout for recentEnter flag to prevent cursor restoration race conditions
@@ -78,7 +78,8 @@ export class CreateNodeCommand implements KeyboardCommand {
       });
     } else {
       // Normal splitting behavior for middle/end positions
-      const splitResult = splitMarkdownContent(currentContent, cursorPosition);
+      // Auto-detect pattern from content (preserves legacy behavior)
+      const splitResult = patternSplitter.split(currentContent, cursorPosition);
 
       // NOTE: We don't update the element content here because:
       // 1. Direct DOM manipulation can cause focus issues

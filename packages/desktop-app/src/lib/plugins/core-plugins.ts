@@ -11,6 +11,8 @@
  */
 
 import type { PluginDefinition, NodeReferenceComponent } from './types';
+import type { PatternTemplate } from '../patterns/types';
+import { PatternRegistry } from '../patterns/registry';
 import BaseNodeReference from '../components/base-node-reference.svelte';
 
 // Core plugins for built-in node types
@@ -76,7 +78,19 @@ export const headerNodePlugin: PluginDefinition = {
         nodeType: 'header'
       }
     ],
-    // Unified pattern detection for h1-h6 auto-conversion
+    // New unified pattern template for h1-h6 auto-conversion
+    patternTemplate: {
+      regex: /^(#{1,6})\s/,
+      nodeType: 'header',
+      priority: 10,
+      splittingStrategy: 'prefix-inheritance',
+      prefixToInherit: undefined, // Will be extracted from regex
+      cursorPlacement: 'after-prefix',
+      extractMetadata: (match: RegExpMatchArray) => ({
+        headerLevel: match[1].length // Capture group 1 is the hashtags
+      })
+    } as PatternTemplate,
+    // Keep legacy pattern detection for backward compatibility
     patternDetection: [
       {
         pattern: /^(#{1,6})\s/,
@@ -117,8 +131,23 @@ export const taskNodePlugin: PluginDefinition = {
         nodeType: 'task' // Set node type to 'task' when selected
       }
     ],
-    // Pattern detection for task checkbox auto-conversion
+    // New unified pattern template for task checkbox auto-conversion
     // Supports: [ ], [x], [X], - [ ], - [x], * [ ], * [x], + [ ], + [x]
+    patternTemplate: {
+      regex: /^[-*+]?\s*\[\s*[xX\s]\s*\]\s/,
+      nodeType: 'task',
+      priority: 10,
+      splittingStrategy: 'simple-split',
+      cursorPlacement: 'start',
+      extractMetadata: (match: RegExpMatchArray) => {
+        // Check if checkbox is marked (contains 'x' or 'X')
+        const isCompleted = /[xX]/.test(match[0]);
+        return {
+          taskState: isCompleted ? 'completed' : 'pending'
+        };
+      }
+    } as PatternTemplate,
+    // Keep legacy pattern detection for backward compatibility
     patternDetection: [
       {
         pattern: /^[-*+]?\s*\[\s*[xX\s]\s*\]\s/,
@@ -216,8 +245,20 @@ export const codeBlockNodePlugin: PluginDefinition = {
         desiredCursorPosition: 4 // Position cursor after "```\n" (on the empty line)
       }
     ],
-    // Pattern detection for ``` auto-conversion
+    // New unified pattern template for ``` auto-conversion
     // Requires newline: user types ```, then presses Shift+Enter to trigger
+    patternTemplate: {
+      regex: /^```(\w+)?\n/,
+      nodeType: 'code-block',
+      priority: 10,
+      splittingStrategy: 'simple-split',
+      cursorPlacement: 'start',
+      contentTemplate: '```\n\n```', // Auto-complete with closing fence
+      extractMetadata: (match: RegExpMatchArray) => ({
+        language: match[1]?.toLowerCase() || 'plaintext'
+      })
+    } as PatternTemplate,
+    // Keep legacy pattern detection for backward compatibility
     patternDetection: [
       {
         pattern: /^```(\w+)?\n/,
@@ -261,7 +302,17 @@ export const quoteBlockNodePlugin: PluginDefinition = {
         desiredCursorPosition: 2 // Position cursor after "> " prefix
       }
     ],
-    // Pattern detection for > auto-conversion
+    // New unified pattern template for > auto-conversion
+    patternTemplate: {
+      regex: /^>\s/,
+      nodeType: 'quote-block',
+      priority: 10,
+      splittingStrategy: 'prefix-inheritance',
+      prefixToInherit: '> ',
+      cursorPlacement: 'after-prefix',
+      extractMetadata: () => ({})
+    } as PatternTemplate,
+    // Keep legacy pattern detection for backward compatibility
     patternDetection: [
       {
         pattern: /^>\s/,
@@ -315,7 +366,17 @@ export const orderedListNodePlugin: PluginDefinition = {
         desiredCursorPosition: 3 // Position cursor after "1. " prefix
       }
     ],
-    // Pattern detection for "1. " auto-conversion
+    // New unified pattern template for "1. " auto-conversion
+    patternTemplate: {
+      regex: /^1\.\s/,
+      nodeType: 'ordered-list',
+      priority: 10,
+      splittingStrategy: 'prefix-inheritance',
+      prefixToInherit: '1. ',
+      cursorPlacement: 'after-prefix',
+      extractMetadata: () => ({})
+    } as PatternTemplate,
+    // Keep legacy pattern detection for backward compatibility
     patternDetection: [
       {
         pattern: /^1\.\s/,
@@ -402,6 +463,7 @@ export const corePlugins = [
 /**
  * Register all core plugins with the unified registry
  * Replaces the old BasicNodeTypeRegistry initialization
+ * Also registers patterns with PatternRegistry for unified pattern handling
  */
 export function registerCorePlugins(registry: import('./plugin-registry').PluginRegistry): void {
   // Check if plugins are already registered in this specific registry instance
@@ -409,17 +471,29 @@ export function registerCorePlugins(registry: import('./plugin-registry').Plugin
     return; // Already registered in this registry
   }
 
+  const patternRegistry = PatternRegistry.getInstance();
+
   for (const plugin of corePlugins) {
     registry.register(plugin);
+
+    // Register pattern template with PatternRegistry if present
+    if (plugin.config.patternTemplate) {
+      patternRegistry.register(plugin.config.patternTemplate);
+    }
   }
 
   // Log registration statistics
   const stats = registry.getStats();
+  const patternStats = patternRegistry.getStats();
   console.log('[UnifiedPluginRegistry] Core plugins registered:', {
     plugins: stats.pluginsCount,
     slashCommands: stats.slashCommandsCount,
     viewers: stats.viewersCount,
     references: stats.referencesCount
+  });
+  console.log('[PatternRegistry] Patterns registered:', {
+    patterns: patternStats.patternCount,
+    registeredNodeTypes: patternStats.registeredNodeTypes
   });
 }
 

@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { splitMarkdownContent } from '../../lib/utils/markdown-splitter';
+import { patternSplitter } from '../../lib/patterns/splitter';
 
 describe('Header Cursor Position Splitting', () => {
   describe('Fixed Behavior (now working correctly)', () => {
@@ -16,7 +16,7 @@ describe('Header Cursor Position Splitting', () => {
       const content = '# Header text';
       const position = 0; // |# Header text
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'header');
 
       console.log('Before header - result:', result);
       // FIXED: Original node keeps header syntax, new node gets full content
@@ -29,7 +29,7 @@ describe('Header Cursor Position Splitting', () => {
       const content = '# Header text';
       const position = 1; // #| Header text
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'header');
 
       console.log('Within header syntax - result:', result);
       // FIXED: Original node keeps header syntax, new node gets full content
@@ -42,7 +42,7 @@ describe('Header Cursor Position Splitting', () => {
       const content = '# Header text';
       const position = 2; // # |Header text
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'header');
 
       console.log('After header syntax - result:', result);
       // FIXED: Both nodes get proper header syntax
@@ -58,7 +58,7 @@ describe('Header Cursor Position Splitting', () => {
 
         // Test cursor at different positions within header syntax
         for (let pos = 0; pos < headerPrefix.length; pos++) {
-          const result = splitMarkdownContent(content, pos);
+          const result = patternSplitter.split(content, pos, 'header');
           console.log(`Level ${level}, pos ${pos}:`, result);
 
           // The afterContent should always preserve the full header syntax
@@ -81,22 +81,22 @@ describe('Header Cursor Position Splitting', () => {
       const content = '## Important Header';
 
       // Case 1: Cursor at position 0 (|## Important Header)
-      const result1 = splitMarkdownContent(content, 0);
+      const result1 = patternSplitter.split(content, 0, 'header');
       expect(result1.beforeContent).toBe('## '); // FIXED: Original node keeps header syntax
       expect(result1.afterContent).toBe('## Important Header');
 
       // Case 2: Cursor at position 1 (#|# Important Header)
-      const result2 = splitMarkdownContent(content, 1);
+      const result2 = patternSplitter.split(content, 1, 'header');
       expect(result2.beforeContent).toBe('## '); // Original node keeps header syntax
       expect(result2.afterContent).toBe('## Important Header'); // New node gets full header
 
       // Case 3: Cursor at position 2 (##| Important Header)
-      const result3 = splitMarkdownContent(content, 2);
+      const result3 = patternSplitter.split(content, 2, 'header');
       expect(result3.beforeContent).toBe('## '); // Original node keeps header syntax
       expect(result3.afterContent).toBe('## Important Header'); // New node gets full header
 
       // Case 4: Cursor at position 3 (## |Important Header)
-      const result4 = splitMarkdownContent(content, 3);
+      const result4 = patternSplitter.split(content, 3, 'header');
       expect(result4.beforeContent).toBe('## '); // Header syntax only
       expect(result4.afterContent).toBe('## Important Header'); // Full header with content
     });
@@ -106,7 +106,7 @@ describe('Header Cursor Position Splitting', () => {
       const content = '### Section: Overview and Details';
 
       // Cursor within header syntax should preserve the header for both nodes
-      const result = splitMarkdownContent(content, 2); // ##|# Section...
+      const result = patternSplitter.split(content, 2, 'header'); // ##|# Section...
       expect(result.beforeContent).toBe('### '); // Original node keeps header syntax
       expect(result.afterContent).toBe('### Section: Overview and Details'); // New node gets full content
     });

@@ -7,6 +7,7 @@
 
 import type { SvelteComponent, Component } from 'svelte';
 import type { NodeViewerProps, NodeComponentProps } from '../types/node-viewers';
+import type { PatternTemplate } from '../patterns/types';
 
 // Base component types - match existing nodeViewers.ts definitions
 export type NodeViewerComponent = Component<NodeViewerProps>; // Page-level viewers (DateNodeViewer, BaseNodeViewer)
@@ -107,8 +108,14 @@ export interface NodeTypeConfig {
   /**
    * Pattern detection configurations for auto-converting node types
    * Example: Header plugin defines /^(#{1,6})\s/ to auto-convert text → header
+   * @deprecated Use patternTemplate instead - will be removed in next major version
    */
   patternDetection?: PatternDetectionConfig[];
+  /**
+   * Pattern template for unified pattern system (new)
+   * Used by PatternRegistry and PatternSplitter for consistent pattern handling
+   */
+  patternTemplate?: PatternTemplate;
   canHaveChildren?: boolean;
   canBeChild?: boolean;
   defaultContent?: string;

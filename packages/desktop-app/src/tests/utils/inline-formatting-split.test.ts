@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { splitMarkdownContent } from '../../lib/utils/markdown-splitter';
+import { patternSplitter } from '../../lib/patterns/splitter';
 
 describe('Inline Formatting Split', () => {
   describe('Bold formatting (**text**)', () => {
@@ -19,7 +19,7 @@ describe('Inline Formatting Split', () => {
       const content = '**bold text**';
       const position = 5; // **bol|d text** (position 5 is after '**bol')
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('**bol**'); // First line gets closing **
       expect(result.afterContent).toBe('**d text**'); // Second line gets opening **
@@ -30,7 +30,7 @@ describe('Inline Formatting Split', () => {
       const content = '**bold text**';
       const position = 2; // **|bold text**
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       // When splitting right after opening markers, the implementation adds closing markers
       expect(result.beforeContent).toBe('****'); // Opening markers + closing markers
@@ -42,7 +42,7 @@ describe('Inline Formatting Split', () => {
       const content = '**bold text**';
       const position = 11; // **bold text|**
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       // When splitting right before closing markers, the implementation adds opening markers to second line
       expect(result.beforeContent).toBe('**bold text**'); // Complete bold text
@@ -54,7 +54,7 @@ describe('Inline Formatting Split', () => {
       const content = '__bold text__';
       const position = 5; // __bol|d text__
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('__bol__');
       expect(result.afterContent).toBe('__d text__');
@@ -67,7 +67,7 @@ describe('Inline Formatting Split', () => {
       const content = '*italic text*';
       const position = 7; // *italic| text*
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('*italic*');
       expect(result.afterContent).toBe('* text*');
@@ -78,7 +78,7 @@ describe('Inline Formatting Split', () => {
       const content = '_italic text_';
       const position = 7; // _italic| text_
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('_italic_');
       expect(result.afterContent).toBe('_ text_');
@@ -91,7 +91,7 @@ describe('Inline Formatting Split', () => {
       const content = '`code snippet`';
       const position = 5; // `code| snippet`
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('`code`');
       expect(result.afterContent).toBe('` snippet`');
@@ -102,7 +102,7 @@ describe('Inline Formatting Split', () => {
       const content = '`getUserById()`';
       const position = 8; // `getUser|ById()`
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('`getUser`');
       expect(result.afterContent).toBe('`ById()`');
@@ -115,7 +115,7 @@ describe('Inline Formatting Split', () => {
       const content = '~~crossed out~~';
       const position = 9; // ~~crossed| out~~
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('~~crossed~~');
       expect(result.afterContent).toBe('~~ out~~');
@@ -126,7 +126,7 @@ describe('Inline Formatting Split', () => {
       const content = '~strikethrough~';
       const position = 7; // ~strike|through~
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('~strike~');
       expect(result.afterContent).toBe('~through~');
@@ -137,7 +137,7 @@ describe('Inline Formatting Split', () => {
       const content = 'Testing some in-line **bold**, *italic*, and ~strikethrough~';
       const position = 52; // Testing some in-line **bold**, *italic*, and ~strike|through~
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('Testing some in-line **bold**, *italic*, and ~strike~');
       expect(result.afterContent).toBe('~through~');
@@ -150,7 +150,7 @@ describe('Inline Formatting Split', () => {
       const content = '***important***';
       const position = 8; // ***impor|tant***
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('***impor***');
       expect(result.afterContent).toBe('***tant***');
@@ -161,7 +161,7 @@ describe('Inline Formatting Split', () => {
       const content = '**_important_**';
       const position = 8; // **_impor|tant_**
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('**_impor_**');
       expect(result.afterContent).toBe('**_tant_**');
@@ -174,7 +174,7 @@ describe('Inline Formatting Split', () => {
       const content = 'This is **bold** text';
       const position = 12; // This is **bo|ld** text
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('This is **bo**');
       expect(result.afterContent).toBe('**ld** text');
@@ -185,7 +185,7 @@ describe('Inline Formatting Split', () => {
       const content = 'This is **bold** text';
       const position = 5; // This |is **bold** text
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('This ');
       expect(result.afterContent).toBe('is **bold** text');
@@ -196,7 +196,7 @@ describe('Inline Formatting Split', () => {
       const content = '**bold** and *italic* text';
       const position = 17; // **bold** and *ita|lic* text
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('**bold** and *ita*');
       expect(result.afterContent).toBe('*lic* text');
@@ -209,7 +209,7 @@ describe('Inline Formatting Split', () => {
       const content = '**bold**';
       const position = 0; // |**bold**
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('');
       expect(result.afterContent).toBe('**bold**');
@@ -220,7 +220,7 @@ describe('Inline Formatting Split', () => {
       const content = '**bold**';
       const position = 8; // **bold**|
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('**bold**');
       expect(result.afterContent).toBe('');
@@ -231,7 +231,7 @@ describe('Inline Formatting Split', () => {
       const content = '';
       const position = 0;
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('');
       expect(result.afterContent).toBe('');
@@ -242,7 +242,7 @@ describe('Inline Formatting Split', () => {
       const content = '**bold _italic_ text**';
       const position = 15; // **bold _italic| _ text**
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       // This is a complex case - the implementation should preserve both bold and italic
       expect(result.beforeContent).toContain('_italic_');
@@ -255,7 +255,7 @@ describe('Inline Formatting Split', () => {
       const content = 'Use `Array.prototype.map()` to transform arrays';
       const position = 20; // Use `Array.prototype|.map()` to transform arrays
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('Use `Array.prototype`');
       expect(result.afterContent).toBe('`.map()` to transform arrays');
@@ -266,7 +266,7 @@ describe('Inline Formatting Split', () => {
       const content = '**WARNING:** Do not use this in production';
       const position = 12; // **WARNING:**| Do not use this in production
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('**WARNING:**');
       expect(result.afterContent).toBe(' Do not use this in production');
@@ -277,7 +277,7 @@ describe('Inline Formatting Split', () => {
       const content = '**Important:** Remember to save your work';
       const position = 17; // **Important:** Re|member to save your work
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.beforeContent).toBe('**Important:** Re');
       expect(result.afterContent).toBe('member to save your work');
@@ -290,7 +290,7 @@ describe('Inline Formatting Split', () => {
       const content = '**text**';
       const position = 4; // **te|xt**
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.newNodeCursorPosition).toBe(2); // After **
     });
@@ -299,7 +299,7 @@ describe('Inline Formatting Split', () => {
       const content = '*text*';
       const position = 3; // *te|xt*
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.newNodeCursorPosition).toBe(1); // After *
     });
@@ -308,7 +308,7 @@ describe('Inline Formatting Split', () => {
       const content = '`code`';
       const position = 3; // `co|de`
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.newNodeCursorPosition).toBe(1); // After `
     });
@@ -317,7 +317,7 @@ describe('Inline Formatting Split', () => {
       const content = 'plain text';
       const position = 6; // plain |text
 
-      const result = splitMarkdownContent(content, position);
+      const result = patternSplitter.split(content, position, 'text');
 
       expect(result.newNodeCursorPosition).toBe(0); // At start
     });
