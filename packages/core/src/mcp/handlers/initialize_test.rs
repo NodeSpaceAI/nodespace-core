@@ -22,8 +22,9 @@ fn test_initialize_success() {
     assert_eq!(result["serverInfo"]["name"], "nodespace-mcp-server");
     assert!(result["serverInfo"]["version"].is_string());
 
-    // Verify capabilities structure
-    assert!(result["capabilities"]["tools"].is_array());
+    // Verify capabilities structure (per MCP 2024-11-05 spec)
+    assert!(result["capabilities"]["tools"].is_object());
+    assert_eq!(result["capabilities"]["tools"]["listChanged"], false);
     assert!(result["capabilities"]["resources"].is_object());
     assert!(result["capabilities"]["prompts"].is_object());
 }
@@ -76,13 +77,9 @@ fn test_initialize_empty_params() {
 
 #[test]
 fn test_all_expected_tools_present() {
-    let params = json!({
-        "protocolVersion": "2024-11-05",
-        "clientInfo": {"name": "test"}
-    });
-
-    let result = handle_initialize(params).unwrap();
-    let tools = result["capabilities"]["tools"].as_array().unwrap();
+    // Use tools/list to get tool schemas (per MCP spec, tools are discovered via tools/list)
+    let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
+    let tools = result["tools"].as_array().unwrap();
 
     // Verify all expected methods are present
     let expected_tools = [
@@ -110,8 +107,8 @@ fn test_all_expected_tools_present() {
 
 #[test]
 fn test_all_schemas_have_required_fields() {
-    let schemas = get_tool_schemas();
-    let tools = schemas.as_array().unwrap();
+    let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
+    let tools = result["tools"].as_array().unwrap();
 
     assert!(
         tools.len() >= 6,
@@ -156,8 +153,8 @@ fn test_all_schemas_have_required_fields() {
 
 #[test]
 fn test_create_node_schema_has_required_fields() {
-    let schemas = get_tool_schemas();
-    let tools = schemas.as_array().unwrap();
+    let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
+    let tools = result["tools"].as_array().unwrap();
 
     let create_node = tools
         .iter()
@@ -190,8 +187,8 @@ fn test_create_node_schema_has_required_fields() {
 
 #[test]
 fn test_get_node_schema_structure() {
-    let schemas = get_tool_schemas();
-    let tools = schemas.as_array().unwrap();
+    let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
+    let tools = result["tools"].as_array().unwrap();
 
     let get_node = tools
         .iter()
@@ -213,8 +210,8 @@ fn test_get_node_schema_structure() {
 
 #[test]
 fn test_update_node_schema_structure() {
-    let schemas = get_tool_schemas();
-    let tools = schemas.as_array().unwrap();
+    let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
+    let tools = result["tools"].as_array().unwrap();
 
     let update_node = tools
         .iter()
@@ -237,8 +234,8 @@ fn test_update_node_schema_structure() {
 
 #[test]
 fn test_markdown_import_schema_structure() {
-    let schemas = get_tool_schemas();
-    let tools = schemas.as_array().unwrap();
+    let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
+    let tools = result["tools"].as_array().unwrap();
 
     let markdown_import = tools
         .iter()
@@ -333,7 +330,8 @@ mod integration_tests {
         // Verify initialize response structure
         assert_eq!(init_result["protocolVersion"], "2024-11-05");
         assert_eq!(init_result["serverInfo"]["name"], "nodespace-mcp-server");
-        assert!(init_result["capabilities"]["tools"].is_array());
+        assert!(init_result["capabilities"]["tools"].is_object());
+        assert_eq!(init_result["capabilities"]["tools"]["listChanged"], false);
 
         // Step 5: Simulate receiving "initialized" notification
         // (In real server, this would come from client)
@@ -450,9 +448,10 @@ mod integration_tests {
         // Both should return same structure
         assert_eq!(result1["protocolVersion"], result2["protocolVersion"]);
         assert_eq!(result1["serverInfo"]["name"], result2["serverInfo"]["name"]);
+        // Tools capability is now an object per MCP spec
         assert_eq!(
-            result1["capabilities"]["tools"].as_array().unwrap().len(),
-            result2["capabilities"]["tools"].as_array().unwrap().len()
+            result1["capabilities"]["tools"]["listChanged"],
+            result2["capabilities"]["tools"]["listChanged"]
         );
     }
 }

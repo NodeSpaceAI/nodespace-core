@@ -1,0 +1,347 @@
+//! MCP Tools Handler
+//!
+//! Implements MCP-compliant tools/list and tools/call methods.
+//! This module centralizes tool discovery and execution according to the
+//! MCP 2024-11-05 specification.
+
+use crate::mcp::handlers::{markdown, nodes, search};
+use crate::mcp::types::MCPError;
+use crate::services::{NodeEmbeddingService, NodeService};
+use serde_json::{json, Value};
+use std::sync::Arc;
+
+/// Handle tools/list MCP request
+///
+/// Returns all available tool schemas for client discovery.
+/// This is called after initialize to discover what tools the server provides.
+///
+/// # MCP Spec Compliance
+///
+/// Response format:
+/// ```json
+/// {
+///   "tools": [
+///     {
+///       "name": "tool_name",
+///       "description": "...",
+///       "inputSchema": { ... }
+///     }
+///   ]
+/// }
+/// ```
+pub fn handle_tools_list(_params: Value) -> Result<Value, MCPError> {
+    Ok(json!({
+        "tools": get_tool_schemas()
+    }))
+}
+
+/// Handle tools/call MCP request
+///
+/// Executes a tool by name with provided arguments.
+/// This is the unified entry point for all tool execution in MCP-compliant servers.
+///
+/// # MCP Spec Compliance (2024-11-05)
+///
+/// Request format:
+/// ```json
+/// {
+///   "name": "tool_name",
+///   "arguments": { ... }
+/// }
+/// ```
+///
+/// Response format (success):
+/// ```json
+/// {
+///   "content": [{
+///     "type": "text",
+///     "text": "..."
+///   }],
+///   "isError": false
+/// }
+/// ```
+///
+/// Response format (error):
+/// ```json
+/// {
+///   "content": [{
+///     "type": "text",
+///     "text": "Error message"
+///   }],
+///   "isError": true
+/// }
+/// ```
+///
+/// # Arguments
+///
+/// * `node_service` - Arc reference to NodeService for node operations
+/// * `embedding_service` - Arc reference to NodeEmbeddingService for search
+/// * `params` - Request parameters containing `name` and `arguments`
+///
+/// # Returns
+///
+/// Returns JSON result with content array and isError flag per MCP spec
+pub async fn handle_tools_call(
+    node_service: &Arc<NodeService>,
+    embedding_service: &Arc<NodeEmbeddingService>,
+    params: Value,
+) -> Result<Value, MCPError> {
+    // Extract tool name from params
+    let tool_name = params["name"]
+        .as_str()
+        .ok_or_else(|| MCPError::invalid_params("Missing 'name' parameter".to_string()))?;
+
+    // Extract arguments (defaults to empty object if missing)
+    let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+
+    // Route to appropriate handler based on tool name
+    let result = match tool_name {
+        "create_node" => nodes::handle_create_node(node_service, arguments).await,
+        "get_node" => nodes::handle_get_node(node_service, arguments).await,
+        "update_node" => nodes::handle_update_node(node_service, arguments).await,
+        "delete_node" => nodes::handle_delete_node(node_service, arguments).await,
+        "query_nodes" => nodes::handle_query_nodes(node_service, arguments).await,
+        "create_nodes_from_markdown" => {
+            markdown::handle_create_nodes_from_markdown(node_service, arguments).await
+        }
+        "get_markdown_from_node_id" => {
+            markdown::handle_get_markdown_from_node_id(node_service, arguments).await
+        }
+        "search_containers" => search::handle_search_containers(embedding_service, arguments).await,
+        _ => {
+            return Err(MCPError::invalid_params(format!(
+                "Unknown tool: {}",
+                tool_name
+            )))
+        }
+    };
+
+    // Format response per MCP spec with content array and isError flag
+    match result {
+        Ok(data) => {
+            // Success: Serialize result as pretty JSON text in content array
+            let text = serde_json::to_string_pretty(&data).map_err(|e| {
+                MCPError::internal_error(format!("JSON serialization failed: {}", e))
+            })?;
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": text
+                }],
+                "isError": false
+            }))
+        }
+        Err(e) => {
+            // Error: Return error message in content array with isError=true
+            // This follows MCP spec: tool execution errors are returned as successful
+            // responses with isError=true, not as JSON-RPC errors
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": e.message
+                }],
+                "isError": true
+            }))
+        }
+    }
+}
+
+/// Generate JSON schemas for all available MCP tools
+///
+/// This function defines the complete tool catalog exposed by the MCP server.
+/// Schemas are manually maintained to provide high-quality descriptions and
+/// precise control over the API surface.
+///
+/// # Design Rationale
+///
+/// Manual schemas (vs auto-generated) allow for:
+/// - Human-crafted explanations optimized for AI understanding
+/// - Detailed field-level documentation with examples
+/// - Specific enum values that may differ from internal types
+/// - Fine-grained control over what's exposed to MCP clients
+///
+/// # Future Enhancement
+///
+/// Consider auto-generating schemas from Rust types with proc macros,
+/// while preserving ability to override descriptions (see Issue #312).
+fn get_tool_schemas() -> Value {
+    json!([
+        {
+            "name": "create_node",
+            "description": "Create a new node in NodeSpace",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_type": {
+                        "type": "string",
+                        "enum": ["text", "header", "task", "date", "code-block", "quote-block", "ordered-list"],
+                        "description": "Type of node to create"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Content of the node (markdown format for most types)"
+                    },
+                    "parent_id": {
+                        "type": "string",
+                        "description": "Optional parent node ID for hierarchy"
+                    },
+                    "container_node_id": {
+                        "type": "string",
+                        "description": "Optional container/document ID"
+                    },
+                    "properties": {
+                        "type": "object",
+                        "description": "Additional type-specific properties (JSON object)"
+                    }
+                },
+                "required": ["node_type", "content"]
+            }
+        },
+        {
+            "name": "get_node",
+            "description": "Retrieve a single node by ID",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_id": {
+                        "type": "string",
+                        "description": "ID of the node to retrieve"
+                    }
+                },
+                "required": ["node_id"]
+            }
+        },
+        {
+            "name": "update_node",
+            "description": "Update an existing node's content or properties",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_id": {
+                        "type": "string",
+                        "description": "ID of the node to update"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Updated content"
+                    },
+                    "properties": {
+                        "type": "object",
+                        "description": "Updated properties"
+                    }
+                },
+                "required": ["node_id"]
+            }
+        },
+        {
+            "name": "delete_node",
+            "description": "Delete a node and optionally its children",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_id": {
+                        "type": "string",
+                        "description": "ID of the node to delete"
+                    }
+                },
+                "required": ["node_id"]
+            }
+        },
+        {
+            "name": "query_nodes",
+            "description": "Query nodes with filters",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "filters": {
+                        "type": "array",
+                        "description": "Array of filter conditions"
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of results"
+                    }
+                }
+            }
+        },
+        {
+            "name": "create_nodes_from_markdown",
+            "description": "Parse markdown and create hierarchical nodes",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "markdown_content": {
+                        "type": "string",
+                        "description": "Markdown content to parse"
+                    },
+                    "container_title": {
+                        "type": "string",
+                        "description": "Title for the container node"
+                    }
+                },
+                "required": ["markdown_content", "container_title"]
+            }
+        },
+        {
+            "name": "get_markdown_from_node_id",
+            "description": "Export node and its children as clean markdown for reading and analysis",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_id": {
+                        "type": "string",
+                        "description": "Root node ID to export"
+                    },
+                    "include_children": {
+                        "type": "boolean",
+                        "description": "Include child nodes recursively (default: true)",
+                        "default": true
+                    },
+                    "max_depth": {
+                        "type": "number",
+                        "description": "Maximum recursion depth (default: 20)",
+                        "default": 20
+                    }
+                },
+                "required": ["node_id"]
+            }
+        },
+        {
+            "name": "search_containers",
+            "description": "Search containers using natural language semantic similarity (vector embeddings). Examples: 'Q4 planning tasks', 'machine learning research notes', 'budget discussions'",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language search query (e.g., 'Q4 planning tasks')"
+                    },
+                    "threshold": {
+                        "type": "number",
+                        "description": "Similarity threshold 0.0-1.0, lower = more similar (default: 0.7)",
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "default": 0.7
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of results (default: 20)",
+                        "default": 20
+                    },
+                    "exact": {
+                        "type": "boolean",
+                        "description": "Use exact cosine distance instead of approximate DiskANN (default: false)",
+                        "default": false
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    ])
+}
+
+// Include tests
+#[cfg(test)]
+#[path = "tools_test.rs"]
+mod tools_test;

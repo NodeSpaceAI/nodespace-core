@@ -6,8 +6,12 @@
 use crate::mcp::types::MCPError;
 use serde_json::{json, Value};
 
-/// MCP protocol version supported by this server
-const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+/// Supported MCP protocol versions (for backward compatibility)
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
+    "2025-06-18", // Latest spec (future-proof)
+    "2025-03-26", // Streamable HTTP (current)
+    "2024-11-05", // HTTP+SSE (deprecated but supported)
+];
 
 /// Handle MCP initialize request
 ///
@@ -44,213 +48,30 @@ pub fn handle_initialize(params: Value) -> Result<Value, MCPError> {
     // Version negotiation: Check if we support client's version
     // MCP spec: Server should respond with same version if supported,
     // or suggest alternative version
-    if client_version != MCP_PROTOCOL_VERSION {
-        // For now, only support latest version
-        // Future: Could negotiate older versions
+    if !SUPPORTED_PROTOCOL_VERSIONS.contains(&client_version) {
         return Err(MCPError::invalid_request(format!(
-            "Unsupported protocol version: {}. Server supports: {}",
-            client_version, MCP_PROTOCOL_VERSION
+            "Unsupported protocol version: {}. Server supports: {:?}",
+            client_version, SUPPORTED_PROTOCOL_VERSIONS
         )));
     }
 
-    // Build capability response
+    // Build capability response per MCP spec
+    // Tools capability indicates support for tools/list and tools/call
+    // Actual tool schemas are retrieved via tools/list method
     Ok(json!({
-        "protocolVersion": MCP_PROTOCOL_VERSION,
+        "protocolVersion": client_version,  // Echo back client's version if supported
         "serverInfo": {
             "name": "nodespace-mcp-server",
             "version": env!("CARGO_PKG_VERSION")
         },
         "capabilities": {
-            "tools": get_tool_schemas(),
+            "tools": {
+                "listChanged": false  // Tool list is static, doesn't change after init
+            },
             "resources": {},  // Future: Add resource capabilities
             "prompts": {}     // Future: Add prompt capabilities
         }
     }))
-}
-
-/// Generate JSON schemas for all available MCP tools
-///
-/// TODO: Consider auto-generating from Rust types (future enhancement)
-/// For now, manually maintain schemas to ensure quality descriptions.
-/// Manual schemas allow for:
-/// - Human-crafted explanations and descriptions
-/// - Detailed field-level documentation
-/// - Specific enum values that may not be in types
-/// - Fine-grained control over what's exposed to clients
-fn get_tool_schemas() -> Value {
-    json!([
-        {
-            "name": "create_node",
-            "description": "Create a new node in NodeSpace",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "node_type": {
-                        "type": "string",
-                        "enum": ["text", "header", "task", "date", "code-block", "quote-block", "ordered-list"],
-                        "description": "Type of node to create"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Content of the node (markdown format for most types)"
-                    },
-                    "parent_id": {
-                        "type": "string",
-                        "description": "Optional parent node ID for hierarchy"
-                    },
-                    "container_node_id": {
-                        "type": "string",
-                        "description": "Optional container/document ID"
-                    },
-                    "properties": {
-                        "type": "object",
-                        "description": "Additional type-specific properties (JSON object)"
-                    }
-                },
-                "required": ["node_type", "content"]
-            }
-        },
-        {
-            "name": "get_node",
-            "description": "Retrieve a single node by ID",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "node_id": {
-                        "type": "string",
-                        "description": "ID of the node to retrieve"
-                    }
-                },
-                "required": ["node_id"]
-            }
-        },
-        {
-            "name": "update_node",
-            "description": "Update an existing node's content or properties",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "node_id": {
-                        "type": "string",
-                        "description": "ID of the node to update"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Updated content"
-                    },
-                    "properties": {
-                        "type": "object",
-                        "description": "Updated properties"
-                    }
-                },
-                "required": ["node_id"]
-            }
-        },
-        {
-            "name": "delete_node",
-            "description": "Delete a node and optionally its children",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "node_id": {
-                        "type": "string",
-                        "description": "ID of the node to delete"
-                    }
-                },
-                "required": ["node_id"]
-            }
-        },
-        {
-            "name": "query_nodes",
-            "description": "Query nodes with filters",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "filters": {
-                        "type": "array",
-                        "description": "Array of filter conditions"
-                    },
-                    "limit": {
-                        "type": "number",
-                        "description": "Maximum number of results"
-                    }
-                }
-            }
-        },
-        {
-            "name": "create_nodes_from_markdown",
-            "description": "Parse markdown and create hierarchical nodes",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "markdown_content": {
-                        "type": "string",
-                        "description": "Markdown content to parse"
-                    },
-                    "container_title": {
-                        "type": "string",
-                        "description": "Title for the container node"
-                    }
-                },
-                "required": ["markdown_content", "container_title"]
-            }
-        },
-        {
-            "name": "get_markdown_from_node_id",
-            "description": "Export node and its children as clean markdown for reading and analysis",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "node_id": {
-                        "type": "string",
-                        "description": "Root node ID to export"
-                    },
-                    "include_children": {
-                        "type": "boolean",
-                        "description": "Include child nodes recursively (default: true)",
-                        "default": true
-                    },
-                    "max_depth": {
-                        "type": "number",
-                        "description": "Maximum recursion depth (default: 20)",
-                        "default": 20
-                    }
-                },
-                "required": ["node_id"]
-            }
-        },
-        {
-            "name": "search_containers",
-            "description": "Search containers using natural language semantic similarity (vector embeddings). Examples: 'Q4 planning tasks', 'machine learning research notes', 'budget discussions'",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Natural language search query (e.g., 'Q4 planning tasks')"
-                    },
-                    "threshold": {
-                        "type": "number",
-                        "description": "Similarity threshold 0.0-1.0, lower = more similar (default: 0.7)",
-                        "minimum": 0.0,
-                        "maximum": 1.0,
-                        "default": 0.7
-                    },
-                    "limit": {
-                        "type": "number",
-                        "description": "Maximum number of results (default: 20)",
-                        "default": 20
-                    },
-                    "exact": {
-                        "type": "boolean",
-                        "description": "Use exact cosine distance instead of approximate DiskANN (default: false)",
-                        "default": false
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    ])
 }
 
 // Include tests

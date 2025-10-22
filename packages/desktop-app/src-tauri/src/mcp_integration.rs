@@ -42,7 +42,7 @@ struct NodeDeletedEvent {
 /// method type. Uses HTTP transport for GUI app integration.
 ///
 /// Port configuration: Can be set via `MCP_PORT` environment variable,
-/// defaults to 3001 if not specified.
+/// defaults to 3100 if not specified (avoids conflict with dev-server on 3001).
 pub async fn run_mcp_server_with_events(
     node_service: Arc<NodeService>,
     embedding_service: Arc<NodeEmbeddingService>,
@@ -52,7 +52,7 @@ pub async fn run_mcp_server_with_events(
     let port = std::env::var("MCP_PORT")
         .ok()
         .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(3001);
+        .unwrap_or(3100);
 
     // Create callback that emits Tauri events
     let callback = Arc::new(move |method: &str, result: &Value| {

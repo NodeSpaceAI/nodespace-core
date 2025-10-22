@@ -6,10 +6,17 @@
 //!
 //! Both transports share the same request handler logic and optional callbacks.
 
-use crate::mcp::handlers::nodes;
 use crate::mcp::types::{MCPError, MCPNotification, MCPRequest, MCPResponse};
 use crate::services::{NodeEmbeddingService, NodeService};
-use axum::{extract::State, http::StatusCode, routing::get, routing::post, Json, Router};
+use axum::{
+    body::Body,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::get,
+    routing::post,
+    Json, Router,
+};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -201,10 +208,13 @@ async fn run_stdio_server(
     Ok(())
 }
 
-/// Run the MCP server over HTTP
+/// Run the MCP server over HTTP with Streamable HTTP transport (2025-03-26 spec)
 ///
-/// Starts an HTTP server listening on the specified port that accepts
-/// JSON-RPC 2.0 requests via POST requests to /mcp endpoint.
+/// Implements the MCP Streamable HTTP transport:
+/// - Single endpoint (POST /mcp) - Client sends JSON-RPC messages, receives responses
+/// - Supports both application/json and text/event-stream Accept headers
+/// - Backward compatible with HTTP+SSE (2024-11-05) via GET /mcp (deprecated)
+///
 /// Also provides a /health endpoint for monitoring.
 #[instrument(skip(services, callback))]
 async fn run_http_server(
@@ -213,7 +223,7 @@ async fn run_http_server(
     callback: Option<ResponseCallback>,
 ) -> anyhow::Result<()> {
     info!(
-        "🔌 MCP HTTP server (GUI mode) starting on http://localhost:{}",
+        "🔌 MCP Streamable HTTP server (2025-03-26) starting on http://localhost:{}",
         port
     );
 
@@ -224,9 +234,11 @@ async fn run_http_server(
         initialized: Arc::new(AtomicBool::new(false)),
     });
 
-    // Create router with MCP handler and health check
+    // Create router with unified /mcp endpoint and health check
     let app = Router::new()
-        .route("/mcp", post(handle_http_mcp_request))
+        .route("/mcp", post(handle_streamable_http_request))
+        .route("/mcp", get(handle_sse_connection)) // Backward compat (deprecated)
+        .route("/mcp/message", post(handle_http_mcp_request)) // Backward compat (deprecated)
         .route("/health", get(handle_health_check))
         .layer(TraceLayer::new_for_http())
         .with_state((shared_services, shared_callback, shared_state));
@@ -235,17 +247,200 @@ async fn run_http_server(
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
 
     info!(
-        "✅ MCP HTTP server (GUI mode) listening on http://localhost:{}",
+        "✅ MCP Streamable HTTP server (2025-03-26) listening on http://localhost:{}",
         port
     );
-    info!("   📍 MCP endpoint: http://localhost:{}/mcp", port);
+    info!(
+        "   📬 Primary endpoint: http://localhost:{}/mcp (POST)",
+        port
+    );
+    info!("   📡 Deprecated SSE: http://localhost:{}/mcp (GET)", port);
+    info!(
+        "   📬 Deprecated POST: http://localhost:{}/mcp/message",
+        port
+    );
     info!("   🏥 Health check: http://localhost:{}/health", port);
 
     // Run the server
     axum::serve(listener, app).await?;
 
-    info!("🔌 MCP HTTP server (GUI mode) stopped");
+    info!("🔌 MCP Streamable HTTP server stopped");
     Ok(())
+}
+
+/// Streamable HTTP request endpoint (MCP 2025-03-26 Streamable HTTP transport)
+///
+/// Unified endpoint that handles JSON-RPC requests with flexible response modes:
+/// - Notifications (no id field) → 202 Accepted with no body
+/// - Requests with Accept: application/json → 200 OK with JSON response
+/// - Requests with Accept: text/event-stream → 200 OK with SSE stream
+///
+/// Supports protocol version negotiation (2024-11-05, 2025-03-26, 2025-06-18).
+async fn handle_streamable_http_request(
+    headers: HeaderMap,
+    State((services, callback, state)): State<(
+        Arc<McpServices>,
+        Option<ResponseCallback>,
+        Arc<ServerState>,
+    )>,
+    body: String,
+) -> Result<Response, StatusCode> {
+    info!("📥 Streamable HTTP request received");
+
+    // Parse the JSON-RPC message
+    // First try parsing as a request (has id field)
+    if let Ok(request) = serde_json::from_str::<MCPRequest>(&body) {
+        let request_id = request.id;
+        let method = request.method.clone();
+
+        // Special handling for initialize: automatically mark as initialized after successful response
+        let is_initialize = method == "initialize";
+
+        info!(
+            "📥 Streamable HTTP request: {} (id: {})",
+            method, request_id
+        );
+
+        // Handle the request using shared state
+        let response = handle_request(services.as_ref(), &state, request).await;
+
+        // Auto-initialize for HTTP transport after successful initialize request
+        if is_initialize && response.result.is_some() {
+            state.initialized.store(true, Ordering::SeqCst);
+            info!("✅ MCP session initialized (Streamable HTTP) - ready for operations");
+        }
+
+        // Invoke callback on successful response
+        if let Some(ref cb) = callback {
+            if let Some(ref result) = response.result {
+                cb(&method, result);
+            }
+        }
+
+        // Check Accept header to determine response format
+        let accept = headers
+            .get("accept")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/json");
+
+        debug!(
+            "📤 Streamable HTTP response for method '{}' (id={}, accept={})",
+            method, request_id, accept
+        );
+
+        // LIMITATION: Simple substring matching for Accept header.
+        // Does not parse q-values per RFC 7231. This works correctly for known MCP clients:
+        // - Claude Code sends: "application/json, text/event-stream" → chooses JSON ✓
+        // - SSE-only clients send: "text/event-stream" → chooses SSE ✓
+        // - Default (no header): defaults to JSON ✓
+        //
+        // Edge case not handled:
+        // - "application/json;q=0.1, text/event-stream;q=0.9" → would incorrectly choose JSON
+        //
+        // Future improvement: Use proper Accept header parsing library with q-value support.
+        // For now, this simple approach is sufficient for all known MCP client implementations.
+        let prefer_sse =
+            accept.contains("text/event-stream") && !accept.contains("application/json");
+
+        if prefer_sse {
+            // SSE streaming mode
+            // For simplicity, we'll send a single SSE message with the response
+            use axum::response::sse::{Event, KeepAlive, Sse};
+            use std::convert::Infallible;
+            use tokio_stream::wrappers::BroadcastStream;
+            use tokio_stream::StreamExt;
+
+            let (tx, rx) = tokio::sync::broadcast::channel::<Result<Event, Infallible>>(10);
+
+            // Send the response as SSE message event
+            let response_json = serde_json::to_string(&response).map_err(|e| {
+                error!("Failed to serialize response: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            tokio::spawn(async move {
+                let event = Event::default().event("message").data(response_json);
+                let _ = tx.send(Ok(event));
+            });
+
+            let stream = BroadcastStream::new(rx).filter_map(|result| result.ok());
+
+            Ok(Sse::new(stream)
+                .keep_alive(KeepAlive::default())
+                .into_response())
+        } else {
+            // JSON response mode (default)
+            Ok(Json(response).into_response())
+        }
+    } else if let Ok(_notification) = serde_json::from_str::<MCPNotification>(&body) {
+        // Notification (no id field) - return 202 Accepted with no body
+        info!("📥 Streamable HTTP notification received");
+
+        // Handle the notification
+        let notification: MCPNotification = serde_json::from_str(&body).unwrap();
+        handle_notification(&state, notification).await;
+
+        // Return 202 Accepted with no body (per spec)
+        Ok(Response::builder()
+            .status(StatusCode::ACCEPTED)
+            .body(Body::empty())
+            .unwrap())
+    } else {
+        // Invalid JSON-RPC message
+        warn!("❌ Invalid JSON-RPC message: {}", body);
+        Err(StatusCode::BAD_REQUEST)
+    }
+}
+
+/// SSE connection endpoint (MCP 2024-11-05 HTTP+SSE transport - DEPRECATED)
+///
+/// When a client connects via SSE, this endpoint sends an `endpoint` event
+/// containing the URI where the client should POST JSON-RPC messages.
+///
+/// The SSE stream remains open for potential server-to-client notifications,
+/// though the current implementation focuses on client-initiated requests.
+///
+/// NOTE: This endpoint is DEPRECATED. Use POST /mcp with Streamable HTTP instead.
+async fn handle_sse_connection(
+    State((_, _, _)): State<(Arc<McpServices>, Option<ResponseCallback>, Arc<ServerState>)>,
+) -> impl axum::response::IntoResponse {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use std::convert::Infallible;
+    use tokio_stream::wrappers::BroadcastStream;
+    use tokio_stream::StreamExt;
+
+    info!("📡 SSE client connected");
+
+    // Create a stream that sends the endpoint event immediately
+    let (tx, rx) = tokio::sync::broadcast::channel::<Result<Event, Infallible>>(10);
+
+    // Send the endpoint event as per MCP spec
+    let endpoint_data = json!({
+        "endpoint": "/mcp/message"
+    })
+    .to_string();
+
+    // Spawn task to send the endpoint event
+    tokio::spawn(async move {
+        // Send the endpoint event using the SSE Event builder
+        let endpoint_event = Event::default().event("endpoint").data(endpoint_data);
+        let _ = tx.send(Ok(endpoint_event));
+
+        // Keep the channel alive for potential future server-to-client messages
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+            // Send keepalive comment
+            let keepalive_event = Event::default().comment("keepalive");
+            if tx.send(Ok(keepalive_event)).is_err() {
+                break; // Client disconnected
+            }
+        }
+    });
+
+    // Convert broadcast receiver to stream
+    let stream = BroadcastStream::new(rx).filter_map(|result| result.ok());
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 /// Health check endpoint
@@ -255,7 +450,7 @@ async fn handle_health_check() -> Json<Value> {
     Json(json!({
         "status": "ok",
         "service": "NodeSpace MCP Server",
-        "transport": "http"
+        "transport": "http+sse"
     }))
 }
 
@@ -275,7 +470,10 @@ async fn handle_http_mcp_request(
     )>,
     Json(request): Json<MCPRequest>,
 ) -> Result<Json<MCPResponse>, StatusCode> {
-    debug!("📥 HTTP MCP request: {}", request.method);
+    info!(
+        "📥 HTTP MCP request: {} (id: {})",
+        request.method, request.id
+    );
 
     let request_id = request.id;
     let method = request.method.clone();
@@ -336,30 +534,11 @@ async fn handle_request(
         // Ping for connection health checks (doesn't need services or initialization)
         "ping" => Ok(json!({})),
 
-        // Normal node operations (require initialization to have completed first)
-        "create_node" => nodes::handle_create_node(&services.node_service, request.params).await,
-        "get_node" => nodes::handle_get_node(&services.node_service, request.params).await,
-        "update_node" => nodes::handle_update_node(&services.node_service, request.params).await,
-        "delete_node" => nodes::handle_delete_node(&services.node_service, request.params).await,
-        "query_nodes" => nodes::handle_query_nodes(&services.node_service, request.params).await,
-        "create_nodes_from_markdown" => {
-            crate::mcp::handlers::markdown::handle_create_nodes_from_markdown(
+        // MCP-compliant tool discovery and execution (per 2024-11-05 spec)
+        "tools/list" => crate::mcp::handlers::tools::handle_tools_list(request.params),
+        "tools/call" => {
+            crate::mcp::handlers::tools::handle_tools_call(
                 &services.node_service,
-                request.params,
-            )
-            .await
-        }
-        "get_markdown_from_node_id" => {
-            crate::mcp::handlers::markdown::handle_get_markdown_from_node_id(
-                &services.node_service,
-                request.params,
-            )
-            .await
-        }
-
-        // Search operations (require initialization)
-        "search_containers" => {
-            crate::mcp::handlers::search::handle_search_containers(
                 &services.embedding_service,
                 request.params,
             )
@@ -391,7 +570,7 @@ async fn handle_request(
 #[instrument(skip(state), fields(method = %notification.method))]
 async fn handle_notification(state: &ServerState, notification: MCPNotification) {
     match notification.method.as_str() {
-        "initialized" => {
+        "initialized" | "notifications/initialized" => {
             state.initialized.store(true, Ordering::SeqCst);
             info!("✅ MCP session initialized - ready for operations");
         }
@@ -525,7 +704,7 @@ mod tests {
 
         assert_eq!(json["status"], "ok");
         assert_eq!(json["service"], "NodeSpace MCP Server");
-        assert_eq!(json["transport"], "http");
+        assert_eq!(json["transport"], "http+sse");
     }
 
     #[tokio::test]
