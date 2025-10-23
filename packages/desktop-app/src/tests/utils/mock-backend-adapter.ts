@@ -175,6 +175,10 @@ export class MockBackendAdapter implements BackendAdapter {
     return [];
   }
 
+  async getMentioningContainers(_nodeId: string): Promise<string[]> {
+    return [];
+  }
+
   async deleteNodeMention(_mentioningNodeId: string, _mentionedNodeId: string): Promise<void> {
     // No-op for sibling chain tests
   }

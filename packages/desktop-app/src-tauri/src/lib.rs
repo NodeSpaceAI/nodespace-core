@@ -169,6 +169,7 @@ pub fn run() {
             commands::nodes::save_node_with_parent,
             commands::nodes::get_outgoing_mentions,
             commands::nodes::get_incoming_mentions,
+            commands::nodes::get_mentioning_containers,
             commands::nodes::delete_node_mention,
         ])
         .run(tauri::generate_context!())

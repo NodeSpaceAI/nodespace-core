@@ -648,6 +648,57 @@ struct CreateMentionRequest {
     mentioned_node_id: String,
 }
 
+/// GET /api/nodes/:id/mentioning-containers
+///
+/// Get containers of nodes that mention the target node (backlinks at container level).
+///
+/// This resolves incoming mentions to their container nodes and deduplicates.
+/// Exceptions: Task and ai-chat nodes are treated as their own containers.
+///
+/// # Path Parameters
+///
+/// - `id` (string): The node ID to find backlinks for
+///
+/// # Response
+///
+/// JSON array of unique container node IDs:
+/// ```json
+/// ["container-id-1", "container-id-2"]
+/// ```
+///
+/// # Example
+///
+/// ```bash
+/// curl http://localhost:3001/api/nodes/some-node-id/mentioning-containers
+/// ```
+async fn get_mentioning_containers(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+) -> Result<Json<Vec<String>>, HttpError> {
+    let node_service = {
+        let lock = state.node_service.read().map_err(|e| {
+            HttpError::new(
+                format!("Failed to acquire node service read lock: {}", e),
+                "LOCK_ERROR",
+            )
+        })?;
+        Arc::clone(&*lock)
+    };
+
+    let container_ids = node_service
+        .get_mentioning_containers(&node_id)
+        .await
+        .map_err(|e| HttpError::from_anyhow(e.into(), "NODE_SERVICE_ERROR"))?;
+
+    tracing::debug!(
+        "Found {} mentioning containers for node {}",
+        container_ids.len(),
+        node_id
+    );
+
+    Ok(Json(container_ids))
+}
+
 // ============================================================================
 // Router Configuration
 // ============================================================================
@@ -676,5 +727,9 @@ pub fn routes(state: AppState) -> Router {
         // Node mention endpoints
         .route("/api/nodes/container", post(create_container_node))
         .route("/api/nodes/mention", post(create_node_mention))
+        .route(
+            "/api/nodes/:id/mentioning-containers",
+            get(get_mentioning_containers),
+        )
         .with_state(state)
 }

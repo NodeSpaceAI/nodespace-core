@@ -8,6 +8,7 @@
   import { tick } from 'svelte';
 
   let isOpen = $state(true);
+  let backlinksOpen = $state(false);
   let theme = $state<'light' | 'dark'>('light');
 
   let selectedStatus = $state({ value: "IN_PROGRESS", label: "In Progress" });
@@ -242,7 +243,7 @@
     </div>
 
     <!-- SECTION 2: Children -->
-    <div class="pt-2">
+    <div class="pt-2 pb-4">
       <div class="hierarchy-example">
         <!-- Implementation Tasks (Parent) -->
         <div class="hierarchy-node has-children">
@@ -297,6 +298,89 @@
           Write tests for property renderer
         </div>
       </div>
+    </div>
+
+    <!-- SECTION 3: Backlinks (Mock) -->
+    <div class="border-t pt-2">
+      <Collapsible.Root bind:open={backlinksOpen}>
+        <Collapsible.Trigger class="flex w-full items-center justify-between py-3 font-medium transition-all hover:opacity-80">
+          <div class="flex items-center gap-3">
+            <span class="text-sm text-muted-foreground">
+              Mentioned by: (3 nodes)
+            </span>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              class="h-4 w-4 text-muted-foreground transition-transform duration-200"
+              class:rotate-180={backlinksOpen}
+            >
+              <path
+                d="M4 6l4 4 4-4"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </div>
+        </Collapsible.Trigger>
+
+        <Collapsible.Content>
+          <div class="pb-4">
+            <ul class="flex flex-col gap-1">
+              <!-- Date backlink -->
+              <li>
+                <a
+                  href="#"
+                  class="flex items-center gap-2 px-2 py-1.5 text-sm no-underline"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <rect x="2" y="3" width="12" height="11" rx="1" stroke="currentColor" stroke-width="1.5"/>
+                    <path d="M5 1v3M11 1v3M2 6h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  </svg>
+                  <span class="flex-1 truncate">
+                    2025-10-14 - Sprint Planning
+                  </span>
+                </a>
+              </li>
+
+              <!-- Another date backlink -->
+              <li>
+                <a
+                  href="#"
+                  class="flex items-center gap-2 px-2 py-1.5 text-sm no-underline"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <rect x="2" y="3" width="12" height="11" rx="1" stroke="currentColor" stroke-width="1.5"/>
+                    <path d="M5 1v3M11 1v3M2 6h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  </svg>
+                  <span class="flex-1 truncate">
+                    2025-10-12 - Design System Review
+                  </span>
+                </a>
+              </li>
+
+              <!-- Task backlink -->
+              <li>
+                <a
+                  href="#"
+                  class="flex items-center gap-2 px-2 py-1.5 text-sm no-underline"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                  </svg>
+                  <span class="flex-1 truncate">
+                    Review property form implementation
+                  </span>
+                </a>
+              </li>
+            </ul>
+          </div>
+        </Collapsible.Content>
+      </Collapsible.Root>
     </div>
   </div>
   </div>

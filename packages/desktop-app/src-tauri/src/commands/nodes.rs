@@ -665,6 +665,46 @@ pub async fn get_incoming_mentions(
     service.get_mentioned_by(&node_id).await.map_err(Into::into)
 }
 
+/// Get containers of nodes that mention the target node (backlinks at container level)
+///
+/// This resolves incoming mentions to their container nodes and deduplicates.
+///
+/// Unlike `get_incoming_mentions` which returns individual mentioning nodes,
+/// this resolves to their container nodes and deduplicates automatically.
+///
+/// # Container Resolution Logic
+/// - For task and ai-chat nodes: Returns the node's own ID (they are their own containers)
+/// - For other nodes: Returns their container_node_id (or the node ID itself if it's a root)
+///
+/// # Arguments
+/// * `service` - Node service instance from Tauri state
+/// * `node_id` - ID of the node to find backlinks for
+///
+/// # Returns
+/// * `Ok(Vec<String>)` - List of unique container node IDs (empty if no backlinks)
+/// * `Err(CommandError)` - Error with details if operation fails
+///
+/// # Example
+/// If nodes A and B (both children of Container X) mention target node,
+/// returns `['container-x-id']` instead of `['node-a-id', 'node-b-id']`
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// const containers = await invoke('get_mentioning_containers', {
+///   nodeId: 'node-123'
+/// });
+/// ```
+#[tauri::command]
+pub async fn get_mentioning_containers(
+    service: State<'_, NodeService>,
+    node_id: String,
+) -> Result<Vec<String>, CommandError> {
+    service
+        .get_mentioning_containers(&node_id)
+        .await
+        .map_err(Into::into)
+}
+
 /// Delete a mention relationship between two nodes
 ///
 /// Removes the record that one node mentions another.

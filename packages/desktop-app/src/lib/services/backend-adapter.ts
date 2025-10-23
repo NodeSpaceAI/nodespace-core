@@ -282,6 +282,23 @@ export interface BackendAdapter {
   getIncomingMentions(nodeId: string): Promise<string[]>;
 
   /**
+   * Get containers of nodes that mention this node (backlinks at container level)
+   *
+   * Unlike `getIncomingMentions` which returns individual mentioning nodes,
+   * this resolves to their container nodes and deduplicates automatically.
+   *
+   * Example: If nodes A and B (both children of Container X) mention this node,
+   * returns `['container-x-id']` instead of `['node-a-id', 'node-b-id']`
+   *
+   * Exceptions: Task and ai-chat nodes are treated as their own containers.
+   *
+   * @param nodeId - ID of the node to query for backlinks
+   * @returns List of unique container node IDs (empty if no backlinks)
+   * @throws {NodeOperationError} If query fails
+   */
+  getMentioningContainers(nodeId: string): Promise<string[]>;
+
+  /**
    * Delete a mention relationship between two nodes
    * @param mentioningNodeId - ID of the node that contains the mention
    * @param mentionedNodeId - ID of the node being mentioned
@@ -581,6 +598,15 @@ export class TauriAdapter implements BackendAdapter {
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, nodeId, 'getIncomingMentions');
+    }
+  }
+
+  async getMentioningContainers(nodeId: string): Promise<string[]> {
+    try {
+      return await invoke<string[]>('get_mentioning_containers', { nodeId });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, nodeId, 'getMentioningContainers');
     }
   }
 
@@ -1160,6 +1186,21 @@ export class HttpAdapter implements BackendAdapter {
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, nodeId, 'getIncomingMentions');
+    }
+  }
+
+  async getMentioningContainers(nodeId: string): Promise<string[]> {
+    try {
+      const response = await globalThis.fetch(
+        `${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/mentioning-containers`,
+        {
+          method: 'GET'
+        }
+      );
+      return await this.handleResponse<string[]>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, nodeId, 'getMentioningContainers');
     }
   }
 

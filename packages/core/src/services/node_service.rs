@@ -191,7 +191,7 @@ impl NodeService {
                     // Auto-create the date node
                     let date_node = Node {
                         id: parent_id.clone(),
-                        node_type: "date".to_string(),
+                        node_type: "text".to_string(),
                         content: String::new(),
                         parent_id: None,
                         container_node_id: None,
@@ -2127,6 +2127,75 @@ impl NodeService {
 
         Ok(mentioned_by)
     }
+
+    /// Get container nodes of nodes that mention the target node (backlinks at container level).
+    ///
+    /// This resolves incoming mentions to their container nodes and deduplicates.
+    ///
+    /// # Container Resolution Logic
+    /// - For task and ai-chat nodes: Uses the node's own ID (they are their own containers)
+    /// - For other nodes: Uses their container_node_id (or the node ID itself if it's a root)
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use nodespace_core::services::node_service::NodeService;
+    /// # use nodespace_core::services::database::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+    /// # let service = NodeService::new(db)?;
+    /// // If nodes A and B (both children of Container X) mention target node,
+    /// // returns ['container-x-id'] (deduplicated)
+    /// let containers = service.get_mentioning_containers("target-node-id").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_mentioning_containers(
+        &self,
+        node_id: &str,
+    ) -> Result<Vec<String>, NodeServiceError> {
+        let conn = self.db.connect()?;
+
+        let query = "
+            SELECT DISTINCT
+                CASE
+                    WHEN n.node_type IN ('task', 'ai-chat') THEN n.id
+                    ELSE COALESCE(n.container_node_id, n.id)
+                END as container_id
+            FROM node_mentions nm
+            JOIN nodes n ON nm.node_id = n.id
+            WHERE nm.mentions_node_id = ?
+        ";
+
+        let mut stmt = conn.prepare(query).await.map_err(|e| {
+            NodeServiceError::query_failed(format!(
+                "Failed to prepare mentioning_containers query: {}",
+                e
+            ))
+        })?;
+
+        let mut rows = stmt.query([node_id]).await.map_err(|e| {
+            NodeServiceError::query_failed(format!(
+                "Failed to execute mentioning_containers query: {}",
+                e
+            ))
+        })?;
+
+        let mut containers = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+        {
+            let container_id: String = row
+                .get(0)
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            containers.push(container_id);
+        }
+
+        Ok(containers)
+    }
 }
 
 #[cfg(test)]
@@ -2187,7 +2256,7 @@ mod tests {
 
         let node = Node::new_with_id(
             "2025-01-03".to_string(),
-            "date".to_string(),
+            "text".to_string(),
             "2025-01-03".to_string(),
             None,
             json!({}),
@@ -2518,7 +2587,7 @@ mod tests {
         // Create a date node (acts as container)
         let date_node = Node::new_with_id(
             "2025-10-05".to_string(),
-            "date".to_string(),
+            "text".to_string(),
             "2025-10-05".to_string(),
             None,
             json!({}),
@@ -2555,7 +2624,7 @@ mod tests {
         // Create a different date node with a child (should not be returned)
         let other_date = Node::new_with_id(
             "2025-10-06".to_string(),
-            "date".to_string(),
+            "text".to_string(),
             "2025-10-06".to_string(),
             None,
             json!({}),
@@ -3131,6 +3200,399 @@ mod tests {
                 results.len(),
                 2,
                 "Default behavior should not filter (include_containers_and_tasks defaults to false)"
+            );
+        }
+    }
+
+    /// Tests for get_mentioning_containers() - container-level backlinks
+    ///
+    /// These tests verify the container-level backlinks functionality which
+    /// resolves incoming mentions to their container nodes and deduplicates.
+    ///
+    /// # Test Coverage
+    ///
+    /// - `basic_backlinks()` - Simple case: child node mentions target
+    /// - `deduplication()` - Multiple children in same container mention target
+    /// - `task_exception()` - Task nodes treated as own containers
+    /// - `ai_chat_exception()` - AI-chat nodes treated as own containers
+    /// - `empty_backlinks()` - No mentions returns empty vector
+    /// - `mixed_containers()` - Multiple different containers mentioning target
+    /// - `nonexistent_node()` - Querying backlinks for non-existent node
+    mod mentioning_containers_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn basic_backlinks() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a container node
+            let container = Node::new(
+                "text".to_string(),
+                "Container page".to_string(),
+                None,
+                json!({}),
+            );
+            let container_id = service.create_node(container).await.unwrap();
+
+            // Create a child text node in the container
+            let child = Node::new_with_id(
+                "child-text".to_string(),
+                "text".to_string(),
+                "See @target".to_string(),
+                Some(container_id.clone()),
+                json!({}),
+            );
+            let child_id = service.create_node(child).await.unwrap();
+
+            // Create target node
+            let target = Node::new_with_id(
+                "target".to_string(),
+                "text".to_string(),
+                "Target page".to_string(),
+                None,
+                json!({}),
+            );
+            let target_id = service.create_node(target).await.unwrap();
+
+            // Child mentions target
+            service.create_mention(&child_id, &target_id).await.unwrap();
+
+            // Get mentioning containers for target
+            let containers = service.get_mentioning_containers(&target_id).await.unwrap();
+
+            // Should return the container (not the child)
+            assert_eq!(containers.len(), 1, "Should return exactly one container");
+            assert_eq!(
+                containers[0], container_id,
+                "Should return the container node, not the child"
+            );
+        }
+
+        #[tokio::test]
+        async fn deduplication() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a container
+            let container = Node::new(
+                "text".to_string(),
+                "Container page".to_string(),
+                None,
+                json!({}),
+            );
+            let container_id = service.create_node(container).await.unwrap();
+
+            // Create two child nodes in the same container
+            let child1 = Node::new_with_id(
+                "child-1".to_string(),
+                "text".to_string(),
+                "First mention of @target".to_string(),
+                Some(container_id.clone()),
+                json!({}),
+            );
+            let child1_id = service.create_node(child1).await.unwrap();
+
+            let child2 = Node::new_with_id(
+                "child-2".to_string(),
+                "text".to_string(),
+                "Second mention of @target".to_string(),
+                Some(container_id.clone()),
+                json!({}),
+            );
+            let child2_id = service.create_node(child2).await.unwrap();
+
+            // Create target node
+            let target = Node::new_with_id(
+                "target-dedup".to_string(),
+                "text".to_string(),
+                "Target page".to_string(),
+                None,
+                json!({}),
+            );
+            let target_id = service.create_node(target).await.unwrap();
+
+            // Both children mention target
+            service
+                .create_mention(&child1_id, &target_id)
+                .await
+                .unwrap();
+            service
+                .create_mention(&child2_id, &target_id)
+                .await
+                .unwrap();
+
+            // Get mentioning containers
+            let containers = service.get_mentioning_containers(&target_id).await.unwrap();
+
+            // Should return only ONE container (deduplicated)
+            assert_eq!(
+                containers.len(),
+                1,
+                "Should deduplicate to single container despite two children mentioning target"
+            );
+            assert_eq!(
+                containers[0], container_id,
+                "Should return the container node"
+            );
+        }
+
+        #[tokio::test]
+        async fn task_exception() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a container
+            let container = Node::new(
+                "text".to_string(),
+                "Container page".to_string(),
+                None,
+                json!({}),
+            );
+            let container_id = service.create_node(container).await.unwrap();
+
+            // Create a task node (child of container)
+            let task = Node::new_with_id(
+                "task-1".to_string(),
+                "task".to_string(),
+                "Review @target".to_string(),
+                Some(container_id.clone()),
+                json!({"status": "pending"}),
+            );
+            let task_id = service.create_node(task).await.unwrap();
+
+            // Create target node
+            let target = Node::new_with_id(
+                "target-task".to_string(),
+                "text".to_string(),
+                "Target page".to_string(),
+                None,
+                json!({}),
+            );
+            let target_id = service.create_node(target).await.unwrap();
+
+            // Task mentions target
+            service.create_mention(&task_id, &target_id).await.unwrap();
+
+            // Get mentioning containers
+            let containers = service.get_mentioning_containers(&target_id).await.unwrap();
+
+            // Should return the TASK itself (not its container)
+            assert_eq!(containers.len(), 1, "Should return exactly one container");
+            assert_eq!(
+                containers[0], task_id,
+                "Task nodes should be treated as their own containers (exception rule)"
+            );
+            assert_ne!(
+                containers[0], container_id,
+                "Should NOT return the parent container for task nodes"
+            );
+        }
+
+        // TODO: Uncomment this test when ai-chat node type is implemented
+        // #[tokio::test]
+        // async fn ai_chat_exception() {
+        //     let (service, _temp) = create_test_service().await;
+        //
+        //     // Create a container
+        //     let container = Node::new(
+        //         "text".to_string(),
+        //         "Container page".to_string(),
+        //         None,
+        //         json!({}),
+        //     );
+        //     let container_id = service.create_node(container).await.unwrap();
+        //
+        //     // Create an ai-chat node (child of container)
+        //     let ai_chat = Node::new_with_id(
+        //         "chat-1".to_string(),
+        //         "ai-chat".to_string(),
+        //         "Discussion about @target".to_string(),
+        //         Some(container_id.clone()),
+        //         json!({}),
+        //     );
+        //     let chat_id = service.create_node(ai_chat).await.unwrap();
+        //
+        //     // Create target node
+        //     let target = Node::new_with_id(
+        //         "target-chat".to_string(),
+        //         "text".to_string(),
+        //         "Target page".to_string(),
+        //         None,
+        //         json!({}),
+        //     );
+        //     let target_id = service.create_node(target).await.unwrap();
+        //
+        //     // AI-chat mentions target
+        //     service.create_mention(&chat_id, &target_id).await.unwrap();
+        //
+        //     // Get mentioning containers
+        //     let containers = service
+        //         .get_mentioning_containers(&target_id)
+        //         .await
+        //         .unwrap();
+        //
+        //     // Should return the AI-CHAT itself (not its container)
+        //     assert_eq!(
+        //         containers.len(),
+        //         1,
+        //         "Should return exactly one container"
+        //     );
+        //     assert_eq!(
+        //         containers[0], chat_id,
+        //         "AI-chat nodes should be treated as their own containers (exception rule)"
+        //     );
+        //     assert_ne!(
+        //         containers[0], container_id,
+        //         "Should NOT return the parent container for ai-chat nodes"
+        //     );
+        // }
+
+        #[tokio::test]
+        async fn empty_backlinks() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create target node with no mentions
+            let target = Node::new_with_id(
+                "lonely-target".to_string(),
+                "text".to_string(),
+                "Target page".to_string(),
+                None,
+                json!({}),
+            );
+            let target_id = service.create_node(target).await.unwrap();
+
+            // Get mentioning containers
+            let containers = service.get_mentioning_containers(&target_id).await.unwrap();
+
+            // Should return empty vector
+            assert_eq!(
+                containers.len(),
+                0,
+                "Should return empty vector when no nodes mention target"
+            );
+        }
+
+        #[tokio::test]
+        async fn mixed_containers() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create three different containers
+            let container1 = Node::new(
+                "text".to_string(),
+                "Container page".to_string(),
+                None,
+                json!({}),
+            );
+            let container1_id = service.create_node(container1).await.unwrap();
+
+            let container2 = Node::new(
+                "text".to_string(),
+                "Container 2".to_string(),
+                None,
+                json!({}),
+            );
+            let container2_id = service.create_node(container2).await.unwrap();
+
+            let container3 = Node::new(
+                "text".to_string(),
+                "Container 3".to_string(),
+                None,
+                json!({}),
+            );
+            let container3_id = service.create_node(container3).await.unwrap();
+
+            // Create children in different containers
+            let child1 = Node::new_with_id(
+                "child-c1".to_string(),
+                "text".to_string(),
+                "From container 1".to_string(),
+                Some(container1_id.clone()),
+                json!({}),
+            );
+            let child1_id = service.create_node(child1).await.unwrap();
+
+            let child2 = Node::new_with_id(
+                "child-c2".to_string(),
+                "text".to_string(),
+                "From container 2".to_string(),
+                Some(container2_id.clone()),
+                json!({}),
+            );
+            let child2_id = service.create_node(child2).await.unwrap();
+
+            // Create task in container 3 (should return itself)
+            let task = Node::new_with_id(
+                "task-c3".to_string(),
+                "task".to_string(),
+                "From container 3".to_string(),
+                Some(container3_id.clone()),
+                json!({}),
+            );
+            let task_id = service.create_node(task).await.unwrap();
+
+            // Create target node
+            let target = Node::new_with_id(
+                "target-mixed".to_string(),
+                "text".to_string(),
+                "Target page".to_string(),
+                None,
+                json!({}),
+            );
+            let target_id = service.create_node(target).await.unwrap();
+
+            // All three mention target
+            service
+                .create_mention(&child1_id, &target_id)
+                .await
+                .unwrap();
+            service
+                .create_mention(&child2_id, &target_id)
+                .await
+                .unwrap();
+            service.create_mention(&task_id, &target_id).await.unwrap();
+
+            // Get mentioning containers
+            let containers = service.get_mentioning_containers(&target_id).await.unwrap();
+
+            // Should return 3 unique containers (2 dates + task)
+            assert_eq!(
+                containers.len(),
+                3,
+                "Should return three different containers"
+            );
+
+            // Verify all three are present (order may vary)
+            assert!(
+                containers.contains(&container1_id),
+                "Should include container 1"
+            );
+            assert!(
+                containers.contains(&container2_id),
+                "Should include container 2"
+            );
+            assert!(
+                containers.contains(&task_id),
+                "Should include task (as its own container)"
+            );
+            assert!(
+                !containers.contains(&container3_id),
+                "Should NOT include container 3 (task is treated as own container)"
+            );
+        }
+
+        #[tokio::test]
+        async fn nonexistent_node() {
+            let (service, _temp) = create_test_service().await;
+
+            // Query backlinks for non-existent node
+            let containers = service
+                .get_mentioning_containers("nonexistent-node")
+                .await
+                .unwrap();
+
+            // Should return empty vector (not error - node simply has no backlinks)
+            assert_eq!(
+                containers.len(),
+                0,
+                "Should return empty vector for non-existent node"
             );
         }
     }

@@ -102,31 +102,37 @@
 <!-- Keyboard event listener -->
 <svelte:window on:keydown={handleKeydown} />
 
-<BaseNodeViewer nodeId={currentDateId} {onTitleChange}>
-  {#snippet header()}
-    <!-- Date Navigation Header - inherits base styling from BaseNodeViewer -->
-    <div class="date-nav-container">
-      <div class="date-display">
-        <Icon
-          name="calendar"
-          size={24}
-          color="hsl(var(--muted-foreground))"
-          className="calendar-icon"
-        />
-        <h1>{formattedDate}</h1>
-      </div>
+<div class="date-node-viewer">
+  <BaseNodeViewer nodeId={currentDateId} {onTitleChange}>
+    {#snippet header()}
+      <!-- Date Navigation Header - inherits base styling from BaseNodeViewer -->
+      <div class="date-nav-container">
+        <div class="date-display">
+          <Icon
+            name="calendar"
+            size={24}
+            color="hsl(var(--muted-foreground))"
+            className="calendar-icon"
+          />
+          <h1>{formattedDate}</h1>
+        </div>
 
-      <div class="date-nav-buttons">
-        <button class="date-nav-btn" onclick={() => navigateDate('prev')} aria-label="Previous day">
-          <Icon name="chevronRight" size={16} color="currentColor" className="rotate-left" />
-        </button>
-        <button class="date-nav-btn" onclick={() => navigateDate('next')} aria-label="Next day">
-          <Icon name="chevronRight" size={16} color="currentColor" />
-        </button>
+        <div class="date-nav-buttons">
+          <button
+            class="date-nav-btn"
+            onclick={() => navigateDate('prev')}
+            aria-label="Previous day"
+          >
+            <Icon name="chevronRight" size={16} color="currentColor" className="rotate-left" />
+          </button>
+          <button class="date-nav-btn" onclick={() => navigateDate('next')} aria-label="Next day">
+            <Icon name="chevronRight" size={16} color="currentColor" />
+          </button>
+        </div>
       </div>
-    </div>
-  {/snippet}
-</BaseNodeViewer>
+    {/snippet}
+  </BaseNodeViewer>
+</div>
 
 <style>
   /* Date-specific navigation styles - base header styling comes from BaseNodeViewer */
