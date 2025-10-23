@@ -604,6 +604,8 @@ export class SharedNodeStore {
           // Extract and discard content field (using underscore prefix to indicate intentionally unused)
           // Content field is omitted to avoid backend validation errors for placeholder nodes
           const { content: _content, ...nodeWithoutContent } = node;
+          // Type assertion required: backend expects Node but we're omitting content for placeholders
+          // This is safe because backend validation allows missing content for non-text placeholder nodes
           nodeToPersist = nodeWithoutContent as Node;
         }
 

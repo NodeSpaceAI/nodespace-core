@@ -162,6 +162,10 @@ describe('Keyboard Command Integration', () => {
   });
 
   describe('Backspace Key Integration', () => {
+    // Note: Type casts in this describe block are required because Vitest's vi.fn() returns
+    // a generic Mock type that doesn't include mockReturnValue in the type signature.
+    // The cast to ReturnType<typeof vi.fn> provides the correct typing at runtime.
+
     it('should execute MergeNodesCommand for non-empty node at start', async () => {
       // Mock controller at start position
       (mockController.getCurrentColumn as ReturnType<typeof vi.fn>).mockReturnValue(0);

@@ -50,6 +50,7 @@ describe('positionCursor action', () => {
     });
 
     // Spy on requestAnimationFrame
+    // Type cast required: vi.spyOn returns generic Mock type that doesn't expose mockRestore until runtime
     rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
       cb(0);
       return 0;

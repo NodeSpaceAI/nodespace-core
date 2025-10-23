@@ -457,13 +457,14 @@
       tabindex="0"
       aria-modal="true"
       aria-label="Node autocomplete suggestions"
+      aria-describedby="autocomplete-header autocomplete-shortcuts"
     >
       <!-- Use shadcn-svelte dropdown content styling -->
       <div
         class="bg-popover text-popover-foreground z-50 min-w-[8rem] overflow-y-auto overflow-x-hidden rounded-md border p-1 shadow-md outline-none max-h-[320px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
       >
         <!-- Header using dropdown menu patterns -->
-        <div class="flex items-center gap-2 px-2 py-1.5 text-sm">
+        <div id="autocomplete-header" class="flex items-center gap-2 px-2 py-1.5 text-sm">
           <div class="flex items-center gap-1.5">
             <span class="text-muted-foreground font-medium">@</span>
             <span class="font-medium text-foreground">
@@ -486,7 +487,7 @@
 
           <!-- Keyboard shortcuts -->
           {#if !totalResults || totalResults === 0}
-            <div class="flex items-center gap-1 ml-auto">
+            <div id="autocomplete-shortcuts" class="flex items-center gap-1 ml-auto">
               <Badge variant="outline" class="text-xs h-5 px-1">↑↓</Badge>
               <Badge variant="outline" class="text-xs h-5 px-1">⏎</Badge>
               <Badge variant="outline" class="text-xs h-5 px-1">esc</Badge>

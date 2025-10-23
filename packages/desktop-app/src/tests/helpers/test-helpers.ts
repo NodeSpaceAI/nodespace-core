@@ -623,6 +623,26 @@ export function createKeyboardEvent(
 }
 
 /**
+ * Set mock return value with proper Vitest typing
+ *
+ * Helper to avoid repetitive type casts when setting mock return values.
+ * Vitest's vi.fn() returns a generic Mock type that doesn't include mockReturnValue
+ * in the type signature, requiring a type cast at each usage.
+ *
+ * @param fn - Mock function (created with vi.fn())
+ * @param value - Value to return from the mock
+ *
+ * @example
+ * ```typescript
+ * const mockFn = vi.fn(() => 5);
+ * mockReturnValue(mockFn, 10); // Now returns 10
+ * ```
+ */
+export function mockReturnValue<T>(fn: unknown, value: T): void {
+  (fn as ReturnType<typeof vi.fn>).mockReturnValue(value);
+}
+
+/**
  * Simulate key press on element
  *
  * @param element - Element to dispatch event on
