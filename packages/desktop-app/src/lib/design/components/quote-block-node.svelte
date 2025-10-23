@@ -190,8 +190,7 @@
 </script>
 
 <!-- Wrap BaseNode with quote-block-specific styling -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="quote-block-node-wrapper" onkeydown={handleKeyDown}>
+<div class="quote-block-node-wrapper" onkeydown={handleKeyDown} role="presentation">
   <BaseNode
     {nodeId}
     {nodeType}

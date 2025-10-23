@@ -436,11 +436,7 @@ export class SharedNodeStore {
                   // IMPORTANT: For UPDATE, only send the changes (Partial<Node>), not the full node
                   // The backend expects NodeUpdate which is a partial update of specific fields
                   // Convert nullable fields properly (undefined = don't update, null = set to null)
-                  const updatePayload: Partial<Node> = {};
-                  for (const [key, value] of Object.entries(changes)) {
-                    // @ts-expect-error - Dynamic key access is safe here for partial update
-                    updatePayload[key] = value;
-                  }
+                  const updatePayload = { ...changes };
 
                   try {
                     await tauriNodeService.updateNode(nodeId, updatePayload);
@@ -605,8 +601,11 @@ export class SharedNodeStore {
         // For placeholders with specialized nodeType, filter out content to avoid backend validation
         let nodeToPersist = node;
         if (isPlaceholder && node.nodeType !== 'text') {
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          // Create node without content field by destructuring
+          // Content field is intentionally omitted to avoid backend validation errors for placeholder nodes
           const { content, ...nodeWithoutContent } = node;
+          // Suppress unused variable warning - content is intentionally extracted and discarded
+          void content;
           nodeToPersist = nodeWithoutContent as Node;
         }
 

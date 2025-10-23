@@ -437,21 +437,26 @@
 
 {#if visible}
   <!-- Modal overlay for click-outside handling -->
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div
     class="fixed inset-0 z-50 bg-red-500/50 backdrop-blur-[2px]"
     on:click={closeModal}
+    on:keydown={(e) => e.key === 'Escape' && closeModal()}
+    role="button"
+    tabindex="-1"
     style="animation: overlayFadeIn 0.15s ease-out;"
+    aria-label="Close autocomplete modal"
   >
     <!-- Modal positioned using shadcn-svelte dropdown patterns -->
-    <!-- svelte-ignore a11y-click-events-have-key-events -->
-    <!-- svelte-ignore a11y-no-static-element-interactions -->
     <div
       bind:this={modalElement}
       class="fixed z-50 min-w-80 max-w-md"
       style="left: {adjustedPosition.x}px; top: {adjustedPosition.y}px; animation: modalSlideIn 0.2s ease-out;"
       on:click|stopPropagation
+      on:keydown|stopPropagation
+      role="dialog"
+      tabindex="0"
+      aria-modal="true"
+      aria-label="Node autocomplete suggestions"
     >
       <!-- Use shadcn-svelte dropdown content styling -->
       <div

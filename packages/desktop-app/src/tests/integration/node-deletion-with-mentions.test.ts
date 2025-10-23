@@ -16,6 +16,7 @@ import { HierarchyService } from '$lib/services/hierarchy-service';
 import { eventBus } from '$lib/services/event-bus';
 import type { Node } from '$lib/types';
 import type { NodeDeletedEvent } from '$lib/services/event-types';
+import type { ReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 
 describe('Node Deletion with Mentions (Issue #190)', () => {
   let nodeReferenceService: NodeReferenceService;
@@ -61,8 +62,11 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
     } as unknown as HierarchyService;
 
     // Create NodeReferenceService with mocks
+    // Type casting: NodeReferenceService constructor expects full ReactiveNodeService interface,
+    // but for this test we only need findNode() and nodes array.
+    // Using 'unknown' requires explicit assertion which is safer than 'any'.
     nodeReferenceService = new NodeReferenceService(
-      mockNodeManager as unknown as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      mockNodeManager as unknown as ReactiveNodeService,
       mockHierarchyService,
       mockTauriService as unknown as TauriNodeService
     );
@@ -137,9 +141,11 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
       const nodeId = 'deleted-node';
 
       // Spy on private methods through the service
+      // Using type assertion to access private method for testing purposes
       const clearCachesSpy = vi.spyOn(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        nodeReferenceService as any,
+        nodeReferenceService as NodeReferenceService & {
+          invalidateNodeCaches: (nodeId: string) => void;
+        },
         'invalidateNodeCaches'
       );
 
@@ -273,8 +279,11 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
   describe('cleanupDeletedNodeReferences deprecation', () => {
     it('cleanupDeletedNodeReferences should not be called automatically', async () => {
       // Spy on the deprecated method
+      // Using type assertion to access private method for testing purposes
       const cleanupSpy = vi.spyOn(
-        nodeReferenceService as unknown as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        nodeReferenceService as NodeReferenceService & {
+          cleanupDeletedNodeReferences: () => Promise<void>;
+        },
         'cleanupDeletedNodeReferences'
       );
 

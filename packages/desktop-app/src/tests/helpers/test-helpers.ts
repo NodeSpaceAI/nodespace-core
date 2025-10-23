@@ -27,52 +27,28 @@ import type { NodeSpaceEvent } from '$lib/services/event-types';
 // ============================================================================
 
 /**
- * Create a minimal test node with just ID and content (convenience overload)
+ * Create a test node with flexible parameter options
  *
- * This function provides backward compatibility with old test patterns.
- * For new code, prefer using the object-based `createTestNode({ id, content })`.
+ * Supports both positional parameters (legacy) and options object (preferred).
  *
- * @param id - Node ID
- * @param content - Node content
- * @param nodeType - Optional node type
- * @param parentId - Optional parent ID
- * @param additionalProps - Additional properties to override
+ * @param idOrOptions - Node ID (string) or options object (Partial<Node>)
+ * @param content - Node content (when using positional parameters)
+ * @param nodeType - Optional node type (when using positional parameters)
+ * @param parentId - Optional parent ID (when using positional parameters)
+ * @param additionalProps - Additional properties to override (when using positional parameters)
  * @returns Complete Node object
  *
  * @example
  * ```typescript
+ * // Positional parameters (legacy)
  * const node = createTestNode('my-id', 'My content');
  * const childNode = createTestNode('child', 'Child content', 'text', 'parent-id');
- * ```
- */
-
-export function createTestNode(
-  id: string,
-  content: string,
-  nodeType?: string,
-  parentId?: string | null,
-  additionalProps?: Partial<Node>
-): Node;
-
-/**
- * Create a test node with options object
  *
- * Preferred signature for creating test nodes with full control over properties.
- *
- * @param options - Partial Node properties to override defaults
- * @returns Complete Node object
- *
- * @example
- * ```typescript
+ * // Options object (preferred)
  * const node = createTestNode({ id: 'my-id', content: 'My content' });
  * const childNode = createTestNode({ parentId: 'parent-id', content: 'Child' });
  * ```
  */
-// eslint-disable-next-line no-redeclare -- TypeScript function overloads
-export function createTestNode(options?: Partial<Node>): Node;
-
-// Implementation
-// eslint-disable-next-line no-redeclare -- TypeScript function overloads
 export function createTestNode(
   idOrOptions?: string | Partial<Node>,
   content?: string,

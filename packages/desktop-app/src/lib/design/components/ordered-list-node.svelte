@@ -197,8 +197,12 @@
 </script>
 
 <!-- Wrap BaseNode with ordered-list-specific styling -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="ordered-list-node-wrapper" data-node-type="ordered-list" onkeydown={handleKeyDown}>
+<div
+  class="ordered-list-node-wrapper"
+  data-node-type="ordered-list"
+  onkeydown={handleKeyDown}
+  role="presentation"
+>
   <BaseNode
     {nodeId}
     {nodeType}

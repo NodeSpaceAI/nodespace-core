@@ -52,8 +52,7 @@ describe('NavigateUpCommand', () => {
       });
 
       // Mock that we're at the first line
-      // @ts-expect-error - vi.fn() creates a mock with mockReturnValue
-      mockController.isAtFirstLine.mockReturnValue(true);
+      (mockController.isAtFirstLine as ReturnType<typeof vi.fn>).mockReturnValue(true);
 
       expect(command.canExecute(context)).toBe(true);
     });
@@ -182,8 +181,7 @@ describe('NavigateUpCommand', () => {
       });
 
       // Mock different pixel offset
-      // @ts-expect-error - vi.fn() creates a mock with mockReturnValue
-      mockController.getCurrentPixelOffset.mockReturnValue(250);
+      (mockController.getCurrentPixelOffset as ReturnType<typeof vi.fn>).mockReturnValue(250);
 
       await command.execute(context);
 

@@ -164,8 +164,7 @@ describe('Keyboard Command Integration', () => {
   describe('Backspace Key Integration', () => {
     it('should execute MergeNodesCommand for non-empty node at start', async () => {
       // Mock controller at start position
-      // @ts-expect-error - vi.fn() creates a mock with mockReturnValue
-      mockController.getCurrentColumn.mockReturnValue(0);
+      (mockController.getCurrentColumn as ReturnType<typeof vi.fn>).mockReturnValue(0);
       mockController.element.textContent = 'test content';
 
       const event = new KeyboardEvent('keydown', { key: 'Backspace' });
@@ -189,8 +188,7 @@ describe('Keyboard Command Integration', () => {
 
     it('should execute MergeNodesCommand and delete empty node', async () => {
       // Mock controller at start position with empty content
-      // @ts-expect-error - vi.fn() creates a mock with mockReturnValue
-      mockController.getCurrentColumn.mockReturnValue(0);
+      (mockController.getCurrentColumn as ReturnType<typeof vi.fn>).mockReturnValue(0);
       mockController.element.textContent = '   '; // Whitespace only
 
       const event = new KeyboardEvent('keydown', { key: 'Backspace' });
@@ -214,8 +212,7 @@ describe('Keyboard Command Integration', () => {
 
     it('should not execute MergeNodesCommand when not at start', async () => {
       // Mock controller NOT at start position
-      // @ts-expect-error - vi.fn() creates a mock with mockReturnValue
-      mockController.getCurrentColumn.mockReturnValue(5);
+      (mockController.getCurrentColumn as ReturnType<typeof vi.fn>).mockReturnValue(5);
 
       const event = new KeyboardEvent('keydown', { key: 'Backspace' });
       const context = {
