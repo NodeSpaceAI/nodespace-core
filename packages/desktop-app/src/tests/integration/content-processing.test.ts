@@ -113,7 +113,7 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
       }
     }, 10000);
 
-    it('should process mentions during node creation', async () => {
+    it.skipIf(!shouldUseDatabase())('should process mentions during node creation', async () => {
       // Create a daily note (the mentioning node)
       const dailyNoteData = TestNodeBuilder.text('Daily Note 2025-01-15')
         .withType('text') // Use text type instead of date to avoid custom ID validation
@@ -157,7 +157,7 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
       // a query endpoint for mentions, which may be added in the future
     }, 10000);
 
-    it('should update embeddings when content changes', async () => {
+    it.skipIf(!shouldUseDatabase())('should update embeddings when content changes', async () => {
       // Create a topic node
       const topicData = TestNodeBuilder.text('Machine Learning Overview')
         .withProperties({ category: 'AI', importance: 'high' })
@@ -217,7 +217,7 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
   });
 
   describe('Batch operations', () => {
-    it('should batch generate embeddings for multiple topics', async () => {
+    it.skipIf(!shouldUseDatabase())('should batch generate embeddings for multiple topics', async () => {
       // Create multiple topic nodes
       const topic1Data = TestNodeBuilder.text('JavaScript Basics').build();
       const topic1Id = await backend.createNode(topic1Data);
@@ -257,7 +257,7 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
       }
     }, 10000);
 
-    it('should handle partial failures in batch operations', async () => {
+    it.skipIf(!shouldUseDatabase())('should handle partial failures in batch operations', async () => {
       // Create valid and invalid topic IDs
       const validTopic1Data = TestNodeBuilder.text('Valid Topic 1').build();
       const validTopic1Id = await backend.createNode(validTopic1Data);
@@ -302,7 +302,7 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
       }
     }, 10000);
 
-    it('should report accurate success/failure counts', async () => {
+    it.skipIf(!shouldUseDatabase())('should report accurate success/failure counts', async () => {
       // Create 10 topic nodes for batch testing
       const topicIds: string[] = [];
       for (let i = 1; i <= 10; i++) {

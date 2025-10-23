@@ -51,7 +51,7 @@ describe.sequential('Date Node Placeholder Persistence', () => {
     sharedNodeStore.__resetForTesting();
   });
 
-  it('should auto-create date node when creating text node with non-existent date parent', async () => {
+  it.skipIf(!shouldUseDatabase())('should auto-create date node when creating text node with non-existent date parent', async () => {
     // Create a text node with date node parent that doesn't exist
     const textNode = TestNodeBuilder.text('Hello from today')
       .withParent('2025-10-13')
@@ -81,7 +81,7 @@ describe.sequential('Date Node Placeholder Persistence', () => {
     expect(retrievedDate?.content).toBe(''); // Date nodes have empty content
   });
 
-  it('should not persist placeholder nodes (empty text nodes) immediately', async () => {
+  it.skipIf(!shouldUseDatabase())('should not persist placeholder nodes (empty text nodes) immediately', async () => {
     // Simulate what happens when user opens an empty date view
     const dateId = '2025-10-13';
 
@@ -122,7 +122,7 @@ describe.sequential('Date Node Placeholder Persistence', () => {
     expect(sharedNodeStore.isNodePersisted(placeholderId)).toBe(false);
   });
 
-  it('should persist node with content when date parent auto-created', async () => {
+  it.skipIf(!shouldUseDatabase())('should persist node with content when date parent auto-created', async () => {
     // Simulates the full flow: create text node under non-existent date
     const dateId = '2025-10-13';
     const textNode = TestNodeBuilder.text('Hello from today')

@@ -196,7 +196,7 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
   });
 
   describe('Timeout handling', () => {
-    it('should timeout embedding operations after 30 seconds', async () => {
+    it.skipIf(!shouldUseDatabase())('should timeout embedding operations after 30 seconds', async () => {
       // Note: This test verifies the timeout mechanism exists
       // In real implementation, a slow embedding service would trigger timeout
       // For placeholder implementation, operations are fast, so we just verify
@@ -290,7 +290,7 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
       }
     }, 10000);
 
-    it('should preserve error details in batch failures', async () => {
+    it.skipIf(!shouldUseDatabase())('should preserve error details in batch failures', async () => {
       // Create mix of valid and invalid topic IDs
       const validTopicData = TestNodeBuilder.text('Valid Topic').build();
       const validTopicId = await backend.createNode(validTopicData);
