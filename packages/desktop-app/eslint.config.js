@@ -77,7 +77,7 @@ export default [
       ...oxlint.configs.recommended.rules,
       ...ts.configs.recommended.rules,
       // Customize rules as needed
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
       'no-console': process.env.NODE_ENV === 'production' ? 'error' : 'off',
       // File naming conventions for TypeScript files
@@ -128,7 +128,7 @@ export default [
     rules: {
       ...oxlint.configs.recommended.rules,
       ...ts.configs.recommended.rules,
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
       'no-console': process.env.NODE_ENV === 'production' ? 'error' : 'off',
       // File naming conventions for Svelte TypeScript files (kebab-case)
@@ -271,7 +271,7 @@ export default [
     rules: {
       ...oxlint.configs.recommended.rules,
       ...ts.configs.recommended.rules,
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
       'no-console': 'off', // Allow console in tests
       // File naming conventions for test files (kebab-case)

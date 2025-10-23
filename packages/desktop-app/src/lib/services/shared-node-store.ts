@@ -601,11 +601,9 @@ export class SharedNodeStore {
         // For placeholders with specialized nodeType, filter out content to avoid backend validation
         let nodeToPersist = node;
         if (isPlaceholder && node.nodeType !== 'text') {
-          // Create node without content field by destructuring
-          // Content field is intentionally omitted to avoid backend validation errors for placeholder nodes
-          const { content, ...nodeWithoutContent } = node;
-          // Suppress unused variable warning - content is intentionally extracted and discarded
-          void content;
+          // Extract and discard content field (using underscore prefix to indicate intentionally unused)
+          // Content field is omitted to avoid backend validation errors for placeholder nodes
+          const { content: _content, ...nodeWithoutContent } = node;
           nodeToPersist = nodeWithoutContent as Node;
         }
 
