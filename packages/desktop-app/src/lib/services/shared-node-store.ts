@@ -475,10 +475,22 @@ export class SharedNodeStore {
                 this.markUpdatePersisted(nodeId, update);
               } catch (dbError) {
                 const error = dbError instanceof Error ? dbError : new Error(String(dbError));
-                console.error(`[SharedNodeStore] Database write failed for node ${nodeId}:`, error);
+
+                // Only log database errors when we expect database to work
+                const inTestMode =
+                  typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
+                const inDatabaseMode =
+                  typeof process !== 'undefined' && process.env.TEST_USE_DATABASE === 'true';
+
+                if (!inTestMode || inDatabaseMode) {
+                  console.error(
+                    `[SharedNodeStore] Database write failed for node ${nodeId}:`,
+                    error
+                  );
+                }
 
                 // Track error in test environment for test verification
-                if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
+                if (inTestMode) {
                   this.testErrors.push(error);
                 }
 
@@ -625,12 +637,26 @@ export class SharedNodeStore {
               }
             } catch (dbError) {
               const error = dbError instanceof Error ? dbError : new Error(String(dbError));
-              console.error(`[SharedNodeStore] Database write failed for node ${node.id}:`, error);
 
-              // Track error in test environment for test verification
-              if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
+              // Only log database errors when we expect database to work
+              // In test mode without database (in-memory), these errors are expected and noisy
+              const inTestMode = typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
+              const inDatabaseMode =
+                typeof process !== 'undefined' && process.env.TEST_USE_DATABASE === 'true';
+
+              if (!inTestMode || inDatabaseMode) {
+                // Production or database integration tests - log errors
+                console.error(
+                  `[SharedNodeStore] Database write failed for node ${node.id}:`,
+                  error
+                );
+              }
+
+              // Always track errors in test environment for test verification
+              if (inTestMode) {
                 this.testErrors.push(error);
               }
+
               throw error; // Re-throw to mark operation as failed in coordinator
             }
           },
@@ -703,15 +729,26 @@ export class SharedNodeStore {
               await tauriNodeService.deleteNode(nodeId);
             } catch (dbError) {
               const error = dbError instanceof Error ? dbError : new Error(String(dbError));
-              console.error(
-                `[SharedNodeStore] Database deletion failed for node ${nodeId}:`,
-                error
-              );
 
-              // Track error in test environment for test verification
-              if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
+              // Only log database errors when we expect database to work
+              // In test mode without database (in-memory), these errors are expected and noisy
+              const inTestMode = typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
+              const inDatabaseMode =
+                typeof process !== 'undefined' && process.env.TEST_USE_DATABASE === 'true';
+
+              if (!inTestMode || inDatabaseMode) {
+                // Production or database integration tests - log errors
+                console.error(
+                  `[SharedNodeStore] Database deletion failed for node ${nodeId}:`,
+                  error
+                );
+              }
+
+              // Always track errors in test environment for test verification
+              if (inTestMode) {
                 this.testErrors.push(error);
               }
+
               throw error; // Re-throw to mark operation as failed in coordinator
             }
           },
@@ -769,7 +806,17 @@ export class SharedNodeStore {
 
       return nodes;
     } catch (error) {
-      console.error(`[SharedNodeStore] Failed to load children for parent ${parentId}:`, error);
+      // Only log database errors when we expect database to work
+      // In test mode without database (in-memory), these errors are expected and noisy
+      const inTestMode = typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
+      const inDatabaseMode =
+        typeof process !== 'undefined' && process.env.TEST_USE_DATABASE === 'true';
+
+      if (!inTestMode || inDatabaseMode) {
+        // Production or database integration tests - log errors
+        console.error(`[SharedNodeStore] Failed to load children for parent ${parentId}:`, error);
+      }
+
       throw error;
     }
   }
@@ -1753,7 +1800,15 @@ export class SharedNodeStore {
           }
         } catch (dbError) {
           const error = dbError instanceof Error ? dbError : new Error(String(dbError));
-          console.error(`[SharedNodeStore] Batch persistence failed for node ${nodeId}:`, error);
+
+          // Only log database errors when we expect database to work
+          const inTestMode = typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
+          const inDatabaseMode =
+            typeof process !== 'undefined' && process.env.TEST_USE_DATABASE === 'true';
+
+          if (!inTestMode || inDatabaseMode) {
+            console.error(`[SharedNodeStore] Batch persistence failed for node ${nodeId}:`, error);
+          }
 
           // Track error in test environment
           if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {

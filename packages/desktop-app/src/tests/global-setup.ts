@@ -104,8 +104,18 @@ export default async function setup() {
   const { PersistenceCoordinator } = await import('$lib/services/persistence-coordinator.svelte');
   PersistenceCoordinator.resetInstance();
   const coordinator = PersistenceCoordinator.getInstance();
-  coordinator.enableTestMode(); // Service tests use test mode by default
+
+  // Conditionally enable test mode based on database mode
+  // Test mode silently catches DatabaseInitializationError for in-memory testing
+  // Database mode expects real database and should surface errors
+  const useDatabase = process.env.TEST_USE_DATABASE === 'true';
+
+  if (!useDatabase) {
+    coordinator.enableTestMode();
+    console.log('✅ PersistenceCoordinator in test mode (in-memory only)');
+  } else {
+    console.log('✅ PersistenceCoordinator in database mode (HTTP adapter)');
+  }
 
   console.log('✅ Global test setup complete: Plugin registry initialized');
-  console.log('✅ PersistenceCoordinator initialized in test mode');
 }
