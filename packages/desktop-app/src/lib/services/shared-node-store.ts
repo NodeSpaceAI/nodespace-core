@@ -27,6 +27,7 @@ import { tauriNodeService } from './tauri-node-service';
 import { PersistenceCoordinator, OperationCancelledError } from './persistence-coordinator.svelte';
 import { isPlaceholderNode, requiresAtomicBatching } from '$lib/utils/placeholder-detection';
 import { mentionSyncService } from './mention-sync-service';
+import { shouldLogDatabaseErrors, isTestEnvironment } from '$lib/utils/test-environment';
 import type { Node } from '$lib/types';
 import type {
   NodeUpdate,
@@ -476,23 +477,16 @@ export class SharedNodeStore {
               } catch (dbError) {
                 const error = dbError instanceof Error ? dbError : new Error(String(dbError));
 
-                // Only log database errors when we expect database to work
-                const inTestMode =
-                  typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
-                const inDatabaseMode =
-                  typeof process !== 'undefined' && process.env.TEST_USE_DATABASE === 'true';
-
-                if (!inTestMode || inDatabaseMode) {
+                // Suppress expected errors in in-memory test mode
+                if (shouldLogDatabaseErrors()) {
                   console.error(
                     `[SharedNodeStore] Database write failed for node ${nodeId}:`,
                     error
                   );
                 }
 
-                // Track error in test environment for test verification
-                if (inTestMode) {
-                  this.testErrors.push(error);
-                }
+                // Always track errors in test environment for verification
+                this.trackErrorIfTesting(error);
 
                 // Rollback the optimistic update
                 this.rollbackUpdate(nodeId, update);
@@ -638,24 +632,16 @@ export class SharedNodeStore {
             } catch (dbError) {
               const error = dbError instanceof Error ? dbError : new Error(String(dbError));
 
-              // Only log database errors when we expect database to work
-              // In test mode without database (in-memory), these errors are expected and noisy
-              const inTestMode = typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
-              const inDatabaseMode =
-                typeof process !== 'undefined' && process.env.TEST_USE_DATABASE === 'true';
-
-              if (!inTestMode || inDatabaseMode) {
-                // Production or database integration tests - log errors
+              // Suppress expected errors in in-memory test mode
+              if (shouldLogDatabaseErrors()) {
                 console.error(
                   `[SharedNodeStore] Database write failed for node ${node.id}:`,
                   error
                 );
               }
 
-              // Always track errors in test environment for test verification
-              if (inTestMode) {
-                this.testErrors.push(error);
-              }
+              // Always track errors in test environment for verification
+              this.trackErrorIfTesting(error);
 
               throw error; // Re-throw to mark operation as failed in coordinator
             }
@@ -730,24 +716,16 @@ export class SharedNodeStore {
             } catch (dbError) {
               const error = dbError instanceof Error ? dbError : new Error(String(dbError));
 
-              // Only log database errors when we expect database to work
-              // In test mode without database (in-memory), these errors are expected and noisy
-              const inTestMode = typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
-              const inDatabaseMode =
-                typeof process !== 'undefined' && process.env.TEST_USE_DATABASE === 'true';
-
-              if (!inTestMode || inDatabaseMode) {
-                // Production or database integration tests - log errors
+              // Suppress expected errors in in-memory test mode
+              if (shouldLogDatabaseErrors()) {
                 console.error(
                   `[SharedNodeStore] Database deletion failed for node ${nodeId}:`,
                   error
                 );
               }
 
-              // Always track errors in test environment for test verification
-              if (inTestMode) {
-                this.testErrors.push(error);
-              }
+              // Always track errors in test environment for verification
+              this.trackErrorIfTesting(error);
 
               throw error; // Re-throw to mark operation as failed in coordinator
             }
@@ -806,14 +784,8 @@ export class SharedNodeStore {
 
       return nodes;
     } catch (error) {
-      // Only log database errors when we expect database to work
-      // In test mode without database (in-memory), these errors are expected and noisy
-      const inTestMode = typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
-      const inDatabaseMode =
-        typeof process !== 'undefined' && process.env.TEST_USE_DATABASE === 'true';
-
-      if (!inTestMode || inDatabaseMode) {
-        // Production or database integration tests - log errors
+      // Suppress expected errors in in-memory test mode
+      if (shouldLogDatabaseErrors()) {
         console.error(`[SharedNodeStore] Failed to load children for parent ${parentId}:`, error);
       }
 
@@ -1801,19 +1773,13 @@ export class SharedNodeStore {
         } catch (dbError) {
           const error = dbError instanceof Error ? dbError : new Error(String(dbError));
 
-          // Only log database errors when we expect database to work
-          const inTestMode = typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
-          const inDatabaseMode =
-            typeof process !== 'undefined' && process.env.TEST_USE_DATABASE === 'true';
-
-          if (!inTestMode || inDatabaseMode) {
+          // Suppress expected errors in in-memory test mode
+          if (shouldLogDatabaseErrors()) {
             console.error(`[SharedNodeStore] Batch persistence failed for node ${nodeId}:`, error);
           }
 
-          // Track error in test environment
-          if (typeof process !== 'undefined' && process.env.NODE_ENV === 'test') {
-            this.testErrors.push(error);
-          }
+          // Always track errors in test environment for verification
+          this.trackErrorIfTesting(error);
 
           throw error;
         }
@@ -1845,6 +1811,19 @@ export class SharedNodeStore {
    */
   getTestErrors(): Error[] {
     return [...this.testErrors];
+  }
+
+  /**
+   * Track error in test environment for verification
+   * Only adds errors when NODE_ENV='test'
+   *
+   * @param error - Error to track for test verification
+   * @private
+   */
+  private trackErrorIfTesting(error: Error): void {
+    if (isTestEnvironment()) {
+      this.testErrors.push(error);
+    }
   }
 
   /**

@@ -22,6 +22,8 @@
  * @see docs/architecture/dependency-based-persistence.md
  */
 
+import { shouldLogDatabaseErrors } from '$lib/utils/test-environment';
+
 // ============================================================================
 // Error Types
 // ============================================================================
@@ -661,15 +663,8 @@ export class PersistenceCoordinator {
       // Reject promise
       op.reject(err);
 
-      // Log error (consistent structured logging)
-      // Only log in production or database integration tests
-      // In in-memory test mode, these errors are expected (silently caught above)
-      const inTestMode = typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
-      const inDatabaseMode =
-        typeof process !== 'undefined' && process.env.TEST_USE_DATABASE === 'true';
-
-      if (!inTestMode || inDatabaseMode) {
-        // Production or database integration tests - log errors
+      // Suppress expected errors in in-memory test mode
+      if (shouldLogDatabaseErrors()) {
         console.error('[PersistenceCoordinator] Operation failed:', {
           nodeId: op.nodeId,
           error: err

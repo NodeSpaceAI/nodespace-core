@@ -48,9 +48,63 @@
  * - Integration tests explicitly opt-in to database mode
  * - Clear separation of fast vs. comprehensive test runs
  * - No noisy console errors in default mode
+ *
+ * # Migration Guide for Existing Tests
+ *
+ * **Before:**
+ * ```typescript
+ * beforeEach(async () => {
+ *   dbPath = createTestDatabase('my-test');
+ *   await initializeTestDatabase(dbPath);
+ * });
+ *
+ * afterEach(async () => {
+ *   await cleanupTestDatabase(dbPath);
+ * });
+ * ```
+ *
+ * **After:**
+ * ```typescript
+ * beforeEach(async () => {
+ *   dbPath = await initializeDatabaseIfNeeded('my-test'); // Handles both modes
+ * });
+ *
+ * afterEach(async () => {
+ *   await cleanupDatabaseIfNeeded(dbPath); // Safe with null
+ * });
+ * ```
+ *
+ * # Production Code Usage
+ *
+ * For service classes that log database errors:
+ *
+ * ```typescript
+ * import { shouldLogDatabaseErrors, isTestEnvironment } from '../tests/utils/should-use-database';
+ *
+ * try {
+ *   await database.save(node);
+ * } catch (dbError) {
+ *   const error = dbError instanceof Error ? dbError : new Error(String(dbError));
+ *
+ *   // Suppress expected errors in in-memory test mode
+ *   if (shouldLogDatabaseErrors()) {
+ *     console.error('[Service] Database operation failed:', error);
+ *   }
+ *
+ *   // Always track errors in test environment for verification
+ *   if (isTestEnvironment()) {
+ *     this.testErrors.push(error);
+ *   }
+ *
+ *   throw error;
+ * }
+ * ```
  */
 
 import { createTestDatabase, initializeTestDatabase, cleanupTestDatabase } from './test-database';
+
+// Re-export utility functions from production code
+export { shouldLogDatabaseErrors, isTestEnvironment } from '$lib/utils/test-environment';
 
 /**
  * Determines if tests should use real database via HTTP adapter
