@@ -19,16 +19,13 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
-import {
-  waitForDatabaseWrites
-} from '../utils/test-database';
+import { waitForDatabaseWrites } from '../utils/test-database';
 import {
   initializeDatabaseIfNeeded,
   cleanupDatabaseIfNeeded,
   shouldUseDatabase
 } from '../utils/should-use-database';
-import { createAndFetchNode, checkServerHealth } from '../utils/test-node-helpers';
-import { TestNodeBuilder } from '../utils/test-node-builder';
+import { createNodeForCurrentMode, checkServerHealth } from '../utils/test-node-helpers';
 import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
@@ -82,38 +79,9 @@ describe('Shift+Enter Key Operations', () => {
     // Cleanup is handled in afterAll
   });
 
-  // Helper function: Create node via HTTP or build in-memory depending on mode
-  async function createOrBuildNode(nodeData: {
-    id: string;
-    nodeType: 'text' | 'task' | 'date';
-    content: string;
-    parentId: string | null;
-    containerNodeId: string | null;
-    beforeSiblingId: string | null;
-    properties: Record<string, unknown>;
-    embeddingVector: number[] | null;
-    mentions: string[];
-  }) {
-    if (shouldUseDatabase()) {
-      return await createOrBuildNode( nodeData);
-    } else {
-      return new TestNodeBuilder()
-        .withId(nodeData.id)
-        .withType(nodeData.nodeType)
-        .withContent(nodeData.content)
-        .withParent(nodeData.parentId)
-        .withContainer(nodeData.containerNodeId)
-        .withBeforeSibling(nodeData.beforeSiblingId)
-        .withProperties(nodeData.properties)
-        .withEmbedding(nodeData.embeddingVector)
-        .withMentions(nodeData.mentions)
-        .buildWithTimestamps();
-    }
-  }
-
   it('should insert single newline in node content', async () => {
     // Setup: Create node
-    const node = await createOrBuildNode( {
+    const node = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First line',
@@ -145,7 +113,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should insert multiple newlines in sequence', async () => {
     // Setup: Create node
-    const node = await createOrBuildNode( {
+    const node = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'Line 1',
@@ -175,7 +143,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should preserve inline formatting across newlines', async () => {
     // Setup: Create node with markdown formatting
-    const node = await createOrBuildNode( {
+    const node = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: '**Bold text**',
@@ -205,7 +173,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should preserve header formatting when adding newlines', async () => {
     // Setup: Create node with header
-    const node = await createOrBuildNode( {
+    const node = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: '## Header',
@@ -233,7 +201,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should handle newline at beginning of content', async () => {
     // Setup: Create node
-    const node = await createOrBuildNode( {
+    const node = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'Content',
@@ -261,7 +229,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should handle newline at end of content', async () => {
     // Setup: Create node
-    const node = await createOrBuildNode( {
+    const node = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'Content',
@@ -288,7 +256,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should preserve list item formatting with newlines', async () => {
     // Setup: Create list item node
-    const node = await createOrBuildNode( {
+    const node = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: '- List item',
@@ -317,7 +285,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should preserve task checkbox formatting with newlines', async () => {
     // Setup: Create task node
-    const node = await createOrBuildNode( {
+    const node = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: '[ ] Task item',
@@ -346,7 +314,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should handle mixed content with multiple formatting types', async () => {
     // Setup: Create node
-    const node = await createOrBuildNode( {
+    const node = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: '## Title',
@@ -389,7 +357,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should not create new nodes when content contains newlines', async () => {
     // Setup: Create two nodes
-    const node1 = await createOrBuildNode( {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'Node 1',
@@ -401,7 +369,7 @@ describe('Shift+Enter Key Operations', () => {
       mentions: []
     });
 
-    const node2 = await createOrBuildNode( {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Node 2',
@@ -436,7 +404,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should handle empty lines between content', async () => {
     // Setup: Create node
-    const node = await createOrBuildNode( {
+    const node = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'Paragraph 1',

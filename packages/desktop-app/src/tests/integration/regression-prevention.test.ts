@@ -11,10 +11,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import {
-  cleanDatabase,
-  waitForDatabaseWrites
-} from '../utils/test-database';
+import { cleanDatabase, waitForDatabaseWrites } from '../utils/test-database';
 import {
   initializeDatabaseIfNeeded,
   cleanupDatabaseIfNeeded,

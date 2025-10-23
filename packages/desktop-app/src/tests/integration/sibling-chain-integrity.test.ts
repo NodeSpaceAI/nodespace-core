@@ -18,14 +18,13 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
-import { cleanupTestDatabase, waitForDatabaseWrites } from '../utils/test-database';
+import { waitForDatabaseWrites } from '../utils/test-database';
 import {
   initializeDatabaseIfNeeded,
   cleanupDatabaseIfNeeded,
   shouldUseDatabase
 } from '../utils/should-use-database';
-import { createAndFetchNode, checkServerHealth } from '../utils/test-node-helpers';
-import { TestNodeBuilder } from '../utils/test-node-builder';
+import { createNodeForCurrentMode, checkServerHealth } from '../utils/test-node-helpers';
 import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
@@ -69,39 +68,6 @@ describe('Sibling Chain Integrity', () => {
   afterEach(async () => {
     await cleanupDatabaseIfNeeded(dbPath);
   });
-
-  /**
-   * Helper function to create or build a node based on database mode
-   * In database mode: creates via HTTP adapter
-   * In in-memory mode: builds node directly
-   */
-  async function createOrBuildNode(nodeData: {
-    id: string;
-    nodeType: 'text' | 'task' | 'date';
-    content: string;
-    parentId: string | null;
-    containerNodeId: string | null;
-    beforeSiblingId: string | null;
-    properties: Record<string, unknown>;
-    embeddingVector: number[] | null;
-    mentions: string[];
-  }) {
-    if (shouldUseDatabase()) {
-      return await createAndFetchNode(adapter, nodeData);
-    } else {
-      return new TestNodeBuilder()
-        .withId(nodeData.id)
-        .withType(nodeData.nodeType)
-        .withContent(nodeData.content)
-        .withParent(nodeData.parentId)
-        .withContainer(nodeData.containerNodeId)
-        .withBeforeSibling(nodeData.beforeSiblingId)
-        .withProperties(nodeData.properties)
-        .withEmbedding(nodeData.embeddingVector)
-        .withMentions(nodeData.mentions)
-        .buildWithTimestamps();
-    }
-  }
 
   /**
    * Helper function to validate sibling chain integrity
@@ -192,7 +158,7 @@ describe('Sibling Chain Integrity', () => {
 
   it('should maintain valid chain after creating multiple nodes', async () => {
     // Setup: Create initial node
-    const node1 = await createOrBuildNode({
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -232,7 +198,7 @@ describe('Sibling Chain Integrity', () => {
 
   it('should repair chain when node is deleted', async () => {
     // Setup: Create three nodes
-    const node1 = await createOrBuildNode({
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -244,7 +210,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node2 = await createOrBuildNode({
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -256,7 +222,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node3 = await createOrBuildNode({
+    const node3 = await createNodeForCurrentMode(adapter, {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
@@ -303,7 +269,7 @@ describe('Sibling Chain Integrity', () => {
 
   it('should maintain chain integrity during indent operation', async () => {
     // Setup: Create three siblings
-    const node1 = await createOrBuildNode({
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -315,7 +281,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node2 = await createOrBuildNode({
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -327,7 +293,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node3 = await createOrBuildNode({
+    const node3 = await createNodeForCurrentMode(adapter, {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
@@ -378,7 +344,7 @@ describe('Sibling Chain Integrity', () => {
 
   it('should maintain chain integrity during outdent operation', async () => {
     // Setup: Create parent with children
-    const parent = await createOrBuildNode({
+    const parent = await createNodeForCurrentMode(adapter, {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
@@ -390,7 +356,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const child1 = await createOrBuildNode({
+    const child1 = await createNodeForCurrentMode(adapter, {
       id: 'child-1',
       nodeType: 'text',
       content: 'Child 1',
@@ -402,7 +368,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const child2 = await createOrBuildNode({
+    const child2 = await createNodeForCurrentMode(adapter, {
       id: 'child-2',
       nodeType: 'text',
       content: 'Child 2',
@@ -451,7 +417,7 @@ describe('Sibling Chain Integrity', () => {
 
   it('should maintain chain when combining nodes', async () => {
     // Setup: Create three nodes
-    const node1 = await createOrBuildNode({
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -463,7 +429,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node2 = await createOrBuildNode({
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -475,7 +441,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node3 = await createOrBuildNode({
+    const node3 = await createNodeForCurrentMode(adapter, {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
@@ -510,7 +476,7 @@ describe('Sibling Chain Integrity', () => {
 
   it('should validate chain has no circular references', async () => {
     // Setup: Create valid chain
-    const node1 = await createOrBuildNode({
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -522,7 +488,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node2 = await createOrBuildNode({
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -534,7 +500,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node3 = await createOrBuildNode({
+    const node3 = await createNodeForCurrentMode(adapter, {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
@@ -577,7 +543,7 @@ describe('Sibling Chain Integrity', () => {
 
   it('should maintain chain integrity with complex operations sequence', async () => {
     // Setup: Create initial nodes
-    const node1 = await createOrBuildNode({
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'Node 1',
@@ -589,7 +555,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node2 = await createOrBuildNode({
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Node 2',

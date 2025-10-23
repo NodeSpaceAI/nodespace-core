@@ -1,104 +1,18 @@
 /**
  * Test Database Mode Utilities
  *
- * Provides utilities for determining whether tests should use real database
- * via HTTP adapter or in-memory mode for faster execution.
+ * Provides utilities for switching between in-memory testing (default) and full
+ * database integration testing via the TEST_USE_DATABASE environment variable.
  *
- * # Database Modes
+ * **Quick Start:**
+ * - `bun run test` - Fast in-memory mode (default)
+ * - `bun run test:db` - Full database integration mode
  *
- * **In-Memory Mode (default)**
- * - Fast execution (~2-3 seconds for full suite)
- * - No database initialization
- * - PersistenceCoordinator silently catches DatabaseInitializationError
- * - Suitable for business logic and UI tests
- * - Run with: `bun run test`
+ * **For comprehensive documentation**, see:
+ * - [Testing Guide](../../../docs/architecture/development/testing-guide.md)
+ * - Usage patterns, migration guide, and design rationale
  *
- * **Database Mode (opt-in)**
- * - Full integration testing with real SQLite database
- * - Uses HTTP adapter to communicate with dev-server
- * - Slower execution (~10-15 seconds for full suite)
- * - Verifies actual database persistence
- * - Run with: `TEST_USE_DATABASE=true bun run test` or `bun run test:db`
- *
- * # Usage
- *
- * ```typescript
- * import { shouldUseDatabase, initializeDatabaseIfNeeded } from '../utils/should-use-database';
- *
- * describe('My Test Suite', () => {
- *   let dbPath: string | null;
- *
- *   beforeEach(async () => {
- *     // Automatically initializes database only if TEST_USE_DATABASE=true
- *     dbPath = await initializeDatabaseIfNeeded('my-test');
- *   });
- *
- *   afterEach(async () => {
- *     if (dbPath) {
- *       await cleanupTestDatabase(dbPath);
- *     }
- *   });
- * });
- * ```
- *
- * # Design Rationale
- *
- * This pattern separates test concerns:
- * - Most tests focus on business logic (in-memory is sufficient)
- * - Integration tests explicitly opt-in to database mode
- * - Clear separation of fast vs. comprehensive test runs
- * - No noisy console errors in default mode
- *
- * # Migration Guide for Existing Tests
- *
- * **Before:**
- * ```typescript
- * beforeEach(async () => {
- *   dbPath = createTestDatabase('my-test');
- *   await initializeTestDatabase(dbPath);
- * });
- *
- * afterEach(async () => {
- *   await cleanupTestDatabase(dbPath);
- * });
- * ```
- *
- * **After:**
- * ```typescript
- * beforeEach(async () => {
- *   dbPath = await initializeDatabaseIfNeeded('my-test'); // Handles both modes
- * });
- *
- * afterEach(async () => {
- *   await cleanupDatabaseIfNeeded(dbPath); // Safe with null
- * });
- * ```
- *
- * # Production Code Usage
- *
- * For service classes that log database errors:
- *
- * ```typescript
- * import { shouldLogDatabaseErrors, isTestEnvironment } from '../tests/utils/should-use-database';
- *
- * try {
- *   await database.save(node);
- * } catch (dbError) {
- *   const error = dbError instanceof Error ? dbError : new Error(String(dbError));
- *
- *   // Suppress expected errors in in-memory test mode
- *   if (shouldLogDatabaseErrors()) {
- *     console.error('[Service] Database operation failed:', error);
- *   }
- *
- *   // Always track errors in test environment for verification
- *   if (isTestEnvironment()) {
- *     this.testErrors.push(error);
- *   }
- *
- *   throw error;
- * }
- * ```
+ * @see docs/architecture/development/testing-guide.md
  */
 
 import { createTestDatabase, initializeTestDatabase, cleanupTestDatabase } from './test-database';

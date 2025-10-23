@@ -18,16 +18,13 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
-import {
-  waitForDatabaseWrites
-} from '../utils/test-database';
+import { waitForDatabaseWrites } from '../utils/test-database';
 import {
   initializeDatabaseIfNeeded,
   cleanupDatabaseIfNeeded,
   shouldUseDatabase
 } from '../utils/should-use-database';
-import { createAndFetchNode, checkServerHealth } from '../utils/test-node-helpers';
-import { TestNodeBuilder } from '../utils/test-node-builder';
+import { createNodeForCurrentMode, checkServerHealth } from '../utils/test-node-helpers';
 import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
@@ -73,38 +70,9 @@ describe('Indent/Outdent Operations', () => {
     await cleanupDatabaseIfNeeded(dbPath);
   });
 
-  // Helper function: Create node via HTTP or build in-memory depending on mode
-  async function createOrBuildNode(nodeData: {
-    id: string;
-    nodeType: 'text' | 'task' | 'date';
-    content: string;
-    parentId: string | null;
-    containerNodeId: string | null;
-    beforeSiblingId: string | null;
-    properties: Record<string, unknown>;
-    embeddingVector: number[] | null;
-    mentions: string[];
-  }) {
-    if (shouldUseDatabase()) {
-      return await createOrBuildNode( nodeData);
-    } else {
-      return new TestNodeBuilder()
-        .withId(nodeData.id)
-        .withType(nodeData.nodeType)
-        .withContent(nodeData.content)
-        .withParent(nodeData.parentId)
-        .withContainer(nodeData.containerNodeId)
-        .withBeforeSibling(nodeData.beforeSiblingId)
-        .withProperties(nodeData.properties)
-        .withEmbedding(nodeData.embeddingVector)
-        .withMentions(nodeData.mentions)
-        .buildWithTimestamps();
-    }
-  }
-
   it('should indent node to become child of previous sibling', async () => {
     // Setup: Create two sibling nodes
-    const node1 = await createOrBuildNode( {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -116,7 +84,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createOrBuildNode( {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -159,7 +127,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should not allow indent on first node', async () => {
     // Setup: Create single node
-    const node = await createOrBuildNode( {
+    const node = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -186,7 +154,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should recalculate descendant depths when indenting', async () => {
     // Setup: Create parent with child, then sibling
-    const node1 = await createOrBuildNode( {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -198,7 +166,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createOrBuildNode( {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -210,7 +178,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child = await createOrBuildNode( {
+    const child = await createNodeForCurrentMode(adapter, {
       id: 'child-1',
       nodeType: 'text',
       content: 'Child of Second',
@@ -241,7 +209,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should outdent node to parent level', async () => {
     // Setup: Create parent with child
-    const parent = await createOrBuildNode( {
+    const parent = await createNodeForCurrentMode(adapter, {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
@@ -253,7 +221,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child = await createOrBuildNode( {
+    const child = await createNodeForCurrentMode(adapter, {
       id: 'child',
       nodeType: 'text',
       content: 'Child',
@@ -293,7 +261,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should not allow outdent on root node', async () => {
     // Setup: Create root node
-    const node = await createOrBuildNode( {
+    const node = await createNodeForCurrentMode(adapter, {
       id: 'root',
       nodeType: 'text',
       content: 'Root',
@@ -320,7 +288,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should transfer siblings below when outdenting', async () => {
     // Setup: Create parent with multiple children
-    const parent = await createOrBuildNode( {
+    const parent = await createNodeForCurrentMode(adapter, {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
@@ -332,7 +300,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child1 = await createOrBuildNode( {
+    const child1 = await createNodeForCurrentMode(adapter, {
       id: 'child-1',
       nodeType: 'text',
       content: 'Child 1',
@@ -344,7 +312,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child2 = await createOrBuildNode( {
+    const child2 = await createNodeForCurrentMode(adapter, {
       id: 'child-2',
       nodeType: 'text',
       content: 'Child 2',
@@ -356,7 +324,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child3 = await createOrBuildNode( {
+    const child3 = await createNodeForCurrentMode(adapter, {
       id: 'child-3',
       nodeType: 'text',
       content: 'Child 3',
@@ -391,7 +359,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should position outdented node after its old parent', async () => {
     // Setup: Create parent with child
-    const parent = await createOrBuildNode( {
+    const parent = await createNodeForCurrentMode(adapter, {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
@@ -403,7 +371,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child = await createOrBuildNode( {
+    const child = await createNodeForCurrentMode(adapter, {
       id: 'child',
       nodeType: 'text',
       content: 'Child',
@@ -434,7 +402,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should update sibling chain when indenting', async () => {
     // Setup: Create three siblings
-    const node1 = await createOrBuildNode( {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -446,7 +414,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createOrBuildNode( {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -458,7 +426,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node3 = await createOrBuildNode( {
+    const node3 = await createNodeForCurrentMode(adapter, {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
@@ -490,7 +458,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should handle indenting node that has children', async () => {
     // Setup: Create parent with children, then sibling with children
-    const node1 = await createOrBuildNode( {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -502,7 +470,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createOrBuildNode( {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -514,7 +482,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child = await createOrBuildNode( {
+    const child = await createNodeForCurrentMode(adapter, {
       id: 'child-of-2',
       nodeType: 'text',
       content: 'Child',
@@ -551,7 +519,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should append indented node to existing children', async () => {
     // Setup: Create node with existing child, then sibling
-    const node1 = await createOrBuildNode( {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -563,7 +531,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const existingChild = await createOrBuildNode( {
+    const existingChild = await createNodeForCurrentMode(adapter, {
       id: 'existing-child',
       nodeType: 'text',
       content: 'Existing Child',
@@ -575,7 +543,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createOrBuildNode( {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -608,7 +576,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should indent multiple nodes as siblings when indented separately', async () => {
     // Setup: Create chain of nodes
-    const node1 = await createOrBuildNode( {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'Level 0',
@@ -620,7 +588,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createOrBuildNode( {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Level 1',
@@ -632,7 +600,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node3 = await createOrBuildNode( {
+    const node3 = await createNodeForCurrentMode(adapter, {
       id: 'node-3',
       nodeType: 'text',
       content: 'Level 2',
@@ -671,7 +639,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should handle multiple consecutive outdents', async () => {
     // Setup: Create nested hierarchy
-    const node1 = await createOrBuildNode( {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'Level 0',
@@ -683,7 +651,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createOrBuildNode( {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Level 1',
@@ -695,7 +663,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node3 = await createOrBuildNode( {
+    const node3 = await createNodeForCurrentMode(adapter, {
       id: 'node-3',
       nodeType: 'text',
       content: 'Level 2',
@@ -727,7 +695,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should maintain sibling chain integrity when outdenting first child', async () => {
     // Setup: Create parent with multiple children
-    const parent = await createOrBuildNode( {
+    const parent = await createNodeForCurrentMode(adapter, {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
@@ -739,7 +707,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child1 = await createOrBuildNode( {
+    const child1 = await createNodeForCurrentMode(adapter, {
       id: 'child-1',
       nodeType: 'text',
       content: 'Child 1',
@@ -751,7 +719,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child2 = await createOrBuildNode( {
+    const child2 = await createNodeForCurrentMode(adapter, {
       id: 'child-2',
       nodeType: 'text',
       content: 'Child 2',
@@ -782,7 +750,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should emit hierarchy changed events for indent/outdent', async () => {
     // Setup: Create nodes
-    const node1 = await createOrBuildNode( {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -794,7 +762,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createOrBuildNode( {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -827,7 +795,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should prevent indent when previous sibling is code-block (canHaveChildren: false)', async () => {
     // Setup: Create code-block followed by text node
-    const codeBlock = await createOrBuildNode( {
+    const codeBlock = await createNodeForCurrentMode(adapter, {
       id: 'code-1',
       nodeType: 'code-block',
       content: '```js\nconsole.log("test");\n```',
@@ -839,7 +807,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const textNode = await createOrBuildNode( {
+    const textNode = await createNodeForCurrentMode(adapter, {
       id: 'text-1',
       nodeType: 'text',
       content: 'Some text',
@@ -871,7 +839,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should allow indent when previous sibling is text node (canHaveChildren: true)', async () => {
     // Setup: Create text node followed by another text node
-    const textNode1 = await createOrBuildNode( {
+    const textNode1 = await createNodeForCurrentMode(adapter, {
       id: 'text-1',
       nodeType: 'text',
       content: 'First text',
@@ -883,7 +851,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const textNode2 = await createOrBuildNode( {
+    const textNode2 = await createNodeForCurrentMode(adapter, {
       id: 'text-2',
       nodeType: 'text',
       content: 'Second text',
@@ -913,7 +881,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should allow indent when previous sibling is header node (canHaveChildren: true)', async () => {
     // Setup: Create header followed by text node
-    const headerNode = await createOrBuildNode( {
+    const headerNode = await createNodeForCurrentMode(adapter, {
       id: 'header-1',
       nodeType: 'header',
       content: 'Header',
@@ -925,7 +893,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const textNode = await createOrBuildNode( {
+    const textNode = await createNodeForCurrentMode(adapter, {
       id: 'text-1',
       nodeType: 'text',
       content: 'Content',
@@ -955,7 +923,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should allow indent when previous sibling is task node (canHaveChildren: true)', async () => {
     // Setup: Create task followed by text node
-    const taskNode = await createOrBuildNode( {
+    const taskNode = await createNodeForCurrentMode(adapter, {
       id: 'task-1',
       nodeType: 'task',
       content: 'Task item',
@@ -967,7 +935,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const textNode = await createOrBuildNode( {
+    const textNode = await createNodeForCurrentMode(adapter, {
       id: 'text-1',
       nodeType: 'text',
       content: 'Task details',
