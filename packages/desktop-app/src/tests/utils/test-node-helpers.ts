@@ -6,6 +6,8 @@
 
 import type { Node } from '$lib/types';
 import type { HttpAdapter } from '$lib/services/backend-adapter';
+import { TestNodeBuilder } from './test-node-builder';
+import { shouldUseDatabase } from './should-use-database';
 
 /**
  * Retries an async operation with exponential backoff.
@@ -144,4 +146,75 @@ export function skipIfEndpointUnavailable(error: unknown, endpointName: string):
     return true;
   }
   return false;
+}
+
+/**
+ * Creates a node using the appropriate method based on current test mode.
+ *
+ * - **Database mode** (`TEST_USE_DATABASE=true`): Creates node via HTTP adapter
+ *   and fetches it back to ensure persistence.
+ * - **In-memory mode** (default): Builds node locally using TestNodeBuilder
+ *   without making HTTP requests.
+ *
+ * This centralized helper eliminates duplication across integration tests and
+ * ensures consistent behavior in both test modes.
+ *
+ * @param adapter - The HttpAdapter instance (used only in database mode)
+ * @param nodeData - The node data (without createdAt/modifiedAt timestamps)
+ * @returns The created/built Node object with all fields populated
+ *
+ * @example
+ * ```typescript
+ * const node = await createNodeForCurrentMode(adapter, {
+ *   id: 'test-node-1',
+ *   nodeType: 'text',
+ *   content: 'Hello World',
+ *   parentId: null,
+ *   containerNodeId: null,
+ *   beforeSiblingId: null,
+ *   properties: {},
+ *   embeddingVector: null,
+ *   mentions: []
+ * });
+ * ```
+ */
+export async function createNodeForCurrentMode(
+  adapter: HttpAdapter,
+  nodeData: {
+    id: string;
+    nodeType:
+      | 'text'
+      | 'task'
+      | 'date'
+      | 'header'
+      | 'code-block'
+      | 'quote-block'
+      | 'ordered-list'
+      | 'ai-chat';
+    content: string;
+    parentId: string | null;
+    containerNodeId: string | null;
+    beforeSiblingId: string | null;
+    properties: Record<string, unknown>;
+    embeddingVector: number[] | null;
+    mentions: string[];
+  }
+): Promise<Node> {
+  if (shouldUseDatabase()) {
+    // Database mode: Create via HTTP and fetch back to verify persistence
+    return await createAndFetchNode(adapter, nodeData);
+  } else {
+    // In-memory mode: Build locally without HTTP calls
+    return new TestNodeBuilder()
+      .withId(nodeData.id)
+      .withType(nodeData.nodeType)
+      .withContent(nodeData.content)
+      .withParent(nodeData.parentId)
+      .withContainer(nodeData.containerNodeId)
+      .withBeforeSibling(nodeData.beforeSiblingId)
+      .withProperties(nodeData.properties)
+      .withEmbedding(nodeData.embeddingVector)
+      .withMentions(nodeData.mentions)
+      .buildWithTimestamps();
+  }
 }

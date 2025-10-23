@@ -18,34 +18,35 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import { waitForDatabaseWrites } from '../utils/test-database';
 import {
-  createTestDatabase,
-  cleanupTestDatabase,
-  initializeTestDatabase,
-  waitForDatabaseWrites
-} from '../utils/test-database';
-import { createAndFetchNode, checkServerHealth } from '../utils/test-node-helpers';
+  initializeDatabaseIfNeeded,
+  cleanupDatabaseIfNeeded,
+  shouldUseDatabase
+} from '../utils/should-use-database';
+import { createNodeForCurrentMode, checkServerHealth } from '../utils/test-node-helpers';
 import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe('Sibling Chain Integrity', () => {
-  let dbPath: string;
+  let dbPath: string | null;
   let adapter: HttpAdapter;
   let service: ReturnType<typeof createReactiveNodeService>;
   let hierarchyChangeCount: number;
 
   beforeAll(async () => {
-    // Verify HTTP dev server is running before running any tests
-    const healthCheckAdapter = new HttpAdapter('http://localhost:3001');
-    await checkServerHealth(healthCheckAdapter);
+    // Only verify HTTP dev server health in database mode
+    if (shouldUseDatabase()) {
+      const healthCheckAdapter = new HttpAdapter('http://localhost:3001');
+      await checkServerHealth(healthCheckAdapter);
+    }
   });
 
   beforeEach(async () => {
     // Note: We create a new database per test (not per suite) for better isolation,
     // trading minor performance cost for stronger guarantees against test interference.
-    dbPath = createTestDatabase('sibling-chain-integrity');
-    await initializeTestDatabase(dbPath);
+    dbPath = await initializeDatabaseIfNeeded('sibling-chain-integrity');
     adapter = new HttpAdapter('http://localhost:3001');
 
     hierarchyChangeCount = 0;
@@ -65,7 +66,7 @@ describe('Sibling Chain Integrity', () => {
   });
 
   afterEach(async () => {
-    await cleanupTestDatabase(dbPath);
+    await cleanupDatabaseIfNeeded(dbPath);
   });
 
   /**
@@ -157,7 +158,7 @@ describe('Sibling Chain Integrity', () => {
 
   it('should maintain valid chain after creating multiple nodes', async () => {
     // Setup: Create initial node
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -177,7 +178,10 @@ describe('Sibling Chain Integrity', () => {
     const node4Id = service.createNode(node3Id, 'Fourth', 'text');
 
     await waitForDatabaseWrites();
-    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+    // Only check for errors in database mode (in-memory mode expects DatabaseInitializationError)
+    if (shouldUseDatabase()) {
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+    }
 
     // Verify: Chain integrity
     const validation = validateSiblingChain(null);
@@ -193,18 +197,8 @@ describe('Sibling Chain Integrity', () => {
   });
 
   it('should repair chain when node is deleted', async () => {
-    // NOTE: This test may still fail intermittently (~10-20% of runs) due to SQLite's
-    // internal "database is locked" errors. The backend now has write serialization
-    // (mutex in node_endpoints.rs) which significantly improves reliability, but cannot
-    // completely eliminate SQLite locking issues due to connection management and WAL mode.
-    //
-    // For 100% test reliability, the long-term solution is to refactor tests to use
-    // in-memory database instead of HTTP dev-server (see Issue #285).
-    //
-    // See: Issue #266, PR #283 for full investigation and attempted fixes.
-
     // Setup: Create three nodes
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -216,7 +210,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node2 = await createAndFetchNode(adapter, {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -228,7 +222,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node3 = await createAndFetchNode(adapter, {
+    const node3 = await createNodeForCurrentMode(adapter, {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
@@ -246,7 +240,10 @@ describe('Sibling Chain Integrity', () => {
     service.deleteNode('node-2');
 
     await waitForDatabaseWrites();
-    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+    // Only check for errors in database mode (in-memory mode expects DatabaseInitializationError)
+    if (shouldUseDatabase()) {
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+    }
 
     // Verify: Chain repaired
     const validation = validateSiblingChain(null);
@@ -258,19 +255,21 @@ describe('Sibling Chain Integrity', () => {
     const node3Updated = service.findNode('node-3');
     expect(node3Updated?.beforeSiblingId).toBe('node-1');
 
-    // Verify: Database persistence matches in-memory state
-    const node3Persisted = await adapter.getNode('node-3');
-    expect(node3Persisted?.beforeSiblingId).toBe('node-1');
-    expect(node3Persisted?.parentId).toBe(null);
+    // Verify database persistence only in database mode
+    if (shouldUseDatabase()) {
+      const node3Persisted = await adapter.getNode('node-3');
+      expect(node3Persisted?.beforeSiblingId).toBe('node-1');
+      expect(node3Persisted?.parentId).toBe(null);
 
-    // Verify: node-2 was actually deleted from database
-    const node2Persisted = await adapter.getNode('node-2');
-    expect(node2Persisted).toBeNull();
+      // Verify: node-2 was actually deleted from database
+      const node2Persisted = await adapter.getNode('node-2');
+      expect(node2Persisted).toBeNull();
+    }
   });
 
   it('should maintain chain integrity during indent operation', async () => {
     // Setup: Create three siblings
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -282,7 +281,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node2 = await createAndFetchNode(adapter, {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -294,7 +293,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node3 = await createAndFetchNode(adapter, {
+    const node3 = await createNodeForCurrentMode(adapter, {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
@@ -312,7 +311,10 @@ describe('Sibling Chain Integrity', () => {
     service.indentNode('node-2');
 
     await waitForDatabaseWrites();
-    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+    // Only check for errors in database mode (in-memory mode expects DatabaseInitializationError)
+    if (shouldUseDatabase()) {
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+    }
 
     // Verify: Root chain repaired
     const rootValidation = validateSiblingChain(null);
@@ -328,19 +330,21 @@ describe('Sibling Chain Integrity', () => {
     const node3Updated = service.findNode('node-3');
     expect(node3Updated?.beforeSiblingId).toBe('node-1');
 
-    // Verify: Database persistence matches in-memory state
-    const node2Persisted = await adapter.getNode('node-2');
-    expect(node2Persisted?.parentId).toBe('node-1'); // node-2 is now child of node-1
-    expect(node2Persisted?.beforeSiblingId).toBeNull(); // Last child of node-1
+    // Verify database persistence only in database mode
+    if (shouldUseDatabase()) {
+      const node2Persisted = await adapter.getNode('node-2');
+      expect(node2Persisted?.parentId).toBe('node-1'); // node-2 is now child of node-1
+      expect(node2Persisted?.beforeSiblingId).toBeNull(); // Last child of node-1
 
-    const node3Persisted = await adapter.getNode('node-3');
-    expect(node3Persisted?.beforeSiblingId).toBe('node-1'); // node-3 bypasses indented node-2
-    expect(node3Persisted?.parentId).toBeNull(); // node-3 still at root level
+      const node3Persisted = await adapter.getNode('node-3');
+      expect(node3Persisted?.beforeSiblingId).toBe('node-1'); // node-3 bypasses indented node-2
+      expect(node3Persisted?.parentId).toBeNull(); // node-3 still at root level
+    }
   });
 
   it('should maintain chain integrity during outdent operation', async () => {
     // Setup: Create parent with children
-    const parent = await createAndFetchNode(adapter, {
+    const parent = await createNodeForCurrentMode(adapter, {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
@@ -352,7 +356,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const child1 = await createAndFetchNode(adapter, {
+    const child1 = await createNodeForCurrentMode(adapter, {
       id: 'child-1',
       nodeType: 'text',
       content: 'Child 1',
@@ -364,7 +368,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const child2 = await createAndFetchNode(adapter, {
+    const child2 = await createNodeForCurrentMode(adapter, {
       id: 'child-2',
       nodeType: 'text',
       content: 'Child 2',
@@ -382,7 +386,10 @@ describe('Sibling Chain Integrity', () => {
     service.outdentNode('child-1');
 
     await waitForDatabaseWrites();
-    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+    // Only check for errors in database mode (in-memory mode expects DatabaseInitializationError)
+    if (shouldUseDatabase()) {
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+    }
 
     // Verify: Root chain valid
     const rootValidation = validateSiblingChain(null);
@@ -396,19 +403,21 @@ describe('Sibling Chain Integrity', () => {
     const child1ChildValidation = validateSiblingChain('child-1');
     expect(child1ChildValidation.valid).toBe(true);
 
-    // Verify: Database persistence matches in-memory state
-    const child1Persisted = await adapter.getNode('child-1');
-    expect(child1Persisted?.parentId).toBeNull(); // child-1 outdented to root
-    expect(child1Persisted?.beforeSiblingId).toBe('parent'); // Positioned after parent
+    // Verify database persistence only in database mode
+    if (shouldUseDatabase()) {
+      const child1Persisted = await adapter.getNode('child-1');
+      expect(child1Persisted?.parentId).toBeNull(); // child-1 outdented to root
+      expect(child1Persisted?.beforeSiblingId).toBe('parent'); // Positioned after parent
 
-    const child2Persisted = await adapter.getNode('child-2');
-    expect(child2Persisted?.parentId).toBe('child-1'); // child-2 transferred to child-1
-    expect(child2Persisted?.beforeSiblingId).toBeNull(); // First/only child of child-1
+      const child2Persisted = await adapter.getNode('child-2');
+      expect(child2Persisted?.parentId).toBe('child-1'); // child-2 transferred to child-1
+      expect(child2Persisted?.beforeSiblingId).toBeNull(); // First/only child of child-1
+    }
   });
 
   it('should maintain chain when combining nodes', async () => {
     // Setup: Create three nodes
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -420,7 +429,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node2 = await createAndFetchNode(adapter, {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -432,7 +441,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node3 = await createAndFetchNode(adapter, {
+    const node3 = await createNodeForCurrentMode(adapter, {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
@@ -450,7 +459,10 @@ describe('Sibling Chain Integrity', () => {
     await service.combineNodes('node-2', 'node-1');
 
     await waitForDatabaseWrites();
-    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+    // Only check for errors in database mode (in-memory mode expects DatabaseInitializationError)
+    if (shouldUseDatabase()) {
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+    }
 
     // Verify: Chain repaired
     const validation = validateSiblingChain(null);
@@ -464,7 +476,7 @@ describe('Sibling Chain Integrity', () => {
 
   it('should validate chain has no circular references', async () => {
     // Setup: Create valid chain
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -476,7 +488,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node2 = await createAndFetchNode(adapter, {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -488,7 +500,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node3 = await createAndFetchNode(adapter, {
+    const node3 = await createNodeForCurrentMode(adapter, {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
@@ -531,7 +543,7 @@ describe('Sibling Chain Integrity', () => {
 
   it('should maintain chain integrity with complex operations sequence', async () => {
     // Setup: Create initial nodes
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'Node 1',
@@ -543,7 +555,7 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    const node2 = await createAndFetchNode(adapter, {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Node 2',
@@ -574,7 +586,10 @@ describe('Sibling Chain Integrity', () => {
     await service.combineNodes(node3Id, 'node-2'); // Combine node-3 into node-2
     await waitForDatabaseWrites();
 
-    expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+    // Only check for errors in database mode (in-memory mode expects DatabaseInitializationError)
+    if (shouldUseDatabase()) {
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+    }
 
     // Verify: node-3 was deleted by combineNodes (combined into node-2)
     expect(service.findNode(node3Id)).toBeNull();

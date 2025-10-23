@@ -22,6 +22,8 @@
  * @see docs/architecture/dependency-based-persistence.md
  */
 
+import { shouldLogDatabaseErrors } from '$lib/utils/test-environment';
+
 // ============================================================================
 // Error Types
 // ============================================================================
@@ -661,11 +663,13 @@ export class PersistenceCoordinator {
       // Reject promise
       op.reject(err);
 
-      // Log error (consistent structured logging)
-      console.error('[PersistenceCoordinator] Operation failed:', {
-        nodeId: op.nodeId,
-        error: err
-      });
+      // Suppress expected errors in in-memory test mode
+      if (shouldLogDatabaseErrors()) {
+        console.error('[PersistenceCoordinator] Operation failed:', {
+          nodeId: op.nodeId,
+          error: err
+        });
+      }
 
       // Clean up
       this.operations.delete(op.nodeId);

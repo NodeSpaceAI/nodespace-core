@@ -379,6 +379,14 @@ export async function waitForDatabaseWrites(
   maxWaitMs: number = 5000,
   pollInterval: number = 50
 ): Promise<void> {
+  // In in-memory mode (TEST_USE_DATABASE !== 'true'), skip waiting for database writes
+  // since persistence is intentionally disabled and will never complete
+  if (process.env.TEST_USE_DATABASE !== 'true') {
+    // Still wait a brief moment for any synchronous operations to complete
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return;
+  }
+
   const startTime = Date.now();
 
   while (sharedNodeStore.hasPendingWrites()) {

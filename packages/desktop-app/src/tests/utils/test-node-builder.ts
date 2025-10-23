@@ -44,7 +44,17 @@ export class TestNodeBuilder {
   /**
    * Set node type
    */
-  withType(nodeType: 'text' | 'task' | 'date'): this {
+  withType(
+    nodeType:
+      | 'text'
+      | 'task'
+      | 'date'
+      | 'header'
+      | 'code-block'
+      | 'quote-block'
+      | 'ordered-list'
+      | 'ai-chat'
+  ): this {
     this.node.nodeType = nodeType;
     return this;
   }

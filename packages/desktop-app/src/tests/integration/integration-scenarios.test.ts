@@ -8,36 +8,37 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { cleanDatabase, waitForDatabaseWrites } from '../utils/test-database';
 import {
-  createTestDatabase,
-  cleanupTestDatabase,
-  initializeTestDatabase,
-  cleanDatabase,
-  waitForDatabaseWrites
-} from '../utils/test-database';
+  initializeDatabaseIfNeeded,
+  cleanupDatabaseIfNeeded,
+  shouldUseDatabase
+} from '../utils/should-use-database';
+import { checkServerHealth } from '../utils/test-node-helpers';
 import { TestNodeBuilder } from '../utils/test-node-builder';
-import { getBackendAdapter } from '$lib/services/backend-adapter';
+import { getBackendAdapter, HttpAdapter } from '$lib/services/backend-adapter';
 import type { BackendAdapter } from '$lib/services/backend-adapter';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe.sequential('Section 11: Integration Scenarios', () => {
-  let dbPath: string;
+  let dbPath: string | null;
   let backend: BackendAdapter;
 
   beforeAll(async () => {
-    // Create isolated test database for this suite
-    dbPath = createTestDatabase('phase3-integration');
+    if (shouldUseDatabase()) {
+      await checkServerHealth(new HttpAdapter('http://localhost:3001'));
+    }
     backend = getBackendAdapter();
-    await initializeTestDatabase(dbPath);
-    console.log(`[Test] Using database: ${dbPath}`);
   });
 
   afterAll(async () => {
-    // Cleanup test database
-    await cleanupTestDatabase(dbPath);
+    await cleanupDatabaseIfNeeded(dbPath);
   });
 
   beforeEach(async () => {
+    // Initialize database if needed
+    dbPath = await initializeDatabaseIfNeeded('phase3-integration');
+
     // Clean database between tests to ensure test isolation
     await cleanDatabase(backend);
 
@@ -58,7 +59,9 @@ describe.sequential('Section 11: Integration Scenarios', () => {
       const dailyNoteId = await backend.createNode(dailyNoteData);
 
       await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      if (shouldUseDatabase()) {
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      }
 
       // Step 2: Create a container node with mention
       const containerInput = {
@@ -87,7 +90,9 @@ describe.sequential('Section 11: Integration Scenarios', () => {
       const task1Id = await backend.createNode(task1Data);
 
       await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      if (shouldUseDatabase()) {
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      }
 
       const task2Data = TestNodeBuilder.text('Review and merge PR')
         .withParent(containerId)
@@ -97,7 +102,9 @@ describe.sequential('Section 11: Integration Scenarios', () => {
       const task2Id = await backend.createNode(task2Data);
 
       await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      if (shouldUseDatabase()) {
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      }
 
       // Step 6: Verify hierarchy and relationships
       const children = await backend.queryNodes({ parentId: containerId });
@@ -145,7 +152,9 @@ describe.sequential('Section 11: Integration Scenarios', () => {
       const topic3Id = await backend.createNode(topic3Data);
 
       await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      if (shouldUseDatabase()) {
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      }
 
       // Step 2: Generate embeddings for all topics
       // Note: Placeholder implementation will return NOT_IMPLEMENTED
@@ -164,7 +173,9 @@ describe.sequential('Section 11: Integration Scenarios', () => {
       });
 
       await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      if (shouldUseDatabase()) {
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      }
 
       // Verify content was updated
       const updatedTopic1 = await backend.getNode(topic1Id);
@@ -241,7 +252,9 @@ describe.sequential('Section 11: Integration Scenarios', () => {
       const topicId = await backend.createNode(topicData);
 
       await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      if (shouldUseDatabase()) {
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      }
 
       // Step 2: Generate initial embedding
       try {
@@ -261,7 +274,9 @@ describe.sequential('Section 11: Integration Scenarios', () => {
       });
 
       await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      if (shouldUseDatabase()) {
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      }
 
       // Step 4: Check stale count (should be at least 1)
       try {

@@ -200,6 +200,29 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    - Test thoroughly with mock data and services (temporarily, transitioning to real services soon)
    - Ensure feature works independently and provides user value
 
+**4a. Testing (Required)**
+   ```bash
+   # Fast in-memory tests (use during development)
+   bun run test                    # Run all tests once
+   bun run test:watch              # Watch mode (recommended for TDD)
+
+   # Test specific files
+   bun run test src/tests/integration/my-test.test.ts
+   bun run test:watch src/tests/unit/my-component.test.ts
+
+   # Database integration tests (use before merging)
+   bun run test:db                 # Full integration with SQLite
+   bun run test:db:watch           # Watch mode with database
+
+   # Coverage reports
+   bun run test:coverage
+   ```
+
+   **When to use which mode:**
+   - **In-memory mode (default)**: Fast (100x), perfect for TDD and CI/CD
+   - **Database mode**: Full integration validation before merging critical changes
+   - See [Testing Guide](docs/architecture/development/testing-guide.md) for details
+
 5. **Run Quality Checks & Create PR**
    ```bash
    # ⚠️ MANDATORY: Run quality:fix before creating PR
@@ -261,10 +284,19 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 **Testing Requirements (CRITICAL):**
 - **NEVER use `bun test`** - This command does NOT support Happy-DOM environment
 - **ALWAYS use one of these:**
-  - `bun run test` (uses bunx vitest internally)
-  - `bunx vitest run` (direct vitest command)
-  - `bunx vitest` (watch mode)
+  - **In-Memory Mode (Fast - Recommended)**:
+    - `bun run test` - Run all tests once
+    - `bun run test:watch` - Watch mode for TDD
+    - `bunx vitest` - Direct watch mode
+  - **Database Mode (Full Integration)**:
+    - `bun run test:db` - Full SQLite integration tests
+    - `bun run test:db:watch` - Watch mode with database
+  - **Coverage**:
+    - `bun run test:coverage` - Generate coverage reports
 - **Why?** Vitest is configured with Happy-DOM in vitest.config.ts. Bun's native test runner doesn't read this configuration, causing DOM-dependent tests to fail.
+- **Test Modes:** Integration tests support two modes via `TEST_USE_DATABASE` flag:
+  - **In-memory (default)**: 100x faster, perfect for TDD and CI/CD
+  - **Database mode**: Full integration validation with SQLite persistence
 - **Validation:** Tests will automatically fail with a clear error message if run with wrong command
 - **CI/CD:** All test scripts in package.json use the correct commands
 

@@ -15,36 +15,37 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { cleanDatabase, waitForDatabaseWrites } from '../utils/test-database';
 import {
-  createTestDatabase,
-  cleanupTestDatabase,
-  initializeTestDatabase,
-  cleanDatabase,
-  waitForDatabaseWrites
-} from '../utils/test-database';
+  initializeDatabaseIfNeeded,
+  cleanupDatabaseIfNeeded,
+  shouldUseDatabase
+} from '../utils/should-use-database';
+import { checkServerHealth } from '../utils/test-node-helpers';
 import { TestNodeBuilder } from '../utils/test-node-builder';
-import { getBackendAdapter } from '$lib/services/backend-adapter';
+import { getBackendAdapter, HttpAdapter } from '$lib/services/backend-adapter';
 import type { BackendAdapter } from '$lib/services/backend-adapter';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe.sequential('Date Node Placeholder Persistence', () => {
-  let dbPath: string;
+  let dbPath: string | null;
   let backend: BackendAdapter;
 
   beforeAll(async () => {
-    // Create isolated test database
-    dbPath = createTestDatabase('date-node-placeholder-persistence');
+    if (shouldUseDatabase()) {
+      await checkServerHealth(new HttpAdapter('http://localhost:3001'));
+    }
     backend = getBackendAdapter();
-
-    // Initialize database connection
-    await initializeTestDatabase(dbPath);
   });
 
   afterAll(async () => {
-    await cleanupTestDatabase(dbPath);
+    await cleanupDatabaseIfNeeded(dbPath);
   });
 
   beforeEach(async () => {
+    // Initialize database if needed
+    dbPath = await initializeDatabaseIfNeeded('date-node-placeholder-persistence');
+
     // Clean database and stores before each test
     await cleanDatabase(backend);
     sharedNodeStore.__resetForTesting();

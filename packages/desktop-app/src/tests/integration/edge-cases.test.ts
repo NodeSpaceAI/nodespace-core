@@ -8,37 +8,38 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { cleanDatabase, waitForDatabaseWrites } from '../utils/test-database';
 import {
-  createTestDatabase,
-  cleanupTestDatabase,
-  initializeTestDatabase,
-  cleanDatabase,
-  waitForDatabaseWrites
-} from '../utils/test-database';
+  initializeDatabaseIfNeeded,
+  cleanupDatabaseIfNeeded,
+  shouldUseDatabase
+} from '../utils/should-use-database';
+import { checkServerHealth } from '../utils/test-node-helpers';
 import { TestNodeBuilder } from '../utils/test-node-builder';
-import { getBackendAdapter } from '$lib/services/backend-adapter';
+import { getBackendAdapter, HttpAdapter } from '$lib/services/backend-adapter';
 import type { BackendAdapter } from '$lib/services/backend-adapter';
 import { NodeOperationError } from '$lib/types/errors';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe.sequential('Section 10: Edge Cases & Error Handling', () => {
-  let dbPath: string;
+  let dbPath: string | null;
   let backend: BackendAdapter;
 
   beforeAll(async () => {
-    // Create isolated test database for this suite
-    dbPath = createTestDatabase('phase3-edge-cases');
+    if (shouldUseDatabase()) {
+      await checkServerHealth(new HttpAdapter('http://localhost:3001'));
+    }
     backend = getBackendAdapter();
-    await initializeTestDatabase(dbPath);
-    console.log(`[Test] Using database: ${dbPath}`);
   });
 
   afterAll(async () => {
-    // Cleanup test database
-    await cleanupTestDatabase(dbPath);
+    await cleanupDatabaseIfNeeded(dbPath);
   });
 
   beforeEach(async () => {
+    // Initialize database if needed
+    dbPath = await initializeDatabaseIfNeeded('phase3-edge-cases');
+
     // Clean database between tests to ensure test isolation
     await cleanDatabase(backend);
 
@@ -206,7 +207,9 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
       const topicId = await backend.createNode(topicData);
 
       await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      if (shouldUseDatabase()) {
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      }
 
       // Attempt operation (will be fast with placeholder)
       const startTime = performance.now();
@@ -293,7 +296,9 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
       const validTopicId = await backend.createNode(validTopicData);
 
       await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      if (shouldUseDatabase()) {
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      }
 
       const topicIds = [validTopicId, 'invalid-id-1', 'invalid-id-2'];
 

@@ -18,28 +18,30 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import { waitForDatabaseWrites } from '../utils/test-database';
 import {
-  createTestDatabase,
-  cleanupTestDatabase,
-  initializeTestDatabase,
-  waitForDatabaseWrites
-} from '../utils/test-database';
-import { createAndFetchNode, checkServerHealth } from '../utils/test-node-helpers';
+  initializeDatabaseIfNeeded,
+  cleanupDatabaseIfNeeded,
+  shouldUseDatabase
+} from '../utils/should-use-database';
+import { createNodeForCurrentMode, checkServerHealth } from '../utils/test-node-helpers';
 import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
 import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
 
 describe('Indent/Outdent Operations', () => {
-  let dbPath: string;
+  let dbPath: string | null;
   let adapter: HttpAdapter;
   let service: ReturnType<typeof createReactiveNodeService>;
   let hierarchyChangeCount: number;
 
   beforeAll(async () => {
-    // Verify HTTP dev server is running before running any tests
-    const healthCheckAdapter = new HttpAdapter('http://localhost:3001');
-    await checkServerHealth(healthCheckAdapter);
+    if (shouldUseDatabase()) {
+      // Verify HTTP dev server is running before running any tests
+      const healthCheckAdapter = new HttpAdapter('http://localhost:3001');
+      await checkServerHealth(healthCheckAdapter);
+    }
   });
 
   beforeEach(async () => {
@@ -50,10 +52,8 @@ describe('Indent/Outdent Operations', () => {
     // 2. SharedNodeStore holds node data - without reset, nodes from previous tests remain
     sharedNodeStore.__resetForTesting();
 
-    // Note: We create a new database per test (not per suite) for better isolation,
-    // trading minor performance cost for stronger guarantees against test interference.
-    dbPath = createTestDatabase('indent-outdent-operations');
-    await initializeTestDatabase(dbPath);
+    // Initialize database if needed
+    dbPath = await initializeDatabaseIfNeeded('indent-outdent-operations');
     adapter = new HttpAdapter('http://localhost:3001');
 
     hierarchyChangeCount = 0;
@@ -67,12 +67,12 @@ describe('Indent/Outdent Operations', () => {
   });
 
   afterEach(async () => {
-    await cleanupTestDatabase(dbPath);
+    await cleanupDatabaseIfNeeded(dbPath);
   });
 
   it('should indent node to become child of previous sibling', async () => {
     // Setup: Create two sibling nodes
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -84,7 +84,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createAndFetchNode(adapter, {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -116,8 +116,10 @@ describe('Indent/Outdent Operations', () => {
     expect(ui?.depth).toBe(1);
 
     // Verify: Database state
-    const dbNode = await adapter.getNode('node-2');
-    expect(dbNode?.parentId).toBe('node-1');
+    if (shouldUseDatabase()) {
+      const dbNode = await adapter.getNode('node-2');
+      expect(dbNode?.parentId).toBe('node-1');
+    }
 
     // Verify: Hierarchy changed event
     expect(hierarchyChangeCount).toBeGreaterThan(0);
@@ -125,7 +127,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should not allow indent on first node', async () => {
     // Setup: Create single node
-    const node = await createAndFetchNode(adapter, {
+    const node = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -152,7 +154,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should recalculate descendant depths when indenting', async () => {
     // Setup: Create parent with child, then sibling
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -164,7 +166,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createAndFetchNode(adapter, {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -176,7 +178,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child = await createAndFetchNode(adapter, {
+    const child = await createNodeForCurrentMode(adapter, {
       id: 'child-1',
       nodeType: 'text',
       content: 'Child of Second',
@@ -207,7 +209,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should outdent node to parent level', async () => {
     // Setup: Create parent with child
-    const parent = await createAndFetchNode(adapter, {
+    const parent = await createNodeForCurrentMode(adapter, {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
@@ -219,7 +221,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child = await createAndFetchNode(adapter, {
+    const child = await createNodeForCurrentMode(adapter, {
       id: 'child',
       nodeType: 'text',
       content: 'Child',
@@ -251,13 +253,15 @@ describe('Indent/Outdent Operations', () => {
     expect(ui?.depth).toBe(0);
 
     // Verify: Database state
-    const dbNode = await adapter.getNode('child');
-    expect(dbNode?.parentId).toBeNull();
+    if (shouldUseDatabase()) {
+      const dbNode = await adapter.getNode('child');
+      expect(dbNode?.parentId).toBeNull();
+    }
   });
 
   it('should not allow outdent on root node', async () => {
     // Setup: Create root node
-    const node = await createAndFetchNode(adapter, {
+    const node = await createNodeForCurrentMode(adapter, {
       id: 'root',
       nodeType: 'text',
       content: 'Root',
@@ -284,7 +288,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should transfer siblings below when outdenting', async () => {
     // Setup: Create parent with multiple children
-    const parent = await createAndFetchNode(adapter, {
+    const parent = await createNodeForCurrentMode(adapter, {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
@@ -296,7 +300,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child1 = await createAndFetchNode(adapter, {
+    const child1 = await createNodeForCurrentMode(adapter, {
       id: 'child-1',
       nodeType: 'text',
       content: 'Child 1',
@@ -308,7 +312,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child2 = await createAndFetchNode(adapter, {
+    const child2 = await createNodeForCurrentMode(adapter, {
       id: 'child-2',
       nodeType: 'text',
       content: 'Child 2',
@@ -320,7 +324,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child3 = await createAndFetchNode(adapter, {
+    const child3 = await createNodeForCurrentMode(adapter, {
       id: 'child-3',
       nodeType: 'text',
       content: 'Child 3',
@@ -355,7 +359,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should position outdented node after its old parent', async () => {
     // Setup: Create parent with child
-    const parent = await createAndFetchNode(adapter, {
+    const parent = await createNodeForCurrentMode(adapter, {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
@@ -367,7 +371,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child = await createAndFetchNode(adapter, {
+    const child = await createNodeForCurrentMode(adapter, {
       id: 'child',
       nodeType: 'text',
       content: 'Child',
@@ -398,7 +402,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should update sibling chain when indenting', async () => {
     // Setup: Create three siblings
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -410,7 +414,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createAndFetchNode(adapter, {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -422,7 +426,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node3 = await createAndFetchNode(adapter, {
+    const node3 = await createNodeForCurrentMode(adapter, {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
@@ -454,7 +458,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should handle indenting node that has children', async () => {
     // Setup: Create parent with children, then sibling with children
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -466,7 +470,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createAndFetchNode(adapter, {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -478,7 +482,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child = await createAndFetchNode(adapter, {
+    const child = await createNodeForCurrentMode(adapter, {
       id: 'child-of-2',
       nodeType: 'text',
       content: 'Child',
@@ -515,7 +519,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should append indented node to existing children', async () => {
     // Setup: Create node with existing child, then sibling
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -527,7 +531,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const existingChild = await createAndFetchNode(adapter, {
+    const existingChild = await createNodeForCurrentMode(adapter, {
       id: 'existing-child',
       nodeType: 'text',
       content: 'Existing Child',
@@ -539,7 +543,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createAndFetchNode(adapter, {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -572,7 +576,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should indent multiple nodes as siblings when indented separately', async () => {
     // Setup: Create chain of nodes
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'Level 0',
@@ -584,7 +588,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createAndFetchNode(adapter, {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Level 1',
@@ -596,7 +600,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node3 = await createAndFetchNode(adapter, {
+    const node3 = await createNodeForCurrentMode(adapter, {
       id: 'node-3',
       nodeType: 'text',
       content: 'Level 2',
@@ -635,7 +639,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should handle multiple consecutive outdents', async () => {
     // Setup: Create nested hierarchy
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'Level 0',
@@ -647,7 +651,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createAndFetchNode(adapter, {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Level 1',
@@ -659,7 +663,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node3 = await createAndFetchNode(adapter, {
+    const node3 = await createNodeForCurrentMode(adapter, {
       id: 'node-3',
       nodeType: 'text',
       content: 'Level 2',
@@ -691,7 +695,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should maintain sibling chain integrity when outdenting first child', async () => {
     // Setup: Create parent with multiple children
-    const parent = await createAndFetchNode(adapter, {
+    const parent = await createNodeForCurrentMode(adapter, {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
@@ -703,7 +707,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child1 = await createAndFetchNode(adapter, {
+    const child1 = await createNodeForCurrentMode(adapter, {
       id: 'child-1',
       nodeType: 'text',
       content: 'Child 1',
@@ -715,7 +719,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const child2 = await createAndFetchNode(adapter, {
+    const child2 = await createNodeForCurrentMode(adapter, {
       id: 'child-2',
       nodeType: 'text',
       content: 'Child 2',
@@ -746,7 +750,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should emit hierarchy changed events for indent/outdent', async () => {
     // Setup: Create nodes
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
@@ -758,7 +762,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const node2 = await createAndFetchNode(adapter, {
+    const node2 = await createNodeForCurrentMode(adapter, {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
@@ -791,7 +795,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should prevent indent when previous sibling is code-block (canHaveChildren: false)', async () => {
     // Setup: Create code-block followed by text node
-    const codeBlock = await createAndFetchNode(adapter, {
+    const codeBlock = await createNodeForCurrentMode(adapter, {
       id: 'code-1',
       nodeType: 'code-block',
       content: '```js\nconsole.log("test");\n```',
@@ -803,7 +807,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const textNode = await createAndFetchNode(adapter, {
+    const textNode = await createNodeForCurrentMode(adapter, {
       id: 'text-1',
       nodeType: 'text',
       content: 'Some text',
@@ -835,7 +839,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should allow indent when previous sibling is text node (canHaveChildren: true)', async () => {
     // Setup: Create text node followed by another text node
-    const textNode1 = await createAndFetchNode(adapter, {
+    const textNode1 = await createNodeForCurrentMode(adapter, {
       id: 'text-1',
       nodeType: 'text',
       content: 'First text',
@@ -847,7 +851,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const textNode2 = await createAndFetchNode(adapter, {
+    const textNode2 = await createNodeForCurrentMode(adapter, {
       id: 'text-2',
       nodeType: 'text',
       content: 'Second text',
@@ -877,7 +881,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should allow indent when previous sibling is header node (canHaveChildren: true)', async () => {
     // Setup: Create header followed by text node
-    const headerNode = await createAndFetchNode(adapter, {
+    const headerNode = await createNodeForCurrentMode(adapter, {
       id: 'header-1',
       nodeType: 'header',
       content: 'Header',
@@ -889,7 +893,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const textNode = await createAndFetchNode(adapter, {
+    const textNode = await createNodeForCurrentMode(adapter, {
       id: 'text-1',
       nodeType: 'text',
       content: 'Content',
@@ -919,7 +923,7 @@ describe('Indent/Outdent Operations', () => {
 
   it('should allow indent when previous sibling is task node (canHaveChildren: true)', async () => {
     // Setup: Create task followed by text node
-    const taskNode = await createAndFetchNode(adapter, {
+    const taskNode = await createNodeForCurrentMode(adapter, {
       id: 'task-1',
       nodeType: 'task',
       content: 'Task item',
@@ -931,7 +935,7 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    const textNode = await createAndFetchNode(adapter, {
+    const textNode = await createNodeForCurrentMode(adapter, {
       id: 'text-1',
       nodeType: 'text',
       content: 'Task details',
