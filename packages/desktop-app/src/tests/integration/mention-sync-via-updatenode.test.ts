@@ -32,6 +32,29 @@ describe('Issue #341: Mention Sync via updateNode()', () => {
     vi.clearAllMocks();
   });
 
+  // Helper to wait for async operations with polling
+  const waitFor = async (
+    assertion: () => void,
+    options: { timeout?: number; interval?: number } = {}
+  ): Promise<void> => {
+    const timeout = options.timeout ?? 1000;
+    const interval = options.interval ?? 10;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeout) {
+      try {
+        assertion();
+        return; // Assertion passed
+      } catch {
+        // Assertion failed, wait and retry
+        await new Promise((resolve) => setTimeout(resolve, interval));
+      }
+    }
+
+    // Final attempt - this will throw if assertion still fails
+    assertion();
+  };
+
   // Helper to create test nodes with all required fields
   const createTestNode = (overrides: Partial<Node> = {}): Node => ({
     id: overrides.id || 'test-node-id',
@@ -73,13 +96,15 @@ describe('Issue #341: Mention Sync via updateNode()', () => {
     );
 
     // Wait for async mention sync to complete
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    // Verify mention sync was triggered
-    expect(syncMentionsSpy).toHaveBeenCalledWith(
-      sourceNodeId,
-      'Initial content without mentions',
-      contentWithMention
+    await waitFor(
+      () => {
+        expect(syncMentionsSpy).toHaveBeenCalledWith(
+          sourceNodeId,
+          'Initial content without mentions',
+          contentWithMention
+        );
+      },
+      { timeout: 100 }
     );
 
     syncMentionsSpy.mockRestore();
@@ -106,7 +131,7 @@ describe('Issue #341: Mention Sync via updateNode()', () => {
       { skipPersistence: true }
     );
 
-    // Wait a bit to ensure no async calls
+    // Give time for any potential async calls (though none should happen)
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     // Verify mention sync was NOT triggered
@@ -139,13 +164,15 @@ describe('Issue #341: Mention Sync via updateNode()', () => {
       { skipPersistence: true }
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    // Verify mention sync was triggered with correct parameters
-    expect(syncMentionsSpy).toHaveBeenCalledWith(
-      sourceNodeId,
-      `See [@Node](nodespace://${mentionedNodeId})`,
-      contentWithoutMention
+    await waitFor(
+      () => {
+        expect(syncMentionsSpy).toHaveBeenCalledWith(
+          sourceNodeId,
+          `See [@Node](nodespace://${mentionedNodeId})`,
+          contentWithoutMention
+        );
+      },
+      { timeout: 100 }
     );
 
     syncMentionsSpy.mockRestore();
@@ -176,13 +203,85 @@ describe('Issue #341: Mention Sync via updateNode()', () => {
       { skipPersistence: true }
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitFor(
+      () => {
+        expect(syncMentionsSpy).toHaveBeenCalledWith(
+          sourceNodeId,
+          `See [@Old Node](nodespace://${oldMentionId})`,
+          contentWithNewMention
+        );
+      },
+      { timeout: 100 }
+    );
 
-    // Verify mention sync was triggered
-    expect(syncMentionsSpy).toHaveBeenCalledWith(
-      sourceNodeId,
-      `See [@Old Node](nodespace://${oldMentionId})`,
-      contentWithNewMention
+    syncMentionsSpy.mockRestore();
+  });
+
+  it('should sync mentions when content changes from mention to empty string', async () => {
+    const nodeId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const mentionId = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+
+    const nodeWithMention = createTestNode({
+      id: nodeId,
+      content: `[@Node](nodespace://${mentionId})`
+    });
+
+    store.setNode(nodeWithMention, { type: 'database', reason: 'initial-load' }, true);
+
+    const { mentionSyncService } = await import('$lib/services/mention-sync-service');
+    const syncMentionsSpy = vi.spyOn(mentionSyncService, 'syncMentions');
+
+    // Update to empty string
+    store.updateNode(
+      nodeId,
+      { content: '' },
+      { type: 'viewer', viewerId: 'test-viewer' },
+      { skipPersistence: true }
+    );
+
+    await waitFor(
+      () => {
+        expect(syncMentionsSpy).toHaveBeenCalledWith(
+          nodeId,
+          `[@Node](nodespace://${mentionId})`,
+          ''
+        );
+      },
+      { timeout: 100 }
+    );
+
+    syncMentionsSpy.mockRestore();
+  });
+
+  it('should sync mentions when content changes from empty string to mention', async () => {
+    const nodeId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+    const mentionId = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+
+    const nodeWithEmptyContent = createTestNode({
+      id: nodeId,
+      content: ''
+    });
+
+    store.setNode(nodeWithEmptyContent, { type: 'database', reason: 'initial-load' }, true);
+
+    const { mentionSyncService } = await import('$lib/services/mention-sync-service');
+    const syncMentionsSpy = vi.spyOn(mentionSyncService, 'syncMentions');
+
+    // Update from empty string to mention
+    const contentWithMention = `[@Node](nodespace://${mentionId})`;
+
+    store.updateNode(
+      nodeId,
+      { content: contentWithMention },
+      { type: 'viewer', viewerId: 'test-viewer' },
+      { skipPersistence: true }
+    );
+
+    await waitFor(
+      () => {
+        expect(syncMentionsSpy).toHaveBeenCalledWith(nodeId, '', contentWithMention);
+      },
+      { timeout: 100 }
     );
 
     syncMentionsSpy.mockRestore();
@@ -222,13 +321,15 @@ describe('Issue #341: Mention Sync via updateNode()', () => {
     }).not.toThrow();
 
     // Wait for async error handling
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    // Verify error was logged
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
-      '[SharedNodeStore] Failed to sync mentions for node',
-      nodeId,
-      expect.any(Error)
+    await waitFor(
+      () => {
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          '[SharedNodeStore] Failed to sync mentions for node',
+          nodeId,
+          expect.any(Error)
+        );
+      },
+      { timeout: 100 }
     );
 
     // Verify node was still updated
@@ -275,11 +376,14 @@ describe('Issue #341: Mention Sync via updateNode()', () => {
       { skipPersistence: true } // Skip DB for test
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    // CRITICAL: Verify mention sync was called
-    // This was the bug - mention sync was NOT being called in this scenario
-    expect(syncMentionsSpy).toHaveBeenCalledWith(childNodeId, '', updatedContent);
+    await waitFor(
+      () => {
+        // CRITICAL: Verify mention sync was called
+        // This was the bug - mention sync was NOT being called in this scenario
+        expect(syncMentionsSpy).toHaveBeenCalledWith(childNodeId, '', updatedContent);
+      },
+      { timeout: 100 }
+    );
 
     syncMentionsSpy.mockRestore();
   });

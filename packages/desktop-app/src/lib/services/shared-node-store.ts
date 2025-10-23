@@ -198,11 +198,42 @@ export class SharedNodeStore {
   }
 
   // ========================================================================
+  // Private Helper Methods
+  // ========================================================================
+
+  /**
+   * Sync mention relationships when content changes
+   *
+   * Fires asynchronously in the background without blocking the caller.
+   * Errors are logged but do not propagate to prevent disrupting node operations.
+   *
+   * @param nodeId - ID of the node whose content changed
+   * @param oldContent - Previous content (may be undefined for new nodes)
+   * @param newContent - New content (must be defined and different from oldContent)
+   */
+  private syncMentionsIfChanged(
+    nodeId: string,
+    oldContent: string | undefined,
+    newContent: string | undefined
+  ): void {
+    // Only sync if content actually changed and new content is defined
+    if (oldContent !== newContent && newContent !== undefined) {
+      // Fire and forget - mentions sync in background
+      mentionSyncService.syncMentions(nodeId, oldContent, newContent).catch((error) => {
+        console.error('[SharedNodeStore] Failed to sync mentions for node', nodeId, error);
+      });
+    }
+  }
+
+  // ========================================================================
   // Update Operations with Conflict Detection
   // ========================================================================
 
   /**
    * Update a node with conflict detection and source tracking
+   *
+   * Automatically syncs mention relationships when content changes.
+   * Mention sync runs asynchronously and failures are logged but do not block the update.
    *
    * @param nodeId - ID of node to update
    * @param changes - Partial node changes to apply
@@ -318,13 +349,8 @@ export class SharedNodeStore {
       this.notifySubscribers(nodeId, updatedNode, source);
 
       // Sync mentions if content changed (async - don't block)
-      if ('content' in changes && changes.content !== existingNode.content) {
-        // Fire and forget - mentions sync in background
-        mentionSyncService
-          .syncMentions(nodeId, existingNode.content, changes.content!)
-          .catch((error) => {
-            console.error('[SharedNodeStore] Failed to sync mentions for node', nodeId, error);
-          });
+      if ('content' in changes) {
+        this.syncMentionsIfChanged(nodeId, existingNode.content, changes.content);
       }
 
       // Emit event - cast to bypass type checking for now
@@ -553,12 +579,7 @@ export class SharedNodeStore {
     this.notifySubscribers(node.id, node, source);
 
     // Sync mentions if content changed (async - don't block)
-    if (oldNode?.content !== node.content) {
-      // Fire and forget - mentions sync in background
-      mentionSyncService.syncMentions(node.id, oldNode?.content, node.content).catch((error) => {
-        console.error('[SharedNodeStore] Failed to sync mentions for node', node.id, error);
-      });
-    }
+    this.syncMentionsIfChanged(node.id, oldNode?.content, node.content);
 
     // If source is database, mark node as already persisted
     if (source.type === 'database') {
