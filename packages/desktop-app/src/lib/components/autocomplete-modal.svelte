@@ -437,28 +437,34 @@
 
 {#if visible}
   <!-- Modal overlay for click-outside handling -->
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div
     class="fixed inset-0 z-50 bg-red-500/50 backdrop-blur-[2px]"
     on:click={closeModal}
+    on:keydown={(e) => e.key === 'Escape' && closeModal()}
+    role="button"
+    tabindex="-1"
     style="animation: overlayFadeIn 0.15s ease-out;"
+    aria-label="Close autocomplete modal"
   >
     <!-- Modal positioned using shadcn-svelte dropdown patterns -->
-    <!-- svelte-ignore a11y-click-events-have-key-events -->
-    <!-- svelte-ignore a11y-no-static-element-interactions -->
     <div
       bind:this={modalElement}
       class="fixed z-50 min-w-80 max-w-md"
       style="left: {adjustedPosition.x}px; top: {adjustedPosition.y}px; animation: modalSlideIn 0.2s ease-out;"
       on:click|stopPropagation
+      on:keydown|stopPropagation
+      role="dialog"
+      tabindex="0"
+      aria-modal="true"
+      aria-label="Node autocomplete suggestions"
+      aria-describedby="autocomplete-header autocomplete-shortcuts"
     >
       <!-- Use shadcn-svelte dropdown content styling -->
       <div
         class="bg-popover text-popover-foreground z-50 min-w-[8rem] overflow-y-auto overflow-x-hidden rounded-md border p-1 shadow-md outline-none max-h-[320px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
       >
         <!-- Header using dropdown menu patterns -->
-        <div class="flex items-center gap-2 px-2 py-1.5 text-sm">
+        <div id="autocomplete-header" class="flex items-center gap-2 px-2 py-1.5 text-sm">
           <div class="flex items-center gap-1.5">
             <span class="text-muted-foreground font-medium">@</span>
             <span class="font-medium text-foreground">
@@ -481,7 +487,7 @@
 
           <!-- Keyboard shortcuts -->
           {#if !totalResults || totalResults === 0}
-            <div class="flex items-center gap-1 ml-auto">
+            <div id="autocomplete-shortcuts" class="flex items-center gap-1 ml-auto">
               <Badge variant="outline" class="text-xs h-5 px-1">↑↓</Badge>
               <Badge variant="outline" class="text-xs h-5 px-1">⏎</Badge>
               <Badge variant="outline" class="text-xs h-5 px-1">esc</Badge>

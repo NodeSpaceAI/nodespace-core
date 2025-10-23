@@ -11,14 +11,13 @@ import { TextareaController } from '$lib/design/components/textarea-controller';
 describe('positionCursor action', () => {
   let textarea: HTMLTextAreaElement;
   let controller: TextareaController;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let rafSpy: any;
+  // Type as Vitest mock instance - vi.spyOn returns a mock that can be restored
+  let rafSpy: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     // Ensure requestAnimationFrame exists in test environment
     if (!globalThis.requestAnimationFrame) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      globalThis.requestAnimationFrame = ((cb: any) => {
+      globalThis.requestAnimationFrame = ((cb: (time: number) => void) => {
         cb(0);
         return 0;
       }) as typeof requestAnimationFrame;
@@ -51,10 +50,11 @@ describe('positionCursor action', () => {
     });
 
     // Spy on requestAnimationFrame
+    // Type cast required: vi.spyOn returns generic Mock type that doesn't expose mockRestore until runtime
     rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
       cb(0);
       return 0;
-    });
+    }) as ReturnType<typeof vi.fn>;
   });
 
   afterEach(() => {

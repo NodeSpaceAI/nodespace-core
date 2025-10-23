@@ -196,9 +196,18 @@
   }
 </script>
 
-<!-- Wrap BaseNode with ordered-list-specific styling -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="ordered-list-node-wrapper" data-node-type="ordered-list" onkeydown={handleKeyDown}>
+<!--
+  Wrapper div for ordered-list-specific styling and keyboard event delegation.
+  role="presentation": This div is purely for styling and event forwarding.
+  All semantic meaning and interaction is handled by the BaseNode component below.
+  Screen readers should skip this wrapper and focus on the content within BaseNode.
+-->
+<div
+  class="ordered-list-node-wrapper"
+  data-node-type="ordered-list"
+  onkeydown={handleKeyDown}
+  role="presentation"
+>
   <BaseNode
     {nodeId}
     {nodeType}

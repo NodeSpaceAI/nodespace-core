@@ -189,9 +189,13 @@
   }
 </script>
 
-<!-- Wrap BaseNode with quote-block-specific styling -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="quote-block-node-wrapper" onkeydown={handleKeyDown}>
+<!--
+  Wrapper div for quote-block-specific styling and keyboard event delegation.
+  role="presentation": This div is purely for styling and event forwarding.
+  All semantic meaning and interaction is handled by the BaseNode component below.
+  Screen readers should skip this wrapper and focus on the content within BaseNode.
+-->
+<div class="quote-block-node-wrapper" onkeydown={handleKeyDown} role="presentation">
   <BaseNode
     {nodeId}
     {nodeType}

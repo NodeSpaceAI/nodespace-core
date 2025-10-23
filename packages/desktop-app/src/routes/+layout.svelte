@@ -7,8 +7,8 @@
   // Flush pending saves on window close to prevent data loss
   onMount(() => {
     // Check if running in Tauri (desktop app)
-    // @ts-expect-error - Tauri internal property not in Window type
-    if (window.__TAURI_INTERNALS__) {
+    // Tauri adds __TAURI_INTERNALS__ to window at runtime
+    if ('__TAURI_INTERNALS__' in window) {
       // Import Tauri APIs only if we're in Tauri
       (async () => {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');

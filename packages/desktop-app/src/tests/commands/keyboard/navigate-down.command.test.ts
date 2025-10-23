@@ -14,6 +14,10 @@ import type { KeyboardContext } from '$lib/services/keyboard-command-registry';
 import type { TextareaController } from '$lib/design/components/textarea-controller';
 
 describe('NavigateDownCommand', () => {
+  // Note: Type casts for mock methods are required because Vitest's vi.fn() returns
+  // a generic Mock type that doesn't include mockReturnValue in the type signature.
+  // The cast to ReturnType<typeof vi.fn> provides the correct typing at runtime.
+
   let command: NavigateDownCommand;
   let mockController: TextareaController;
   let navigateArrowSpy: ReturnType<typeof vi.fn>;
@@ -52,8 +56,7 @@ describe('NavigateDownCommand', () => {
       });
 
       // Mock that we're at the last line
-      // @ts-expect-error - vi.fn() creates a mock with mockReturnValue
-      mockController.isAtLastLine.mockReturnValue(true);
+      (mockController.isAtLastLine as ReturnType<typeof vi.fn>).mockReturnValue(true);
 
       expect(command.canExecute(context)).toBe(true);
     });
@@ -71,8 +74,7 @@ describe('NavigateDownCommand', () => {
       mockController.element?.appendChild(div2);
 
       // Mock that we're NOT at last line
-      // @ts-expect-error - vi.fn() creates a mock with mockReturnValue
-      mockController.isAtLastLine.mockReturnValue(false);
+      (mockController.isAtLastLine as ReturnType<typeof vi.fn>).mockReturnValue(false);
 
       expect(command.canExecute(context)).toBe(false);
     });
@@ -168,8 +170,7 @@ describe('NavigateDownCommand', () => {
       });
 
       // Mock different pixel offset
-      // @ts-expect-error - vi.fn() creates a mock with mockReturnValue
-      mockController.getCurrentPixelOffset.mockReturnValue(250);
+      (mockController.getCurrentPixelOffset as ReturnType<typeof vi.fn>).mockReturnValue(250);
 
       await command.execute(context);
 
