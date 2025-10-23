@@ -9,35 +9,39 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import {
-  createTestDatabase,
-  cleanupTestDatabase,
-  initializeTestDatabase,
   cleanDatabase,
   waitForDatabaseWrites
 } from '../utils/test-database';
+import {
+  initializeDatabaseIfNeeded,
+  cleanupDatabaseIfNeeded,
+  shouldUseDatabase
+} from '../utils/should-use-database';
+import { checkServerHealth } from '../utils/test-node-helpers';
 import { TestNodeBuilder } from '../utils/test-node-builder';
-import { getBackendAdapter } from '$lib/services/backend-adapter';
+import { getBackendAdapter, HttpAdapter } from '$lib/services/backend-adapter';
 import type { BackendAdapter } from '$lib/services/backend-adapter';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 describe.sequential('Section 9: Content Processing & Advanced Operations', () => {
-  let dbPath: string;
+  let dbPath: string | null;
   let backend: BackendAdapter;
 
   beforeAll(async () => {
-    // Create isolated test database for this suite
-    dbPath = createTestDatabase('phase3-content-processing');
+    if (shouldUseDatabase()) {
+      await checkServerHealth(new HttpAdapter('http://localhost:3001'));
+    }
     backend = getBackendAdapter();
-    await initializeTestDatabase(dbPath);
-    console.log(`[Test] Using database: ${dbPath}`);
   });
 
   afterAll(async () => {
-    // Cleanup test database
-    await cleanupTestDatabase(dbPath);
+    await cleanupDatabaseIfNeeded(dbPath);
   });
 
   beforeEach(async () => {
+    // Initialize database if needed
+    dbPath = await initializeDatabaseIfNeeded('phase3-content-processing');
+
     // Clean database between tests to ensure test isolation
     await cleanDatabase(backend);
 
@@ -120,7 +124,9 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
       const dailyNoteId = await backend.createNode(dailyNoteData);
 
       await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      if (shouldUseDatabase()) {
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      }
 
       // Create a container node
       // Note: mentionedBy parameter may not be implemented yet
@@ -162,7 +168,9 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
       const topicId = await backend.createNode(topicData);
 
       await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      if (shouldUseDatabase()) {
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      }
 
       // Generate initial embedding
       try {
@@ -224,7 +232,9 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
       const topic3Id = await backend.createNode(topic3Data);
 
       await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      if (shouldUseDatabase()) {
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      }
 
       const topicIds = [topic1Id, topic2Id, topic3Id];
 
@@ -259,7 +269,9 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
       const validTopic2Id = await backend.createNode(validTopic2Data);
 
       await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      if (shouldUseDatabase()) {
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      }
 
       // Mix valid and non-existent topic IDs
       const topicIds = [
@@ -303,7 +315,9 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
       }
 
       await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      if (shouldUseDatabase()) {
+        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+      }
 
       try {
         const result = await backend.batchGenerateEmbeddings(topicIds);

@@ -18,21 +18,24 @@
  * stronger isolation guarantees against test interference.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import {
-  createTestDatabase,
-  cleanupTestDatabase,
-  initializeTestDatabase,
   waitForDatabaseWrites
 } from '../utils/test-database';
+import {
+  initializeDatabaseIfNeeded,
+  cleanupDatabaseIfNeeded,
+  shouldUseDatabase
+} from '../utils/should-use-database';
 import { createAndFetchNode, checkServerHealth } from '../utils/test-node-helpers';
+import { TestNodeBuilder } from '../utils/test-node-builder';
 import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
 import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
 
 describe('Shift+Enter Key Operations', () => {
-  let dbPath: string;
+  let dbPath: string | null;
   let adapter: HttpAdapter;
   let service: ReturnType<typeof createReactiveNodeService>;
   let hierarchyChangeCount: number;
@@ -41,21 +44,22 @@ describe('Shift+Enter Key Operations', () => {
     // Disable test mode for integration tests - we want real database operations
     PersistenceCoordinator.getInstance().disableTestMode();
 
-    // Verify HTTP dev server is running before running any tests
-    const healthCheckAdapter = new HttpAdapter('http://localhost:3001');
-    await checkServerHealth(healthCheckAdapter);
+    if (shouldUseDatabase()) {
+      // Verify HTTP dev server is running before running any tests
+      const healthCheckAdapter = new HttpAdapter('http://localhost:3001');
+      await checkServerHealth(healthCheckAdapter);
+    }
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     // Reset to default test mode state to prevent test ordering dependencies
     PersistenceCoordinator.getInstance().enableTestMode();
+    await cleanupDatabaseIfNeeded(dbPath);
   });
 
   beforeEach(async () => {
-    // Note: We create a new database per test (not per suite) for better isolation,
-    // trading minor performance cost for stronger guarantees against test interference.
-    dbPath = createTestDatabase('shift-enter-operations');
-    await initializeTestDatabase(dbPath);
+    // Initialize database if needed
+    dbPath = await initializeDatabaseIfNeeded('shift-enter-operations');
     adapter = new HttpAdapter('http://localhost:3001');
 
     hierarchyChangeCount = 0;
@@ -75,12 +79,41 @@ describe('Shift+Enter Key Operations', () => {
   });
 
   afterEach(async () => {
-    await cleanupTestDatabase(dbPath);
+    // Cleanup is handled in afterAll
   });
+
+  // Helper function: Create node via HTTP or build in-memory depending on mode
+  async function createOrBuildNode(nodeData: {
+    id: string;
+    nodeType: 'text' | 'task' | 'date';
+    content: string;
+    parentId: string | null;
+    containerNodeId: string | null;
+    beforeSiblingId: string | null;
+    properties: Record<string, unknown>;
+    embeddingVector: number[] | null;
+    mentions: string[];
+  }) {
+    if (shouldUseDatabase()) {
+      return await createOrBuildNode( nodeData);
+    } else {
+      return new TestNodeBuilder()
+        .withId(nodeData.id)
+        .withType(nodeData.nodeType)
+        .withContent(nodeData.content)
+        .withParent(nodeData.parentId)
+        .withContainer(nodeData.containerNodeId)
+        .withBeforeSibling(nodeData.beforeSiblingId)
+        .withProperties(nodeData.properties)
+        .withEmbedding(nodeData.embeddingVector)
+        .withMentions(nodeData.mentions)
+        .buildWithTimestamps();
+    }
+  }
 
   it('should insert single newline in node content', async () => {
     // Setup: Create node
-    const node = await createAndFetchNode(adapter, {
+    const node = await createOrBuildNode( {
       id: 'node-1',
       nodeType: 'text',
       content: 'First line',
@@ -112,7 +145,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should insert multiple newlines in sequence', async () => {
     // Setup: Create node
-    const node = await createAndFetchNode(adapter, {
+    const node = await createOrBuildNode( {
       id: 'node-1',
       nodeType: 'text',
       content: 'Line 1',
@@ -142,7 +175,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should preserve inline formatting across newlines', async () => {
     // Setup: Create node with markdown formatting
-    const node = await createAndFetchNode(adapter, {
+    const node = await createOrBuildNode( {
       id: 'node-1',
       nodeType: 'text',
       content: '**Bold text**',
@@ -172,7 +205,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should preserve header formatting when adding newlines', async () => {
     // Setup: Create node with header
-    const node = await createAndFetchNode(adapter, {
+    const node = await createOrBuildNode( {
       id: 'node-1',
       nodeType: 'text',
       content: '## Header',
@@ -200,7 +233,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should handle newline at beginning of content', async () => {
     // Setup: Create node
-    const node = await createAndFetchNode(adapter, {
+    const node = await createOrBuildNode( {
       id: 'node-1',
       nodeType: 'text',
       content: 'Content',
@@ -228,7 +261,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should handle newline at end of content', async () => {
     // Setup: Create node
-    const node = await createAndFetchNode(adapter, {
+    const node = await createOrBuildNode( {
       id: 'node-1',
       nodeType: 'text',
       content: 'Content',
@@ -255,7 +288,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should preserve list item formatting with newlines', async () => {
     // Setup: Create list item node
-    const node = await createAndFetchNode(adapter, {
+    const node = await createOrBuildNode( {
       id: 'node-1',
       nodeType: 'text',
       content: '- List item',
@@ -284,7 +317,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should preserve task checkbox formatting with newlines', async () => {
     // Setup: Create task node
-    const node = await createAndFetchNode(adapter, {
+    const node = await createOrBuildNode( {
       id: 'node-1',
       nodeType: 'text',
       content: '[ ] Task item',
@@ -313,7 +346,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should handle mixed content with multiple formatting types', async () => {
     // Setup: Create node
-    const node = await createAndFetchNode(adapter, {
+    const node = await createOrBuildNode( {
       id: 'node-1',
       nodeType: 'text',
       content: '## Title',
@@ -356,7 +389,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should not create new nodes when content contains newlines', async () => {
     // Setup: Create two nodes
-    const node1 = await createAndFetchNode(adapter, {
+    const node1 = await createOrBuildNode( {
       id: 'node-1',
       nodeType: 'text',
       content: 'Node 1',
@@ -368,7 +401,7 @@ describe('Shift+Enter Key Operations', () => {
       mentions: []
     });
 
-    const node2 = await createAndFetchNode(adapter, {
+    const node2 = await createOrBuildNode( {
       id: 'node-2',
       nodeType: 'text',
       content: 'Node 2',
@@ -403,7 +436,7 @@ describe('Shift+Enter Key Operations', () => {
 
   it('should handle empty lines between content', async () => {
     // Setup: Create node
-    const node = await createAndFetchNode(adapter, {
+    const node = await createOrBuildNode( {
       id: 'node-1',
       nodeType: 'text',
       content: 'Paragraph 1',
