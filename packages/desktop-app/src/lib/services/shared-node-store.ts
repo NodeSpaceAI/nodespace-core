@@ -317,6 +317,16 @@ export class SharedNodeStore {
       // Notify subscribers
       this.notifySubscribers(nodeId, updatedNode, source);
 
+      // Sync mentions if content changed (async - don't block)
+      if ('content' in changes && changes.content !== existingNode.content) {
+        // Fire and forget - mentions sync in background
+        mentionSyncService
+          .syncMentions(nodeId, existingNode.content, changes.content!)
+          .catch((error) => {
+            console.error('[SharedNodeStore] Failed to sync mentions for node', nodeId, error);
+          });
+      }
+
       // Emit event - cast to bypass type checking for now
       // TODO: Update event-types.ts to support source tracking
       eventBus.emit({
