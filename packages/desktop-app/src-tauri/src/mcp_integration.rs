@@ -5,6 +5,7 @@
 //! with the Tauri desktop application.
 
 use nodespace_core::mcp;
+use nodespace_core::operations::NodeOperations;
 use nodespace_core::services::NodeEmbeddingService;
 use nodespace_core::{Node, NodeService};
 use serde::Serialize;
@@ -59,9 +60,12 @@ pub async fn run_mcp_server_with_events(
         emit_event_for_method(&app, method, result);
     });
 
+    // Create NodeOperations from NodeService
+    let node_operations = Arc::new(NodeOperations::new(node_service));
+
     // Create combined services struct for MCP
     let services = mcp::server::McpServices {
-        node_service,
+        node_operations,
         embedding_service,
     };
 

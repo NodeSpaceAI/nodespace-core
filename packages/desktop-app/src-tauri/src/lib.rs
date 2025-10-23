@@ -160,6 +160,8 @@ pub fn run() {
             commands::nodes::create_node_mention,
             commands::nodes::get_node,
             commands::nodes::update_node,
+            commands::nodes::move_node,
+            commands::nodes::reorder_node,
             commands::nodes::delete_node,
             commands::nodes::get_children,
             commands::nodes::get_nodes_by_container_id,

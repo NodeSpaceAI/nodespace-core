@@ -24,7 +24,7 @@
 
 use crate::mcp::types::MCPError;
 use crate::models::Node;
-use crate::services::NodeService;
+use crate::operations::NodeOperations;
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -39,7 +39,35 @@ const MAX_NODES_PER_IMPORT: usize = 1000;
 /// Parameters for create_nodes_from_markdown method
 #[derive(Debug, Deserialize)]
 pub struct CreateNodesFromMarkdownParams {
+    /// Markdown content to parse into child nodes.
+    ///
+    /// IMPORTANT: Do NOT include the container_title text in markdown_content
+    /// to avoid creating duplicate nodes. The container_title creates a separate
+    /// container node, and all markdown_content nodes become children of it.
+    ///
+    /// Example:
+    /// ```
+    /// // CORRECT ✅
+    /// container_title: "# Project Alpha"
+    /// markdown_content: "## Task 1\nDescription here"
+    /// // Creates: "# Project Alpha" (container) → "## Task 1" (child) → "Description" (child)
+    ///
+    /// // INCORRECT ❌
+    /// container_title: "# Project Alpha"
+    /// markdown_content: "# Project Alpha\n## Task 1\nDescription"
+    /// // Creates: "# Project Alpha" (container) → "# Project Alpha" (duplicate child!) → ...
+    /// ```
     pub markdown_content: String,
+
+    /// Title for the container node (REQUIRED).
+    ///
+    /// This creates a separate container node that all markdown_content nodes
+    /// will be children of. Can be:
+    /// - A date string (YYYY-MM-DD) to use/create a date container
+    /// - Markdown text (e.g., "# My Document" or "Project Notes") to create a text/header container
+    ///
+    /// The parsed container type must be text, header, or date.
+    /// Multi-line types (code-block, quote-block, ordered-list) cannot be containers.
     pub container_title: String,
 }
 
@@ -48,6 +76,16 @@ pub struct CreateNodesFromMarkdownParams {
 pub struct NodeMetadata {
     pub id: String,
     pub node_type: String,
+}
+
+/// Strategy for determining the container node
+#[derive(Debug, Clone)]
+enum ContainerStrategy {
+    /// Use a date node as the container (auto-created if needed)
+    DateContainer(String),
+    /// Parse container_title as markdown to create the container node
+    /// The parsed node type must be text or header (not multi-line types)
+    TitleAsContainer(String),
 }
 
 /// Tracks a node in the hierarchy during parsing
@@ -69,25 +107,31 @@ struct ParserContext {
     node_ids: Vec<String>,
     /// All created nodes with metadata (id + type)
     nodes: Vec<NodeMetadata>,
-    /// Container node ID (first node created becomes the container)
+    /// Container node ID (determined by strategy)
     container_node_id: Option<String>,
     /// Current list item counter for ordered lists (tracks the number prefix for ordered lists)
     ordered_list_counter: usize,
     /// Whether we're in an ordered list
     in_ordered_list: bool,
-    /// Whether the first node has been created (becomes the container)
+    /// Whether the first node has been created (for tracking purposes)
     first_node_created: bool,
 }
 
 impl ParserContext {
-    fn new_empty() -> Self {
+    fn new_with_strategy(strategy: ContainerStrategy) -> Self {
+        // For DateContainer strategy, set container_node_id immediately
+        let container_node_id = match &strategy {
+            ContainerStrategy::DateContainer(date) => Some(date.clone()),
+            ContainerStrategy::TitleAsContainer(_) => None, // Will be set after parsing title
+        };
+
         Self {
             heading_stack: Vec::new(),
             list_stack: Vec::new(),
             last_sibling: None,
             node_ids: Vec::new(),
             nodes: Vec::new(),
-            container_node_id: None,
+            container_node_id,
             ordered_list_counter: 0,
             in_ordered_list: false,
             first_node_created: false,
@@ -135,12 +179,6 @@ impl ParserContext {
 
     /// Track a node for sibling ordering
     fn track_node(&mut self, node_id: String, node_type: String) {
-        // If this is the first node, it becomes the container
-        if !self.first_node_created {
-            self.container_node_id = Some(node_id.clone());
-            self.first_node_created = true;
-        }
-
         self.last_sibling = Some(node_id.clone());
         self.node_ids.push(node_id.clone());
         self.nodes.push(NodeMetadata {
@@ -148,16 +186,11 @@ impl ParserContext {
             node_type,
         });
     }
-
-    /// Check if this is the first node being created
-    fn is_first_node(&self) -> bool {
-        !self.first_node_created
-    }
 }
 
 /// Handle create_nodes_from_markdown MCP request
 pub async fn handle_create_nodes_from_markdown(
-    service: &Arc<NodeService>,
+    operations: &Arc<NodeOperations>,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: CreateNodesFromMarkdownParams = serde_json::from_value(params)
@@ -172,10 +205,53 @@ pub async fn handle_create_nodes_from_markdown(
         )));
     }
 
-    // Parse markdown and create nodes
-    // The first element will become the container node
-    let mut context = ParserContext::new_empty();
-    parse_markdown(&params.markdown_content, service, &mut context).await?;
+    // Determine container strategy based on container_title
+    let container_strategy = if is_date_format(&params.container_title) {
+        // container_title is a date → use date as container
+        ContainerStrategy::DateContainer(params.container_title.clone())
+    } else {
+        // container_title is markdown → parse it to create the container node
+        ContainerStrategy::TitleAsContainer(params.container_title.clone())
+    };
+
+    let mut context = ParserContext::new_with_strategy(container_strategy.clone());
+
+    // For TitleAsContainer, parse the title first to create the container node
+    if let ContainerStrategy::TitleAsContainer(ref title) = container_strategy {
+        // Temporarily clear container_node_id so the container node itself is created as a container
+        // (with container_node_id = None, which is required for container nodes)
+        context.container_node_id = None;
+
+        parse_markdown(title, operations, &mut context).await?;
+
+        // Validate that exactly one node was created and it's a valid container type
+        if context.nodes.len() != 1 {
+            return Err(MCPError::invalid_params(format!(
+                "container_title must parse to exactly one node, got {}",
+                context.nodes.len()
+            )));
+        }
+
+        let container_node = &context.nodes[0];
+        if !is_valid_container_type(&container_node.node_type) {
+            return Err(MCPError::invalid_params(format!(
+                "container_title parsed to '{}' which cannot be a container. Only text, header, or date nodes can be containers.",
+                container_node.node_type
+            )));
+        }
+
+        // Set this node as the container for subsequent nodes
+        context.container_node_id = Some(container_node.id.clone());
+
+        // CRITICAL: Set the container as the initial parent for top-level nodes in markdown_content
+        // This makes the first heading in markdown_content a CHILD of the container, not a sibling
+        context.push_heading(container_node.id.clone(), 0);
+
+        context.first_node_created = true;
+    }
+
+    // Parse the main markdown content
+    parse_markdown(&params.markdown_content, operations, &mut context).await?;
 
     // Validate we didn't exceed max nodes
     if context.nodes.len() > MAX_NODES_PER_IMPORT {
@@ -186,7 +262,6 @@ pub async fn handle_create_nodes_from_markdown(
         )));
     }
 
-    // Get the container node ID (first created node)
     let container_node_id = context
         .container_node_id
         .ok_or_else(|| MCPError::internal_error("No container node created".to_string()))?;
@@ -200,6 +275,19 @@ pub async fn handle_create_nodes_from_markdown(
     }))
 }
 
+/// Check if a string matches the date format YYYY-MM-DD
+fn is_date_format(s: &str) -> bool {
+    use chrono::NaiveDate;
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
+}
+
+/// Check if a node type can be a container
+/// Only text, header, and date nodes can be containers (semantically meaningful)
+/// Multi-line nodes (code-block, quote-block, ordered-list) cannot be containers
+fn is_valid_container_type(node_type: &str) -> bool {
+    matches!(node_type, "text" | "header" | "date")
+}
+
 /// Parse markdown content and create nodes
 ///
 /// This function processes markdown using pulldown-cmark's event stream parser
@@ -208,7 +296,7 @@ pub async fn handle_create_nodes_from_markdown(
 /// # Arguments
 ///
 /// * `markdown` - The markdown content to parse
-/// * `service` - NodeService for creating nodes in the database
+/// * `operations` - NodeOperations for creating nodes in the database
 /// * `context` - Parser context tracking hierarchy and node state
 ///
 /// # Returns
@@ -222,7 +310,7 @@ pub async fn handle_create_nodes_from_markdown(
 /// - **List context takes precedence**: Items nested in lists use list parent, not heading parent
 async fn parse_markdown(
     markdown: &str,
-    service: &Arc<NodeService>,
+    operations: &Arc<NodeOperations>,
     context: &mut ParserContext,
 ) -> Result<(), MCPError> {
     // Enable GitHub Flavored Markdown extensions (tables, strikethrough, task lists, etc.)
@@ -269,13 +357,12 @@ async fn parse_markdown(
                             format!("{} {}", "#".repeat(heading_level), current_text.trim());
 
                         let node_id = create_node(
-                            service,
+                            operations,
                             "header",
                             &content,
                             context.current_parent_id(),
                             context.container_node_id.clone(),
-                            context.last_sibling.clone(),
-                            context.is_first_node(),
+                            None, // Let NodeOperations calculate sibling position
                         )
                         .await?;
 
@@ -292,13 +379,12 @@ async fn parse_markdown(
                                 .unwrap_or(false)
                         {
                             let node_id = create_node(
-                                service,
+                                operations,
                                 "text",
                                 content,
                                 context.current_parent_id(),
                                 context.container_node_id.clone(),
-                                context.last_sibling.clone(),
-                                context.is_first_node(),
+                                None, // Let NodeOperations calculate sibling position
                             )
                             .await?;
                             context.track_node(node_id, "text".to_string());
@@ -314,13 +400,12 @@ async fn parse_markdown(
                         let content = format!("{}\n{}\n```", fence, current_text.trim_end());
 
                         let node_id = create_node(
-                            service,
+                            operations,
                             "code-block",
                             &content,
                             context.current_parent_id(),
                             context.container_node_id.clone(),
-                            context.last_sibling.clone(),
-                            context.is_first_node(),
+                            None, // Let NodeOperations calculate sibling position
                         )
                         .await?;
                         context.track_node(node_id, "code-block".to_string());
@@ -337,13 +422,12 @@ async fn parse_markdown(
                                 .join("\n");
 
                             let node_id = create_node(
-                                service,
+                                operations,
                                 "quote-block",
                                 &content,
                                 context.current_parent_id(),
                                 context.container_node_id.clone(),
-                                context.last_sibling.clone(),
-                                context.is_first_node(),
+                                None, // Let NodeOperations calculate sibling position
                             )
                             .await?;
                             context.track_node(node_id, "quote-block".to_string());
@@ -371,13 +455,12 @@ async fn parse_markdown(
                             };
 
                             let node_id = create_node(
-                                service,
+                                operations,
                                 node_type,
                                 &formatted_content,
                                 context.current_parent_id(),
                                 context.container_node_id.clone(),
-                                context.last_sibling.clone(),
-                                context.is_first_node(),
+                                None, // Let NodeOperations calculate sibling position
                             )
                             .await?;
 
@@ -433,58 +516,45 @@ async fn parse_markdown(
     Ok(())
 }
 
-/// Create a node via NodeService
+/// Create a node via NodeOperations
 async fn create_node(
-    service: &Arc<NodeService>,
+    operations: &Arc<NodeOperations>,
     node_type: &str,
     content: &str,
     parent_id: Option<String>,
     container_node_id: Option<String>,
     before_sibling_id: Option<String>,
-    is_first_node: bool,
 ) -> Result<String, MCPError> {
-    let node = Node::new(
-        node_type.to_string(),
-        content.to_string(),
-        parent_id,
-        json!({}),
-    );
-
-    // First node becomes the container (no container_node_id for itself)
-    // All subsequent nodes belong to that container
-    let node = if is_first_node {
-        Node {
-            container_node_id: None, // First node IS the container
-            before_sibling_id,
-            ..node
-        }
-    } else {
-        Node {
+    // Create node via NodeOperations (enforces all business rules)
+    // Container node ID is provided from the pre-created container
+    operations
+        .create_node(
+            node_type.to_string(),
+            content.to_string(),
+            parent_id,
             container_node_id,
             before_sibling_id,
-            ..node
-        }
-    };
+            json!({}),
+        )
+        .await
+        .map_err(|e| {
+            // Create preview of content for error message (avoid multi-line content in error)
+            let content_preview: String = content
+                .chars()
+                .take(40)
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            let content_display = if content.len() > 40 {
+                format!("{}...", content_preview)
+            } else {
+                content_preview
+            };
 
-    // Create node and provide contextual error on failure
-    service.create_node(node).await.map_err(|e| {
-        // Create preview of content for error message (avoid multi-line content in error)
-        let content_preview: String = content
-            .chars()
-            .take(40)
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect();
-        let content_display = if content.len() > 40 {
-            format!("{}...", content_preview)
-        } else {
-            content_preview
-        };
-
-        MCPError::node_creation_failed(format!(
-            "Failed to create {} node '{}': {}",
-            node_type, content_display, e
-        ))
-    })
+            MCPError::node_creation_failed(format!(
+                "Failed to create {} node '{}': {}",
+                node_type, content_display, e
+            ))
+        })
 }
 
 /// Convert HeadingLevel to usize (1-6)
@@ -543,7 +613,7 @@ fn default_max_depth() -> usize {
 /// - [ ] Review architecture
 /// ```
 pub async fn handle_get_markdown_from_node_id(
-    service: &Arc<NodeService>,
+    operations: &Arc<NodeOperations>,
     params: Value,
 ) -> Result<Value, MCPError> {
     // Parse parameters
@@ -551,7 +621,7 @@ pub async fn handle_get_markdown_from_node_id(
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
     // Fetch the root node first to validate it exists
-    let root_node = service
+    let root_node = operations
         .get_node(&params.node_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?
@@ -563,7 +633,7 @@ pub async fn handle_get_markdown_from_node_id(
         .with_container_node_id(root_node.id.clone())
         .with_order_by(OrderBy::CreatedAsc);
 
-    let all_nodes = service
+    let all_nodes = operations
         .query_nodes(filter)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to query container nodes: {}", e)))?;

@@ -1,6 +1,7 @@
 //! Database initialization and path management commands
 
 use crate::commands::embeddings::EmbeddingState;
+use nodespace_core::operations::NodeOperations;
 use nodespace_core::services::{
     EmbeddingProcessor, EmbeddingProcessorConfig, NodeEmbeddingService,
 };
@@ -137,6 +138,9 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     let node_service = NodeService::new(db_service.clone())
         .map_err(|e| format!("Failed to initialize node service: {}", e))?;
 
+    // Initialize NodeOperations business logic layer (wraps NodeService)
+    let node_operations = NodeOperations::new(Arc::new(node_service.clone()));
+
     // Initialize embedding service (creates its own NLP engine internally)
     let embedding_service = NodeEmbeddingService::new_with_defaults(db_arc.clone())
         .map_err(|e| format!("Failed to initialize embedding service: {}", e))?;
@@ -156,6 +160,7 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     // Manage all services
     app.manage(db_service);
     app.manage(node_service);
+    app.manage(node_operations);
     app.manage(EmbeddingState {
         service: embedding_service_arc,
     });

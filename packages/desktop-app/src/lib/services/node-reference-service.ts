@@ -2,8 +2,8 @@
  * NodeReferenceService - Universal Node Reference System (Phase 2.1)
  *
  * Implements comprehensive @ trigger system for universal node referencing,
- * building on Phase 1 foundation (HierarchyService, NodeOperationsService,
- * EnhancedNodeManager, EventBus, MockDatabaseService with mentions array support).
+ * building on Phase 1 foundation (HierarchyService, EnhancedNodeManager,
+ * EventBus, MockDatabaseService with mentions array support).
  *
  * Core Features:
  * - Universal @ trigger detection in contenteditable elements
@@ -19,7 +19,7 @@
  * - EventBus: Real-time coordination and cache invalidation
  * - NodeManager/EnhancedNodeManager: Node data access and manipulation
  * - HierarchyService: Efficient node hierarchy operations
- * - NodeOperationsService: Advanced node operations and mentions management
+ * - BackendAdapter: Direct backend communication for mentions management
  * - TauriNodeService: Bidirectional reference storage via mentions array with native backend queries
  * - ContentProcessor: Enhanced @ trigger content processing
  */
@@ -28,9 +28,9 @@ import { eventBus } from './event-bus';
 import { ContentProcessor } from './content-processor';
 import type { ReactiveNodeService as NodeManager } from './reactive-node-service.svelte';
 import type { HierarchyService } from './hierarchy-service';
-import type { NodeOperationsService } from './node-operations-service';
 import type { Node } from '$lib/types';
 import type { TauriNodeService } from './tauri-node-service';
+import { backendAdapter } from './backend-adapter';
 
 // ============================================================================
 // Core Types and Interfaces
@@ -111,7 +111,6 @@ export interface AutocompleteConfig {
 export class NodeReferenceService {
   private nodeManager: NodeManager;
   private hierarchyService: HierarchyService;
-  private nodeOperationsService: NodeOperationsService;
   private databaseService: TauriNodeService;
   private contentProcessor: ContentProcessor;
   private readonly serviceName = 'NodeReferenceService';
@@ -148,13 +147,11 @@ export class NodeReferenceService {
   constructor(
     nodeManager: NodeManager,
     hierarchyService: HierarchyService,
-    nodeOperationsService: NodeOperationsService,
     databaseService: TauriNodeService,
     contentProcessor?: ContentProcessor
   ) {
     this.nodeManager = nodeManager;
     this.hierarchyService = hierarchyService;
-    this.nodeOperationsService = nodeOperationsService;
     this.databaseService = databaseService;
     this.contentProcessor = contentProcessor || ContentProcessor.getInstance();
 
@@ -543,8 +540,8 @@ export class NodeReferenceService {
       if (!allCurrentMentions.includes(targetId)) {
         const updatedMentions = [...allCurrentMentions, targetId];
 
-        // Update database
-        await this.nodeOperationsService.updateNodeMentions(sourceId, updatedMentions);
+        // Update database using private helper (calls backend adapter)
+        await this.updateNodeMentions(sourceId, updatedMentions);
 
         // Update in-memory node
         sourceNode.mentions = updatedMentions;
@@ -582,8 +579,8 @@ export class NodeReferenceService {
       if (currentMentions.includes(targetId) || inMemoryMentions.includes(targetId)) {
         const updatedMentions = currentMentions.filter((id: string) => id !== targetId);
 
-        // Update both database and in-memory representation
-        await this.nodeOperationsService.updateNodeMentions(sourceId, updatedMentions);
+        // Update both database and in-memory representation using private helper
+        await this.updateNodeMentions(sourceId, updatedMentions);
         sourceNode.mentions = updatedMentions;
 
         // Update local cache
@@ -1050,6 +1047,48 @@ export class NodeReferenceService {
     return currentId;
   }
 
+  /**
+   * Update node mentions with bidirectional consistency
+   * Replaces NodeOperationsService.updateNodeMentions by using backend adapter directly
+   */
+  private async updateNodeMentions(nodeId: string, newMentions: string[]): Promise<void> {
+    const existingNode = this.nodeManager.findNode(nodeId);
+    if (!existingNode) {
+      throw new Error(`Node ${nodeId} not found for mentions update`);
+    }
+
+    const oldMentions = existingNode.mentions || [];
+    const oldMentionsSet = new Set(oldMentions);
+    const newMentionsSet = new Set(newMentions);
+
+    // Find mentions to add and remove
+    const toAdd = newMentions.filter((id) => !oldMentionsSet.has(id));
+    const toRemove = oldMentions.filter((id) => !newMentionsSet.has(id));
+
+    // Update the mentions on this node using the proper method
+    this.nodeManager.updateNodeMentions(nodeId, newMentions);
+
+    // Update bidirectional consistency using backend adapter
+    for (const mentionedId of toAdd) {
+      await backendAdapter.createNodeMention(nodeId, mentionedId);
+    }
+
+    for (const unmentionedId of toRemove) {
+      await backendAdapter.deleteNodeMention(nodeId, unmentionedId);
+    }
+
+    // Emit events for coordination
+    eventBus.emit<import('./event-types').ReferencesUpdateNeededEvent>({
+      type: 'references:update-needed',
+      namespace: 'coordination',
+      source: this.serviceName,
+      nodeId,
+      updateType: 'content',
+      affectedReferences: [...toAdd, ...toRemove],
+      metadata: {}
+    });
+  }
+
   private generateNodeId(): string {
     return `node_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
@@ -1114,8 +1153,8 @@ export class NodeReferenceService {
       for (const node of referencingNodes) {
         const updatedMentions = (node.mentions || []).filter((id: string) => id !== deletedNodeId);
 
-        // Update database
-        await this.nodeOperationsService.updateNodeMentions(node.id, updatedMentions);
+        // Update database using private helper
+        await this.updateNodeMentions(node.id, updatedMentions);
 
         // Update in-memory node if it exists
         const inMemoryNode = this.nodeManager.findNode(node.id);

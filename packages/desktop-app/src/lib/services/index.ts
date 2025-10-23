@@ -9,7 +9,6 @@
 // Node Management
 // ============================================================================
 export * from './reactive-node-service.svelte.js';
-export * from './node-operations-service';
 export * from './hierarchy-service';
 
 // ============================================================================

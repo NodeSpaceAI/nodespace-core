@@ -7,7 +7,8 @@
 //! Both transports share the same request handler logic and optional callbacks.
 
 use crate::mcp::types::{MCPError, MCPNotification, MCPRequest, MCPResponse};
-use crate::services::{NodeEmbeddingService, NodeService};
+use crate::operations::NodeOperations;
+use crate::services::NodeEmbeddingService;
 use axum::{
     body::Body,
     extract::State,
@@ -35,7 +36,7 @@ pub enum McpTransport {
 
 /// Combined services for MCP handlers
 pub struct McpServices {
-    pub node_service: Arc<NodeService>,
+    pub node_operations: Arc<NodeOperations>,
     pub embedding_service: Arc<NodeEmbeddingService>,
 }
 
@@ -538,7 +539,7 @@ async fn handle_request(
         "tools/list" => crate::mcp::handlers::tools::handle_tools_list(request.params),
         "tools/call" => {
             crate::mcp::handlers::tools::handle_tools_call(
-                &services.node_service,
+                &services.node_operations,
                 &services.embedding_service,
                 request.params,
             )
@@ -663,6 +664,7 @@ mod tests {
     // Helper to create test services
     async fn create_test_services() -> McpServices {
         use crate::db::DatabaseService;
+        use crate::services::NodeService;
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -670,10 +672,11 @@ mod tests {
         let db = DatabaseService::new(db_path).await.unwrap();
         let db_arc = Arc::new(db);
         let node_service = Arc::new(NodeService::new((*db_arc).clone()).unwrap());
+        let node_operations = Arc::new(NodeOperations::new(node_service));
         let embedding_service = Arc::new(NodeEmbeddingService::new_with_defaults(db_arc).unwrap());
 
         McpServices {
-            node_service,
+            node_operations,
             embedding_service,
         }
     }

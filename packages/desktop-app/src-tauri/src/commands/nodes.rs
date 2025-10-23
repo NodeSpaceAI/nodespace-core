@@ -1,10 +1,9 @@
 //! Node CRUD operation commands for Text, Task, and Date nodes
 
-use chrono::Utc;
+use nodespace_core::operations::{NodeOperationError, NodeOperations};
 use nodespace_core::{Node, NodeQuery, NodeService, NodeServiceError, NodeUpdate};
 use serde::{Deserialize, Serialize};
 use tauri::State;
-use uuid::Uuid;
 
 use crate::constants::ALLOWED_NODE_TYPES;
 
@@ -49,6 +48,16 @@ impl From<NodeServiceError> for CommandError {
     }
 }
 
+impl From<NodeOperationError> for CommandError {
+    fn from(err: NodeOperationError) -> Self {
+        CommandError {
+            message: format!("Node operation failed: {}", err),
+            code: "NODE_OPERATION_ERROR".to_string(),
+            details: Some(format!("{:?}", err)),
+        }
+    }
+}
+
 /// Validate that node type is supported
 ///
 /// # Arguments
@@ -76,8 +85,10 @@ fn validate_node_type(node_type: &str) -> Result<(), CommandError> {
 
 /// Create a new node (Text, Task, or Date only)
 ///
+/// Uses NodeOperations business logic layer to enforce data integrity rules.
+///
 /// # Arguments
-/// * `service` - Node service instance from Tauri state
+/// * `operations` - NodeOperations instance from Tauri state
 /// * `node` - Node data to create (must have node_type: text|task|date)
 ///
 /// # Returns
@@ -87,9 +98,8 @@ fn validate_node_type(node_type: &str) -> Result<(), CommandError> {
 /// # Errors
 /// Returns error if:
 /// - Node type is not one of: text, task, date
+/// - Business rule validation fails (container requirements, sibling chains, etc.)
 /// - Database operation fails
-/// - Node validation fails
-/// - Required fields are missing
 ///
 /// # Example Frontend Usage
 /// ```typescript
@@ -103,31 +113,23 @@ fn validate_node_type(node_type: &str) -> Result<(), CommandError> {
 /// ```
 #[tauri::command]
 pub async fn create_node(
-    service: State<'_, NodeService>,
+    operations: State<'_, NodeOperations>,
     node: CreateNodeInput,
 ) -> Result<String, CommandError> {
     validate_node_type(&node.node_type)?;
 
-    // Database will auto-generate timestamps via DEFAULT CURRENT_TIMESTAMP
-    // We still need to provide placeholder timestamps for the Node struct
-    let now = Utc::now();
-
-    let full_node = Node {
-        id: node.id,
-        node_type: node.node_type,
-        content: node.content,
-        parent_id: node.parent_id,
-        container_node_id: node.container_node_id,
-        before_sibling_id: node.before_sibling_id,
-        created_at: now,  // Placeholder - DB will use its own timestamp
-        modified_at: now, // Placeholder - DB will use its own timestamp
-        properties: node.properties,
-        embedding_vector: node.embedding_vector,
-        mentions: Vec::new(),     // Empty on create - populated separately
-        mentioned_by: Vec::new(), // Empty on create - computed from database
-    };
-
-    service.create_node(full_node).await.map_err(Into::into)
+    // Use NodeOperations to create node with business rule enforcement
+    operations
+        .create_node(
+            node.node_type,
+            node.content,
+            node.parent_id,
+            node.container_node_id,
+            node.before_sibling_id,
+            node.properties,
+        )
+        .await
+        .map_err(Into::into)
 }
 
 /// Input for creating a container node
@@ -144,14 +146,16 @@ pub struct CreateContainerNodeInput {
 
 /// Create a new container node (root node with container_node_id = NULL)
 ///
+/// Uses NodeOperations to create container with business rule enforcement.
 /// Container nodes are root-level nodes that can contain other nodes.
-/// They always have:
-/// - parent_id = NULL
-/// - container_node_id = NULL (they ARE containers)
-/// - before_sibling_id = NULL
+/// NodeOperations ensures they have:
+/// - parent_id = None
+/// - container_node_id = None (they ARE containers)
+/// - before_sibling_id = None
 ///
 /// # Arguments
-/// * `service` - Node service instance from Tauri state
+/// * `operations` - NodeOperations instance from Tauri state
+/// * `service` - NodeService for mention relationship creation
 /// * `input` - Container node data
 ///
 /// # Returns
@@ -171,30 +175,23 @@ pub struct CreateContainerNodeInput {
 /// ```
 #[tauri::command]
 pub async fn create_container_node(
+    operations: State<'_, NodeOperations>,
     service: State<'_, NodeService>,
     input: CreateContainerNodeInput,
 ) -> Result<String, CommandError> {
     validate_node_type(&input.node_type)?;
 
-    let now = Utc::now();
-    let node_id = Uuid::new_v4().to_string();
-
-    let container_node = Node {
-        id: node_id.clone(),
-        node_type: input.node_type,
-        content: input.content,
-        parent_id: None,         // Always null for containers
-        container_node_id: None, // Always null for containers (they ARE containers)
-        before_sibling_id: None, // No sibling ordering for root nodes
-        created_at: now,
-        modified_at: now,
-        properties: input.properties,
-        embedding_vector: None,
-        mentions: Vec::new(), // Will be populated when this node mentions others
-        mentioned_by: Vec::new(), // Will be computed from node_mentions table
-    };
-
-    service.create_node(container_node).await?;
+    // Create container node with NodeOperations (enforces container rules)
+    let node_id = operations
+        .create_node(
+            input.node_type,
+            input.content,
+            None, // parent_id = None for containers
+            None, // container_node_id = None for containers
+            None, // before_sibling_id = None for containers
+            input.properties,
+        )
+        .await?;
 
     // If mentioned_by is provided, create mention relationship
     if let Some(mentioning_node_id) = input.mentioned_by {
@@ -272,8 +269,10 @@ pub async fn get_node(
 
 /// Update an existing node
 ///
+/// Uses NodeOperations to enforce business rules during updates.
+///
 /// # Arguments
-/// * `service` - Node service instance from Tauri state
+/// * `operations` - NodeOperations instance from Tauri state
 /// * `id` - Unique identifier of the node to update
 /// * `update` - Fields to update on the node
 ///
@@ -284,8 +283,8 @@ pub async fn get_node(
 /// # Errors
 /// Returns error if:
 /// - Node with given ID doesn't exist
+/// - Business rule validation fails
 /// - Database operation fails
-/// - Update validation fails
 ///
 /// # Example Frontend Usage
 /// ```typescript
@@ -299,21 +298,28 @@ pub async fn get_node(
 /// ```
 #[tauri::command]
 pub async fn update_node(
-    service: State<'_, NodeService>,
+    operations: State<'_, NodeOperations>,
     id: String,
     update: NodeUpdate,
 ) -> Result<(), CommandError> {
-    service.update_node(&id, update).await.map_err(Into::into)
+    // NodeOperations.update_node only handles content/type/properties
+    // For hierarchy changes, use move_node() or reorder_node()
+    operations
+        .update_node(&id, update.content, update.node_type, update.properties)
+        .await
+        .map_err(Into::into)
 }
 
 /// Delete a node by ID
 ///
+/// Uses NodeOperations for consistent deletion logic.
+///
 /// # Arguments
-/// * `service` - Node service instance from Tauri state
+/// * `operations` - NodeOperations instance from Tauri state
 /// * `id` - Unique identifier of the node to delete
 ///
 /// # Returns
-/// * `Ok(())` - Deletion successful
+/// * `Ok(DeleteResult)` - Deletion result with cascaded node IDs
 /// * `Err(CommandError)` - Error with details if deletion fails
 ///
 /// # Errors
@@ -328,14 +334,88 @@ pub async fn update_node(
 ///
 /// # Example Frontend Usage
 /// ```typescript
-/// await invoke('delete_node', { id: 'node-123' });
+/// const result = await invoke('delete_node', { id: 'node-123' });
+/// console.log(`Deleted ${result.deletedNodeIds.length} nodes`);
 /// ```
 #[tauri::command]
 pub async fn delete_node(
-    service: State<'_, NodeService>,
+    operations: State<'_, NodeOperations>,
     id: String,
 ) -> Result<nodespace_core::models::DeleteResult, CommandError> {
-    service.delete_node(&id).await.map_err(Into::into)
+    operations.delete_node(&id).await.map_err(Into::into)
+}
+
+/// Move a node to a new parent
+///
+/// Uses NodeOperations to enforce business rules for hierarchy changes.
+/// Validates parent-container consistency and updates container_node_id.
+///
+/// # Arguments
+/// * `operations` - NodeOperations instance from Tauri state
+/// * `node_id` - ID of the node to move
+/// * `new_parent_id` - Optional new parent ID (None makes it a root node)
+///
+/// # Returns
+/// * `Ok(())` - Node moved successfully
+/// * `Err(CommandError)` - Error if move validation fails
+///
+/// # Errors
+/// Returns error if:
+/// - Node doesn't exist
+/// - New parent doesn't exist
+/// - Container node cannot be moved (containers must remain at root)
+/// - Parent-container consistency check fails
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// await invoke('move_node', { nodeId: 'node-123', newParentId: 'parent-456' });
+/// ```
+#[tauri::command]
+pub async fn move_node(
+    operations: State<'_, NodeOperations>,
+    node_id: String,
+    new_parent_id: Option<String>,
+) -> Result<(), CommandError> {
+    operations
+        .move_node(&node_id, new_parent_id.as_deref())
+        .await
+        .map_err(Into::into)
+}
+
+/// Reorder a node by changing its sibling position
+///
+/// Uses NodeOperations to calculate sibling positions and validate ordering.
+///
+/// # Arguments
+/// * `operations` - NodeOperations instance from Tauri state
+/// * `node_id` - ID of the node to reorder
+/// * `before_sibling_id` - Optional ID of sibling to place before (None = last position)
+///
+/// # Returns
+/// * `Ok(())` - Node reordered successfully
+/// * `Err(CommandError)` - Error if reorder validation fails
+///
+/// # Errors
+/// Returns error if:
+/// - Node doesn't exist
+/// - before_sibling_id node doesn't exist
+/// - Sibling is not in the same parent
+/// - Container node cannot be reordered
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// await invoke('reorder_node', { nodeId: 'node-123', beforeSiblingId: 'sibling-456' });
+/// ```
+#[tauri::command]
+pub async fn reorder_node(
+    operations: State<'_, NodeOperations>,
+    node_id: String,
+    before_sibling_id: Option<String>,
+) -> Result<(), CommandError> {
+    operations
+        .reorder_node(&node_id, before_sibling_id.as_deref())
+        .await
+        .map_err(Into::into)
 }
 
 /// Get child nodes of a parent node
@@ -489,6 +569,23 @@ pub async fn query_nodes_simple(
 ///   beforeSiblingId: null
 /// });
 /// ```
+///
+/// # Architecture Note: NodeOperations Bypass
+///
+/// ⚠️ **IMPORTANT**: This command uses `NodeService` directly instead of `NodeOperations`.
+///
+/// **Why the bypass?**
+/// - This is a specialized **transactional upsert** that combines "ensure parent exists" + "upsert node"
+/// - The transaction must complete atomically to prevent database locking issues during auto-save
+/// - NodeOperations enforces business rules but doesn't support transactional parent creation yet
+///
+/// **Safety measures:**
+/// - Still validates node type via `validate_node_type()`
+/// - Limited to specific auto-save use case (frontend debounced typing)
+/// - All other node operations (`create_node`, `update_node`, `move_node`, `reorder_node`) use NodeOperations
+///
+/// **Future improvement**: Consider adding `NodeOperations::upsert_node_with_parent()` method
+/// to enforce business rules within the transaction semantics (tracked in follow-up issue).
 #[tauri::command]
 pub async fn save_node_with_parent(
     service: State<'_, NodeService>,
@@ -501,7 +598,7 @@ pub async fn save_node_with_parent(
 ) -> Result<(), CommandError> {
     validate_node_type(&node_type)?;
 
-    // Use single-transaction upsert method
+    // Use single-transaction upsert method (bypasses NodeOperations for transactional reasons)
     service
         .upsert_node_with_parent(
             &node_id,

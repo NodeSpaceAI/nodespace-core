@@ -242,9 +242,11 @@ fn test_markdown_import_schema_structure() {
         .find(|t| t["name"] == "create_nodes_from_markdown")
         .expect("create_nodes_from_markdown schema not found");
 
-    assert_eq!(
-        markdown_import["description"],
-        "Parse markdown and create hierarchical nodes"
+    // Verify description starts correctly (we added warnings, so check the beginning)
+    let description = markdown_import["description"].as_str().unwrap();
+    assert!(
+        description.starts_with("Parse markdown and create hierarchical nodes"),
+        "Description should start with 'Parse markdown and create hierarchical nodes'"
     );
 
     let input_schema = &markdown_import["inputSchema"];

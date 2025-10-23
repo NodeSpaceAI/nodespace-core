@@ -33,9 +33,6 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
     nodes: Node[];
   };
   let mockHierarchyService: HierarchyService;
-  let mockNodeOperationsService: {
-    updateNodeMentions: ReturnType<typeof vi.fn>;
-  };
 
   beforeEach(() => {
     // Clear all event bus listeners (recreate eventBus if needed)
@@ -63,16 +60,10 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
       getNodePath: vi.fn().mockReturnValue({ nodeIds: [], depth: 0 })
     } as unknown as HierarchyService;
 
-    // Setup mock node operations service
-    mockNodeOperationsService = {
-      updateNodeMentions: vi.fn().mockResolvedValue(undefined)
-    };
-
     // Create NodeReferenceService with mocks
     nodeReferenceService = new NodeReferenceService(
       mockNodeManager as unknown as any, // eslint-disable-line @typescript-eslint/no-explicit-any
       mockHierarchyService,
-      mockNodeOperationsService as unknown as any, // eslint-disable-line @typescript-eslint/no-explicit-any
       mockTauriService as unknown as TauriNodeService
     );
   });
@@ -138,9 +129,8 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         mentionedBy: 'target-node'
       });
 
-      // updateNodeMentions should also NOT be called
-      // Database CASCADE handles cleanup automatically
-      expect(mockNodeOperationsService.updateNodeMentions).not.toHaveBeenCalled();
+      // updateNodeMentions is now private in NodeReferenceService
+      // Database CASCADE handles cleanup automatically (no manual cleanup needed)
     });
 
     it('should invalidate caches when node is deleted', async () => {
@@ -242,7 +232,6 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
 
       // Should NOT update mentions arrays
       // Database CASCADE handles this automatically
-      expect(mockNodeOperationsService.updateNodeMentions).not.toHaveBeenCalled();
     });
 
     it('should not cause errors when deleting node without mentions', async () => {
@@ -278,7 +267,6 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
 
       // No database operations should have been triggered
       expect(mockTauriService.queryNodes).not.toHaveBeenCalled();
-      expect(mockNodeOperationsService.updateNodeMentions).not.toHaveBeenCalled();
     });
   });
 

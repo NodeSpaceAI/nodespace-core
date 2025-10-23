@@ -15,7 +15,6 @@
   // Import proper types for the services
   import type { ReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
   import type { HierarchyService as HierarchyServiceType } from '$lib/services/hierarchy-service';
-  import type { NodeOperationsService as NodeOperationsServiceType } from '$lib/services/node-operations-service';
   import type { ContentProcessor as ContentProcessorType } from '$lib/services/content-processor';
   import type { TauriNodeService as TauriNodeServiceType } from '$lib/services/tauri-node-service';
   import type NodeReferenceServiceType from '$lib/services/node-reference-service';
@@ -25,7 +24,6 @@
     nodeReferenceService: NodeReferenceServiceType;
     nodeManager: ReactiveNodeService;
     hierarchyService: HierarchyServiceType;
-    nodeOperationsService: NodeOperationsServiceType;
     contentProcessor: ContentProcessorType;
     databaseService: TauriNodeServiceType;
   }
@@ -49,7 +47,6 @@
   import NodeReferenceService from '$lib/services/node-reference-service';
   import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
   import { HierarchyService } from '$lib/services/hierarchy-service';
-  import { NodeOperationsService } from '$lib/services/node-operations-service';
   import { tauriNodeService } from '$lib/services/tauri-node-service';
   import { ContentProcessor } from '$lib/services/content-processor';
   import { focusManager } from '$lib/services/focus-manager.svelte';
@@ -110,16 +107,10 @@
 
       const hierarchyService = new HierarchyService(nodeManager);
       const contentProcessor = ContentProcessor.getInstance();
-      const nodeOperationsService = new NodeOperationsService(
-        nodeManager,
-        hierarchyService,
-        contentProcessor
-      );
 
       const nodeReferenceService = new NodeReferenceService(
         nodeManager,
         hierarchyService,
-        nodeOperationsService,
         tauriNodeService,
         contentProcessor
       );
@@ -130,7 +121,6 @@
         nodeReferenceService,
         nodeManager,
         hierarchyService,
-        nodeOperationsService,
         contentProcessor,
         databaseService: tauriNodeService
       };

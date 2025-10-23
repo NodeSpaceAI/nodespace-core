@@ -3,7 +3,6 @@ import { NodeReferenceService } from '$lib/services/node-reference-service';
 import type { TauriNodeService } from '$lib/services/tauri-node-service';
 import type { ReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import type { HierarchyService } from '$lib/services/hierarchy-service';
-import type { NodeOperationsService } from '$lib/services/node-operations-service';
 import type { Node } from '$lib/types';
 
 describe('NodeReferenceService - @mention autocomplete filtering', () => {
@@ -11,7 +10,6 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
   let mockDatabaseService: TauriNodeService;
   let mockNodeManager: ReactiveNodeService;
   let mockHierarchyService: HierarchyService;
-  let mockNodeOpsService: NodeOperationsService;
 
   beforeEach(() => {
     // Create mock database service with queryNodes spy
@@ -25,14 +23,8 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
     } as unknown as ReactiveNodeService;
 
     mockHierarchyService = {} as HierarchyService;
-    mockNodeOpsService = {} as NodeOperationsService;
 
-    service = new NodeReferenceService(
-      mockNodeManager,
-      mockHierarchyService,
-      mockNodeOpsService,
-      mockDatabaseService
-    );
+    service = new NodeReferenceService(mockNodeManager, mockHierarchyService, mockDatabaseService);
   });
 
   describe('searchNodes() with includeContainersAndTasks filter', () => {
