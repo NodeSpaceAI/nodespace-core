@@ -206,6 +206,7 @@ export class TauriNodeService {
    * - mentionedBy (finds nodes that mention the specified node ID)
    * - contentContains (case-insensitive substring search)
    * - nodeType (filter by type)
+   * - includeContainersAndTasks (filter to only tasks or container nodes)
    * - limit (maximum results to return)
    *
    * Query priority: id > mentionedBy > contentContains > nodeType
@@ -225,12 +226,33 @@ export class TauriNodeService {
    * @example
    * // Get specific node
    * const nodes = await service.queryNodes({ id: 'node-123' });
+   *
+   * @example
+   * // Search for @mention autocomplete (only tasks and containers)
+   * const results = await service.queryNodes({ contentContains: 'proj', includeContainersAndTasks: true });
    */
   async queryNodes(query: {
     id?: string;
     mentionedBy?: string;
     contentContains?: string;
     nodeType?: string;
+    /**
+     * Filter to only include referenceable nodes (task nodes and container nodes).
+     *
+     * When `true`, applies backend filter: `(node_type = 'task' OR container_node_id IS NULL)`
+     *
+     * **Includes:**
+     * - Task nodes (all tasks, regardless of hierarchy)
+     * - Container/root nodes (top-level documents with no parent)
+     *
+     * **Excludes:**
+     * - Text child nodes and other non-referenceable content fragments
+     *
+     * **Primary use case:** @mention autocomplete to show only nodes users should reference.
+     *
+     * @default false
+     */
+    includeContainersAndTasks?: boolean;
     limit?: number;
   }): Promise<Node[]> {
     this.ensureInitialized();

@@ -1084,9 +1084,55 @@ impl NodeService {
     /// // Full-text search
     /// let query = NodeQuery::content_contains("search term".to_string()).with_limit(10);
     /// let nodes = service.query_nodes_simple(query).await?;
+    ///
+    /// // Filter-only query (return all containers and tasks)
+    /// let query = NodeQuery { include_containers_and_tasks: Some(true), ..Default::default() };
+    /// let nodes = service.query_nodes_simple(query).await?;
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// # Query Priority Order
+    ///
+    /// Queries are evaluated in the following priority order:
+    /// 1. `id` - Direct node lookup (exact match)
+    /// 2. `mentioned_by` - Nodes that reference the specified node
+    /// 3. `content_contains` + optional `node_type` - Full-text content search
+    /// 4. `node_type` - Filter by node type
+    /// 5. `include_containers_and_tasks` - Filter-only query (returns all matching nodes)
+    /// 6. Empty query - Returns empty vec (safer than returning all nodes)
+    ///
+    /// # Note on Empty Queries
+    ///
+    /// Queries with no parameters (all fields `None` or `false`) will return an empty vector.
+    /// This is intentional to prevent accidentally fetching all nodes from the database.
+    /// To query all containers and tasks, use `include_containers_and_tasks: Some(true)`.
+    /// Helper function to generate container/task filter SQL clause
+    ///
+    /// Returns a SQL WHERE clause fragment that filters to only include:
+    /// - Task nodes (node_type = 'task')
+    /// - Container nodes (container_node_id IS NULL)
+    ///
+    /// # Arguments
+    /// * `enabled` - Whether to apply the filter
+    /// * `table_alias` - Optional table alias (e.g., Some("n") for "n.node_type")
+    ///
+    /// # Safety
+    /// This function only generates hardcoded SQL fragments - no user input is interpolated.
+    /// The filter is applied via string concatenation (not parameterized) because it's
+    /// structural SQL (column names and operators), not user data.
+    fn build_container_task_filter(enabled: bool, table_alias: Option<&str>) -> String {
+        if !enabled {
+            return String::new();
+        }
+
+        let prefix = table_alias.map(|a| format!("{}.", a)).unwrap_or_default();
+        format!(
+            " AND ({}node_type = 'task' OR {}container_node_id IS NULL)",
+            prefix, prefix
+        )
+    }
+
     pub async fn query_nodes_simple(
         &self,
         query: crate::models::NodeQuery,
@@ -1094,6 +1140,9 @@ impl NodeService {
         // Use connection with busy timeout to prevent immediate failure on lock contention
         // This is especially important for queries that might run concurrently with deletes
         let conn = self.db.connect_with_timeout().await?;
+
+        // Determine if container/task filtering should be applied
+        let filter_enabled = query.include_containers_and_tasks.unwrap_or(false);
 
         // Priority 1: Query by ID (exact match)
         if let Some(ref id) = query.id {
@@ -1112,13 +1161,16 @@ impl NodeService {
                 .map(|l| format!(" LIMIT {}", l))
                 .unwrap_or_default();
 
+            let container_task_filter =
+                Self::build_container_task_filter(filter_enabled, Some("n"));
+
             // Query node_mentions table to find nodes that reference the target
             let sql_query = format!(
                 "SELECT n.id, n.node_type, n.content, n.parent_id, n.container_node_id, n.before_sibling_id, n.created_at, n.modified_at, n.properties, n.embedding_vector
                  FROM nodes n
                  INNER JOIN node_mentions nm ON n.id = nm.node_id
-                 WHERE nm.mentions_node_id = ?{}",
-                limit_clause
+                 WHERE nm.mentions_node_id = ?{}{}",
+                container_task_filter, limit_clause
             );
 
             let mut stmt = conn.prepare(&sql_query).await.map_err(|e| {
@@ -1163,13 +1215,16 @@ impl NodeService {
                 .map(|l| format!(" LIMIT {}", l))
                 .unwrap_or_default();
 
+            // Generate filter clause without table alias (queries nodes table directly)
+            let container_task_filter = Self::build_container_task_filter(filter_enabled, None);
+
             // Determine SQL query based on whether node_type is specified
             let mut rows = if let Some(ref node_type) = query.node_type {
                 // Case 1: Filter by both content and node_type
                 let sql = format!(
                     "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector
-                     FROM nodes WHERE content LIKE ? AND node_type = ?{}",
-                    limit_clause
+                     FROM nodes WHERE content LIKE ? AND node_type = ?{}{}",
+                    container_task_filter, limit_clause
                 );
 
                 let mut stmt = conn.prepare(&sql).await.map_err(|e| {
@@ -1191,8 +1246,8 @@ impl NodeService {
                 // Case 2: Filter by content only
                 let sql = format!(
                     "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector
-                     FROM nodes WHERE content LIKE ?{}",
-                    limit_clause
+                     FROM nodes WHERE content LIKE ?{}{}",
+                    container_task_filter, limit_clause
                 );
 
                 let mut stmt = conn.prepare(&sql).await.map_err(|e| {
@@ -1235,10 +1290,13 @@ impl NodeService {
                 .map(|l| format!(" LIMIT {}", l))
                 .unwrap_or_default();
 
+            // Generate filter clause without table alias (queries nodes table directly)
+            let container_task_filter = Self::build_container_task_filter(filter_enabled, None);
+
             let sql_query = format!(
                 "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector
-                 FROM nodes WHERE node_type = ?{}",
-                limit_clause
+                 FROM nodes WHERE node_type = ?{}{}",
+                container_task_filter, limit_clause
             );
 
             let mut stmt = conn.prepare(&sql_query).await.map_err(|e| {
@@ -1247,6 +1305,44 @@ impl NodeService {
 
             let mut rows = stmt.query([node_type.as_str()]).await.map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to execute node_type query: {}", e))
+            })?;
+
+            let mut nodes = Vec::new();
+            while let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            {
+                nodes.push(self.row_to_node(row)?);
+            }
+
+            return Ok(nodes);
+        }
+
+        // Priority 5: Filter-only query (return nodes matching container/task filter)
+        // This handles cases where only the filter is specified without other query parameters
+        if filter_enabled {
+            let container_task_filter = Self::build_container_task_filter(filter_enabled, None);
+            let limit_clause = query
+                .limit
+                .map(|l| format!(" LIMIT {}", l))
+                .unwrap_or_default();
+
+            // WHERE 1=1 is a SQL idiom for dynamic WHERE clauses - it's always true,
+            // allowing the filter to be appended via AND clause. This is clearer than
+            // conditional WHERE clause generation and maintains consistent query structure.
+            let sql_query = format!(
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector
+                 FROM nodes WHERE 1=1{}{}",
+                container_task_filter, limit_clause
+            );
+
+            let mut stmt = conn.prepare(&sql_query).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
+            })?;
+
+            let mut rows = stmt.query([] as [&str; 0]).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
             })?;
 
             let mut nodes = Vec::new();
@@ -2734,5 +2830,308 @@ mod tests {
             matches!(result.unwrap_err(), NodeServiceError::NodeNotFound { .. }),
             "Should return NodeNotFound error"
         );
+    }
+
+    /// Tests for include_containers_and_tasks filter functionality
+    ///
+    /// These tests verify the filter that restricts query results to only
+    /// task nodes and container nodes (nodes with no parent), excluding
+    /// regular text children and other non-referenceable content.
+    ///
+    /// # Test Organization
+    ///
+    /// - `basic_filter()` - Core filter behavior (includes/excludes correct nodes)
+    /// - `content_contains_with_filter()` - Filter + full-text search integration
+    /// - `mentioned_by_with_filter()` - Filter + mention query integration
+    /// - `node_type_with_filter()` - Filter + type query interaction (edge case: tasks always included)
+    /// - `default_behavior()` - Verifies filter defaults to false (no filtering)
+    ///
+    /// All tests use unique content markers (e.g., "UniqueBasicFilter") to prevent
+    /// cross-test contamination and ensure proper test isolation.
+    mod container_task_filter_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn basic_filter() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a container node (no parent = root/container)
+            let container = Node::new(
+                "text".to_string(),
+                "UniqueBasicFilter Container".to_string(),
+                None,
+                json!({}),
+            );
+            let container_id = service.create_node(container).await.unwrap();
+
+            // Create a task node (child of container)
+            let task = Node::new_with_id(
+                "task-1".to_string(),
+                "task".to_string(),
+                "UniqueBasicFilter Task".to_string(),
+                Some(container_id.clone()),
+                json!({"status": "pending"}),
+            );
+            let task_id = service.create_node(task).await.unwrap();
+
+            // Create a regular text child node (should be filtered out)
+            let text_child = Node::new_with_id(
+                "text-child-1".to_string(),
+                "text".to_string(),
+                "UniqueBasicFilter Text".to_string(),
+                Some(container_id.clone()),
+                json!({}),
+            );
+            let text_child_id = service.create_node(text_child).await.unwrap();
+
+            // Query WITH filter enabled - use content match to isolate this test's nodes
+            let query_with_filter = crate::models::NodeQuery {
+                content_contains: Some("UniqueBasicFilter".to_string()),
+                include_containers_and_tasks: Some(true),
+                ..Default::default()
+            };
+            let filtered_results = service.query_nodes_simple(query_with_filter).await.unwrap();
+
+            // Verify we only get container and task nodes
+            assert_eq!(
+                filtered_results.len(),
+                2,
+                "Should return exactly 2 nodes (container + task)"
+            );
+
+            let result_ids: Vec<&str> = filtered_results.iter().map(|n| n.id.as_str()).collect();
+            assert!(
+                result_ids.contains(&container_id.as_str()),
+                "Should include container node"
+            );
+            assert!(
+                result_ids.contains(&task_id.as_str()),
+                "Should include task node"
+            );
+            assert!(
+                !result_ids.contains(&text_child_id.as_str()),
+                "Should NOT include text child node"
+            );
+
+            // Query WITHOUT filter - should get all 3 nodes created in this test
+            let query_no_filter = crate::models::NodeQuery {
+                content_contains: Some("UniqueBasicFilter".to_string()),
+                include_containers_and_tasks: Some(false),
+                ..Default::default()
+            };
+            let unfiltered_results = service.query_nodes_simple(query_no_filter).await.unwrap();
+
+            assert_eq!(
+                unfiltered_results.len(),
+                3,
+                "Should return all 3 nodes when filter disabled"
+            );
+        }
+
+        #[tokio::test]
+        async fn content_contains_with_filter() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create container with "meeting" in content
+            let container = Node::new(
+                "text".to_string(),
+                "Team meeting notes".to_string(),
+                None,
+                json!({}),
+            );
+            let container_id = service.create_node(container).await.unwrap();
+
+            // Create task with "meeting" in content (child of container)
+            let task = Node::new_with_id(
+                "task-meeting".to_string(),
+                "task".to_string(),
+                "Schedule meeting".to_string(),
+                Some(container_id.clone()),
+                json!({}),
+            );
+            let task_id = service.create_node(task).await.unwrap();
+
+            // Create text child with "meeting" in content (should be filtered out)
+            let text_child = Node::new_with_id(
+                "text-meeting".to_string(),
+                "text".to_string(),
+                "Meeting agenda item".to_string(),
+                Some(container_id.clone()),
+                json!({}),
+            );
+            service.create_node(text_child).await.unwrap();
+
+            // Query for "meeting" WITH container/task filter
+            let query = crate::models::NodeQuery {
+                content_contains: Some("meeting".to_string()),
+                include_containers_and_tasks: Some(true),
+                ..Default::default()
+            };
+            let results = service.query_nodes_simple(query).await.unwrap();
+
+            // Should only return container and task, not the text child
+            assert_eq!(
+                results.len(),
+                2,
+                "Should return only container and task nodes with 'meeting'"
+            );
+
+            let result_ids: Vec<&str> = results.iter().map(|n| n.id.as_str()).collect();
+            assert!(result_ids.contains(&container_id.as_str()));
+            assert!(result_ids.contains(&task_id.as_str()));
+        }
+
+        #[tokio::test]
+        async fn mentioned_by_with_filter() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a target node to be mentioned
+            let target = Node::new_with_id(
+                "target-node".to_string(),
+                "text".to_string(),
+                "Target".to_string(),
+                None,
+                json!({}),
+            );
+            let target_id = service.create_node(target).await.unwrap();
+
+            // Create container that mentions target
+            let container = Node::new_with_id(
+                "container-1".to_string(),
+                "text".to_string(),
+                "Container mentioning @target-node".to_string(),
+                None,
+                json!({}),
+            );
+            let container_id = service.create_node(container).await.unwrap();
+            service
+                .create_mention(&container_id, &target_id)
+                .await
+                .unwrap();
+
+            // Create task that mentions target (child of container)
+            let task = Node::new_with_id(
+                "task-mentions".to_string(),
+                "task".to_string(),
+                "Task with @target-node reference".to_string(),
+                Some(container_id.clone()),
+                json!({}),
+            );
+            let task_id = service.create_node(task).await.unwrap();
+            service.create_mention(&task_id, &target_id).await.unwrap();
+
+            // Create text child that mentions target (should be filtered out)
+            let text_child = Node::new_with_id(
+                "text-mentions".to_string(),
+                "text".to_string(),
+                "Text with @target-node".to_string(),
+                Some(container_id.clone()),
+                json!({}),
+            );
+            let text_child_id = service.create_node(text_child).await.unwrap();
+            service
+                .create_mention(&text_child_id, &target_id)
+                .await
+                .unwrap();
+
+            // Query nodes that mention target WITH container/task filter
+            let query = crate::models::NodeQuery {
+                mentioned_by: Some(target_id.clone()),
+                include_containers_and_tasks: Some(true),
+                ..Default::default()
+            };
+            let results = service.query_nodes_simple(query).await.unwrap();
+
+            // Should only return container and task
+            assert_eq!(
+                results.len(),
+                2,
+                "Should return only container and task that mention target"
+            );
+
+            let result_ids: Vec<&str> = results.iter().map(|n| n.id.as_str()).collect();
+            assert!(result_ids.contains(&container_id.as_str()));
+            assert!(result_ids.contains(&task_id.as_str()));
+            assert!(!result_ids.contains(&text_child_id.as_str()));
+        }
+
+        #[tokio::test]
+        async fn node_type_with_filter() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create multiple task nodes - some containers, some children
+            let container_task = Node::new_with_id(
+                "task-container".to_string(),
+                "task".to_string(),
+                "Container task".to_string(),
+                None,
+                json!({}),
+            );
+            let container_task_id = service.create_node(container_task).await.unwrap();
+
+            let child_task = Node::new_with_id(
+                "task-child".to_string(),
+                "task".to_string(),
+                "Child task".to_string(),
+                Some(container_task_id.clone()),
+                json!({}),
+            );
+            service.create_node(child_task).await.unwrap();
+
+            // Query for task nodes WITH container/task filter
+            // This should still return task nodes even if they're children,
+            // because the filter is (node_type = 'task' OR container_node_id IS NULL)
+            let query = crate::models::NodeQuery {
+                node_type: Some("task".to_string()),
+                include_containers_and_tasks: Some(true),
+                ..Default::default()
+            };
+            let results = service.query_nodes_simple(query).await.unwrap();
+
+            // Both tasks should be returned (filter allows tasks regardless of parent)
+            assert_eq!(
+                results.len(),
+                2,
+                "Should return all task nodes (filter allows tasks)"
+            );
+        }
+
+        #[tokio::test]
+        async fn default_behavior() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create mix of nodes with unique identifier
+            let container = Node::new(
+                "text".to_string(),
+                "UniqueDefaultTest Container".to_string(),
+                None,
+                json!({}),
+            );
+            service.create_node(container).await.unwrap();
+
+            let task = Node::new(
+                "task".to_string(),
+                "UniqueDefaultTest Task".to_string(),
+                None,
+                json!({}),
+            );
+            service.create_node(task).await.unwrap();
+
+            // Query with filter = None (default should be false)
+            // Use content search to isolate this test's nodes
+            let query = crate::models::NodeQuery {
+                content_contains: Some("UniqueDefaultTest".to_string()),
+                include_containers_and_tasks: None, // Defaults to false
+                ..Default::default()
+            };
+            let results = service.query_nodes_simple(query).await.unwrap();
+
+            // Should return all nodes (filter defaults to false via unwrap_or)
+            assert_eq!(
+                results.len(),
+                2,
+                "Default behavior should not filter (include_containers_and_tasks defaults to false)"
+            );
+        }
     }
 }

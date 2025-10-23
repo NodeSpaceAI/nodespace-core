@@ -667,6 +667,12 @@ export class NodeReferenceService {
 
   /**
    * Search nodes with fuzzy matching and filtering
+   *
+   * For @mention autocomplete, filters results to only include:
+   * - Task nodes (nodeType = 'task')
+   * - Container nodes (containerNodeId = null)
+   *
+   * This ensures users can only @mention referenceable nodes.
    */
   public async searchNodes(query: string, nodeType?: string): Promise<Node[]> {
     if (!query || query.length < this.autocompleteConfig.minQueryLength) {
@@ -683,9 +689,11 @@ export class NodeReferenceService {
 
     try {
       // Use database service for efficient querying
+      // Filter to only show task nodes and container nodes for @mention autocomplete
       const results = await this.databaseService.queryNodes({
         contentContains: query,
         nodeType: nodeType,
+        includeContainersAndTasks: true, // Only show tasks and containers
         limit: this.autocompleteConfig.maxSuggestions * 3 // Get more for better filtering
       });
 
