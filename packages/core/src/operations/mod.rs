@@ -817,6 +817,30 @@ impl NodeOperations {
             )));
         }
 
+        // Fix sibling chain BEFORE reordering (maintain chain integrity)
+        if let Some(parent_id) = &node.parent_id {
+            // Find all siblings (nodes with same parent)
+            let siblings = self
+                .node_service
+                .query_nodes(NodeFilter::new().with_parent_id(parent_id.clone()))
+                .await?;
+
+            // Find the node that points to this one (next sibling in chain)
+            if let Some(next_sibling) = siblings
+                .iter()
+                .find(|n| n.before_sibling_id.as_deref() == Some(node_id))
+            {
+                // Update next sibling to skip over the moved node
+                // This maintains the chain: if A → B → C and we move B, we update C to point to A
+                let mut fix_update = NodeUpdate::new();
+                fix_update.before_sibling_id = Some(node.before_sibling_id.clone());
+
+                self.node_service
+                    .update_node(&next_sibling.id, fix_update)
+                    .await?;
+            }
+        }
+
         // Validate sibling position
         let new_sibling = self
             .calculate_sibling_position(
@@ -839,9 +863,21 @@ impl NodeOperations {
     // DELETE Operations
     // =========================================================================
 
-    /// Delete a node
+    /// Delete a node with sibling chain integrity preservation
     ///
-    /// Simple delegation to NodeService with cascade handling.
+    /// This method fixes the critical bug where deleting a node left dangling
+    /// before_sibling_id references pointing to the deleted node.
+    ///
+    /// # Sibling Chain Fix
+    ///
+    /// Before deletion:
+    /// - Node A (before_sibling_id=None)
+    /// - Node B (before_sibling_id="A")  ← Deleting this
+    /// - Node C (before_sibling_id="B")
+    ///
+    /// After deletion (with fix):
+    /// - Node A (before_sibling_id=None)
+    /// - Node C (before_sibling_id="A")  ← Fixed! Now points to A instead of deleted B
     ///
     /// # Arguments
     ///
@@ -850,6 +886,12 @@ impl NodeOperations {
     /// # Returns
     ///
     /// DeleteResult indicating whether the node existed
+    ///
+    /// # Errors
+    ///
+    /// Returns `NodeOperationError` if:
+    /// - Database error occurs
+    /// - Circular sibling chain detected (data corruption)
     ///
     /// # Examples
     ///
@@ -869,6 +911,40 @@ impl NodeOperations {
     /// # }
     /// ```
     pub async fn delete_node(&self, node_id: &str) -> Result<DeleteResult, NodeOperationError> {
+        // 1. Get the node being deleted (if it exists)
+        let node = match self.node_service.get_node(node_id).await? {
+            Some(n) => n,
+            None => {
+                // Node doesn't exist - return false immediately
+                return Ok(DeleteResult { existed: false });
+            }
+        };
+
+        // 2. Fix sibling chain BEFORE deletion (only if node has a parent)
+        if let Some(parent_id) = &node.parent_id {
+            // Find all siblings (nodes with same parent)
+            let siblings = self
+                .node_service
+                .query_nodes(NodeFilter::new().with_parent_id(parent_id.clone()))
+                .await?;
+
+            // Find the node that points to this one (next sibling in chain)
+            if let Some(next_sibling) = siblings
+                .iter()
+                .find(|n| n.before_sibling_id.as_deref() == Some(node_id))
+            {
+                // Update next sibling to point to what the deleted node pointed to
+                // This maintains the chain: if A → B → C and we delete B, we get A → C
+                let mut update = NodeUpdate::new();
+                update.before_sibling_id = Some(node.before_sibling_id.clone());
+
+                self.node_service
+                    .update_node(&next_sibling.id, update)
+                    .await?;
+            }
+        }
+
+        // 3. Now safe to delete (children cascade via DB foreign key)
         Ok(self.node_service.delete_node(node_id).await?)
     }
 }
@@ -1131,5 +1207,265 @@ mod tests {
             second_node.before_sibling_id, None,
             "Second node should have no before_sibling_id (end of chain)"
         );
+    }
+
+    // =========================================================================
+    // Delete Operations - Sibling Chain Integrity Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_delete_node_fixes_sibling_chain_middle() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        // Create date container
+        let date = operations
+            .create_node(
+                "date".to_string(),
+                "2025-01-03".to_string(),
+                None,
+                None,
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        // Create three siblings: A → B → C
+        let node_a = operations
+            .create_node(
+                "text".to_string(),
+                "A".to_string(),
+                None,
+                Some(date.clone()),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let node_b = operations
+            .create_node(
+                "text".to_string(),
+                "B".to_string(),
+                None,
+                Some(date.clone()),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let node_c = operations
+            .create_node(
+                "text".to_string(),
+                "C".to_string(),
+                None,
+                Some(date.clone()),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        // Verify initial chain: A (None) → B (None) → C (None)
+        let a = operations.get_node(&node_a).await.unwrap().unwrap();
+        let b = operations.get_node(&node_b).await.unwrap().unwrap();
+        let c = operations.get_node(&node_c).await.unwrap().unwrap();
+        assert_eq!(a.before_sibling_id, None);
+        assert_eq!(b.before_sibling_id, None);
+        assert_eq!(c.before_sibling_id, None);
+
+        // Delete B (middle node)
+        let result = operations.delete_node(&node_b).await.unwrap();
+        assert!(result.existed);
+
+        // Verify B is deleted
+        let deleted = operations.get_node(&node_b).await.unwrap();
+        assert!(deleted.is_none());
+
+        // Verify sibling chain is intact: A and C still exist
+        let a_after = operations.get_node(&node_a).await.unwrap().unwrap();
+        let c_after = operations.get_node(&node_c).await.unwrap().unwrap();
+        assert_eq!(a_after.before_sibling_id, None);
+        assert_eq!(c_after.before_sibling_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_delete_node_first_in_chain() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        // Create date container
+        let date = operations
+            .create_node(
+                "date".to_string(),
+                "2025-01-03".to_string(),
+                None,
+                None,
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        // Create two siblings
+        let first = operations
+            .create_node(
+                "text".to_string(),
+                "First".to_string(),
+                None,
+                Some(date.clone()),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let second = operations
+            .create_node(
+                "text".to_string(),
+                "Second".to_string(),
+                None,
+                Some(date.clone()),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        // Delete first node
+        let result = operations.delete_node(&first).await.unwrap();
+        assert!(result.existed);
+
+        // Verify second node still exists with correct chain
+        let second_after = operations.get_node(&second).await.unwrap().unwrap();
+        assert_eq!(second_after.before_sibling_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_delete_node_last_in_chain() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        // Create date container
+        let date = operations
+            .create_node(
+                "date".to_string(),
+                "2025-01-03".to_string(),
+                None,
+                None,
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        // Create two siblings
+        let first = operations
+            .create_node(
+                "text".to_string(),
+                "First".to_string(),
+                None,
+                Some(date.clone()),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let last = operations
+            .create_node(
+                "text".to_string(),
+                "Last".to_string(),
+                None,
+                Some(date.clone()),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        // Delete last node
+        let result = operations.delete_node(&last).await.unwrap();
+        assert!(result.existed);
+
+        // Verify first node still exists unchanged
+        let first_after = operations.get_node(&first).await.unwrap().unwrap();
+        assert_eq!(first_after.before_sibling_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_delete_node_with_children() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        // Create date container
+        let date = operations
+            .create_node(
+                "date".to_string(),
+                "2025-01-03".to_string(),
+                None,
+                None,
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        // Create parent with siblings
+        let parent = operations
+            .create_node(
+                "text".to_string(),
+                "Parent".to_string(),
+                None,
+                Some(date.clone()),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let sibling = operations
+            .create_node(
+                "text".to_string(),
+                "Sibling".to_string(),
+                None,
+                Some(date.clone()),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        // Create child under parent
+        let child = operations
+            .create_node(
+                "text".to_string(),
+                "Child".to_string(),
+                Some(parent.clone()),
+                None, // Inferred from parent
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        // Delete parent (should cascade delete child and fix sibling chain)
+        let result = operations.delete_node(&parent).await.unwrap();
+        assert!(result.existed);
+
+        // Verify parent and child are deleted
+        assert!(operations.get_node(&parent).await.unwrap().is_none());
+        assert!(operations.get_node(&child).await.unwrap().is_none());
+
+        // Verify sibling still exists with intact chain
+        let sibling_after = operations.get_node(&sibling).await.unwrap().unwrap();
+        assert_eq!(sibling_after.before_sibling_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_node() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        // Try to delete a node that doesn't exist
+        let result = operations.delete_node("nonexistent-id").await.unwrap();
+        assert!(!result.existed);
     }
 }

@@ -70,6 +70,11 @@ pub fn handle_initialize(params: Value) -> Result<Value, MCPError> {
             },
             "resources": {},  // Future: Add resource capabilities
             "prompts": {}     // Future: Add prompt capabilities
+        },
+        "instructions": {
+            "date_nodes": "Date nodes (YYYY-MM-DD) are virtual containers that auto-exist for any valid date. You don't need to create them explicitly - just reference them as parent_id or container_node_id and they'll be created automatically if needed. Example: insert_child_at_index(parent_id='2025-10-23', ...) automatically creates the date container.",
+            "node_types": "Available node types: text, header, task, date, code-block, quote-block, ordered-list. Date nodes are special containers for daily notes.",
+            "hierarchy": "Nodes can be nested. Use index-based operations (insert_child_at_index, move_child_to_index) for intuitive position control, or use low-level operations (create_node, reorder_node) for direct pointer manipulation."
         }
     }))
 }

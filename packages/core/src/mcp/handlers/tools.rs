@@ -97,18 +97,35 @@ pub async fn handle_tools_call(
 
     // Route to appropriate handler based on tool name
     let result = match tool_name {
+        // Core Node CRUD
         "create_node" => nodes::handle_create_node(node_operations, arguments).await,
         "get_node" => nodes::handle_get_node(node_operations, arguments).await,
         "update_node" => nodes::handle_update_node(node_operations, arguments).await,
         "delete_node" => nodes::handle_delete_node(node_operations, arguments).await,
         "query_nodes" => nodes::handle_query_nodes(node_operations, arguments).await,
+
+        // Hierarchy & Children (Index-Based Operations)
+        "get_children" => nodes::handle_get_children(node_operations, arguments).await,
+        "get_child_at_index" => nodes::handle_get_child_at_index(node_operations, arguments).await,
+        "insert_child_at_index" => {
+            nodes::handle_insert_child_at_index(node_operations, arguments).await
+        }
+        "move_child_to_index" => {
+            nodes::handle_move_child_to_index(node_operations, arguments).await
+        }
+        "get_node_tree" => nodes::handle_get_node_tree(node_operations, arguments).await,
+
+        // Markdown Import/Export
         "create_nodes_from_markdown" => {
             markdown::handle_create_nodes_from_markdown(node_operations, arguments).await
         }
         "get_markdown_from_node_id" => {
             markdown::handle_get_markdown_from_node_id(node_operations, arguments).await
         }
+
+        // Search
         "search_containers" => search::handle_search_containers(embedding_service, arguments).await,
+
         _ => {
             return Err(MCPError::invalid_params(format!(
                 "Unknown tool: {}",
@@ -264,6 +281,131 @@ fn get_tool_schemas() -> Value {
                         "description": "Maximum number of results"
                     }
                 }
+            }
+        },
+        {
+            "name": "get_children",
+            "description": "Get all children of a parent node in order with their positions (0-based indexes). Returns minimal info by default - use include_content=true to see node content.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "parent_id": {
+                        "type": "string",
+                        "description": "Parent node ID (any node ID, or YYYY-MM-DD for date containers)"
+                    },
+                    "include_content": {
+                        "type": "boolean",
+                        "description": "Include node content in response (default: false). Set to true only if you need content and don't already have it from get_markdown_from_node_id.",
+                        "default": false
+                    }
+                },
+                "required": ["parent_id"]
+            }
+        },
+        {
+            "name": "get_child_at_index",
+            "description": "Get a specific child by its position under a parent. Returns the child node at the specified index (0-based).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "parent_id": {
+                        "type": "string",
+                        "description": "Parent node ID"
+                    },
+                    "index": {
+                        "type": "number",
+                        "description": "Position of child to retrieve (0-based)",
+                        "minimum": 0
+                    },
+                    "include_content": {
+                        "type": "boolean",
+                        "description": "Include node content in response (default: true)",
+                        "default": true
+                    }
+                },
+                "required": ["parent_id", "index"]
+            }
+        },
+        {
+            "name": "insert_child_at_index",
+            "description": "Insert a new child node at a specific position (0-based index) under a parent. Index 0 = first child, index 1 = second child, etc. If index >= child count, appends at end.\n\nDATE NODES: If parent_id is in YYYY-MM-DD format, it references a date container which auto-exists. You don't need to create date nodes first.\n\nExample: parent_id='2025-10-23' automatically uses that date's container.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "parent_id": {
+                        "type": "string",
+                        "description": "Parent node ID (any node ID, or YYYY-MM-DD for date containers)"
+                    },
+                    "index": {
+                        "type": "number",
+                        "description": "Position to insert at (0-based). 0=first, 1=second, etc. Use large number (e.g., 999) to append at end.",
+                        "minimum": 0
+                    },
+                    "node_type": {
+                        "type": "string",
+                        "enum": ["text", "header", "task", "date", "code-block", "quote-block", "ordered-list"],
+                        "description": "Type of node to create"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Node content"
+                    },
+                    "properties": {
+                        "type": "object",
+                        "description": "Additional type-specific properties (JSON object)"
+                    }
+                },
+                "required": ["parent_id", "index", "node_type", "content"]
+            }
+        },
+        {
+            "name": "move_child_to_index",
+            "description": "Move an existing child node to a different position among its siblings. The node stays under the same parent, only the position changes. Index 0 = first position, 1 = second, etc.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_id": {
+                        "type": "string",
+                        "description": "Child node to reorder"
+                    },
+                    "index": {
+                        "type": "number",
+                        "description": "New position (0-based). Node will be moved to this position among siblings. If index >= sibling count, moves to end.",
+                        "minimum": 0
+                    }
+                },
+                "required": ["node_id", "index"]
+            }
+        },
+        {
+            "name": "get_node_tree",
+            "description": "Get hierarchical tree structure of a node and its descendants. Returns minimal structure by default (IDs, types, relationships). Use include_content=true if you need to see node content.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_id": {
+                        "type": "string",
+                        "description": "Root node ID to get tree from"
+                    },
+                    "max_depth": {
+                        "type": "number",
+                        "description": "Maximum depth to traverse (default: 10). Use lower values for performance with large trees.",
+                        "default": 10,
+                        "minimum": 1,
+                        "maximum": 100
+                    },
+                    "include_content": {
+                        "type": "boolean",
+                        "description": "Include node content in response (default: false). Set to true only if you need content and don't have it from a previous get_markdown_from_node_id call.",
+                        "default": false
+                    },
+                    "include_metadata": {
+                        "type": "boolean",
+                        "description": "Include created_at, modified_at, properties (default: false)",
+                        "default": false
+                    }
+                },
+                "required": ["node_id"]
             }
         },
         {
