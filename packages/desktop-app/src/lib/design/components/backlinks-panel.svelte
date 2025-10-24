@@ -104,8 +104,6 @@
               </li>
             {/each}
           </ul>
-        {:else}
-          <div class="px-2 py-2 text-sm text-muted-foreground">No pages mention this one yet.</div>
         {/if}
       </div>
     </Collapsible.Content>
