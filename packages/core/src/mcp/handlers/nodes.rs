@@ -164,6 +164,7 @@ pub async fn handle_create_node(
     // Create node via NodeOperations (enforces all business rules)
     let node_id = operations
         .create_node(
+            None, // MCP generates IDs server-side
             params.node_type.clone(),
             params.content,
             params.parent_id,
@@ -336,6 +337,7 @@ async fn ensure_parent_exists(
         // Try to create - date nodes use their content as ID
         let _ = operations
             .create_node(
+                None, // MCP generates IDs server-side
                 "date".to_string(),
                 parent_id.to_string(),
                 None,
@@ -561,6 +563,7 @@ pub async fn handle_insert_child_at_index(
     // 6. Create node using pointer-based operation
     let node_id = operations
         .create_node(
+            None, // MCP generates IDs server-side
             params.node_type.clone(),
             params.content,
             Some(params.parent_id.clone()),

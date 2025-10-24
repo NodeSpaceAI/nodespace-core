@@ -137,7 +137,8 @@ pub fn extract_mentions(content: &str) -> Vec<String> {
 
     // Match markdown format using the defined pattern
     static MARKDOWN_REGEX: OnceLock<Regex> = OnceLock::new();
-    let markdown_regex = MARKDOWN_REGEX.get_or_init(|| Regex::new(MARKDOWN_MENTION_PATTERN).unwrap());
+    let markdown_regex =
+        MARKDOWN_REGEX.get_or_init(|| Regex::new(MARKDOWN_MENTION_PATTERN).unwrap());
 
     for cap in markdown_regex.captures_iter(content) {
         if let Some(node_id) = cap.get(1) {

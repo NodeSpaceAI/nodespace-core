@@ -529,6 +529,7 @@ async fn create_node(
     // Container node ID is provided from the pre-created container
     operations
         .create_node(
+            None, // MCP generates IDs server-side
             node_type.to_string(),
             content.to_string(),
             parent_id,

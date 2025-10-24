@@ -58,6 +58,7 @@
 //!
 //!     // Create a node with automatic container inference
 //!     let node_id = operations.create_node(
+//!         None, // Test generates ID
 //!         "text".to_string(),
 //!         "Hello World".to_string(),
 //!         Some("parent-id".to_string()),
@@ -109,6 +110,7 @@ use std::sync::Arc;
 ///
 /// // All operations automatically enforce business rules
 /// let node_id = operations.create_node(
+///     None, // Test generates ID
 ///     "text".to_string(),
 ///     "Content".to_string(),
 ///     Some("parent-id".to_string()),
@@ -449,6 +451,7 @@ impl NodeOperations {
     /// # let operations = NodeOperations::new(node_service);
     /// // Create a date node (container)
     /// let date_id = operations.create_node(
+    ///     None, // Test generates ID
     ///     "date".to_string(),
     ///     "2025-01-03".to_string(),
     ///     None, // containers cannot have parent
@@ -459,6 +462,7 @@ impl NodeOperations {
     ///
     /// // Create a text node with automatic container inference
     /// let text_id = operations.create_node(
+    ///     None, // Test generates ID
     ///     "text".to_string(),
     ///     "Hello".to_string(),
     ///     Some(date_id.clone()), // parent
@@ -482,6 +486,7 @@ impl NodeOperations {
     /// # use serde_json::json;
     /// # async fn example(operations: Arc<NodeOperations>) -> Result<(), Box<dyn std::error::Error>> {
     /// let date_id = operations.create_node(
+    ///     None, // Test generates ID
     ///     "date".to_string(),
     ///     "2025-10-23".to_string(),  // This becomes the ID
     ///     None, None, None, json!({})
@@ -491,8 +496,10 @@ impl NodeOperations {
     /// # Ok(())
     /// # }
     /// ```
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_node(
         &self,
+        id: Option<String>,
         node_type: String,
         content: String,
         parent_id: Option<String>,
@@ -558,8 +565,12 @@ impl NodeOperations {
         };
 
         // Create the node using NodeService
-        // Special case: date nodes use their content (YYYY-MM-DD) as the ID
-        let node_id = if node_type == "date" {
+        // Use provided ID if given (allows frontend to pre-generate UUIDs for local state management)
+        // Otherwise, special case: date nodes use their content (YYYY-MM-DD) as the ID
+        // Otherwise: generate a new UUID
+        let node_id = if let Some(provided_id) = id {
+            provided_id
+        } else if node_type == "date" {
             content.clone()
         } else {
             uuid::Uuid::new_v4().to_string()
@@ -708,14 +719,9 @@ impl NodeOperations {
         // This method only updates content, node_type, and properties
         // Use move_node() or reorder_node() for hierarchy changes
 
-        // Verify node exists
-        let _node = self
-            .node_service
-            .get_node(node_id)
-            .await?
-            .ok_or_else(|| NodeOperationError::node_not_found(node_id.to_string()))?;
-
         // Create NodeUpdate with only content/type/properties (no hierarchy changes)
+        // Note: NodeService.update_node() will validate that the node exists,
+        // so we don't need a redundant check here (avoids race condition window)
         let mut update = NodeUpdate::new();
         if let Some(c) = content {
             update = update.with_content(c);
@@ -1083,6 +1089,7 @@ mod tests {
         // Create a date container
         let date_id = operations
             .create_node(
+                None, // Test generates ID
                 "date".to_string(),
                 "2025-01-03".to_string(),
                 None,
@@ -1096,6 +1103,7 @@ mod tests {
         // Create a child WITHOUT container_node_id - should infer from parent
         let child_id = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "Child content".to_string(),
                 Some(date_id.clone()),
@@ -1127,6 +1135,7 @@ mod tests {
         // Create two separate date containers
         let date1 = operations
             .create_node(
+                None, // Test generates ID
                 "date".to_string(),
                 "2025-01-03".to_string(),
                 None,
@@ -1139,6 +1148,7 @@ mod tests {
 
         let date2 = operations
             .create_node(
+                None, // Test generates ID
                 "date".to_string(),
                 "2025-01-04".to_string(),
                 None,
@@ -1152,6 +1162,7 @@ mod tests {
         // Create a parent in date1 container
         let parent = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "Parent in date1".to_string(),
                 None,
@@ -1165,6 +1176,7 @@ mod tests {
         // Try to create child with different container than parent - should fail
         let result = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "Child in date2".to_string(),
                 Some(parent.clone()),
@@ -1194,6 +1206,7 @@ mod tests {
         // Create date container
         let date = operations
             .create_node(
+                None, // Test generates ID
                 "date".to_string(),
                 "2025-01-03".to_string(),
                 None,
@@ -1207,6 +1220,7 @@ mod tests {
         // Create first node (will be last in chain since no before_sibling_id)
         let first = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "First".to_string(),
                 None,
@@ -1220,6 +1234,7 @@ mod tests {
         // Create second node (also goes to end, after first)
         let second = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "Second".to_string(),
                 None,
@@ -1233,6 +1248,7 @@ mod tests {
         // Create third node BEFORE second (so ordering becomes: first → third → second)
         let third = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "Third".to_string(),
                 None,
@@ -1279,6 +1295,7 @@ mod tests {
         // Create date container
         let date = operations
             .create_node(
+                None, // Test generates ID
                 "date".to_string(),
                 "2025-01-03".to_string(),
                 None,
@@ -1292,6 +1309,7 @@ mod tests {
         // Create three siblings: A → B → C
         let node_a = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "A".to_string(),
                 None,
@@ -1304,6 +1322,7 @@ mod tests {
 
         let node_b = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "B".to_string(),
                 None,
@@ -1316,6 +1335,7 @@ mod tests {
 
         let node_c = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "C".to_string(),
                 None,
@@ -1356,6 +1376,7 @@ mod tests {
         // Create date container
         let date = operations
             .create_node(
+                None, // Test generates ID
                 "date".to_string(),
                 "2025-01-03".to_string(),
                 None,
@@ -1369,6 +1390,7 @@ mod tests {
         // Create two siblings
         let first = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "First".to_string(),
                 None,
@@ -1381,6 +1403,7 @@ mod tests {
 
         let second = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "Second".to_string(),
                 None,
@@ -1407,6 +1430,7 @@ mod tests {
         // Create date container
         let date = operations
             .create_node(
+                None, // Test generates ID
                 "date".to_string(),
                 "2025-01-03".to_string(),
                 None,
@@ -1420,6 +1444,7 @@ mod tests {
         // Create two siblings
         let first = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "First".to_string(),
                 None,
@@ -1432,6 +1457,7 @@ mod tests {
 
         let last = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "Last".to_string(),
                 None,
@@ -1458,6 +1484,7 @@ mod tests {
         // Create date container
         let date = operations
             .create_node(
+                None, // Test generates ID
                 "date".to_string(),
                 "2025-01-03".to_string(),
                 None,
@@ -1471,6 +1498,7 @@ mod tests {
         // Create parent with siblings
         let parent = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "Parent".to_string(),
                 None,
@@ -1483,6 +1511,7 @@ mod tests {
 
         let sibling = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "Sibling".to_string(),
                 None,
@@ -1496,6 +1525,7 @@ mod tests {
         // Create child under parent
         let child = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "Child".to_string(),
                 Some(parent.clone()),

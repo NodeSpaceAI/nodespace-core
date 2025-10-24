@@ -119,8 +119,10 @@ pub async fn create_node(
     validate_node_type(&node.node_type)?;
 
     // Use NodeOperations to create node with business rule enforcement
+    // Pass frontend-generated ID so frontend can track node before persistence completes
     operations
         .create_node(
+            Some(node.id), // Frontend provides UUID for local state tracking
             node.node_type,
             node.content,
             node.parent_id,
@@ -184,6 +186,7 @@ pub async fn create_container_node(
     // Create container node with NodeOperations (enforces container rules)
     let node_id = operations
         .create_node(
+            None, // Let NodeOperations generate ID for containers
             input.node_type,
             input.content,
             None, // parent_id = None for containers

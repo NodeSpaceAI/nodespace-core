@@ -240,6 +240,7 @@ mod integration_tests {
         // Create date container
         let date = operations
             .create_node(
+                None, // Test generates ID
                 "date".to_string(),
                 "2025-10-24".to_string(),
                 None,
@@ -253,6 +254,7 @@ mod integration_tests {
         // Create three children: A → B → C
         let node_a = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "A".to_string(),
                 Some(date.clone()),
@@ -265,6 +267,7 @@ mod integration_tests {
 
         let node_b = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "B".to_string(),
                 Some(date.clone()),
@@ -277,6 +280,7 @@ mod integration_tests {
 
         let _node_c = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "C".to_string(),
                 Some(date.clone()),
@@ -329,6 +333,7 @@ mod integration_tests {
         // Create date container
         let date = operations
             .create_node(
+                None, // Test generates ID
                 "date".to_string(),
                 "2025-10-25".to_string(),
                 None,
@@ -342,6 +347,7 @@ mod integration_tests {
         // Create parent with child
         let parent = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "Parent".to_string(),
                 Some(date.clone()),
@@ -355,6 +361,7 @@ mod integration_tests {
         // Create child under parent
         let child = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "Child".to_string(),
                 Some(parent.clone()),
@@ -368,6 +375,7 @@ mod integration_tests {
         // Create grandchild under child
         let _grandchild = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "Grandchild".to_string(),
                 Some(child.clone()),
@@ -414,6 +422,7 @@ mod integration_tests {
         // Create date container
         let date = operations
             .create_node(
+                None, // Test generates ID
                 "date".to_string(),
                 "2025-10-26".to_string(),
                 None,
@@ -427,6 +436,7 @@ mod integration_tests {
         // Create only 2 children
         let _node_a = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "A".to_string(),
                 Some(date.clone()),
@@ -439,6 +449,7 @@ mod integration_tests {
 
         let _node_b = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "B".to_string(),
                 Some(date.clone()),
@@ -473,6 +484,7 @@ mod integration_tests {
         // Create date container
         let date = operations
             .create_node(
+                None, // Test generates ID
                 "date".to_string(),
                 "2025-10-27".to_string(),
                 None,
@@ -555,6 +567,7 @@ mod integration_tests {
         // Create a simple node
         let node = operations
             .create_node(
+                None, // Test generates ID
                 "text".to_string(),
                 "Test".to_string(),
                 None,
