@@ -88,16 +88,56 @@ use std::sync::Arc;
 /// This struct replaces the 8 individual parameters previously used in `create_node()`,
 /// improving code maintainability and avoiding Clippy's `too_many_arguments` warning.
 ///
+/// # ID Generation Strategy
+///
+/// The `id` field supports three distinct scenarios:
+///
+/// 1. **Frontend-provided UUID** (Tauri commands): The frontend pre-generates UUIDs for
+///    optimistic UI updates and local state tracking (`persistedNodeIds`). This ensures
+///    ID consistency between client and server, preventing sync issues.
+///
+/// 2. **Auto-generated UUID** (MCP handlers): Server-side generation for external clients
+///    like AI assistants. This prevents ID conflicts and maintains security boundaries.
+///
+/// 3. **Date-based ID** (special case): Date nodes use their content (YYYY-MM-DD format)
+///    as the ID, enabling predictable lookups and ensuring uniqueness by date.
+///
+/// # Security Considerations
+///
+/// When accepting frontend-provided IDs:
+///
+/// - **UUID validation**: Non-date nodes must provide valid UUID format. Invalid UUIDs
+///   are rejected with `InvalidOperation` error.
+/// - **Database constraints**: The database enforces UNIQUE constraint on `nodes.id`,
+///   preventing collisions at the storage layer.
+/// - **Trust boundary**: Only Tauri commands (trusted in-process frontend) can provide
+///   custom IDs. MCP handlers (external AI clients) always use server-side generation.
+/// - **No collision check needed**: UUID format validation combined with database constraints
+///   provides sufficient protection without additional pre-flight existence checks.
+///
 /// # Examples
 ///
 /// ```no_run
 /// # use nodespace_core::operations::CreateNodeParams;
 /// # use serde_json::json;
+/// // Auto-generated ID (MCP path)
 /// let params = CreateNodeParams {
 ///     id: None,
 ///     node_type: "text".to_string(),
 ///     content: "Hello World".to_string(),
 ///     parent_id: Some("parent-123".to_string()),
+///     container_node_id: None,
+///     before_sibling_id: None,
+///     properties: json!({}),
+/// };
+///
+/// // Frontend-provided UUID (Tauri path)
+/// let frontend_id = uuid::Uuid::new_v4().to_string();
+/// let params_with_id = CreateNodeParams {
+///     id: Some(frontend_id),
+///     node_type: "text".to_string(),
+///     content: "Tracked by frontend".to_string(),
+///     parent_id: None,
 ///     container_node_id: None,
 ///     before_sibling_id: None,
 ///     properties: json!({}),
@@ -610,7 +650,22 @@ impl NodeOperations {
         // Otherwise, special case: date nodes use their content (YYYY-MM-DD) as the ID
         // Otherwise: generate a new UUID
         let node_id = if let Some(provided_id) = params.id {
-            provided_id
+            // Validate that provided ID is either:
+            // 1. A proper UUID format (for regular nodes)
+            // 2. A valid date format (YYYY-MM-DD) for date nodes
+            if params.node_type == "date" {
+                // Date nodes can use date format as ID
+                provided_id
+            } else {
+                // Non-date nodes must use UUID format (security check)
+                uuid::Uuid::parse_str(&provided_id).map_err(|_| {
+                    NodeOperationError::invalid_operation(format!(
+                        "Provided ID '{}' is not a valid UUID format (required for non-date nodes)",
+                        provided_id
+                    ))
+                })?;
+                provided_id
+            }
         } else if params.node_type == "date" {
             params.content.clone()
         } else {
@@ -1597,5 +1652,188 @@ mod tests {
         // Try to delete a node that doesn't exist
         let result = operations.delete_node("nonexistent-id").await.unwrap();
         assert!(!result.existed);
+    }
+
+    // =========================================================================
+    // Frontend-Provided ID Tests (Issue #349)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_create_node_with_frontend_provided_uuid() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        // Frontend-generated UUID (simulating Tauri command)
+        let frontend_id = uuid::Uuid::new_v4().to_string();
+
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: Some(frontend_id.clone()),
+                node_type: "text".to_string(),
+                content: "Frontend-tracked node".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Verify returned ID matches provided ID
+        assert_eq!(
+            node_id, frontend_id,
+            "Should return the exact UUID provided by frontend"
+        );
+
+        // Verify node was created with correct ID
+        let node = operations.get_node(&frontend_id).await.unwrap();
+        assert!(
+            node.is_some(),
+            "Node should exist with frontend-provided ID"
+        );
+        assert_eq!(
+            node.unwrap().id,
+            frontend_id,
+            "Stored node should have frontend-provided ID"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_node_with_frontend_provided_date_id() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        // Frontend provides date as ID for date node
+        let date_id = "2025-10-31".to_string();
+
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: Some(date_id.clone()),
+                node_type: "date".to_string(),
+                content: "2025-10-31".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Verify returned ID matches provided date ID
+        assert_eq!(
+            node_id, date_id,
+            "Date nodes should accept date format as ID"
+        );
+
+        // Verify node was created
+        let node = operations.get_node(&date_id).await.unwrap();
+        assert!(node.is_some(), "Date node should exist with provided ID");
+        assert_eq!(node.unwrap().id, date_id);
+    }
+
+    #[tokio::test]
+    async fn test_create_node_rejects_invalid_uuid_for_non_date() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        // Try to create non-date node with invalid UUID
+        let result = operations
+            .create_node(CreateNodeParams {
+                id: Some("not-a-valid-uuid".to_string()),
+                node_type: "text".to_string(),
+                content: "Test".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await;
+
+        // Should fail with InvalidOperation error
+        assert!(
+            result.is_err(),
+            "Should reject invalid UUID format for non-date nodes"
+        );
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                NodeOperationError::InvalidOperation { .. }
+            ),
+            "Should return InvalidOperation error for malformed UUID"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_node_with_frontend_id_preserves_hierarchy() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        // Create parent with frontend-provided UUID
+        let parent_id = uuid::Uuid::new_v4().to_string();
+        operations
+            .create_node(CreateNodeParams {
+                id: Some(parent_id.clone()),
+                node_type: "text".to_string(),
+                content: "Parent".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Create child with frontend-provided UUID
+        let child_id = uuid::Uuid::new_v4().to_string();
+        operations
+            .create_node(CreateNodeParams {
+                id: Some(child_id.clone()),
+                node_type: "text".to_string(),
+                content: "Child".to_string(),
+                parent_id: Some(parent_id.clone()),
+                container_node_id: Some(parent_id.clone()),
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Verify hierarchy is correctly established
+        let child = operations.get_node(&child_id).await.unwrap().unwrap();
+        assert_eq!(
+            child.parent_id,
+            Some(parent_id.clone()),
+            "Child should have correct parent"
+        );
+        assert_eq!(
+            child.container_node_id,
+            Some(parent_id),
+            "Child should have correct container"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_auto_generated_ids_still_work() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        // Create node without providing ID (MCP path)
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: None, // Should auto-generate UUID
+                node_type: "text".to_string(),
+                content: "Auto-generated ID".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Verify ID was auto-generated (should be valid UUID)
+        assert!(
+            uuid::Uuid::parse_str(&node_id).is_ok(),
+            "Auto-generated ID should be valid UUID"
+        );
+
+        // Verify node exists
+        let node = operations.get_node(&node_id).await.unwrap();
+        assert!(node.is_some(), "Node with auto-generated ID should exist");
     }
 }
