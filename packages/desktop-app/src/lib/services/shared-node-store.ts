@@ -26,7 +26,6 @@ import { eventBus } from './event-bus';
 import { tauriNodeService } from './tauri-node-service';
 import { PersistenceCoordinator, OperationCancelledError } from './persistence-coordinator.svelte';
 import { isPlaceholderNode, requiresAtomicBatching } from '$lib/utils/placeholder-detection';
-import { mentionSyncService } from './mention-sync-service';
 import { shouldLogDatabaseErrors, isTestEnvironment } from '$lib/utils/test-environment';
 import type { Node } from '$lib/types';
 import type {
@@ -198,42 +197,14 @@ export class SharedNodeStore {
   }
 
   // ========================================================================
-  // Private Helper Methods
-  // ========================================================================
-
-  /**
-   * Sync mention relationships when content changes
-   *
-   * Fires asynchronously in the background without blocking the caller.
-   * Errors are logged but do not propagate to prevent disrupting node operations.
-   *
-   * @param nodeId - ID of the node whose content changed
-   * @param oldContent - Previous content (may be undefined for new nodes)
-   * @param newContent - New content (must be defined and different from oldContent)
-   */
-  private syncMentionsIfChanged(
-    nodeId: string,
-    oldContent: string | undefined,
-    newContent: string | undefined
-  ): void {
-    // Only sync if content actually changed and new content is defined
-    if (oldContent !== newContent && newContent !== undefined) {
-      // Fire and forget - mentions sync in background
-      mentionSyncService.syncMentions(nodeId, oldContent, newContent).catch((error) => {
-        console.error('[SharedNodeStore] Failed to sync mentions for node', nodeId, error);
-      });
-    }
-  }
-
-  // ========================================================================
   // Update Operations with Conflict Detection
   // ========================================================================
 
   /**
    * Update a node with conflict detection and source tracking
    *
-   * Automatically syncs mention relationships when content changes.
-   * Mention sync runs asynchronously and failures are logged but do not block the update.
+   * Note: Mention relationships are automatically synced by the backend when content changes.
+   * The Rust backend extracts nodespace:// mentions and maintains the node_mentions table.
    *
    * @param nodeId - ID of node to update
    * @param changes - Partial node changes to apply
@@ -347,11 +318,6 @@ export class SharedNodeStore {
 
       // Notify subscribers
       this.notifySubscribers(nodeId, updatedNode, source);
-
-      // Sync mentions if content changed (async - don't block)
-      if ('content' in changes) {
-        this.syncMentionsIfChanged(nodeId, existingNode.content, changes.content);
-      }
 
       // Emit event - cast to bypass type checking for now
       // TODO: Update event-types.ts to support source tracking
@@ -569,13 +535,9 @@ export class SharedNodeStore {
    */
   setNode(node: Node, source: UpdateSource, skipPersistence = false): void {
     const isNewNode = !this.persistedNodeIds.has(node.id);
-    const oldNode = this.nodes.get(node.id);
     this.nodes.set(node.id, node);
     this.versions.set(node.id, this.getNextVersion(node.id));
     this.notifySubscribers(node.id, node, source);
-
-    // Sync mentions if content changed (async - don't block)
-    this.syncMentionsIfChanged(node.id, oldNode?.content, node.content);
 
     // If source is database, mark node as already persisted
     if (source.type === 'database') {
