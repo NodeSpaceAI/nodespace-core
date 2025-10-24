@@ -79,7 +79,7 @@ pub use error::NodeOperationError;
 use crate::models::{DeleteResult, Node, NodeFilter, NodeUpdate};
 use crate::services::NodeService;
 use chrono::Utc;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 /// Core business logic layer for node operations
@@ -197,6 +197,55 @@ impl NodeOperations {
         // - header: Header containers (e.g., "# Project Name")
         // Multi-line types (code-block, quote-block, ordered-list) cannot be containers
         matches!(node_type, "date" | "text" | "header")
+    }
+
+    /// Ensure date container exists, auto-creating it if necessary
+    ///
+    /// Date nodes (YYYY-MM-DD format) are special containers that auto-exist.
+    /// They are always root-level containers (no parent, no container).
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - Potential date node ID to check/create
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) if the node exists or was created, Err if creation failed
+    async fn ensure_date_container_exists(&self, node_id: &str) -> Result<(), NodeOperationError> {
+        // Check if this is a date format (YYYY-MM-DD)
+        if !Self::is_date_node_id(node_id) {
+            return Ok(()); // Not a date, nothing to do
+        }
+
+        // Check if date container already exists
+        let exists = self.node_service.get_node(node_id).await?.is_some();
+        if exists {
+            return Ok(()); // Already exists
+        }
+
+        // Auto-create the date container
+        let date_node = Node::new(
+            "date".to_string(),
+            String::new(), // Date nodes have empty content
+            None,          // Date nodes are always root-level (no parent, no container)
+            json!({}),
+        );
+
+        // Override the ID to be the date string (YYYY-MM-DD)
+        let mut date_node_with_id = date_node;
+        date_node_with_id.id = node_id.to_string();
+
+        // Create the date container directly via NodeService
+        // Skip NodeOperations to avoid infinite recursion
+        self.node_service.create_node(date_node_with_id).await?;
+
+        Ok(())
+    }
+
+    /// Check if a string matches date node ID format: YYYY-MM-DD
+    fn is_date_node_id(id: &str) -> bool {
+        use chrono::NaiveDate;
+        NaiveDate::parse_from_str(id, "%Y-%m-%d").is_ok()
     }
 
     /// Resolve container_node_id for non-container nodes
@@ -450,6 +499,15 @@ impl NodeOperations {
         before_sibling_id: Option<String>,
         properties: Value,
     ) -> Result<String, NodeOperationError> {
+        // CRITICAL: Auto-create date containers if they don't exist
+        // Date nodes are always containers and parents - they never have parents themselves
+        if let Some(ref parent_id_str) = parent_id {
+            self.ensure_date_container_exists(parent_id_str).await?;
+        }
+        if let Some(ref container_id_str) = container_node_id {
+            self.ensure_date_container_exists(container_id_str).await?;
+        }
+
         // Business Rule 1: Determine if this node IS a container based on hierarchy fields
         // A node is a container if it has NO parent and NO container
         // (not just because its type CAN be a container)

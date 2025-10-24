@@ -34,7 +34,7 @@
       sharedNodeStore.setNode(
         event.payload.node,
         { type: 'mcp-server' },
-        false // Don't skip persistence - let store handle it
+        true // Skip persistence - already saved by MCP backend
       );
     });
 
