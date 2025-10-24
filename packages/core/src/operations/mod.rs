@@ -224,10 +224,11 @@ impl NodeOperations {
         }
 
         // Auto-create the date container
+        // IMPORTANT: Date node content MUST match the date ID for validation
         let date_node = Node::new(
             "date".to_string(),
-            String::new(), // Date nodes have empty content
-            None,          // Date nodes are always root-level (no parent, no container)
+            node_id.to_string(), // Content must be the date string (YYYY-MM-DD)
+            None,                // Date nodes are always root-level (no parent, no container)
             json!({}),
         );
 
