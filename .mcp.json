@@ -8,6 +8,10 @@
         "chrome-devtools-mcp@latest"
       ],
       "env": {}
+    },
+    "nodespace": {
+      "type": "http",
+      "url": "http://localhost:3200/mcp"
     }
   }
 }
