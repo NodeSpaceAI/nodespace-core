@@ -113,227 +113,247 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
       }
     }, 10000);
 
-    it.skipIf(!shouldUseDatabase())('should process mentions during node creation', async () => {
-      // Create a daily note (the mentioning node)
-      const dailyNoteData = TestNodeBuilder.text('Daily Note 2025-01-15')
-        .withType('text') // Use text type instead of date to avoid custom ID validation
-        .build();
-      const dailyNoteId = await backend.createNode(dailyNoteData);
-
-      await waitForDatabaseWrites();
-      if (shouldUseDatabase()) {
-        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-      }
-
-      // Create a container node
-      // Note: mentionedBy parameter may not be implemented yet
-      const containerInput = {
-        content: 'Meeting Notes',
-        nodeType: 'text'
-      };
-
-      try {
-        const containerId = await backend.createContainerNode(containerInput);
-
-        // Verify container was created
-        const container = await backend.getNode(containerId);
-        expect(container).toBeTruthy();
-        expect(container?.content).toBe('Meeting Notes');
-
-        // Measure mention creation performance
-        const startTime = performance.now();
-        await backend.createNodeMention(dailyNoteId, containerId);
-        const duration = performance.now() - startTime;
-
-        console.log(`Mention creation: ${duration.toFixed(2)}ms`);
-        expect(duration).toBeLessThan(50); // Baseline: < 50ms
-      } catch (error) {
-        // If container endpoint is not implemented, skip this test
-        // Expected: 405 Method Not Allowed or similar until endpoint is active
-        expect(error).toBeTruthy();
-      }
-
-      // Note: The mention relationship verification would require
-      // a query endpoint for mentions, which may be added in the future
-    }, 10000);
-
-    it.skipIf(!shouldUseDatabase())('should update embeddings when content changes', async () => {
-      // Create a topic node
-      const topicData = TestNodeBuilder.text('Machine Learning Overview')
-        .withProperties({ category: 'AI', importance: 'high' })
-        .build();
-      const topicId = await backend.createNode(topicData);
-
-      await waitForDatabaseWrites();
-      if (shouldUseDatabase()) {
-        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-      }
-
-      // Generate initial embedding
-      try {
-        await backend.generateContainerEmbedding(topicId);
-      } catch (error) {
-        // Expected: NOT_IMPLEMENTED or 404 until TopicEmbeddingService is integrated
-        expect(error).toBeTruthy();
-      }
-
-      // Note: Since the backend has placeholder implementations, we expect
-      // NOT_IMPLEMENTED errors. This test verifies the interface is correct.
-      // Once TopicEmbeddingService is integrated, these operations will work.
-
-      // Update the topic content
-      try {
-        await backend.updateNode(topicId, {
-          content: 'Deep Learning and Neural Networks'
-        });
+    it.skipIf(!shouldUseDatabase())(
+      'should process mentions during node creation',
+      async () => {
+        // Create a daily note (the mentioning node)
+        const dailyNoteData = TestNodeBuilder.text('Daily Note 2025-01-15')
+          .withType('text') // Use text type instead of date to avoid custom ID validation
+          .build();
+        const dailyNoteId = await backend.createNode(dailyNoteData);
 
         await waitForDatabaseWrites();
-        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-
-        // Verify content was updated
-        const updatedTopic = await backend.getNode(topicId);
-        expect(updatedTopic?.content).toBe('Deep Learning and Neural Networks');
-      } catch (error) {
-        // If updateNode returns 500 error, skip this test
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (errorMessage.includes('500')) {
-          console.log('[Test] Node update endpoint error - test skipped');
-          expect(error).toBeTruthy();
-          return;
+        if (shouldUseDatabase()) {
+          expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
         }
-        throw error;
-      }
 
-      // Trigger re-embedding (will return NOT_IMPLEMENTED for now)
-      // When service is integrated, this should mark the topic as stale
-      // and trigger re-embedding
-      try {
-        await backend.updateContainerEmbedding(topicId);
-      } catch (error) {
-        // Expected: NOT_IMPLEMENTED until TopicEmbeddingService is integrated
-        expect(error).toBeTruthy();
-      }
-    }, 10000);
+        // Create a container node
+        // Note: mentionedBy parameter may not be implemented yet
+        const containerInput = {
+          content: 'Meeting Notes',
+          nodeType: 'text'
+        };
+
+        try {
+          const containerId = await backend.createContainerNode(containerInput);
+
+          // Verify container was created
+          const container = await backend.getNode(containerId);
+          expect(container).toBeTruthy();
+          expect(container?.content).toBe('Meeting Notes');
+
+          // Measure mention creation performance
+          const startTime = performance.now();
+          await backend.createNodeMention(dailyNoteId, containerId);
+          const duration = performance.now() - startTime;
+
+          console.log(`Mention creation: ${duration.toFixed(2)}ms`);
+          expect(duration).toBeLessThan(50); // Baseline: < 50ms
+        } catch (error) {
+          // If container endpoint is not implemented, skip this test
+          // Expected: 405 Method Not Allowed or similar until endpoint is active
+          expect(error).toBeTruthy();
+        }
+
+        // Note: The mention relationship verification would require
+        // a query endpoint for mentions, which may be added in the future
+      },
+      10000
+    );
+
+    it.skipIf(!shouldUseDatabase())(
+      'should update embeddings when content changes',
+      async () => {
+        // Create a topic node
+        const topicData = TestNodeBuilder.text('Machine Learning Overview')
+          .withProperties({ category: 'AI', importance: 'high' })
+          .build();
+        const topicId = await backend.createNode(topicData);
+
+        await waitForDatabaseWrites();
+        if (shouldUseDatabase()) {
+          expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+        }
+
+        // Generate initial embedding
+        try {
+          await backend.generateContainerEmbedding(topicId);
+        } catch (error) {
+          // Expected: NOT_IMPLEMENTED or 404 until TopicEmbeddingService is integrated
+          expect(error).toBeTruthy();
+        }
+
+        // Note: Since the backend has placeholder implementations, we expect
+        // NOT_IMPLEMENTED errors. This test verifies the interface is correct.
+        // Once TopicEmbeddingService is integrated, these operations will work.
+
+        // Update the topic content
+        try {
+          await backend.updateNode(topicId, {
+            content: 'Deep Learning and Neural Networks'
+          });
+
+          await waitForDatabaseWrites();
+          expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+          // Verify content was updated
+          const updatedTopic = await backend.getNode(topicId);
+          expect(updatedTopic?.content).toBe('Deep Learning and Neural Networks');
+        } catch (error) {
+          // If updateNode returns 500 error, skip this test
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          if (errorMessage.includes('500')) {
+            console.log('[Test] Node update endpoint error - test skipped');
+            expect(error).toBeTruthy();
+            return;
+          }
+          throw error;
+        }
+
+        // Trigger re-embedding (will return NOT_IMPLEMENTED for now)
+        // When service is integrated, this should mark the topic as stale
+        // and trigger re-embedding
+        try {
+          await backend.updateContainerEmbedding(topicId);
+        } catch (error) {
+          // Expected: NOT_IMPLEMENTED until TopicEmbeddingService is integrated
+          expect(error).toBeTruthy();
+        }
+      },
+      10000
+    );
   });
 
   describe('Batch operations', () => {
-    it.skipIf(!shouldUseDatabase())('should batch generate embeddings for multiple topics', async () => {
-      // Create multiple topic nodes
-      const topic1Data = TestNodeBuilder.text('JavaScript Basics').build();
-      const topic1Id = await backend.createNode(topic1Data);
+    it.skipIf(!shouldUseDatabase())(
+      'should batch generate embeddings for multiple topics',
+      async () => {
+        // Create multiple topic nodes
+        const topic1Data = TestNodeBuilder.text('JavaScript Basics').build();
+        const topic1Id = await backend.createNode(topic1Data);
 
-      const topic2Data = TestNodeBuilder.text('TypeScript Advanced Patterns').build();
-      const topic2Id = await backend.createNode(topic2Data);
+        const topic2Data = TestNodeBuilder.text('TypeScript Advanced Patterns').build();
+        const topic2Id = await backend.createNode(topic2Data);
 
-      const topic3Data = TestNodeBuilder.text('Rust Programming').build();
-      const topic3Id = await backend.createNode(topic3Data);
+        const topic3Data = TestNodeBuilder.text('Rust Programming').build();
+        const topic3Id = await backend.createNode(topic3Data);
 
-      await waitForDatabaseWrites();
-      if (shouldUseDatabase()) {
-        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-      }
-
-      const topicIds = [topic1Id, topic2Id, topic3Id];
-
-      // Batch generate embeddings
-      // Note: Placeholder implementation returns empty arrays
-      try {
-        const startTime = performance.now();
-        const result = await backend.batchGenerateEmbeddings(topicIds);
-        const duration = performance.now() - startTime;
-
-        console.log(`Batch embedding: ${duration.toFixed(2)}ms for ${topicIds.length} topics`);
-
-        // Verify result structure
-        expect(result).toHaveProperty('successCount');
-        expect(result).toHaveProperty('failedEmbeddings');
-        expect(Array.isArray(result.failedEmbeddings)).toBe(true);
-
-        // Performance baseline (placeholder should be fast)
-        expect(duration).toBeLessThan(1000);
-      } catch (error) {
-        // Expected: NOT_IMPLEMENTED until TopicEmbeddingService is integrated
-        expect(error).toBeTruthy();
-      }
-    }, 10000);
-
-    it.skipIf(!shouldUseDatabase())('should handle partial failures in batch operations', async () => {
-      // Create valid and invalid topic IDs
-      const validTopic1Data = TestNodeBuilder.text('Valid Topic 1').build();
-      const validTopic1Id = await backend.createNode(validTopic1Data);
-
-      const validTopic2Data = TestNodeBuilder.text('Valid Topic 2').build();
-      const validTopic2Id = await backend.createNode(validTopic2Data);
-
-      await waitForDatabaseWrites();
-      if (shouldUseDatabase()) {
-        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-      }
-
-      // Mix valid and non-existent topic IDs
-      const topicIds = [
-        validTopic1Id,
-        'non-existent-topic-1',
-        validTopic2Id,
-        'non-existent-topic-2'
-      ];
-
-      try {
-        const result = await backend.batchGenerateEmbeddings(topicIds);
-
-        // In a real implementation, we expect:
-        // - successCount = 2 (valid topics)
-        // - failedEmbeddings = 2 entries (non-existent topics)
-        expect(result).toHaveProperty('successCount');
-        expect(result).toHaveProperty('failedEmbeddings');
-
-        // Verify failed embeddings have proper structure
-        if (result.failedEmbeddings.length > 0) {
-          for (const failed of result.failedEmbeddings) {
-            expect(failed).toHaveProperty('topicId');
-            expect(failed).toHaveProperty('error');
-            expect(typeof failed.containerId).toBe('string');
-            expect(typeof failed.error).toBe('string');
-          }
+        await waitForDatabaseWrites();
+        if (shouldUseDatabase()) {
+          expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
         }
-      } catch (error) {
-        // Expected: NOT_IMPLEMENTED until TopicEmbeddingService is integrated
-        expect(error).toBeTruthy();
-      }
-    }, 10000);
 
-    it.skipIf(!shouldUseDatabase())('should report accurate success/failure counts', async () => {
-      // Create 10 topic nodes for batch testing
-      const topicIds: string[] = [];
-      for (let i = 1; i <= 10; i++) {
-        const topicData = TestNodeBuilder.text(`Topic ${i}`).build();
-        const topicId = await backend.createNode(topicData);
-        topicIds.push(topicId);
-      }
+        const topicIds = [topic1Id, topic2Id, topic3Id];
 
-      await waitForDatabaseWrites();
-      if (shouldUseDatabase()) {
-        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-      }
+        // Batch generate embeddings
+        // Note: Placeholder implementation returns empty arrays
+        try {
+          const startTime = performance.now();
+          const result = await backend.batchGenerateEmbeddings(topicIds);
+          const duration = performance.now() - startTime;
 
-      try {
-        const result = await backend.batchGenerateEmbeddings(topicIds);
+          console.log(`Batch embedding: ${duration.toFixed(2)}ms for ${topicIds.length} topics`);
 
-        // Verify counts
-        expect(result.successCount).toBeGreaterThanOrEqual(0);
-        expect(result.successCount).toBeLessThanOrEqual(topicIds.length);
+          // Verify result structure
+          expect(result).toHaveProperty('successCount');
+          expect(result).toHaveProperty('failedEmbeddings');
+          expect(Array.isArray(result.failedEmbeddings)).toBe(true);
 
-        // Success count + failed count should equal total
-        const totalProcessed = result.successCount + result.failedEmbeddings.length;
-        expect(totalProcessed).toBe(topicIds.length);
+          // Performance baseline (placeholder should be fast)
+          expect(duration).toBeLessThan(1000);
+        } catch (error) {
+          // Expected: NOT_IMPLEMENTED until TopicEmbeddingService is integrated
+          expect(error).toBeTruthy();
+        }
+      },
+      10000
+    );
 
-        // Each failed embedding should have unique topicId
-        const failedIds = new Set(result.failedEmbeddings.map((f) => f.containerId));
-        expect(failedIds.size).toBe(result.failedEmbeddings.length);
-      } catch (error) {
-        // Expected: NOT_IMPLEMENTED until TopicEmbeddingService is integrated
-        expect(error).toBeTruthy();
-      }
-    }, 10000);
+    it.skipIf(!shouldUseDatabase())(
+      'should handle partial failures in batch operations',
+      async () => {
+        // Create valid and invalid topic IDs
+        const validTopic1Data = TestNodeBuilder.text('Valid Topic 1').build();
+        const validTopic1Id = await backend.createNode(validTopic1Data);
+
+        const validTopic2Data = TestNodeBuilder.text('Valid Topic 2').build();
+        const validTopic2Id = await backend.createNode(validTopic2Data);
+
+        await waitForDatabaseWrites();
+        if (shouldUseDatabase()) {
+          expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+        }
+
+        // Mix valid and non-existent topic IDs
+        const topicIds = [
+          validTopic1Id,
+          'non-existent-topic-1',
+          validTopic2Id,
+          'non-existent-topic-2'
+        ];
+
+        try {
+          const result = await backend.batchGenerateEmbeddings(topicIds);
+
+          // In a real implementation, we expect:
+          // - successCount = 2 (valid topics)
+          // - failedEmbeddings = 2 entries (non-existent topics)
+          expect(result).toHaveProperty('successCount');
+          expect(result).toHaveProperty('failedEmbeddings');
+
+          // Verify failed embeddings have proper structure
+          if (result.failedEmbeddings.length > 0) {
+            for (const failed of result.failedEmbeddings) {
+              expect(failed).toHaveProperty('topicId');
+              expect(failed).toHaveProperty('error');
+              expect(typeof failed.containerId).toBe('string');
+              expect(typeof failed.error).toBe('string');
+            }
+          }
+        } catch (error) {
+          // Expected: NOT_IMPLEMENTED until TopicEmbeddingService is integrated
+          expect(error).toBeTruthy();
+        }
+      },
+      10000
+    );
+
+    it.skipIf(!shouldUseDatabase())(
+      'should report accurate success/failure counts',
+      async () => {
+        // Create 10 topic nodes for batch testing
+        const topicIds: string[] = [];
+        for (let i = 1; i <= 10; i++) {
+          const topicData = TestNodeBuilder.text(`Topic ${i}`).build();
+          const topicId = await backend.createNode(topicData);
+          topicIds.push(topicId);
+        }
+
+        await waitForDatabaseWrites();
+        if (shouldUseDatabase()) {
+          expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+        }
+
+        try {
+          const result = await backend.batchGenerateEmbeddings(topicIds);
+
+          // Verify counts
+          expect(result.successCount).toBeGreaterThanOrEqual(0);
+          expect(result.successCount).toBeLessThanOrEqual(topicIds.length);
+
+          // Success count + failed count should equal total
+          const totalProcessed = result.successCount + result.failedEmbeddings.length;
+          expect(totalProcessed).toBe(topicIds.length);
+
+          // Each failed embedding should have unique topicId
+          const failedIds = new Set(result.failedEmbeddings.map((f) => f.containerId));
+          expect(failedIds.size).toBe(result.failedEmbeddings.length);
+        } catch (error) {
+          // Expected: NOT_IMPLEMENTED until TopicEmbeddingService is integrated
+          expect(error).toBeTruthy();
+        }
+      },
+      10000
+    );
   });
 });

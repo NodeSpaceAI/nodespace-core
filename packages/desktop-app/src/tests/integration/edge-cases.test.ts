@@ -196,36 +196,40 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
   });
 
   describe('Timeout handling', () => {
-    it.skipIf(!shouldUseDatabase())('should timeout embedding operations after 30 seconds', async () => {
-      // Note: This test verifies the timeout mechanism exists
-      // In real implementation, a slow embedding service would trigger timeout
-      // For placeholder implementation, operations are fast, so we just verify
-      // the interface accepts the operation
+    it.skipIf(!shouldUseDatabase())(
+      'should timeout embedding operations after 30 seconds',
+      async () => {
+        // Note: This test verifies the timeout mechanism exists
+        // In real implementation, a slow embedding service would trigger timeout
+        // For placeholder implementation, operations are fast, so we just verify
+        // the interface accepts the operation
 
-      // Create a topic node
-      const topicData = TestNodeBuilder.text('Test Topic for Timeout').build();
-      const topicId = await backend.createNode(topicData);
+        // Create a topic node
+        const topicData = TestNodeBuilder.text('Test Topic for Timeout').build();
+        const topicId = await backend.createNode(topicData);
 
-      await waitForDatabaseWrites();
-      if (shouldUseDatabase()) {
-        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-      }
+        await waitForDatabaseWrites();
+        if (shouldUseDatabase()) {
+          expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+        }
 
-      // Attempt operation (will be fast with placeholder)
-      const startTime = performance.now();
-      try {
-        await backend.generateContainerEmbedding(topicId);
-      } catch (error) {
-        const duration = performance.now() - startTime;
+        // Attempt operation (will be fast with placeholder)
+        const startTime = performance.now();
+        try {
+          await backend.generateContainerEmbedding(topicId);
+        } catch (error) {
+          const duration = performance.now() - startTime;
 
-        // If it times out, it should be around 30 seconds (30000ms)
-        // With placeholder, it will fail immediately with NOT_IMPLEMENTED
-        expect(error).toBeTruthy();
+          // If it times out, it should be around 30 seconds (30000ms)
+          // With placeholder, it will fail immediately with NOT_IMPLEMENTED
+          expect(error).toBeTruthy();
 
-        // Verify it's not actually waiting 30 seconds (placeholder fails fast)
-        expect(duration).toBeLessThan(1000);
-      }
-    }, 35000); // Allow 35s for timeout test + cleanup
+          // Verify it's not actually waiting 30 seconds (placeholder fails fast)
+          expect(duration).toBeLessThan(1000);
+        }
+      },
+      35000
+    ); // Allow 35s for timeout test + cleanup
 
     it('should cleanup resources on timeout', async () => {
       try {
@@ -290,45 +294,49 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
       }
     }, 10000);
 
-    it.skipIf(!shouldUseDatabase())('should preserve error details in batch failures', async () => {
-      // Create mix of valid and invalid topic IDs
-      const validTopicData = TestNodeBuilder.text('Valid Topic').build();
-      const validTopicId = await backend.createNode(validTopicData);
+    it.skipIf(!shouldUseDatabase())(
+      'should preserve error details in batch failures',
+      async () => {
+        // Create mix of valid and invalid topic IDs
+        const validTopicData = TestNodeBuilder.text('Valid Topic').build();
+        const validTopicId = await backend.createNode(validTopicData);
 
-      await waitForDatabaseWrites();
-      if (shouldUseDatabase()) {
-        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-      }
+        await waitForDatabaseWrites();
+        if (shouldUseDatabase()) {
+          expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+        }
 
-      const topicIds = [validTopicId, 'invalid-id-1', 'invalid-id-2'];
+        const topicIds = [validTopicId, 'invalid-id-1', 'invalid-id-2'];
 
-      try {
-        const result = await backend.batchGenerateEmbeddings(topicIds);
+        try {
+          const result = await backend.batchGenerateEmbeddings(topicIds);
 
-        // Verify failed embeddings contain error details
-        if (result.failedEmbeddings.length > 0) {
-          for (const failed of result.failedEmbeddings) {
-            expect(failed.containerId).toBeTruthy();
-            expect(failed.error).toBeTruthy();
-            expect(typeof failed.containerId).toBe('string');
-            expect(typeof failed.error).toBe('string');
-            expect(failed.error.length).toBeGreaterThan(0);
+          // Verify failed embeddings contain error details
+          if (result.failedEmbeddings.length > 0) {
+            for (const failed of result.failedEmbeddings) {
+              expect(failed.containerId).toBeTruthy();
+              expect(failed.error).toBeTruthy();
+              expect(typeof failed.containerId).toBe('string');
+              expect(typeof failed.error).toBe('string');
+              expect(failed.error.length).toBeGreaterThan(0);
+            }
+          }
+
+          // Success count should be 0 or 1 (depending on placeholder behavior)
+          expect(result.successCount).toBeGreaterThanOrEqual(0);
+          expect(result.successCount).toBeLessThanOrEqual(topicIds.length);
+        } catch (error) {
+          // If entire batch fails, verify error is thrown
+          expect(error).toBeTruthy();
+
+          if (error instanceof NodeOperationError) {
+            expect(error.operation).toBe('batchGenerateEmbeddings');
+            expect(error.message).toBeTruthy();
           }
         }
-
-        // Success count should be 0 or 1 (depending on placeholder behavior)
-        expect(result.successCount).toBeGreaterThanOrEqual(0);
-        expect(result.successCount).toBeLessThanOrEqual(topicIds.length);
-      } catch (error) {
-        // If entire batch fails, verify error is thrown
-        expect(error).toBeTruthy();
-
-        if (error instanceof NodeOperationError) {
-          expect(error.operation).toBe('batchGenerateEmbeddings');
-          expect(error.message).toBeTruthy();
-        }
-      }
-    }, 10000);
+      },
+      10000
+    );
   });
 
   describe('Mention operation edge cases', () => {
