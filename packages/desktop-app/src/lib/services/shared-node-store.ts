@@ -618,7 +618,24 @@ export class SharedNodeStore {
               // Check if node has been persisted - use in-memory tracking to avoid database query
               const isPersistedToDatabase = this.persistedNodeIds.has(node.id);
               if (isPersistedToDatabase) {
-                await tauriNodeService.updateNode(node.id, nodeToPersist);
+                try {
+                  await tauriNodeService.updateNode(node.id, nodeToPersist);
+                } catch (updateError) {
+                  // If UPDATE fails because node doesn't exist, try CREATE instead
+                  if (
+                    updateError instanceof Error &&
+                    (updateError.message.includes('NodeNotFound') ||
+                      updateError.message.includes('does not exist'))
+                  ) {
+                    console.warn(
+                      `[SharedNodeStore] Node ${node.id} not found in database, creating instead of updating`
+                    );
+                    await tauriNodeService.createNode(nodeToPersist);
+                    this.persistedNodeIds.add(node.id);
+                  } else {
+                    throw updateError;
+                  }
+                }
               } else {
                 await tauriNodeService.createNode(nodeToPersist);
                 this.persistedNodeIds.add(node.id); // Track as persisted
