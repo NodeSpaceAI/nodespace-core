@@ -313,12 +313,38 @@ impl NodeService {
         mentioning_node_id: &str,
         mentioned_node_id: &str,
     ) -> Result<(), NodeServiceError> {
+        // Prevent direct self-references
+        if mentioning_node_id == mentioned_node_id {
+            return Err(NodeServiceError::ValidationFailed(
+                crate::models::ValidationError::InvalidParent(
+                    "Cannot create self-referencing mention".to_string(),
+                ),
+            ));
+        }
+
         // Validate both nodes exist
         if !self.node_exists(mentioning_node_id).await? {
             return Err(NodeServiceError::node_not_found(mentioning_node_id));
         }
         if !self.node_exists(mentioned_node_id).await? {
             return Err(NodeServiceError::node_not_found(mentioned_node_id));
+        }
+
+        // Prevent container-level self-references (child mentioning its own container)
+        let mentioning_node = self
+            .get_node(mentioning_node_id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(mentioning_node_id))?;
+
+        // If the mentioning node has a container, prevent it from mentioning that container
+        if let Some(container_id) = &mentioning_node.container_node_id {
+            if container_id == mentioned_node_id {
+                return Err(NodeServiceError::ValidationFailed(
+                    crate::models::ValidationError::InvalidParent(
+                        "Cannot mention own container (container-level self-reference)".to_string(),
+                    ),
+                ));
+            }
         }
 
         let conn = self.db.connect_with_timeout().await?;
@@ -1958,12 +1984,37 @@ impl NodeService {
         source_id: &str,
         target_id: &str,
     ) -> Result<(), NodeServiceError> {
+        // Prevent direct self-references
+        if source_id == target_id {
+            return Err(NodeServiceError::ValidationFailed(
+                crate::models::ValidationError::InvalidParent(
+                    "Cannot create self-referencing mention".to_string(),
+                ),
+            ));
+        }
+
         // Verify both nodes exist
         if !self.node_exists(source_id).await? {
             return Err(NodeServiceError::node_not_found(source_id));
         }
         if !self.node_exists(target_id).await? {
             return Err(NodeServiceError::node_not_found(target_id));
+        }
+
+        // Prevent container-level self-references (child mentioning its own container)
+        let source_node = self
+            .get_node(source_id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
+
+        if let Some(container_id) = &source_node.container_node_id {
+            if container_id == target_id {
+                return Err(NodeServiceError::ValidationFailed(
+                    crate::models::ValidationError::InvalidParent(
+                        "Cannot mention own container (container-level self-reference)".to_string(),
+                    ),
+                ));
+            }
         }
 
         let conn = self.db.connect()?;
