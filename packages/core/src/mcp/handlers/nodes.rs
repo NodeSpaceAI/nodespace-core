@@ -5,16 +5,19 @@
 
 use crate::mcp::types::MCPError;
 use crate::models::{NodeFilter, OrderBy};
-use crate::operations::NodeOperations;
+use crate::operations::{CreateNodeParams, NodeOperations};
 use chrono::NaiveDate;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Parameters for create_node method
+/// Parameters for create_node method from MCP clients
+///
+/// Note: MCP clients don't provide IDs - they are generated server-side.
+/// This struct is used for deserialization from MCP requests.
 #[derive(Debug, Deserialize)]
-pub struct CreateNodeParams {
+pub struct MCPCreateNodeParams {
     pub node_type: String,
     pub content: String,
     #[serde(default)]
@@ -158,26 +161,26 @@ pub async fn handle_create_node(
     operations: &Arc<NodeOperations>,
     params: Value,
 ) -> Result<Value, MCPError> {
-    let params: CreateNodeParams = serde_json::from_value(params)
+    let mcp_params: MCPCreateNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
     // Create node via NodeOperations (enforces all business rules)
     let node_id = operations
-        .create_node(
-            None, // MCP generates IDs server-side
-            params.node_type.clone(),
-            params.content,
-            params.parent_id,
-            params.container_node_id,
-            params.before_sibling_id,
-            params.properties,
-        )
+        .create_node(CreateNodeParams {
+            id: None, // MCP generates IDs server-side
+            node_type: mcp_params.node_type.clone(),
+            content: mcp_params.content,
+            parent_id: mcp_params.parent_id,
+            container_node_id: mcp_params.container_node_id,
+            before_sibling_id: mcp_params.before_sibling_id,
+            properties: mcp_params.properties,
+        })
         .await
         .map_err(|e| MCPError::node_creation_failed(format!("Failed to create node: {}", e)))?;
 
     Ok(json!({
         "node_id": node_id,
-        "node_type": params.node_type,
+        "node_type": mcp_params.node_type,
         "success": true
     }))
 }
@@ -336,15 +339,15 @@ async fn ensure_parent_exists(
     if is_valid_date_format(parent_id) {
         // Try to create - date nodes use their content as ID
         let _ = operations
-            .create_node(
-                None, // MCP generates IDs server-side
-                "date".to_string(),
-                parent_id.to_string(),
-                None,
-                None,
-                None,
-                json!({}),
-            )
+            .create_node(CreateNodeParams {
+                id: None, // MCP generates IDs server-side
+                node_type: "date".to_string(),
+                content: parent_id.to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
             .await
             .map_err(|e| {
                 MCPError::node_creation_failed(format!("Failed to auto-create date node: {}", e))
@@ -562,15 +565,15 @@ pub async fn handle_insert_child_at_index(
 
     // 6. Create node using pointer-based operation
     let node_id = operations
-        .create_node(
-            None, // MCP generates IDs server-side
-            params.node_type.clone(),
-            params.content,
-            Some(params.parent_id.clone()),
+        .create_node(CreateNodeParams {
+            id: None, // MCP generates IDs server-side
+            node_type: params.node_type.clone(),
+            content: params.content,
+            parent_id: Some(params.parent_id.clone()),
             container_node_id,
-            before_sibling_id.clone(),
-            params.properties,
-        )
+            before_sibling_id: before_sibling_id.clone(),
+            properties: params.properties,
+        })
         .await
         .map_err(|e| MCPError::node_creation_failed(format!("Failed to create node: {}", e)))?;
 
