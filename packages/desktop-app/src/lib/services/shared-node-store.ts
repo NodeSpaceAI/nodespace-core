@@ -444,11 +444,13 @@ export class SharedNodeStore {
                   try {
                     await tauriNodeService.updateNode(nodeId, updatePayload);
                   } catch (updateError) {
-                    // If UPDATE fails because node doesn't exist (NodeNotFound), try CREATE instead
+                    // If UPDATE fails because node doesn't exist, try CREATE instead
                     // This handles cases where persistedNodeIds is out of sync (page reload, database reset)
+                    // Match both "NodeNotFound" and "does not exist" error messages
                     if (
                       updateError instanceof Error &&
-                      updateError.message.includes('NodeNotFound')
+                      (updateError.message.includes('NodeNotFound') ||
+                        updateError.message.includes('does not exist'))
                     ) {
                       console.warn(
                         `[SharedNodeStore] Node ${nodeId} not found in database, creating instead of updating`
