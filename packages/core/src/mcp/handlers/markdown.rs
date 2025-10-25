@@ -24,7 +24,7 @@
 
 use crate::mcp::types::MCPError;
 use crate::models::Node;
-use crate::operations::NodeOperations;
+use crate::operations::{CreateNodeParams, NodeOperations};
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -528,14 +528,15 @@ async fn create_node(
     // Create node via NodeOperations (enforces all business rules)
     // Container node ID is provided from the pre-created container
     operations
-        .create_node(
-            node_type.to_string(),
-            content.to_string(),
+        .create_node(CreateNodeParams {
+            id: None, // MCP generates IDs server-side
+            node_type: node_type.to_string(),
+            content: content.to_string(),
             parent_id,
             container_node_id,
             before_sibling_id,
-            json!({}),
-        )
+            properties: json!({}),
+        })
         .await
         .map_err(|e| {
             // Create preview of content for error message (avoid multi-line content in error)

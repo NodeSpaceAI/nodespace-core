@@ -1,6 +1,6 @@
 //! Node CRUD operation commands for Text, Task, and Date nodes
 
-use nodespace_core::operations::{NodeOperationError, NodeOperations};
+use nodespace_core::operations::{CreateNodeParams, NodeOperationError, NodeOperations};
 use nodespace_core::{Node, NodeQuery, NodeService, NodeServiceError, NodeUpdate};
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -119,15 +119,17 @@ pub async fn create_node(
     validate_node_type(&node.node_type)?;
 
     // Use NodeOperations to create node with business rule enforcement
+    // Pass frontend-generated ID so frontend can track node before persistence completes
     operations
-        .create_node(
-            node.node_type,
-            node.content,
-            node.parent_id,
-            node.container_node_id,
-            node.before_sibling_id,
-            node.properties,
-        )
+        .create_node(CreateNodeParams {
+            id: Some(node.id), // Frontend provides UUID for local state tracking
+            node_type: node.node_type,
+            content: node.content,
+            parent_id: node.parent_id,
+            container_node_id: node.container_node_id,
+            before_sibling_id: node.before_sibling_id,
+            properties: node.properties,
+        })
         .await
         .map_err(Into::into)
 }
@@ -183,14 +185,15 @@ pub async fn create_container_node(
 
     // Create container node with NodeOperations (enforces container rules)
     let node_id = operations
-        .create_node(
-            input.node_type,
-            input.content,
-            None, // parent_id = None for containers
-            None, // container_node_id = None for containers
-            None, // before_sibling_id = None for containers
-            input.properties,
-        )
+        .create_node(CreateNodeParams {
+            id: None, // Let NodeOperations generate ID for containers
+            node_type: input.node_type,
+            content: input.content,
+            parent_id: None,         // parent_id = None for containers
+            container_node_id: None, // container_node_id = None for containers
+            before_sibling_id: None, // before_sibling_id = None for containers
+            properties: input.properties,
+        })
         .await?;
 
     // If mentioned_by is provided, create mention relationship

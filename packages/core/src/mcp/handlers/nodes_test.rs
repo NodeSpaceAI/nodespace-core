@@ -140,7 +140,7 @@ mod integration_tests {
         handle_get_child_at_index, handle_get_children, handle_get_node_tree,
         handle_insert_child_at_index, handle_move_child_to_index,
     };
-    use crate::operations::NodeOperations;
+    use crate::operations::{CreateNodeParams, NodeOperations};
     use crate::{DatabaseService, NodeService};
     use serde_json::json;
     use std::sync::Arc;
@@ -239,51 +239,55 @@ mod integration_tests {
 
         // Create date container
         let date = operations
-            .create_node(
-                "date".to_string(),
-                "2025-10-24".to_string(),
-                None,
-                None,
-                None,
-                json!({}),
-            )
+            .create_node(CreateNodeParams {
+                id: None, // Test generates ID
+                node_type: "date".to_string(),
+                content: "2025-10-24".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
             .await
             .unwrap();
 
         // Create three children: A → B → C
         let node_a = operations
-            .create_node(
-                "text".to_string(),
-                "A".to_string(),
-                Some(date.clone()),
-                Some(date.clone()),
-                None,
-                json!({}),
-            )
+            .create_node(CreateNodeParams {
+                id: None, // Test generates ID
+                node_type: "text".to_string(),
+                content: "A".to_string(),
+                parent_id: Some(date.clone()),
+                container_node_id: Some(date.clone()),
+                before_sibling_id: None,
+                properties: json!({}),
+            })
             .await
             .unwrap();
 
         let node_b = operations
-            .create_node(
-                "text".to_string(),
-                "B".to_string(),
-                Some(date.clone()),
-                Some(date.clone()),
-                Some(node_a.clone()),
-                json!({}),
-            )
+            .create_node(CreateNodeParams {
+                id: None, // Test generates ID
+                node_type: "text".to_string(),
+                content: "B".to_string(),
+                parent_id: Some(date.clone()),
+                container_node_id: Some(date.clone()),
+                before_sibling_id: Some(node_a.clone()),
+                properties: json!({}),
+            })
             .await
             .unwrap();
 
         let _node_c = operations
-            .create_node(
-                "text".to_string(),
-                "C".to_string(),
-                Some(date.clone()),
-                Some(date.clone()),
-                Some(node_b.clone()),
-                json!({}),
-            )
+            .create_node(CreateNodeParams {
+                id: None, // Test generates ID
+                node_type: "text".to_string(),
+                content: "C".to_string(),
+                parent_id: Some(date.clone()),
+                container_node_id: Some(date.clone()),
+                before_sibling_id: Some(node_b.clone()),
+                properties: json!({}),
+            })
             .await
             .unwrap();
 
@@ -328,53 +332,57 @@ mod integration_tests {
 
         // Create date container
         let date = operations
-            .create_node(
-                "date".to_string(),
-                "2025-10-25".to_string(),
-                None,
-                None,
-                None,
-                json!({}),
-            )
+            .create_node(CreateNodeParams {
+                id: None, // Test generates ID
+                node_type: "date".to_string(),
+                content: "2025-10-25".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
             .await
             .unwrap();
 
         // Create parent with child
         let parent = operations
-            .create_node(
-                "text".to_string(),
-                "Parent".to_string(),
-                Some(date.clone()),
-                Some(date.clone()),
-                None,
-                json!({}),
-            )
+            .create_node(CreateNodeParams {
+                id: None, // Test generates ID
+                node_type: "text".to_string(),
+                content: "Parent".to_string(),
+                parent_id: Some(date.clone()),
+                container_node_id: Some(date.clone()),
+                before_sibling_id: None,
+                properties: json!({}),
+            })
             .await
             .unwrap();
 
         // Create child under parent
         let child = operations
-            .create_node(
-                "text".to_string(),
-                "Child".to_string(),
-                Some(parent.clone()),
-                Some(date.clone()),
-                None,
-                json!({}),
-            )
+            .create_node(CreateNodeParams {
+                id: None, // Test generates ID
+                node_type: "text".to_string(),
+                content: "Child".to_string(),
+                parent_id: Some(parent.clone()),
+                container_node_id: Some(date.clone()),
+                before_sibling_id: None,
+                properties: json!({}),
+            })
             .await
             .unwrap();
 
         // Create grandchild under child
         let _grandchild = operations
-            .create_node(
-                "text".to_string(),
-                "Grandchild".to_string(),
-                Some(child.clone()),
-                Some(date.clone()),
-                None,
-                json!({}),
-            )
+            .create_node(CreateNodeParams {
+                id: None, // Test generates ID
+                node_type: "text".to_string(),
+                content: "Grandchild".to_string(),
+                parent_id: Some(child.clone()),
+                container_node_id: Some(date.clone()),
+                before_sibling_id: None,
+                properties: json!({}),
+            })
             .await
             .unwrap();
 
@@ -413,39 +421,42 @@ mod integration_tests {
 
         // Create date container
         let date = operations
-            .create_node(
-                "date".to_string(),
-                "2025-10-26".to_string(),
-                None,
-                None,
-                None,
-                json!({}),
-            )
+            .create_node(CreateNodeParams {
+                id: None, // Test generates ID
+                node_type: "date".to_string(),
+                content: "2025-10-26".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
             .await
             .unwrap();
 
         // Create only 2 children
         let _node_a = operations
-            .create_node(
-                "text".to_string(),
-                "A".to_string(),
-                Some(date.clone()),
-                Some(date.clone()),
-                None,
-                json!({}),
-            )
+            .create_node(CreateNodeParams {
+                id: None, // Test generates ID
+                node_type: "text".to_string(),
+                content: "A".to_string(),
+                parent_id: Some(date.clone()),
+                container_node_id: Some(date.clone()),
+                before_sibling_id: None,
+                properties: json!({}),
+            })
             .await
             .unwrap();
 
         let _node_b = operations
-            .create_node(
-                "text".to_string(),
-                "B".to_string(),
-                Some(date.clone()),
-                Some(date.clone()),
-                Some(_node_a.clone()),
-                json!({}),
-            )
+            .create_node(CreateNodeParams {
+                id: None, // Test generates ID
+                node_type: "text".to_string(),
+                content: "B".to_string(),
+                parent_id: Some(date.clone()),
+                container_node_id: Some(date.clone()),
+                before_sibling_id: Some(_node_a.clone()),
+                properties: json!({}),
+            })
             .await
             .unwrap();
 
@@ -472,14 +483,15 @@ mod integration_tests {
 
         // Create date container
         let date = operations
-            .create_node(
-                "date".to_string(),
-                "2025-10-27".to_string(),
-                None,
-                None,
-                None,
-                json!({}),
-            )
+            .create_node(CreateNodeParams {
+                id: None, // Test generates ID
+                node_type: "date".to_string(),
+                content: "2025-10-27".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
             .await
             .unwrap();
 
@@ -554,14 +566,15 @@ mod integration_tests {
 
         // Create a simple node
         let node = operations
-            .create_node(
-                "text".to_string(),
-                "Test".to_string(),
-                None,
-                None,
-                None,
-                json!({}),
-            )
+            .create_node(CreateNodeParams {
+                id: None, // Test generates ID
+                node_type: "text".to_string(),
+                content: "Test".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
             .await
             .unwrap();
 
