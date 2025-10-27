@@ -9,11 +9,18 @@
  * - Custom CSS classes for inline formatting compatibility
  * - Robust parsing for edge cases (nested formatting, malformed syntax)
  * - Preservation of header syntax as plain text (not processed as HTML headers)
+ * - Disabled list rendering to prevent "1. Text" patterns from becoming HTML lists
  *
  * Examples of what this processes:
  * ✅ "**bold text**" → <span class="markdown-bold">bold text</span>
  * ✅ "*italic text*" → <span class="markdown-italic">italic text</span>
+ * ✅ "1. Item" → "1. Item" (preserved as plain text, NOT <ol><li>Item</li></ol>)
  * ❌ "# Header" → "# Header" (preserved as plain text, NOT <h1>Header</h1>)
+ *
+ * GFM (GitHub Flavored Markdown) Features:
+ * - GFM is enabled (gfm: true) for better markdown compatibility
+ * - Tables with pipe syntax (| Header |) will render with bold first row (GFM standard)
+ * - This is INTENDED behavior - first row of GFM tables represents headers
  */
 
 import { marked } from 'marked';
@@ -50,6 +57,29 @@ marked.use({
       const level = '#'.repeat(token.depth);
       const text = this.parser.parseInline(token.tokens);
       return `${level} ${text}`;
+    },
+
+    // CRITICAL: Disable ordered list processing to prevent "### 1. Text" from becoming a list
+    // GFM detects "1. " pattern and creates lists, but for header nodes this is unwanted
+    list(token: Tokens.List): string {
+      // Return plain text representation of list items with their markers preserved
+      const items = token.items.map((item, index) => {
+        const text = this.parser.parse(item.tokens);
+        // Preserve the list marker (1., 2., -, etc.)
+        let marker = '';
+        if (token.ordered) {
+          // For ordered lists, use the actual number (start + index) followed by dot and space
+          const itemNumber = (token.start || 1) + index;
+          marker = `${itemNumber}. `;
+        } else {
+          // For unordered lists, use dash
+          marker = '- ';
+        }
+        // Add task checkbox if present
+        const taskMarker = item.task ? (item.checked ? '[x] ' : '[ ] ') : '';
+        return `${marker}${taskMarker}${text}`;
+      });
+      return items.join('\n');
     }
   },
   // Configure options
