@@ -961,6 +961,15 @@
     text-decoration: underline;
   }
 
+  :global(.markdown-code-inline) {
+    /* Match code-block styling for consistency */
+    background: hsl(var(--muted));
+    padding: 0.125rem 0.25rem;
+    border-radius: var(--radius);
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.875rem;
+  }
+
   :global(.markdown-code) {
     font-family: 'Fira Code', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
     font-size: 0.9em;

@@ -14,6 +14,7 @@
  * Examples of what this processes:
  * ✅ "**bold text**" → <span class="markdown-bold">bold text</span>
  * ✅ "*italic text*" → <span class="markdown-italic">italic text</span>
+ * ✅ "`code`" → <code class="markdown-code-inline">code</code>
  * ✅ "1. Item" → "1. Item" (preserved as plain text, NOT <ol><li>Item</li></ol>)
  * ❌ "# Header" → "# Header" (preserved as plain text, NOT <h1>Header</h1>)
  *
@@ -41,6 +42,11 @@ marked.use({
       // Extract the rendered text content from the token
       const text = this.parser.parseInline(token.tokens);
       return `<span class="markdown-italic">${text}</span>`;
+    },
+
+    // Override inline code (codespan) rendering to match code block styling
+    codespan(token: Tokens.Codespan): string {
+      return `<code class="markdown-code-inline">${token.text}</code>`;
     },
 
     // Override paragraph to avoid wrapping inline content in <p> tags
