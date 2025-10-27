@@ -921,6 +921,8 @@
     box-sizing: border-box;
     /* Match view div display to prevent layout shift */
     display: block;
+    /* Always maintain min-height to match empty view divs (line-height) */
+    min-height: 1.5rem;
   }
 
   .node__content--view {
@@ -933,7 +935,8 @@
   .node__content:empty,
   .node__content--view:empty {
     /* Ensure empty nodes maintain their height and are clickable */
-    min-height: 1.25rem;
+    /* Use line-height (24px / 1.5rem) to match textarea's single-line height */
+    min-height: 1.5rem;
     cursor: text;
   }
 
@@ -958,7 +961,20 @@
     text-decoration: underline;
   }
 
-  :global(.markdown-code) {
+  :global(.markdown-code-inline) {
+    /* Current inline code styling (used by marked-config.ts) */
+    /* Matches code-block styling for consistency */
+    background: hsl(var(--muted));
+    padding: 0.125rem 0.25rem;
+    border-radius: var(--radius);
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.875rem;
+  }
+
+  :global(.markdown-code),
+  :global(.ns-markdown-code) {
+    /* Legacy inline code styling (from markdown-utils.ts custom parser) */
+    /* TODO: Consolidate with .markdown-code-inline once markdown-utils.ts is deprecated */
     font-family: 'Fira Code', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
     font-size: 0.9em;
     background-color: hsl(var(--muted));
