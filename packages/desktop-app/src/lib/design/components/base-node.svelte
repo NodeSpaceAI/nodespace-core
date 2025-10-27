@@ -962,7 +962,8 @@
   }
 
   :global(.markdown-code-inline) {
-    /* Match code-block styling for consistency */
+    /* Current inline code styling (used by marked-config.ts) */
+    /* Matches code-block styling for consistency */
     background: hsl(var(--muted));
     padding: 0.125rem 0.25rem;
     border-radius: var(--radius);
@@ -970,7 +971,10 @@
     font-size: 0.875rem;
   }
 
-  :global(.markdown-code) {
+  :global(.markdown-code),
+  :global(.ns-markdown-code) {
+    /* Legacy inline code styling (from markdown-utils.ts custom parser) */
+    /* TODO: Consolidate with .markdown-code-inline once markdown-utils.ts is deprecated */
     font-family: 'Fira Code', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
     font-size: 0.9em;
     background-color: hsl(var(--muted));

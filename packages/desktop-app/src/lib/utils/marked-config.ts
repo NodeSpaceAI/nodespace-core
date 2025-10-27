@@ -22,6 +22,12 @@
  * - GFM is enabled (gfm: true) for better markdown compatibility
  * - Tables with pipe syntax (| Header |) will render with bold first row (GFM standard)
  * - This is INTENDED behavior - first row of GFM tables represents headers
+ *
+ * Why GFM is enabled despite NodeSpace's semantic node types:
+ * - Provides robust inline formatting parsing (bold, italic, strikethrough, code)
+ * - Handles edge cases better than custom regex parsers (see Issue #350)
+ * - Table rendering aligns with user expectations from GitHub/Discord
+ * - List rendering is overridden (see list() renderer) to fit NodeSpace's architecture
  */
 
 import { marked } from 'marked';
@@ -67,11 +73,22 @@ marked.use({
 
     // CRITICAL: Disable ordered list processing to prevent "### 1. Text" from becoming a list
     // GFM detects "1. " pattern and creates lists, but for header nodes this is unwanted
+    //
+    // ARCHITECTURAL DECISION:
+    // NodeSpace uses semantic node types (header, task, ordered-list) rather than
+    // markdown-based list rendering. Users create lists via /ordered-list slash command,
+    // not markdown syntax (1., 2., 3.). This renderer preserves list markers as plain text,
+    // which is correct for our architecture where ordered-list nodes have dedicated components.
+    //
+    // FUTURE CONSIDERATION:
+    // If rich-text nodes or markdown import features are added, may need conditional
+    // list rendering based on node type context.
     list(token: Tokens.List): string {
       // Return plain text representation of list items with their markers preserved
       const items = token.items.map((item, index) => {
+        // Recursively parse item tokens (handles nested formatting like **bold**)
         const text = this.parser.parse(item.tokens);
-        // Preserve the list marker (1., 2., -, etc.)
+        // Preserve the list marker (1., 2., -, etc.) as plain text, NOT <li> tags
         let marker = '';
         if (token.ordered) {
           // For ordered lists, use the actual number (start + index) followed by dot and space

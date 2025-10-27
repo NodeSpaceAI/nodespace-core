@@ -201,6 +201,80 @@ describe('marked.js Integration', () => {
     });
   });
 
+  describe('List rendering (CRITICAL: prevent numbered prefixes from becoming HTML lists)', () => {
+    it('should preserve "1. Text" as plain text, not convert to ordered list', () => {
+      const result = markdownToHtml('1. Item text');
+      expect(result).toBe('1. Item text');
+      expect(result).not.toMatch(/<ol>/);
+      expect(result).not.toMatch(/<li>/);
+    });
+
+    it('should handle headers with numbered prefixes without creating lists (#353)', () => {
+      const result = markdownToHtml('### 1. Maintainability');
+      expect(result).toBe('### 1. Maintainability');
+      expect(result).not.toMatch(/<ol>/);
+      expect(result).not.toMatch(/<li>/);
+      expect(result).not.toMatch(/<h[1-6]/);
+    });
+
+    it('should preserve multiline numbered text without list conversion', () => {
+      const input = '1. First point<br>2. Second point';
+      const result = markdownToHtml(input);
+      expect(result).toContain('1. First point');
+      expect(result).toContain('2. Second point');
+      expect(result).not.toMatch(/<ol>/);
+    });
+
+    it('should preserve unordered list markers as plain text', () => {
+      const result = markdownToHtml('- Item');
+      expect(result).toBe('- Item');
+      expect(result).not.toMatch(/<ul>/);
+      expect(result).not.toMatch(/<li>/);
+    });
+
+    it('should handle task list syntax as plain text', () => {
+      const result = markdownToHtml('- [ ] Unchecked task');
+      expect(result).toBe('- [ ] Unchecked task');
+      expect(result).not.toMatch(/<input/);
+      expect(result).not.toMatch(/<ul>/);
+    });
+
+    it('should preserve list markers with various numbers', () => {
+      const testCases = [
+        { input: '1. First', expected: '1. First' },
+        { input: '2. Second', expected: '2. Second' },
+        { input: '99. Ninety-ninth', expected: '99. Ninety-ninth' }
+      ];
+
+      testCases.forEach(({ input, expected }) => {
+        const result = markdownToHtml(input);
+        expect(result).toBe(expected);
+        expect(result).not.toMatch(/<ol>/);
+      });
+    });
+  });
+
+  describe('Inline code rendering', () => {
+    it('should render inline code with custom class', () => {
+      const result = markdownToHtml('This is `code` text');
+      expect(result).toContain('<code class="markdown-code-inline">code</code>');
+      expect(result).not.toMatch(/<code>code<\/code>/); // Should not use plain <code>
+    });
+
+    it('should handle multiple inline code blocks', () => {
+      const result = markdownToHtml('`first` and `second`');
+      expect(result).toBe(
+        '<code class="markdown-code-inline">first</code> and <code class="markdown-code-inline">second</code>'
+      );
+    });
+
+    it('should handle inline code with formatting around it', () => {
+      const result = markdownToHtml('**bold** and `code` text');
+      expect(result).toContain('class="markdown-bold"');
+      expect(result).toContain('class="markdown-code-inline"');
+    });
+  });
+
   describe('Performance and reliability', () => {
     it('should handle large text efficiently', () => {
       const largeText = 'This is **bold** and *italic* text. '.repeat(1000);
