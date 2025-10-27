@@ -921,6 +921,8 @@
     box-sizing: border-box;
     /* Match view div display to prevent layout shift */
     display: block;
+    /* Always maintain min-height to match empty view divs (line-height) */
+    min-height: 1.5rem;
   }
 
   .node__content--view {
@@ -933,7 +935,8 @@
   .node__content:empty,
   .node__content--view:empty {
     /* Ensure empty nodes maintain their height and are clickable */
-    min-height: 1.25rem;
+    /* Use line-height (24px / 1.5rem) to match textarea's single-line height */
+    min-height: 1.5rem;
     cursor: text;
   }
 
