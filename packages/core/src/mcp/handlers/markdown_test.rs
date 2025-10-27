@@ -88,6 +88,259 @@ Text under second H2"#;
     }
 
     #[tokio::test]
+    async fn test_same_level_headers_are_siblings() {
+        let (operations, _temp_dir) = setup_test_service().await;
+
+        // Test case from issue #350: Multiple H2s should be siblings, not nested
+        let markdown = r#"# Main Title
+## First H2
+Some content under first H2
+## Second H2
+Content under second H2
+## Third H2
+### H3 under Third H2
+Content under H3"#;
+
+        let params = json!({
+            "markdown_content": markdown,
+            "container_title": "# Container H1"
+        });
+
+        let result = handle_create_nodes_from_markdown(&operations, params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+
+        let node_ids = result["node_ids"].as_array().unwrap();
+
+        // Get all nodes
+        let container_h1 = operations
+            .get_node(node_ids[0].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let main_title = operations
+            .get_node(node_ids[1].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let first_h2 = operations
+            .get_node(node_ids[2].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let text1 = operations
+            .get_node(node_ids[3].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let second_h2 = operations
+            .get_node(node_ids[4].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let text2 = operations
+            .get_node(node_ids[5].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let third_h2 = operations
+            .get_node(node_ids[6].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let h3 = operations
+            .get_node(node_ids[7].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let text3 = operations
+            .get_node(node_ids[8].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Verify hierarchy structure
+        assert_eq!(container_h1.content, "# Container H1");
+        assert!(container_h1.is_root(), "Container should be root");
+
+        // Main Title (H1) should be child of container
+        assert_eq!(main_title.content, "# Main Title");
+        assert_eq!(
+            main_title.parent_id,
+            Some(container_h1.id.clone()),
+            "H1 should be child of container"
+        );
+
+        // CRITICAL: All three H2s should be children of Main Title H1, NOT nested under each other
+        assert_eq!(first_h2.content, "## First H2");
+        assert_eq!(
+            first_h2.parent_id,
+            Some(main_title.id.clone()),
+            "First H2 should be child of H1, not nested"
+        );
+
+        assert_eq!(second_h2.content, "## Second H2");
+        assert_eq!(
+            second_h2.parent_id,
+            Some(main_title.id.clone()),
+            "Second H2 should be child of H1 (sibling of First H2), not child of First H2"
+        );
+
+        assert_eq!(third_h2.content, "## Third H2");
+        assert_eq!(
+            third_h2.parent_id,
+            Some(main_title.id.clone()),
+            "Third H2 should be child of H1 (sibling of other H2s), not child of Second H2"
+        );
+
+        // Text nodes should be children of their respective H2s
+        assert_eq!(
+            text1.parent_id,
+            Some(first_h2.id.clone()),
+            "Text should be child of its H2"
+        );
+        assert_eq!(
+            text2.parent_id,
+            Some(second_h2.id.clone()),
+            "Text should be child of its H2"
+        );
+
+        // H3 should be child of Third H2
+        assert_eq!(h3.content, "### H3 under Third H2");
+        assert_eq!(
+            h3.parent_id,
+            Some(third_h2.id.clone()),
+            "H3 should be child of its parent H2"
+        );
+
+        // Text under H3 should be child of H3
+        assert_eq!(
+            text3.parent_id,
+            Some(h3.id.clone()),
+            "Text should be child of H3"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_complex_heading_transitions() {
+        let (operations, _temp_dir) = setup_test_service().await;
+
+        // Test various heading level transitions
+        let markdown = r#"# H1
+## H2-A
+### H3 under H2-A
+## H2-B (back to H2 after H3)
+#### H4 (skip H3)
+## H2-C (back to H2 after H4)
+# Another H1
+## H2 under second H1"#;
+
+        let params = json!({
+            "markdown_content": markdown,
+            "container_title": "Complex Test"
+        });
+
+        let result = handle_create_nodes_from_markdown(&operations, params)
+            .await
+            .unwrap();
+
+        let node_ids = result["node_ids"].as_array().unwrap();
+
+        // Get nodes we need to verify
+        let container = operations
+            .get_node(node_ids[0].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let h1_first = operations
+            .get_node(node_ids[1].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let h2_a = operations
+            .get_node(node_ids[2].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let h3 = operations
+            .get_node(node_ids[3].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let h2_b = operations
+            .get_node(node_ids[4].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let h4 = operations
+            .get_node(node_ids[5].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let h2_c = operations
+            .get_node(node_ids[6].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let h1_second = operations
+            .get_node(node_ids[7].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let h2_under_second = operations
+            .get_node(node_ids[8].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Verify complex hierarchy
+        assert_eq!(
+            h1_first.parent_id,
+            Some(container.id.clone()),
+            "First H1 child of container"
+        );
+        assert_eq!(
+            h2_a.parent_id,
+            Some(h1_first.id.clone()),
+            "H2-A child of H1"
+        );
+        assert_eq!(h3.parent_id, Some(h2_a.id.clone()), "H3 child of H2-A");
+
+        // CRITICAL: H2-B should be sibling of H2-A (both children of H1), not child of H3
+        assert_eq!(
+            h2_b.parent_id,
+            Some(h1_first.id.clone()),
+            "H2-B should be child of H1 (sibling of H2-A), not child of H3"
+        );
+
+        // H4 should be child of H2-B (even though H3 was skipped)
+        assert_eq!(h4.parent_id, Some(h2_b.id.clone()), "H4 child of H2-B");
+
+        // CRITICAL: H2-C should be sibling of H2-A and H2-B, not child of H4
+        assert_eq!(
+            h2_c.parent_id,
+            Some(h1_first.id.clone()),
+            "H2-C should be child of H1 (sibling of other H2s), not child of H4"
+        );
+
+        // Second H1 should be child of container (sibling of first H1)
+        assert_eq!(
+            h1_second.parent_id,
+            Some(container.id.clone()),
+            "Second H1 should be child of container (sibling of first H1)"
+        );
+
+        // H2 under second H1 should be child of second H1
+        assert_eq!(
+            h2_under_second.parent_id,
+            Some(h1_second.id.clone()),
+            "H2 should be child of second H1"
+        );
+    }
+
+    #[tokio::test]
     async fn test_content_preservation() {
         let (operations, _temp_dir) = setup_test_service().await;
 
@@ -318,9 +571,9 @@ Regular paragraph text."#;
 
         assert_eq!(result["success"], true);
 
-        // Container from container_title + 3 headers + 2 tasks + code block + quote + 2 text nodes (quote content + paragraph)
-        // Note: Quote content appears as text before being wrapped in quote-block
-        assert_eq!(result["nodes_created"], 10);
+        // Container from container_title + 3 headers + 2 tasks + code block + quote + 1 text node (paragraph)
+        // Note: Quote is a single quote-block node (old parser created duplicates)
+        assert_eq!(result["nodes_created"], 9);
     }
 
     #[tokio::test]
@@ -730,9 +983,10 @@ Text paragraph
             .unwrap();
         let exported_markdown = result["markdown"].as_str().unwrap();
 
-        // Verify output contains content (container is "Test", children are "# Hello World" and "- Item 1")
+        // Verify output contains content (container is "Test", children are "# Hello World" and "Item 1")
+        // Note: Standalone bullets (not under text paragraphs) have "- " stripped during import
         assert!(exported_markdown.contains("# Hello World"));
-        assert!(exported_markdown.contains("- Item 1"));
+        assert!(exported_markdown.contains("Item 1"));
 
         // Verify node count (container + header + list item = 3)
         assert_eq!(result["node_count"].as_u64().unwrap(), 3);
@@ -969,6 +1223,143 @@ Text under section 1
         // assert!(exported.contains("## Section 2"));
         // assert!(exported.contains("- Item 1"));
         // assert!(exported.contains("- Item 2"));
+    }
+
+    #[tokio::test]
+    async fn test_bullet_with_link() {
+        let (operations, _temp_dir) = setup_test_service().await;
+
+        let markdown = r#"Text paragraph
+- [Click here](https://example.com)
+- Regular bullet"#;
+
+        let params = json!({
+            "markdown_content": markdown,
+            "container_title": "# Container"
+        });
+
+        let result = handle_create_nodes_from_markdown(&operations, params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+
+        let nodes = result["nodes"].as_array().unwrap();
+
+        // Container + text paragraph + link (stored as text) + bullet
+        assert_eq!(nodes.len(), 4);
+
+        // Link should be stored as text (not incorrectly identified as a bullet)
+        // The "- [link](url)" format should be preserved with the "- " prefix
+        let link_node = operations
+            .get_node(nodes[2]["id"].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(link_node.node_type, "text");
+        assert!(link_node.content.contains("[Click here]"));
+        // Verify the link preserved the "- " prefix (it wasn't treated as a bullet)
+        assert!(link_node.content.starts_with("- ["));
+
+        // Regular bullet should have "- " stripped
+        let bullet_node = operations
+            .get_node(nodes[3]["id"].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(bullet_node.node_type, "text");
+        assert_eq!(bullet_node.content, "Regular bullet");
+
+        // Verify bullet is child of text paragraph (or link node, depending on parser logic)
+        // The key is that it's NOT a root node and the "- " prefix was stripped
+        let text_paragraph = operations
+            .get_node(nodes[1]["id"].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // The bullet should be a child of either the text paragraph or the link node
+        // (depending on which comes last in last_text_node tracking)
+        assert!(
+            bullet_node.parent_id.is_some(),
+            "Bullet should have a parent"
+        );
+        // Verify it's either child of text paragraph or link node
+        let is_child_of_text_or_link = bullet_node.parent_id == Some(text_paragraph.id.clone())
+            || bullet_node.parent_id == Some(link_node.id.clone());
+        assert!(
+            is_child_of_text_or_link,
+            "Bullet should be child of text paragraph or link node"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ordered_list_false_positive() {
+        let (operations, _temp_dir) = setup_test_service().await;
+
+        // This should be ONE text node, not broken into ordered list
+        let markdown = "This is step 1. The next step is step 2.";
+
+        let params = json!({
+            "markdown_content": markdown,
+            "container_title": "# Container"
+        });
+
+        let result = handle_create_nodes_from_markdown(&operations, params)
+            .await
+            .unwrap();
+
+        let nodes = result["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2); // Container + text (not broken into list)
+
+        let text_node = operations
+            .get_node(nodes[1]["id"].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(text_node.node_type, "text");
+        assert_eq!(text_node.content, markdown);
+    }
+
+    #[tokio::test]
+    async fn test_bullet_roundtrip() {
+        let (operations, _temp_dir) = setup_test_service().await;
+
+        // Import
+        let import_params = json!({
+            "markdown_content": "Text paragraph\n- Bullet 1\n- Bullet 2",
+            "container_title": "# Header"
+        });
+
+        let import_result = handle_create_nodes_from_markdown(&operations, import_params)
+            .await
+            .unwrap();
+
+        let container_id = import_result["container_node_id"].as_str().unwrap();
+
+        // Export
+        let export_params = json!({
+            "node_id": container_id,
+            "include_children": true
+        });
+
+        let export_result = handle_get_markdown_from_node_id(&operations, export_params)
+            .await
+            .unwrap();
+
+        let exported = export_result["markdown"].as_str().unwrap();
+
+        // Remove HTML comments for comparison
+        let cleaned: String = exported
+            .lines()
+            .filter(|line| !line.trim().starts_with("<!--"))
+            .collect::<Vec<&str>>()
+            .join("\n");
+
+        // Should match original structure (bullets should have "- " prefix)
+        assert!(cleaned.contains("- Bullet 1"));
+        assert!(cleaned.contains("- Bullet 2"));
     }
 
     #[tokio::test]
