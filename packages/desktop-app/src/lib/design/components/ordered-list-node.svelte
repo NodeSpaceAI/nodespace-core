@@ -55,9 +55,10 @@
   // Prevent merging into ordered-lists (structured content can't accept arbitrary merges)
   const editableConfig = { allowMultiline: true, allowMergeInto: false };
 
-  // Ordered list metadata - disable markdown to show plain text numbers
+  // Ordered list metadata - enable markdown for inline formatting (bold, italic, code)
+  // Note: List structure (1. 2. 3.) is preserved as plain text by marked-config.ts
   let listMetadata = $derived({
-    disableMarkdown: true // Show sequential numbers as plain text, not HTML lists
+    disableMarkdown: false // Allow inline formatting like **bold**, *italic*, `code`
   });
 
   /**
