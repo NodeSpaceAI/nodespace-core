@@ -32,7 +32,10 @@ mod tests {
     }
 
     /// Helper to check if a node is marked as stale in the database
-    async fn is_node_stale(db: &DatabaseService, node_id: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    async fn is_node_stale(
+        db: &DatabaseService,
+        node_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         let conn = db.connect_with_timeout().await?;
         let mut stmt = conn
             .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
@@ -48,7 +51,10 @@ mod tests {
     }
 
     /// Helper to mark a node as not stale (simulating successful embedding)
-    async fn mark_not_stale(db: &DatabaseService, node_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    async fn mark_not_stale(
+        db: &DatabaseService,
+        node_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let conn = db.connect_with_timeout().await?;
         conn.execute(
             "UPDATE nodes SET embedding_stale = FALSE WHERE id = ?",
@@ -63,14 +69,22 @@ mod tests {
         let (service, db, _temp) = create_test_services().await;
 
         // Create a container node (no container_node_id = root level)
-        let container_node = Node::new("text".to_string(), "Container content".to_string(), None, json!({}));
+        let container_node = Node::new(
+            "text".to_string(),
+            "Container content".to_string(),
+            None,
+            json!({}),
+        );
         let container_id = container_node.id.clone();
 
         service.create_node(container_node).await.unwrap();
 
         // Verify container node is marked as stale
         let is_stale = is_node_stale(&db, &container_id).await.unwrap();
-        assert!(is_stale, "Container node should be marked as stale on creation");
+        assert!(
+            is_stale,
+            "Container node should be marked as stale on creation"
+        );
     }
 
     #[tokio::test]
@@ -78,7 +92,8 @@ mod tests {
         let (service, db, _temp) = create_test_services().await;
 
         // Create a container node first
-        let container_node = Node::new("text".to_string(), "Container".to_string(), None, json!({}));
+        let container_node =
+            Node::new("text".to_string(), "Container".to_string(), None, json!({}));
         let container_id = container_node.id.clone();
         service.create_node(container_node).await.unwrap();
 
@@ -96,7 +111,10 @@ mod tests {
 
         // Verify child node is NOT marked as stale (only containers need embeddings)
         let is_stale = is_node_stale(&db, &child_id).await.unwrap();
-        assert!(!is_stale, "Child node should NOT be marked as stale on creation");
+        assert!(
+            !is_stale,
+            "Child node should NOT be marked as stale on creation"
+        );
     }
 
     #[tokio::test]
@@ -104,7 +122,12 @@ mod tests {
         let (service, db, _temp) = create_test_services().await;
 
         // Create container and mark it as not stale (simulate existing embedding)
-        let container_node = Node::new("text".to_string(), "Original content".to_string(), None, json!({}));
+        let container_node = Node::new(
+            "text".to_string(),
+            "Original content".to_string(),
+            None,
+            json!({}),
+        );
         let container_id = container_node.id.clone();
         service.create_node(container_node).await.unwrap();
         mark_not_stale(&db, &container_id).await.unwrap();
@@ -118,7 +141,10 @@ mod tests {
 
         // Verify container is now marked as stale
         let is_stale = is_node_stale(&db, &container_id).await.unwrap();
-        assert!(is_stale, "Container should be marked as stale after content update");
+        assert!(
+            is_stale,
+            "Container should be marked as stale after content update"
+        );
     }
 
     #[tokio::test]
@@ -126,7 +152,8 @@ mod tests {
         let (service, db, _temp) = create_test_services().await;
 
         // Create container
-        let container_node = Node::new("text".to_string(), "Container".to_string(), None, json!({}));
+        let container_node =
+            Node::new("text".to_string(), "Container".to_string(), None, json!({}));
         let container_id = container_node.id.clone();
         service.create_node(container_node).await.unwrap();
         mark_not_stale(&db, &container_id).await.unwrap();
@@ -162,12 +189,22 @@ mod tests {
         let (service, db, _temp) = create_test_services().await;
 
         // Create two container nodes
-        let container1 = Node::new("text".to_string(), "Container 1".to_string(), None, json!({}));
+        let container1 = Node::new(
+            "text".to_string(),
+            "Container 1".to_string(),
+            None,
+            json!({}),
+        );
         let container1_id = container1.id.clone();
         service.create_node(container1).await.unwrap();
         mark_not_stale(&db, &container1_id).await.unwrap();
 
-        let container2 = Node::new("text".to_string(), "Container 2".to_string(), None, json!({}));
+        let container2 = Node::new(
+            "text".to_string(),
+            "Container 2".to_string(),
+            None,
+            json!({}),
+        );
         let container2_id = container2.id.clone();
         service.create_node(container2).await.unwrap();
         mark_not_stale(&db, &container2_id).await.unwrap();
@@ -211,7 +248,8 @@ mod tests {
         let (service, db, _temp) = create_test_services().await;
 
         // Create container
-        let container_node = Node::new("text".to_string(), "Container".to_string(), None, json!({}));
+        let container_node =
+            Node::new("text".to_string(), "Container".to_string(), None, json!({}));
         let container_id = container_node.id.clone();
         service.create_node(container_node).await.unwrap();
         mark_not_stale(&db, &container_id).await.unwrap();
@@ -248,7 +286,12 @@ mod tests {
 
         // Create a "task" node at root level (container_node_id = None)
         // This tests that container detection uses NULL check, not node_type == 'topic'
-        let task_container = Node::new("task".to_string(), "Task as container".to_string(), None, json!({}));
+        let task_container = Node::new(
+            "task".to_string(),
+            "Task as container".to_string(),
+            None,
+            json!({}),
+        );
         let task_id = task_container.id.clone();
         service.create_node(task_container).await.unwrap();
 
@@ -282,7 +325,8 @@ mod tests {
         let (service, db, _temp) = create_test_services().await;
 
         // Create container
-        let container_node = Node::new("text".to_string(), "Container".to_string(), None, json!({}));
+        let container_node =
+            Node::new("text".to_string(), "Container".to_string(), None, json!({}));
         let container_id = container_node.id.clone();
         service.create_node(container_node).await.unwrap();
         mark_not_stale(&db, &container_id).await.unwrap();
