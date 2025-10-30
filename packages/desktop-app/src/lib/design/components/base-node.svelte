@@ -46,6 +46,7 @@
   import { positionCursor } from '$lib/actions/position-cursor';
   import { createMockElementForView, findCharacterFromClickFast } from './cursor-positioning';
   import { mapViewPositionToEditPosition } from '$lib/utils/view-edit-mapper';
+  import { NodeSearchService } from '$lib/services/node-search-service';
 
   // Props (Svelte 5 runes syntax) - nodeReferenceService removed
   let {
@@ -213,36 +214,9 @@
       // Get all nodes from the node manager
       const allNodes = Array.from(services.nodeManager.nodes.values());
 
-      // Filter nodes based on query
-      // Show all non-text nodes (Tasks, Persons, etc.) + container text nodes only
-      // Exclude date nodes
-      const filtered = allNodes
-        .filter((node) => {
-          // Exclude date nodes
-          if (node.nodeType === 'date') {
-            return false;
-          }
-
-          // Match query in title or content
-          const title = node.content.split('\n')[0] || '';
-          const matchesQuery =
-            title.toLowerCase().includes(query.toLowerCase()) ||
-            node.content.toLowerCase().includes(query.toLowerCase());
-
-          if (!matchesQuery) {
-            return false;
-          }
-
-          // Show non-text nodes regardless of hierarchy
-          if (node.nodeType !== 'text') {
-            return true;
-          }
-
-          // For text nodes, only show container nodes
-          const isContainer = node.containerNodeId === null;
-          return isContainer;
-        })
-        .slice(0, 10); // Limit to 10 results
+      // Filter nodes using NodeSearchService
+      // Rules: Exclude dates, match query, show all non-text + container text only
+      const filtered = NodeSearchService.filterMentionableNodes(allNodes, query).slice(0, 10); // Limit to 10 results
 
       // Convert to NodeResult format
       autocompleteResults = filtered.map((node) => ({
