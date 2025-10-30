@@ -304,7 +304,7 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
           // Verify failed embeddings have proper structure
           if (result.failedEmbeddings.length > 0) {
             for (const failed of result.failedEmbeddings) {
-              expect(failed).toHaveProperty('topicId');
+              expect(failed).toHaveProperty('containerId');
               expect(failed).toHaveProperty('error');
               expect(typeof failed.containerId).toBe('string');
               expect(typeof failed.error).toBe('string');

@@ -358,7 +358,7 @@ impl NodeService {
                     // Auto-create the date node
                     let date_node = Node {
                         id: parent_id.clone(),
-                        node_type: "text".to_string(),
+                        node_type: "date".to_string(),
                         content: String::new(),
                         parent_id: None,
                         container_node_id: None,
