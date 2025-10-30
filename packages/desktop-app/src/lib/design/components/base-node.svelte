@@ -133,6 +133,7 @@
   // Date picker popover state
   let showDatePicker = $state(false);
   let datePickerPosition = $state({ x: 0, y: 0 });
+  let selectedCalendarDate = $state<DateValue | undefined>(undefined);
 
   // Generate mock autocomplete results for TEST ENVIRONMENT ONLY
   // Used only when import.meta.env.VITEST is true
@@ -236,7 +237,7 @@
       { id: 'today', title: 'Today', type: 'date', isShortcut: true },
       { id: 'tomorrow', title: 'Tomorrow', type: 'date', isShortcut: true },
       { id: 'yesterday', title: 'Yesterday', type: 'date', isShortcut: true },
-      { id: 'date-picker', title: 'Select date >', type: 'date', isShortcut: true }
+      { id: 'date-picker', title: 'Select date...', type: 'date', isShortcut: true }
     ];
 
     // Filter shortcuts based on query
@@ -258,21 +259,20 @@
     }
   });
 
-  // Handle calendar date selection
-  function handleCalendarChange(value: DateValue | undefined) {
-    if (value) {
-      // Convert DateValue to JS Date
-      const jsDate = new Date(
-        value.year,
-        value.month - 1, // JS months are 0-indexed
-        value.day
-      );
+  // Watch calendar date selection and handle it
+  $effect(() => {
+    if (selectedCalendarDate) {
+      const { year, month, day } = selectedCalendarDate;
+      // Convert DateValue to JS Date (month is 1-indexed in DateValue, 0-indexed in JS Date)
+      const jsDate = new Date(year, month - 1, day);
+
+      // Call date selection handler
       handleDateSelection(jsDate);
 
-      // Close the date picker
-      showDatePicker = false;
+      // Reset selection for next time (do this AFTER handleDateSelection to avoid loop)
+      selectedCalendarDate = undefined;
     }
-  }
+  });
 
   // Perform real search using the node manager
   async function performRealSearch(query: string) {
@@ -948,7 +948,7 @@
   <div
     style="position: fixed; left: {datePickerPosition.x}px; top: {datePickerPosition.y}px; z-index: 1001; background: hsl(var(--popover)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); padding: 0.5rem;"
   >
-    <Calendar type="single" onValueChange={handleCalendarChange} />
+    <Calendar type="single" bind:value={selectedCalendarDate} />
   </div>
 {/if}
 
