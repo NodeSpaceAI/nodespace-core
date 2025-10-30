@@ -4,9 +4,19 @@
 
   let {
     ref = $bindable(null),
+    onclick,
     class: className,
     ...restProps
   }: CalendarPrimitive.DayProps = $props();
+
+  // Intercept click events for debugging
+  function handleClick(event: MouseEvent) {
+    console.log('[CalendarDay] Date clicked!', event);
+    // Call the original onclick handler if provided
+    if (onclick) {
+      onclick(event as any);
+    }
+  }
 </script>
 
 <CalendarPrimitive.Day
@@ -29,5 +39,6 @@
     className
   )}
   bind:ref
+  onclick={handleClick}
   {...restProps}
 />

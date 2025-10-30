@@ -261,11 +261,17 @@
 
   // Watch calendar date selection and handle it
   $effect(() => {
+    console.log(
+      '[BaseNode] Calendar $effect triggered, selectedCalendarDate:',
+      selectedCalendarDate
+    );
     if (selectedCalendarDate) {
+      console.log('[BaseNode] Calendar date selected:', selectedCalendarDate);
       const { year, month, day } = selectedCalendarDate;
       // Convert DateValue to JS Date (month is 1-indexed in DateValue, 0-indexed in JS Date)
       const jsDate = new Date(year, month - 1, day);
 
+      console.log('[BaseNode] Calling handleDateSelection with jsDate:', jsDate);
       // Call date selection handler
       handleDateSelection(jsDate);
 
@@ -948,7 +954,19 @@
   <div
     style="position: fixed; left: {datePickerPosition.x}px; top: {datePickerPosition.y}px; z-index: 1001; background: hsl(var(--popover)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); padding: 0.5rem;"
   >
-    <Calendar type="single" bind:value={selectedCalendarDate} />
+    <Calendar
+      type="single"
+      bind:value={selectedCalendarDate}
+      onValueChange={(v) => {
+        console.log('[BaseNode] onValueChange fired with value:', v);
+        if (v) {
+          // Manually set the value since bind:value isn't working through the wrapper
+          selectedCalendarDate = v;
+        }
+        // Close picker when date is selected (the $effect will handle the actual selection)
+        showDatePicker = false;
+      }}
+    />
   </div>
 {/if}
 
