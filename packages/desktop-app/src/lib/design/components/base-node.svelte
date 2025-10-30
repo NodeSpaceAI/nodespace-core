@@ -24,7 +24,7 @@
 -->
 
 <script lang="ts">
-  import { createEventDispatcher, onDestroy, untrack } from 'svelte';
+  import { createEventDispatcher, onDestroy, untrack, tick } from 'svelte';
   // import { type NodeType } from '$lib/design/icons'; // Unused but preserved for future use
 
   import {
@@ -34,6 +34,7 @@
   } from './textarea-controller.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
   import { SlashCommandDropdown } from '$lib/components/ui/slash-command-dropdown';
+  // Use shadcn Calendar component (official date picker pattern)
   import { Calendar } from '$lib/components/ui/calendar';
   import { type DateValue } from '@internationalized/date';
   import {
@@ -202,7 +203,11 @@
    * Format a Date object to YYYY-MM-DD string
    */
   function formatDate(date: Date): string {
-    return date.toISOString().split('T')[0];
+    // Use local date components to avoid timezone conversion
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 
   /**
@@ -259,23 +264,14 @@
     }
   });
 
-  // Watch calendar date selection and handle it
+  // Watch calendar date selection with Svelte 5 reactivity
   $effect(() => {
-    console.log(
-      '[BaseNode] Calendar $effect triggered, selectedCalendarDate:',
-      selectedCalendarDate
-    );
     if (selectedCalendarDate) {
-      console.log('[BaseNode] Calendar date selected:', selectedCalendarDate);
       const { year, month, day } = selectedCalendarDate;
       // Convert DateValue to JS Date (month is 1-indexed in DateValue, 0-indexed in JS Date)
       const jsDate = new Date(year, month - 1, day);
-
-      console.log('[BaseNode] Calling handleDateSelection with jsDate:', jsDate);
-      // Call date selection handler
       handleDateSelection(jsDate);
-
-      // Reset selection for next time (do this AFTER handleDateSelection to avoid loop)
+      // Reset for next selection
       selectedCalendarDate = undefined;
     }
   });
@@ -322,13 +318,6 @@
   $effect(() => {
     if (showSlashCommands) {
       slashCommands = slashCommandService.filterCommands(currentSlashQuery);
-    }
-  });
-
-  // Close date picker when autocomplete closes
-  $effect(() => {
-    if (!showAutocomplete && showDatePicker) {
-      showDatePicker = false;
     }
   });
 
@@ -439,6 +428,12 @@
    */
   async function handleDateSelection(date: Date) {
     const dateStr = formatDate(date);
+
+    // Re-enter edit mode if we've lost focus (shouldn't happen with preventDefault, but safety check)
+    if (!isEditing && textareaElement) {
+      focusManager.setEditingNode(nodeId);
+      await tick();
+    }
 
     if (controller) {
       // Insert as a node reference (date nodes are virtual, no DB creation needed)
@@ -952,21 +947,19 @@
 <!-- Date Picker Component (positioned as submenu relative to "Select date" item) -->
 {#if showDatePicker}
   <div
-    style="position: fixed; left: {datePickerPosition.x}px; top: {datePickerPosition.y}px; z-index: 1001; background: hsl(var(--popover)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); padding: 0.5rem;"
+    role="dialog"
+    aria-label="Date picker"
+    tabindex="-1"
+    style="position: fixed; left: {datePickerPosition.x}px; top: {datePickerPosition.y}px; z-index: 1001; background: hsl(var(--popover)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); padding: 0;"
+    onmousedown={(e) => {
+      // Standard UI pattern: Prevent blur when interacting with popovers/dropdowns
+      // This maintains edit mode while selecting from the calendar
+      // Same pattern used in NodeAutocomplete (line 262)
+      e.preventDefault();
+      e.stopPropagation();
+    }}
   >
-    <Calendar
-      type="single"
-      bind:value={selectedCalendarDate}
-      onValueChange={(v) => {
-        console.log('[BaseNode] onValueChange fired with value:', v);
-        if (v) {
-          // Manually set the value since bind:value isn't working through the wrapper
-          selectedCalendarDate = v;
-        }
-        // Close picker when date is selected (the $effect will handle the actual selection)
-        showDatePicker = false;
-      }}
-    />
+    <Calendar type="single" bind:value={selectedCalendarDate} />
   </div>
 {/if}
 

@@ -2,15 +2,36 @@
   import { Calendar as CalendarPrimitive, type WithoutChildrenOrChild } from 'bits-ui';
   import * as Calendar from './index.js';
   import { cn } from '$lib/utils.js';
+  import type { DateValue } from '@internationalized/date';
 
   let {
     ref = $bindable(null),
     value = $bindable(),
     placeholder = $bindable(),
+    onValueChange,
+    type,
     class: className,
     weekdayFormat = 'short',
     ...restProps
   }: WithoutChildrenOrChild<CalendarPrimitive.RootProps> = $props();
+
+  // Create a local reactive variable to properly bridge the binding
+  let internalValue = $state<DateValue | DateValue[] | undefined>(value);
+
+  // Sync external value changes to internal
+  $effect(() => {
+    internalValue = value;
+  });
+
+  // Handle internal changes and propagate them
+  function handleValueChange(v: DateValue | DateValue[] | undefined) {
+    // Update the bindable prop
+    value = v;
+    // Call the user's callback if provided
+    if (onValueChange) {
+      onValueChange(v as never);
+    }
+  }
 </script>
 
 <!--
@@ -18,9 +39,11 @@ Discriminated Unions + Destructing (required for bindable) do not
 get along, so we shut typescript up by casting `value` to `never`.
 -->
 <CalendarPrimitive.Root
-  bind:value={value as never}
+  bind:value={internalValue as never}
   bind:ref
   bind:placeholder
+  onValueChange={handleValueChange}
+  {type}
   {weekdayFormat}
   class={cn('p-3', className)}
   {...restProps}
