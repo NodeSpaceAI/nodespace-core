@@ -34,7 +34,8 @@
   } from './textarea-controller.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
   import { SlashCommandDropdown } from '$lib/components/ui/slash-command-dropdown';
-  import { DatePickerModal } from '$lib/components/ui/date-picker';
+  import { Calendar } from '$lib/components/ui/calendar';
+  import { type DateValue } from '@internationalized/date';
   import {
     SlashCommandService,
     type SlashCommand,
@@ -129,7 +130,7 @@
   let slashCommands = $state<SlashCommand[]>([]);
   let slashCommandService = SlashCommandService.getInstance();
 
-  // Date picker modal state
+  // Date picker popover state
   let showDatePicker = $state(false);
   let datePickerPosition = $state({ x: 0, y: 0 });
 
@@ -235,7 +236,7 @@
       { id: 'today', title: 'Today', type: 'date', isShortcut: true },
       { id: 'tomorrow', title: 'Tomorrow', type: 'date', isShortcut: true },
       { id: 'yesterday', title: 'Yesterday', type: 'date', isShortcut: true },
-      { id: 'date-picker', title: 'Date (pick)', type: 'date', isShortcut: true }
+      { id: 'date-picker', title: 'Select date >', type: 'date', isShortcut: true }
     ];
 
     // Filter shortcuts based on query
@@ -256,6 +257,22 @@
       }
     }
   });
+
+  // Handle calendar date selection
+  function handleCalendarChange(value: DateValue | undefined) {
+    if (value) {
+      // Convert DateValue to JS Date
+      const jsDate = new Date(
+        value.year,
+        value.month - 1, // JS months are 0-indexed
+        value.day
+      );
+      handleDateSelection(jsDate);
+
+      // Close the date picker
+      showDatePicker = false;
+    }
+  }
 
   // Perform real search using the node manager
   async function performRealSearch(query: string) {
@@ -302,19 +319,26 @@
     }
   });
 
+  // Close date picker when autocomplete closes
+  $effect(() => {
+    if (!showAutocomplete && showDatePicker) {
+      showDatePicker = false;
+    }
+  });
+
   // Autocomplete event handlers
   async function handleAutocompleteSelect(result: NodeResult) {
     // Handle date picker special case
     if (result.id === 'date-picker') {
-      // Close autocomplete
-      showAutocomplete = false;
-      currentQuery = '';
-      autocompleteResults = [];
-
-      // Use the same position as autocomplete
-      datePickerPosition = autocompletePosition;
-
-      // Show date picker modal
+      // Capture submenu position if available
+      const resultWithPosition = result as NodeResult & {
+        submenuPosition?: { x: number; y: number };
+      };
+      if (resultWithPosition.submenuPosition) {
+        datePickerPosition = resultWithPosition.submenuPosition;
+      }
+      // Keep autocomplete open (it will show the date picker alongside)
+      // Just toggle the date picker popover
       showDatePicker = true;
       return;
     }
@@ -403,59 +427,16 @@
   }
 
   /**
-   * Creates or gets a DateNode for the given date string
-   * Returns the node ID if successful, null otherwise
-   */
-  async function createDateNode(dateStr: string): Promise<string | null> {
-    try {
-      if (!services?.nodeManager) {
-        return null;
-      }
-
-      const nodeManager = services.nodeManager;
-      const { backendAdapter } = await import('$lib/services/backend-adapter');
-
-      // Check if date node already exists (dates use their date string as ID)
-      const existingNode = nodeManager.nodes.get(dateStr);
-      if (existingNode) {
-        return existingNode.id;
-      }
-
-      // Find the last root node to get the correct order
-      const allNodes = Array.from(nodeManager.nodes.values());
-      const rootNodes = allNodes.filter(isContainerNode);
-      const lastRootNode = rootNodes[rootNodes.length - 1];
-      const beforeSiblingId = lastRootNode ? lastRootNode.id : null;
-
-      // Create new date node using backend adapter
-      await backendAdapter.createNode({
-        id: dateStr, // Use date string as ID for consistency
-        content: dateStr,
-        nodeType: 'date',
-        parentId: null,
-        containerNodeId: null,
-        beforeSiblingId: beforeSiblingId,
-        properties: {},
-        embeddingVector: null
-      });
-
-      return dateStr;
-    } catch (error) {
-      console.error('[DateNode] Failed to create date node:', error);
-      return null;
-    }
-  }
-
-  /**
    * Handle date selection from shortcuts or date picker
+   * Date nodes are virtual - they only get persisted when children are added
+   * Here we just create the markdown link without database creation
    */
   async function handleDateSelection(date: Date) {
     const dateStr = formatDate(date);
-    const dateNodeId = await createDateNode(dateStr);
 
-    if (dateNodeId && controller) {
-      // Insert as a node reference
-      controller.insertNodeReference(dateNodeId, dateStr);
+    if (controller) {
+      // Insert as a node reference (date nodes are virtual, no DB creation needed)
+      controller.insertNodeReference(dateStr, dateStr);
     }
 
     // Hide date picker and autocomplete
@@ -466,7 +447,7 @@
 
     // Emit event
     dispatch('nodeReferenceSelected', {
-      nodeId: dateNodeId || dateStr,
+      nodeId: dateStr,
       nodeTitle: dateStr
     });
   }
@@ -824,15 +805,6 @@
     }
   }
 
-  function handleDatePickerClose(): void {
-    showDatePicker = false;
-
-    // Return focus to the content editable element
-    if (controller) {
-      controller.focus();
-    }
-  }
-
   // ============================================================================
   // Utility Functions
   // ============================================================================
@@ -971,13 +943,14 @@
   onclose={handleSlashCommandClose}
 />
 
-<!-- Date Picker Modal Component -->
-<DatePickerModal
-  position={datePickerPosition}
-  visible={showDatePicker}
-  onselect={handleDateSelection}
-  onclose={handleDatePickerClose}
-/>
+<!-- Date Picker Component (positioned as submenu relative to "Select date" item) -->
+{#if showDatePicker}
+  <div
+    style="position: fixed; left: {datePickerPosition.x}px; top: {datePickerPosition.y}px; z-index: 1001; background: hsl(var(--popover)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); padding: 0.5rem;"
+  >
+    <Calendar type="single" onValueChange={handleCalendarChange} />
+  </div>
+{/if}
 
 <style>
   .node {
