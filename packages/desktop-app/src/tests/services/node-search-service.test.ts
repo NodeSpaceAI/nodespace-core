@@ -139,7 +139,7 @@ describe('NodeSearchService', () => {
 
         const result = NodeSearchService.filterMentionableNodes(nodes, '   ');
 
-        // Whitespace-only query matches everything (since '   ' is present in all strings)
+        // Whitespace-only query returns no results (whitespace doesn't naturally occur in content)
         expect(result).toHaveLength(0);
       });
 
