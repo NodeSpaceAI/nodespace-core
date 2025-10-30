@@ -672,10 +672,13 @@ impl NodeEmbeddingService {
             NodeServiceError::QueryFailed(format!("Database connection failed: {}", e))
         })?;
 
+        // Use json() wrapper to ensure SQLite parses the string as JSON type.
+        // Without json(), json_set() treats the value as a string literal,
+        // causing metadata access to return Null instead of the expected JSON object.
         conn.execute(
             "UPDATE nodes SET
                 embedding_vector = ?,
-                properties = json_set(properties, '$.embedding_metadata', ?),
+                properties = json_set(properties, '$.embedding_metadata', json(?)),
                 modified_at = CURRENT_TIMESTAMP
              WHERE id = ?",
             params![blob, metadata.to_string(), node_id],
