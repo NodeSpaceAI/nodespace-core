@@ -207,7 +207,7 @@ impl EmbeddingProcessor {
         let mut stmt = conn
             .prepare(
                 "SELECT id FROM nodes
-                 WHERE node_type = 'topic'
+                 WHERE container_node_id IS NULL
                    AND embedding_stale = TRUE
                  ORDER BY last_content_update DESC
                  LIMIT ?",

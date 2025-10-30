@@ -16,6 +16,9 @@ pub mod embedding_service;
 pub mod error;
 pub mod node_service;
 
+#[cfg(test)]
+mod node_service_container_test;
+
 pub use embedding_processor::{EmbeddingProcessor, EmbeddingProcessorConfig};
 pub use embedding_service::{NodeEmbeddingService, EMBEDDING_DIMENSION};
 pub use error::NodeServiceError;

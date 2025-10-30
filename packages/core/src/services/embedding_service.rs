@@ -251,7 +251,7 @@ impl NodeEmbeddingService {
                 n.embedding_vector, vt.distance
              FROM vector_top_k('idx_nodes_embedding_vector', vector(?), ?) vt
              JOIN nodes n ON n.rowid = vt.rowid
-             WHERE n.node_type = 'topic'
+             WHERE n.container_node_id IS NULL
                AND vt.distance < ?",
             )
             .await
@@ -315,7 +315,7 @@ impl NodeEmbeddingService {
                 embedding_vector,
                 vector_distance_cosine(embedding_vector, vector(?)) as distance
              FROM nodes
-             WHERE node_type = 'topic'
+             WHERE container_node_id IS NULL
                AND embedding_vector IS NOT NULL
                AND vector_distance_cosine(embedding_vector, vector(?)) < ?
              ORDER BY distance ASC
@@ -910,7 +910,7 @@ impl NodeEmbeddingService {
         let mut stmt = conn
             .prepare(
                 "SELECT id FROM nodes
-                 WHERE node_type = 'topic' AND embedding_stale = TRUE
+                 WHERE container_node_id IS NULL AND embedding_stale = TRUE
                  ORDER BY last_content_update DESC",
             )
             .await
@@ -950,7 +950,7 @@ impl NodeEmbeddingService {
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT id FROM nodes
-                     WHERE node_type = 'topic'
+                     WHERE container_node_id IS NULL
                        AND embedding_stale = TRUE
                        AND last_content_update > datetime('now', '-{} seconds')
                      ORDER BY last_content_update DESC",

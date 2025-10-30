@@ -11,6 +11,18 @@
 //!
 //! Initial implementation supports Text, Task, and Date nodes for E2E testing.
 //! Person and Project node support will be added in separate issues.
+//!
+//! # Container Node Detection
+//!
+//! Container nodes (topics, date nodes, etc.) are the primary targets for semantic search.
+//! They are identified by `container_node_id IS NULL` in the database.
+//!
+//! **CRITICAL:** Never use `node_type == 'topic'` for container detection.
+//! The node_type field indicates the node's behavior, not its container status.
+//!
+//! Examples:
+//! - Container node: `container_node_id = NULL` (e.g., @mention pages, date nodes)
+//! - Child node: `container_node_id = Some("parent-id")` (e.g., notes within a topic)
 
 use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::DatabaseService;
@@ -49,6 +61,30 @@ fn is_date_node_id(id: &str) -> bool {
         && bytes[7] == b'-'
         && bytes[8].is_ascii_digit()
         && bytes[9].is_ascii_digit()
+}
+
+/// Check if a node is a container node based on its container_node_id
+///
+/// Container nodes are identified by having a NULL container_node_id in the database.
+/// This is the ONLY correct way to detect container nodes.
+///
+/// # Arguments
+///
+/// * `container_node_id` - The container_node_id field from a Node
+///
+/// # Returns
+///
+/// `true` if the node is a container (container_node_id is None), `false` otherwise
+///
+/// # Examples
+///
+/// ```
+/// # use nodespace_core::services::node_service::is_container_node;
+/// assert!(is_container_node(&None)); // Container node
+/// assert!(!is_container_node(&Some("parent-id".to_string()))); // Child node
+/// ```
+pub fn is_container_node(container_node_id: &Option<String>) -> bool {
+    container_node_id.is_none()
 }
 
 // Regex pattern for UUID validation (lowercase hex with standard UUID format)
@@ -384,22 +420,46 @@ impl NodeService {
             .as_deref()
             .filter(|id| *id != ROOT_CONTAINER_ID);
 
-        conn.execute(
-            "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                node.id.as_str(),
-                node.node_type.as_str(),
-                node.content.as_str(),
-                node.parent_id.as_deref(),
-                container_node_id_value,
-                node.before_sibling_id.as_deref(),
-                properties_json.as_str(),
-                node.embedding_vector.as_deref(),
-            ),
-        )
-        .await
-        .map_err(|e| NodeServiceError::query_failed(format!("Failed to insert node: {}", e)))?;
+        // Mark container nodes as stale for initial embedding generation
+        // Container nodes are identified by container_node_id being NULL
+        // This ensures new containers will be picked up by the background embedding processor
+        let is_container = container_node_id_value.is_none();
+
+        if is_container {
+            conn.execute(
+                "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector, embedding_stale, last_content_update)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, CURRENT_TIMESTAMP)",
+                (
+                    node.id.as_str(),
+                    node.node_type.as_str(),
+                    node.content.as_str(),
+                    node.parent_id.as_deref(),
+                    container_node_id_value,
+                    node.before_sibling_id.as_deref(),
+                    properties_json.as_str(),
+                    node.embedding_vector.as_deref(),
+                ),
+            )
+            .await
+            .map_err(|e| NodeServiceError::query_failed(format!("Failed to insert node: {}", e)))?;
+        } else {
+            conn.execute(
+                "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    node.id.as_str(),
+                    node.node_type.as_str(),
+                    node.content.as_str(),
+                    node.parent_id.as_deref(),
+                    container_node_id_value,
+                    node.before_sibling_id.as_deref(),
+                    properties_json.as_str(),
+                    node.embedding_vector.as_deref(),
+                ),
+            )
+            .await
+            .map_err(|e| NodeServiceError::query_failed(format!("Failed to insert node: {}", e)))?;
+        }
 
         Ok(node.id)
     }
@@ -658,11 +718,11 @@ impl NodeService {
             updated.parent_id = parent_id;
         }
 
-        if let Some(container_node_id) = update.container_node_id {
+        if let Some(ref container_node_id) = update.container_node_id {
             // Convert ROOT_CONTAINER_ID to None (null in database) - same as CREATE operation
             updated.container_node_id = match container_node_id {
                 Some(id) if id == ROOT_CONTAINER_ID => None,
-                other => other,
+                other => other.clone(),
             };
         }
 
@@ -686,8 +746,11 @@ impl NodeService {
         let properties_json = serde_json::to_string(&updated.properties)
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
-        // If content changed and this is a topic node, mark as stale
-        if content_changed && updated.node_type == "topic" {
+        // Determine if this node is a container (container_node_id IS NULL)
+        let is_container = updated.container_node_id.is_none();
+
+        // If content changed and this is a container node, mark as stale
+        if content_changed && is_container {
             conn.execute(
                 "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ?, embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
                 (
@@ -719,6 +782,48 @@ impl NodeService {
             )
             .await
             .map_err(|e| NodeServiceError::query_failed(format!("Failed to update node: {}", e)))?;
+        }
+
+        // If content changed in a child node, mark the parent container as stale too
+        // This ensures container embeddings stay fresh when children are modified
+        if content_changed && !is_container {
+            if let Some(ref container_id) = updated.container_node_id {
+                conn.execute(
+                    "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+                    [container_id.as_str()],
+                )
+                .await
+                .map_err(|e| NodeServiceError::query_failed(format!("Failed to mark parent container as stale: {}", e)))?;
+            }
+        }
+
+        // If container_node_id changed (node moved between containers), mark both old and new containers as stale
+        // Moving a node affects the content of both containers semantically
+        if update.container_node_id.is_some()
+            && existing.container_node_id != updated.container_node_id
+        {
+            // Mark old container as stale (if it exists)
+            if let Some(ref old_container_id) = existing.container_node_id {
+                conn.execute(
+                    "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+                    [old_container_id.as_str()],
+                )
+                .await
+                .ok(); // Don't fail update if old container no longer exists
+            }
+
+            // Mark new container as stale (if different from what content_changed handled)
+            // Only needed if content didn't change (content_changed already handled new container above)
+            if !content_changed {
+                if let Some(ref new_container_id) = updated.container_node_id {
+                    conn.execute(
+                        "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+                        [new_container_id.as_str()],
+                    )
+                    .await
+                    .ok(); // Don't fail update if new container doesn't exist
+                }
+            }
         }
 
         // Sync mentions if content changed
