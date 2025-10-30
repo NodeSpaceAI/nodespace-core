@@ -34,6 +34,7 @@
   } from './textarea-controller.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
   import { SlashCommandDropdown } from '$lib/components/ui/slash-command-dropdown';
+  import { DatePickerModal } from '$lib/components/ui/date-picker';
   import {
     SlashCommandService,
     type SlashCommand,
@@ -128,6 +129,10 @@
   let slashCommands = $state<SlashCommand[]>([]);
   let slashCommandService = SlashCommandService.getInstance();
 
+  // Date picker modal state
+  let showDatePicker = $state(false);
+  let datePickerPosition = $state({ x: 0, y: 0 });
+
   // Generate mock autocomplete results for TEST ENVIRONMENT ONLY
   // Used only when import.meta.env.VITEST is true
   function generateMockResultsForTests(query: string): NodeResult[] {
@@ -187,6 +192,58 @@
     );
   }
 
+  // ============================================================================
+  // Date Shortcuts and Formatting Logic
+  // ============================================================================
+
+  /**
+   * Format a Date object to YYYY-MM-DD string
+   */
+  function formatDate(date: Date): string {
+    return date.toISOString().split('T')[0];
+  }
+
+  /**
+   * Get date string from shortcut name
+   */
+  function getDateFromShortcut(shortcut: string): string {
+    const today = new Date();
+
+    switch (shortcut) {
+      case 'today':
+        return formatDate(today);
+      case 'tomorrow': {
+        const tomorrow = new Date(today);
+        tomorrow.setDate(today.getDate() + 1);
+        return formatDate(tomorrow);
+      }
+      case 'yesterday': {
+        const yesterday = new Date(today);
+        yesterday.setDate(today.getDate() - 1);
+        return formatDate(yesterday);
+      }
+      default:
+        return formatDate(today);
+    }
+  }
+
+  /**
+   * Generate date shortcuts for autocomplete
+   */
+  function getDateShortcuts(query: string): NodeResult[] {
+    const shortcuts: NodeResult[] = [
+      { id: 'today', title: 'Today', type: 'date', isShortcut: true },
+      { id: 'tomorrow', title: 'Tomorrow', type: 'date', isShortcut: true },
+      { id: 'yesterday', title: 'Yesterday', type: 'date', isShortcut: true },
+      { id: 'date-picker', title: 'Date (pick)', type: 'date', isShortcut: true }
+    ];
+
+    // Filter shortcuts based on query
+    return shortcuts.filter((shortcut) =>
+      shortcut.title.toLowerCase().includes(query.toLowerCase())
+    );
+  }
+
   // Reactive effect to update autocomplete results when query changes
   $effect(() => {
     if (showAutocomplete && nodeReferenceService) {
@@ -211,6 +268,9 @@
         return;
       }
 
+      // Get date shortcuts first (always shown)
+      const dateShortcuts = getDateShortcuts(query);
+
       // Get all nodes from the node manager
       const allNodes = Array.from(services.nodeManager.nodes.values());
 
@@ -219,11 +279,14 @@
       const filtered = NodeSearchService.filterMentionableNodes(allNodes, query).slice(0, 10); // Limit to 10 results
 
       // Convert to NodeResult format
-      autocompleteResults = filtered.map((node) => ({
+      const nodeResults = filtered.map((node) => ({
         id: node.id,
         title: node.content.split('\n')[0] || 'Untitled',
         type: (node.nodeType || 'text') as NodeType
       }));
+
+      // Combine: date shortcuts first, then search results
+      autocompleteResults = [...dateShortcuts, ...nodeResults];
     } catch (error) {
       console.error('[NodeSearch] Search failed:', error);
       autocompleteResults = [];
@@ -241,6 +304,29 @@
 
   // Autocomplete event handlers
   async function handleAutocompleteSelect(result: NodeResult) {
+    // Handle date picker special case
+    if (result.id === 'date-picker') {
+      // Close autocomplete
+      showAutocomplete = false;
+      currentQuery = '';
+      autocompleteResults = [];
+
+      // Use the same position as autocomplete
+      datePickerPosition = autocompletePosition;
+
+      // Show date picker modal
+      showDatePicker = true;
+      return;
+    }
+
+    // Handle date shortcuts (today, tomorrow, yesterday)
+    if (result.isShortcut && result.id !== 'date-picker') {
+      const dateStr = getDateFromShortcut(result.id);
+      await handleDateSelection(new Date(dateStr));
+      return;
+    }
+
+    // Handle normal node references
     if (controller) {
       if (result.id === 'new') {
         const newNodeId = await createNewNodeFromMention(result.title);
@@ -314,6 +400,75 @@
       console.error('[NodeCreation] Failed to create node:', error);
       return null;
     }
+  }
+
+  /**
+   * Creates or gets a DateNode for the given date string
+   * Returns the node ID if successful, null otherwise
+   */
+  async function createDateNode(dateStr: string): Promise<string | null> {
+    try {
+      if (!services?.nodeManager) {
+        return null;
+      }
+
+      const nodeManager = services.nodeManager;
+      const { backendAdapter } = await import('$lib/services/backend-adapter');
+
+      // Check if date node already exists (dates use their date string as ID)
+      const existingNode = nodeManager.nodes.get(dateStr);
+      if (existingNode) {
+        return existingNode.id;
+      }
+
+      // Find the last root node to get the correct order
+      const allNodes = Array.from(nodeManager.nodes.values());
+      const rootNodes = allNodes.filter(isContainerNode);
+      const lastRootNode = rootNodes[rootNodes.length - 1];
+      const beforeSiblingId = lastRootNode ? lastRootNode.id : null;
+
+      // Create new date node using backend adapter
+      await backendAdapter.createNode({
+        id: dateStr, // Use date string as ID for consistency
+        content: dateStr,
+        nodeType: 'date',
+        parentId: null,
+        containerNodeId: null,
+        beforeSiblingId: beforeSiblingId,
+        properties: {},
+        embeddingVector: null
+      });
+
+      return dateStr;
+    } catch (error) {
+      console.error('[DateNode] Failed to create date node:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Handle date selection from shortcuts or date picker
+   */
+  async function handleDateSelection(date: Date) {
+    const dateStr = formatDate(date);
+    const dateNodeId = await createDateNode(dateStr);
+
+    if (dateNodeId && controller) {
+      // Insert as a node reference
+      controller.insertNodeReference(dateNodeId, dateStr);
+    }
+
+    // Hide date picker and autocomplete
+    showDatePicker = false;
+    showAutocomplete = false;
+    currentQuery = '';
+    autocompleteResults = [];
+
+    // Emit event
+    dispatch('nodeReferenceSelected', {
+      nodeId: dateNodeId || dateStr,
+      nodeTitle: dateStr
+    });
   }
 
   // Slash command event handlers
@@ -669,6 +824,15 @@
     }
   }
 
+  function handleDatePickerClose(): void {
+    showDatePicker = false;
+
+    // Return focus to the content editable element
+    if (controller) {
+      controller.focus();
+    }
+  }
+
   // ============================================================================
   // Utility Functions
   // ============================================================================
@@ -805,6 +969,14 @@
   visible={showSlashCommands}
   onselect={handleSlashCommandSelect}
   onclose={handleSlashCommandClose}
+/>
+
+<!-- Date Picker Modal Component -->
+<DatePickerModal
+  position={datePickerPosition}
+  visible={showDatePicker}
+  onselect={handleDateSelection}
+  onclose={handleDatePickerClose}
 />
 
 <style>

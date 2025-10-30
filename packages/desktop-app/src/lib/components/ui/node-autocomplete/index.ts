@@ -8,4 +8,5 @@ export interface NodeResult {
   type: NodeType;
   subtitle?: string;
   metadata?: string;
+  isShortcut?: boolean; // Flag for date shortcuts and other special items
 }
