@@ -32,7 +32,7 @@
     onNodeIdChange?: (_nodeId: string) => void; // In type for interface, not used by BaseNodeViewer
   } = $props();
 
-  // Editable header state
+  // Editable header state (for default header when no custom snippet provided)
   let headerContent = $state('');
 
   // Get nodeManager from shared context
@@ -69,7 +69,7 @@
     if (nodeId) {
       loadChildrenForParent(nodeId);
 
-      // Load header content from node
+      // Load header content from node (for default editable header)
       const node = sharedNodeStore.getNode(nodeId);
       if (node) {
         headerContent = node.content || '';
@@ -84,7 +84,7 @@
     }
   });
 
-  // Update tab title when header content changes
+  // Update tab title when header content changes (for default editable header)
   $effect(() => {
     if (onTitleChange && headerContent !== undefined) {
       const firstLine = headerContent.split('\n')[0].trim();
@@ -94,7 +94,7 @@
   });
 
   /**
-   * Handle header content changes
+   * Handle header content changes (for default editable header)
    * Updates both the local state and the node's content in the database
    */
   function handleHeaderInput(newValue: string) {
@@ -1366,22 +1366,23 @@
 
 <!-- Base Node Viewer: Header + Scrollable Children Area -->
 <div class="base-node-viewer">
-  <!-- Editable Header Section (always visible) -->
-  <div class="viewer-editable-header">
-    <input
-      type="text"
-      class="header-input"
-      bind:value={headerContent}
-      oninput={(e) => handleHeaderInput(e.currentTarget.value)}
-      placeholder="Untitled"
-      aria-label="Page title"
-    />
-  </div>
-
-  <!-- Custom Header Section (can be customized via snippet) -->
+  <!-- Header Section - Default editable header or custom snippet -->
   {#if header}
+    <!-- Custom header provided via snippet (e.g., DateNodeViewer's date navigation) -->
     <div class="viewer-header">
       {@render header()}
+    </div>
+  {:else}
+    <!-- Default editable header (no custom snippet provided) -->
+    <div class="viewer-editable-header">
+      <input
+        type="text"
+        class="header-input"
+        bind:value={headerContent}
+        oninput={(e) => handleHeaderInput(e.currentTarget.value)}
+        placeholder="Untitled"
+        aria-label="Page title"
+      />
     </div>
   {/if}
 
@@ -1583,7 +1584,7 @@
     width: 100%;
   }
 
-  /* Editable header section - always visible, borderless design */
+  /* Default editable header section - borderless design */
   .viewer-editable-header {
     flex-shrink: 0;
     padding: 1rem;
