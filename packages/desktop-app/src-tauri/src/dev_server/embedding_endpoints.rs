@@ -23,26 +23,8 @@
 //!
 //! # Implementation Status
 //!
-//! **NOTE**: This module contains placeholder implementations because the NodeEmbeddingService
-//! is not yet integrated into AppState. Most endpoints return NOT_IMPLEMENTED errors with
-//! clear messages indicating what needs to be added.
-//!
-//! **EXCEPTION**: The `POST /api/embeddings/batch` endpoint has a working stub implementation
-//! that validates node existence and returns proper success/failure counts. This allows
-//! frontend tests to verify the interface while the full embedding service is being developed.
-//!
-//! **When to Use Stub vs Real Implementation**:
-//! - **Stub** (current batch endpoint): Use when testing API interfaces and error handling without
-//!   requiring actual embedding generation. Suitable for integration tests that verify request/response
-//!   contracts and error paths.
-//! - **Real Implementation** (future): Required for end-to-end tests that validate embedding quality,
-//!   semantic search accuracy, or production deployments. Needs NodeEmbeddingService integrated into AppState.
-//!
-//! **TODO for Phase 3 completion**:
-//! 1. Add `embedding_service: Arc<NodeEmbeddingService>` to AppState in mod.rs
-//! 2. Replace placeholder handlers with actual service calls
-//! 3. Initialize NodeEmbeddingService in dev-server binary
-//! 4. Update tests to use the real service
+//! ✅ **Phase 3 Complete**: NodeEmbeddingService is integrated into AppState and all endpoints
+//! use the real embedding service implementation. All embedding operations are fully functional.
 //!
 //! # Security (Production Considerations)
 //!
@@ -64,8 +46,32 @@ use axum::{
 use crate::commands::embeddings::{BatchEmbeddingResult, SearchContainersParams};
 use crate::commands::nodes::CreateContainerNodeInput;
 use crate::dev_server::{AppState, HttpError};
+use nodespace_core::services::NodeEmbeddingService;
 use nodespace_core::Node;
 use std::sync::Arc;
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Acquire the embedding service from AppState
+///
+/// This helper extracts the embedding service from the shared AppState,
+/// properly handling lock acquisition and Arc cloning. The lock is released
+/// immediately after cloning the Arc, minimizing lock hold time.
+///
+/// # Errors
+///
+/// Returns `HttpError` with `LOCK_ERROR` code if the RwLock is poisoned.
+fn get_embedding_service(state: &AppState) -> Result<Arc<NodeEmbeddingService>, HttpError> {
+    let lock = state.embedding_service.read().map_err(|e| {
+        HttpError::new(
+            format!("Failed to acquire embedding service read lock: {}", e),
+            "LOCK_ERROR",
+        )
+    })?;
+    Ok(Arc::clone(&*lock))
+}
 
 // ============================================================================
 // Embedding Endpoints
@@ -93,10 +99,6 @@ use std::sync::Arc;
 ///
 /// - `NODE_NOT_FOUND`: Topic node doesn't exist
 /// - `EMBEDDING_GENERATION_FAILED`: Embedding service failed
-///
-/// # TODO
-///
-/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn generate_container_embedding(
     State(state): State<AppState>,
     Json(payload): Json<GenerateEmbeddingRequest>,
@@ -110,16 +112,7 @@ async fn generate_container_embedding(
         ));
     }
 
-    // Acquire embedding service lock
-    let embedding_service: Arc<nodespace_core::services::NodeEmbeddingService> = {
-        let lock = state.embedding_service.read().map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire embedding service read lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?;
-        Arc::clone(&*lock)
-    };
+    let embedding_service = get_embedding_service(&state)?;
 
     // Generate embedding
     embedding_service
@@ -177,9 +170,6 @@ struct GenerateEmbeddingRequest {
 ///   }'
 /// ```
 ///
-/// # TODO
-///
-/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn search_containers(
     State(state): State<AppState>,
     Json(params): Json<SearchContainersParams>,
@@ -197,16 +187,7 @@ async fn search_containers(
     let limit = params.limit.unwrap_or(20);
     let exact = params.exact.unwrap_or(false);
 
-    // Acquire embedding service lock
-    let embedding_service: Arc<nodespace_core::services::NodeEmbeddingService> = {
-        let lock = state.embedding_service.read().map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire embedding service read lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?;
-        Arc::clone(&*lock)
-    };
+    let embedding_service = get_embedding_service(&state)?;
 
     // Perform search
     let results = if exact {
@@ -245,9 +226,6 @@ async fn search_containers(
 /// curl -X PATCH http://localhost:3001/api/embeddings/topic-uuid-123
 /// ```
 ///
-/// # TODO
-///
-/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn update_container_embedding(
     State(state): State<AppState>,
     Path(container_id): Path<String>,
@@ -261,16 +239,7 @@ async fn update_container_embedding(
         ));
     }
 
-    // Acquire embedding service lock
-    let embedding_service: Arc<nodespace_core::services::NodeEmbeddingService> = {
-        let lock = state.embedding_service.read().map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire embedding service read lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?;
-        Arc::clone(&*lock)
-    };
+    let embedding_service = get_embedding_service(&state)?;
 
     // Update embedding
     embedding_service
@@ -327,16 +296,7 @@ async fn batch_generate_embeddings(
         ));
     }
 
-    // Acquire embedding service lock
-    let embedding_service: Arc<nodespace_core::services::NodeEmbeddingService> = {
-        let lock = state.embedding_service.read().map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire embedding service read lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?;
-        Arc::clone(&*lock)
-    };
+    let embedding_service = get_embedding_service(&state)?;
 
     let mut success_count = 0;
     let mut failed_embeddings = Vec::new();
@@ -389,22 +349,10 @@ struct BatchGenerateRequest {
 /// curl http://localhost:3001/api/embeddings/stale-count
 /// ```
 ///
-/// # TODO
-///
-/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn get_stale_container_count(
     State(state): State<AppState>,
 ) -> Result<Json<usize>, HttpError> {
-    // Acquire embedding service lock
-    let embedding_service: Arc<nodespace_core::services::NodeEmbeddingService> = {
-        let lock = state.embedding_service.read().map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire embedding service read lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?;
-        Arc::clone(&*lock)
-    };
+    let embedding_service = get_embedding_service(&state)?;
 
     // Get stale containers
     let containers = embedding_service
@@ -435,10 +383,6 @@ async fn get_stale_container_count(
 ///   -H "Content-Type: application/json" \
 ///   -d '{"containerId": "topic-uuid-123"}'
 /// ```
-///
-/// # TODO
-///
-/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn on_container_closed(
     State(state): State<AppState>,
     Json(payload): Json<TopicIdRequest>,
@@ -452,16 +396,7 @@ async fn on_container_closed(
         ));
     }
 
-    // Acquire embedding service lock
-    let embedding_service: Arc<nodespace_core::services::NodeEmbeddingService> = {
-        let lock = state.embedding_service.read().map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire embedding service read lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?;
-        Arc::clone(&*lock)
-    };
+    let embedding_service = get_embedding_service(&state)?;
 
     // Handle container closed event
     embedding_service
@@ -500,10 +435,6 @@ async fn on_container_closed(
 ///   -H "Content-Type: application/json" \
 ///   -d '{"containerId": "topic-uuid-123"}'
 /// ```
-///
-/// # TODO
-///
-/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn on_container_idle(
     State(state): State<AppState>,
     Json(payload): Json<TopicIdRequest>,
@@ -517,16 +448,7 @@ async fn on_container_idle(
         ));
     }
 
-    // Acquire embedding service lock
-    let embedding_service: Arc<nodespace_core::services::NodeEmbeddingService> = {
-        let lock = state.embedding_service.read().map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire embedding service read lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?;
-        Arc::clone(&*lock)
-    };
+    let embedding_service = get_embedding_service(&state)?;
 
     // Handle idle timeout
     let was_embedded = embedding_service
@@ -558,21 +480,8 @@ async fn on_container_idle(
 /// ```bash
 /// curl -X POST http://localhost:3001/api/embeddings/sync
 /// ```
-///
-/// # TODO
-///
-/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn sync_embeddings(State(state): State<AppState>) -> Result<Json<usize>, HttpError> {
-    // Acquire embedding service lock
-    let embedding_service: Arc<nodespace_core::services::NodeEmbeddingService> = {
-        let lock = state.embedding_service.read().map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire embedding service read lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?;
-        Arc::clone(&*lock)
-    };
+    let embedding_service = get_embedding_service(&state)?;
 
     // Sync all stale containers
     let count = embedding_service

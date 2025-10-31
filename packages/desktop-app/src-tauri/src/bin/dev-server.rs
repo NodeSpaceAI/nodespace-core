@@ -86,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create initial database and node service for startup
     let db_service = DatabaseService::new(db_path.clone()).await?;
+    // DatabaseService::clone() is cheap - it clones the inner Arc<Database> and PathBuf
     let db_arc_for_embedding = Arc::new(db_service.clone());
     let node_service = NodeService::new(db_service.clone())?;
 
