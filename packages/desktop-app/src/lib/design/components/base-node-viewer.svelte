@@ -1586,7 +1586,6 @@
   .viewer-editable-header {
     flex-shrink: 0;
     padding: 1rem;
-    padding-bottom: 0.5rem;
     border-bottom: 1px solid hsl(var(--border));
     background: hsl(var(--background));
   }
