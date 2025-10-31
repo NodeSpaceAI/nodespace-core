@@ -32,14 +32,6 @@
     onNodeIdChange?: (_nodeId: string) => void; // In type for interface, not used by BaseNodeViewer
   } = $props();
 
-  // Editable header state (for default header when no custom snippet provided)
-  // Use $derived to make it reactive to node content changes from any source
-  const headerContent = $derived.by(() => {
-    if (!nodeId) return '';
-    const node = sharedNodeStore.getNode(nodeId);
-    return node?.content || '';
-  });
-
   // Get nodeManager from shared context
   const services = getNodeServices();
   if (!services) {
@@ -57,6 +49,10 @@
     viewerId: nodeId || 'root'
   };
 
+  // Editable header state (for default header when no custom snippet provided)
+  // Use local $state so input binding works and we can update tab title immediately
+  let headerContent = $state('');
+
   // Track last saved content to detect actual changes
   const lastSavedContent = new Map<string, string>();
 
@@ -67,30 +63,41 @@
   // Start as true to prevent watcher from firing before loadChildrenForParent() completes
   let isLoadingInitialNodes = true;
 
-  // Set view context and load children when nodeId changes
+  // Set view context, load children, and initialize header content when nodeId changes
   $effect(() => {
     nodeManager.setViewParentId(nodeId);
 
     if (nodeId) {
       loadChildrenForParent(nodeId);
-    }
-  });
 
-  // Update tab title when header content changes (for default editable header)
-  $effect(() => {
-    if (onTitleChange && headerContent !== undefined) {
-      const firstLine = headerContent.split('\n')[0].trim();
-      const title = firstLine.length > 40 ? firstLine.substring(0, 37) + '...' : firstLine;
-      onTitleChange(title || 'Untitled');
+      // Initialize header content from node
+      const node = sharedNodeStore.getNode(nodeId);
+      headerContent = node?.content || '';
+
+      // Update tab title on load
+      updateTabTitle(headerContent);
     }
   });
 
   /**
+   * Update tab title from header content
+   */
+  function updateTabTitle(content: string) {
+    if (onTitleChange) {
+      const firstLine = content.split('\n')[0].trim();
+      const title = firstLine.length > 40 ? firstLine.substring(0, 37) + '...' : firstLine;
+      onTitleChange(title || 'Untitled');
+    }
+  }
+
+  /**
    * Handle header content changes (for default editable header)
-   * Updates the node's content in the database
-   * headerContent will update reactively via $derived when the node changes
+   * Updates both the tab title and node's content in the database
    */
   function handleHeaderInput(newValue: string) {
+    // Update tab title immediately
+    updateTabTitle(newValue);
+
     // Update node content in database if nodeId exists
     // Use the same method as child nodes to ensure consistent behavior
     if (nodeId) {
@@ -1369,7 +1376,7 @@
       <input
         type="text"
         class="header-input"
-        value={headerContent}
+        bind:value={headerContent}
         oninput={(e) => handleHeaderInput(e.currentTarget.value)}
         placeholder="Untitled"
         aria-label="Page title"
