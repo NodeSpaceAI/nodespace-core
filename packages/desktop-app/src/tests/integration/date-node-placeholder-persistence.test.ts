@@ -87,44 +87,44 @@ describe.sequential('Date Node Placeholder Persistence', () => {
   it.skipIf(!shouldUseDatabase())(
     'should not persist placeholder nodes (empty text nodes) immediately',
     async () => {
-      // Simulate what happens when user opens an empty date view
-      const dateId = '2025-10-13';
+    // Simulate what happens when user opens an empty date view
+    const dateId = '2025-10-13';
 
-      // Create placeholder (empty text node) as viewer source
-      const placeholderId = globalThis.crypto.randomUUID();
-      const placeholder = TestNodeBuilder.text('')
-        .withId(placeholderId)
-        .withParent(dateId)
-        .withContainer(dateId)
-        .build();
+    // Create placeholder (empty text node) as viewer source
+    const placeholderId = globalThis.crypto.randomUUID();
+    const placeholder = TestNodeBuilder.text('')
+      .withId(placeholderId)
+      .withParent(dateId)
+      .withContainer(dateId)
+      .build();
 
-      // Add to store with viewer source (simulates BaseNodeViewer behavior)
-      const viewerSource = {
-        type: 'viewer' as const,
-        viewerId: 'test-viewer',
-        reason: 'placeholder-creation'
-      };
-      const fullPlaceholder = {
-        ...placeholder,
-        createdAt: new Date().toISOString(),
-        modifiedAt: new Date().toISOString()
-      };
-      sharedNodeStore.setNode(fullPlaceholder, viewerSource);
+    // Add to store with viewer source (simulates BaseNodeViewer behavior)
+    const viewerSource = {
+      type: 'viewer' as const,
+      viewerId: 'test-viewer',
+      reason: 'placeholder-creation'
+    };
+    const fullPlaceholder = {
+      ...placeholder,
+      createdAt: new Date().toISOString(),
+      modifiedAt: new Date().toISOString()
+    };
+    sharedNodeStore.setNode(fullPlaceholder, viewerSource);
 
-      // Wait a bit to ensure any persistence would have happened
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    // Wait a bit to ensure any persistence would have happened
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
-      // Verify placeholder is NOT in database
-      const retrievedPlaceholder = await backend.getNode(placeholderId);
-      expect(retrievedPlaceholder).toBeNull();
+    // Verify placeholder is NOT in database
+    const retrievedPlaceholder = await backend.getNode(placeholderId);
+    expect(retrievedPlaceholder).toBeNull();
 
-      // Verify placeholder IS in memory
-      const inMemory = sharedNodeStore.getNode(placeholderId);
-      expect(inMemory).toBeTruthy();
-      expect(inMemory?.content).toBe('');
+    // Verify placeholder IS in memory
+    const inMemory = sharedNodeStore.getNode(placeholderId);
+    expect(inMemory).toBeTruthy();
+    expect(inMemory?.content).toBe('');
 
-      // Verify it's not marked as persisted
-      expect(sharedNodeStore.isNodePersisted(placeholderId)).toBe(false);
+    // Verify it's not marked as persisted
+    expect(sharedNodeStore.isNodePersisted(placeholderId)).toBe(false);
     }
   );
 
