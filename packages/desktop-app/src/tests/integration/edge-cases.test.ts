@@ -142,8 +142,9 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
       }
     }, 5000); // Shorter timeout for input validation (fails fast)
 
-    it('should validate container node input', async () => {
-      try {
+    it.skipIf(!shouldUseDatabase())(
+      'should validate container node input',
+      async () => {
         // Test with empty content
         try {
           await backend.createContainerNode({
@@ -181,18 +182,9 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
         } catch (error) {
           expect(error).toBeTruthy();
         }
-      } catch (error) {
-        // If container endpoint is not yet active, skip this test
-        // Expected: 405 Method Not Allowed until endpoint is properly registered
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (errorMessage.includes('405') || errorMessage.includes('500')) {
-          console.log('[Test] Container endpoint not yet active - test skipped');
-          expect(error).toBeTruthy();
-        } else {
-          throw error;
-        }
-      }
-    }, 10000);
+      },
+      10000
+    );
   });
 
   describe('Timeout handling', () => {

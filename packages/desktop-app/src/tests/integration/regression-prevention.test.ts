@@ -92,8 +92,9 @@ describe.sequential('Section 12: Regression Prevention', () => {
   }
 
   describe('Hierarchy integrity (Regression #185, #176)', () => {
-    it('should maintain sibling order for container nodes', async () => {
-      try {
+    it.skipIf(!shouldUseDatabase())(
+      'should maintain sibling order for container nodes',
+      async () => {
         // Issue #185: Lost track of nodes, sibling chain corruption
         // Fix: Proper transaction handling, before_sibling_id validation
 
@@ -172,18 +173,9 @@ describe.sequential('Section 12: Regression Prevention', () => {
 
         expect(container2?.beforeSiblingId).toBe(container1Id);
         expect(container3?.beforeSiblingId).toBe(container2Id);
-      } catch (error) {
-        // If container endpoint is not yet active, skip this test
-        // Expected: 405 Method Not Allowed until endpoint is properly registered
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (errorMessage.includes('405') || errorMessage.includes('500')) {
-          console.log('[Test] Container endpoint not yet active - test skipped');
-          expect(error).toBeTruthy();
-        } else {
-          throw error;
-        }
-      }
-    }, 10000);
+      },
+      10000
+    );
 
     it('should preserve parent-child relationships during mention operations', async () => {
       try {
@@ -392,8 +384,9 @@ describe.sequential('Section 12: Regression Prevention', () => {
   });
 
   describe('Concurrent operation safety (Regression #190)', () => {
-    it('should handle concurrent container node creation', async () => {
-      try {
+    it.skipIf(!shouldUseDatabase())(
+      'should handle concurrent container node creation',
+      async () => {
         // Issue #190: Race conditions in hierarchy operations
         // Fix: Transaction isolation, proper locking
 
@@ -427,18 +420,9 @@ describe.sequential('Section 12: Regression Prevention', () => {
           expect(container?.nodeType).toBe('text');
           expect(container?.parentId).toBeNull();
         }
-      } catch (error) {
-        // If container endpoint is not yet active, skip this test
-        // Expected: 405 Method Not Allowed until endpoint is properly registered
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (errorMessage.includes('405') || errorMessage.includes('500')) {
-          console.log('[Test] Container endpoint not yet active - test skipped');
-          expect(error).toBeTruthy();
-        } else {
-          throw error;
-        }
-      }
-    }, 10000);
+      },
+      10000
+    );
 
     it('should handle concurrent mention creation to same node', async () => {
       try {
