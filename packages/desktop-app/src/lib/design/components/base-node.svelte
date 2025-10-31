@@ -235,18 +235,22 @@
   }
 
   /**
-   * Generate date shortcuts for autocomplete
+   * Memoized date shortcuts array
+   * These are static shortcuts that don't change during component lifecycle
+   */
+  const DATE_SHORTCUTS: readonly NodeResult[] = [
+    { id: 'today', title: 'Today', type: 'date', isShortcut: true },
+    { id: 'tomorrow', title: 'Tomorrow', type: 'date', isShortcut: true },
+    { id: 'yesterday', title: 'Yesterday', type: 'date', isShortcut: true },
+    { id: 'date-picker', title: 'Select date...', type: 'date', isShortcut: true }
+  ] as const;
+
+  /**
+   * Generate date shortcuts for autocomplete (filtered by query)
    */
   function getDateShortcuts(query: string): NodeResult[] {
-    const shortcuts: NodeResult[] = [
-      { id: 'today', title: 'Today', type: 'date', isShortcut: true },
-      { id: 'tomorrow', title: 'Tomorrow', type: 'date', isShortcut: true },
-      { id: 'yesterday', title: 'Yesterday', type: 'date', isShortcut: true },
-      { id: 'date-picker', title: 'Select date...', type: 'date', isShortcut: true }
-    ];
-
-    // Filter shortcuts based on query
-    return shortcuts.filter((shortcut) =>
+    // Filter the memoized shortcuts based on query
+    return DATE_SHORTCUTS.filter((shortcut) =>
       shortcut.title.toLowerCase().includes(query.toLowerCase())
     );
   }
@@ -948,7 +952,8 @@
 {#if showDatePicker}
   <div
     role="dialog"
-    aria-label="Date picker"
+    aria-label="Date picker. Use arrow keys to navigate, Enter to select, Escape to close"
+    aria-modal="true"
     tabindex="-1"
     style="position: fixed; left: {datePickerPosition.x}px; top: {datePickerPosition.y}px; z-index: 1001; background: hsl(var(--popover)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); padding: 0;"
     onmousedown={(e) => {

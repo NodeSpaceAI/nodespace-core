@@ -13,6 +13,8 @@
     type: NodeType;
     subtitle?: string;
     metadata?: string;
+    isShortcut?: boolean;
+    submenuPosition?: { x: number; y: number };
   }
 
   // Props
@@ -144,8 +146,8 @@
     // For date-picker, attach position information for submenu positioning
     if (result.id === 'date-picker' && itemRefs[selectedIndex]) {
       const itemRect = itemRefs[selectedIndex].getBoundingClientRect();
-      // Add position metadata to the result
-      (result as NodeResult & { submenuPosition?: { x: number; y: number } }).submenuPosition = {
+      // Add position metadata to the result (now part of NodeResult interface)
+      result.submenuPosition = {
         x: itemRect.right,
         y: itemRect.top
       };
