@@ -83,6 +83,7 @@ export class NavigationService {
         node = fetchedNode;
 
         // Add to store for future use
+        // skipPersistence=true will automatically mark node as persisted in setNode()
         sharedNodeStore.setNode(
           node,
           { type: 'external', source: 'navigation-service', description: 'fetched-for-link-click' },
