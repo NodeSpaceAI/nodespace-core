@@ -84,7 +84,9 @@ describe.sequential('Date Node Placeholder Persistence', () => {
     }
   );
 
-  it('should not persist placeholder nodes (empty text nodes) immediately', async () => {
+  it.skipIf(!shouldUseDatabase())(
+    'should not persist placeholder nodes (empty text nodes) immediately',
+    async () => {
     // Simulate what happens when user opens an empty date view
     const dateId = '2025-10-13';
 
@@ -123,7 +125,8 @@ describe.sequential('Date Node Placeholder Persistence', () => {
 
     // Verify it's not marked as persisted
     expect(sharedNodeStore.isNodePersisted(placeholderId)).toBe(false);
-  });
+    }
+  );
 
   it.skipIf(!shouldUseDatabase())(
     'should persist node with content when date parent auto-created',
