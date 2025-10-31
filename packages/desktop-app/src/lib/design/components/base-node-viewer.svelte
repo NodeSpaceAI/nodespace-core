@@ -32,6 +32,9 @@
     onNodeIdChange?: (_nodeId: string) => void; // In type for interface, not used by BaseNodeViewer
   } = $props();
 
+  // Editable header state
+  let headerContent = $state('');
+
   // Get nodeManager from shared context
   const services = getNodeServices();
   if (!services) {
@@ -66,17 +69,43 @@
     if (nodeId) {
       loadChildrenForParent(nodeId);
 
+      // Load header content from node
+      const node = sharedNodeStore.getNode(nodeId);
+      if (node) {
+        headerContent = node.content || '';
+      }
+
       // Set tab title to node content (first line)
       if (onTitleChange) {
-        const node = sharedNodeStore.getNode(nodeId);
-        if (node && node.content) {
-          const firstLine = node.content.split('\n')[0].trim();
-          const title = firstLine.length > 40 ? firstLine.substring(0, 37) + '...' : firstLine;
-          onTitleChange(title || 'Untitled');
-        }
+        const firstLine = headerContent.split('\n')[0].trim();
+        const title = firstLine.length > 40 ? firstLine.substring(0, 37) + '...' : firstLine;
+        onTitleChange(title || 'Untitled');
       }
     }
   });
+
+  // Update tab title when header content changes
+  $effect(() => {
+    if (onTitleChange && headerContent !== undefined) {
+      const firstLine = headerContent.split('\n')[0].trim();
+      const title = firstLine.length > 40 ? firstLine.substring(0, 37) + '...' : firstLine;
+      onTitleChange(title || 'Untitled');
+    }
+  });
+
+  /**
+   * Handle header content changes
+   * Updates both the local state and the node's content in the database
+   */
+  function handleHeaderInput(newValue: string) {
+    // Update local state
+    headerContent = newValue;
+
+    // Update node content in database if nodeId exists
+    if (nodeId) {
+      sharedNodeStore.updateNode(nodeId, { content: newValue }, VIEWER_SOURCE);
+    }
+  }
 
   // Track pending content saves for new nodes (keyed by node ID)
   // Structural updates must wait for these to complete to avoid FOREIGN KEY errors
@@ -1337,7 +1366,19 @@
 
 <!-- Base Node Viewer: Header + Scrollable Children Area -->
 <div class="base-node-viewer">
-  <!-- Header Section (can be customized via snippet) -->
+  <!-- Editable Header Section (always visible) -->
+  <div class="viewer-editable-header">
+    <input
+      type="text"
+      class="header-input"
+      bind:value={headerContent}
+      oninput={(e) => handleHeaderInput(e.currentTarget.value)}
+      placeholder="Untitled"
+      aria-label="Page title"
+    />
+  </div>
+
+  <!-- Custom Header Section (can be customized via snippet) -->
   {#if header}
     <div class="viewer-header">
       {@render header()}
@@ -1542,7 +1583,32 @@
     width: 100%;
   }
 
-  /* Header section - fixed at top, doesn't scroll */
+  /* Editable header section - always visible, borderless design */
+  .viewer-editable-header {
+    flex-shrink: 0;
+    padding: 1rem;
+    padding-bottom: 0.5rem;
+    background: hsl(var(--background));
+  }
+
+  .header-input {
+    width: 100%;
+    font-size: 2rem;
+    font-weight: 500;
+    color: hsl(var(--muted-foreground));
+    background: transparent;
+    border: none;
+    outline: none;
+    padding: 0;
+    margin: 0;
+    font-family: inherit;
+  }
+
+  .header-input::placeholder {
+    color: hsl(var(--muted-foreground) / 0.5);
+  }
+
+  /* Custom header section - fixed at top, doesn't scroll */
   .viewer-header {
     flex-shrink: 0;
     padding: 1rem;
