@@ -102,8 +102,9 @@
     headerContent = newValue;
 
     // Update node content in database if nodeId exists
+    // Use the same method as child nodes to ensure consistent behavior
     if (nodeId) {
-      sharedNodeStore.updateNode(nodeId, { content: newValue }, VIEWER_SOURCE);
+      nodeManager.updateNodeContent(nodeId, newValue);
     }
   }
 
