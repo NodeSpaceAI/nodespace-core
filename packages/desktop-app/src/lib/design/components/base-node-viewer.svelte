@@ -9,6 +9,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
+  import { formatTabTitle } from '$lib/utils/text-formatting';
   import { pluginRegistry } from '$lib/components/viewers/index';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import BacklinksPanel from '$lib/design/components/backlinks-panel.svelte';
@@ -81,27 +82,40 @@
 
   /**
    * Update tab title from header content
+   *
+   * Uses shared formatTabTitle utility to ensure consistent tab title formatting
+   * across all viewers and navigation. Multi-line content is automatically
+   * truncated to first line, and long titles are shortened with ellipsis.
+   *
+   * @param content - Full node content (may be multi-line)
    */
   function updateTabTitle(content: string) {
     if (onTitleChange) {
-      const firstLine = content.split('\n')[0].trim();
-      const title = firstLine.length > 40 ? firstLine.substring(0, 37) + '...' : firstLine;
-      onTitleChange(title || 'Untitled');
+      onTitleChange(formatTabTitle(content));
     }
   }
 
   /**
    * Handle header content changes (for default editable header)
-   * Updates both the tab title and node's content in the database
+   * Updates local state, tab title, and persists to database
    */
   function handleHeaderInput(newValue: string) {
+    // Update local state (since we use one-way binding)
+    headerContent = newValue;
+
     // Update tab title immediately
     updateTabTitle(newValue);
 
     // Update node content in database if nodeId exists
     // Use the same method as child nodes to ensure consistent behavior
     if (nodeId) {
-      nodeManager.updateNodeContent(nodeId, newValue);
+      try {
+        nodeManager.updateNodeContent(nodeId, newValue);
+      } catch (error) {
+        console.error('[BaseNodeViewer] Failed to update header content:', error);
+        // TODO: Show user-facing error notification via event bus
+        // eventBus.emit({ type: 'error:node-update-failed', nodeId, error });
+      }
     }
   }
 
@@ -1376,7 +1390,7 @@
       <input
         type="text"
         class="header-input"
-        bind:value={headerContent}
+        value={headerContent}
         oninput={(e) => handleHeaderInput(e.currentTarget.value)}
         placeholder="Untitled"
         aria-label="Page title"

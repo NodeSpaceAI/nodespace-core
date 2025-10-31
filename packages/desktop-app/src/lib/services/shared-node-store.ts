@@ -541,8 +541,7 @@ export class SharedNodeStore {
     this.versions.set(node.id, this.getNextVersion(node.id));
     this.notifySubscribers(node.id, node, source);
 
-    // If source is database OR skipPersistence=true, mark node as already persisted
-    // skipPersistence=true means the node was loaded from backend and should not be persisted again
+    // Mark as persisted if loaded from backend (database source or skipPersistence flag)
     if (source.type === 'database' || skipPersistence) {
       this.persistedNodeIds.add(node.id);
     }

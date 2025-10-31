@@ -20,9 +20,9 @@ import { sharedNodeStore } from './shared-node-store';
 import { get } from 'svelte/store';
 import type { Node } from '$lib/types';
 import { formatDateTitle, isValidDateString } from '$lib/utils/date-formatting';
+import { formatTabTitle } from '$lib/utils/text-formatting';
 
 // Constants
-const MAX_TAB_TITLE_LENGTH = 40;
 const LOG_PREFIX = '[NavigationService]';
 
 export interface NavigationTarget {
@@ -103,7 +103,13 @@ export class NavigationService {
   }
 
   /**
-   * Generate a human-readable tab title from node content
+   * Generate tab title for a node
+   *
+   * Uses specialized formatting for date nodes, and shared formatTabTitle
+   * utility for all other node types to ensure consistency.
+   *
+   * @param node - The node to generate a title for
+   * @returns Human-readable tab title
    */
   private generateTabTitle(node: Node): string {
     // For date nodes, use formatted date
@@ -116,13 +122,9 @@ export class NavigationService {
       return formatDateTitle(date);
     }
 
-    // For other nodes, use first line of content (max MAX_TAB_TITLE_LENGTH chars)
+    // For other nodes, use shared utility for consistent formatting
     if (node.content && typeof node.content === 'string') {
-      const firstLine = node.content.split('\n')[0].trim();
-      if (firstLine.length > MAX_TAB_TITLE_LENGTH) {
-        return firstLine.substring(0, MAX_TAB_TITLE_LENGTH - 3) + '...';
-      }
-      return firstLine;
+      return formatTabTitle(node.content, `${node.nodeType} Node`);
     }
 
     // Fallback to node type
