@@ -541,8 +541,8 @@ export class SharedNodeStore {
     this.versions.set(node.id, this.getNextVersion(node.id));
     this.notifySubscribers(node.id, node, source);
 
-    // If source is database, mark node as already persisted
-    if (source.type === 'database') {
+    // Mark as persisted if loaded from backend (database source or skipPersistence flag)
+    if (source.type === 'database' || skipPersistence) {
       this.persistedNodeIds.add(node.id);
     }
 
@@ -787,10 +787,10 @@ export class SharedNodeStore {
       const nodes = await tauriNodeService.getNodesByContainerId(parentId);
 
       // Add nodes to store with database source (skips persistence)
+      // skipPersistence=true will automatically mark nodes as persisted in setNode()
       const databaseSource = { type: 'database' as const, reason: 'loaded-from-db' };
       for (const node of nodes) {
         this.setNode(node, databaseSource, true); // skipPersistence = true
-        this.persistedNodeIds.add(node.id); // Mark as already persisted
       }
 
       return nodes;

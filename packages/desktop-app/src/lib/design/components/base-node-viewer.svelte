@@ -9,6 +9,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
+  import { formatTabTitle } from '$lib/utils/text-formatting';
   import { pluginRegistry } from '$lib/components/viewers/index';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import BacklinksPanel from '$lib/design/components/backlinks-panel.svelte';
@@ -49,6 +50,10 @@
     viewerId: nodeId || 'root'
   };
 
+  // Editable header state (for default header when no custom snippet provided)
+  // Use local $state so input binding works and we can update tab title immediately
+  let headerContent = $state('');
+
   // Track last saved content to detect actual changes
   const lastSavedContent = new Map<string, string>();
 
@@ -59,24 +64,60 @@
   // Start as true to prevent watcher from firing before loadChildrenForParent() completes
   let isLoadingInitialNodes = true;
 
-  // Set view context and load children when nodeId changes
+  // Set view context, load children, and initialize header content when nodeId changes
   $effect(() => {
     nodeManager.setViewParentId(nodeId);
 
     if (nodeId) {
       loadChildrenForParent(nodeId);
 
-      // Set tab title to node content (first line)
-      if (onTitleChange) {
-        const node = sharedNodeStore.getNode(nodeId);
-        if (node && node.content) {
-          const firstLine = node.content.split('\n')[0].trim();
-          const title = firstLine.length > 40 ? firstLine.substring(0, 37) + '...' : firstLine;
-          onTitleChange(title || 'Untitled');
-        }
-      }
+      // Initialize header content from node
+      const node = sharedNodeStore.getNode(nodeId);
+      headerContent = node?.content || '';
+
+      // Update tab title on load
+      updateTabTitle(headerContent);
     }
   });
+
+  /**
+   * Update tab title from header content
+   *
+   * Uses shared formatTabTitle utility to ensure consistent tab title formatting
+   * across all viewers and navigation. Multi-line content is automatically
+   * truncated to first line, and long titles are shortened with ellipsis.
+   *
+   * @param content - Full node content (may be multi-line)
+   */
+  function updateTabTitle(content: string) {
+    if (onTitleChange) {
+      onTitleChange(formatTabTitle(content));
+    }
+  }
+
+  /**
+   * Handle header content changes (for default editable header)
+   * Updates local state, tab title, and persists to database
+   */
+  function handleHeaderInput(newValue: string) {
+    // Update local state (since we use one-way binding)
+    headerContent = newValue;
+
+    // Update tab title immediately
+    updateTabTitle(newValue);
+
+    // Update node content in database if nodeId exists
+    // Use the same method as child nodes to ensure consistent behavior
+    if (nodeId) {
+      try {
+        nodeManager.updateNodeContent(nodeId, newValue);
+      } catch (error) {
+        console.error('[BaseNodeViewer] Failed to update header content:', error);
+        // TODO: Show user-facing error notification via event bus
+        // eventBus.emit({ type: 'error:node-update-failed', nodeId, error });
+      }
+    }
+  }
 
   // Track pending content saves for new nodes (keyed by node ID)
   // Structural updates must wait for these to complete to avoid FOREIGN KEY errors
@@ -1337,10 +1378,23 @@
 
 <!-- Base Node Viewer: Header + Scrollable Children Area -->
 <div class="base-node-viewer">
-  <!-- Header Section (can be customized via snippet) -->
+  <!-- Header Section - Default editable header or custom snippet -->
   {#if header}
+    <!-- Custom header provided via snippet (e.g., DateNodeViewer's date navigation) -->
     <div class="viewer-header">
       {@render header()}
+    </div>
+  {:else}
+    <!-- Default editable header (no custom snippet provided) -->
+    <div class="viewer-editable-header">
+      <input
+        type="text"
+        class="header-input"
+        value={headerContent}
+        oninput={(e) => handleHeaderInput(e.currentTarget.value)}
+        placeholder="Untitled"
+        aria-label="Page title"
+      />
     </div>
   {/if}
 
@@ -1542,7 +1596,32 @@
     width: 100%;
   }
 
-  /* Header section - fixed at top, doesn't scroll */
+  /* Default editable header section - borderless design */
+  .viewer-editable-header {
+    flex-shrink: 0;
+    padding: 1rem;
+    border-bottom: 1px solid hsl(var(--border));
+    background: hsl(var(--background));
+  }
+
+  .header-input {
+    width: 100%;
+    font-size: 2rem;
+    font-weight: 500;
+    color: hsl(var(--muted-foreground));
+    background: transparent;
+    border: none;
+    outline: none;
+    padding: 0;
+    margin: 0;
+    font-family: inherit;
+  }
+
+  .header-input::placeholder {
+    color: hsl(var(--muted-foreground) / 0.5);
+  }
+
+  /* Custom header section - fixed at top, doesn't scroll */
   .viewer-header {
     flex-shrink: 0;
     padding: 1rem;
