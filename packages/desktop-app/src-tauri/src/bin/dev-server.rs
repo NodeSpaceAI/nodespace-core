@@ -41,6 +41,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use nodespace_core::services::NodeEmbeddingService;
 use nodespace_core::{DatabaseService, NodeService};
 
 #[tokio::main]
@@ -85,16 +86,22 @@ async fn main() -> anyhow::Result<()> {
 
     // Create initial database and node service for startup
     let db_service = DatabaseService::new(db_path.clone()).await?;
+    let db_arc_for_embedding = Arc::new(db_service.clone());
     let node_service = NodeService::new(db_service.clone())?;
+
+    // Initialize embedding service with defaults (requires Arc<DatabaseService>)
+    let embedding_service = NodeEmbeddingService::new_with_defaults(db_arc_for_embedding)
+        .map_err(|e| anyhow::anyhow!("Failed to initialize embedding service: {}", e))?;
 
     tracing::info!("✅ Services initialized");
 
     // Wrap services in RwLock for dynamic database switching during tests (Issue #255)
     let db_arc = Arc::new(RwLock::new(Arc::new(db_service)));
     let ns_arc = Arc::new(RwLock::new(Arc::new(node_service)));
+    let es_arc = Arc::new(RwLock::new(Arc::new(embedding_service)));
 
     // Start HTTP server
-    nodespace_app_lib::dev_server::start_server(db_arc, ns_arc, port).await?;
+    nodespace_app_lib::dev_server::start_server(db_arc, ns_arc, es_arc, port).await?;
 
     Ok(())
 }
