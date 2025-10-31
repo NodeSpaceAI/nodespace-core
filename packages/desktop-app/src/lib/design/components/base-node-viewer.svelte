@@ -33,7 +33,12 @@
   } = $props();
 
   // Editable header state (for default header when no custom snippet provided)
-  let headerContent = $state('');
+  // Use $derived to make it reactive to node content changes from any source
+  const headerContent = $derived.by(() => {
+    if (!nodeId) return '';
+    const node = sharedNodeStore.getNode(nodeId);
+    return node?.content || '';
+  });
 
   // Get nodeManager from shared context
   const services = getNodeServices();
@@ -68,19 +73,6 @@
 
     if (nodeId) {
       loadChildrenForParent(nodeId);
-
-      // Load header content from node (for default editable header)
-      const node = sharedNodeStore.getNode(nodeId);
-      if (node) {
-        headerContent = node.content || '';
-      }
-
-      // Set tab title to node content (first line)
-      if (onTitleChange) {
-        const firstLine = headerContent.split('\n')[0].trim();
-        const title = firstLine.length > 40 ? firstLine.substring(0, 37) + '...' : firstLine;
-        onTitleChange(title || 'Untitled');
-      }
     }
   });
 
@@ -95,12 +87,10 @@
 
   /**
    * Handle header content changes (for default editable header)
-   * Updates both the local state and the node's content in the database
+   * Updates the node's content in the database
+   * headerContent will update reactively via $derived when the node changes
    */
   function handleHeaderInput(newValue: string) {
-    // Update local state
-    headerContent = newValue;
-
     // Update node content in database if nodeId exists
     // Use the same method as child nodes to ensure consistent behavior
     if (nodeId) {
@@ -1379,7 +1369,7 @@
       <input
         type="text"
         class="header-input"
-        bind:value={headerContent}
+        value={headerContent}
         oninput={(e) => handleHeaderInput(e.currentTarget.value)}
         placeholder="Untitled"
         aria-label="Page title"
