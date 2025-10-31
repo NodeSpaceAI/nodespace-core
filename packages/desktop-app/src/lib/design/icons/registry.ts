@@ -173,6 +173,15 @@ class IconRegistry {
       hasState: false,
       hasRingEffect: false // Ordered lists are leaf nodes (no children)
     });
+
+    // Date nodes - for calendar dates and journal entries
+    this.register('date', {
+      component: CircleIcon,
+      semanticClass: 'node-icon',
+      colorVar: 'hsl(var(--node-date, 200 40% 45%))',
+      hasState: false,
+      hasRingEffect: true // Dates can have children (journal entries, notes, etc.)
+    });
   }
 
   /**

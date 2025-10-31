@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon, { type NodeType } from '$lib/design/icons';
   import { onMount } from 'svelte';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
   // Import icon configuration from registry for consistency
   import { getIconConfig } from '$lib/design/icons/registry';
@@ -12,6 +13,8 @@
     type: NodeType;
     subtitle?: string;
     metadata?: string;
+    isShortcut?: boolean;
+    submenuPosition?: { x: number; y: number };
   }
 
   // Props
@@ -139,6 +142,17 @@
 
   function selectResult(result: NodeResult) {
     selectedIndex = results.indexOf(result);
+
+    // For date-picker, attach position information for submenu positioning
+    if (result.id === 'date-picker' && itemRefs[selectedIndex]) {
+      const itemRect = itemRefs[selectedIndex].getBoundingClientRect();
+      // Add position metadata to the result (now part of NodeResult interface)
+      result.submenuPosition = {
+        x: itemRect.right,
+        y: itemRect.top
+      };
+    }
+
     onselect?.(result);
   }
 
@@ -265,21 +279,34 @@
             }
           }}
         >
-          <div style="display: flex; align-items: center; gap: 0.5rem;">
-            <div
-              style="width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;"
-            >
-              {#if result.type && getNodeConfig(result.type)}
-                <!-- Future: Dynamic icon based on node type -->
-                <Icon name={result.type as any} size={16} />
-              {:else}
-                <!-- Fallback: Static text circle -->
-                <div class="node-icon">
-                  <div class="text-circle"></div>
-                </div>
-              {/if}
+          <div
+            style="display: flex; align-items: center; {result.id === 'date-picker'
+              ? 'justify-content: space-between; width: 100%;'
+              : 'gap: 0.5rem;'}"
+          >
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <div
+                style="width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;"
+              >
+                {#if result.type && getNodeConfig(result.type)}
+                  <!-- Future: Dynamic icon based on node type -->
+                  <Icon name={result.type as any} size={16} />
+                {:else}
+                  <!-- Fallback: Static text circle -->
+                  <div class="node-icon">
+                    <div class="text-circle"></div>
+                  </div>
+                {/if}
+              </div>
+              <div style="font-weight: 500;">{result.title}</div>
             </div>
-            <div style="font-weight: 500;">{result.title}</div>
+            {#if result.id === 'date-picker'}
+              <div
+                style="width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; color: hsl(var(--muted-foreground));"
+              >
+                <ChevronRight size={16} />
+              </div>
+            {/if}
           </div>
         </div>
       {/each}

@@ -24,7 +24,7 @@
 -->
 
 <script lang="ts">
-  import { createEventDispatcher, onDestroy, untrack } from 'svelte';
+  import { createEventDispatcher, onDestroy, untrack, tick } from 'svelte';
   // import { type NodeType } from '$lib/design/icons'; // Unused but preserved for future use
 
   import {
@@ -34,6 +34,9 @@
   } from './textarea-controller.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
   import { SlashCommandDropdown } from '$lib/components/ui/slash-command-dropdown';
+  // Use shadcn Calendar component (official date picker pattern)
+  import { Calendar } from '$lib/components/ui/calendar';
+  import { type DateValue } from '@internationalized/date';
   import {
     SlashCommandService,
     type SlashCommand,
@@ -128,6 +131,11 @@
   let slashCommands = $state<SlashCommand[]>([]);
   let slashCommandService = SlashCommandService.getInstance();
 
+  // Date picker popover state
+  let showDatePicker = $state(false);
+  let datePickerPosition = $state({ x: 0, y: 0 });
+  let selectedCalendarDate = $state<DateValue | undefined>(undefined);
+
   // Generate mock autocomplete results for TEST ENVIRONMENT ONLY
   // Used only when import.meta.env.VITEST is true
   function generateMockResultsForTests(query: string): NodeResult[] {
@@ -187,6 +195,66 @@
     );
   }
 
+  // ============================================================================
+  // Date Shortcuts and Formatting Logic
+  // ============================================================================
+
+  /**
+   * Format a Date object to YYYY-MM-DD string
+   */
+  function formatDate(date: Date): string {
+    // Use local date components to avoid timezone conversion
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  /**
+   * Get date string from shortcut name
+   */
+  function getDateFromShortcut(shortcut: string): string {
+    const today = new Date();
+
+    switch (shortcut) {
+      case 'today':
+        return formatDate(today);
+      case 'tomorrow': {
+        const tomorrow = new Date(today);
+        tomorrow.setDate(today.getDate() + 1);
+        return formatDate(tomorrow);
+      }
+      case 'yesterday': {
+        const yesterday = new Date(today);
+        yesterday.setDate(today.getDate() - 1);
+        return formatDate(yesterday);
+      }
+      default:
+        return formatDate(today);
+    }
+  }
+
+  /**
+   * Memoized date shortcuts array
+   * These are static shortcuts that don't change during component lifecycle
+   */
+  const DATE_SHORTCUTS: readonly NodeResult[] = [
+    { id: 'today', title: 'Today', type: 'date', isShortcut: true },
+    { id: 'tomorrow', title: 'Tomorrow', type: 'date', isShortcut: true },
+    { id: 'yesterday', title: 'Yesterday', type: 'date', isShortcut: true },
+    { id: 'date-picker', title: 'Select date...', type: 'date', isShortcut: true }
+  ] as const;
+
+  /**
+   * Generate date shortcuts for autocomplete (filtered by query)
+   */
+  function getDateShortcuts(query: string): NodeResult[] {
+    // Filter the memoized shortcuts based on query
+    return DATE_SHORTCUTS.filter((shortcut) =>
+      shortcut.title.toLowerCase().includes(query.toLowerCase())
+    );
+  }
+
   // Reactive effect to update autocomplete results when query changes
   $effect(() => {
     if (showAutocomplete && nodeReferenceService) {
@@ -197,6 +265,18 @@
         // Fallback to mock results ONLY in test mode when nodeManager is not available
         autocompleteResults = generateMockResultsForTests(currentQuery);
       }
+    }
+  });
+
+  // Watch calendar date selection with Svelte 5 reactivity
+  $effect(() => {
+    if (selectedCalendarDate) {
+      const { year, month, day } = selectedCalendarDate;
+      // Convert DateValue to JS Date (month is 1-indexed in DateValue, 0-indexed in JS Date)
+      const jsDate = new Date(year, month - 1, day);
+      handleDateSelection(jsDate);
+      // Reset for next selection
+      selectedCalendarDate = undefined;
     }
   });
 
@@ -211,6 +291,9 @@
         return;
       }
 
+      // Get date shortcuts first (always shown)
+      const dateShortcuts = getDateShortcuts(query);
+
       // Get all nodes from the node manager
       const allNodes = Array.from(services.nodeManager.nodes.values());
 
@@ -219,11 +302,14 @@
       const filtered = NodeSearchService.filterMentionableNodes(allNodes, query).slice(0, 10); // Limit to 10 results
 
       // Convert to NodeResult format
-      autocompleteResults = filtered.map((node) => ({
+      const nodeResults = filtered.map((node) => ({
         id: node.id,
         title: node.content.split('\n')[0] || 'Untitled',
         type: (node.nodeType || 'text') as NodeType
       }));
+
+      // Combine: date shortcuts first, then search results
+      autocompleteResults = [...dateShortcuts, ...nodeResults];
     } catch (error) {
       console.error('[NodeSearch] Search failed:', error);
       autocompleteResults = [];
@@ -241,6 +327,29 @@
 
   // Autocomplete event handlers
   async function handleAutocompleteSelect(result: NodeResult) {
+    // Handle date picker special case
+    if (result.id === 'date-picker') {
+      // Capture submenu position if available
+      const resultWithPosition = result as NodeResult & {
+        submenuPosition?: { x: number; y: number };
+      };
+      if (resultWithPosition.submenuPosition) {
+        datePickerPosition = resultWithPosition.submenuPosition;
+      }
+      // Keep autocomplete open (it will show the date picker alongside)
+      // Just toggle the date picker popover
+      showDatePicker = true;
+      return;
+    }
+
+    // Handle date shortcuts (today, tomorrow, yesterday)
+    if (result.isShortcut && result.id !== 'date-picker') {
+      const dateStr = getDateFromShortcut(result.id);
+      await handleDateSelection(new Date(dateStr));
+      return;
+    }
+
+    // Handle normal node references
     if (controller) {
       if (result.id === 'new') {
         const newNodeId = await createNewNodeFromMention(result.title);
@@ -314,6 +423,38 @@
       console.error('[NodeCreation] Failed to create node:', error);
       return null;
     }
+  }
+
+  /**
+   * Handle date selection from shortcuts or date picker
+   * Date nodes are virtual - they only get persisted when children are added
+   * Here we just create the markdown link without database creation
+   */
+  async function handleDateSelection(date: Date) {
+    const dateStr = formatDate(date);
+
+    // Re-enter edit mode if we've lost focus (shouldn't happen with preventDefault, but safety check)
+    if (!isEditing && textareaElement) {
+      focusManager.setEditingNode(nodeId);
+      await tick();
+    }
+
+    if (controller) {
+      // Insert as a node reference (date nodes are virtual, no DB creation needed)
+      controller.insertNodeReference(dateStr, dateStr);
+    }
+
+    // Hide date picker and autocomplete
+    showDatePicker = false;
+    showAutocomplete = false;
+    currentQuery = '';
+    autocompleteResults = [];
+
+    // Emit event
+    dispatch('nodeReferenceSelected', {
+      nodeId: dateStr,
+      nodeTitle: dateStr
+    });
   }
 
   // Slash command event handlers
@@ -806,6 +947,26 @@
   onselect={handleSlashCommandSelect}
   onclose={handleSlashCommandClose}
 />
+
+<!-- Date Picker Component (positioned as submenu relative to "Select date" item) -->
+{#if showDatePicker}
+  <div
+    role="dialog"
+    aria-label="Date picker. Use arrow keys to navigate, Enter to select, Escape to close"
+    aria-modal="true"
+    tabindex="-1"
+    style="position: fixed; left: {datePickerPosition.x}px; top: {datePickerPosition.y}px; z-index: 1001; background: hsl(var(--popover)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); padding: 0;"
+    onmousedown={(e) => {
+      // Standard UI pattern: Prevent blur when interacting with popovers/dropdowns
+      // This maintains edit mode while selecting from the calendar
+      // Same pattern used in NodeAutocomplete (line 262)
+      e.preventDefault();
+      e.stopPropagation();
+    }}
+  >
+    <Calendar type="single" bind:value={selectedCalendarDate} />
+  </div>
+{/if}
 
 <style>
   .node {

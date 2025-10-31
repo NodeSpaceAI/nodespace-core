@@ -8,4 +8,6 @@ export interface NodeResult {
   type: NodeType;
   subtitle?: string;
   metadata?: string;
+  isShortcut?: boolean; // Flag for date shortcuts and other special items
+  submenuPosition?: { x: number; y: number }; // For positioning submenus (e.g., date picker)
 }
