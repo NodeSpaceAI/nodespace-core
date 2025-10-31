@@ -23,26 +23,8 @@
 //!
 //! # Implementation Status
 //!
-//! **NOTE**: This module contains placeholder implementations because the NodeEmbeddingService
-//! is not yet integrated into AppState. Most endpoints return NOT_IMPLEMENTED errors with
-//! clear messages indicating what needs to be added.
-//!
-//! **EXCEPTION**: The `POST /api/embeddings/batch` endpoint has a working stub implementation
-//! that validates node existence and returns proper success/failure counts. This allows
-//! frontend tests to verify the interface while the full embedding service is being developed.
-//!
-//! **When to Use Stub vs Real Implementation**:
-//! - **Stub** (current batch endpoint): Use when testing API interfaces and error handling without
-//!   requiring actual embedding generation. Suitable for integration tests that verify request/response
-//!   contracts and error paths.
-//! - **Real Implementation** (future): Required for end-to-end tests that validate embedding quality,
-//!   semantic search accuracy, or production deployments. Needs NodeEmbeddingService integrated into AppState.
-//!
-//! **TODO for Phase 3 completion**:
-//! 1. Add `embedding_service: Arc<NodeEmbeddingService>` to AppState in mod.rs
-//! 2. Replace placeholder handlers with actual service calls
-//! 3. Initialize NodeEmbeddingService in dev-server binary
-//! 4. Update tests to use the real service
+//! ✅ **Phase 3 Complete**: NodeEmbeddingService is integrated into AppState and all endpoints
+//! use the real embedding service implementation. All embedding operations are fully functional.
 //!
 //! # Security (Production Considerations)
 //!
@@ -64,8 +46,32 @@ use axum::{
 use crate::commands::embeddings::{BatchEmbeddingResult, SearchContainersParams};
 use crate::commands::nodes::CreateContainerNodeInput;
 use crate::dev_server::{AppState, HttpError};
+use nodespace_core::services::NodeEmbeddingService;
 use nodespace_core::Node;
 use std::sync::Arc;
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Acquire the embedding service from AppState
+///
+/// This helper extracts the embedding service from the shared AppState,
+/// properly handling lock acquisition and Arc cloning. The lock is released
+/// immediately after cloning the Arc, minimizing lock hold time.
+///
+/// # Errors
+///
+/// Returns `HttpError` with `LOCK_ERROR` code if the RwLock is poisoned.
+fn get_embedding_service(state: &AppState) -> Result<Arc<NodeEmbeddingService>, HttpError> {
+    let lock = state.embedding_service.read().map_err(|e| {
+        HttpError::new(
+            format!("Failed to acquire embedding service read lock: {}", e),
+            "LOCK_ERROR",
+        )
+    })?;
+    Ok(Arc::clone(&*lock))
+}
 
 // ============================================================================
 // Embedding Endpoints
@@ -93,12 +99,8 @@ use std::sync::Arc;
 ///
 /// - `NODE_NOT_FOUND`: Topic node doesn't exist
 /// - `EMBEDDING_GENERATION_FAILED`: Embedding service failed
-///
-/// # TODO
-///
-/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn generate_container_embedding(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(payload): Json<GenerateEmbeddingRequest>,
 ) -> Result<StatusCode, HttpError> {
     // Validate container_id is not empty
@@ -110,20 +112,25 @@ async fn generate_container_embedding(
         ));
     }
 
-    // TODO: Replace with actual service call
-    // state.embedding_service.embed_topic(&payload.container_id).await
-    //     .map_err(|e| HttpError::from_anyhow(e.into(), "EMBEDDING_GENERATION_FAILED"))?;
+    let embedding_service = get_embedding_service(&state)?;
 
-    tracing::warn!(
-        container_id = %payload.container_id,
-        "generate_container_embedding called but NodeEmbeddingService not in AppState"
-    );
+    // Generate embedding
+    embedding_service
+        .embed_container(&payload.container_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                "Embedding generation failed for {}: {:?}",
+                payload.container_id,
+                e
+            );
+            HttpError::new(
+                format!("Embedding generation failed: {}", e),
+                "EMBEDDING_GENERATION_FAILED",
+            )
+        })?;
 
-    Err(HttpError::with_details(
-        "Embedding service not yet integrated into dev server",
-        "NOT_IMPLEMENTED",
-        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
-    ))
+    Ok(StatusCode::OK)
 }
 
 /// Request body for generate embedding
@@ -163,36 +170,44 @@ struct GenerateEmbeddingRequest {
 ///   }'
 /// ```
 ///
-/// # TODO
-///
-/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn search_containers(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(params): Json<SearchContainersParams>,
 ) -> Result<Json<Vec<Node>>, HttpError> {
-    // TODO: Replace with actual service call
-    // let threshold = params.threshold.unwrap_or(0.7);
-    // let limit = params.limit.unwrap_or(20);
-    // let exact = params.exact.unwrap_or(false);
-    //
-    // let results = if exact {
-    //     state.embedding_service.exact_search_containers(&params.query, threshold, limit).await
-    // } else {
-    //     state.embedding_service.search_containers(&params.query, threshold, limit).await
-    // };
-    //
-    // results.map_err(|e| HttpError::from_anyhow(e.into(), "TOPIC_SEARCH_FAILED"))
+    // Validate query is not empty
+    if params.query.is_empty() {
+        return Err(HttpError::with_details(
+            "Search query cannot be empty",
+            "INVALID_INPUT",
+            "query must be a non-empty string",
+        ));
+    }
 
-    tracing::warn!(
-        query = %params.query,
-        "search_containers called but NodeEmbeddingService not in AppState"
-    );
+    let threshold = params.threshold.unwrap_or(0.7);
+    let limit = params.limit.unwrap_or(20);
+    let exact = params.exact.unwrap_or(false);
 
-    Err(HttpError::with_details(
-        "Embedding service not yet integrated into dev server",
-        "NOT_IMPLEMENTED",
-        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
-    ))
+    let embedding_service = get_embedding_service(&state)?;
+
+    // Perform search
+    let results = if exact {
+        embedding_service
+            .exact_search_containers(&params.query, threshold, limit)
+            .await
+    } else {
+        embedding_service
+            .search_containers(&params.query, threshold, limit)
+            .await
+    };
+
+    results.map(Json).map_err(|e| {
+        tracing::error!(
+            "Container search failed for query '{}': {:?}",
+            params.query,
+            e
+        );
+        HttpError::new(format!("Topic search failed: {}", e), "TOPIC_SEARCH_FAILED")
+    })
 }
 
 /// Update embedding for a topic node immediately
@@ -211,11 +226,8 @@ async fn search_containers(
 /// curl -X PATCH http://localhost:3001/api/embeddings/topic-uuid-123
 /// ```
 ///
-/// # TODO
-///
-/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn update_container_embedding(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(container_id): Path<String>,
 ) -> Result<StatusCode, HttpError> {
     // Validate container_id is not empty
@@ -227,20 +239,21 @@ async fn update_container_embedding(
         ));
     }
 
-    // TODO: Replace with actual service call
-    // state.embedding_service.embed_topic(&container_id).await
-    //     .map_err(|e| HttpError::from_anyhow(e.into(), "EMBEDDING_UPDATE_FAILED"))?;
+    let embedding_service = get_embedding_service(&state)?;
 
-    tracing::warn!(
-        container_id = %container_id,
-        "update_container_embedding called but NodeEmbeddingService not in AppState"
-    );
+    // Update embedding
+    embedding_service
+        .embed_container(&container_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("Embedding update failed for {}: {:?}", container_id, e);
+            HttpError::new(
+                format!("Embedding update failed: {}", e),
+                "EMBEDDING_UPDATE_FAILED",
+            )
+        })?;
 
-    Err(HttpError::with_details(
-        "Embedding service not yet integrated into dev server",
-        "NOT_IMPLEMENTED",
-        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
-    ))
+    Ok(StatusCode::OK)
 }
 
 /// Batch generate embeddings for multiple topics
@@ -283,41 +296,21 @@ async fn batch_generate_embeddings(
         ));
     }
 
-    // Stub implementation: Check which containers exist and return appropriate results
-    let node_service = state
-        .node_service
-        .read()
-        .map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire node service read lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?
-        .clone();
+    let embedding_service = get_embedding_service(&state)?;
 
     let mut success_count = 0;
     let mut failed_embeddings = Vec::new();
 
-    // TODO: For real implementation, process container_ids in parallel using futures::future::join_all
-    // to improve batch operation performance. Sequential processing is acceptable for this stub.
+    // Process each container ID and generate embeddings
+    // TODO: Consider using futures::future::join_all for parallel processing to improve performance
+    // Sequential processing is acceptable for now and ensures proper error tracking per container
     for container_id in payload.container_ids {
-        // Check if node exists
-        match node_service.get_node(&container_id).await {
-            Ok(Some(_)) => {
-                // Node exists - in real implementation, would generate embedding
-                // For now, just count as success
+        match embedding_service.embed_container(&container_id).await {
+            Ok(()) => {
                 success_count += 1;
             }
-            Ok(None) => {
-                // Node doesn't exist - add to failed list
-                failed_embeddings.push(crate::commands::embeddings::BatchEmbeddingError {
-                    container_id: container_id.clone(),
-                    error: format!("Node not found: {}", container_id),
-                });
-            }
             Err(e) => {
-                // Error checking node - add to failed list
-                tracing::error!("Failed to check node {}: {}", container_id, e);
+                tracing::error!("Failed to generate embedding for {}: {:?}", container_id, e);
                 failed_embeddings.push(crate::commands::embeddings::BatchEmbeddingError {
                     container_id: container_id.clone(),
                     error: e.to_string(),
@@ -327,7 +320,7 @@ async fn batch_generate_embeddings(
     }
 
     tracing::info!(
-        "Batch embedding (STUB): {} succeeded, {} failed (using node existence check, not actual embeddings)",
+        "Batch embedding completed: {} succeeded, {} failed",
         success_count,
         failed_embeddings.len()
     );
@@ -356,24 +349,21 @@ struct BatchGenerateRequest {
 /// curl http://localhost:3001/api/embeddings/stale-count
 /// ```
 ///
-/// # TODO
-///
-/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn get_stale_container_count(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Result<Json<usize>, HttpError> {
-    // TODO: Replace with actual service call
-    // let topics = state.embedding_service.get_all_stale_topics().await
-    //     .map_err(|e| HttpError::from_anyhow(e.into(), "STALE_COUNT_FAILED"))?;
-    // Ok(Json(topics.len()))
+    let embedding_service = get_embedding_service(&state)?;
 
-    tracing::warn!("get_stale_container_count called but NodeEmbeddingService not in AppState");
+    // Get stale containers
+    let containers = embedding_service
+        .get_all_stale_containers()
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to get stale containers: {:?}", e);
+            HttpError::new(format!("Stale count failed: {}", e), "STALE_COUNT_FAILED")
+        })?;
 
-    Err(HttpError::with_details(
-        "Embedding service not yet integrated into dev server",
-        "NOT_IMPLEMENTED",
-        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
-    ))
+    Ok(Json(containers.len()))
 }
 
 /// Smart trigger: Topic closed/unfocused
@@ -393,12 +383,8 @@ async fn get_stale_container_count(
 ///   -H "Content-Type: application/json" \
 ///   -d '{"containerId": "topic-uuid-123"}'
 /// ```
-///
-/// # TODO
-///
-/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn on_container_closed(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(payload): Json<TopicIdRequest>,
 ) -> Result<StatusCode, HttpError> {
     // Validate container_id is not empty
@@ -410,20 +396,22 @@ async fn on_container_closed(
         ));
     }
 
-    // TODO: Replace with actual service call
-    // state.embedding_service.on_container_closed(&payload.container_id).await
-    //     .map_err(|e| HttpError::from_anyhow(e.into(), "TOPIC_CLOSE_FAILED"))?;
+    let embedding_service = get_embedding_service(&state)?;
 
-    tracing::warn!(
-        container_id = %payload.container_id,
-        "on_container_closed called but NodeEmbeddingService not in AppState"
-    );
+    // Handle container closed event
+    embedding_service
+        .on_container_closed(&payload.container_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                "Topic close handler failed for {}: {:?}",
+                payload.container_id,
+                e
+            );
+            HttpError::new(format!("Topic close failed: {}", e), "TOPIC_CLOSE_FAILED")
+        })?;
 
-    Err(HttpError::with_details(
-        "Embedding service not yet integrated into dev server",
-        "NOT_IMPLEMENTED",
-        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
-    ))
+    Ok(StatusCode::OK)
 }
 
 /// Smart trigger: Idle timeout
@@ -447,12 +435,8 @@ async fn on_container_closed(
 ///   -H "Content-Type: application/json" \
 ///   -d '{"containerId": "topic-uuid-123"}'
 /// ```
-///
-/// # TODO
-///
-/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
 async fn on_container_idle(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(payload): Json<TopicIdRequest>,
 ) -> Result<Json<bool>, HttpError> {
     // Validate container_id is not empty
@@ -464,21 +448,22 @@ async fn on_container_idle(
         ));
     }
 
-    // TODO: Replace with actual service call
-    // let was_embedded = state.embedding_service.on_idle_timeout(&payload.container_id).await
-    //     .map_err(|e| HttpError::from_anyhow(e.into(), "IDLE_TIMEOUT_FAILED"))?;
-    // Ok(Json(was_embedded))
+    let embedding_service = get_embedding_service(&state)?;
 
-    tracing::warn!(
-        container_id = %payload.container_id,
-        "on_container_idle called but NodeEmbeddingService not in AppState"
-    );
+    // Handle idle timeout
+    let was_embedded = embedding_service
+        .on_idle_timeout(&payload.container_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                "Idle timeout handler failed for {}: {:?}",
+                payload.container_id,
+                e
+            );
+            HttpError::new(format!("Idle timeout failed: {}", e), "IDLE_TIMEOUT_FAILED")
+        })?;
 
-    Err(HttpError::with_details(
-        "Embedding service not yet integrated into dev server",
-        "NOT_IMPLEMENTED",
-        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
-    ))
+    Ok(Json(was_embedded))
 }
 
 /// Manually sync all stale topics
@@ -495,23 +480,19 @@ async fn on_container_idle(
 /// ```bash
 /// curl -X POST http://localhost:3001/api/embeddings/sync
 /// ```
-///
-/// # TODO
-///
-/// Replace placeholder with actual NodeEmbeddingService call once added to AppState.
-async fn sync_embeddings(State(_state): State<AppState>) -> Result<Json<usize>, HttpError> {
-    // TODO: Replace with actual service call
-    // let count = state.embedding_service.sync_all_stale_topics().await
-    //     .map_err(|e| HttpError::from_anyhow(e.into(), "SYNC_FAILED"))?;
-    // Ok(Json(count))
+async fn sync_embeddings(State(state): State<AppState>) -> Result<Json<usize>, HttpError> {
+    let embedding_service = get_embedding_service(&state)?;
 
-    tracing::warn!("sync_embeddings called but NodeEmbeddingService not in AppState");
+    // Sync all stale containers
+    let count = embedding_service
+        .sync_all_stale_containers()
+        .await
+        .map_err(|e| {
+            tracing::error!("Sync all stale containers failed: {:?}", e);
+            HttpError::new(format!("Sync failed: {}", e), "SYNC_FAILED")
+        })?;
 
-    Err(HttpError::with_details(
-        "Embedding service not yet integrated into dev server",
-        "NOT_IMPLEMENTED",
-        "TODO: Add NodeEmbeddingService to AppState in mod.rs",
-    ))
+    Ok(Json(count))
 }
 
 /// Request body for topic ID operations
