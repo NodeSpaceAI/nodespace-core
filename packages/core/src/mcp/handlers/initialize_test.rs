@@ -83,13 +83,26 @@ fn test_all_expected_tools_present() {
 
     // Verify all expected methods are present
     let expected_tools = [
+        // Core CRUD
         "create_node",
         "get_node",
         "update_node",
         "delete_node",
         "query_nodes",
+        // Hierarchy operations
+        "get_children",
+        "get_child_at_index",
+        "insert_child_at_index",
+        "move_child_to_index",
+        "get_node_tree",
+        // Markdown
         "create_nodes_from_markdown",
         "get_markdown_from_node_id",
+        // Batch operations
+        "get_nodes_batch",
+        "update_nodes_batch",
+        "update_container_from_markdown",
+        // Search
         "search_containers",
     ];
 
@@ -101,8 +114,8 @@ fn test_all_expected_tools_present() {
         );
     }
 
-    // Verify we have exactly 8 tools
-    assert_eq!(tools.len(), 8, "Expected exactly 8 tools");
+    // Verify we have exactly 16 tools (8 original + 5 hierarchy + 3 batch operations)
+    assert_eq!(tools.len(), 16, "Expected exactly 16 tools");
 }
 
 #[test]

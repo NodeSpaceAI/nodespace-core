@@ -122,6 +122,13 @@ pub async fn handle_tools_call(
         "get_markdown_from_node_id" => {
             markdown::handle_get_markdown_from_node_id(node_operations, arguments).await
         }
+        "update_container_from_markdown" => {
+            markdown::handle_update_container_from_markdown(node_operations, arguments).await
+        }
+
+        // Batch Operations
+        "get_nodes_batch" => nodes::handle_get_nodes_batch(node_operations, arguments).await,
+        "update_nodes_batch" => nodes::handle_update_nodes_batch(node_operations, arguments).await,
 
         // Search
         "search_containers" => search::handle_search_containers(embedding_service, arguments).await,
@@ -448,6 +455,67 @@ fn get_tool_schemas() -> Value {
                     }
                 },
                 "required": ["node_id"]
+            }
+        },
+        {
+            "name": "get_nodes_batch",
+            "description": "Get multiple nodes in a single request (more efficient than multiple get_node calls). Useful when you need details for many nodes after parsing markdown export.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Array of node IDs to retrieve (max 100)",
+                        "maxItems": 100,
+                        "minItems": 1
+                    }
+                },
+                "required": ["node_ids"]
+            }
+        },
+        {
+            "name": "update_nodes_batch",
+            "description": "Update multiple nodes in a single request (surgical updates). More efficient than calling update_node multiple times. Use this for bulk content updates like marking tasks complete.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "updates": {
+                        "type": "array",
+                        "description": "Array of update operations (max 100)",
+                        "maxItems": 100,
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string", "description": "Node ID to update" },
+                                "content": { "type": "string", "description": "Updated content" },
+                                "node_type": { "type": "string", "description": "Updated node type" },
+                                "properties": { "type": "object", "description": "Updated properties" }
+                            },
+                            "required": ["id"]
+                        }
+                    }
+                },
+                "required": ["updates"]
+            }
+        },
+        {
+            "name": "update_container_from_markdown",
+            "description": "Replace all container children with new structure parsed from markdown (bulk replacement, GitHub-style). Deletes existing children and creates new hierarchy. Use this when AI needs to reorganize or rewrite entire document structures.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "container_id": {
+                        "type": "string",
+                        "description": "Container node ID to update"
+                    },
+                    "markdown": {
+                        "type": "string",
+                        "description": "New markdown content to parse and replace children. Will be parsed into nodes under the existing container."
+                    }
+                },
+                "required": ["container_id", "markdown"]
             }
         },
         {

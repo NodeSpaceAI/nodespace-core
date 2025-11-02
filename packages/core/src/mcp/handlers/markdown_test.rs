@@ -5,7 +5,9 @@
 #[cfg(test)]
 mod tests {
     use crate::db::DatabaseService;
-    use crate::mcp::handlers::markdown::handle_create_nodes_from_markdown;
+    use crate::mcp::handlers::markdown::{
+        handle_create_nodes_from_markdown, handle_update_container_from_markdown,
+    };
     use crate::operations::NodeOperations;
     use crate::services::NodeService;
     use serde_json::json;
@@ -1416,5 +1418,185 @@ Regular text after code."#;
         // Verify at least the header was exported
         let has_header = exported.contains("# Code Example") || exported.contains("Code");
         assert!(has_header, "Missing header content in export");
+    }
+
+    // =========================================================================
+    // Batch Container Update Tests (update_container_from_markdown)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_update_container_from_markdown_basic() {
+        let (operations, _temp_dir) = setup_test_service().await;
+
+        // Create container with some children
+        let create_params = json!({
+            "markdown_content": "- Old item 1\n- Old item 2",
+            "container_title": "# Test Container"
+        });
+
+        let create_result = handle_create_nodes_from_markdown(&operations, create_params)
+            .await
+            .unwrap();
+        let container_id = create_result["container_node_id"].as_str().unwrap();
+
+        // Update container with new markdown
+        let update_params = json!({
+            "container_id": container_id,
+            "markdown": "- New item 1\n- New item 2\n- New item 3"
+        });
+
+        let result = handle_update_container_from_markdown(&operations, update_params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["container_id"], container_id);
+        assert_eq!(result["nodes_deleted"].as_u64().unwrap(), 2); // 2 old items
+        assert_eq!(result["nodes_created"].as_u64().unwrap(), 3); // 3 new items
+
+        // Verify new structure
+        let children = operations
+            .query_nodes(
+                crate::models::NodeFilter::new()
+                    .with_parent_id(container_id.to_string())
+                    .with_order_by(crate::models::OrderBy::CreatedAsc),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(children.len(), 3);
+        assert!(children[0].content.contains("New item 1"));
+        assert!(children[1].content.contains("New item 2"));
+        assert!(children[2].content.contains("New item 3"));
+    }
+
+    #[tokio::test]
+    async fn test_update_container_from_markdown_complex_structure() {
+        let (operations, _temp_dir) = setup_test_service().await;
+
+        // Create container with simple structure
+        let create_params = json!({
+            "markdown_content": "Simple text",
+            "container_title": "# Document"
+        });
+
+        let create_result = handle_create_nodes_from_markdown(&operations, create_params)
+            .await
+            .unwrap();
+        let container_id = create_result["container_node_id"].as_str().unwrap();
+
+        // Update with complex hierarchy
+        let update_params = json!({
+            "container_id": container_id,
+            "markdown": "## Phase 1\n- Task A\n- Task B\n\n## Phase 2\n- Task C"
+        });
+
+        let result = handle_update_container_from_markdown(&operations, update_params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["container_id"], container_id);
+        assert!(result["nodes_created"].as_u64().unwrap() >= 5); // 2 headers + 3 tasks
+
+        // Verify hierarchy was created
+        let children = operations
+            .query_nodes(
+                crate::models::NodeFilter::new()
+                    .with_container_node_id(container_id.to_string())
+                    .with_order_by(crate::models::OrderBy::CreatedAsc),
+            )
+            .await
+            .unwrap();
+
+        // Should have headers and tasks
+        let has_headers = children.iter().any(|n| n.node_type == "header");
+        let has_tasks = children.iter().any(|n| n.content.contains("Task"));
+        assert!(has_headers, "Should have header nodes");
+        assert!(has_tasks, "Should have task nodes");
+    }
+
+    #[tokio::test]
+    async fn test_update_container_from_markdown_nonexistent_container() {
+        let (operations, _temp_dir) = setup_test_service().await;
+
+        let params = json!({
+            "container_id": "nonexistent-container-id",
+            "markdown": "New content"
+        });
+
+        let result = handle_update_container_from_markdown(&operations, params).await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.message.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_update_container_from_markdown_empty_markdown() {
+        let (operations, _temp_dir) = setup_test_service().await;
+
+        // Create container with children
+        let create_params = json!({
+            "markdown_content": "- Item 1\n- Item 2",
+            "container_title": "# Container"
+        });
+
+        let create_result = handle_create_nodes_from_markdown(&operations, create_params)
+            .await
+            .unwrap();
+        let container_id = create_result["container_node_id"].as_str().unwrap();
+
+        // Update with empty markdown (should delete all children)
+        let update_params = json!({
+            "container_id": container_id,
+            "markdown": ""
+        });
+
+        let result = handle_update_container_from_markdown(&operations, update_params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["nodes_deleted"].as_u64().unwrap(), 2);
+        assert_eq!(result["nodes_created"].as_u64().unwrap(), 0);
+
+        // Verify no children remain
+        let children = operations
+            .query_nodes(
+                crate::models::NodeFilter::new()
+                    .with_parent_id(container_id.to_string())
+                    .with_order_by(crate::models::OrderBy::CreatedAsc),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(children.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_update_container_from_markdown_exceeds_size_limit() {
+        let (operations, _temp_dir) = setup_test_service().await;
+
+        // Create container
+        let create_params = json!({
+            "markdown_content": "Test",
+            "container_title": "# Container"
+        });
+
+        let create_result = handle_create_nodes_from_markdown(&operations, create_params)
+            .await
+            .unwrap();
+        let container_id = create_result["container_node_id"].as_str().unwrap();
+
+        // Try to update with markdown exceeding 1MB limit
+        let large_markdown = "x".repeat(1_000_001);
+        let update_params = json!({
+            "container_id": container_id,
+            "markdown": large_markdown
+        });
+
+        let result = handle_update_container_from_markdown(&operations, update_params).await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.message.contains("exceeds maximum size"));
     }
 }

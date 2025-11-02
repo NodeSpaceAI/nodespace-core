@@ -721,6 +721,189 @@ pub async fn handle_get_node_tree(
     Ok(json!(tree))
 }
 
+// =========================================================================
+// Batch Operations for Performance
+// =========================================================================
+
+/// Parameters for get_nodes_batch method
+#[derive(Debug, Deserialize)]
+pub struct GetNodesBatchParams {
+    pub node_ids: Vec<String>,
+}
+
+/// Result of batch get operation
+#[derive(Debug, serde::Serialize)]
+pub struct BatchGetResult {
+    /// Successfully retrieved nodes
+    nodes: Vec<serde_json::Value>,
+    /// IDs of nodes that weren't found
+    not_found: Vec<String>,
+}
+
+/// Get multiple nodes in a single request
+///
+/// More efficient than calling get_node multiple times when AI needs
+/// to fetch details for many nodes (e.g., after parsing markdown export).
+///
+/// # Example
+///
+/// ```rust,no_run
+/// let params = json!({
+///     "node_ids": ["task-1", "task-2", "task-3"]
+/// });
+/// let result = handle_get_nodes_batch(&operations, params).await?;
+/// // Returns all found nodes + list of IDs that don't exist
+/// ```
+pub async fn handle_get_nodes_batch(
+    operations: &Arc<NodeOperations>,
+    params: Value,
+) -> Result<Value, MCPError> {
+    // Parse parameters
+    let params: GetNodesBatchParams = serde_json::from_value(params)
+        .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
+
+    // Validate input
+    if params.node_ids.is_empty() {
+        return Err(MCPError::invalid_params(
+            "node_ids cannot be empty".to_string(),
+        ));
+    }
+
+    if params.node_ids.len() > 100 {
+        return Err(MCPError::invalid_params(format!(
+            "Batch size exceeds maximum of 100 nodes (got {} nodes)",
+            params.node_ids.len()
+        )));
+    }
+
+    // Fetch all nodes
+    let mut nodes = Vec::new();
+    let mut not_found = Vec::new();
+
+    for node_id in params.node_ids {
+        match operations.get_node(&node_id).await {
+            Ok(Some(node)) => {
+                nodes.push(serde_json::to_value(&node).unwrap());
+            }
+            Ok(None) => {
+                not_found.push(node_id);
+            }
+            Err(e) => {
+                tracing::warn!("Error fetching node {}: {}", node_id, e);
+                not_found.push(node_id);
+            }
+        }
+    }
+
+    Ok(json!({
+        "nodes": nodes,
+        "not_found": not_found,
+        "count": nodes.len()
+    }))
+}
+
+/// Single update in a batch request
+#[derive(Debug, Deserialize)]
+pub struct BatchUpdateItem {
+    /// Node ID to update
+    pub id: String,
+    /// Optional updated content
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Optional updated node type
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_type: Option<String>,
+    /// Optional updated properties
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub properties: Option<Value>,
+}
+
+/// Parameters for update_nodes_batch
+#[derive(Debug, Deserialize)]
+pub struct UpdateNodesBatchParams {
+    pub updates: Vec<BatchUpdateItem>,
+}
+
+/// Failed update info
+#[derive(Debug, serde::Serialize)]
+pub struct BatchUpdateFailure {
+    id: String,
+    error: String,
+}
+
+/// Update multiple nodes in a single request
+///
+/// Applies updates sequentially. If some updates fail,
+/// returns both successful and failed update IDs for client handling.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// let params = json!({
+///     "updates": [
+///         { "id": "task-1", "content": "- [x] Done" },
+///         { "id": "task-2", "properties": { "priority": "high" } }
+///     ]
+/// });
+/// let result = handle_update_nodes_batch(&operations, params).await?;
+/// ```
+pub async fn handle_update_nodes_batch(
+    operations: &Arc<NodeOperations>,
+    params: Value,
+) -> Result<Value, MCPError> {
+    // Parse parameters
+    let params: UpdateNodesBatchParams = serde_json::from_value(params)
+        .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
+
+    // Validate input
+    if params.updates.is_empty() {
+        return Err(MCPError::invalid_params(
+            "updates cannot be empty".to_string(),
+        ));
+    }
+
+    if params.updates.len() > 100 {
+        return Err(MCPError::invalid_params(format!(
+            "Batch size exceeds maximum of 100 updates (got {} updates)",
+            params.updates.len()
+        )));
+    }
+
+    // Apply all updates
+    let mut updated = Vec::new();
+    let mut failed: Vec<BatchUpdateFailure> = Vec::new();
+
+    for update in params.updates {
+        // Apply update via NodeOperations (enforces all business rules)
+        match operations
+            .update_node(
+                &update.id,
+                update.content,
+                update.node_type,
+                update.properties,
+            )
+            .await
+        {
+            Ok(_) => {
+                updated.push(update.id);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to update node {}: {}", update.id, e);
+                failed.push(BatchUpdateFailure {
+                    id: update.id,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(json!({
+        "updated": updated,
+        "failed": failed,
+        "count": updated.len()
+    }))
+}
+
 // Include tests
 #[cfg(test)]
 #[path = "nodes_test.rs"]

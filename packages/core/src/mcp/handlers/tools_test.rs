@@ -19,19 +19,36 @@ fn test_tools_list_returns_all_schemas() {
 
     let tools = response["tools"].as_array().unwrap();
 
-    // Verify all 8 tools are present
-    assert_eq!(tools.len(), 8);
+    // Verify all 16 tools are present (8 original + 5 hierarchy + 3 batch operations)
+    assert_eq!(tools.len(), 16);
 
     // Verify tool names
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
 
+    // Core CRUD
     assert!(tool_names.contains(&"create_node"));
     assert!(tool_names.contains(&"get_node"));
     assert!(tool_names.contains(&"update_node"));
     assert!(tool_names.contains(&"delete_node"));
     assert!(tool_names.contains(&"query_nodes"));
+
+    // Hierarchy operations
+    assert!(tool_names.contains(&"get_children"));
+    assert!(tool_names.contains(&"get_child_at_index"));
+    assert!(tool_names.contains(&"insert_child_at_index"));
+    assert!(tool_names.contains(&"move_child_to_index"));
+    assert!(tool_names.contains(&"get_node_tree"));
+
+    // Markdown
     assert!(tool_names.contains(&"create_nodes_from_markdown"));
     assert!(tool_names.contains(&"get_markdown_from_node_id"));
+
+    // Batch operations
+    assert!(tool_names.contains(&"get_nodes_batch"));
+    assert!(tool_names.contains(&"update_nodes_batch"));
+    assert!(tool_names.contains(&"update_container_from_markdown"));
+
+    // Search
     assert!(tool_names.contains(&"search_containers"));
 }
 

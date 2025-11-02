@@ -145,6 +145,54 @@ fn emit_event_for_method(app: &AppHandle, method: &str, result: &Value) {
                 }
             }
         }
+        "update_nodes_batch" => {
+            // Emit node-updated event for each successfully updated node
+            if let Some(updated_ids) = result["updated"].as_array() {
+                for node_id_value in updated_ids {
+                    if let Some(node_id) = node_id_value.as_str() {
+                        let event = NodeUpdatedEvent {
+                            node_id: node_id.to_string(),
+                        };
+                        if let Err(e) = app.emit("node-updated", &event) {
+                            warn!(
+                                "Failed to emit node-updated event for batch update {}: {}",
+                                node_id, e
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        "update_container_from_markdown" => {
+            // Emit node-created events for all newly created nodes
+            // (Note: We don't emit node-deleted events for removed children to avoid excessive events,
+            // as the frontend should refresh the container view anyway)
+            if let Some(nodes) = result["nodes"].as_array() {
+                for node_metadata in nodes {
+                    // The result contains NodeMetadata (id + node_type), not full Node objects
+                    // So we emit just the node_id and let the frontend fetch if needed
+                    if let (Some(_node_id), Some(_node_type)) = (
+                        node_metadata["id"].as_str(),
+                        node_metadata["node_type"].as_str(),
+                    ) {
+                        // For simplicity, emit a generic updated event for the container
+                        // The frontend should refresh the entire container view
+                        if let Some(container_id) = result["container_id"].as_str() {
+                            let event = NodeUpdatedEvent {
+                                node_id: container_id.to_string(),
+                            };
+                            if let Err(e) = app.emit("node-updated", &event) {
+                                warn!(
+                                    "Failed to emit node-updated event for container {}: {}",
+                                    container_id, e
+                                );
+                            }
+                            break; // Only emit once for the container, not for each child
+                        }
+                    }
+                }
+            }
+        }
         _ => {} // No events for get/query operations
     }
 }
