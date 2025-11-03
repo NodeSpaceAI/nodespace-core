@@ -7,7 +7,7 @@
 use crate::mcp::handlers::{markdown, nodes, search};
 use crate::mcp::types::MCPError;
 use crate::operations::NodeOperations;
-use crate::services::NodeEmbeddingService;
+use crate::services::{NodeEmbeddingService, SchemaService};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -77,6 +77,7 @@ pub fn handle_tools_list(_params: Value) -> Result<Value, MCPError> {
 ///
 /// * `node_operations` - Arc reference to NodeOperations for node operations
 /// * `embedding_service` - Arc reference to NodeEmbeddingService for search
+/// * `schema_service` - Arc reference to SchemaService for schema validation
 /// * `params` - Request parameters containing `name` and `arguments`
 ///
 /// # Returns
@@ -85,6 +86,7 @@ pub fn handle_tools_list(_params: Value) -> Result<Value, MCPError> {
 pub async fn handle_tools_call(
     node_operations: &Arc<NodeOperations>,
     embedding_service: &Arc<NodeEmbeddingService>,
+    schema_service: &Arc<SchemaService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     // Extract tool name from params
@@ -100,7 +102,9 @@ pub async fn handle_tools_call(
         // Core Node CRUD
         "create_node" => nodes::handle_create_node(node_operations, arguments).await,
         "get_node" => nodes::handle_get_node(node_operations, arguments).await,
-        "update_node" => nodes::handle_update_node(node_operations, arguments).await,
+        "update_node" => {
+            nodes::handle_update_node(node_operations, schema_service, arguments).await
+        }
         "delete_node" => nodes::handle_delete_node(node_operations, arguments).await,
         "query_nodes" => nodes::handle_query_nodes(node_operations, arguments).await,
 
@@ -128,7 +132,9 @@ pub async fn handle_tools_call(
 
         // Batch Operations
         "get_nodes_batch" => nodes::handle_get_nodes_batch(node_operations, arguments).await,
-        "update_nodes_batch" => nodes::handle_update_nodes_batch(node_operations, arguments).await,
+        "update_nodes_batch" => {
+            nodes::handle_update_nodes_batch(node_operations, schema_service, arguments).await
+        }
 
         // Search
         "search_containers" => search::handle_search_containers(embedding_service, arguments).await,
@@ -239,7 +245,7 @@ fn get_tool_schemas() -> Value {
         },
         {
             "name": "update_node",
-            "description": "Update an existing node's content or properties",
+            "description": "Update an existing node's content or properties. Note: Core schema fields are protected - they cannot be deleted and enum values must match allowed values. User-defined fields can be freely modified.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -253,7 +259,7 @@ fn get_tool_schemas() -> Value {
                     },
                     "properties": {
                         "type": "object",
-                        "description": "Updated properties"
+                        "description": "Updated properties (core fields are protected)"
                     }
                 },
                 "required": ["node_id"]

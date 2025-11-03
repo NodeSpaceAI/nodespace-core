@@ -477,7 +477,8 @@ impl NodeService {
             .unwrap_or(1) as u32;
 
         // Get target version from schema
-        let target_version = if let Some(schema) = self.get_schema_for_type(&node.node_type).await? {
+        let target_version = if let Some(schema) = self.get_schema_for_type(&node.node_type).await?
+        {
             schema.get("version").and_then(|v| v.as_i64()).unwrap_or(1) as u32
         } else {
             1 // No schema found - no migration needed
@@ -489,7 +490,9 @@ impl NodeService {
         }
 
         // Apply migrations
-        let migrated_node = self.migration_registry.apply_migrations(node, target_version)?;
+        let migrated_node = self
+            .migration_registry
+            .apply_migrations(node, target_version)?;
 
         // Persist migrated node to database
         let conn = self.db.connect_with_timeout().await?;
@@ -502,10 +505,7 @@ impl NodeService {
         )
         .await
         .map_err(|e| {
-            NodeServiceError::query_failed(format!(
-                "Failed to persist migrated node: {}",
-                e
-            ))
+            NodeServiceError::query_failed(format!("Failed to persist migrated node: {}", e))
         })?;
 
         // Update the in-memory node
