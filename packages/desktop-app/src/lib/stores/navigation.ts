@@ -443,6 +443,27 @@ export function updateTabContent(tabId: string, content: { nodeId: string; nodeT
 }
 
 /**
+ * Get ordered tabs for a specific pane
+ * @param state - The current tab state
+ * @param paneId - The pane ID to get tabs for
+ * @returns Array of tabs in the order specified by the pane's tabIds array
+ *
+ * @remarks
+ * This function is optimized to use a single-pass approach for ordering tabs.
+ * It maps through the pane's tabIds array and looks up each tab, filtering out
+ * any undefined results (which shouldn't occur in normal operation).
+ */
+export function getOrderedTabsForPane(state: TabState, paneId: string): Tab[] {
+  const pane = state.panes.find((p) => p.id === paneId);
+  if (!pane) return [];
+
+  // Single-pass: map tabIds to tabs, filter out undefined
+  return pane.tabIds
+    .map((tabId) => state.tabs.find((t) => t.id === tabId))
+    .filter((t): t is Tab => t !== undefined);
+}
+
+/**
  * Reorder a tab within the same pane
  * @param tabId - The tab ID to reorder
  * @param newIndex - The new position index in the pane's tab list

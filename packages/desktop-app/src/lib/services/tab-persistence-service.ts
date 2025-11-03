@@ -194,14 +194,20 @@ export class TabPersistenceService {
   /**
    * Sanitize state to remove duplicates and invalid references
    * @param state - The state to sanitize
-   * @returns The sanitized state
+   * @returns The sanitized state (new object, immutable)
+   *
+   * @remarks
+   * This function performs defensive data sanitization for state loaded from
+   * external storage (localStorage/Tauri). It creates new objects at each level
+   * to ensure immutability and removes duplicate IDs that may have been introduced
+   * by external factors or bugs in older versions.
    */
   private static sanitize(state: PersistedTabState): PersistedTabState {
     // Remove duplicate pane IDs
     const seenPaneIds = new Set<string>();
     const uniquePanes = state.panes.filter((pane) => {
       if (seenPaneIds.has(pane.id)) {
-        this.warn(`Removing duplicate pane ID: ${pane.id}`);
+        this.error(`Removing duplicate pane ID: ${pane.id}`);
         return false;
       }
       seenPaneIds.add(pane.id);
@@ -209,16 +215,28 @@ export class TabPersistenceService {
     });
 
     // Remove duplicate tab IDs from each pane's tabIds array
-    const sanitizedPanes = uniquePanes.map((pane) => ({
-      ...pane,
-      tabIds: [...new Set(pane.tabIds)]
-    }));
+    // Explicitly create new objects to ensure immutability
+    const sanitizedPanes = uniquePanes.map((pane) => {
+      const uniqueTabIds = [...new Set(pane.tabIds)];
+
+      if (uniqueTabIds.length !== pane.tabIds.length) {
+        const duplicateCount = pane.tabIds.length - uniqueTabIds.length;
+        this.warn(
+          `Removed ${duplicateCount} duplicate tab ID(s) from pane ${pane.id}'s tabIds array`
+        );
+      }
+
+      return {
+        ...pane,
+        tabIds: uniqueTabIds
+      };
+    });
 
     // Remove duplicate tab IDs from tabs array
     const seenTabIds = new Set<string>();
     const uniqueTabs = state.tabs.filter((tab) => {
       if (seenTabIds.has(tab.id)) {
-        this.warn(`Removing duplicate tab ID: ${tab.id}`);
+        this.error(`Removing duplicate tab ID: ${tab.id}`);
         return false;
       }
       seenTabIds.add(tab.id);

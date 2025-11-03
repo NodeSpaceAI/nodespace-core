@@ -28,7 +28,13 @@
   </PaneManager>
 -->
 <script lang="ts">
-  import { tabState, setActivePane, resizePane, type Tab } from '$lib/stores/navigation.js';
+  import {
+    tabState,
+    setActivePane,
+    resizePane,
+    getOrderedTabsForPane,
+    type Tab
+  } from '$lib/stores/navigation.js';
   import TabSystem from './tab-system.svelte';
   import PaneContent from './pane-content.svelte';
   import { cn } from '$lib/utils.js';
@@ -89,14 +95,9 @@
   }
 
   // Get tabs for a specific pane in the correct order based on pane.tabIds
-  function getTabsForPane(paneId: string) {
-    const pane = $tabState.panes.find((p) => p.id === paneId);
-    if (!pane) return [];
-
-    // Order tabs according to pane's tabIds array
-    return pane.tabIds
-      .map((tabId) => $tabState.tabs.find((t) => t.id === tabId))
-      .filter((t): t is Tab => t !== undefined);
+  // Uses the shared utility function for consistent tab ordering
+  function getTabsForPane(paneId: string): Tab[] {
+    return getOrderedTabsForPane($tabState, paneId);
   }
 
   // Get active tab ID for a specific pane

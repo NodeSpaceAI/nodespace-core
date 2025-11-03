@@ -37,7 +37,8 @@
     setActiveTab,
     closeTab,
     reorderTab,
-    moveTabBetweenPanes
+    moveTabBetweenPanes,
+    getOrderedTabsForPane
   } from '$lib/stores/navigation.js';
   import { cn } from '$lib/utils.js';
   import type { Tab, Pane } from '$lib/stores/navigation.js';
@@ -61,19 +62,8 @@
   const currentPaneId = $derived(pane?.id || $tabState.activePaneId);
 
   // Get tabs in the correct order based on pane's tabIds array
-  // Use simple $derived instead of $derived.by for better reactivity
-  const displayTabs = $derived(
-    tabs ||
-      (() => {
-        const currentPane = $tabState.panes.find((p) => p.id === currentPaneId);
-        if (!currentPane) return $tabState.tabs;
-
-        // Order tabs according to pane's tabIds array
-        return currentPane.tabIds
-          .map((tabId) => $tabState.tabs.find((t) => t.id === tabId))
-          .filter((t): t is Tab => t !== undefined);
-      })()
-  );
+  // Use the optimized utility function for consistent tab ordering
+  const displayTabs = $derived(tabs || getOrderedTabsForPane($tabState, currentPaneId));
 
   const currentActiveTabId = $derived(
     activeTabId || $tabState.activeTabIds[$tabState.activePaneId]
@@ -181,45 +171,85 @@
    * Handle drop - perform tab reorder or move between panes
    */
   function handleDrop(state: DragDropState<{ tab: Tab; paneId: string }>): void {
-    const { draggedItem, targetContainer, sourceContainer } = state;
+    try {
+      const { draggedItem, targetContainer, sourceContainer } = state;
 
-    if (!draggedItem || !targetContainer || !sourceContainer) {
+      // Early validation: check for required state
+      if (!draggedItem || !targetContainer || !sourceContainer) {
+        console.warn('[TabSystem] Invalid drop operation: missing required state', {
+          hasDraggedItem: !!draggedItem,
+          hasTargetContainer: !!targetContainer,
+          hasSourceContainer: !!sourceContainer
+        });
+        dragOverIndex = null;
+        return;
+      }
+
+      // Parse and validate indices
+      const sourceIndex = parseInt(sourceContainer.replace('tab-', ''));
+      const targetIndex = parseInt(targetContainer.replace('tab-', ''));
+
+      if (isNaN(sourceIndex) || isNaN(targetIndex)) {
+        console.error('[TabSystem] Invalid drop operation: could not parse container indices', {
+          sourceContainer,
+          targetContainer,
+          sourceIndex,
+          targetIndex
+        });
+        dragOverIndex = null;
+        return;
+      }
+
+      const sourcePaneId = draggedItem.paneId;
+      const tabId = draggedItem.tab.id;
+
+      // Validate pane existence
+      const sourcePaneExists = $tabState.panes.some((p) => p.id === sourcePaneId);
+      const targetPaneExists = $tabState.panes.some((p) => p.id === currentPaneId);
+
+      if (!sourcePaneExists || !targetPaneExists) {
+        console.error('[TabSystem] Invalid drop operation: pane not found', {
+          sourcePaneId,
+          targetPaneId: currentPaneId,
+          sourcePaneExists,
+          targetPaneExists
+        });
+        dragOverIndex = null;
+        return;
+      }
+
+      // Skip if dropping on same position
+      if (sourcePaneId === currentPaneId && sourceIndex === targetIndex) {
+        dragOverIndex = null;
+        return;
+      }
+
+      // Perform the drop operation
+      if (sourcePaneId === currentPaneId) {
+        // Within-pane reorder
+        reorderTab(tabId, targetIndex, currentPaneId);
+      } else {
+        // Cross-pane move
+        moveTabBetweenPanes(tabId, sourcePaneId, currentPaneId, targetIndex);
+      }
+    } catch (error) {
+      console.error('[TabSystem] Drop operation failed:', error);
+      // Could show user-facing toast notification here in the future
+    } finally {
+      // Always clear drag-over state
       dragOverIndex = null;
-      return;
     }
-
-    // Parse indices from container IDs
-    const sourceIndex = parseInt(sourceContainer.replace('tab-', ''));
-    const targetIndex = parseInt(targetContainer.replace('tab-', ''));
-
-    if (isNaN(sourceIndex) || isNaN(targetIndex)) {
-      dragOverIndex = null;
-      return;
-    }
-
-    const sourcePaneId = draggedItem.paneId;
-    const tabId = draggedItem.tab.id;
-
-    // Skip if dropping on same position
-    if (sourcePaneId === currentPaneId && sourceIndex === targetIndex) {
-      dragOverIndex = null;
-      return;
-    }
-
-    if (sourcePaneId === currentPaneId) {
-      // Within-pane reorder
-      reorderTab(tabId, targetIndex, currentPaneId);
-    } else {
-      // Cross-pane move
-      moveTabBetweenPanes(tabId, sourcePaneId, currentPaneId, targetIndex);
-    }
-
-    // Clear drag-over state
-    dragOverIndex = null;
   }
 
   /**
    * Check if a tab can be dragged
+   * @param _tab - The tab to check (currently unused, parameter kept for future extensibility)
+   * @returns false if this is the last tab in the last pane, true otherwise
+   *
+   * @remarks
+   * Prevents dragging the last tab in the last pane to ensure the application
+   * always has at least one visible tab. The tab parameter is reserved for future
+   * per-tab drag restrictions (e.g., pinned tabs, locked tabs).
    */
   function canDragTab(_tab: Tab): boolean {
     // Cannot drag last tab in last pane
@@ -246,9 +276,12 @@
         isDragging && 'tab-item--dragging'
       )}
       role="tab"
+      title={tab.title}
       tabindex={isActive ? 0 : -1}
       aria-selected={isActive}
       aria-controls={`tab-panel-${tab.id}`}
+      aria-grabbed={isDragging}
+      aria-dropeffect={showDropIndicator ? 'move' : 'none'}
       onkeydown={(event) => handleTabKeydown(event, tab.id)}
       use:droppable={{
         container: `tab-${i}`,
@@ -262,7 +295,6 @@
     >
       <span
         class="tab-title"
-        title={tab.title}
         role="button"
         tabindex="0"
         onclick={() => handleTabClick(tab.id)}
