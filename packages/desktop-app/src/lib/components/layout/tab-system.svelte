@@ -60,18 +60,19 @@
   const currentPaneId = $derived(pane?.id || $tabState.activePaneId);
 
   // Get tabs in the correct order based on pane's tabIds array
-  const displayTabs: Tab[] = $derived.by(() => {
-    if (tabs) return tabs;
+  // Use simple $derived instead of $derived.by for better reactivity
+  const displayTabs = $derived(
+    tabs ||
+      (() => {
+        const currentPane = $tabState.panes.find((p) => p.id === currentPaneId);
+        if (!currentPane) return $tabState.tabs;
 
-    // Get the current pane
-    const currentPane = $tabState.panes.find((p) => p.id === currentPaneId);
-    if (!currentPane) return $tabState.tabs;
-
-    // Order tabs according to pane's tabIds array
-    return currentPane.tabIds
-      .map((tabId) => $tabState.tabs.find((t) => t.id === tabId))
-      .filter((t): t is Tab => t !== undefined);
-  });
+        // Order tabs according to pane's tabIds array
+        return currentPane.tabIds
+          .map((tabId) => $tabState.tabs.find((t) => t.id === tabId))
+          .filter((t): t is Tab => t !== undefined);
+      })()
+  );
 
   const currentActiveTabId = $derived(
     activeTabId || $tabState.activeTabIds[$tabState.activePaneId]
