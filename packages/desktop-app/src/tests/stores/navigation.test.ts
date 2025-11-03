@@ -14,6 +14,8 @@ import {
   closeTab,
   addTab,
   resetTabState,
+  reorderTab,
+  moveTabBetweenPanes,
   DEFAULT_PANE_ID,
   DAILY_JOURNAL_TAB_ID,
   type Tab
@@ -429,6 +431,475 @@ describe('Navigation Store - Tab Management', () => {
 
       const stateAfter = get(tabState);
       expect(stateAfter.tabs.length).toBe(tabCountBefore);
+    });
+  });
+
+  describe('reorderTab', () => {
+    beforeEach(() => {
+      resetTabState();
+    });
+
+    it('reorders tab within same pane', () => {
+      // Add three tabs to default pane
+      const tab1: Tab = {
+        id: 'test-tab-1',
+        title: 'Test Tab 1',
+        type: 'node',
+        content: { nodeId: 'test-node-1', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+      const tab2: Tab = {
+        id: 'test-tab-2',
+        title: 'Test Tab 2',
+        type: 'node',
+        content: { nodeId: 'test-node-2', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+      const tab3: Tab = {
+        id: 'test-tab-3',
+        title: 'Test Tab 3',
+        type: 'node',
+        content: { nodeId: 'test-node-3', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+
+      addTab(tab1);
+      addTab(tab2);
+      addTab(tab3);
+
+      // Verify initial order: Daily Journal, tab1, tab2, tab3
+      const stateBefore = get(tabState);
+      const pane = stateBefore.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      expect(pane?.tabIds).toEqual([DAILY_JOURNAL_TAB_ID, tab1.id, tab2.id, tab3.id]);
+
+      // Move tab1 from index 1 to index 3 (after tab3)
+      reorderTab(tab1.id, 3, DEFAULT_PANE_ID);
+
+      const stateAfter = get(tabState);
+      const updatedPane = stateAfter.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      expect(updatedPane?.tabIds).toEqual([DAILY_JOURNAL_TAB_ID, tab2.id, tab3.id, tab1.id]);
+    });
+
+    it('handles invalid pane ID gracefully', () => {
+      const stateBefore = get(tabState);
+      const pane = stateBefore.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      const tabIdsBefor = pane?.tabIds;
+
+      reorderTab(DAILY_JOURNAL_TAB_ID, 0, 'non-existent-pane');
+
+      const stateAfter = get(tabState);
+      const updatedPane = stateAfter.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      expect(updatedPane?.tabIds).toEqual(tabIdsBefor);
+    });
+
+    it('handles invalid tab ID gracefully', () => {
+      const stateBefore = get(tabState);
+      const pane = stateBefore.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      const tabIdsBefore = pane?.tabIds;
+
+      reorderTab('non-existent-tab', 0, DEFAULT_PANE_ID);
+
+      const stateAfter = get(tabState);
+      const updatedPane = stateAfter.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      expect(updatedPane?.tabIds).toEqual(tabIdsBefore);
+    });
+
+    it('no-ops when moving to same position', () => {
+      // Add a tab
+      const tab1: Tab = {
+        id: 'test-tab-1',
+        title: 'Test Tab 1',
+        type: 'node',
+        content: { nodeId: 'test-node-1', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+      addTab(tab1);
+
+      const stateBefore = get(tabState);
+      const pane = stateBefore.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      const tabIdsBefore = [...pane!.tabIds];
+
+      // Move tab1 to its current position (index 1)
+      reorderTab(tab1.id, 1, DEFAULT_PANE_ID);
+
+      const stateAfter = get(tabState);
+      const updatedPane = stateAfter.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      expect(updatedPane?.tabIds).toEqual(tabIdsBefore);
+    });
+
+    it('handles boundary indices correctly (move to start)', () => {
+      // Add three tabs
+      const tab1: Tab = {
+        id: 'test-tab-1',
+        title: 'Test Tab 1',
+        type: 'node',
+        content: { nodeId: 'test-node-1', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+      const tab2: Tab = {
+        id: 'test-tab-2',
+        title: 'Test Tab 2',
+        type: 'node',
+        content: { nodeId: 'test-node-2', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+      addTab(tab1);
+      addTab(tab2);
+
+      // Move tab2 to index 0 (first position)
+      reorderTab(tab2.id, 0, DEFAULT_PANE_ID);
+
+      const state = get(tabState);
+      const pane = state.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      expect(pane?.tabIds).toEqual([tab2.id, DAILY_JOURNAL_TAB_ID, tab1.id]);
+    });
+
+    it('handles boundary indices correctly (move to end)', () => {
+      // Add three tabs
+      const tab1: Tab = {
+        id: 'test-tab-1',
+        title: 'Test Tab 1',
+        type: 'node',
+        content: { nodeId: 'test-node-1', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+      const tab2: Tab = {
+        id: 'test-tab-2',
+        title: 'Test Tab 2',
+        type: 'node',
+        content: { nodeId: 'test-node-2', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+      addTab(tab1);
+      addTab(tab2);
+
+      // Move Daily Journal to last position
+      reorderTab(DAILY_JOURNAL_TAB_ID, 2, DEFAULT_PANE_ID);
+
+      const state = get(tabState);
+      const pane = state.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      expect(pane?.tabIds).toEqual([tab1.id, tab2.id, DAILY_JOURNAL_TAB_ID]);
+    });
+
+    it('maintains tab reference integrity', () => {
+      // Add a tab
+      const tab1: Tab = {
+        id: 'test-tab-1',
+        title: 'Test Tab 1',
+        type: 'node',
+        content: { nodeId: 'test-node-1', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+      addTab(tab1);
+
+      const stateBefore = get(tabState);
+      const tabBefore = stateBefore.tabs.find((t) => t.id === tab1.id);
+
+      // Reorder tab
+      reorderTab(tab1.id, 0, DEFAULT_PANE_ID);
+
+      const stateAfter = get(tabState);
+      const tabAfter = stateAfter.tabs.find((t) => t.id === tab1.id);
+
+      // Tab object should remain the same (just order changed)
+      expect(tabAfter).toEqual(tabBefore);
+    });
+  });
+
+  describe('moveTabBetweenPanes', () => {
+    beforeEach(() => {
+      resetTabState();
+    });
+
+    it('moves tab between panes', () => {
+      // Create second pane
+      const newPane = createPane();
+      expect(newPane).not.toBeNull();
+
+      // Add a tab to first pane
+      const tab1: Tab = {
+        id: 'test-tab-1',
+        title: 'Test Tab 1',
+        type: 'node',
+        content: { nodeId: 'test-node-1', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+      addTab(tab1);
+
+      const stateBefore = get(tabState);
+      const pane1Before = stateBefore.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      const pane2Before = stateBefore.panes.find((p) => p.id === newPane!.id);
+      expect(pane1Before?.tabIds).toContain(tab1.id);
+      expect(pane2Before?.tabIds).not.toContain(tab1.id);
+
+      // Move tab from pane1 to pane2
+      moveTabBetweenPanes(tab1.id, DEFAULT_PANE_ID, newPane!.id, 0);
+
+      const stateAfter = get(tabState);
+      const pane1After = stateAfter.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      const pane2After = stateAfter.panes.find((p) => p.id === newPane!.id);
+
+      expect(pane1After?.tabIds).not.toContain(tab1.id);
+      expect(pane2After?.tabIds).toContain(tab1.id);
+      expect(pane2After?.tabIds[0]).toBe(tab1.id);
+
+      // Verify tab's paneId was updated
+      const movedTab = stateAfter.tabs.find((t) => t.id === tab1.id);
+      expect(movedTab?.paneId).toBe(newPane!.id);
+    });
+
+    it('closes source pane when last tab moved', () => {
+      // Create second pane
+      const newPane = createPane();
+      expect(newPane).not.toBeNull();
+
+      // Add a tab to second pane
+      const tab1: Tab = {
+        id: 'test-tab-1',
+        title: 'Test Tab 1',
+        type: 'node',
+        content: { nodeId: 'test-node-1', nodeType: 'text' },
+        closeable: true,
+        paneId: newPane!.id
+      };
+      addTab(tab1);
+
+      const stateBefore = get(tabState);
+      expect(stateBefore.panes.length).toBe(2);
+
+      // Move the only tab from pane2 to pane1
+      moveTabBetweenPanes(tab1.id, newPane!.id, DEFAULT_PANE_ID, 1);
+
+      const stateAfter = get(tabState);
+      expect(stateAfter.panes.length).toBe(1);
+      expect(stateAfter.panes[0].id).toBe(DEFAULT_PANE_ID);
+      expect(stateAfter.panes[0].width).toBe(100);
+    });
+
+    it('updates active tab correctly in both panes', () => {
+      // Create second pane
+      const newPane = createPane();
+      expect(newPane).not.toBeNull();
+
+      // Add two tabs to first pane
+      const tab1: Tab = {
+        id: 'test-tab-1',
+        title: 'Test Tab 1',
+        type: 'node',
+        content: { nodeId: 'test-node-1', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+      const tab2: Tab = {
+        id: 'test-tab-2',
+        title: 'Test Tab 2',
+        type: 'node',
+        content: { nodeId: 'test-node-2', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+      addTab(tab1);
+      addTab(tab2);
+
+      // Set tab2 as active in pane1
+      setActiveTab(tab2.id, DEFAULT_PANE_ID);
+
+      const stateBefore = get(tabState);
+      expect(stateBefore.activeTabIds[DEFAULT_PANE_ID]).toBe(tab2.id);
+
+      // Get the first remaining tab ID before moving
+      const pane = stateBefore.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      const remainingTabIds = pane!.tabIds.filter((id) => id !== tab2.id);
+      const firstRemainingTabId = remainingTabIds[0];
+
+      // Move active tab (tab2) from pane1 to pane2
+      moveTabBetweenPanes(tab2.id, DEFAULT_PANE_ID, newPane!.id, 0);
+
+      const stateAfter = get(tabState);
+      // Source pane should have first remaining tab as active now
+      expect(stateAfter.activeTabIds[DEFAULT_PANE_ID]).toBe(firstRemainingTabId);
+      // Target pane should have moved tab as active
+      expect(stateAfter.activeTabIds[newPane!.id]).toBe(tab2.id);
+    });
+
+    it('sets moved tab as active in target pane', () => {
+      // Create second pane
+      const newPane = createPane();
+      expect(newPane).not.toBeNull();
+
+      // Add a tab to pane2
+      const tab1: Tab = {
+        id: 'test-tab-1',
+        title: 'Test Tab 1',
+        type: 'node',
+        content: { nodeId: 'test-node-1', nodeType: 'text' },
+        closeable: true,
+        paneId: newPane!.id
+      };
+      addTab(tab1);
+
+      // Add a tab to pane1
+      const tab2: Tab = {
+        id: 'test-tab-2',
+        title: 'Test Tab 2',
+        type: 'node',
+        content: { nodeId: 'test-node-2', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+      addTab(tab2);
+
+      // Move tab2 from pane1 to pane2
+      moveTabBetweenPanes(tab2.id, DEFAULT_PANE_ID, newPane!.id, 1);
+
+      const state = get(tabState);
+      expect(state.activePaneId).toBe(newPane!.id);
+      expect(state.activeTabIds[newPane!.id]).toBe(tab2.id);
+    });
+
+    it('handles moving to non-existent pane', () => {
+      const tab1: Tab = {
+        id: 'test-tab-1',
+        title: 'Test Tab 1',
+        type: 'node',
+        content: { nodeId: 'test-node-1', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+      addTab(tab1);
+
+      const stateBefore = get(tabState);
+      const tabsBefore = stateBefore.tabs.length;
+      const panesBefore = stateBefore.panes.length;
+
+      // Try to move to non-existent pane
+      moveTabBetweenPanes(tab1.id, DEFAULT_PANE_ID, 'non-existent-pane', 0);
+
+      const stateAfter = get(tabState);
+      expect(stateAfter.tabs.length).toBe(tabsBefore);
+      expect(stateAfter.panes.length).toBe(panesBefore);
+
+      // Tab should still be in original pane
+      const tab = stateAfter.tabs.find((t) => t.id === tab1.id);
+      expect(tab?.paneId).toBe(DEFAULT_PANE_ID);
+    });
+
+    it('handles moving non-existent tab', () => {
+      // Create second pane
+      const newPane = createPane();
+      expect(newPane).not.toBeNull();
+
+      const stateBefore = get(tabState);
+      const pane1Before = stateBefore.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      const pane2Before = stateBefore.panes.find((p) => p.id === newPane!.id);
+      const tabIds1Before = [...pane1Before!.tabIds];
+      const tabIds2Before = [...pane2Before!.tabIds];
+
+      // Try to move non-existent tab
+      moveTabBetweenPanes('non-existent-tab', DEFAULT_PANE_ID, newPane!.id, 0);
+
+      const stateAfter = get(tabState);
+      const pane1After = stateAfter.panes.find((p) => p.id === DEFAULT_PANE_ID);
+      const pane2After = stateAfter.panes.find((p) => p.id === newPane!.id);
+
+      // Nothing should have changed
+      expect(pane1After?.tabIds).toEqual(tabIds1Before);
+      expect(pane2After?.tabIds).toEqual(tabIds2Before);
+    });
+
+    it('maintains pane width correctly after auto-close', () => {
+      // Create second pane
+      const newPane = createPane();
+      expect(newPane).not.toBeNull();
+
+      // Resize panes to 60/40 split
+      resizePane(DEFAULT_PANE_ID, 60);
+
+      const stateBefore = get(tabState);
+      expect(stateBefore.panes[0].width).toBe(60);
+      expect(stateBefore.panes[1].width).toBe(40);
+
+      // Add a tab to second pane
+      const tab1: Tab = {
+        id: 'test-tab-1',
+        title: 'Test Tab 1',
+        type: 'node',
+        content: { nodeId: 'test-node-1', nodeType: 'text' },
+        closeable: true,
+        paneId: newPane!.id
+      };
+      addTab(tab1);
+
+      // Move the only tab from pane2 to pane1 (should close pane2)
+      moveTabBetweenPanes(tab1.id, newPane!.id, DEFAULT_PANE_ID, 1);
+
+      const stateAfter = get(tabState);
+      expect(stateAfter.panes.length).toBe(1);
+      // Remaining pane should be expanded to 100%
+      expect(stateAfter.panes[0].width).toBe(100);
+    });
+
+    it('inserts tab at correct position in target pane', () => {
+      // Create second pane
+      const newPane = createPane();
+      expect(newPane).not.toBeNull();
+
+      // Add three tabs to pane2
+      const tab1: Tab = {
+        id: 'test-tab-1',
+        title: 'Test Tab 1',
+        type: 'node',
+        content: { nodeId: 'test-node-1', nodeType: 'text' },
+        closeable: true,
+        paneId: newPane!.id
+      };
+      const tab2: Tab = {
+        id: 'test-tab-2',
+        title: 'Test Tab 2',
+        type: 'node',
+        content: { nodeId: 'test-node-2', nodeType: 'text' },
+        closeable: true,
+        paneId: newPane!.id
+      };
+      const tab3: Tab = {
+        id: 'test-tab-3',
+        title: 'Test Tab 3',
+        type: 'node',
+        content: { nodeId: 'test-node-3', nodeType: 'text' },
+        closeable: true,
+        paneId: newPane!.id
+      };
+      addTab(tab1);
+      addTab(tab2);
+      addTab(tab3);
+
+      // Add a tab to pane1
+      const tab4: Tab = {
+        id: 'test-tab-4',
+        title: 'Test Tab 4',
+        type: 'node',
+        content: { nodeId: 'test-node-4', nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      };
+      addTab(tab4);
+
+      // Move tab4 from pane1 to pane2 at index 1 (between tab1 and tab2)
+      moveTabBetweenPanes(tab4.id, DEFAULT_PANE_ID, newPane!.id, 1);
+
+      const state = get(tabState);
+      const pane2 = state.panes.find((p) => p.id === newPane!.id);
+      expect(pane2?.tabIds).toEqual([tab1.id, tab4.id, tab2.id, tab3.id]);
     });
   });
 });
