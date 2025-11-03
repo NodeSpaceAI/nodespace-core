@@ -28,6 +28,7 @@ export class TabPersistenceService {
   private static readonly DEBUG = import.meta.env.DEV;
 
   private static saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private static pendingState: TabState | null = null;
 
   /**
    * Log message in development mode only
@@ -62,9 +63,13 @@ export class TabPersistenceService {
       clearTimeout(this.saveTimer);
     }
 
+    // Store pending state for flush()
+    this.pendingState = state;
+
     // Debounce the save operation
     this.saveTimer = setTimeout(() => {
       this.saveImmediate(state);
+      this.pendingState = null;
     }, this.DEBOUNCE_MS);
   }
 
@@ -229,6 +234,12 @@ export class TabPersistenceService {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
+    }
+
+    // If there's a pending state, save it immediately
+    if (this.pendingState) {
+      this.saveImmediate(this.pendingState);
+      this.pendingState = null;
     }
   }
 }
