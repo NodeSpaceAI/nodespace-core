@@ -24,6 +24,8 @@ import { NavigateDownCommand } from '$lib/commands/keyboard/navigate-down.comman
 import { FormatTextCommand } from '$lib/commands/keyboard/format-text.command';
 import { CursorPositioningService } from '$lib/services/cursor-positioning-service';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
+import { tabState } from '$lib/stores/navigation';
+import { get } from 'svelte/store';
 import { untrack } from 'svelte';
 
 // Module-level command singletons - created once and reused
@@ -117,6 +119,7 @@ export class TextareaController {
   public element: HTMLTextAreaElement;
   private nodeId: string;
   private nodeType: string;
+  private paneId: string;
   private config: TextareaControllerConfig;
   public events: TextareaControllerEvents;
 
@@ -164,12 +167,14 @@ export class TextareaController {
     element: HTMLTextAreaElement,
     nodeId: string,
     nodeType: string,
+    paneId: string,
     events: TextareaControllerEvents,
     config: TextareaControllerConfig = {}
   ) {
     this.element = element;
     this.nodeId = nodeId;
     this.nodeType = nodeType;
+    this.paneId = paneId;
     this.events = events;
     this.config = { allowMultiline: false, ...config }; // Default to single-line
 
@@ -610,16 +615,23 @@ export class TextareaController {
    * Build keyboard context for command execution
    */
   private buildKeyboardContext(event: KeyboardEvent): Record<string, unknown> {
+    // Get active pane ID for multi-pane coordination
+    const currentTabState = get(tabState);
+    const activePaneId = currentTabState.activePaneId;
+
     return {
       event,
       controller: this,
       nodeId: this.nodeId,
       nodeType: this.nodeType,
+      paneId: this.paneId,
       content: this.element.value,
       cursorPosition: this.getCursorPosition(),
       selection: window.getSelection(),
       allowMultiline: this.config.allowMultiline,
-      metadata: {}
+      metadata: {
+        activePaneId
+      }
     };
   }
 

@@ -221,6 +221,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    **When to use which mode:**
    - **In-memory mode (default)**: Fast (100x), perfect for TDD and CI/CD
    - **Database mode**: Full integration validation before merging critical changes
+   - Some tests conditionally skip in in-memory mode (require full database persistence)
    - See [Testing Guide](docs/architecture/development/testing-guide.md) for details
 
 5. **Run Quality Checks & Create PR**

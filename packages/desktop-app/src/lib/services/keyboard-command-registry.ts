@@ -6,6 +6,7 @@
  */
 
 import type { TextareaController } from '$lib/design/components/textarea-controller';
+import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
 
 /**
  * Context provided to keyboard commands during execution
@@ -23,6 +24,9 @@ export interface KeyboardContext {
 
   /** Current node type */
   nodeType: string;
+
+  /** Pane ID this node belongs to (for multi-pane support) */
+  paneId: string;
 
   /** Current text content */
   content: string;
@@ -149,6 +153,14 @@ export class KeyboardCommandRegistry {
     // Build the full context
     const context = this.buildContext(event, controller, additionalContext);
 
+    // MULTI-PANE COORDINATION: Only execute if this pane is active
+    // This prevents keyboard shortcuts from affecting inactive panes
+    if (context.paneId && context.metadata.activePaneId) {
+      if (context.paneId !== context.metadata.activePaneId) {
+        return false; // Not the active pane, ignore the command
+      }
+    }
+
     // Check if command can execute in current context
     if (!command.canExecute(context)) {
       return false;
@@ -232,6 +244,7 @@ export class KeyboardCommandRegistry {
       controller,
       nodeId: additionalContext.nodeId || '',
       nodeType: additionalContext.nodeType || 'text',
+      paneId: additionalContext.paneId || DEFAULT_PANE_ID,
       content: additionalContext.content || '',
       cursorPosition: additionalContext.cursorPosition || 0,
       selection,

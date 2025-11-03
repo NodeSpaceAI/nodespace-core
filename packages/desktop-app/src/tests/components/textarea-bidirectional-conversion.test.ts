@@ -61,7 +61,7 @@ describe('TextareaController - Bidirectional Conversion', () => {
   describe('Forward Conversion: Text → Header', () => {
     it('should convert to header when typing "## "', async () => {
       // Start with text node
-      controller = new TextareaController(element, 'test-node', 'text', mockEvents);
+      controller = new TextareaController(element, 'test-node', 'text', 'default', mockEvents);
       controller.initialize('', true);
 
       // Type "## "
@@ -78,7 +78,7 @@ describe('TextareaController - Bidirectional Conversion', () => {
     });
 
     it('should update internal nodeType after forward conversion', async () => {
-      controller = new TextareaController(element, 'test-node', 'text', mockEvents);
+      controller = new TextareaController(element, 'test-node', 'text', 'default', mockEvents);
       controller.initialize('', true);
 
       // Type "## "
@@ -106,7 +106,7 @@ describe('TextareaController - Bidirectional Conversion', () => {
   describe('Reverse Conversion: Header → Text', () => {
     it('should convert back to text when removing space from "## "', async () => {
       // Start with header node
-      controller = new TextareaController(element, 'test-node', 'header', mockEvents);
+      controller = new TextareaController(element, 'test-node', 'header', 'default', mockEvents);
       controller.initialize('## Title', true);
 
       // Remove space: "##Title"
@@ -122,7 +122,7 @@ describe('TextareaController - Bidirectional Conversion', () => {
     });
 
     it('should convert back to text when removing all hashtags', async () => {
-      controller = new TextareaController(element, 'test-node', 'header', mockEvents);
+      controller = new TextareaController(element, 'test-node', 'header', 'default', mockEvents);
       controller.initialize('## Title', true);
 
       // Remove all hashtags: "Title"
@@ -137,7 +137,7 @@ describe('TextareaController - Bidirectional Conversion', () => {
     });
 
     it('should update internal nodeType after reverse conversion', async () => {
-      controller = new TextareaController(element, 'test-node', 'header', mockEvents);
+      controller = new TextareaController(element, 'test-node', 'header', 'default', mockEvents);
       controller.initialize('## Title', true);
 
       // Remove space
@@ -163,7 +163,7 @@ describe('TextareaController - Bidirectional Conversion', () => {
 
   describe('Multiple Conversions During Edit', () => {
     it('should handle text → header → text → header sequence', async () => {
-      controller = new TextareaController(element, 'test-node', 'text', mockEvents);
+      controller = new TextareaController(element, 'test-node', 'text', 'default', mockEvents);
       controller.initialize('', true);
 
       // 1. Text → Header: Type "## "
@@ -191,7 +191,7 @@ describe('TextareaController - Bidirectional Conversion', () => {
     });
 
     it('should handle header level changes during edit', async () => {
-      controller = new TextareaController(element, 'test-node', 'text', mockEvents);
+      controller = new TextareaController(element, 'test-node', 'text', 'default', mockEvents);
       controller.initialize('', true);
 
       // Start with h2
@@ -217,7 +217,7 @@ describe('TextareaController - Bidirectional Conversion', () => {
 
   describe('Edge Cases During Edit', () => {
     it('should not convert text node when typing hashtags without space', async () => {
-      controller = new TextareaController(element, 'test-node', 'text', mockEvents);
+      controller = new TextareaController(element, 'test-node', 'text', 'default', mockEvents);
       controller.initialize('', true);
 
       // Type "##" (no space)
@@ -230,7 +230,7 @@ describe('TextareaController - Bidirectional Conversion', () => {
     });
 
     it('should not trigger conversion when already correct type', async () => {
-      controller = new TextareaController(element, 'test-node', 'header', mockEvents);
+      controller = new TextareaController(element, 'test-node', 'header', 'default', mockEvents);
       controller.initialize('## Title', true);
 
       // Type more content but keep pattern valid

@@ -217,6 +217,7 @@ describe('NavigateDownCommand', () => {
       cursorPosition: 0,
       selection: null,
       allowMultiline: options.allowMultiline ?? false,
+      paneId: 'default',
       metadata: {}
     };
   }
