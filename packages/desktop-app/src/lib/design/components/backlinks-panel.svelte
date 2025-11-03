@@ -55,7 +55,7 @@
 <div class="backlinks-panel-container">
   <Collapsible.Root bind:open={isOpen}>
     <!-- Trigger stays at bottom -->
-    <Collapsible.Trigger class="backlinks-trigger">
+    <Collapsible.Trigger aria-label="Toggle backlinks panel" aria-expanded={isOpen}>
       <div class="flex items-center justify-between">
         <span class="text-sm text-muted-foreground">
           Mentioned by: ({loading ? '...' : backlinks.length}
@@ -67,6 +67,7 @@
           fill="none"
           class="h-4 w-4 text-muted-foreground transition-transform duration-200"
           class:rotate-180={isOpen}
+          aria-hidden="true"
         >
           <path
             d="M4 10l4-4 4 4"
@@ -87,12 +88,12 @@
         {:else if error}
           <div class="px-4 py-3 text-sm text-destructive">{error}</div>
         {:else if backlinks.length > 0}
-          <ul class="flex flex-col">
+          <ul class="flex flex-col gap-1">
             {#each backlinks as backlink}
               <li>
                 <a
                   href="nodespace://{backlink.id}"
-                  class="flex items-center gap-2 px-4 py-2 text-sm no-underline hover:bg-muted/50 transition-colors"
+                  class="flex items-center gap-2 px-4 py-2 text-sm no-underline hover:bg-muted/50 transition-colors rounded"
                 >
                   <Icon name={getNodeIcon(backlink.nodeType)} size={16} />
                   <span class="flex-1 truncate">
@@ -113,20 +114,22 @@
     position: sticky;
     bottom: 0;
     background: hsl(var(--background));
-    z-index: 10;
+    z-index: var(--z-sticky);
     display: flex;
     flex-direction: column-reverse; /* Reverse: trigger renders at bottom, content above */
     margin-top: auto;
-    /* Remove any inherited padding to make border extend full width */
-    /* Use width calc instead of negative margins for better Safari compatibility */
-    width: calc(100% + 3rem);
-    margin-left: -1.5rem;
-    margin-bottom: -1rem;
+
+    /* Break out of parent padding to achieve full-width border */
+    /* This approach is intentional: keeps component within scroll container for sticky positioning */
+    /* while allowing border to extend edge-to-edge. Coupled to padding variables for maintainability. */
+    width: calc(100% + (var(--viewer-padding-horizontal) * 2));
+    margin-left: calc(-1 * var(--viewer-padding-horizontal));
+    margin-bottom: calc(-1 * var(--viewer-padding-bottom));
   }
 
   .backlinks-panel-container :global([data-collapsible-trigger]) {
     width: 100%;
-    padding: 0.75rem 1.5rem;
+    padding: 0.75rem var(--viewer-padding-horizontal);
     border-top: 1px solid hsl(var(--border));
     background: hsl(var(--background));
     cursor: pointer;
@@ -138,7 +141,7 @@
   }
 
   .backlinks-content {
-    height: 240px; /* Same as navigation sidebar width (240px) */
+    height: var(--backlinks-panel-height);
     overflow-y: auto;
     background: hsl(var(--background));
   }

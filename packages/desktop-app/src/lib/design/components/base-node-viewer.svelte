@@ -1652,8 +1652,10 @@
     overflow-y: auto;
     overflow-x: hidden;
     min-height: 0; /* Critical for flex scrolling */
-    padding: 1.5rem;
-    padding-bottom: 1rem; /* Reduced padding - backlinks panel is now sticky within this container */
+    padding: var(--viewer-padding-vertical) var(--viewer-padding-horizontal);
+    padding-bottom: var(
+      --viewer-padding-bottom
+    ); /* Reduced padding - backlinks panel is now sticky within this container */
     display: flex;
     flex-direction: column;
     gap: 0; /* 0px gap - all spacing from node padding for 8px total */

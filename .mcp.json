@@ -11,9 +11,9 @@
     },
     "puppeteer": {
       "type": "stdio",
-      "command": "npx",
+      "command": "bunx",
       "args": [
-        "-y",
+        "--bun",
         "@modelcontextprotocol/server-puppeteer"
       ],
       "env": {}
