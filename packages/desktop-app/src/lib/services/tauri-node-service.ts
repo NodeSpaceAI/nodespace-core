@@ -147,12 +147,14 @@ export class TauriNodeService {
    * Note: Backend automatically updates modified_at - do NOT include in update.
    *
    * @param id - ID of the node to update
+   * @param version - Expected version for optimistic concurrency control
    * @param update - Fields to update (partial)
    * @throws NodeOperationError if node doesn't exist or update fails
+   * @throws Version conflict error if version doesn't match current version
    */
-  async updateNode(id: string, update: NodeUpdate): Promise<void> {
+  async updateNode(id: string, version: number, update: NodeUpdate): Promise<void> {
     this.ensureInitialized();
-    await this.adapter.updateNode(id, update);
+    await this.adapter.updateNode(id, version, update);
   }
 
   /**
@@ -161,11 +163,13 @@ export class TauriNodeService {
    * Warning: This is destructive and cannot be undone.
    *
    * @param id - ID of the node to delete
+   * @param version - Expected version for optimistic concurrency control
    * @throws NodeOperationError if node doesn't exist or deletion fails
+   * @throws Version conflict error if version doesn't match current version
    */
-  async deleteNode(id: string): Promise<void> {
+  async deleteNode(id: string, version: number): Promise<void> {
     this.ensureInitialized();
-    await this.adapter.deleteNode(id);
+    await this.adapter.deleteNode(id, version);
   }
 
   /**

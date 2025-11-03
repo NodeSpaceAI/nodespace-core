@@ -241,6 +241,7 @@ async fn create_node(
         embedding_vector: node.embedding_vector,
         mentions: Vec::new(),
         mentioned_by: Vec::new(),
+        version: 1, // New nodes always start at version 1
     };
 
     // Use shared NodeService (Issue #255 - proper fix with connection draining)

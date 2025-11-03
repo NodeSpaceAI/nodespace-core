@@ -144,7 +144,7 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Update node2 to point to newNode instead of node1
-      await backend.updateNode(node2Id, {
+      await backend.updateNode(node2Id, 1, {
         beforeSiblingId: newNodeId
       });
 
@@ -232,7 +232,7 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Update node2 to point to newNode
-      await backend.updateNode(node2Id, {
+      await backend.updateNode(node2Id, 1, {
         beforeSiblingId: newNodeId
       });
 
@@ -288,7 +288,7 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
       const newChildId = await backend.createNode(newChildData);
 
       // Update child1 to point to newChild
-      await backend.updateNode(child1Id, {
+      await backend.updateNode(child1Id, 1, {
         beforeSiblingId: newChildId
       });
 
@@ -346,7 +346,7 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
       const node0Id = await backend.createNode(node0Data);
 
       // Update node1 to point to node0
-      await backend.updateNode(node1Id, {
+      await backend.updateNode(node1Id, 1, {
         beforeSiblingId: node0Id
       });
 
@@ -381,7 +381,7 @@ describe.sequential('Section 6: Node Ordering Tests', () => {
       const newNodeId = await backend.createNode(newNodeData);
 
       // Update header to point to new node
-      await backend.updateNode(headerId, {
+      await backend.updateNode(headerId, 1, {
         beforeSiblingId: newNodeId
       });
 

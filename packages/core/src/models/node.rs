@@ -42,6 +42,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+/// Default version value for serde deserialization (version 1)
+fn default_version() -> i64 {
+    1
+}
+
 /// Validation errors for Node operations
 #[derive(Error, Debug)]
 pub enum ValidationError {
@@ -135,6 +140,11 @@ pub struct Node {
     /// Sibling ordering reference (single-pointer linked list)
     pub before_sibling_id: Option<String>,
 
+    /// Optimistic concurrency control version (incremented on each update)
+    /// Used to detect conflicting concurrent writes from MCP clients and Frontend UI
+    #[serde(default = "default_version")]
+    pub version: i64,
+
     /// Creation timestamp
     pub created_at: DateTime<Utc>,
 
@@ -225,6 +235,7 @@ impl Node {
             parent_id,
             container_node_id,
             before_sibling_id: None,
+            version: 1,
             created_at: now,
             modified_at: now,
             properties,
@@ -281,6 +292,7 @@ impl Node {
             parent_id,
             container_node_id,
             before_sibling_id: None,
+            version: 1,
             created_at: now,
             modified_at: now,
             properties,
@@ -335,6 +347,7 @@ impl Node {
             parent_id,
             container_node_id,
             before_sibling_id: None,
+            version: 1,
             created_at: now,
             modified_at: now,
             properties,

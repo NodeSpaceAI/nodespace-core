@@ -5,12 +5,43 @@
 
 use crate::mcp::types::MCPError;
 use crate::models::{NodeFilter, OrderBy};
-use crate::operations::{CreateNodeParams, NodeOperations};
+use crate::operations::{CreateNodeParams, NodeOperationError, NodeOperations};
 use chrono::NaiveDate;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Convert NodeOperationError to MCPError with proper formatting
+///
+/// Special handling for VersionConflict errors: includes current node state
+/// in the error response for client-side merge.
+fn operation_error_to_mcp(error: NodeOperationError) -> MCPError {
+    match error {
+        NodeOperationError::VersionConflict {
+            node_id,
+            expected_version,
+            actual_version,
+            current_node,
+        } => {
+            // current_node is already available in the error as Box<Node>
+            let current_node_value = serde_json::to_value(&*current_node).ok();
+            MCPError::version_conflict(
+                node_id,
+                expected_version,
+                actual_version,
+                current_node_value,
+            )
+        }
+        NodeOperationError::NodeNotFound { node_id } => MCPError::node_not_found(&node_id),
+        NodeOperationError::InvalidOperation { reason } => MCPError::validation_error(reason),
+        NodeOperationError::DatabaseError(source) => {
+            MCPError::internal_error(format!("Database error: {}", source))
+        }
+        // Handle any other error variants
+        _ => MCPError::internal_error(format!("Operation error: {}", error)),
+    }
+}
 
 /// Parameters for create_node method from MCP clients
 ///
@@ -40,6 +71,10 @@ pub struct GetNodeParams {
 #[derive(Debug, Deserialize)]
 pub struct UpdateNodeParams {
     pub node_id: String,
+    /// Expected version for optimistic concurrency control (REQUIRED)
+    /// This prevents race conditions and silent data loss from concurrent updates.
+    /// Always fetch the node first to get its current version before updating.
+    pub version: i64,
     #[serde(default)]
     pub node_type: Option<String>,
     #[serde(default)]
@@ -52,6 +87,10 @@ pub struct UpdateNodeParams {
 #[derive(Debug, Deserialize)]
 pub struct DeleteNodeParams {
     pub node_id: String,
+    /// Expected version for optimistic concurrency control (REQUIRED)
+    /// This prevents race conditions and accidental deletion of modified nodes.
+    /// Always fetch the node first to get its current version before deleting.
+    pub version: i64,
 }
 
 /// Parameters for query_nodes method
@@ -92,6 +131,8 @@ pub struct InsertChildAtIndexParams {
 #[derive(Debug, Deserialize)]
 pub struct MoveChildToIndexParams {
     pub node_id: String,
+    /// Expected version for optimistic concurrency control
+    pub version: i64,
     pub index: usize,
 }
 
@@ -226,18 +267,22 @@ pub async fn handle_update_node(
     // - embedding_vector: Embeddings are auto-generated from content via background jobs
     //
     // Use MCP only for content/property updates. Use separate operations for structural changes.
-    operations
+
+    // Version is now mandatory - no auto-fetch to prevent TOCTOU race conditions
+    let updated_node = operations
         .update_node(
             &params.node_id,
+            params.version,
             params.content,
             params.node_type,
             params.properties,
         )
         .await
-        .map_err(|e| MCPError::node_update_failed(format!("Failed to update node: {}", e)))?;
+        .map_err(operation_error_to_mcp)?;
 
     Ok(json!({
         "node_id": params.node_id,
+        "version": updated_node.version,
         "success": true
     }))
 }
@@ -251,10 +296,11 @@ pub async fn handle_delete_node(
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
     // Delete node via NodeOperations
+    // Version is now mandatory - no auto-fetch to prevent TOCTOU race conditions
     let result = operations
-        .delete_node(&params.node_id)
+        .delete_node(&params.node_id, params.version)
         .await
-        .map_err(|e| MCPError::node_delete_failed(format!("Failed to delete node: {}", e)))?;
+        .map_err(operation_error_to_mcp)?;
 
     Ok(json!({
         "node_id": params.node_id,
@@ -585,13 +631,19 @@ pub async fn handle_insert_child_at_index(
         // Update it to point to the new node
         let node_to_update_id = &children_info[params.index].node_id;
 
+        // Get current version for the node being reordered (side effect of insertion)
+        // Note: This is not passed by client since client doesn't control this sibling
+        let node_to_update = operations
+            .get_node(node_to_update_id)
+            .await
+            .map_err(|e| MCPError::node_not_found(&format!("Node not found: {}", e)))?
+            .ok_or_else(|| MCPError::node_not_found(node_to_update_id))?;
+
         // Use reorder_node to update the old node's before_sibling_id to point to new node
         operations
-            .reorder_node(node_to_update_id, Some(&node_id))
+            .reorder_node(node_to_update_id, node_to_update.version, Some(&node_id))
             .await
-            .map_err(|e| {
-                MCPError::node_update_failed(format!("Failed to fix sibling chain: {}", e))
-            })?;
+            .map_err(operation_error_to_mcp)?;
     }
 
     Ok(json!({
@@ -645,9 +697,13 @@ pub async fn handle_move_child_to_index(
 
     // 4. Use reorder_node operation (which now handles sibling chain integrity)
     operations
-        .reorder_node(&params.node_id, before_sibling_id.as_deref())
+        .reorder_node(
+            &params.node_id,
+            params.version,
+            before_sibling_id.as_deref(),
+        )
         .await
-        .map_err(|e| MCPError::node_update_failed(format!("Failed to reorder node: {}", e)))?;
+        .map_err(operation_error_to_mcp)?;
 
     Ok(json!({
         "node_id": params.node_id,
@@ -807,6 +863,10 @@ pub async fn handle_get_nodes_batch(
 pub struct BatchUpdateItem {
     /// Node ID to update
     pub id: String,
+    /// Expected version for optimistic concurrency control
+    /// If not provided, will fetch current version (optimistic: assumes no conflict)
+    #[serde(default)]
+    pub version: Option<i64>,
     /// Optional updated content
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
@@ -874,10 +934,41 @@ pub async fn handle_update_nodes_batch(
     let mut failed: Vec<BatchUpdateFailure> = Vec::new();
 
     for update in params.updates {
+        // If version not provided, fetch current version (optimistic: assumes no concurrent updates)
+        // ⚠️ WARNING: This bypasses optimistic concurrency control!
+        let version = match update.version {
+            Some(v) => v,
+            None => {
+                tracing::warn!(
+                    "OCC bypassed: version parameter not provided for batch update (race condition possible)"
+                );
+                match operations.get_node(&update.id).await {
+                    Ok(Some(node)) => node.version,
+                    Ok(None) => {
+                        failed.push(BatchUpdateFailure {
+                            id: update.id.clone(),
+                            error: format!("Node '{}' does not exist", update.id),
+                        });
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to fetch node {} for version: {}", update.id, e);
+                        let mcp_error = operation_error_to_mcp(e);
+                        failed.push(BatchUpdateFailure {
+                            id: update.id,
+                            error: mcp_error.message,
+                        });
+                        continue;
+                    }
+                }
+            }
+        };
+
         // Apply update via NodeOperations (enforces all business rules)
         match operations
             .update_node(
                 &update.id,
+                version,
                 update.content,
                 update.node_type,
                 update.properties,
@@ -889,9 +980,10 @@ pub async fn handle_update_nodes_batch(
             }
             Err(e) => {
                 tracing::warn!("Failed to update node {}: {}", update.id, e);
+                let mcp_error = operation_error_to_mcp(e);
                 failed.push(BatchUpdateFailure {
                     id: update.id,
-                    error: e.to_string(),
+                    error: mcp_error.message,
                 });
             }
         }

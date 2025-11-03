@@ -303,13 +303,21 @@ pub async fn get_node(
 pub async fn update_node(
     operations: State<'_, NodeOperations>,
     id: String,
+    version: i64,
     update: NodeUpdate,
 ) -> Result<(), CommandError> {
     // NodeOperations.update_node only handles content/type/properties
     // For hierarchy changes, use move_node() or reorder_node()
     operations
-        .update_node(&id, update.content, update.node_type, update.properties)
+        .update_node(
+            &id,
+            version,
+            update.content,
+            update.node_type,
+            update.properties,
+        )
         .await
+        .map(|_| ()) // Discard the returned Node, command just needs Ok(())
         .map_err(Into::into)
 }
 
@@ -344,8 +352,12 @@ pub async fn update_node(
 pub async fn delete_node(
     operations: State<'_, NodeOperations>,
     id: String,
+    version: i64,
 ) -> Result<nodespace_core::models::DeleteResult, CommandError> {
-    operations.delete_node(&id).await.map_err(Into::into)
+    operations
+        .delete_node(&id, version)
+        .await
+        .map_err(Into::into)
 }
 
 /// Move a node to a new parent
@@ -377,10 +389,11 @@ pub async fn delete_node(
 pub async fn move_node(
     operations: State<'_, NodeOperations>,
     node_id: String,
+    version: i64,
     new_parent_id: Option<String>,
 ) -> Result<(), CommandError> {
     operations
-        .move_node(&node_id, new_parent_id.as_deref())
+        .move_node(&node_id, version, new_parent_id.as_deref())
         .await
         .map_err(Into::into)
 }
@@ -413,10 +426,11 @@ pub async fn move_node(
 pub async fn reorder_node(
     operations: State<'_, NodeOperations>,
     node_id: String,
+    version: i64,
     before_sibling_id: Option<String>,
 ) -> Result<(), CommandError> {
     operations
-        .reorder_node(&node_id, before_sibling_id.as_deref())
+        .reorder_node(&node_id, version, before_sibling_id.as_deref())
         .await
         .map_err(Into::into)
 }

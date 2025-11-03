@@ -168,7 +168,7 @@ describe.sequential('Section 11: Integration Scenarios', () => {
       }
 
       // Step 3: Update content of topic1 (should mark as stale)
-      await backend.updateNode(topic1Id, {
+      await backend.updateNode(topic1Id, 1, {
         content: 'Introduction to Machine Learning and AI'
       });
 
@@ -265,11 +265,11 @@ describe.sequential('Section 11: Integration Scenarios', () => {
       }
 
       // Step 3: Update content multiple times (simulate editing)
-      await backend.updateNode(topicId, {
+      await backend.updateNode(topicId, 1, {
         content: 'TypeScript Best Practices - Updated'
       });
 
-      await backend.updateNode(topicId, {
+      await backend.updateNode(topicId, 2, {
         content: 'TypeScript Best Practices - Final Version'
       });
 

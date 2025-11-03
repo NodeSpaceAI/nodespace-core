@@ -76,3 +76,61 @@ export class NodeOperationError extends Error {
     this.name = 'NodeOperationError';
   }
 }
+
+/**
+ * MCP Version Conflict Error Data
+ * Matches the error data structure from Rust MCP layer (packages/core/src/mcp/types.rs)
+ */
+export interface VersionConflictData {
+  /** Error type identifier */
+  type: 'VersionConflict';
+
+  /** Node ID that had the conflict */
+  node_id: string;
+
+  /** Version the client expected */
+  expected_version: number;
+
+  /** Actual current version in database */
+  actual_version: number;
+
+  /** Full current node state from database for client-side merge */
+  current_node: import('./node').Node;
+}
+
+/**
+ * MCP Error Response Format
+ * Matches JSON-RPC 2.0 error format with custom version conflict code
+ */
+export interface MCPError {
+  /** JSON-RPC error code (-32005 for version conflicts) */
+  code: number;
+
+  /** Human-readable error message */
+  message: string;
+
+  /** Optional structured error data (contains VersionConflictData for conflicts) */
+  data?: VersionConflictData | unknown;
+}
+
+/**
+ * Version conflict error code constant
+ */
+export const VERSION_CONFLICT_CODE = -32005;
+
+/**
+ * Type guard to check if an MCP error is a version conflict
+ */
+export function isVersionConflict(
+  error: unknown
+): error is MCPError & { data: VersionConflictData } {
+  if (typeof error !== 'object' || error === null) return false;
+
+  const err = error as Record<string, unknown>;
+  return (
+    err.code === VERSION_CONFLICT_CODE &&
+    typeof err.data === 'object' &&
+    err.data !== null &&
+    (err.data as Record<string, unknown>).type === 'VersionConflict'
+  );
+}

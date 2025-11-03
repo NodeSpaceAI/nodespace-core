@@ -59,6 +59,7 @@ describe('NodeType Conflict Detection', () => {
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: {},
         mentions: []
       };
@@ -98,6 +99,7 @@ describe('NodeType Conflict Detection', () => {
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: { headerLevel: 2 },
         mentions: []
       };
@@ -135,6 +137,7 @@ describe('NodeType Conflict Detection', () => {
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: {},
         mentions: []
       };
@@ -176,6 +179,7 @@ describe('NodeType Conflict Detection', () => {
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: {},
         mentions: []
       };
@@ -206,6 +210,7 @@ describe('NodeType Conflict Detection', () => {
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: { customProp: 'value1' },
         mentions: []
       };
@@ -246,6 +251,7 @@ describe('NodeType Conflict Detection', () => {
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: {},
         mentions: []
       };
@@ -284,6 +290,7 @@ describe('NodeType Conflict Detection', () => {
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: {},
         mentions: []
       };
@@ -327,6 +334,7 @@ describe('NodeType Conflict Detection', () => {
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: {},
         mentions: []
       };
@@ -363,6 +371,7 @@ describe('NodeType Conflict Detection', () => {
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: {},
         mentions: []
       }));

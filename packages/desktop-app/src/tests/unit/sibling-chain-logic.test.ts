@@ -164,6 +164,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -200,6 +201,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -212,6 +214,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -224,6 +227,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: 'node-2',
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -259,6 +263,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -271,6 +276,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -283,6 +289,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: 'node-2',
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -319,6 +326,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -331,6 +339,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -343,6 +352,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: 'child-1',
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -377,6 +387,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -389,6 +400,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -401,6 +413,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: 'node-2',
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -432,6 +445,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -444,6 +458,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 
@@ -456,6 +471,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
       beforeSiblingId: 'node-2',
       properties: {},
       embeddingVector: null,
+      version: 1,
       mentions: []
     });
 

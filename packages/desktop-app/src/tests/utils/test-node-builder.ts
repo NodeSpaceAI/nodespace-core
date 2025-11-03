@@ -28,6 +28,7 @@ export class TestNodeBuilder {
     parentId: null,
     containerNodeId: null,
     beforeSiblingId: null,
+    version: 1,
     properties: {},
     embeddingVector: null,
     mentions: []
@@ -127,6 +128,14 @@ export class TestNodeBuilder {
   }
 
   /**
+   * Set version
+   */
+  withVersion(version: number): this {
+    this.node.version = version;
+    return this;
+  }
+
+  /**
    * Build a text node with defaults
    */
   static text(content: string): TestNodeBuilder {
@@ -187,6 +196,7 @@ export class TestNodeBuilder {
       parentId: this.node.parentId ?? null,
       containerNodeId: this.node.containerNodeId ?? null,
       beforeSiblingId: this.node.beforeSiblingId ?? null,
+      version: this.node.version ?? 1,
       properties: this.node.properties ?? {},
       embeddingVector: this.node.embeddingVector ?? null,
       mentions: this.node.mentions ?? []

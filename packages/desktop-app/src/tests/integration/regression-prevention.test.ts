@@ -123,7 +123,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
         }
 
         // Update container2 to come after container1
-        await backend.updateNode(container2Id, {
+        await backend.updateNode(container2Id, 1, {
           beforeSiblingId: container1Id
         });
 
@@ -145,7 +145,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
         }
 
         // Update container3 to come after container2
-        await backend.updateNode(container3Id, {
+        await backend.updateNode(container3Id, 1, {
           beforeSiblingId: container2Id
         });
 
@@ -301,7 +301,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
         }
 
         // Delete the mentioned node
-        await backend.deleteNode(mentionedNodeId);
+        await backend.deleteNode(mentionedNodeId, 1);
 
         await waitForDatabaseWrites();
         if (shouldUseDatabase()) {
@@ -361,7 +361,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
         }
 
         // Delete the mentioning node
-        await backend.deleteNode(mentioningNodeId);
+        await backend.deleteNode(mentioningNodeId, 1);
 
         await waitForDatabaseWrites();
         if (shouldUseDatabase()) {
@@ -520,7 +520,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
         }
 
         // Update content (should mark as stale)
-        await backend.updateNode(topicId, {
+        await backend.updateNode(topicId, 1, {
           content: 'Modified Content'
         });
 
@@ -571,7 +571,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
         }
 
         // Edit content
-        await backend.updateNode(topicId, {
+        await backend.updateNode(topicId, 1, {
           content: 'Edited Topic Content'
         });
 
@@ -625,7 +625,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
         }
 
         // Edit content multiple times (simulate editing session)
-        await backend.updateNode(topicId, {
+        await backend.updateNode(topicId, 1, {
           content: 'First Edit'
         });
 
@@ -634,7 +634,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
           expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
         }
 
-        await backend.updateNode(topicId, {
+        await backend.updateNode(topicId, 2, {
           content: 'Second Edit'
         });
 
@@ -643,7 +643,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
           expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
         }
 
-        await backend.updateNode(topicId, {
+        await backend.updateNode(topicId, 3, {
           content: 'Final Edit'
         });
 

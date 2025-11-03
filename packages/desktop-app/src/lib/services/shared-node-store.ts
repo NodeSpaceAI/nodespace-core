@@ -441,8 +441,12 @@ export class SharedNodeStore {
                   // Convert nullable fields properly (undefined = don't update, null = set to null)
                   const updatePayload = { ...changes };
 
+                  // Get current node version for optimistic concurrency control
+                  const currentNode = this.nodes.get(nodeId);
+                  const currentVersion = currentNode?.version ?? 1;
+
                   try {
-                    await tauriNodeService.updateNode(nodeId, updatePayload);
+                    await tauriNodeService.updateNode(nodeId, currentVersion, updatePayload);
                   } catch (updateError) {
                     // If UPDATE fails because node doesn't exist, try CREATE instead
                     // This handles cases where persistedNodeIds is out of sync (page reload, database reset)
@@ -621,7 +625,9 @@ export class SharedNodeStore {
               const isPersistedToDatabase = this.persistedNodeIds.has(node.id);
               if (isPersistedToDatabase) {
                 try {
-                  await tauriNodeService.updateNode(node.id, nodeToPersist);
+                  // Get current version for optimistic concurrency control
+                  const currentVersion = node.version ?? 1;
+                  await tauriNodeService.updateNode(node.id, currentVersion, nodeToPersist);
                 } catch (updateError) {
                   // If UPDATE fails because node doesn't exist, try CREATE instead
                   if (
@@ -725,7 +731,10 @@ export class SharedNodeStore {
           nodeId,
           async () => {
             try {
-              await tauriNodeService.deleteNode(nodeId);
+              // Get current version for optimistic concurrency control
+              // Note: node has already been removed from this.nodes, so we use the captured node variable
+              const currentVersion = node.version ?? 1;
+              await tauriNodeService.deleteNode(nodeId, currentVersion);
             } catch (dbError) {
               const error = dbError instanceof Error ? dbError : new Error(String(dbError));
 
@@ -1758,7 +1767,9 @@ export class SharedNodeStore {
           //
           // STRATEGY: Try UPDATE first if we know node is persisted, otherwise CREATE
           if (isPersistedToDatabase) {
-            await tauriNodeService.updateNode(nodeId, changes);
+            // Get current version for optimistic concurrency control
+            const currentVersion = finalNode.version ?? 1;
+            await tauriNodeService.updateNode(nodeId, currentVersion, changes);
           } else {
             // Try CREATE, but handle race condition where old path persisted first
             try {
@@ -1776,7 +1787,8 @@ export class SharedNodeStore {
               ) {
                 // Race detected: Old debounced path persisted before batch started
                 // Update with batched changes to fix inconsistent state
-                await tauriNodeService.updateNode(nodeId, changes);
+                const currentVersion = finalNode.version ?? 1;
+                await tauriNodeService.updateNode(nodeId, currentVersion, changes);
                 this.persistedNodeIds.add(nodeId);
               } else {
                 throw createError;

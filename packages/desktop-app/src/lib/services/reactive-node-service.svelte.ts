@@ -426,6 +426,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       beforeSiblingId: beforeSiblingId,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
+      version: 1,
       properties: {},
       mentions: []
     };

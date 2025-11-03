@@ -132,6 +132,10 @@ pub struct MCPError {
 
     /// Human-readable error message
     pub message: String,
+
+    /// Additional error data (optional, for version conflicts and other detailed errors)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 // JSON-RPC 2.0 standard error codes
@@ -147,6 +151,7 @@ pub const NODE_CREATION_FAILED: i32 = -32001;
 pub const NODE_UPDATE_FAILED: i32 = -32002;
 pub const NODE_DELETE_FAILED: i32 = -32003;
 pub const VALIDATION_ERROR: i32 = -32004;
+pub const VERSION_CONFLICT: i32 = -32005;
 
 impl MCPError {
     /// Create a parse error
@@ -154,6 +159,7 @@ impl MCPError {
         Self {
             code: PARSE_ERROR,
             message,
+            data: None,
         }
     }
 
@@ -162,6 +168,7 @@ impl MCPError {
         Self {
             code: INVALID_REQUEST,
             message,
+            data: None,
         }
     }
 
@@ -170,6 +177,7 @@ impl MCPError {
         Self {
             code: METHOD_NOT_FOUND,
             message: format!("Method not found: {}", method),
+            data: None,
         }
     }
 
@@ -178,6 +186,7 @@ impl MCPError {
         Self {
             code: INVALID_PARAMS,
             message,
+            data: None,
         }
     }
 
@@ -186,6 +195,7 @@ impl MCPError {
         Self {
             code: INTERNAL_ERROR,
             message,
+            data: None,
         }
     }
 
@@ -194,6 +204,7 @@ impl MCPError {
         Self {
             code: NODE_NOT_FOUND,
             message: format!("Node not found: {}", node_id),
+            data: None,
         }
     }
 
@@ -202,6 +213,7 @@ impl MCPError {
         Self {
             code: NODE_CREATION_FAILED,
             message,
+            data: None,
         }
     }
 
@@ -210,6 +222,7 @@ impl MCPError {
         Self {
             code: NODE_UPDATE_FAILED,
             message,
+            data: None,
         }
     }
 
@@ -218,6 +231,7 @@ impl MCPError {
         Self {
             code: NODE_DELETE_FAILED,
             message,
+            data: None,
         }
     }
 
@@ -226,6 +240,55 @@ impl MCPError {
         Self {
             code: VALIDATION_ERROR,
             message,
+            data: None,
+        }
+    }
+
+    /// Create a version conflict error with current node state for client-side merge
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - ID of the node with version conflict
+    /// * `expected_version` - Version the client expected
+    /// * `actual_version` - Current version in the database
+    /// * `current_node` - Current node state for client-side merge (optional)
+    ///
+    /// # Example
+    ///
+    /// ```json
+    /// {
+    ///   "code": -32005,
+    ///   "message": "Version conflict: expected v5 but current is v7",
+    ///   "data": {
+    ///     "type": "VersionConflict",
+    ///     "node_id": "node-123",
+    ///     "expected_version": 5,
+    ///     "actual_version": 7,
+    ///     "current_node": { /* full node state */ }
+    ///   }
+    /// }
+    /// ```
+    pub fn version_conflict(
+        node_id: String,
+        expected_version: i64,
+        actual_version: i64,
+        current_node: Option<Value>,
+    ) -> Self {
+        use serde_json::json;
+
+        Self {
+            code: VERSION_CONFLICT,
+            message: format!(
+                "version conflict: expected v{} but current is v{}",
+                expected_version, actual_version
+            ),
+            data: Some(json!({
+                "type": "VersionConflict",
+                "node_id": node_id,
+                "expected_version": expected_version,
+                "actual_version": actual_version,
+                "current_node": current_node,
+            })),
         }
     }
 }

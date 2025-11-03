@@ -576,6 +576,7 @@ async fn create_container_node(
         embedding_vector: None,
         mentions: Vec::new(), // Will be populated when this node mentions others
         mentioned_by: Vec::new(), // Will be computed from node_mentions table
+        version: 1,           // New nodes always start at version 1
     };
 
     let node_service = {

@@ -71,6 +71,7 @@ export function createTestNode(
       beforeSiblingId: options.beforeSiblingId ?? null,
       createdAt: options.createdAt || now,
       modifiedAt: options.modifiedAt || now,
+      version: options.version ?? 1,
       properties: options.properties || {},
       // Always provide mentions as an array, never undefined
       mentions: options.mentions || [],
@@ -91,6 +92,7 @@ export function createTestNode(
     beforeSiblingId: null,
     createdAt: now,
     modifiedAt: now,
+    version: 1,
     properties: {},
     embeddingVector: undefined,
     ...additionalProps,

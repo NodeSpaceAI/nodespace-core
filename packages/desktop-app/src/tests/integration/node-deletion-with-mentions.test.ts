@@ -89,6 +89,7 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         mentions: ['target-node'],
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: {}
       };
 
@@ -102,6 +103,7 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         mentions: [],
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: {}
       };
 
@@ -180,6 +182,7 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         mentions: [],
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: {}
       };
 
@@ -193,6 +196,7 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         mentions: ['target'],
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: {}
       };
 
@@ -206,6 +210,7 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         mentions: ['target'],
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: {}
       };
 
@@ -251,6 +256,7 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         mentions: [],
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: 1,
         properties: {}
       };
 

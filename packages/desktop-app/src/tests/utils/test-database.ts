@@ -156,7 +156,7 @@ export async function initializeTestDatabase(
           }
 
           // Clean up sentinel
-          await adapter.deleteNode(sentinelId);
+          await adapter.deleteNode(sentinelId, 1);
 
           // Verify deletion succeeded
           const deletedCheck = await adapter.getNode(sentinelId);
@@ -183,7 +183,7 @@ export async function initializeTestDatabase(
           // This prevents database pollution from failed verification attempts
           if (sentinelId) {
             try {
-              await adapter.deleteNode(sentinelId);
+              await adapter.deleteNode(sentinelId, 1);
             } catch {
               // Ignore cleanup failures - node may not exist or database may be inaccessible
               // This is a best-effort cleanup
@@ -286,7 +286,7 @@ export async function cleanDatabase(backend: BackendAdapter): Promise<CleanDatab
 
     for (const node of rootNodes) {
       try {
-        await backend.deleteNode(node.id);
+        await backend.deleteNode(node.id, node.version);
         successCount++;
       } catch {
         // Ignore deletion errors - node might already be deleted by cascade

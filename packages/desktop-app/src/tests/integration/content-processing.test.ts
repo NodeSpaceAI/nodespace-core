@@ -189,7 +189,7 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
 
         // Update the topic content
         try {
-          await backend.updateNode(topicId, {
+          await backend.updateNode(topicId, 1, {
             content: 'Deep Learning and Neural Networks'
           });
 

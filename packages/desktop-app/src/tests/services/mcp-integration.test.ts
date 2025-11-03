@@ -30,6 +30,7 @@ describe('Phase 3: MCP Integration (Simulated)', () => {
     beforeSiblingId: null,
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
+    version: 1,
     properties: {},
     mentions: []
   };

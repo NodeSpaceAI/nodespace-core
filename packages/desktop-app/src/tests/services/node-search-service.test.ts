@@ -25,6 +25,7 @@ function createTestNode(overrides: Partial<Node>): Node {
     beforeSiblingId: null,
     createdAt: '2025-01-01T00:00:00Z',
     modifiedAt: '2025-01-01T00:00:00Z',
+    version: 1,
     properties: {},
     ...overrides
   };

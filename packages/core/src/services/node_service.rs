@@ -363,6 +363,7 @@ impl NodeService {
                         parent_id: None,
                         container_node_id: None,
                         before_sibling_id: None,
+                        version: 1,
                         properties: serde_json::Value::Object(serde_json::Map::new()),
                         mentions: vec![],
                         mentioned_by: vec![],
@@ -375,8 +376,8 @@ impl NodeService {
                     let conn = self.db.connect_with_timeout().await?;
                     let properties_json = "{}";
                     conn.execute(
-                        "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, version, properties, embedding_vector)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             date_node.id.as_str(),
                             date_node.node_type.as_str(),
@@ -384,6 +385,7 @@ impl NodeService {
                             date_node.parent_id.as_deref(),
                             date_node.container_node_id.as_deref(),
                             date_node.before_sibling_id.as_deref(),
+                            date_node.version,
                             properties_json,
                             date_node.embedding_vector.as_deref(),
                         ),
@@ -626,7 +628,7 @@ impl NodeService {
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id,
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version,
                         created_at, modified_at, properties, embedding_vector
                  FROM nodes WHERE id = ?",
             )
@@ -840,6 +842,208 @@ impl NodeService {
         Ok(())
     }
 
+    /// Update node with optimistic concurrency control (version check)
+    ///
+    /// This method performs an atomic update with version checking to prevent
+    /// race conditions when multiple clients modify the same node concurrently.
+    ///
+    /// The version check ensures that:
+    /// 1. The node hasn't been modified since the client last read it
+    /// 2. Updates are applied atomically with version increment
+    /// 3. Conflicts are detected via rows_affected = 0
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - Node ID to update
+    /// * `expected_version` - Version the client expects (from their last read)
+    /// * `update` - Fields to update
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(rows_affected)` - Number of rows updated (0 = version mismatch, 1 = success)
+    /// * `Err(NodeServiceError)` - Database or validation errors
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let rows = service.update_with_version_check(
+    ///     "node-123",
+    ///     5,  // Expected version
+    ///     NodeUpdate::new().with_content("New content".into())
+    /// ).await?;
+    ///
+    /// if rows == 0 {
+    ///     // Version conflict - node was modified by another client
+    ///     // Caller should fetch current state and handle conflict
+    /// }
+    /// ```
+    pub async fn update_with_version_check(
+        &self,
+        id: &str,
+        expected_version: i64,
+        update: NodeUpdate,
+    ) -> Result<usize, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "Update contains no changes",
+            ));
+        }
+
+        // Get existing node to validate update and build new state
+        let existing = self
+            .get_node(id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(id))?;
+
+        // Build updated node state
+        let mut updated = existing.clone();
+        let mut content_changed = false;
+
+        if let Some(node_type) = update.node_type {
+            updated.node_type = node_type;
+        }
+
+        if let Some(content) = update.content {
+            if updated.content != content {
+                content_changed = true;
+            }
+            updated.content = content;
+        }
+
+        if let Some(parent_id) = update.parent_id {
+            updated.parent_id = parent_id;
+        }
+
+        if let Some(ref container_node_id) = update.container_node_id {
+            // Convert ROOT_CONTAINER_ID to None (null in database) - same as CREATE operation
+            updated.container_node_id = match container_node_id {
+                Some(id) if id == ROOT_CONTAINER_ID => None,
+                other => other.clone(),
+            };
+        }
+
+        if let Some(before_sibling_id) = update.before_sibling_id {
+            updated.before_sibling_id = before_sibling_id;
+        }
+
+        if let Some(properties) = update.properties {
+            updated.properties = properties;
+        }
+
+        if let Some(embedding_vector) = update.embedding_vector {
+            updated.embedding_vector = embedding_vector;
+        }
+
+        // Validate updated node
+        self.behaviors.validate_node(&updated)?;
+
+        // Execute update with version check
+        let conn = self.db.connect_with_timeout().await?;
+        let properties_json = serde_json::to_string(&updated.properties)
+            .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
+
+        // Determine if this node is a container (container_node_id IS NULL)
+        let is_container = updated.container_node_id.is_none();
+
+        // Build UPDATE query with version check and atomic version increment
+        // Returns 0 rows if version mismatch, 1 row if successful
+        let rows_affected = if content_changed && is_container {
+            conn.execute(
+                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ?, embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP, version = version + 1 WHERE id = ? AND version = ?",
+                (
+                    updated.node_type.as_str(),
+                    updated.content.as_str(),
+                    updated.parent_id.as_deref(),
+                    updated.container_node_id.as_deref(),
+                    updated.before_sibling_id.as_deref(),
+                    properties_json.as_str(),
+                    updated.embedding_vector.as_deref(),
+                    id,
+                    expected_version,
+                ),
+            )
+            .await
+            .map_err(|e| NodeServiceError::query_failed(format!("Failed to update node with version check: {}", e)))?
+        } else {
+            conn.execute(
+                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ?, version = version + 1 WHERE id = ? AND version = ?",
+                (
+                    updated.node_type.as_str(),
+                    updated.content.as_str(),
+                    updated.parent_id.as_deref(),
+                    updated.container_node_id.as_deref(),
+                    updated.before_sibling_id.as_deref(),
+                    properties_json.as_str(),
+                    updated.embedding_vector.as_deref(),
+                    id,
+                    expected_version,
+                ),
+            )
+            .await
+            .map_err(|e| NodeServiceError::query_failed(format!("Failed to update node with version check: {}", e)))?
+        };
+
+        // If version mismatch (rows_affected = 0), return early
+        // Caller will handle conflict by fetching current state
+        if rows_affected == 0 {
+            return Ok(0);
+        }
+
+        // Update succeeded - handle side effects (embedding staleness, mention sync)
+
+        // If content changed in a child node, mark the parent container as stale too
+        if content_changed && !is_container {
+            if let Some(ref container_id) = updated.container_node_id {
+                conn.execute(
+                    "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+                    [container_id.as_str()],
+                )
+                .await
+                .map_err(|e| NodeServiceError::query_failed(format!("Failed to mark parent container as stale: {}", e)))?;
+            }
+        }
+
+        // If container_node_id changed (node moved between containers), mark both old and new containers as stale
+        if update.container_node_id.is_some()
+            && existing.container_node_id != updated.container_node_id
+        {
+            // Mark old container as stale (if it exists)
+            if let Some(ref old_container_id) = existing.container_node_id {
+                conn.execute(
+                    "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+                    [old_container_id.as_str()],
+                )
+                .await
+                .ok(); // Don't fail update if old container no longer exists
+            }
+
+            // Mark new container as stale (if different from what content_changed handled)
+            if !content_changed {
+                if let Some(ref new_container_id) = updated.container_node_id {
+                    conn.execute(
+                        "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+                        [new_container_id.as_str()],
+                    )
+                    .await
+                    .ok(); // Don't fail update if new container doesn't exist
+                }
+            }
+        }
+
+        // Sync mentions if content changed
+        if content_changed {
+            if let Err(e) = self
+                .sync_mentions(id, &existing.content, &updated.content)
+                .await
+            {
+                // Log warning but don't fail the update
+                tracing::warn!("Failed to sync mentions for node {}: {}", id, e);
+            }
+        }
+
+        Ok(rows_affected as usize)
+    }
+
     /// Sync mention relationships when node content changes
     ///
     /// Compares old vs new mentions and updates database:
@@ -974,6 +1178,54 @@ impl NodeService {
         } else {
             crate::models::DeleteResult::not_found()
         })
+    }
+
+    /// Delete node with optimistic concurrency control (version check)
+    ///
+    /// This method performs an atomic delete with version checking to prevent
+    /// race conditions when multiple clients attempt to delete or modify the same node.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - Node ID to delete
+    /// * `expected_version` - Version the client expects (from their last read)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(rows_affected)` - Number of rows deleted (0 = version mismatch or not found, 1 = success)
+    /// * `Err(NodeServiceError)` - Database errors
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let rows = service.delete_with_version_check("node-123", 5).await?;
+    ///
+    /// if rows == 0 {
+    ///     // Either version conflict or node doesn't exist
+    ///     // Caller should check if node still exists to distinguish
+    /// }
+    /// ```
+    pub async fn delete_with_version_check(
+        &self,
+        id: &str,
+        expected_version: i64,
+    ) -> Result<usize, NodeServiceError> {
+        let conn = self.db.connect_with_timeout().await?;
+
+        let rows_affected = conn
+            .execute(
+                "DELETE FROM nodes WHERE id = ? AND version = ?",
+                (id, expected_version),
+            )
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!(
+                    "Failed to delete node with version check: {}",
+                    e
+                ))
+            })?;
+
+        Ok(rows_affected as usize)
     }
 
     /// Get children of a node
@@ -1308,7 +1560,7 @@ impl NodeService {
                 .unwrap_or_default();
 
             let query = format!(
-                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes WHERE node_type = ?{}{}",
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes WHERE node_type = ?{}{}",
                 order_clause, limit_clause
             );
 
@@ -1346,7 +1598,7 @@ impl NodeService {
                 .unwrap_or_default();
 
             let query = format!(
-                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes WHERE parent_id = ?{}{}",
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes WHERE parent_id = ?{}{}",
                 order_clause, limit_clause
             );
 
@@ -1384,7 +1636,7 @@ impl NodeService {
                 .unwrap_or_default();
 
             let query = format!(
-                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes WHERE container_node_id = ?{}{}",
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes WHERE container_node_id = ?{}{}",
                 order_clause, limit_clause
             );
 
@@ -1426,7 +1678,7 @@ impl NodeService {
             .unwrap_or_default();
 
         let query = format!(
-            "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector FROM nodes{}{}",
+            "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes{}{}",
             order_clause, limit_clause
         );
 
@@ -1568,7 +1820,7 @@ impl NodeService {
 
             // Query node_mentions table to find nodes that reference the target
             let sql_query = format!(
-                "SELECT n.id, n.node_type, n.content, n.parent_id, n.container_node_id, n.before_sibling_id, n.created_at, n.modified_at, n.properties, n.embedding_vector
+                "SELECT n.id, n.node_type, n.content, n.parent_id, n.container_node_id, n.before_sibling_id, n.version, n.created_at, n.modified_at, n.properties, n.embedding_vector
                  FROM nodes n
                  INNER JOIN node_mentions nm ON n.id = nm.node_id
                  WHERE nm.mentions_node_id = ?{}{}",
@@ -1624,7 +1876,7 @@ impl NodeService {
             let mut rows = if let Some(ref node_type) = query.node_type {
                 // Case 1: Filter by both content and node_type
                 let sql = format!(
-                    "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector
+                    "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector
                      FROM nodes WHERE content LIKE ? AND node_type = ?{}{}",
                     container_task_filter, limit_clause
                 );
@@ -1647,7 +1899,7 @@ impl NodeService {
             } else {
                 // Case 2: Filter by content only
                 let sql = format!(
-                    "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector
+                    "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector
                      FROM nodes WHERE content LIKE ?{}{}",
                     container_task_filter, limit_clause
                 );
@@ -1696,7 +1948,7 @@ impl NodeService {
             let container_task_filter = Self::build_container_task_filter(filter_enabled, None);
 
             let sql_query = format!(
-                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector
                  FROM nodes WHERE node_type = ?{}{}",
                 container_task_filter, limit_clause
             );
@@ -1734,7 +1986,7 @@ impl NodeService {
             // allowing the filter to be appended via AND clause. This is clearer than
             // conditional WHERE clause generation and maintains consistent query structure.
             let sql_query = format!(
-                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, created_at, modified_at, properties, embedding_vector
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector
                  FROM nodes WHERE 1=1{}{}",
                 container_task_filter, limit_clause
             );
@@ -2216,17 +2468,20 @@ impl NodeService {
         let before_sibling_id: Option<String> = row
             .get(5)
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-        let created_at: String = row
+        let version: i64 = row
             .get(6)
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-        let modified_at: String = row
+        let created_at: String = row
             .get(7)
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-        let properties_json: String = row
+        let modified_at: String = row
             .get(8)
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-        let embedding_vector: Option<Vec<u8>> = row
+        let properties_json: String = row
             .get(9)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        let embedding_vector: Option<Vec<u8>> = row
+            .get(10)
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         let properties: serde_json::Value =
@@ -2256,6 +2511,7 @@ impl NodeService {
             parent_id,
             container_node_id,
             before_sibling_id,
+            version,
             created_at,
             modified_at,
             properties,

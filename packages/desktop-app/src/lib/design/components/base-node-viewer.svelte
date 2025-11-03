@@ -277,6 +277,7 @@
               beforeSiblingId: node.beforeSiblingId,
               createdAt: node.createdAt || new Date().toISOString(),
               modifiedAt: new Date().toISOString(),
+              version: node.version || 1, // Use existing version or default to 1 for new nodes
               properties: node.properties || {},
               mentions: node.mentions || []
             };
@@ -627,6 +628,7 @@
             beforeSiblingId: null,
             createdAt: new Date().toISOString(),
             modifiedAt: new Date().toISOString(),
+            version: 1, // Placeholder starts at version 1
             properties: {},
             mentions: []
           };
@@ -718,6 +720,7 @@
         beforeSiblingId: node.beforeSiblingId,
         createdAt: node.createdAt || new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
+        version: node.version || 1, // Use existing version or default to 1
         properties: node.properties || {},
         mentions: node.mentions || []
       };

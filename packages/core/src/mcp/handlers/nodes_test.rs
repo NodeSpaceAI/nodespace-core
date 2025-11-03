@@ -131,6 +131,352 @@ mod tests {
 }
 
 // =========================================================================
+// Optimistic Concurrency Control (OCC) Tests
+// =========================================================================
+
+#[cfg(test)]
+mod occ_tests {
+    use crate::mcp::handlers::nodes::{handle_delete_node, handle_update_node};
+    use crate::mcp::types::{INVALID_PARAMS, VERSION_CONFLICT};
+    use crate::operations::{CreateNodeParams, NodeOperations};
+    use crate::{DatabaseService, NodeService};
+    use serde_json::json;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn setup_test_operations(
+    ) -> Result<(Arc<NodeOperations>, TempDir), Box<dyn std::error::Error>> {
+        let temp_dir = TempDir::new()?;
+        let db_path = temp_dir.path().join("test.db");
+        let db = DatabaseService::new(db_path).await?;
+        let node_service = NodeService::new(db)?;
+        let operations = Arc::new(NodeOperations::new(Arc::new(node_service)));
+        Ok((operations, temp_dir))
+    }
+
+    /// Verifies nodes are created with version 1
+    #[tokio::test]
+    async fn test_node_created_with_version_1() {
+        let (operations, _temp) = setup_test_operations().await.unwrap();
+
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Test content".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        let node = operations.get_node(&node_id).await.unwrap().unwrap();
+        assert_eq!(node.version, 1);
+    }
+
+    /// Verifies version increments on successful update
+    #[tokio::test]
+    async fn test_version_increments_on_update() {
+        let (operations, _temp) = setup_test_operations().await.unwrap();
+
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Original".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // First update: version 1 → 2
+        let params = json!({
+            "node_id": node_id,
+            "version": 1,
+            "content": "Updated once"
+        });
+
+        let result = handle_update_node(&operations, params).await.unwrap();
+        assert_eq!(result["version"], 2);
+
+        // Second update: version 2 → 3
+        let params2 = json!({
+            "node_id": node_id,
+            "version": 2,
+            "content": "Updated twice"
+        });
+
+        let result2 = handle_update_node(&operations, params2).await.unwrap();
+        assert_eq!(result2["version"], 3);
+    }
+
+    /// Verifies concurrent update detection via version conflict
+    #[tokio::test]
+    async fn test_concurrent_update_version_conflict() {
+        let (operations, _temp) = setup_test_operations().await.unwrap();
+
+        // Create node (version=1)
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Original".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Client 1 updates successfully (version 1 → 2)
+        let params1 = json!({
+            "node_id": node_id,
+            "version": 1,
+            "content": "Client 1 update"
+        });
+        handle_update_node(&operations, params1).await.unwrap();
+
+        // Client 2 tries to update with stale version (still thinks version=1)
+        let params2 = json!({
+            "node_id": node_id,
+            "version": 1,
+            "content": "Client 2 conflicting update"
+        });
+
+        let result = handle_update_node(&operations, params2).await;
+
+        // Should fail with VersionConflict error
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.code, VERSION_CONFLICT);
+        assert!(error.message.contains("version conflict"));
+    }
+
+    /// Verifies conflict error includes current node state
+    #[tokio::test]
+    async fn test_version_conflict_includes_current_node() {
+        let (operations, _temp) = setup_test_operations().await.unwrap();
+
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Original".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Update to version 2
+        let params1 = json!({
+            "node_id": node_id,
+            "version": 1,
+            "content": "First update"
+        });
+        handle_update_node(&operations, params1).await.unwrap();
+
+        // Try to update with stale version
+        let params2 = json!({
+            "node_id": node_id,
+            "version": 1,
+            "content": "Conflicting update"
+        });
+
+        let result = handle_update_node(&operations, params2).await;
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        assert_eq!(error.code, VERSION_CONFLICT);
+
+        // Verify error data includes current node state
+        let data = error.data.unwrap();
+        assert_eq!(data["type"], "VersionConflict");
+        assert_eq!(data["expected_version"], 1);
+        assert_eq!(data["actual_version"], 2);
+        assert!(data["current_node"].is_object());
+        assert_eq!(data["current_node"]["content"], "First update");
+        assert_eq!(data["current_node"]["version"], 2);
+    }
+
+    /// Verifies delete operation checks version
+    #[tokio::test]
+    async fn test_delete_with_version_check() {
+        let (operations, _temp) = setup_test_operations().await.unwrap();
+
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "To be deleted".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Update to version 2
+        let update_params = json!({
+            "node_id": node_id,
+            "version": 1,
+            "content": "Modified"
+        });
+        handle_update_node(&operations, update_params)
+            .await
+            .unwrap();
+
+        // Try to delete with stale version (should fail)
+        let delete_params = json!({
+            "node_id": node_id,
+            "version": 1
+        });
+
+        let result = handle_delete_node(&operations, delete_params).await;
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.code, VERSION_CONFLICT);
+
+        // Verify node still exists
+        let node = operations.get_node(&node_id).await.unwrap();
+        assert!(node.is_some());
+
+        // Delete with correct version should succeed
+        let delete_params2 = json!({
+            "node_id": node_id,
+            "version": 2
+        });
+        let result2 = handle_delete_node(&operations, delete_params2).await;
+        assert!(result2.is_ok());
+
+        // Verify node is deleted
+        let deleted = operations.get_node(&node_id).await.unwrap();
+        assert!(deleted.is_none());
+    }
+
+    /// Verifies rapid sequential updates maintain version integrity
+    #[tokio::test]
+    async fn test_rapid_sequential_updates() {
+        let (operations, _temp) = setup_test_operations().await.unwrap();
+
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Start".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Perform 10 sequential updates
+        let mut current_version = 1;
+        for i in 0..10 {
+            let params = json!({
+                "node_id": node_id,
+                "version": current_version,
+                "content": format!("Update {}", i + 1)
+            });
+
+            let result = handle_update_node(&operations, params).await.unwrap();
+            current_version = result["version"].as_i64().unwrap();
+            assert_eq!(current_version, (i + 2) as i64);
+        }
+
+        // Final version should be 11
+        assert_eq!(current_version, 11);
+
+        let final_node = operations.get_node(&node_id).await.unwrap().unwrap();
+        assert_eq!(final_node.version, 11);
+        assert_eq!(final_node.content, "Update 10");
+    }
+
+    /// Verifies property-only updates increment version
+    #[tokio::test]
+    async fn test_property_update_increments_version() {
+        let (operations, _temp) = setup_test_operations().await.unwrap();
+
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Test".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({"status": "draft"}),
+            })
+            .await
+            .unwrap();
+
+        // Update properties only
+        let params = json!({
+            "node_id": node_id,
+            "version": 1,
+            "properties": {"status": "published", "priority": "high"}
+        });
+
+        let result = handle_update_node(&operations, params).await.unwrap();
+        assert_eq!(result["version"], 2);
+
+        let updated = operations.get_node(&node_id).await.unwrap().unwrap();
+        assert_eq!(updated.version, 2);
+        assert_eq!(updated.properties["status"], "published");
+        assert_eq!(updated.properties["priority"], "high");
+    }
+
+    /// Verifies update FAILS when version parameter is missing (prevents TOCTOU race conditions)
+    #[tokio::test]
+    async fn test_update_without_version_parameter() {
+        let (operations, _temp) = setup_test_operations().await.unwrap();
+
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Test".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Update without version parameter - should now FAIL (version is mandatory)
+        let params = json!({
+            "node_id": node_id,
+            "content": "Updated without version"
+        });
+
+        let result = handle_update_node(&operations, params).await;
+
+        // Should fail with invalid_params error
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.code, INVALID_PARAMS);
+        assert!(error.message.contains("missing field `version`"));
+
+        // Verify node was NOT updated (still has original content and version 1)
+        let node = operations.get_node(&node_id).await.unwrap().unwrap();
+        assert_eq!(node.content, "Test");
+        assert_eq!(node.version, 1);
+    }
+}
+
+// =========================================================================
 // Integration Tests for Index-Based Child Operations
 // =========================================================================
 
@@ -293,8 +639,11 @@ mod integration_tests {
             .unwrap();
 
         // Move first node (A) to index 999 (should append at end)
+        // Get node A to fetch its current version for OCC
+        let node_a_data = operations.get_node(&node_a).await.unwrap().unwrap();
         let params = json!({
             "node_id": node_a,
+            "version": node_a_data.version,
             "index": 999
         });
 
@@ -1046,8 +1395,15 @@ mod integration_tests {
         // Benchmark: Sequential individual updates
         let start_sequential = Instant::now();
         for node_id in &node_ids {
+            let node = operations.get_node(node_id).await.unwrap().unwrap();
             operations
-                .update_node(node_id, Some("- [x] Updated task".to_string()), None, None)
+                .update_node(
+                    node_id,
+                    node.version,
+                    Some("- [x] Updated task".to_string()),
+                    None,
+                    None,
+                )
                 .await
                 .unwrap();
         }
@@ -1055,8 +1411,15 @@ mod integration_tests {
 
         // Reset nodes back to unchecked for fair comparison
         for node_id in &node_ids {
+            let node = operations.get_node(node_id).await.unwrap().unwrap();
             operations
-                .update_node(node_id, Some("- [ ] Task".to_string()), None, None)
+                .update_node(
+                    node_id,
+                    node.version,
+                    Some("- [ ] Task".to_string()),
+                    None,
+                    None,
+                )
                 .await
                 .unwrap();
         }
@@ -1097,6 +1460,75 @@ mod integration_tests {
             duration_batch <= duration_sequential,
             "Batch should be at least as fast as sequential (got {:.2}x speedup)",
             speedup
+        );
+    }
+
+    /// Verifies OCC version check overhead is < 5ms per operation
+    /// This test validates the performance acceptance criterion
+    #[tokio::test]
+    async fn test_occ_performance_overhead() {
+        let (operations, _temp) = setup_test_operations().await.unwrap();
+
+        // Create a test node
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Performance test".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Warm up (first operation may be slower due to caching)
+        let node = operations.get_node(&node_id).await.unwrap().unwrap();
+        let _ = operations
+            .update_node(
+                &node_id,
+                node.version,
+                Some("warmup".to_string()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Measure 100 update operations with version checking
+        let iterations = 100;
+        let start = std::time::Instant::now();
+
+        for i in 0..iterations {
+            let node = operations.get_node(&node_id).await.unwrap().unwrap();
+            operations
+                .update_node(
+                    &node_id,
+                    node.version,
+                    Some(format!("Update {}", i)),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let elapsed = start.elapsed();
+        let avg_ms = elapsed.as_millis() as f64 / iterations as f64;
+
+        // Acceptance criterion: < 5ms overhead per operation
+        // Note: This measures total operation time (read + version check + write)
+        // The version check itself adds only ~0.1-1ms (single integer comparison)
+        assert!(
+            avg_ms < 5.0,
+            "OCC overhead too high: {:.2}ms average (expected < 5ms)",
+            avg_ms
+        );
+
+        println!(
+            "✓ Performance test passed: {:.2}ms average per operation (target: < 5ms)",
+            avg_ms
         );
     }
 }

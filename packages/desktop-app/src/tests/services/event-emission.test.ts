@@ -112,12 +112,12 @@ describe.sequential('Section 8: Event System Tests', () => {
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
-      await backend.updateNode(nodeId, { content: 'Updated Content' });
+      await backend.updateNode(nodeId, 1, { content: 'Updated Content' });
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
-      await backend.deleteNode(nodeId);
+      await backend.deleteNode(nodeId, 1);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
@@ -176,7 +176,7 @@ describe.sequential('Section 8: Event System Tests', () => {
       });
 
       // Update node content
-      await backend.updateNode(nodeId, { content: 'Updated Content' });
+      await backend.updateNode(nodeId, 1, { content: 'Updated Content' });
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
@@ -212,7 +212,7 @@ describe.sequential('Section 8: Event System Tests', () => {
       });
 
       // Delete node
-      await backend.deleteNode(nodeId);
+      await backend.deleteNode(nodeId, 1);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
@@ -260,13 +260,13 @@ describe.sequential('Section 8: Event System Tests', () => {
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
-      await backend.updateNode(childId, { beforeSiblingId: siblingId });
+      await backend.updateNode(childId, 1, { beforeSiblingId: siblingId });
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Delete child node (hierarchy change)
-      await backend.deleteNode(childId);
+      await backend.deleteNode(childId, 1);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
@@ -307,17 +307,17 @@ describe.sequential('Section 8: Event System Tests', () => {
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
-      await backend.updateNode(nodeId, { content: 'Updated 1' });
+      await backend.updateNode(nodeId, 1, { content: 'Updated 1' });
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
-      await backend.updateNode(nodeId, { content: 'Updated 2' });
+      await backend.updateNode(nodeId, 2, { content: 'Updated 2' });
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
-      await backend.deleteNode(nodeId);
+      await backend.deleteNode(nodeId, 1);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);

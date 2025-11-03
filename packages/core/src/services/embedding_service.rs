@@ -698,7 +698,7 @@ impl NodeEmbeddingService {
         let mut stmt = conn
             .prepare(
                 "SELECT id, node_type, content, parent_id, container_node_id,
-                    before_sibling_id, created_at, modified_at, properties, embedding_vector
+                    before_sibling_id, version, created_at, modified_at, properties, embedding_vector
              FROM nodes WHERE id = ?",
             )
             .await
@@ -734,7 +734,7 @@ impl NodeEmbeddingService {
         let mut stmt = conn
             .prepare(
                 "SELECT id, node_type, content, parent_id, container_node_id,
-                    before_sibling_id, created_at, modified_at, properties, embedding_vector
+                    before_sibling_id, version, created_at, modified_at, properties, embedding_vector
              FROM nodes WHERE parent_id = ?
              ORDER BY created_at ASC",
             )
@@ -781,25 +781,29 @@ impl NodeEmbeddingService {
             NodeServiceError::QueryFailed(format!("Failed to get before_sibling_id: {}", e))
         })?;
 
-        let created_at_str: String = row.get(6).map_err(|e| {
+        let version: i64 = row
+            .get(6)
+            .map_err(|e| NodeServiceError::QueryFailed(format!("Failed to get version: {}", e)))?;
+
+        let created_at_str: String = row.get(7).map_err(|e| {
             NodeServiceError::QueryFailed(format!("Failed to get created_at: {}", e))
         })?;
         let created_at = parse_timestamp(&created_at_str).map_err(NodeServiceError::QueryFailed)?;
 
-        let modified_at_str: String = row.get(7).map_err(|e| {
+        let modified_at_str: String = row.get(8).map_err(|e| {
             NodeServiceError::QueryFailed(format!("Failed to get modified_at: {}", e))
         })?;
         let modified_at =
             parse_timestamp(&modified_at_str).map_err(NodeServiceError::QueryFailed)?;
 
-        let properties_str: String = row.get(8).map_err(|e| {
+        let properties_str: String = row.get(9).map_err(|e| {
             NodeServiceError::QueryFailed(format!("Failed to get properties: {}", e))
         })?;
         let properties: serde_json::Value = serde_json::from_str(&properties_str).map_err(|e| {
             NodeServiceError::QueryFailed(format!("Failed to parse properties JSON: {}", e))
         })?;
 
-        let embedding_vector: Option<Vec<u8>> = row.get(9).map_err(|e| {
+        let embedding_vector: Option<Vec<u8>> = row.get(10).map_err(|e| {
             NodeServiceError::QueryFailed(format!("Failed to get embedding_vector: {}", e))
         })?;
 
@@ -810,6 +814,7 @@ impl NodeEmbeddingService {
             parent_id,
             container_node_id,
             before_sibling_id,
+            version,
             created_at,
             modified_at,
             properties,

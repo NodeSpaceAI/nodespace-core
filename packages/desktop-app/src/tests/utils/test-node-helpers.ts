@@ -195,6 +195,7 @@ export async function createNodeForCurrentMode(
     parentId: string | null;
     containerNodeId: string | null;
     beforeSiblingId: string | null;
+    version?: number;
     properties: Record<string, unknown>;
     embeddingVector: number[] | null;
     mentions: string[];
@@ -202,7 +203,7 @@ export async function createNodeForCurrentMode(
 ): Promise<Node> {
   if (shouldUseDatabase()) {
     // Database mode: Create via HTTP and fetch back to verify persistence
-    return await createAndFetchNode(adapter, nodeData);
+    return await createAndFetchNode(adapter, { ...nodeData, version: nodeData.version ?? 1 });
   } else {
     // In-memory mode: Build locally without HTTP calls
     return new TestNodeBuilder()
@@ -212,6 +213,7 @@ export async function createNodeForCurrentMode(
       .withParent(nodeData.parentId)
       .withContainer(nodeData.containerNodeId)
       .withBeforeSibling(nodeData.beforeSiblingId)
+      .withVersion(nodeData.version ?? 1)
       .withProperties(nodeData.properties)
       .withEmbedding(nodeData.embeddingVector)
       .withMentions(nodeData.mentions)

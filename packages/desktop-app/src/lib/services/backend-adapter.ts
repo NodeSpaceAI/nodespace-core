@@ -138,10 +138,10 @@ export interface BackendAdapter {
 
   /**
    * Create a new node
-   * @param node - Node data without timestamps
+   * @param node - Node data without timestamps or version (backend sets these)
    * @returns ID of the created node
    */
-  createNode(node: Omit<Node, 'createdAt' | 'modifiedAt'>): Promise<string>;
+  createNode(node: Omit<Node, 'createdAt' | 'modifiedAt' | 'version'>): Promise<string>;
 
   /**
    * Get a node by ID
@@ -153,15 +153,19 @@ export interface BackendAdapter {
   /**
    * Update an existing node
    * @param id - Node ID
+   * @param version - Expected version for optimistic concurrency control
    * @param update - Fields to update (partial)
+   * @throws Version conflict error if version doesn't match current version
    */
-  updateNode(id: string, update: NodeUpdate): Promise<void>;
+  updateNode(id: string, version: number, update: NodeUpdate): Promise<void>;
 
   /**
    * Delete a node by ID
    * @param id - Node ID
+   * @param version - Expected version for optimistic concurrency control
+   * @throws Version conflict error if version doesn't match current version
    */
-  deleteNode(id: string): Promise<void>;
+  deleteNode(id: string, version: number): Promise<void>;
 
   /**
    * Get child nodes of a parent node
@@ -325,7 +329,7 @@ export class TauriAdapter implements BackendAdapter {
     }
   }
 
-  async createNode(node: Omit<Node, 'createdAt' | 'modifiedAt'>): Promise<string> {
+  async createNode(node: Omit<Node, 'createdAt' | 'modifiedAt' | 'version'>): Promise<string> {
     try {
       const nodeId = await invoke<string>('create_node', { node });
 
@@ -366,9 +370,9 @@ export class TauriAdapter implements BackendAdapter {
     }
   }
 
-  async updateNode(id: string, update: NodeUpdate): Promise<void> {
+  async updateNode(id: string, version: number, update: NodeUpdate): Promise<void> {
     try {
-      await invoke<void>('update_node', { id, update });
+      await invoke<void>('update_node', { id, version, update });
 
       // Determine update type based on what fields were updated
       let updateType: 'content' | 'hierarchy' | 'status' | 'metadata' | 'nodeType' = 'content';
@@ -414,13 +418,13 @@ export class TauriAdapter implements BackendAdapter {
     }
   }
 
-  async deleteNode(id: string): Promise<void> {
+  async deleteNode(id: string, version: number): Promise<void> {
     try {
       // Fetch node before deletion to get metadata for events
       // If node doesn't exist, getNode returns null but doesn't throw
       const nodeBeforeDeletion = await this.getNode(id);
 
-      await invoke<void>('delete_node', { id });
+      await invoke<void>('delete_node', { id, version });
 
       // Only emit events if node existed (successful deletion)
       // Note: This handles the backend's non-idempotent DELETE behavior
@@ -719,7 +723,7 @@ export class HttpAdapter implements BackendAdapter {
     }
   }
 
-  async createNode(node: Omit<Node, 'createdAt' | 'modifiedAt'>): Promise<string> {
+  async createNode(node: Omit<Node, 'createdAt' | 'modifiedAt' | 'version'>): Promise<string> {
     try {
       // Wrap the HTTP write operation with retry logic
       const nodeId = await this.retryOnTransientError(async () => {
@@ -774,7 +778,7 @@ export class HttpAdapter implements BackendAdapter {
     }
   }
 
-  async updateNode(id: string, update: NodeUpdate): Promise<void> {
+  async updateNode(id: string, version: number, update: NodeUpdate): Promise<void> {
     try {
       // Wrap the HTTP write operation with retry logic
       await this.retryOnTransientError(async () => {
@@ -785,7 +789,7 @@ export class HttpAdapter implements BackendAdapter {
             headers: {
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify(update)
+            body: JSON.stringify({ ...update, version })
           }
         );
 
@@ -836,7 +840,7 @@ export class HttpAdapter implements BackendAdapter {
     }
   }
 
-  async deleteNode(id: string): Promise<void> {
+  async deleteNode(id: string, version: number): Promise<void> {
     try {
       // Fetch node before deletion to get metadata for events
       // If node doesn't exist, getNode returns null but doesn't throw
@@ -847,7 +851,11 @@ export class HttpAdapter implements BackendAdapter {
         const response = await globalThis.fetch(
           `${this.baseUrl}/api/nodes/${encodeURIComponent(id)}`,
           {
-            method: 'DELETE'
+            method: 'DELETE',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ version })
           }
         );
 

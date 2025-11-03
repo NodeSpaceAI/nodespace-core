@@ -69,16 +69,24 @@ export class MockBackendAdapter implements BackendAdapter {
   /**
    * Update a node in memory
    */
-  async updateNode(id: string, update: NodeUpdate): Promise<void> {
+  async updateNode(id: string, version: number, update: NodeUpdate): Promise<void> {
     const existingNode = this.nodes.get(id);
     if (!existingNode) {
       throw new Error(`Node ${id} not found`);
     }
 
+    // Check version for optimistic concurrency control
+    if (existingNode.version !== version) {
+      throw new Error(
+        `Version conflict: expected version ${version}, but current version is ${existingNode.version}`
+      );
+    }
+
     const updatedNode: Node = {
       ...existingNode,
       ...update,
-      modifiedAt: new Date().toISOString()
+      modifiedAt: new Date().toISOString(),
+      version: existingNode.version + 1
     };
 
     this.nodes.set(id, updatedNode);

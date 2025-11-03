@@ -181,6 +181,7 @@ impl DatabaseService {
                     parent_id TEXT,
                     container_node_id TEXT,
                     before_sibling_id TEXT,
+                    version INTEGER NOT NULL DEFAULT 1,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     modified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     properties JSON NOT NULL DEFAULT '{{}}',

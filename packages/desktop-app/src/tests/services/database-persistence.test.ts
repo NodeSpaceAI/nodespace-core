@@ -154,7 +154,7 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Update content
-      await backend.updateNode(nodeId, { content: 'Hello World' });
+      await backend.updateNode(nodeId, 1, { content: 'Hello World' });
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
@@ -190,13 +190,13 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
 
       // Reorder: A -> C -> B (move C between A and B)
       // Step 1: Update C: beforeSiblingId = A  →  A -> C (B still points to old C.id)
-      await backend.updateNode(nodeCId, { beforeSiblingId: nodeAId });
+      await backend.updateNode(nodeCId, 1, { beforeSiblingId: nodeAId });
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Step 2: Update B: beforeSiblingId = C  →  A -> C -> B (final order)
-      await backend.updateNode(nodeBId, { beforeSiblingId: nodeCId });
+      await backend.updateNode(nodeBId, 1, { beforeSiblingId: nodeCId });
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
@@ -255,7 +255,7 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
 
       // Simulates rapid sequential updates (e.g., user typing fast)
       for (let i = 0; i < 10; i++) {
-        await backend.updateNode(nodeId, { content: `Update ${i}` });
+        await backend.updateNode(nodeId, i + 1, { content: `Update ${i}` });
       }
 
       await waitForDatabaseWrites();
@@ -299,7 +299,7 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Delete parent
-      await backend.deleteNode(parentId);
+      await backend.deleteNode(parentId, 1);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
@@ -347,7 +347,7 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Delete once
-      await backend.deleteNode(nodeId);
+      await backend.deleteNode(nodeId, 1);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
@@ -358,7 +358,7 @@ describe.sequential('Section 7: Database Persistence Tests', () => {
 
       // Delete again - backend should succeed (idempotent)
       // No error should be thrown
-      await expect(backend.deleteNode(nodeId)).resolves.not.toThrow();
+      await expect(backend.deleteNode(nodeId, 1)).resolves.not.toThrow();
 
       // Still deleted (verify final state is consistent)
       const fetchedAfterSecond = await backend.getNode(nodeId);

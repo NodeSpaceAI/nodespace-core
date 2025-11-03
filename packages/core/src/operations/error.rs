@@ -86,6 +86,37 @@ pub enum NodeOperationError {
     #[error("Invalid sibling chain: {reason}")]
     InvalidSiblingChain { reason: String },
 
+    /// Version conflict detected (optimistic concurrency control)
+    ///
+    /// The node was modified by another process between read and write.
+    /// Client should re-read the node and retry the operation with the new version.
+    ///
+    /// # Error Response Format
+    ///
+    /// MCP clients receive:
+    /// ```json
+    /// {
+    ///   "code": -32001,
+    ///   "message": "Version conflict: expected v5 but current is v6",
+    ///   "data": {
+    ///     "type": "VersionConflict",
+    ///     "expected_version": 5,
+    ///     "actual_version": 6,
+    ///     "current_node": { /* full node state */ }
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Frontend UI shows conflict resolution modal with both versions.
+    #[error("Version conflict for node '{node_id}': expected version {expected_version}, but current version is {actual_version}")]
+    VersionConflict {
+        node_id: String,
+        expected_version: i64,
+        actual_version: i64,
+        /// Current state of the node for merge resolution
+        current_node: Box<crate::models::Node>,
+    },
+
     /// Circular reference detected
     ///
     /// Node cannot reference itself as parent, container, or sibling.
@@ -168,6 +199,21 @@ impl NodeOperationError {
     /// Create an InvalidSiblingChain error
     pub fn invalid_sibling_chain(reason: String) -> Self {
         Self::InvalidSiblingChain { reason }
+    }
+
+    /// Create a VersionConflict error
+    pub fn version_conflict(
+        node_id: String,
+        expected_version: i64,
+        actual_version: i64,
+        current_node: crate::models::Node,
+    ) -> Self {
+        Self::VersionConflict {
+            node_id,
+            expected_version,
+            actual_version,
+            current_node: Box::new(current_node),
+        }
     }
 
     /// Create a CircularReference error

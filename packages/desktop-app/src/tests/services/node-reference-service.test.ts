@@ -40,6 +40,7 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
+          version: 1,
           properties: {}
         },
         {
@@ -51,6 +52,7 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
+          version: 1,
           properties: { status: 'pending' }
         }
       ];
@@ -87,6 +89,7 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
+          version: 1,
           properties: {}
         },
         {
@@ -98,6 +101,7 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
+          version: 1,
           properties: {}
         }
         // Note: text child nodes are NOT returned by backend due to filter
@@ -131,6 +135,7 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
+          version: 1,
           properties: {}
         }
       ];
@@ -160,6 +165,7 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
+          version: 1,
           properties: {}
         }
       ];
@@ -211,6 +217,7 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
+          version: 1,
           properties: {}
         }
       ];
@@ -233,6 +240,7 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
+          version: 1,
           properties: {}
         },
         {
@@ -244,6 +252,7 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
+          version: 1,
           properties: {}
         }
       ];

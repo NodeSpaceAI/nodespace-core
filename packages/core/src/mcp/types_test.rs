@@ -70,6 +70,7 @@ mod tests {
             error: Some(MCPError {
                 code: NODE_NOT_FOUND,
                 message: "Node not found: xyz789".to_string(),
+                data: None,
             }),
         };
 
@@ -137,6 +138,7 @@ mod tests {
         let error = MCPError {
             code: INVALID_PARAMS,
             message: "Missing required field: node_type".to_string(),
+            data: None,
         };
 
         let json = serde_json::to_value(&error).unwrap();
