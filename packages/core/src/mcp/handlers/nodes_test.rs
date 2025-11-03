@@ -146,7 +146,8 @@ mod occ_tests {
     use tempfile::TempDir;
 
     async fn setup_test_operations(
-    ) -> Result<(Arc<NodeOperations>, Arc<SchemaService>, TempDir), Box<dyn std::error::Error>> {
+    ) -> Result<(Arc<NodeOperations>, Arc<SchemaService>, TempDir), Box<dyn std::error::Error>>
+    {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
         let db = DatabaseService::new(db_path).await?;
@@ -203,7 +204,9 @@ mod occ_tests {
             "content": "Updated once"
         });
 
-        let result = handle_update_node(&operations, &_schema_service,params).await.unwrap();
+        let result = handle_update_node(&operations, &_schema_service, params)
+            .await
+            .unwrap();
         assert_eq!(result["version"], 2);
 
         // Second update: version 2 → 3
@@ -213,7 +216,9 @@ mod occ_tests {
             "content": "Updated twice"
         });
 
-        let result2 = handle_update_node(&operations, &_schema_service,params2).await.unwrap();
+        let result2 = handle_update_node(&operations, &_schema_service, params2)
+            .await
+            .unwrap();
         assert_eq!(result2["version"], 3);
     }
 
@@ -242,7 +247,9 @@ mod occ_tests {
             "version": 1,
             "content": "Client 1 update"
         });
-        handle_update_node(&operations, &_schema_service,params1).await.unwrap();
+        handle_update_node(&operations, &_schema_service, params1)
+            .await
+            .unwrap();
 
         // Client 2 tries to update with stale version (still thinks version=1)
         let params2 = json!({
@@ -251,7 +258,7 @@ mod occ_tests {
             "content": "Client 2 conflicting update"
         });
 
-        let result = handle_update_node(&operations, &_schema_service,params2).await;
+        let result = handle_update_node(&operations, &_schema_service, params2).await;
 
         // Should fail with VersionConflict error
         assert!(result.is_err());
@@ -284,7 +291,9 @@ mod occ_tests {
             "version": 1,
             "content": "First update"
         });
-        handle_update_node(&operations, &_schema_service,params1).await.unwrap();
+        handle_update_node(&operations, &_schema_service, params1)
+            .await
+            .unwrap();
 
         // Try to update with stale version
         let params2 = json!({
@@ -293,7 +302,7 @@ mod occ_tests {
             "content": "Conflicting update"
         });
 
-        let result = handle_update_node(&operations, &_schema_service,params2).await;
+        let result = handle_update_node(&operations, &_schema_service, params2).await;
         assert!(result.is_err());
 
         let error = result.unwrap_err();
@@ -333,7 +342,7 @@ mod occ_tests {
             "version": 1,
             "content": "Modified"
         });
-        handle_update_node(&operations, &_schema_service,update_params)
+        handle_update_node(&operations, &_schema_service, update_params)
             .await
             .unwrap();
 
@@ -392,7 +401,9 @@ mod occ_tests {
                 "content": format!("Update {}", i + 1)
             });
 
-            let result = handle_update_node(&operations, &_schema_service,params).await.unwrap();
+            let result = handle_update_node(&operations, &_schema_service, params)
+                .await
+                .unwrap();
             current_version = result["version"].as_i64().unwrap();
             assert_eq!(current_version, (i + 2) as i64);
         }
@@ -430,7 +441,9 @@ mod occ_tests {
             "properties": {"status": "published", "priority": "high"}
         });
 
-        let result = handle_update_node(&operations, &_schema_service,params).await.unwrap();
+        let result = handle_update_node(&operations, &_schema_service, params)
+            .await
+            .unwrap();
         assert_eq!(result["version"], 2);
 
         let updated = operations.get_node(&node_id).await.unwrap().unwrap();
@@ -463,7 +476,7 @@ mod occ_tests {
             "content": "Updated without version"
         });
 
-        let result = handle_update_node(&operations, &_schema_service,params).await;
+        let result = handle_update_node(&operations, &_schema_service, params).await;
 
         // Should fail with invalid_params error
         assert!(result.is_err());

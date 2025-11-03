@@ -1048,7 +1048,9 @@ pub async fn handle_update_nodes_batch(
                             }
 
                             // Validate enum values
-                            if field.protection == ProtectionLevel::Core && field.field_type == "enum" {
+                            if field.protection == ProtectionLevel::Core
+                                && field.field_type == "enum"
+                            {
                                 if let Some(new_value) = new_props_obj.get(&field.name) {
                                     if let Some(value_str) = new_value.as_str() {
                                         let allowed_values =
