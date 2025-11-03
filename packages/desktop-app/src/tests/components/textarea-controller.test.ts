@@ -148,7 +148,7 @@ describe('TextareaController', () => {
       }
     };
 
-    controller = new TextareaController(element, 'test-node', 'text', mockEvents);
+    controller = new TextareaController(element, 'test-node', 'text', 'default', mockEvents);
   });
 
   afterEach(() => {
@@ -504,7 +504,7 @@ describe('TextareaController', () => {
       mockEvents.navigateArrow = navigateArrowSpy;
 
       // Create controller with multiline enabled
-      controller = new TextareaController(element, 'test-node', 'text', mockEvents, {
+      controller = new TextareaController(element, 'test-node', 'text', 'default', mockEvents, {
         allowMultiline: true
       });
     });
@@ -576,7 +576,7 @@ describe('TextareaController', () => {
       }
 
       // Create controller with multiline enabled
-      controller = new TextareaController(element, 'test-node', 'text', mockEvents, {
+      controller = new TextareaController(element, 'test-node', 'text', 'default', mockEvents, {
         allowMultiline: true
       });
     });
@@ -611,7 +611,7 @@ describe('TextareaController', () => {
       }
 
       // Create controller with multiline disabled
-      controller = new TextareaController(element, 'task-node', 'task', mockEvents, {
+      controller = new TextareaController(element, 'task-node', 'task', 'default', mockEvents, {
         allowMultiline: false
       });
     });

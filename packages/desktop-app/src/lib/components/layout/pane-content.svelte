@@ -69,6 +69,7 @@
     {#key `${pane.id}-${content.nodeId}`}
       <ViewerComponent
         nodeId={content.nodeId}
+        tabId={activeTabId}
         onTitleChange={(title: string) => updateTabTitle(activeTabId, title)}
         onNodeIdChange={(newNodeId: string) =>
           updateTabContent(activeTabId, { nodeId: newNodeId, nodeType: content.nodeType })}

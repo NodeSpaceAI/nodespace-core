@@ -242,6 +242,7 @@ describe('MergeNodesCommand', () => {
       cursorPosition: options.cursorPosition,
       selection: window.getSelection(),
       allowMultiline: options.allowMultiline,
+      paneId: 'default',
       metadata: {}
     };
   }

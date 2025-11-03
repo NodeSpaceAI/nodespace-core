@@ -687,6 +687,7 @@
         element,
         nodeId,
         nodeType,
+        paneId,
         controllerEvents,
         editableConfig
       );

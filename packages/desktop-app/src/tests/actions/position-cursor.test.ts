@@ -29,7 +29,7 @@ describe('positionCursor action', () => {
     document.body.appendChild(textarea);
 
     // Create controller
-    controller = new TextareaController(textarea, 'test-node', 'text', {
+    controller = new TextareaController(textarea, 'test-node', 'text', 'default', {
       contentChanged: vi.fn(),
       focus: vi.fn(),
       blur: vi.fn(),

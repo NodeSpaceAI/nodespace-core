@@ -21,6 +21,7 @@
   import type { UpdateSource } from '$lib/types/update-protocol';
   import type { Snippet } from 'svelte';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
+  import { getViewerId, saveScrollPosition, getScrollPosition } from '$lib/stores/scroll-state';
 
   // Get paneId from context (set by PaneContent)
   const paneId = getContext<string>('paneId') ?? DEFAULT_PANE_ID;
@@ -29,10 +30,19 @@
   let {
     header,
     nodeId = null,
+    /**
+     * Tab identifier for this viewer instance.
+     * Combined with paneId (from context) to create a unique scroll position identifier.
+     * Each tab+pane combination maintains independent scroll state, allowing the same
+     * document to be viewed in multiple panes with different scroll positions.
+     * @default 'default'
+     */
+    tabId = 'default',
     onTitleChange
   }: {
     header?: Snippet;
     nodeId?: string | null;
+    tabId?: string;
     onTitleChange?: (_title: string) => void;
     onNodeIdChange?: (_nodeId: string) => void; // In type for interface, not used by BaseNodeViewer
   } = $props();
@@ -67,6 +77,12 @@
   // Loading flag to prevent watchers from firing during initial load
   // Start as true to prevent watcher from firing before loadChildrenForParent() completes
   let isLoadingInitialNodes = true;
+
+  // Scroll position tracking
+  // Reference to the scroll container element
+  let scrollContainer: HTMLElement | null = null;
+  // Generate unique viewer ID for this viewer instance
+  const viewerId = getViewerId(tabId, paneId);
 
   // Set view context, load children, and initialize header content when nodeId changes
   $effect(() => {
@@ -1343,6 +1359,42 @@
     await preloadComponents();
   });
 
+  // Scroll position management: Save scroll position when user scrolls
+  $effect(() => {
+    if (!scrollContainer) return;
+
+    const handleScroll = () => {
+      if (scrollContainer) {
+        saveScrollPosition(viewerId, scrollContainer.scrollTop);
+      }
+    };
+
+    scrollContainer.addEventListener('scroll', handleScroll, { passive: true });
+
+    return () => {
+      if (scrollContainer) {
+        scrollContainer.removeEventListener('scroll', handleScroll);
+      }
+    };
+  });
+
+  // Scroll position restoration: Restore when viewer becomes active or mounts
+  $effect(() => {
+    // Restore scroll position when the scroll container is available
+    if (scrollContainer && viewerId) {
+      const savedPosition = getScrollPosition(viewerId);
+      // Capture current container reference to prevent race conditions
+      const currentContainer = scrollContainer;
+      // Use requestAnimationFrame to ensure DOM is ready
+      requestAnimationFrame(() => {
+        // Only restore if container hasn't changed (prevents stale updates)
+        if (scrollContainer === currentContainer) {
+          scrollContainer.scrollTop = savedPosition;
+        }
+      });
+    }
+  });
+
   // Reactively load components when node types change
   $effect(() => {
     const visibleNodes = nodeManager.visibleNodes(nodeId);
@@ -1408,7 +1460,7 @@
   {/if}
 
   <!-- Scrollable Node Content Area (children structure) -->
-  <div class="node-content-area">
+  <div class="node-content-area" bind:this={scrollContainer}>
     {#each nodeManager.visibleNodes(nodeId) as node (node.id)}
       {@const relativeDepth = (node.depth || 0) - minDepth()}
       <div
@@ -1658,6 +1710,42 @@
     flex-direction: column;
     gap: 0; /* 0px gap - all spacing from node padding for 8px total */
 
+    /* Autohide scrollbar - only show when scrolling */
+    scrollbar-width: thin; /* Firefox */
+    scrollbar-color: transparent transparent; /* Firefox - hidden by default */
+  }
+
+  /* Show scrollbar on hover or while scrolling */
+  .node-content-area:hover,
+  .node-content-area:active {
+    scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent; /* Firefox */
+  }
+
+  /* WebKit (Chrome, Safari, Edge) scrollbar styling */
+  .node-content-area::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .node-content-area::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .node-content-area::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 4px;
+  }
+
+  /* Show scrollbar on hover or while scrolling */
+  .node-content-area:hover::-webkit-scrollbar-thumb,
+  .node-content-area:active::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.3);
+  }
+
+  .node-content-area::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.5);
+  }
+
+  .base-node-viewer {
     /* Dynamic Circle Positioning System - All values configurable from here */
     --circle-offset: 22px; /* Circle center distance from container left edge - reserves space for chevrons */
     --circle-diameter: 20px; /* Circle size (width and height) */

@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import { formatDateISO } from '$lib/utils/date-formatting';
+import { clearScrollPosition, clearPaneScrollPositions } from './scroll-state';
 
 export interface Tab {
   id: string;
@@ -141,6 +142,9 @@ export function createPane(): Pane | null {
  * @param paneId - The pane ID to close
  */
 export function closePane(paneId: string) {
+  // Clean up scroll positions for all viewers in this pane
+  clearPaneScrollPositions(paneId);
+
   tabState.update((state) => {
     // Cannot close the last pane
     if (state.panes.length <= 1) {
@@ -269,6 +273,13 @@ export function closeTab(tabId: string) {
     }
 
     const paneId = tab.paneId;
+
+    // Clean up scroll positions for all panes that had this tab
+    // Since tabs can appear in multiple panes (split view), clean up all combinations
+    state.panes.forEach((pane) => {
+      const viewerId = `${tabId}-${pane.id}`;
+      clearScrollPosition(viewerId);
+    });
     const pane = state.panes.find((p) => p.id === paneId);
     if (!pane) {
       return state;

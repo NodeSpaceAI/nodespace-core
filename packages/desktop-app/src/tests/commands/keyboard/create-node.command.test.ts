@@ -303,6 +303,7 @@ describe('CreateNodeCommand', () => {
       cursorPosition: options.cursorPosition || 0,
       selection: null,
       allowMultiline: false,
+      paneId: 'default',
       metadata: {}
     };
   }
