@@ -9,6 +9,15 @@
       ],
       "env": {}
     },
+    "puppeteer": {
+      "type": "stdio",
+      "command": "bunx",
+      "args": [
+        "--bun",
+        "@modelcontextprotocol/server-puppeteer"
+      ],
+      "env": {}
+    },
     "nodespace": {
       "type": "http",
       "url": "http://localhost:3200/mcp"

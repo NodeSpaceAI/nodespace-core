@@ -1639,7 +1639,7 @@
       </div>
     {/each}
 
-    <!-- Backlinks Panel - shows which containers mention this node -->
+    <!-- Backlinks Panel - fixed at bottom of this viewer -->
     {#if nodeId}
       <BacklinksPanel {nodeId} />
     {/if}
@@ -1704,8 +1704,10 @@
     overflow-y: auto;
     overflow-x: hidden;
     min-height: 0; /* Critical for flex scrolling */
-    padding: 1.5rem;
-    padding-bottom: 3rem; /* Extra bottom padding to see last line fully */
+    padding: var(--viewer-padding-vertical) var(--viewer-padding-horizontal);
+    padding-bottom: var(
+      --viewer-padding-bottom
+    ); /* Reduced padding - backlinks panel is now sticky within this container */
     display: flex;
     flex-direction: column;
     gap: 0; /* 0px gap - all spacing from node padding for 8px total */
