@@ -14,7 +14,7 @@ import {
   cleanupDatabaseIfNeeded,
   shouldUseDatabase
 } from '../utils/should-use-database';
-import { checkServerHealth } from '../utils/test-node-helpers';
+import { checkServerHealth, skipIfEndpointUnavailable } from '../utils/test-node-helpers';
 import { TestNodeBuilder } from '../utils/test-node-builder';
 import { getBackendAdapter, HttpAdapter } from '$lib/services/backend-adapter';
 import type { BackendAdapter } from '$lib/services/backend-adapter';
@@ -184,13 +184,11 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
       } catch (error) {
         // If container endpoint is not yet active, skip this test
         // Expected: 405 Method Not Allowed until endpoint is properly registered
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (errorMessage.includes('405') || errorMessage.includes('500')) {
-          console.log('[Test] Container endpoint not yet active - test skipped');
+        if (skipIfEndpointUnavailable(error, 'Container endpoint')) {
           expect(error).toBeTruthy();
-        } else {
-          throw error;
+          return;
         }
+        throw error;
       }
     }, 10000);
   });
@@ -380,13 +378,11 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
       } catch (error) {
         // If mention endpoint is not yet active, skip this test
         // Expected: 405 Method Not Allowed until endpoint is properly registered
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (errorMessage.includes('405') || errorMessage.includes('500')) {
-          console.log('[Test] Mention endpoint not yet active - test skipped');
+        if (skipIfEndpointUnavailable(error, 'Mention endpoint')) {
           expect(error).toBeTruthy();
-        } else {
-          throw error;
+          return;
         }
+        throw error;
       }
     }, 10000);
 
@@ -416,13 +412,11 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
       } catch (error) {
         // If mention endpoint is not yet active, skip this test
         // Expected: 405 Method Not Allowed until endpoint is properly registered
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (errorMessage.includes('405') || errorMessage.includes('500')) {
-          console.log('[Test] Mention endpoint not yet active - test skipped');
+        if (skipIfEndpointUnavailable(error, 'Mention endpoint')) {
           expect(error).toBeTruthy();
-        } else {
-          throw error;
+          return;
         }
+        throw error;
       }
     }, 10000);
   });
