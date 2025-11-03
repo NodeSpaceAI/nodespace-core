@@ -57,11 +57,25 @@
   } = $props();
 
   // Fallback to global state when not pane-specific (backwards compatibility)
-  const displayTabs = $derived(tabs || $tabState.tabs);
+  const currentPaneId = $derived(pane?.id || $tabState.activePaneId);
+
+  // Get tabs in the correct order based on pane's tabIds array
+  const displayTabs: Tab[] = $derived.by(() => {
+    if (tabs) return tabs;
+
+    // Get the current pane
+    const currentPane = $tabState.panes.find((p) => p.id === currentPaneId);
+    if (!currentPane) return $tabState.tabs;
+
+    // Order tabs according to pane's tabIds array
+    return currentPane.tabIds
+      .map((tabId) => $tabState.tabs.find((t) => t.id === tabId))
+      .filter((t): t is Tab => t !== undefined);
+  });
+
   const currentActiveTabId = $derived(
     activeTabId || $tabState.activeTabIds[$tabState.activePaneId]
   );
-  const currentPaneId = $derived(pane?.id || $tabState.activePaneId);
 
   // Check if close button should be disabled (last tab in last pane)
   const isCloseDisabled = $derived(displayTabs.length === 1 && $tabState.panes.length === 1);
@@ -500,6 +514,8 @@
   /* Draggable tab cursor */
   .tab-item[draggable='true'] {
     cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
   }
 
   .tab-item[draggable='true']:active {
