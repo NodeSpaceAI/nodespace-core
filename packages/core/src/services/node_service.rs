@@ -344,6 +344,107 @@ impl NodeService {
     /// # Ok(())
     /// # }
     /// ```
+    /// Get schema definition for a given node type
+    ///
+    /// Queries the schema node directly from the database.
+    /// Schema nodes are stored with id = node_type and node_type = "schema".
+    ///
+    /// # Arguments
+    ///
+    /// * `node_type` - The type of node to get the schema for (e.g., "task", "person")
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(value))` - Schema definition as JSON value if found
+    /// * `Ok(None)` - No schema found for this node type
+    /// * `Err` - Database error
+    async fn get_schema_for_type(
+        &self,
+        node_type: &str,
+    ) -> Result<Option<serde_json::Value>, NodeServiceError> {
+        let conn = self.db.connect_with_timeout().await?;
+
+        let mut stmt = conn
+            .prepare("SELECT properties FROM nodes WHERE id = ? AND node_type = 'schema'")
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to prepare schema query: {}", e))
+            })?;
+
+        let mut rows = stmt
+            .query([node_type])
+            .await
+            .map_err(|e| NodeServiceError::query_failed(format!("Failed to get schema: {}", e)))?;
+
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+        {
+            let properties_str: String = row.get(0).map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to get properties column: {}", e))
+            })?;
+
+            let schema: serde_json::Value = serde_json::from_str(&properties_str)
+                .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
+
+            Ok(Some(schema))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Backfill _schema_version for a node if it doesn't have one (Phase 1 lazy migration)
+    ///
+    /// # Arguments
+    ///
+    /// * `node` - Mutable reference to the node to backfill
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Version was already present or successfully backfilled
+    /// * `Err` - Database error during backfill
+    async fn backfill_schema_version(&self, node: &mut Node) -> Result<(), NodeServiceError> {
+        if let Some(props_obj) = node.properties.as_object() {
+            if !props_obj.contains_key("_schema_version") {
+                // Node doesn't have schema version - backfill it
+                let version =
+                    if let Some(schema) = self.get_schema_for_type(&node.node_type).await? {
+                        schema.get("version").and_then(|v| v.as_i64()).unwrap_or(1)
+                    } else {
+                        1 // Default to version 1 if no schema found
+                    };
+
+                // Add version to node properties
+                let mut updated_props = node.properties.clone();
+                if let Some(props_obj) = updated_props.as_object_mut() {
+                    props_obj.insert("_schema_version".to_string(), serde_json::json!(version));
+                }
+
+                // Persist the backfilled version to database
+                let conn = self.db.connect_with_timeout().await?;
+                let properties_json = serde_json::to_string(&updated_props)
+                    .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
+
+                conn.execute(
+                    "UPDATE nodes SET properties = ?, modified_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (properties_json.as_str(), node.id.as_str()),
+                )
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!(
+                        "Failed to backfill schema version: {}",
+                        e
+                    ))
+                })?;
+
+                // Update the in-memory node with new properties
+                node.properties = updated_props;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn create_node(&self, node: Node) -> Result<String, NodeServiceError> {
         // Validate node using behavior registry
         self.behaviors.validate_node(&node)?;
@@ -355,7 +456,20 @@ impl NodeService {
             if !parent_exists {
                 // Check if this is a date node (format: YYYY-MM-DD)
                 if is_date_node_id(parent_id) {
-                    // Auto-create the date node
+                    // Auto-create the date node with schema version
+                    let mut date_properties = serde_json::Map::new();
+
+                    // Add schema version for date node
+                    if let Some(schema) = self.get_schema_for_type("date").await? {
+                        if let Some(version) = schema.get("version").and_then(|v| v.as_i64()) {
+                            date_properties
+                                .insert("_schema_version".to_string(), serde_json::json!(version));
+                        }
+                    } else {
+                        // No schema found - use version 1 as default
+                        date_properties.insert("_schema_version".to_string(), serde_json::json!(1));
+                    }
+
                     let date_node = Node {
                         id: parent_id.clone(),
                         node_type: "date".to_string(),
@@ -364,7 +478,7 @@ impl NodeService {
                         container_node_id: None,
                         before_sibling_id: None,
                         version: 1,
-                        properties: serde_json::Value::Object(serde_json::Map::new()),
+                        properties: serde_json::Value::Object(date_properties),
                         mentions: vec![],
                         mentioned_by: vec![],
                         created_at: chrono::Utc::now(),
@@ -374,7 +488,8 @@ impl NodeService {
 
                     // Insert date node directly (skip validation to avoid recursion)
                     let conn = self.db.connect_with_timeout().await?;
-                    let properties_json = "{}";
+                    let properties_json = serde_json::to_string(&date_node.properties)
+                        .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
                     conn.execute(
                         "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, version, properties, embedding_vector)
                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -413,7 +528,24 @@ impl NodeService {
         // Database defaults handle created_at and modified_at timestamps automatically
         let conn = self.db.connect_with_timeout().await?;
 
-        let properties_json = serde_json::to_string(&node.properties)
+        // Add schema version to properties
+        // Get schema for this node type and extract version
+        let mut properties = node.properties.clone();
+        if let Some(schema) = self.get_schema_for_type(&node.node_type).await? {
+            if let Some(version) = schema.get("version").and_then(|v| v.as_i64()) {
+                // Add _schema_version to properties
+                if let Some(props_obj) = properties.as_object_mut() {
+                    props_obj.insert("_schema_version".to_string(), serde_json::json!(version));
+                }
+            }
+        } else {
+            // No schema found - use version 1 as default
+            if let Some(props_obj) = properties.as_object_mut() {
+                props_obj.insert("_schema_version".to_string(), serde_json::json!(1));
+            }
+        }
+
+        let properties_json = serde_json::to_string(&properties)
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
         // Convert ROOT_CONTAINER_ID to None (null in database)
@@ -648,6 +780,7 @@ impl NodeService {
         {
             let mut node = self.row_to_node(row)?;
             self.populate_mentions(&mut node).await?;
+            self.backfill_schema_version(&mut node).await?;
             Ok(Some(node))
         } else {
             Ok(None)
@@ -1578,7 +1711,9 @@ impl NodeService {
                 .await
                 .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
             {
-                nodes.push(self.row_to_node(row)?);
+                let mut node = self.row_to_node(row)?;
+                self.backfill_schema_version(&mut node).await?;
+                nodes.push(node);
             }
 
             return Ok(nodes);
@@ -1616,7 +1751,9 @@ impl NodeService {
                 .await
                 .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
             {
-                nodes.push(self.row_to_node(row)?);
+                let mut node = self.row_to_node(row)?;
+                self.backfill_schema_version(&mut node).await?;
+                nodes.push(node);
             }
 
             return Ok(nodes);
@@ -1657,7 +1794,9 @@ impl NodeService {
                 .await
                 .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
             {
-                nodes.push(self.row_to_node(row)?);
+                let mut node = self.row_to_node(row)?;
+                self.backfill_schema_version(&mut node).await?;
+                nodes.push(node);
             }
 
             return Ok(nodes);
@@ -1967,7 +2106,9 @@ impl NodeService {
                 .await
                 .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
             {
-                nodes.push(self.row_to_node(row)?);
+                let mut node = self.row_to_node(row)?;
+                self.backfill_schema_version(&mut node).await?;
+                nodes.push(node);
             }
 
             return Ok(nodes);
@@ -2005,7 +2146,9 @@ impl NodeService {
                 .await
                 .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
             {
-                nodes.push(self.row_to_node(row)?);
+                let mut node = self.row_to_node(row)?;
+                self.backfill_schema_version(&mut node).await?;
+                nodes.push(node);
             }
 
             return Ok(nodes);
@@ -4576,6 +4719,160 @@ mod tests {
 
             // Delete again (should still succeed - idempotent)
             service.delete_mention(&node1_id, &node2_id).await.unwrap();
+        }
+
+        // Phase 1: Version Tracking Tests
+        mod version_tracking_tests {
+            use super::*;
+
+            #[tokio::test]
+            async fn test_new_nodes_get_schema_version() {
+                let (service, _temp) = create_test_service().await;
+
+                // Create a text node (no schema exists, should default to version 1)
+                let node = Node::new(
+                    "text".to_string(),
+                    "Test content".to_string(),
+                    None,
+                    json!({}),
+                );
+
+                let id = service.create_node(node).await.unwrap();
+                let retrieved = service.get_node(&id).await.unwrap().unwrap();
+
+                // Verify _schema_version was added
+                assert!(retrieved.properties.get("_schema_version").is_some());
+                assert_eq!(retrieved.properties["_schema_version"], 1);
+            }
+
+            #[tokio::test]
+            async fn test_backfill_existing_nodes_without_version() {
+                let (service, _temp) = create_test_service().await;
+
+                // Manually insert a node without _schema_version (simulating existing data)
+                let conn = service.db.connect_with_timeout().await.unwrap();
+                let node_id = "test-node-no-version";
+                let properties_json = json!({"some_field": "value"}).to_string();
+
+                conn.execute(
+                    "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        node_id,
+                        "text",
+                        "Test content",
+                        None::<&str>,
+                        None::<&str>,
+                        None::<&str>,
+                        properties_json.as_str(),
+                        None::<&str>,
+                    ),
+                )
+                .await
+                .unwrap();
+
+                // Retrieve the node - should trigger backfill
+                let retrieved = service.get_node(node_id).await.unwrap().unwrap();
+
+                // Verify _schema_version was backfilled
+                assert!(retrieved.properties.get("_schema_version").is_some());
+                assert_eq!(retrieved.properties["_schema_version"], 1);
+
+                // Verify original field is still present
+                assert_eq!(retrieved.properties["some_field"], "value");
+
+                // Verify the backfill was persisted to database
+                let retrieved_again = service.get_node(node_id).await.unwrap().unwrap();
+                assert_eq!(retrieved_again.properties["_schema_version"], 1);
+            }
+
+            #[tokio::test]
+            async fn test_query_nodes_backfills_versions() {
+                let (service, _temp) = create_test_service().await;
+
+                // Manually insert multiple nodes without _schema_version
+                let conn = service.db.connect_with_timeout().await.unwrap();
+
+                for i in 1..=3 {
+                    let node_id = format!("test-node-{}", i);
+                    let properties_json = json!({"field": i}).to_string();
+
+                    conn.execute(
+                        "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            node_id.as_str(),
+                            "text",
+                            format!("Content {}", i).as_str(),
+                            None::<&str>,
+                            None::<&str>,
+                            None::<&str>,
+                            properties_json.as_str(),
+                            None::<&str>,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                }
+
+                // Query all text nodes - should trigger backfill for all
+                let filter = NodeFilter::new().with_node_type("text".to_string());
+                let nodes = service.query_nodes(filter).await.unwrap();
+
+                // Verify all nodes got _schema_version backfilled
+                assert!(nodes.len() >= 3);
+                for node in &nodes {
+                    assert!(node.properties.get("_schema_version").is_some());
+                    assert_eq!(node.properties["_schema_version"], 1);
+                }
+            }
+
+            #[tokio::test]
+            async fn test_auto_created_date_nodes_get_version() {
+                let (service, _temp) = create_test_service().await;
+
+                // Create a node with date parent (will auto-create date node)
+                let text_node = Node::new_with_id(
+                    "test-text-node".to_string(),
+                    "text".to_string(),
+                    "Test content".to_string(),
+                    Some("2025-01-15".to_string()),
+                    json!({}),
+                );
+
+                service.create_node(text_node).await.unwrap();
+
+                // Verify the auto-created date node has _schema_version
+                let date_node = service.get_node("2025-01-15").await.unwrap().unwrap();
+                assert!(date_node.properties.get("_schema_version").is_some());
+                assert_eq!(date_node.properties["_schema_version"], 1);
+            }
+
+            #[tokio::test]
+            async fn test_nodes_with_existing_version_not_modified() {
+                let (service, _temp) = create_test_service().await;
+
+                // Create a node (will get version 1)
+                let node = Node::new(
+                    "text".to_string(),
+                    "Test content".to_string(),
+                    None,
+                    json!({}),
+                );
+
+                let id = service.create_node(node).await.unwrap();
+
+                // Retrieve twice to ensure version doesn't get modified on subsequent access
+                let retrieved1 = service.get_node(&id).await.unwrap().unwrap();
+                let retrieved2 = service.get_node(&id).await.unwrap().unwrap();
+
+                assert_eq!(retrieved1.properties["_schema_version"], 1);
+                assert_eq!(retrieved2.properties["_schema_version"], 1);
+                assert_eq!(
+                    retrieved1.modified_at, retrieved2.modified_at,
+                    "Modified timestamp should not change on backfill skip"
+                );
+            }
         }
     }
 }
