@@ -42,6 +42,7 @@
   import { cn } from '$lib/utils.js';
   import type { Tab, Pane } from '$lib/stores/navigation.js';
   import type { Snippet } from 'svelte';
+  import { draggable, droppable, type DragDropState } from '@thisux/sveltednd';
 
   // Props - when used inside PaneManager
   let {
@@ -81,10 +82,9 @@
   // Check if close button should be disabled (last tab in last pane)
   const isCloseDisabled = $derived(displayTabs.length === 1 && $tabState.panes.length === 1);
 
-  // Drag-and-drop state
-  let draggedTabId: string | null = $state(null);
+  // Drag-over state for visual feedback
   let dragOverIndex: number | null = $state(null);
-  let dragOverPaneId: string | null = $state(null);
+  let draggingTabId: string | null = $state(null);
 
   // Truncate title to specified length with ellipsis
   function truncateTitle(title: string, maxLength: number = 25): string {
@@ -131,72 +131,80 @@
     }
   }
 
-  // Drag-and-drop handlers
+  // Drag-and-drop handlers using @thisux/sveltednd
 
   /**
-   * Handle drag start - initiate dragging operation
+   * Handle drag start - track which tab is being dragged
    */
-  function handleDragStart(event: DragEvent, tab: Tab, index: number): void {
-    // Prevent dragging last tab in last pane
-    if (displayTabs.length === 1 && $tabState.panes.length === 1) {
-      event.preventDefault();
-      return;
+  function handleDragStart(state: DragDropState<{ tab: Tab; paneId: string }>): void {
+    if (state.draggedItem) {
+      draggingTabId = state.draggedItem.tab.id;
     }
-
-    draggedTabId = tab.id;
-    event.dataTransfer!.effectAllowed = 'move';
-    event.dataTransfer!.setData(
-      'application/nodespace-tab',
-      JSON.stringify({
-        tabId: tab.id,
-        sourcePaneId: currentPaneId,
-        sourceIndex: index
-      })
-    );
-
-    // Set drag image (the tab element itself)
-    const dragImage = event.currentTarget as HTMLElement;
-    event.dataTransfer!.setDragImage(dragImage, 0, 0);
   }
 
   /**
-   * Handle drag over - show drop zone and insertion point
+   * Handle drag end - clear dragging state
    */
-  function handleDragOver(event: DragEvent, index: number): void {
-    event.preventDefault(); // Allow drop
-    event.dataTransfer!.dropEffect = 'move';
-
-    dragOverIndex = index;
-    dragOverPaneId = currentPaneId;
+  function handleDragEnd(): void {
+    draggingTabId = null;
+    dragOverIndex = null;
   }
 
   /**
-   * Handle drag leave - clear drop zone indicators
+   * Handle drag over - show visual indicator
    */
-  function handleDragLeave(event: DragEvent): void {
-    // Only clear if leaving the tab bar entirely
-    const relatedTarget = event.relatedTarget as HTMLElement;
-    const tabBar = (event.currentTarget as HTMLElement).closest('.tab-bar');
+  function handleDragOver(state: DragDropState<{ tab: Tab; paneId: string }>): void {
+    const { targetContainer } = state;
+    if (targetContainer) {
+      const targetIndex = parseInt(targetContainer.replace('tab-', ''));
+      if (!isNaN(targetIndex)) {
+        dragOverIndex = targetIndex;
+      }
+    }
+  }
 
-    if (!tabBar?.contains(relatedTarget)) {
+  /**
+   * Handle drag enter - show visual indicator
+   */
+  function handleDragEnter(state: DragDropState<{ tab: Tab; paneId: string }>): void {
+    handleDragOver(state);
+  }
+
+  /**
+   * Handle drag leave - clear visual indicator
+   */
+  function handleDragLeave(): void {
+    dragOverIndex = null;
+  }
+
+  /**
+   * Handle drop - perform tab reorder or move between panes
+   */
+  function handleDrop(state: DragDropState<{ tab: Tab; paneId: string }>): void {
+    const { draggedItem, targetContainer, sourceContainer } = state;
+
+    if (!draggedItem || !targetContainer || !sourceContainer) {
       dragOverIndex = null;
-      dragOverPaneId = null;
-    }
-  }
-
-  /**
-   * Handle drop - perform tab reorder or move
-   */
-  function handleDrop(event: DragEvent, targetIndex: number): void {
-    event.preventDefault();
-
-    const data = event.dataTransfer?.getData('application/nodespace-tab');
-    if (!data) {
-      resetDragState();
       return;
     }
 
-    const { tabId, sourcePaneId } = JSON.parse(data);
+    // Parse indices from container IDs
+    const sourceIndex = parseInt(sourceContainer.replace('tab-', ''));
+    const targetIndex = parseInt(targetContainer.replace('tab-', ''));
+
+    if (isNaN(sourceIndex) || isNaN(targetIndex)) {
+      dragOverIndex = null;
+      return;
+    }
+
+    const sourcePaneId = draggedItem.paneId;
+    const tabId = draggedItem.tab.id;
+
+    // Skip if dropping on same position
+    if (sourcePaneId === currentPaneId && sourceIndex === targetIndex) {
+      dragOverIndex = null;
+      return;
+    }
 
     if (sourcePaneId === currentPaneId) {
       // Within-pane reorder
@@ -206,23 +214,8 @@
       moveTabBetweenPanes(tabId, sourcePaneId, currentPaneId, targetIndex);
     }
 
-    resetDragState();
-  }
-
-  /**
-   * Handle drag end - cleanup drag state
-   */
-  function handleDragEnd(): void {
-    resetDragState();
-  }
-
-  /**
-   * Reset all drag-related state
-   */
-  function resetDragState(): void {
-    draggedTabId = null;
+    // Clear drag-over state
     dragOverIndex = null;
-    dragOverPaneId = null;
   }
 
   /**
@@ -238,43 +231,57 @@
 </script>
 
 <!-- Tab bar - always shown (even with 1 tab for pane system) -->
-<div
-  class={cn(
-    'tab-bar',
-    dragOverPaneId === currentPaneId && draggedTabId && 'tab-bar--drop-zone-active'
-  )}
-  role="tablist"
-  tabindex="-1"
-  aria-label="Content tabs"
-  ondragleave={handleDragLeave}
->
+<div class="tab-bar" role="tablist" tabindex="-1" aria-label="Content tabs">
   {#each displayTabs as tab, i (tab.id)}
     {@const isActive = tab.id === currentActiveTabId}
-    {@const isDragging = draggedTabId === tab.id}
     {@const isDraggable = canDragTab(tab)}
-    {@const showDropIndicator = dragOverIndex === i && dragOverPaneId === currentPaneId}
-
-    <!-- Drop indicator before tab -->
-    {#if showDropIndicator}
-      <div class="drop-indicator"></div>
-    {/if}
+    {@const showDropIndicator = dragOverIndex === i}
+    {@const isDragging = draggingTabId === tab.id}
 
     <div
-      class={cn('tab-item', isActive && 'tab-item--active', isDragging && 'tab-item--dragging')}
+      class={cn(
+        'tab-item',
+        isActive && 'tab-item--active',
+        showDropIndicator && 'tab-item--drop-target',
+        isDragging && 'tab-item--dragging'
+      )}
       role="tab"
       tabindex={isActive ? 0 : -1}
       aria-selected={isActive}
       aria-controls={`tab-panel-${tab.id}`}
-      aria-grabbed={isDragging}
-      draggable={isDraggable}
-      onclick={() => handleTabClick(tab.id)}
       onkeydown={(event) => handleTabKeydown(event, tab.id)}
-      ondragstart={(e) => handleDragStart(e, tab, i)}
-      ondragover={(e) => handleDragOver(e, i)}
-      ondrop={(e) => handleDrop(e, i)}
-      ondragend={handleDragEnd}
+      use:droppable={{
+        container: `tab-${i}`,
+        callbacks: {
+          onDragEnter: handleDragEnter,
+          onDragOver: handleDragOver,
+          onDragLeave: handleDragLeave,
+          onDrop: handleDrop
+        }
+      }}
     >
-      <span class="tab-title" title={tab.title}>
+      <span
+        class="tab-title"
+        title={tab.title}
+        role="button"
+        tabindex="0"
+        onclick={() => handleTabClick(tab.id)}
+        onkeydown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleTabClick(tab.id);
+          }
+        }}
+        use:draggable={{
+          container: `tab-${i}`,
+          dragData: { tab, paneId: currentPaneId },
+          disabled: !isDraggable,
+          callbacks: {
+            onDragStart: handleDragStart,
+            onDragEnd: handleDragEnd
+          }
+        }}
+      >
         {truncateTitle(tab.title)}
       </span>
 
@@ -290,12 +297,24 @@
         </button>
       {/if}
     </div>
-
-    <!-- Drop indicator after last tab -->
-    {#if i === displayTabs.length - 1 && dragOverIndex === displayTabs.length && dragOverPaneId === currentPaneId}
-      <div class="drop-indicator"></div>
-    {/if}
   {/each}
+
+  <!-- Drop zone after last tab for "append to end" -->
+  <div
+    class={cn(
+      'tab-end-drop-zone',
+      dragOverIndex === displayTabs.length && 'tab-end-drop-zone--active'
+    )}
+    use:droppable={{
+      container: `tab-${displayTabs.length}`,
+      callbacks: {
+        onDragEnter: handleDragEnter,
+        onDragOver: handleDragOver,
+        onDragLeave: handleDragLeave,
+        onDrop: handleDrop
+      }
+    }}
+  ></div>
 </div>
 
 <!-- Tab content area -->
@@ -433,6 +452,8 @@
     opacity: 0; /* Hidden by default, shown on tab hover */
     transition: opacity 0.15s ease-in-out;
     border-radius: 2px; /* Subtle rounding to soften corners */
+    z-index: 100; /* Ensure it's above drag handles */
+    pointer-events: auto; /* Always receive pointer events */
   }
 
   /* CSS-only close icon (X shape using pseudo-elements) */
@@ -510,58 +531,62 @@
     }
   }
 
-  /* Drag-and-drop styles */
-
-  /* Draggable tab cursor */
-  .tab-item[draggable='true'] {
+  /* Drag-and-drop styles - minimal styling, library handles states */
+  .tab-item {
     cursor: grab;
     user-select: none;
     -webkit-user-select: none;
   }
 
-  .tab-item[draggable='true']:active {
+  .tab-item:active {
     cursor: grabbing;
   }
 
-  .tab-item[draggable='false'] {
-    cursor: default;
-  }
-
-  /* Dragging state - show ghost effect */
+  /* Make the original tab more transparent while dragging */
   .tab-item--dragging {
     opacity: 0.4;
-    pointer-events: none; /* Prevent hover effects during drag */
+    transition: opacity 0.15s ease;
   }
 
-  /* Drop zone highlight on tab bar */
-  .tab-bar--drop-zone-active {
-    background: hsl(var(--primary) / 0.05);
-    outline: 2px dashed hsl(var(--primary) / 0.3);
-    outline-offset: -2px;
+  /* Drop target indicator - thicker left border */
+  .tab-item--drop-target {
+    border-left: 3px solid hsl(var(--primary)) !important;
+    background-color: hsl(var(--primary) / 0.1);
     transition: all 0.15s ease;
   }
 
-  /* Drop indicator - vertical line showing insertion point */
-  .drop-indicator {
-    position: absolute;
-    width: 3px;
-    height: calc(100% - 8px);
-    top: 4px;
-    background: hsl(var(--primary));
-    border-radius: 1.5px;
-    pointer-events: none;
-    z-index: 100;
-    box-shadow: 0 0 4px hsl(var(--primary) / 0.5);
-    animation: pulse 0.6s ease-in-out infinite;
+  /* First tab drop target - show border on right instead */
+  .tab-item--drop-target:first-child {
+    border-left: 1px solid hsl(var(--border));
+    border-right: 3px solid hsl(var(--primary)) !important;
   }
 
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.6;
-    }
+  /* End drop zone - invisible area after last tab */
+  .tab-end-drop-zone {
+    min-width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    position: relative;
+    transition: all 0.15s ease;
+  }
+
+  /* Show visual indicator when hovering over end zone */
+  .tab-end-drop-zone--active {
+    background-color: hsl(var(--primary) / 0.1);
+    border-left: 3px solid hsl(var(--primary));
+  }
+
+  /* Add a subtle hint that there's a drop zone */
+  .tab-end-drop-zone--active::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 20px;
+    height: 20px;
+    border: 2px dashed hsl(var(--primary));
+    border-radius: 4px;
+    opacity: 0.5;
   }
 </style>

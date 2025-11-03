@@ -192,11 +192,55 @@ export class TabPersistenceService {
   }
 
   /**
+   * Sanitize state to remove duplicates and invalid references
+   * @param state - The state to sanitize
+   * @returns The sanitized state
+   */
+  private static sanitize(state: PersistedTabState): PersistedTabState {
+    // Remove duplicate pane IDs
+    const seenPaneIds = new Set<string>();
+    const uniquePanes = state.panes.filter((pane) => {
+      if (seenPaneIds.has(pane.id)) {
+        this.warn(`Removing duplicate pane ID: ${pane.id}`);
+        return false;
+      }
+      seenPaneIds.add(pane.id);
+      return true;
+    });
+
+    // Remove duplicate tab IDs from each pane's tabIds array
+    const sanitizedPanes = uniquePanes.map((pane) => ({
+      ...pane,
+      tabIds: [...new Set(pane.tabIds)]
+    }));
+
+    // Remove duplicate tab IDs from tabs array
+    const seenTabIds = new Set<string>();
+    const uniqueTabs = state.tabs.filter((tab) => {
+      if (seenTabIds.has(tab.id)) {
+        this.warn(`Removing duplicate tab ID: ${tab.id}`);
+        return false;
+      }
+      seenTabIds.add(tab.id);
+      return true;
+    });
+
+    return {
+      ...state,
+      panes: sanitizedPanes,
+      tabs: uniqueTabs
+    };
+  }
+
+  /**
    * Migrate state from older versions to current version
    * @param state - The state to migrate
    * @returns The migrated state
    */
   private static migrate(state: PersistedTabState): PersistedTabState {
+    // Sanitize state to remove duplicates (applies to all versions)
+    const sanitized = this.sanitize(state);
+
     // Currently only version 1 exists, so no migration needed
     // Future versions can add migration logic here:
     //
@@ -205,7 +249,7 @@ export class TabPersistenceService {
     //   return { ...state, version: 2, newField: defaultValue };
     // }
 
-    return state;
+    return sanitized;
   }
 
   /**
