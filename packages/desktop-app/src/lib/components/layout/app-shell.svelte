@@ -15,6 +15,8 @@
   import { SharedNodeStore } from '$lib/services/shared-node-store';
   import { MCP_EVENTS } from '$lib/constants';
   import type { Node } from '$lib/types';
+  import { loadPersistedState } from '$lib/stores/navigation';
+  import { TabPersistenceService } from '$lib/services/tab-persistence-service';
 
   // Constants
   const LOG_PREFIX = '[AppShell]';
@@ -87,6 +89,14 @@
   // Initialize theme system and menu event listeners
   onMount(() => {
     const cleanup = initializeTheme();
+
+    // Load persisted tab state from storage
+    const stateLoaded = loadPersistedState();
+    if (stateLoaded) {
+      console.log(`${LOG_PREFIX} Persisted tab state loaded successfully`);
+    } else {
+      console.log(`${LOG_PREFIX} No persisted tab state found, using default state`);
+    }
 
     // Initialize the unified plugin registry with core plugins
     registerCorePlugins(pluginRegistry);
@@ -181,6 +191,9 @@
     document.addEventListener('click', handleLinkClick, true);
 
     return async () => {
+      // Flush any pending tab state saves before unmounting
+      TabPersistenceService.flush();
+
       cleanup?.();
       if (unlistenMenu) {
         (await unlistenMenu)();
