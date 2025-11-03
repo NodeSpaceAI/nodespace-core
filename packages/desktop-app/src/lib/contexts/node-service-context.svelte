@@ -50,6 +50,10 @@
   import { tauriNodeService } from '$lib/services/tauri-node-service';
   import { ContentProcessor } from '$lib/services/content-processor';
   import { focusManager } from '$lib/services/focus-manager.svelte';
+  import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
+
+  // Get paneId from context (set by PaneContent)
+  const paneId = getContext<string>('paneId') ?? DEFAULT_PANE_ID;
 
   // Props
   let {
@@ -85,7 +89,7 @@
         focusRequested: (nodeId: string, position?: number) => {
           // Use FocusManager as single source of truth for focus management
           // This replaces the old DOM-based contenteditable selector approach
-          focusManager.setEditingNode(nodeId, position);
+          focusManager.setEditingNode(nodeId, paneId, position);
         },
         hierarchyChanged: () => {
           // Hierarchy change handling logic here if needed

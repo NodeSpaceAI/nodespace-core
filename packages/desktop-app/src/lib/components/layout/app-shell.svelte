@@ -3,13 +3,14 @@
   import { listen } from '@tauri-apps/api/event';
   import { invoke } from '@tauri-apps/api/core';
   import NavigationSidebar from './navigation-sidebar.svelte';
-  import TabSystem from './tab-system.svelte';
+  import PaneManager from './pane-manager.svelte';
   import ThemeProvider from '$lib/design/components/theme-provider.svelte';
   import NodeServiceContext from '$lib/contexts/node-service-context.svelte';
   import { initializeTheme } from '$lib/design/theme';
   import { layoutState, toggleSidebar } from '$lib/stores/layout';
   import { registerCorePlugins } from '$lib/plugins/core-plugins';
   import { pluginRegistry } from '$lib/plugins/index';
+  import { toggleTheme } from '$lib/design/theme';
   import { isValidDateString } from '$lib/utils/date-formatting';
   import { SharedNodeStore } from '$lib/services/shared-node-store';
   import { MCP_EVENTS } from '$lib/constants';
@@ -147,13 +148,31 @@
       }
 
       // Check for Cmd+Click (Mac) or Ctrl+Click (Windows/Linux)
-      const openInNewTab = event.metaKey || event.ctrlKey;
+      const modifierPressed = event.metaKey || event.ctrlKey;
+      const shiftPressed = event.shiftKey;
+
+      // Determine navigation action:
+      // - Cmd+Shift+Click: Open in other pane (don't navigate current)
+      // - Cmd+Click: Open in new tab (same pane)
+      // - Click: Navigate in current tab
+      const openInOtherPane = modifierPressed && shiftPressed;
+      const openInNewTab = modifierPressed && !shiftPressed;
+
+      // Prevent default navigation for modifier key combinations
+      if (modifierPressed) {
+        event.preventDefault();
+      }
 
       // Phase 2-3: Actually navigate using NavigationService (lazy import)
       (async () => {
         const { getNavigationService } = await import('$lib/services/navigation-service');
         const navService = getNavigationService();
-        navService.navigateToNode(nodeId, openInNewTab);
+
+        if (openInOtherPane) {
+          navService.navigateToNodeInOtherPane(nodeId);
+        } else {
+          navService.navigateToNode(nodeId, openInNewTab);
+        }
       })();
     };
 
@@ -178,12 +197,16 @@
   $: isCollapsed = $layoutState.sidebarCollapsed;
 
   // Handle global keyboard shortcuts
-  // function handleKeydown(_event: KeyboardEvent) {
-  //   // No global shortcuts currently defined
-  // }
+  function handleKeydown(event: KeyboardEvent) {
+    // Toggle theme - Cmd+\ (Mac) or Ctrl+\ (Windows/Linux)
+    if ((event.metaKey || event.ctrlKey) && event.key === '\\') {
+      event.preventDefault();
+      toggleTheme();
+    }
+  }
 </script>
 
-<!-- <svelte:window on:keydown={handleKeydown} /> -->
+<svelte:window on:keydown={handleKeydown} />
 
 <!-- 
   Application Shell Component
@@ -207,14 +230,10 @@
       <!-- Navigation Sidebar -->
       <NavigationSidebar />
 
-      <!-- Tab System - positioned to span both tabs and content grid areas -->
-      <div class="tab-system-wrapper">
-        <TabSystem let:activeTab>
-          <!-- Main Content Area -->
-          <main class="main-content">
-            <slot {activeTab} />
-          </main>
-        </TabSystem>
+      <!-- Pane Manager - positioned to span both tabs and content grid areas -->
+      <div class="pane-manager-wrapper">
+        <!-- PaneManager now renders content directly via PaneContent components -->
+        <PaneManager />
       </div>
     </div>
   </NodeServiceContext>
@@ -239,26 +258,14 @@
     grid-area: sidebar;
   }
 
-  /* Tab System Wrapper - spans both tabs and content areas */
-  .tab-system-wrapper {
+  /* Pane Manager Wrapper - spans both tabs and content areas */
+  .pane-manager-wrapper {
     grid-column: 2;
     grid-row: 1 / span 2;
     display: flex;
     flex-direction: column;
     min-height: 0;
     position: relative;
-  }
-
-  /* Main content area */
-  .main-content {
-    overflow: hidden; /* Don't scroll here - let child components handle it */
-    position: relative;
-    background: hsl(var(--content-background));
-    transition: margin-left 0.3s ease;
-    flex: 1;
-    min-height: 0; /* Critical for flex children to scroll properly */
-    display: flex;
-    flex-direction: column;
   }
 
   /* Responsive behavior for smaller screens */
@@ -283,15 +290,5 @@
     /* Ensure focus indicators are visible */
     outline: 2px solid hsl(var(--ring));
     outline-offset: 2px;
-  }
-
-  /* Prevent content shift during sidebar transitions */
-  .main-content {
-    will-change: margin-left;
-  }
-
-  /* Handle content overflow properly */
-  .main-content > :global(*) {
-    max-width: 100%;
   }
 </style>

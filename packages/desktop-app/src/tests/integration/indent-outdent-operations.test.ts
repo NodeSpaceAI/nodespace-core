@@ -396,7 +396,7 @@ describe('Indent/Outdent Operations', () => {
     expect(outdentedChild?.beforeSiblingId).toBe('parent');
 
     // Verify: Visual order
-    const visible = service.visibleNodes;
+    const visible = service.visibleNodes(null);
     expect(visible.map((n) => n.id)).toEqual(['parent', 'child']);
   });
 
@@ -451,7 +451,7 @@ describe('Indent/Outdent Operations', () => {
     expect(node3Updated?.beforeSiblingId).toBe('node-1');
 
     // Verify: Visual order maintained at root level
-    const visible = service.visibleNodes;
+    const visible = service.visibleNodes(null);
     const rootIds = visible.filter((n) => n.parentId === null).map((n) => n.id);
     expect(rootIds).toEqual(['node-1', 'node-3']);
   });
@@ -569,7 +569,7 @@ describe('Indent/Outdent Operations', () => {
     expect(node2Updated?.beforeSiblingId).toBe('existing-child');
 
     // Verify: Visual order
-    const visible = service.visibleNodes;
+    const visible = service.visibleNodes(null);
     const node1Children = visible.filter((n) => n.parentId === 'node-1').map((n) => n.id);
     expect(node1Children).toEqual(['existing-child', 'node-2']);
   });
@@ -833,7 +833,7 @@ describe('Indent/Outdent Operations', () => {
     expect(unchanged?.beforeSiblingId).toBe('code-1');
 
     // Verify: Code-block has no children
-    const children = service.visibleNodes.filter((n) => n.parentId === 'code-1');
+    const children = service.visibleNodes(null).filter((n) => n.parentId === 'code-1');
     expect(children).toHaveLength(0);
   });
 

@@ -28,6 +28,7 @@ import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import type { Node, NodeUIState } from '$lib/types';
 import { createDefaultUIState } from '$lib/types';
 import type { UpdateSource } from '$lib/types/update-protocol';
+import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
 
 export interface NodeManagerEvents {
   focusRequested: (nodeId: string, position?: number) => void;
@@ -56,9 +57,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   const _uiState = $state<Record<string, NodeUIState>>({});
   let _rootNodeIds = $state<string[]>([]);
   const _activeNodeId = $state<string | undefined>(undefined);
-
-  // View context: which parent are we viewing? (null = viewing global roots)
-  let _viewParentId = $state<string | null>(null);
 
   // Manual reactivity trigger - incremented when SharedNodeStore updates
   let _updateTrigger = $state(0);
@@ -288,28 +286,35 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     return result;
   }
 
-  // REACTIVITY FIX: Properly reactive visibleNodes computation using $derived.by
-  const _visibleNodes = $derived.by(() => {
-    // Track SharedNodeStore updates via _updateTrigger
-    void _updateTrigger;
-    void _rootNodeIds;
-    void _viewParentId;
+  /**
+   * Computes visible nodes for a specific parent ID
+   * @param viewParentId - The parent node ID to get children for (null = root nodes)
+   * @returns Sorted, hierarchical array of visible nodes
+   */
+  function getVisibleNodesForParent(viewParentId: string | null): (Node & {
+    depth: number;
+    children: string[];
+    expanded: boolean;
+    autoFocus: boolean;
+    inheritHeaderLevel: number;
+    isPlaceholder: boolean;
+  })[] {
+    void _updateTrigger; // Still track updates for reactivity
+    void _rootNodeIds; // Track root node changes
 
-    // Determine which nodes are "roots" for this view
-    // If viewParentId is set, roots are nodes with parent_id === viewParentId
-    // If viewParentId is null, roots are nodes with no parent_id
     let viewRoots: string[];
-    if (_viewParentId !== null) {
+    if (viewParentId !== null) {
       // Get children from SharedNodeStore
-      const childIds = sharedNodeStore.getNodesForParent(_viewParentId).map((n) => n.id);
+      // NOTE: Parent may not exist yet (e.g., virtual date nodes) - this is OK
+      const childIds = sharedNodeStore.getNodesForParent(viewParentId).map((n) => n.id);
       // Sort children according to beforeSiblingId linked list
-      viewRoots = sortChildrenByBeforeSiblingId(childIds, _viewParentId);
+      viewRoots = sortChildrenByBeforeSiblingId(childIds, viewParentId);
     } else {
       viewRoots = _rootNodeIds;
     }
 
     return getVisibleNodesRecursive(viewRoots);
-  });
+  }
 
   function findNode(nodeId: string): Node | null {
     return sharedNodeStore.getNode(nodeId) || null;
@@ -326,7 +331,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     headerLevel?: number,
     insertAtBeginning?: boolean,
     originalNodeContent?: string,
-    focusNewNode?: boolean
+    focusNewNode?: boolean,
+    paneId: string = DEFAULT_PANE_ID
   ): string {
     const afterNode = findNode(afterNodeId);
     if (!afterNode) {
@@ -447,7 +453,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Set focus using FocusManager (single source of truth)
     // This replaces manual autoFocus flag manipulation
     if (shouldFocusNewNode) {
-      focusManager.setEditingNode(nodeId);
+      focusManager.setEditingNode(nodeId, paneId);
     }
 
     // Update sibling linked list
@@ -559,7 +565,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // If we're not focusing the new node, keep focus on the original node
     if (!shouldFocusNewNode && afterNode) {
-      focusManager.setEditingNode(afterNodeId);
+      focusManager.setEditingNode(afterNodeId, paneId);
     }
 
     return nodeId;
@@ -571,7 +577,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     headerLevel?: number,
     insertAtBeginning: boolean = false,
     originalNodeContent?: string,
-    focusNewNode?: boolean
+    focusNewNode?: boolean,
+    paneId: string = DEFAULT_PANE_ID
   ): string {
     return createNode(
       afterNodeId,
@@ -580,7 +587,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       headerLevel,
       insertAtBeginning,
       originalNodeContent,
-      focusNewNode
+      focusNewNode,
+      paneId
     );
   }
 
@@ -753,7 +761,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     });
   }
 
-  function combineNodes(currentNodeId: string, previousNodeId: string): void {
+  function combineNodes(
+    currentNodeId: string,
+    previousNodeId: string,
+    paneId: string = DEFAULT_PANE_ID
+  ): void {
     const currentNode = sharedNodeStore.getNode(currentNodeId);
     const previousNode = sharedNodeStore.getNode(previousNodeId);
 
@@ -808,7 +820,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     invalidateSortedChildrenCache(currentNodeId);
 
     // Set focus on the previous node using FocusManager
-    focusManager.setEditingNode(previousNodeId);
+    focusManager.setEditingNode(previousNodeId, paneId, mergePosition);
     events.focusRequested(previousNodeId, mergePosition);
     events.nodeDeleted(currentNodeId);
     events.hierarchyChanged();
@@ -1559,11 +1571,20 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     get activeNodeId() {
       return _activeNodeId;
     },
-    get visibleNodes() {
-      return _visibleNodes;
-    },
-    get viewParentId() {
-      return _viewParentId;
+    /**
+     * Get visible nodes for a specific parent
+     * @param parentId - Parent node ID (null for root-level nodes)
+     * @returns Array of visible nodes sorted by visual hierarchy
+     */
+    visibleNodes(parentId: string | null): (Node & {
+      depth: number;
+      children: string[];
+      expanded: boolean;
+      autoFocus: boolean;
+      inheritHeaderLevel: number;
+      isPlaceholder: boolean;
+    })[] {
+      return getVisibleNodesForParent(parentId);
     },
     get _updateTrigger() {
       return _updateTrigger;
@@ -1571,11 +1592,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Direct access to UI state for computed properties
     getUIState(nodeId: string) {
       return _uiState[nodeId];
-    },
-
-    // View context control
-    setViewParentId(parentId: string | null) {
-      _viewParentId = parentId;
     },
 
     // Node operations
@@ -1643,8 +1659,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       // This supports multi-tab/multi-pane scenarios where multiple viewers may share the same placeholder
       // See base-node-viewer.svelte loadChildrenForParent() for placeholder reuse logic
 
-      // Clear existing state
-      Object.keys(_uiState).forEach((id) => delete _uiState[id]);
+      // CRITICAL: Do NOT clear all global _uiState - this would destroy expansion state
+      // for nodes being viewed in other panes. Only update state for nodes being initialized.
+      // _rootNodeIds is still cleared because it represents the top-level view (single instance)
       _rootNodeIds = [];
 
       const defaults = {

@@ -541,8 +541,10 @@ export class SharedNodeStore {
     this.versions.set(node.id, this.getNextVersion(node.id));
     this.notifySubscribers(node.id, node, source);
 
-    // Mark as persisted if loaded from backend (database source or skipPersistence flag)
-    if (source.type === 'database' || skipPersistence) {
+    // Mark as persisted ONLY if loaded from backend (database source)
+    // CRITICAL: Do NOT mark as persisted if skipPersistence=true (placeholder nodes)
+    // Placeholder nodes are in-memory only until user adds content
+    if (source.type === 'database') {
       this.persistedNodeIds.add(node.id);
     }
 

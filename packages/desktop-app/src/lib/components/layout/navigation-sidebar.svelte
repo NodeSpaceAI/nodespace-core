@@ -101,11 +101,7 @@
     color: hsl(var(--foreground));
   }
 
-  .hamburger-button:focus-visible {
-    outline: 2px solid hsl(var(--primary));
-    outline-offset: 2px;
-    border-radius: 4px;
-  }
+  /* Removed :focus-visible border - Tab key used for indent/outdent, not UI navigation */
 
   .hamburger-icon {
     width: 20px;
@@ -161,11 +157,7 @@
     color: hsl(var(--foreground));
   }
 
-  .nav-item:focus-visible {
-    outline: 2px solid hsl(var(--primary));
-    outline-offset: 2px;
-    border-radius: 4px;
-  }
+  /* Removed :focus-visible border - Tab key used for indent/outdent, not UI navigation */
 
   .nav-item:disabled {
     opacity: 0.6;

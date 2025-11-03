@@ -120,12 +120,8 @@
     z-index: 0;
   }
 
-  /* Focus ring styling */
-  :global(.theme-provider :focus-visible) {
-    outline: 2px solid hsl(var(--ring));
-    outline-offset: 2px;
-    border-radius: var(--radius);
-  }
+  /* Focus ring styling - REMOVED global rule that was affecting textareas
+     Tab-specific focus styles remain in tab-system.svelte for keyboard navigation */
 
   /* Scrollbar styling for webkit browsers */
   :global(.theme-provider ::-webkit-scrollbar) {

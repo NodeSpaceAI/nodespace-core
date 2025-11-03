@@ -107,7 +107,7 @@ describe('Shift+Enter Key Operations', () => {
     expect(updatedNode?.content.split('\n')).toHaveLength(2);
 
     // Verify: No new nodes created
-    const visible = service.visibleNodes;
+    const visible = service.visibleNodes(null);
     expect(visible).toHaveLength(1);
   });
 
@@ -383,7 +383,7 @@ describe('Shift+Enter Key Operations', () => {
 
     service.initializeNodes([node1, node2]);
 
-    const initialCount = service.visibleNodes.length;
+    const initialCount = service.visibleNodes(null).length;
 
     // Act: Add newlines to node 1
     service.updateNodeContent('node-1', 'Node 1\nLine 2\nLine 3');
@@ -392,8 +392,8 @@ describe('Shift+Enter Key Operations', () => {
     expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Node count unchanged
-    expect(service.visibleNodes).toHaveLength(initialCount);
-    expect(service.visibleNodes.map((n) => n.id)).toEqual(['node-1', 'node-2']);
+    expect(service.visibleNodes(null)).toHaveLength(initialCount);
+    expect(service.visibleNodes(null).map((n) => n.id)).toEqual(['node-1', 'node-2']);
 
     // Verify: Only node-1 content changed
     const node1Updated = service.findNode('node-1');

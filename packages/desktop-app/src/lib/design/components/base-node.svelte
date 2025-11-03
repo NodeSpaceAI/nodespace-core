@@ -24,7 +24,7 @@
 -->
 
 <script lang="ts">
-  import { createEventDispatcher, onDestroy, untrack, tick } from 'svelte';
+  import { createEventDispatcher, onDestroy, untrack, tick, getContext } from 'svelte';
   // import { type NodeType } from '$lib/design/icons'; // Unused but preserved for future use
 
   import {
@@ -50,6 +50,7 @@
   import { createMockElementForView, findCharacterFromClickFast } from './cursor-positioning';
   import { mapViewPositionToEditPosition } from '$lib/utils/view-edit-mapper';
   import { NodeSearchService } from '$lib/services/node-search-service';
+  import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
 
   // Props (Svelte 5 runes syntax) - nodeReferenceService removed
   let {
@@ -72,9 +73,16 @@
     metadata?: Record<string, unknown>;
   } = $props();
 
+  // Get paneId from Svelte context (set by PaneContent)
+  // Falls back to DEFAULT_PANE_ID for backward compatibility (single-pane mode)
+  const paneId = getContext<string>('paneId') ?? DEFAULT_PANE_ID;
+
   // isEditing is now derived from FocusManager (single source of truth)
   // This replaces the old bindable prop approach
-  let isEditing = $derived(focusManager.editingNodeId === nodeId);
+  // CRITICAL: Check both nodeId AND paneId to support same node in multiple panes
+  let isEditing = $derived(
+    focusManager.editingNodeId === nodeId && focusManager.editingPaneId === paneId
+  );
 
   // Derive cursor positioning data for the action (reactive architecture)
   // Only provide cursor data when this node is actively being edited
@@ -435,7 +443,7 @@
 
     // Re-enter edit mode if we've lost focus (shouldn't happen with preventDefault, but safety check)
     if (!isEditing && textareaElement) {
-      focusManager.setEditingNode(nodeId);
+      focusManager.setEditingNode(nodeId, paneId);
       await tick();
     }
 
@@ -553,7 +561,7 @@
       // Only update if this node isn't already set as editing
       // (Don't overwrite arrow navigation context set by setEditingNodeFromArrowNavigation)
       if (focusManager.editingNodeId !== nodeId) {
-        focusManager.setEditingNode(nodeId);
+        focusManager.setEditingNode(nodeId, paneId);
       }
 
       // CRITICAL: Clear node type conversion flag after successful focus
@@ -867,7 +875,7 @@
       bind:this={textareaElement}
       use:positionCursor={{ data: cursorPositionData, controller }}
       class="node__content node__content--textarea"
-      id="textarea-{nodeId}"
+      id="textarea__{paneId}__{nodeId}"
       rows="1"
       tabindex="0"
     ></textarea>
@@ -875,7 +883,7 @@
     <div
       bind:this={viewElement}
       class="node__content node__content--view"
-      id="view-{nodeId}"
+      id="view__{paneId}__{nodeId}"
       tabindex="0"
       onclick={(e) => {
         // Capture click coordinates
@@ -910,12 +918,12 @@
         );
 
         // Set focus with cursor position via FocusManager
-        focusManager.focusNodeAtPosition(nodeId, editPosition);
+        focusManager.focusNodeAtPosition(nodeId, editPosition, paneId);
       }}
       onkeydown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           // Use FocusManager instead of directly setting isEditing
-          focusManager.setEditingNode(nodeId);
+          focusManager.setEditingNode(nodeId, paneId);
           setTimeout(() => controller?.focus(), 0);
         }
       }}

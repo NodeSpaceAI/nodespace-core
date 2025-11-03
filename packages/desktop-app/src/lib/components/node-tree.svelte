@@ -180,10 +180,7 @@
     transform: translate(-50%, -50%) scale(1.1);
   }
 
-  .ns-node-tree__expand-btn:focus-visible {
-    outline: 2px solid var(--ns-color-primary-500);
-    outline-offset: 2px;
-  }
+  /* Removed :focus-visible border - Tab key used for indent/outdent, not UI navigation */
 
   .ns-node-tree__expand-spacer {
     flex-shrink: 0;

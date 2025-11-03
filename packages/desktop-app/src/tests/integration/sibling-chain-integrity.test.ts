@@ -192,7 +192,7 @@ describe('Sibling Chain Integrity', () => {
     expect(validation.firstChildren[0]).toBe('node-1');
 
     // Verify: Visual order matches chain
-    const visible = service.visibleNodes;
+    const visible = service.visibleNodes(null);
     expect(visible.map((n) => n.id)).toEqual(['node-1', node2Id, node3Id, node4Id]);
   });
 
@@ -602,7 +602,7 @@ describe('Sibling Chain Integrity', () => {
     expect(validation.errors).toHaveLength(0);
 
     // Verify: Visual order makes sense
-    const visible = service.visibleNodes;
+    const visible = service.visibleNodes(null);
     const rootNodes = visible.filter((n) => n.parentId === null);
     expect(rootNodes.length).toBeGreaterThan(0);
 

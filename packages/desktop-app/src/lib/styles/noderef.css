@@ -97,12 +97,7 @@
   box-shadow: 0 2px 4px hsl(var(--border) / 0.2);
 }
 
-.ns-noderef:focus-visible {
-  outline: 2px solid hsl(var(--ring));
-  outline-offset: 2px;
-  background: hsl(var(--accent));
-  color: hsl(var(--accent-foreground));
-}
+/* Removed :focus-visible border - Tab key used for indent/outdent, not UI navigation */
 
 .ns-noderef:active {
   transform: translateY(0);
@@ -516,9 +511,7 @@
     font-weight: 600;
   }
 
-  .ns-noderef:focus-visible {
-    outline-width: 3px;
-  }
+  /* Removed :focus-visible border - Tab key used for indent/outdent, not UI navigation */
 }
 
 /* Reduced motion support */

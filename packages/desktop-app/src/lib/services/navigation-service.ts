@@ -15,7 +15,13 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { addTab, tabState, updateTabContent } from '$lib/stores/navigation';
+import {
+  addTab,
+  tabState,
+  updateTabContent,
+  createPane,
+  setActivePane
+} from '$lib/stores/navigation';
 import { sharedNodeStore } from './shared-node-store';
 import { get } from 'svelte/store';
 import type { Node } from '$lib/types';
@@ -147,7 +153,7 @@ export class NavigationService {
     const currentState = get(tabState);
 
     if (openInNewTab) {
-      // Cmd+Click: Always create new tab
+      // Cmd+Click: Always create new tab in the active pane
       const newTab = {
         id: uuidv4(),
         title: target.title,
@@ -156,7 +162,8 @@ export class NavigationService {
           nodeId: target.nodeId,
           nodeType: target.nodeType
         },
-        closeable: true
+        closeable: true,
+        paneId: currentState.activePaneId
       };
 
       addTab(newTab);
@@ -165,12 +172,91 @@ export class NavigationService {
 
     // Regular click: Navigate within current tab
     // Update the active tab's content to show the clicked node
-    const activeTabId = currentState.activeTabId;
+    const activeTabId = currentState.activeTabIds[currentState.activePaneId];
 
     updateTabContent(activeTabId, {
       nodeId: target.nodeId,
       nodeType: target.nodeType
     });
+  }
+
+  /**
+   * Navigate to a node in the other pane (Cmd+Shift+Click behavior)
+   *
+   * If only one pane exists:
+   * - Creates a second pane (50/50 split)
+   * - Opens the node in the new pane
+   *
+   * If two panes exist:
+   * - Opens the node in the pane that is NOT currently active
+   * - Switches focus to that pane
+   *
+   * @param nodeId - The UUID of the node to navigate to
+   */
+  async navigateToNodeInOtherPane(nodeId: string): Promise<void> {
+    const target = await this.resolveNodeTarget(nodeId);
+
+    if (!target) {
+      // Error already logged in resolveNodeTarget
+      return;
+    }
+
+    const currentState = get(tabState);
+    const currentPaneId = currentState.activePaneId;
+
+    if (currentState.panes.length === 1) {
+      // Create second pane (automatically sets 50/50 split)
+      const newPane = createPane();
+
+      if (!newPane) {
+        console.error(`${LOG_PREFIX} Failed to create second pane (max panes reached)`);
+        return;
+      }
+
+      console.log(`${LOG_PREFIX} Created second pane: ${newPane.id}`);
+
+      // Create tab in the new pane
+      const newTab = {
+        id: uuidv4(),
+        title: target.title,
+        type: 'node' as const,
+        content: {
+          nodeId: target.nodeId,
+          nodeType: target.nodeType
+        },
+        closeable: true,
+        paneId: newPane.id
+      };
+
+      addTab(newTab);
+      setActivePane(newPane.id);
+    } else {
+      // Two panes exist - open in the OTHER pane (not the active one)
+      const otherPane = currentState.panes.find((p) => p.id !== currentPaneId);
+
+      if (!otherPane) {
+        console.error(`${LOG_PREFIX} Could not find other pane`);
+        return;
+      }
+
+      console.log(`${LOG_PREFIX} Opening in other pane: ${otherPane.id}`);
+
+      // Create tab in the other pane
+      const newTab = {
+        id: uuidv4(),
+        title: target.title,
+        type: 'node' as const,
+        content: {
+          nodeId: target.nodeId,
+          nodeType: target.nodeType
+        },
+        closeable: true,
+        paneId: otherPane.id
+      };
+
+      addTab(newTab);
+      setActivePane(otherPane.id);
+    }
   }
 }
 
