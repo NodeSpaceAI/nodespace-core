@@ -20,8 +20,8 @@ fn test_tools_list_returns_all_schemas() {
 
     let tools = response["tools"].as_array().unwrap();
 
-    // Verify all 16 tools are present (8 original + 5 hierarchy + 3 batch operations)
-    assert_eq!(tools.len(), 16);
+    // Verify all 21 tools are present (16 original + 5 schema management tools)
+    assert_eq!(tools.len(), 21);
 
     // Verify tool names
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -51,6 +51,13 @@ fn test_tools_list_returns_all_schemas() {
 
     // Search
     assert!(tool_names.contains(&"search_containers"));
+
+    // Schema management tools
+    assert!(tool_names.contains(&"get_schema_definition"));
+    assert!(tool_names.contains(&"add_schema_field"));
+    assert!(tool_names.contains(&"remove_schema_field"));
+    assert!(tool_names.contains(&"extend_schema_enum"));
+    assert!(tool_names.contains(&"remove_schema_enum_value"));
 }
 
 #[test]

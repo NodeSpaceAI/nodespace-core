@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { SchemaService, createSchemaService } from '$lib/services/schema-service.svelte';
+import { SchemaService, createSchemaService } from '$lib/services/schema-service';
 import type { SchemaDefinition } from '$lib/types/schema';
 
 // Mock Tauri's invoke function

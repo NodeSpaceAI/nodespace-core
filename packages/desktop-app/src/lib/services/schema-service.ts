@@ -1,9 +1,9 @@
 /**
- * Schema Service - Svelte 5 Runes Adapter for Schema Management
+ * Schema Service - TypeScript Wrapper for Schema Management
  *
- * Provides a reactive TypeScript wrapper around the Rust backend's schema
+ * Provides a type-safe TypeScript wrapper around the Rust backend's schema
  * management MCP tools. Enables frontend components to manage user-defined
- * entity schemas with full type safety and Svelte reactivity.
+ * entity schemas with full type safety.
  *
  * ## Features
  *
@@ -12,32 +12,29 @@
  * - Get complete schema definitions
  * - Protection level enforcement (core fields protected)
  * - User-friendly error messages
- * - Svelte 5 reactivity via $state
  *
  * ## Usage Example
  *
- * ```svelte
- * <script lang="ts">
- *   import { createSchemaService } from '$lib/services/schema-service.svelte';
+ * ```typescript
+ * import { createSchemaService } from '$lib/services/schema-service';
  *
- *   const schemaService = createSchemaService();
+ * const schemaService = createSchemaService();
  *
- *   async function addPriorityField() {
- *     await schemaService.addField('task', {
- *       fieldName: 'priority',
- *       fieldType: 'number',
- *       indexed: false,
- *       required: false,
- *       default: 0,
- *       description: 'Task priority level'
- *     });
- *   }
+ * async function addPriorityField() {
+ *   await schemaService.addField('task', {
+ *     fieldName: 'priority',
+ *     fieldType: 'number',
+ *     indexed: false,
+ *     required: false,
+ *     default: 0,
+ *     description: 'Task priority level'
+ *   });
+ * }
  *
- *   async function loadTaskSchema() {
- *     const schema = await schemaService.getSchema('task');
- *     console.log('Task schema version:', schema.version);
- *   }
- * </script>
+ * async function loadTaskSchema() {
+ *   const schema = await schemaService.getSchema('task');
+ *   console.log('Task schema version:', schema.version);
+ * }
  * ```
  *
  * ## Architecture
@@ -45,21 +42,21 @@
  * - Frontend Service (this file) → Tauri IPC → MCP Tools → SchemaService → NodeService → Database
  * - All operations enforce protection levels
  * - Schema version automatically incremented on changes
- * - Reactive state for schema caching (future enhancement)
+ * - Stateless design (no caching) - backend is fast enough for current needs
  *
  * @see packages/core/src/services/schema_service.rs - Rust implementation
  * @see packages/core/src/mcp/handlers/schema.rs - MCP tool handlers
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import type {
-  SchemaDefinition,
-  AddFieldConfig,
-  AddFieldResult,
-  RemoveFieldResult,
-  ExtendEnumResult,
-  RemoveEnumValueResult,
-  SchemaOperationError
+import {
+  SchemaOperationError,
+  type SchemaDefinition,
+  type AddFieldConfig,
+  type AddFieldResult,
+  type RemoveFieldResult,
+  type ExtendEnumResult,
+  type RemoveEnumValueResult
 } from '$lib/types/schema';
 
 /**
@@ -125,6 +122,11 @@ export class SchemaService {
    * ```
    */
   async getSchema(schemaId: string): Promise<SchemaDefinition> {
+    // Validate input before expensive IPC call
+    if (!schemaId || schemaId.trim() === '') {
+      throw new SchemaOperationError('Schema ID cannot be empty', schemaId, 'get');
+    }
+
     try {
       const result = await invoke<{ schema: unknown; schemaId: string; success: boolean }>(
         'mcp_call_tool',
@@ -178,12 +180,7 @@ export class SchemaService {
       };
     } catch (error) {
       const message = formatSchemaError(error, 'get', schemaId);
-      const err = new Error(message) as SchemaOperationError;
-      err.name = 'SchemaOperationError';
-      (err as unknown as { schemaId: string }).schemaId = schemaId;
-      (err as unknown as { operation: string }).operation = 'get';
-      (err as unknown as { originalError: unknown }).originalError = error;
-      throw err;
+      throw new SchemaOperationError(message, schemaId, 'get', error);
     }
   }
 
@@ -213,6 +210,17 @@ export class SchemaService {
    * ```
    */
   async addField(schemaId: string, config: AddFieldConfig): Promise<AddFieldResult> {
+    // Validate input before expensive IPC call
+    if (!schemaId || schemaId.trim() === '') {
+      throw new SchemaOperationError('Schema ID cannot be empty', schemaId, 'addField');
+    }
+    if (!config.fieldName || config.fieldName.trim() === '') {
+      throw new SchemaOperationError('Field name cannot be empty', schemaId, 'addField');
+    }
+    if (!config.fieldType || config.fieldType.trim() === '') {
+      throw new SchemaOperationError('Field type cannot be empty', schemaId, 'addField');
+    }
+
     try {
       const result = await invoke<{
         schema_id: string;
@@ -241,12 +249,7 @@ export class SchemaService {
       };
     } catch (error) {
       const message = formatSchemaError(error, 'add field', schemaId);
-      const err = new Error(message) as SchemaOperationError;
-      err.name = 'SchemaOperationError';
-      (err as unknown as { schemaId: string }).schemaId = schemaId;
-      (err as unknown as { operation: string }).operation = 'addField';
-      (err as unknown as { originalError: unknown }).originalError = error;
-      throw err;
+      throw new SchemaOperationError(message, schemaId, 'addField', error);
     }
   }
 
@@ -269,6 +272,14 @@ export class SchemaService {
    * ```
    */
   async removeField(schemaId: string, fieldName: string): Promise<RemoveFieldResult> {
+    // Validate input before expensive IPC call
+    if (!schemaId || schemaId.trim() === '') {
+      throw new SchemaOperationError('Schema ID cannot be empty', schemaId, 'removeField');
+    }
+    if (!fieldName || fieldName.trim() === '') {
+      throw new SchemaOperationError('Field name cannot be empty', schemaId, 'removeField');
+    }
+
     try {
       const result = await invoke<{
         schema_id: string;
@@ -289,12 +300,7 @@ export class SchemaService {
       };
     } catch (error) {
       const message = formatSchemaError(error, 'remove field', schemaId);
-      const err = new Error(message) as SchemaOperationError;
-      err.name = 'SchemaOperationError';
-      (err as unknown as { schemaId: string }).schemaId = schemaId;
-      (err as unknown as { operation: string }).operation = 'removeField';
-      (err as unknown as { originalError: unknown }).originalError = error;
-      throw err;
+      throw new SchemaOperationError(message, schemaId, 'removeField', error);
     }
   }
 
@@ -319,6 +325,17 @@ export class SchemaService {
    * ```
    */
   async extendEnum(schemaId: string, fieldName: string, value: string): Promise<ExtendEnumResult> {
+    // Validate input before expensive IPC call
+    if (!schemaId || schemaId.trim() === '') {
+      throw new SchemaOperationError('Schema ID cannot be empty', schemaId, 'extendEnum');
+    }
+    if (!fieldName || fieldName.trim() === '') {
+      throw new SchemaOperationError('Field name cannot be empty', schemaId, 'extendEnum');
+    }
+    if (!value || value.trim() === '') {
+      throw new SchemaOperationError('Enum value cannot be empty', schemaId, 'extendEnum');
+    }
+
     try {
       const result = await invoke<{
         schema_id: string;
@@ -340,12 +357,7 @@ export class SchemaService {
       };
     } catch (error) {
       const message = formatSchemaError(error, 'extend enum', schemaId);
-      const err = new Error(message) as SchemaOperationError;
-      err.name = 'SchemaOperationError';
-      (err as unknown as { schemaId: string }).schemaId = schemaId;
-      (err as unknown as { operation: string }).operation = 'extendEnum';
-      (err as unknown as { originalError: unknown }).originalError = error;
-      throw err;
+      throw new SchemaOperationError(message, schemaId, 'extendEnum', error);
     }
   }
 
@@ -373,6 +385,17 @@ export class SchemaService {
     fieldName: string,
     value: string
   ): Promise<RemoveEnumValueResult> {
+    // Validate input before expensive IPC call
+    if (!schemaId || schemaId.trim() === '') {
+      throw new SchemaOperationError('Schema ID cannot be empty', schemaId, 'removeEnumValue');
+    }
+    if (!fieldName || fieldName.trim() === '') {
+      throw new SchemaOperationError('Field name cannot be empty', schemaId, 'removeEnumValue');
+    }
+    if (!value || value.trim() === '') {
+      throw new SchemaOperationError('Enum value cannot be empty', schemaId, 'removeEnumValue');
+    }
+
     try {
       const result = await invoke<{
         schema_id: string;
@@ -394,12 +417,7 @@ export class SchemaService {
       };
     } catch (error) {
       const message = formatSchemaError(error, 'remove enum value', schemaId);
-      const err = new Error(message) as SchemaOperationError;
-      err.name = 'SchemaOperationError';
-      (err as unknown as { schemaId: string }).schemaId = schemaId;
-      (err as unknown as { operation: string }).operation = 'removeEnumValue';
-      (err as unknown as { originalError: unknown }).originalError = error;
-      throw err;
+      throw new SchemaOperationError(message, schemaId, 'removeEnumValue', error);
     }
   }
 
