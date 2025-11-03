@@ -5,5 +5,6 @@
 pub mod initialize;
 pub mod markdown;
 pub mod nodes;
+pub mod schema;
 pub mod search;
 pub mod tools;

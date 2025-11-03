@@ -5,7 +5,8 @@
 //! - `NodeService` - CRUD operations and hierarchy management
 //! - `NodeEmbeddingService` - Embedding generation and semantic search
 //! - `EmbeddingProcessor` - Background task for processing stale container embeddings
-//! - `SchemaService` - Dynamic schema creation and validation (planned)
+//! - `SchemaService` - Schema management with version tracking and migrations
+//! - `MigrationRegistry` - Schema migration infrastructure for lazy upgrades
 //! - `SearchService` - Semantic search and query operations (planned)
 //!
 //! Services coordinate between the database layer and application logic,
@@ -14,7 +15,10 @@
 pub mod embedding_processor;
 pub mod embedding_service;
 pub mod error;
+pub mod migration_registry;
+pub mod migrations;
 pub mod node_service;
+pub mod schema_service;
 
 #[cfg(test)]
 mod node_service_container_test;
@@ -22,4 +26,6 @@ mod node_service_container_test;
 pub use embedding_processor::{EmbeddingProcessor, EmbeddingProcessorConfig};
 pub use embedding_service::{NodeEmbeddingService, EMBEDDING_DIMENSION};
 pub use error::NodeServiceError;
+pub use migration_registry::{MigrationRegistry, MigrationTransform};
 pub use node_service::NodeService;
+pub use schema_service::SchemaService;

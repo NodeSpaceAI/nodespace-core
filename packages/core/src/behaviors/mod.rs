@@ -748,6 +748,56 @@ impl NodeBehavior for DateNodeBehavior {
     }
 }
 
+/// Schema node behavior
+///
+/// Schema nodes store entity type definitions using the Pure JSON schema-as-node pattern.
+/// By convention, schema nodes have `id = type_name` and `node_type = "schema"`.
+///
+/// Schema nodes are validated minimally - they just need non-empty content and valid
+/// properties JSON. The SchemaService handles detailed schema validation.
+pub struct SchemaNodeBehavior;
+
+impl NodeBehavior for SchemaNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "schema"
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // Basic validation - non-empty content
+        if is_empty_or_whitespace(&node.content) {
+            return Err(NodeValidationError::MissingField(
+                "Schema nodes must have content (schema name)".to_string(),
+            ));
+        }
+
+        // Properties should be valid JSON object (detailed validation is in SchemaService)
+        if !node.properties.is_object() {
+            return Err(NodeValidationError::InvalidProperties(
+                "Schema properties must be a JSON object".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn can_have_children(&self) -> bool {
+        false // Schemas are metadata nodes, not containers
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false // Schemas are structured data
+    }
+
+    fn default_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "is_core": false,
+            "version": 1,
+            "description": "",
+            "fields": []
+        })
+    }
+}
+
 /// Registry for managing node behaviors
 ///
 /// The registry provides thread-safe storage and retrieval of node behaviors.
@@ -826,6 +876,7 @@ impl NodeBehaviorRegistry {
         registry.register(Arc::new(QuoteBlockNodeBehavior));
         registry.register(Arc::new(OrderedListNodeBehavior));
         registry.register(Arc::new(DateNodeBehavior));
+        registry.register(Arc::new(SchemaNodeBehavior));
 
         registry
     }

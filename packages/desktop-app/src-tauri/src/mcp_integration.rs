@@ -6,7 +6,7 @@
 
 use nodespace_core::mcp;
 use nodespace_core::operations::NodeOperations;
-use nodespace_core::services::NodeEmbeddingService;
+use nodespace_core::services::{NodeEmbeddingService, SchemaService};
 use nodespace_core::{Node, NodeService};
 use serde::Serialize;
 use serde_json::Value;
@@ -61,12 +61,16 @@ pub async fn run_mcp_server_with_events(
     });
 
     // Create NodeOperations from NodeService
-    let node_operations = Arc::new(NodeOperations::new(node_service));
+    let node_operations = Arc::new(NodeOperations::new(node_service.clone()));
+
+    // Create SchemaService from NodeService
+    let schema_service = Arc::new(SchemaService::new(node_service));
 
     // Create combined services struct for MCP
     let services = mcp::server::McpServices {
         node_operations,
         embedding_service,
+        schema_service,
     };
 
     // Run core MCP server with HTTP transport and event-emitting callback

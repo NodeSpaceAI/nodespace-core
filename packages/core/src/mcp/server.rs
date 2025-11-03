@@ -8,7 +8,7 @@
 
 use crate::mcp::types::{MCPError, MCPNotification, MCPRequest, MCPResponse};
 use crate::operations::NodeOperations;
-use crate::services::NodeEmbeddingService;
+use crate::services::{NodeEmbeddingService, SchemaService};
 use axum::{
     body::Body,
     extract::State,
@@ -38,6 +38,7 @@ pub enum McpTransport {
 pub struct McpServices {
     pub node_operations: Arc<NodeOperations>,
     pub embedding_service: Arc<NodeEmbeddingService>,
+    pub schema_service: Arc<SchemaService>,
 }
 
 /// Server state tracking initialization status
@@ -541,6 +542,7 @@ async fn handle_request(
             crate::mcp::handlers::tools::handle_tools_call(
                 &services.node_operations,
                 &services.embedding_service,
+                &services.schema_service,
                 request.params,
             )
             .await
@@ -672,12 +674,14 @@ mod tests {
         let db = DatabaseService::new(db_path).await.unwrap();
         let db_arc = Arc::new(db);
         let node_service = Arc::new(NodeService::new((*db_arc).clone()).unwrap());
-        let node_operations = Arc::new(NodeOperations::new(node_service));
+        let node_operations = Arc::new(NodeOperations::new(node_service.clone()));
         let embedding_service = Arc::new(NodeEmbeddingService::new_with_defaults(db_arc).unwrap());
+        let schema_service = Arc::new(SchemaService::new(node_service));
 
         McpServices {
             node_operations,
             embedding_service,
+            schema_service,
         }
     }
 

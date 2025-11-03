@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::operations::NodeOperations;
+use crate::services::SchemaService;
 use serde_json::json;
 
 #[test]
@@ -19,8 +20,8 @@ fn test_tools_list_returns_all_schemas() {
 
     let tools = response["tools"].as_array().unwrap();
 
-    // Verify all 16 tools are present (8 original + 5 hierarchy + 3 batch operations)
-    assert_eq!(tools.len(), 16);
+    // Verify all 21 tools are present (16 original + 5 schema management tools)
+    assert_eq!(tools.len(), 21);
 
     // Verify tool names
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -50,6 +51,13 @@ fn test_tools_list_returns_all_schemas() {
 
     // Search
     assert!(tool_names.contains(&"search_containers"));
+
+    // Schema management tools
+    assert!(tool_names.contains(&"get_schema_definition"));
+    assert!(tool_names.contains(&"add_schema_field"));
+    assert!(tool_names.contains(&"remove_schema_field"));
+    assert!(tool_names.contains(&"extend_schema_enum"));
+    assert!(tool_names.contains(&"remove_schema_enum_value"));
 }
 
 #[test]
@@ -116,15 +124,20 @@ mod async_integration_tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    async fn setup_test_services() -> (Arc<NodeOperations>, Arc<NodeEmbeddingService>, TempDir) {
+    async fn setup_test_services() -> (
+        Arc<NodeOperations>,
+        Arc<NodeEmbeddingService>,
+        Arc<SchemaService>,
+        TempDir,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
         let db = DatabaseService::new(db_path).await.unwrap();
 
         // Clone db for both services
         let db_arc = Arc::new(db);
-        let node_operations = Arc::new(NodeService::new((*db_arc).clone()).unwrap());
-        let node_operations = Arc::new(NodeOperations::new(node_operations));
+        let node_service = Arc::new(NodeService::new((*db_arc).clone()).unwrap());
+        let node_operations = Arc::new(NodeOperations::new(node_service.clone()));
 
         // Create NLP engine for embedding service
         let mut nlp_engine = EmbeddingService::new(EmbeddingConfig::default()).unwrap();
@@ -132,19 +145,30 @@ mod async_integration_tests {
         let nlp_engine = Arc::new(nlp_engine);
 
         let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, db_arc));
-        (node_operations, embedding_service, temp_dir)
+
+        // Create SchemaService
+        let schema_service = Arc::new(SchemaService::new(node_service));
+
+        (node_operations, embedding_service, schema_service, temp_dir)
     }
 
     #[tokio::test]
     async fn test_tools_call_unknown_tool_returns_error() {
-        let (node_operations, embedding_service, _temp_dir) = setup_test_services().await;
+        let (node_operations, embedding_service, schema_service, _temp_dir) =
+            setup_test_services().await;
 
         let params = json!({
             "name": "unknown_tool",
             "arguments": {}
         });
 
-        let result = handle_tools_call(&node_operations, &embedding_service, params).await;
+        let result = handle_tools_call(
+            &node_operations,
+            &embedding_service,
+            &schema_service,
+            params,
+        )
+        .await;
 
         // Should return Err with invalid params error
         assert!(result.is_err());
@@ -155,13 +179,20 @@ mod async_integration_tests {
 
     #[tokio::test]
     async fn test_tools_call_missing_name_parameter() {
-        let (node_operations, embedding_service, _temp_dir) = setup_test_services().await;
+        let (node_operations, embedding_service, schema_service, _temp_dir) =
+            setup_test_services().await;
 
         let params = json!({
             "arguments": {"content": "test"}
         });
 
-        let result = handle_tools_call(&node_operations, &embedding_service, params).await;
+        let result = handle_tools_call(
+            &node_operations,
+            &embedding_service,
+            &schema_service,
+            params,
+        )
+        .await;
 
         // Should return Err with invalid params error
         assert!(result.is_err());
@@ -172,7 +203,8 @@ mod async_integration_tests {
 
     #[tokio::test]
     async fn test_tools_call_create_node_success() {
-        let (node_operations, embedding_service, _temp_dir) = setup_test_services().await;
+        let (node_operations, embedding_service, schema_service, _temp_dir) =
+            setup_test_services().await;
 
         let params = json!({
             "name": "create_node",
@@ -182,7 +214,13 @@ mod async_integration_tests {
             }
         });
 
-        let result = handle_tools_call(&node_operations, &embedding_service, params).await;
+        let result = handle_tools_call(
+            &node_operations,
+            &embedding_service,
+            &schema_service,
+            params,
+        )
+        .await;
 
         // Should return Ok with MCP spec-compliant response
         assert!(result.is_ok(), "tools/call should succeed");
@@ -212,7 +250,8 @@ mod async_integration_tests {
 
     #[tokio::test]
     async fn test_tools_call_get_node_not_found_returns_error_response() {
-        let (node_operations, embedding_service, _temp_dir) = setup_test_services().await;
+        let (node_operations, embedding_service, schema_service, _temp_dir) =
+            setup_test_services().await;
 
         let params = json!({
             "name": "get_node",
@@ -221,7 +260,13 @@ mod async_integration_tests {
             }
         });
 
-        let result = handle_tools_call(&node_operations, &embedding_service, params).await;
+        let result = handle_tools_call(
+            &node_operations,
+            &embedding_service,
+            &schema_service,
+            params,
+        )
+        .await;
 
         // Should return Ok with isError=true (per MCP spec, tool errors are not JSON-RPC errors)
         assert!(result.is_ok());
@@ -240,7 +285,8 @@ mod async_integration_tests {
 
     #[tokio::test]
     async fn test_tools_call_query_nodes_success() {
-        let (node_operations, embedding_service, _temp_dir) = setup_test_services().await;
+        let (node_operations, embedding_service, schema_service, _temp_dir) =
+            setup_test_services().await;
 
         // First create a node
         let create_params = json!({
@@ -250,9 +296,14 @@ mod async_integration_tests {
                 "content": "Searchable content"
             }
         });
-        handle_tools_call(&node_operations, &embedding_service, create_params)
-            .await
-            .unwrap();
+        handle_tools_call(
+            &node_operations,
+            &embedding_service,
+            &schema_service,
+            create_params,
+        )
+        .await
+        .unwrap();
 
         // Now query for nodes
         let query_params = json!({
@@ -263,7 +314,13 @@ mod async_integration_tests {
             }
         });
 
-        let result = handle_tools_call(&node_operations, &embedding_service, query_params).await;
+        let result = handle_tools_call(
+            &node_operations,
+            &embedding_service,
+            &schema_service,
+            query_params,
+        )
+        .await;
 
         assert!(result.is_ok());
         let response = result.unwrap();
@@ -281,14 +338,21 @@ mod async_integration_tests {
 
     #[tokio::test]
     async fn test_tools_call_with_missing_arguments_uses_default() {
-        let (node_operations, embedding_service, _temp_dir) = setup_test_services().await;
+        let (node_operations, embedding_service, schema_service, _temp_dir) =
+            setup_test_services().await;
 
         // Call without arguments field
         let params = json!({
             "name": "query_nodes"
         });
 
-        let result = handle_tools_call(&node_operations, &embedding_service, params).await;
+        let result = handle_tools_call(
+            &node_operations,
+            &embedding_service,
+            &schema_service,
+            params,
+        )
+        .await;
 
         // Should work with default empty arguments
         assert!(result.is_ok());
