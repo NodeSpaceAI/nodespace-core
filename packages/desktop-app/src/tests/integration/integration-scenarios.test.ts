@@ -14,7 +14,7 @@ import {
   cleanupDatabaseIfNeeded,
   shouldUseDatabase
 } from '../utils/should-use-database';
-import { checkServerHealth } from '../utils/test-node-helpers';
+import { checkServerHealth, skipIfEndpointUnavailable } from '../utils/test-node-helpers';
 import { TestNodeBuilder } from '../utils/test-node-builder';
 import { getBackendAdapter, HttpAdapter } from '$lib/services/backend-adapter';
 import type { BackendAdapter } from '$lib/services/backend-adapter';
@@ -123,13 +123,11 @@ describe.sequential('Section 11: Integration Scenarios', () => {
     } catch (error) {
       // If container or mention endpoints are not yet active, skip this test
       // Expected: 405 Method Not Allowed until endpoints are properly registered
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      if (errorMessage.includes('405') || errorMessage.includes('500')) {
-        console.log('[Test] Container/mention endpoints not yet active - test skipped');
+      if (skipIfEndpointUnavailable(error, 'Container/mention endpoints')) {
         expect(error).toBeTruthy();
-      } else {
-        throw error;
+        return;
       }
+      throw error;
     }
   }, 10000);
 
