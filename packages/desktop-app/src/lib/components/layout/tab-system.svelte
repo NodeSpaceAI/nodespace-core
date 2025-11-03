@@ -32,7 +32,13 @@
   </TabSystem>
 -->
 <script lang="ts">
-  import { tabState, setActiveTab, closeTab } from '$lib/stores/navigation.js';
+  import {
+    tabState,
+    setActiveTab,
+    closeTab,
+    reorderTab,
+    moveTabBetweenPanes
+  } from '$lib/stores/navigation.js';
   import { cn } from '$lib/utils.js';
   import type { Tab, Pane } from '$lib/stores/navigation.js';
   import type { Snippet } from 'svelte';
@@ -59,6 +65,11 @@
 
   // Check if close button should be disabled (last tab in last pane)
   const isCloseDisabled = $derived(displayTabs.length === 1 && $tabState.panes.length === 1);
+
+  // Drag-and-drop state
+  let draggedTabId: string | null = $state(null);
+  let dragOverIndex: number | null = $state(null);
+  let dragOverPaneId: string | null = $state(null);
 
   // Truncate title to specified length with ellipsis
   function truncateTitle(title: string, maxLength: number = 25): string {
@@ -105,22 +116,148 @@
     }
   }
 
+  // Drag-and-drop handlers
+
+  /**
+   * Handle drag start - initiate dragging operation
+   */
+  function handleDragStart(event: DragEvent, tab: Tab, index: number): void {
+    // Prevent dragging last tab in last pane
+    if (displayTabs.length === 1 && $tabState.panes.length === 1) {
+      event.preventDefault();
+      return;
+    }
+
+    draggedTabId = tab.id;
+    event.dataTransfer!.effectAllowed = 'move';
+    event.dataTransfer!.setData(
+      'application/nodespace-tab',
+      JSON.stringify({
+        tabId: tab.id,
+        sourcePaneId: currentPaneId,
+        sourceIndex: index
+      })
+    );
+
+    // Set drag image (the tab element itself)
+    const dragImage = event.currentTarget as HTMLElement;
+    event.dataTransfer!.setDragImage(dragImage, 0, 0);
+  }
+
+  /**
+   * Handle drag over - show drop zone and insertion point
+   */
+  function handleDragOver(event: DragEvent, index: number): void {
+    event.preventDefault(); // Allow drop
+    event.dataTransfer!.dropEffect = 'move';
+
+    dragOverIndex = index;
+    dragOverPaneId = currentPaneId;
+  }
+
+  /**
+   * Handle drag leave - clear drop zone indicators
+   */
+  function handleDragLeave(event: DragEvent): void {
+    // Only clear if leaving the tab bar entirely
+    const relatedTarget = event.relatedTarget as HTMLElement;
+    const tabBar = (event.currentTarget as HTMLElement).closest('.tab-bar');
+
+    if (!tabBar?.contains(relatedTarget)) {
+      dragOverIndex = null;
+      dragOverPaneId = null;
+    }
+  }
+
+  /**
+   * Handle drop - perform tab reorder or move
+   */
+  function handleDrop(event: DragEvent, targetIndex: number): void {
+    event.preventDefault();
+
+    const data = event.dataTransfer?.getData('application/nodespace-tab');
+    if (!data) {
+      resetDragState();
+      return;
+    }
+
+    const { tabId, sourcePaneId } = JSON.parse(data);
+
+    if (sourcePaneId === currentPaneId) {
+      // Within-pane reorder
+      reorderTab(tabId, targetIndex, currentPaneId);
+    } else {
+      // Cross-pane move
+      moveTabBetweenPanes(tabId, sourcePaneId, currentPaneId, targetIndex);
+    }
+
+    resetDragState();
+  }
+
+  /**
+   * Handle drag end - cleanup drag state
+   */
+  function handleDragEnd(): void {
+    resetDragState();
+  }
+
+  /**
+   * Reset all drag-related state
+   */
+  function resetDragState(): void {
+    draggedTabId = null;
+    dragOverIndex = null;
+    dragOverPaneId = null;
+  }
+
+  /**
+   * Check if a tab can be dragged
+   */
+  function canDragTab(_tab: Tab): boolean {
+    // Cannot drag last tab in last pane
+    return !(displayTabs.length === 1 && $tabState.panes.length === 1);
+  }
+
   // Get active tab for slot prop
   const activeTab = $derived(displayTabs.find((tab) => tab.id === currentActiveTabId));
 </script>
 
 <!-- Tab bar - always shown (even with 1 tab for pane system) -->
-<div class="tab-bar" role="tablist" aria-label="Content tabs">
-  {#each displayTabs as tab (tab.id)}
+<div
+  class={cn(
+    'tab-bar',
+    dragOverPaneId === currentPaneId && draggedTabId && 'tab-bar--drop-zone-active'
+  )}
+  role="tablist"
+  tabindex="-1"
+  aria-label="Content tabs"
+  ondragleave={handleDragLeave}
+>
+  {#each displayTabs as tab, i (tab.id)}
     {@const isActive = tab.id === currentActiveTabId}
+    {@const isDragging = draggedTabId === tab.id}
+    {@const isDraggable = canDragTab(tab)}
+    {@const showDropIndicator = dragOverIndex === i && dragOverPaneId === currentPaneId}
+
+    <!-- Drop indicator before tab -->
+    {#if showDropIndicator}
+      <div class="drop-indicator"></div>
+    {/if}
+
     <div
-      class={cn('tab-item', isActive && 'tab-item--active')}
+      class={cn('tab-item', isActive && 'tab-item--active', isDragging && 'tab-item--dragging')}
       role="tab"
       tabindex={isActive ? 0 : -1}
       aria-selected={isActive}
       aria-controls={`tab-panel-${tab.id}`}
+      aria-grabbed={isDragging}
+      draggable={isDraggable}
       onclick={() => handleTabClick(tab.id)}
       onkeydown={(event) => handleTabKeydown(event, tab.id)}
+      ondragstart={(e) => handleDragStart(e, tab, i)}
+      ondragover={(e) => handleDragOver(e, i)}
+      ondrop={(e) => handleDrop(e, i)}
+      ondragend={handleDragEnd}
     >
       <span class="tab-title" title={tab.title}>
         {truncateTitle(tab.title)}
@@ -138,6 +275,11 @@
         </button>
       {/if}
     </div>
+
+    <!-- Drop indicator after last tab -->
+    {#if i === displayTabs.length - 1 && dragOverIndex === displayTabs.length && dragOverPaneId === currentPaneId}
+      <div class="drop-indicator"></div>
+    {/if}
   {/each}
 </div>
 
@@ -350,6 +492,59 @@
 
     .tab-title {
       max-width: 120px;
+    }
+  }
+
+  /* Drag-and-drop styles */
+
+  /* Draggable tab cursor */
+  .tab-item[draggable='true'] {
+    cursor: grab;
+  }
+
+  .tab-item[draggable='true']:active {
+    cursor: grabbing;
+  }
+
+  .tab-item[draggable='false'] {
+    cursor: default;
+  }
+
+  /* Dragging state - show ghost effect */
+  .tab-item--dragging {
+    opacity: 0.4;
+    pointer-events: none; /* Prevent hover effects during drag */
+  }
+
+  /* Drop zone highlight on tab bar */
+  .tab-bar--drop-zone-active {
+    background: hsl(var(--primary) / 0.05);
+    outline: 2px dashed hsl(var(--primary) / 0.3);
+    outline-offset: -2px;
+    transition: all 0.15s ease;
+  }
+
+  /* Drop indicator - vertical line showing insertion point */
+  .drop-indicator {
+    position: absolute;
+    width: 3px;
+    height: calc(100% - 8px);
+    top: 4px;
+    background: hsl(var(--primary));
+    border-radius: 1.5px;
+    pointer-events: none;
+    z-index: 100;
+    box-shadow: 0 0 4px hsl(var(--primary) / 0.5);
+    animation: pulse 0.6s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.6;
     }
   }
 </style>

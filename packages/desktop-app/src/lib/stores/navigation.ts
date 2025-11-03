@@ -442,5 +442,150 @@ export function updateTabContent(tabId: string, content: { nodeId: string; nodeT
   }));
 }
 
+/**
+ * Reorder a tab within the same pane
+ * @param tabId - The tab ID to reorder
+ * @param newIndex - The new position index in the pane's tab list
+ * @param paneId - The pane ID containing the tab
+ */
+export function reorderTab(tabId: string, newIndex: number, paneId: string): void {
+  tabState.update((state) => {
+    const pane = state.panes.find((p) => p.id === paneId);
+    if (!pane) {
+      return state;
+    }
+
+    const currentIndex = pane.tabIds.indexOf(tabId);
+    if (currentIndex === -1) {
+      return state;
+    }
+
+    // Don't do anything if moving to same position
+    if (currentIndex === newIndex) {
+      return state;
+    }
+
+    // Create new tabIds array with reordered tabs
+    const newTabIds = [...pane.tabIds];
+    newTabIds.splice(currentIndex, 1); // Remove from current position
+    newTabIds.splice(newIndex, 0, tabId); // Insert at new position
+
+    // Update pane with new tabIds order
+    const updatedPanes = state.panes.map((p) => {
+      if (p.id === paneId) {
+        return { ...p, tabIds: newTabIds };
+      }
+      return p;
+    });
+
+    return {
+      ...state,
+      panes: updatedPanes
+    };
+  });
+}
+
+/**
+ * Move a tab from one pane to another
+ * If source pane becomes empty, it will be closed automatically
+ * @param tabId - The tab ID to move
+ * @param sourcePaneId - The source pane ID
+ * @param targetPaneId - The target pane ID
+ * @param targetIndex - The position index in target pane's tab list
+ */
+export function moveTabBetweenPanes(
+  tabId: string,
+  sourcePaneId: string,
+  targetPaneId: string,
+  targetIndex: number
+): void {
+  tabState.update((state) => {
+    const sourcePane = state.panes.find((p) => p.id === sourcePaneId);
+    const targetPane = state.panes.find((p) => p.id === targetPaneId);
+    const tab = state.tabs.find((t) => t.id === tabId);
+
+    if (!sourcePane || !targetPane || !tab) {
+      return state;
+    }
+
+    // Update tab's paneId
+    const updatedTab = { ...tab, paneId: targetPaneId };
+
+    // Update tabs array
+    const updatedTabs = state.tabs.map((t) => (t.id === tabId ? updatedTab : t));
+
+    // Remove tab from source pane's tabIds
+    const sourceTabIds = sourcePane.tabIds.filter((id) => id !== tabId);
+
+    // Add tab to target pane's tabIds at specified index
+    const targetTabIds = [...targetPane.tabIds];
+    targetTabIds.splice(targetIndex, 0, tabId);
+
+    // Update panes
+    let updatedPanes = state.panes.map((p) => {
+      if (p.id === sourcePaneId) {
+        return { ...p, tabIds: sourceTabIds };
+      }
+      if (p.id === targetPaneId) {
+        return { ...p, tabIds: targetTabIds };
+      }
+      return p;
+    });
+
+    // Check if source pane is now empty
+    if (sourceTabIds.length === 0 && state.panes.length > 1) {
+      // Close source pane
+      updatedPanes = updatedPanes.filter((p) => p.id !== sourcePaneId);
+
+      // Expand remaining pane to 100%
+      updatedPanes = updatedPanes.map((p) => ({
+        ...p,
+        width: 100
+      }));
+
+      // Update active pane if necessary
+      let newActivePaneId = state.activePaneId;
+      if (sourcePaneId === state.activePaneId) {
+        newActivePaneId = targetPaneId;
+      }
+
+      // Update active tab IDs map
+      const newActiveTabIds = { ...state.activeTabIds };
+      delete newActiveTabIds[sourcePaneId];
+
+      // Set moved tab as active in target pane
+      newActiveTabIds[targetPaneId] = tabId;
+
+      return {
+        ...state,
+        tabs: updatedTabs,
+        panes: updatedPanes,
+        activePaneId: newActivePaneId,
+        activeTabIds: newActiveTabIds
+      };
+    }
+
+    // Update active tab in source pane if we moved the active tab
+    let newActiveTabIds = { ...state.activeTabIds };
+    if (state.activeTabIds[sourcePaneId] === tabId) {
+      // Set first remaining tab as active in source pane
+      if (sourceTabIds.length > 0) {
+        newActiveTabIds[sourcePaneId] = sourceTabIds[0];
+      }
+    }
+
+    // Set moved tab as active in target pane
+    newActiveTabIds[targetPaneId] = tabId;
+
+    return {
+      ...state,
+      tabs: updatedTabs,
+      panes: updatedPanes,
+      activePaneId: targetPaneId,
+      activeTabIds: newActiveTabIds
+    };
+  });
+}
+
 // Re-export from shared utility for backward compatibility
 export { formatDateTitle as getDateTabTitle } from '$lib/utils/date-formatting';
