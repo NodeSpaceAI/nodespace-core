@@ -2,6 +2,7 @@ import { writable } from 'svelte/store';
 import { formatDateISO } from '$lib/utils/date-formatting';
 import { clearScrollPosition, clearPaneScrollPositions } from './scroll-state';
 import { TabPersistenceService } from '$lib/services/tab-persistence-service';
+import { NodeExpansionCoordinator } from '$lib/services/node-expansion-coordinator';
 
 export interface Tab {
   id: string;
@@ -13,6 +14,7 @@ export interface Tab {
   };
   closeable: boolean;
   paneId: string; // Which pane this tab belongs to
+  expandedNodeIds?: string[]; // Sparse array: only store expanded node IDs (collapsed is default)
 }
 
 export interface Pane {
@@ -74,7 +76,16 @@ let isInitialized = false;
 tabState.subscribe((state) => {
   // Only persist after initialization to avoid overwriting loaded state
   if (isInitialized) {
-    TabPersistenceService.save(state);
+    // Enrich tabs with expansion state before saving
+    const enrichedTabs = state.tabs.map((tab) => ({
+      ...tab,
+      expandedNodeIds: NodeExpansionCoordinator.getExpandedNodeIds(tab.id)
+    }));
+
+    TabPersistenceService.save({
+      ...state,
+      tabs: enrichedTabs
+    });
   }
 });
 
@@ -94,6 +105,14 @@ export function loadPersistedState(): boolean {
       activePaneId: persisted.activePaneId,
       activeTabIds: persisted.activeTabIds
     });
+
+    // Schedule expansion state restoration for each tab
+    // This will be applied when viewers register (deferred restoration pattern)
+    for (const tab of persisted.tabs) {
+      if (tab.expandedNodeIds && tab.expandedNodeIds.length > 0) {
+        NodeExpansionCoordinator.scheduleRestoration(tab.id, tab.expandedNodeIds);
+      }
+    }
   }
 
   // Enable persistence after load attempt (whether successful or not)

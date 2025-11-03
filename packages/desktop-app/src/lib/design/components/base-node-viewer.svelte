@@ -17,6 +17,7 @@
   import { sharedNodeStore } from '$lib/services/shared-node-store';
   import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
   import { focusManager } from '$lib/services/focus-manager.svelte';
+  import { NodeExpansionCoordinator } from '$lib/services/node-expansion-coordinator';
   import type { Node } from '$lib/types';
   import type { UpdateSource } from '$lib/types/update-protocol';
   import type { Snippet } from 'svelte';
@@ -1318,6 +1319,10 @@
 
   // Pre-load components when component mounts
   onMount(async () => {
+    // Register this viewer with the expansion coordinator
+    // This allows expansion states to be persisted and restored
+    NodeExpansionCoordinator.registerViewer(tabId, nodeManager);
+
     async function preloadComponents() {
       // Pre-load all known types
       const knownTypes = ['text', 'header', 'date', 'task', 'ai-chat'];
@@ -1425,6 +1430,9 @@
 
   // Clean up on component unmount and flush pending saves
   onDestroy(() => {
+    // Unregister this viewer from the expansion coordinator
+    NodeExpansionCoordinator.unregisterViewer(tabId);
+
     // Flush pending debounced saves to prevent data loss
     PersistenceCoordinator.getInstance().flushPending();
 
