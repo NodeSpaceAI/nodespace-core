@@ -4,17 +4,87 @@
  * Bridges TabPersistenceService and ReactiveNodeService to persist/restore
  * node expansion states across application restarts.
  *
- * Architecture:
+ * ## Architecture
  * - Maintains a registry of ReactiveNodeService instances (one per viewer/tab)
  * - Extracts expanded node IDs from services for persistence
  * - Restores expansion states when tabs are loaded
  * - Supports deferred restoration (register restoration before service exists)
  *
- * Usage:
- * 1. ReactiveNodeService instances register on creation
- * 2. TabPersistenceService extracts expansion states during save
- * 3. App shell schedules restoration during load
- * 4. Restoration happens automatically when service registers
+ * ## Lifecycle & Timing
+ *
+ * **Application Startup (Loading State):**
+ * ```
+ * 1. App loads → TabPersistenceService.load()
+ *    └─ Returns: { tabs: [{ id, expandedNodeIds: [...] }] }
+ *
+ * 2. Navigation store processes loaded state
+ *    └─ Calls: scheduleRestoration(tabId, expandedNodeIds)
+ *    └─ State: PENDING (viewer not mounted yet)
+ *
+ * 3. BaseNodeViewer mounts (onMount)
+ *    └─ Calls: registerViewer(tabId, service)
+ *    └─ Triggers: Automatic restoration of pending states
+ *    └─ State: APPLIED (nodes expanded via batchSetExpanded)
+ * ```
+ *
+ * **Application Shutdown (Saving State):**
+ * ```
+ * 1. User expands/collapses nodes
+ *    └─ ReactiveNodeService updates UIState.expanded
+ *
+ * 2. Navigation store subscription fires (debounced 500ms)
+ *    └─ Calls: getExpandedNodeIds(tabId) for each tab
+ *    └─ Returns: ['node-1', 'node-3'] (sparse - only expanded)
+ *
+ * 3. TabPersistenceService.save({ tabs: [...] })
+ *    └─ Persists to localStorage with expandedNodeIds
+ * ```
+ *
+ * ## Deferred Restoration Pattern
+ *
+ * The coordinator handles the timing mismatch between:
+ * - Tab state loading (happens early, during app initialization)
+ * - Viewer mounting (happens later, when components render)
+ *
+ * When `scheduleRestoration()` is called before `registerViewer()`:
+ * 1. Restoration request is queued in `pendingRestorations` map
+ * 2. When viewer eventually registers, pending request is auto-applied
+ * 3. Queue entry is removed after application
+ *
+ * This ensures restoration works regardless of timing.
+ *
+ * ## Memory Management
+ *
+ * - Registry tracks registration timestamp for leak detection
+ * - Warns if registry size exceeds MAX_REGISTRY_SIZE (100)
+ * - Provides cleanupStaleEntries() for periodic cleanup
+ * - Always call unregisterViewer() in onDestroy lifecycle
+ *
+ * ## Usage Example
+ *
+ * ```typescript
+ * // In BaseNodeViewer.svelte
+ * onMount(() => {
+ *   NodeExpansionCoordinator.registerViewer(tabId, nodeManager);
+ * });
+ *
+ * onDestroy(() => {
+ *   NodeExpansionCoordinator.unregisterViewer(tabId);
+ * });
+ *
+ * // In navigation.ts (load)
+ * for (const tab of loadedTabs) {
+ *   if (tab.expandedNodeIds?.length > 0) {
+ *     NodeExpansionCoordinator.scheduleRestoration(tab.id, tab.expandedNodeIds);
+ *   }
+ * }
+ *
+ * // In navigation.ts (save)
+ * const enrichedTabs = tabs.map(tab => ({
+ *   ...tab,
+ *   expandedNodeIds: NodeExpansionCoordinator.getExpandedNodeIds(tab.id)
+ * }));
+ * ```
  */
 
 import type { ReactiveNodeService } from './reactive-node-service.svelte';
@@ -24,7 +94,7 @@ import type { ReactiveNodeService } from './reactive-node-service.svelte';
  */
 interface ViewerRegistryEntry {
   service: ReactiveNodeService;
-  viewerId: string;
+  registeredAt: number; // Timestamp for leak detection
 }
 
 /**
@@ -33,6 +103,10 @@ interface ViewerRegistryEntry {
 export class NodeExpansionCoordinator {
   private static readonly LOG_PREFIX = '[NodeExpansionCoordinator]';
   private static readonly DEBUG = import.meta.env.DEV;
+
+  // Memory leak prevention: Warn if registry grows too large
+  private static readonly MAX_REGISTRY_SIZE = 100;
+  private static readonly STALE_ENTRY_AGE_MS = 30 * 60 * 1000; // 30 minutes
 
   /**
    * Map of viewer IDs to ReactiveNodeService instances
@@ -84,7 +158,13 @@ export class NodeExpansionCoordinator {
   static registerViewer(viewerId: string, service: ReactiveNodeService): void {
     this.log(`Registering viewer: ${viewerId}`);
 
-    this.viewerRegistry.set(viewerId, { service, viewerId });
+    this.viewerRegistry.set(viewerId, {
+      service,
+      registeredAt: Date.now()
+    });
+
+    // Memory leak prevention: Warn if registry is growing too large
+    this.checkRegistrySize();
 
     // Check if there are pending expansion states to restore
     const pendingStates = this.pendingRestorations.get(viewerId);
@@ -143,7 +223,7 @@ export class NodeExpansionCoordinator {
 
   /**
    * Restore expansion states to a viewer
-   * Marks specified nodes as expanded
+   * Marks specified nodes as expanded using batch update for efficiency
    *
    * If the viewer hasn't been registered yet, the restoration
    * will be queued and applied when the viewer registers.
@@ -171,24 +251,18 @@ export class NodeExpansionCoordinator {
     }
 
     const { service } = entry;
-    let appliedCount = 0;
-    let skippedCount = 0;
 
-    // Apply expansion states to each node
-    for (const nodeId of expandedNodeIds) {
-      const uiState = service.getUIState(nodeId);
-      if (uiState) {
-        // Node exists - toggle it to expanded state
-        service.toggleExpanded(nodeId);
-        appliedCount++;
-      } else {
-        // Node doesn't exist (may have been deleted since last session)
-        skippedCount++;
-      }
-    }
+    // Filter to only nodes that exist, and prepare batch update
+    const updates = expandedNodeIds
+      .filter((nodeId) => service.getUIState(nodeId) !== undefined)
+      .map((nodeId) => ({ nodeId, expanded: true }));
+
+    // Use batch API for better performance
+    const changedCount = service.batchSetExpanded(updates);
+    const skippedCount = expandedNodeIds.length - updates.length;
 
     this.log(
-      `Restored expansions for viewer ${viewerId}: ${appliedCount} applied, ${skippedCount} skipped`
+      `Restored expansions for viewer ${viewerId}: ${changedCount} applied, ${skippedCount} skipped (missing nodes)`
     );
   }
 
@@ -228,5 +302,51 @@ export class NodeExpansionCoordinator {
    */
   static getPendingRestorationCount(): number {
     return this.pendingRestorations.size;
+  }
+
+  /**
+   * Check registry size and warn if it's growing too large
+   * Helps detect memory leaks from missing unregister calls
+   * @private
+   */
+  private static checkRegistrySize(): void {
+    const size = this.viewerRegistry.size;
+
+    if (size > this.MAX_REGISTRY_SIZE) {
+      this.warn(
+        `Registry size (${size}) exceeds maximum (${this.MAX_REGISTRY_SIZE}). ` +
+          'This may indicate a memory leak from missing unregisterViewer() calls. ' +
+          'Consider calling cleanupStaleEntries().'
+      );
+    }
+  }
+
+  /**
+   * Remove stale entries that have been registered for too long
+   * Useful for preventing memory leaks in long-running applications
+   * Call this periodically if you suspect cleanup issues
+   *
+   * @param maxAgeMs - Maximum age in milliseconds (default: 30 minutes)
+   * @returns Number of stale entries removed
+   */
+  static cleanupStaleEntries(maxAgeMs: number = this.STALE_ENTRY_AGE_MS): number {
+    const now = Date.now();
+    let removedCount = 0;
+
+    for (const [viewerId, entry] of this.viewerRegistry.entries()) {
+      const age = now - entry.registeredAt;
+      if (age > maxAgeMs) {
+        this.warn(`Removing stale entry for viewer ${viewerId} (age: ${Math.round(age / 1000)}s)`);
+        this.viewerRegistry.delete(viewerId);
+        this.pendingRestorations.delete(viewerId);
+        removedCount++;
+      }
+    }
+
+    if (removedCount > 0) {
+      this.log(`Cleaned up ${removedCount} stale entries`);
+    }
+
+    return removedCount;
   }
 }

@@ -6,7 +6,7 @@
  * and ReactiveNodeService integration.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NodeExpansionCoordinator } from '$lib/services/node-expansion-coordinator';
 import { TabPersistenceService } from '$lib/services/tab-persistence-service';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
@@ -84,10 +84,8 @@ describe('Expansion State Persistence Integration', () => {
         activeTabIds: { 'pane-1': tabId }
       };
 
-      // Save to localStorage (simulates TabPersistenceService)
-      TabPersistenceService.save(tabState);
-      // Flush debounced save immediately for testing
-      TabPersistenceService.flush();
+      // Save to localStorage immediately (bypass debounce for testing)
+      TabPersistenceService.saveNow(tabState);
 
       // Verify expansion state was captured
       expect(expandedNodeIds).toContain(rootId);
@@ -278,10 +276,8 @@ describe('Expansion State Persistence Integration', () => {
         activeTabIds: { 'pane-1': tabId }
       };
 
-      TabPersistenceService.save(tabState);
-
-      // Flush debounced save
-      TabPersistenceService.flush();
+      // Save immediately (bypass debounce for testing)
+      TabPersistenceService.saveNow(tabState);
 
       // Load and verify
       const loaded = TabPersistenceService.load();
@@ -306,8 +302,8 @@ describe('Expansion State Persistence Integration', () => {
         activeTabIds: { 'pane-1': 'tab-1' }
       };
 
-      TabPersistenceService.save(tabState);
-      TabPersistenceService.flush();
+      // Save immediately (bypass debounce for testing)
+      TabPersistenceService.saveNow(tabState);
 
       const loaded = TabPersistenceService.load();
       expect(loaded?.tabs[0].expandedNodeIds).toBeUndefined();
@@ -337,6 +333,43 @@ describe('Expansion State Persistence Integration', () => {
 
       // Should capture all expanded nodes
       expect(expandedNodeIds.length).toBe(50);
+    });
+
+    it('should use batch restoration for performance', () => {
+      const tabId = 'test-tab-1';
+      const service = createMockReactiveNodeService();
+
+      // Create 20 nodes
+      const nodeIds = Array.from({ length: 20 }, (_, i) => `node-${i}`);
+      service.initializeNodes(
+        nodeIds.map((id) => createMockNode(id, `Node ${id}`)),
+        { expanded: false }
+      );
+
+      // Spy on batchSetExpanded to verify it's being used
+      const batchSpy = vi.spyOn(service, 'batchSetExpanded');
+
+      NodeExpansionCoordinator.registerViewer(tabId, service);
+
+      // Restore expansion states for 15 nodes
+      const nodesToExpand = nodeIds.slice(0, 15);
+      NodeExpansionCoordinator.restoreExpansionStates(tabId, nodesToExpand);
+
+      // Should have called batchSetExpanded once (not setExpanded 15 times)
+      expect(batchSpy).toHaveBeenCalledOnce();
+      expect(batchSpy).toHaveBeenCalledWith(
+        nodesToExpand.map((nodeId) => ({ nodeId, expanded: true }))
+      );
+
+      // Verify all nodes are expanded
+      for (const nodeId of nodesToExpand) {
+        expect(service.getUIState(nodeId)?.expanded).toBe(true);
+      }
+
+      // Verify remaining nodes are still collapsed
+      for (const nodeId of nodeIds.slice(15)) {
+        expect(service.getUIState(nodeId)?.expanded).toBe(false);
+      }
     });
   });
 });

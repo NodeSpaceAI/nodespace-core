@@ -1462,6 +1462,114 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     });
   }
 
+  /**
+   * Set the expanded state of a node to a specific value
+   * More efficient than toggleExpanded when you know the desired state
+   *
+   * @param nodeId - The ID of the node to update
+   * @param expanded - The desired expanded state
+   * @returns True if the state was changed, false if no change was needed or node doesn't exist
+   */
+  function setExpanded(nodeId: string, expanded: boolean): boolean {
+    try {
+      const uiState = _uiState[nodeId];
+      if (!uiState) return false;
+
+      // No change needed
+      if (uiState.expanded === expanded) return false;
+
+      _uiState[nodeId] = { ...uiState, expanded };
+
+      events.hierarchyChanged();
+      _updateTrigger++;
+
+      const status: import('./event-types').NodeStatus = expanded ? 'expanded' : 'collapsed';
+      const changeType: import('./event-types').HierarchyChangedEvent['changeType'] = expanded
+        ? 'expand'
+        : 'collapse';
+
+      eventBus.emit<import('./event-types').NodeStatusChangedEvent>({
+        type: 'node:status-changed',
+        namespace: 'coordination',
+        source: serviceName,
+        nodeId,
+        status
+      });
+
+      eventBus.emit<import('./event-types').HierarchyChangedEvent>({
+        type: 'hierarchy:changed',
+        namespace: 'lifecycle',
+        source: serviceName,
+        changeType,
+        affectedNodes: [nodeId],
+        metadata: {}
+      });
+
+      return true;
+    } catch (error) {
+      console.error(`[ReactiveNodeService] Error setting expanded state for ${nodeId}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Batch set expansion states for multiple nodes
+   * More efficient than calling setExpanded multiple times as it batches UI updates
+   *
+   * @param updates - Array of {nodeId, expanded} updates to apply
+   * @returns Number of nodes that were actually changed
+   */
+  function batchSetExpanded(updates: Array<{ nodeId: string; expanded: boolean }>): number {
+    try {
+      let changedCount = 0;
+      const affectedNodes: string[] = [];
+
+      // Apply all updates without triggering events
+      for (const { nodeId, expanded } of updates) {
+        const uiState = _uiState[nodeId];
+        if (!uiState) continue;
+
+        // Skip if no change needed
+        if (uiState.expanded === expanded) continue;
+
+        _uiState[nodeId] = { ...uiState, expanded };
+        changedCount++;
+        affectedNodes.push(nodeId);
+
+        // Emit individual status change events
+        const status: import('./event-types').NodeStatus = expanded ? 'expanded' : 'collapsed';
+        eventBus.emit<import('./event-types').NodeStatusChangedEvent>({
+          type: 'node:status-changed',
+          namespace: 'coordination',
+          source: serviceName,
+          nodeId,
+          status
+        });
+      }
+
+      // Only trigger UI update once if anything changed
+      if (changedCount > 0) {
+        events.hierarchyChanged();
+        _updateTrigger++;
+
+        // Emit single hierarchy changed event for all changes
+        eventBus.emit<import('./event-types').HierarchyChangedEvent>({
+          type: 'hierarchy:changed',
+          namespace: 'lifecycle',
+          source: serviceName,
+          changeType: 'expand', // Simplified - batch operations are expansion-focused
+          affectedNodes,
+          metadata: { batchSize: changedCount }
+        });
+      }
+
+      return changedCount;
+    } catch (error) {
+      console.error('[ReactiveNodeService] Error in batch set expanded:', error);
+      return 0;
+    }
+  }
+
   function toggleExpanded(nodeId: string): boolean {
     try {
       const uiState = _uiState[nodeId];
@@ -1608,6 +1716,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     outdentNode,
     deleteNode,
     toggleExpanded,
+    setExpanded,
+    batchSetExpanded,
 
     // Content processing methods for integration tests
     parseNodeContent(nodeId: string) {

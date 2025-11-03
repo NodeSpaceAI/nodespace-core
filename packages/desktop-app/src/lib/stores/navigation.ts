@@ -109,8 +109,19 @@ export function loadPersistedState(): boolean {
     // Schedule expansion state restoration for each tab
     // This will be applied when viewers register (deferred restoration pattern)
     for (const tab of persisted.tabs) {
-      if (tab.expandedNodeIds && tab.expandedNodeIds.length > 0) {
+      // Validate expandedNodeIds before scheduling restoration
+      if (
+        tab.expandedNodeIds &&
+        Array.isArray(tab.expandedNodeIds) &&
+        tab.expandedNodeIds.length > 0 &&
+        tab.expandedNodeIds.every((id) => typeof id === 'string' && id.length > 0)
+      ) {
         NodeExpansionCoordinator.scheduleRestoration(tab.id, tab.expandedNodeIds);
+      } else if (tab.expandedNodeIds && !Array.isArray(tab.expandedNodeIds)) {
+        // Log warning for malformed data but don't crash
+        console.warn(
+          `[Navigation] Invalid expandedNodeIds for tab ${tab.id}: expected array, got ${typeof tab.expandedNodeIds}`
+        );
       }
     }
   }

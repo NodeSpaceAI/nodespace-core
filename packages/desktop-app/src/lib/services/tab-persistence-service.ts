@@ -242,4 +242,13 @@ export class TabPersistenceService {
       this.pendingState = null;
     }
   }
+
+  /**
+   * Force immediate save without debouncing
+   * Exposed for cases where debouncing should be bypassed
+   * @param state - The current tab state to save
+   */
+  static saveNow(state: TabState): void {
+    this.saveImmediate(state);
+  }
 }
