@@ -13,6 +13,7 @@
   import { pluginRegistry } from '$lib/components/viewers/index';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import BacklinksPanel from '$lib/design/components/backlinks-panel.svelte';
+  import SchemaPropertyForm from '$lib/components/property-forms/schema-property-form.svelte';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { sharedNodeStore } from '$lib/services/shared-node-store';
   import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
@@ -1646,6 +1647,14 @@
         </div>
       </div>
     {/each}
+
+    <!-- Schema-Driven Properties Panel - appears after node content -->
+    {#if nodeId}
+      {@const currentNode = sharedNodeStore.getNode(nodeId)}
+      {#if currentNode && currentNode.nodeType !== 'text'}
+        <SchemaPropertyForm {nodeId} nodeType={currentNode.nodeType} />
+      {/if}
+    {/if}
 
     <!-- Backlinks Panel - fixed at bottom of this viewer -->
     {#if nodeId}
