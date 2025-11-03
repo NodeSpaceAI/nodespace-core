@@ -28,6 +28,8 @@ use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::DatabaseService;
 use crate::models::{Node, NodeFilter, NodeUpdate, OrderBy};
 use crate::services::error::NodeServiceError;
+use crate::services::migration_registry::MigrationRegistry;
+use crate::services::migrations;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use regex::Regex;
 use std::collections::HashSet;
@@ -269,6 +271,9 @@ pub struct NodeService {
 
     /// Behavior registry for validation
     behaviors: Arc<NodeBehaviorRegistry>,
+
+    /// Migration registry for lazy schema upgrades
+    migration_registry: Arc<MigrationRegistry>,
 }
 
 impl NodeService {
@@ -295,9 +300,14 @@ impl NodeService {
     /// # }
     /// ```
     pub fn new(db: DatabaseService) -> Result<Self, NodeServiceError> {
+        // Create and initialize migration registry with all registered migrations
+        let mut migration_registry = MigrationRegistry::new();
+        migrations::task::register_migrations(&mut migration_registry);
+
         Ok(Self {
             db: Arc::new(db),
             behaviors: Arc::new(NodeBehaviorRegistry::new()),
+            migration_registry: Arc::new(migration_registry),
         })
     }
 
@@ -442,6 +452,65 @@ impl NodeService {
                 node.properties = updated_props;
             }
         }
+        Ok(())
+    }
+
+    /// Apply lazy migration to upgrade node to latest schema version
+    ///
+    /// Checks if the node's schema version is older than the current schema version,
+    /// and if so, applies migration transforms to upgrade it.
+    ///
+    /// # Arguments
+    ///
+    /// * `node` - Mutable reference to the node to migrate
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Node was already up-to-date or successfully migrated
+    /// * `Err` - Migration failed or database error
+    async fn apply_lazy_migration(&self, node: &mut Node) -> Result<(), NodeServiceError> {
+        // Get current version from node
+        let current_version = node
+            .properties
+            .get("_schema_version")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1) as u32;
+
+        // Get target version from schema
+        let target_version = if let Some(schema) = self.get_schema_for_type(&node.node_type).await? {
+            schema.get("version").and_then(|v| v.as_i64()).unwrap_or(1) as u32
+        } else {
+            1 // No schema found - no migration needed
+        };
+
+        // Check if migration is needed
+        if current_version >= target_version {
+            return Ok(()); // Already up-to-date
+        }
+
+        // Apply migrations
+        let migrated_node = self.migration_registry.apply_migrations(node, target_version)?;
+
+        // Persist migrated node to database
+        let conn = self.db.connect_with_timeout().await?;
+        let properties_json = serde_json::to_string(&migrated_node.properties)
+            .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
+
+        conn.execute(
+            "UPDATE nodes SET properties = ?, modified_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (properties_json.as_str(), node.id.as_str()),
+        )
+        .await
+        .map_err(|e| {
+            NodeServiceError::query_failed(format!(
+                "Failed to persist migrated node: {}",
+                e
+            ))
+        })?;
+
+        // Update the in-memory node
+        *node = migrated_node;
+
         Ok(())
     }
 
@@ -781,6 +850,7 @@ impl NodeService {
             let mut node = self.row_to_node(row)?;
             self.populate_mentions(&mut node).await?;
             self.backfill_schema_version(&mut node).await?;
+            self.apply_lazy_migration(&mut node).await?;
             Ok(Some(node))
         } else {
             Ok(None)
@@ -1713,6 +1783,7 @@ impl NodeService {
             {
                 let mut node = self.row_to_node(row)?;
                 self.backfill_schema_version(&mut node).await?;
+                self.apply_lazy_migration(&mut node).await?;
                 nodes.push(node);
             }
 
@@ -1753,6 +1824,7 @@ impl NodeService {
             {
                 let mut node = self.row_to_node(row)?;
                 self.backfill_schema_version(&mut node).await?;
+                self.apply_lazy_migration(&mut node).await?;
                 nodes.push(node);
             }
 
@@ -1796,6 +1868,7 @@ impl NodeService {
             {
                 let mut node = self.row_to_node(row)?;
                 self.backfill_schema_version(&mut node).await?;
+                self.apply_lazy_migration(&mut node).await?;
                 nodes.push(node);
             }
 
@@ -2108,6 +2181,7 @@ impl NodeService {
             {
                 let mut node = self.row_to_node(row)?;
                 self.backfill_schema_version(&mut node).await?;
+                self.apply_lazy_migration(&mut node).await?;
                 nodes.push(node);
             }
 
@@ -2148,6 +2222,7 @@ impl NodeService {
             {
                 let mut node = self.row_to_node(row)?;
                 self.backfill_schema_version(&mut node).await?;
+                self.apply_lazy_migration(&mut node).await?;
                 nodes.push(node);
             }
 
