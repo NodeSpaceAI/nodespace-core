@@ -447,7 +447,7 @@ mod tests {
         assert_eq!(result["success"], true);
 
         // Verify field was removed
-        let schema = schema_service.get_schema("task").await.unwrap();
+        let schema = schema_service.get_schema("test_schema").await.unwrap();
         let field = schema.fields.iter().find(|f| f.name == "temp_field");
         assert!(field.is_none());
     }
@@ -490,7 +490,7 @@ mod tests {
         assert_eq!(result["success"], true);
 
         // Verify value was added to user_values
-        let schema = schema_service.get_schema("task").await.unwrap();
+        let schema = schema_service.get_schema("test_schema").await.unwrap();
         let values = schema.get_enum_values("status").unwrap();
         assert!(values.contains(&"BLOCKED".to_string()));
     }
@@ -525,7 +525,7 @@ mod tests {
         assert_eq!(result["success"], true);
 
         // Verify value was removed
-        let schema = schema_service.get_schema("task").await.unwrap();
+        let schema = schema_service.get_schema("test_schema").await.unwrap();
         let values = schema.get_enum_values("status").unwrap();
         assert!(!values.contains(&"TEMP_STATUS".to_string()));
     }
