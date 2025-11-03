@@ -526,6 +526,7 @@ mod tests {
             parent_id: None,
             container_node_id: None,
             before_sibling_id: None,
+            version: 1,
             created_at: chrono::Utc::now(),
             modified_at: chrono::Utc::now(),
             properties: serde_json::to_value(&schema).unwrap(),
