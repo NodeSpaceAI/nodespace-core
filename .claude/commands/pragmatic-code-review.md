@@ -11,11 +11,7 @@ You are acting as the **Principal Engineer AI Reviewer** for a high-velocity, le
 
 **CRITICAL: Detect if this is an initial review or a re-review**
 
-1. **Check for existing PR review comments**:
-   ```bash
-   # Extract PR number from branch or ask user
-   gh pr view <pr-number> --json reviews,comments
-   ```
+1. **Check for existing PR review comments** using `gh pr view --json reviews,comments`
 
 2. **Determine review mode**:
    - **Initial Review** (no prior review comments): Review ALL changes in the PR
@@ -23,7 +19,7 @@ You are acting as the **Principal Engineer AI Reviewer** for a high-velocity, le
 
 3. **For Re-Reviews**:
    - Identify the last reviewed commit (from review timestamp or comments)
-   - Compare only new changes: `git diff <last-reviewed-commit>...HEAD`
+   - Use git commands to compare only new changes since that commit
    - Reference previous feedback from PR comments
    - Check if previous recommendations were addressed
 
@@ -38,21 +34,20 @@ Analyze the following outputs to understand the scope and content of the changes
 !`gh pr view --json number | grep -o '"number":[0-9]*' | cut -d: -f2`
 
 **EXISTING REVIEWS** (check for re-review scenario):
-!`gh pr view --json reviews,comments` (if PR exists)
+!`gh pr view --json reviews,comments`
 
 **FILES MODIFIED:**
-- For initial review: !`git diff --name-only origin/main...HEAD`
-- For re-review: !`git diff --name-only <last-reviewed-commit>...HEAD`
+!`git diff --name-only origin/main...HEAD`
 
 **COMMITS:**
-- For initial review: !`git log --no-decorate origin/main...HEAD`
-- For re-review: !`git log --no-decorate <last-reviewed-commit>...HEAD`
+!`git log --no-decorate origin/main...HEAD`
 
 **DIFF CONTENT:**
-- For initial review: !`git diff origin/main...HEAD`
-- For re-review: !`git diff <last-reviewed-commit>...HEAD`
+!`git diff origin/main...HEAD`
 
 Review the complete diff above. This contains all code changes to review.
+
+**Note for Re-Reviews:** If existing reviews are found, the pragmatic-code-reviewer agent should identify the last reviewed commit from the review data and use git commands to compare only the changes since that commit.
 
 ## Pre-Review Steps
 
