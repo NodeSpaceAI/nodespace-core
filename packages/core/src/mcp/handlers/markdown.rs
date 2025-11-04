@@ -1088,10 +1088,19 @@ pub async fn handle_update_container_from_markdown(
         .with_parent_id(params.container_id.clone())
         .with_order_by(OrderBy::CreatedAsc);
 
-    let existing_children = operations
+    let mut existing_children = operations
         .query_nodes(filter)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to get children: {}", e)))?;
+
+    // Delete in REVERSE order to avoid version conflicts from sibling chain updates.
+    // Background: operations.delete_node() updates the next sibling's version when fixing
+    // the sibling chain (see operations/mod.rs:1199-1260). If we delete in forward order:
+    //   1. Delete node A (next sibling B's version increments)
+    //   2. Try to delete B using stale cached version → VERSION CONFLICT
+    // Solution: Delete B first (using current version), then delete A (no conflict).
+    // This pattern is CRITICAL - changing deletion order will break sibling chain integrity.
+    existing_children.reverse();
 
     // Delete all existing children (recursively)
     let mut deleted_count = 0;
