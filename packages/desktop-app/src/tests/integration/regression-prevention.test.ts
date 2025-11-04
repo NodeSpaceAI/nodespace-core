@@ -91,7 +91,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
     return sorted;
   }
 
-  describe('Hierarchy integrity (Regression #185, #176)', () => {
+  describe.skipIf(!shouldUseDatabase())('Hierarchy integrity (Regression #185, #176)', () => {
     it('should maintain sibling order for container nodes', async () => {
       try {
         // Issue #185: Lost track of nodes, sibling chain corruption
@@ -266,7 +266,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
     }, 10000);
   });
 
-  describe('Mention cascade deletion (Regression #184)', () => {
+  describe.skipIf(!shouldUseDatabase())('Mention cascade deletion (Regression #184)', () => {
     it('should remove mention relationships when mentioned node is deleted', async () => {
       try {
         // Issue #184: Orphaned mentions after node deletion
@@ -383,7 +383,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
     }, 10000);
   });
 
-  describe('Concurrent operation safety (Regression #190)', () => {
+  describe.skipIf(!shouldUseDatabase())('Concurrent operation safety (Regression #190)', () => {
     it('should handle concurrent container node creation', async () => {
       try {
         // Issue #190: Race conditions in hierarchy operations
@@ -486,7 +486,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
     }, 10000);
   });
 
-  describe('Content change detection (Regression #187)', () => {
+  describe.skipIf(!shouldUseDatabase())('Content change detection (Regression #187)', () => {
     it('should mark topic as stale when content changes', async () => {
       try {
         // Issue #187: Embeddings not updated after content changes

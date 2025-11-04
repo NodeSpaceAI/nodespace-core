@@ -229,42 +229,46 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
       35000
     ); // Allow 35s for timeout test + cleanup
 
-    it('should cleanup resources on timeout', async () => {
-      try {
-        // Create multiple topics
-        const topic1Data = TestNodeBuilder.text('Topic 1').build();
-        const topic1Id = await backend.createNode(topic1Data);
-
-        const topic2Data = TestNodeBuilder.text('Topic 2').build();
-        const topic2Id = await backend.createNode(topic2Data);
-
-        await waitForDatabaseWrites();
-        expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-
-        // Batch operation (placeholder will fail fast)
+    it.skipIf(!shouldUseDatabase())(
+      'should cleanup resources on timeout',
+      async () => {
         try {
-          await backend.batchGenerateEmbeddings([topic1Id, topic2Id]);
-        } catch (error) {
-          // Verify error is thrown
-          expect(error).toBeTruthy();
-        }
+          // Create multiple topics
+          const topic1Data = TestNodeBuilder.text('Topic 1').build();
+          const topic1Id = await backend.createNode(topic1Data);
 
-        // Verify nodes still exist (cleanup should not delete nodes)
-        const topic1 = await backend.getNode(topic1Id);
-        const topic2 = await backend.getNode(topic2Id);
-        expect(topic1).toBeTruthy();
-        expect(topic2).toBeTruthy();
-      } catch (error) {
-        // If getNode returns 500 error, skip this test
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (errorMessage.includes('500')) {
-          console.log('[Test] Node retrieval endpoint error - test skipped');
-          expect(error).toBeTruthy();
-        } else {
-          throw error;
+          const topic2Data = TestNodeBuilder.text('Topic 2').build();
+          const topic2Id = await backend.createNode(topic2Data);
+
+          await waitForDatabaseWrites();
+          expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+          // Batch operation (placeholder will fail fast)
+          try {
+            await backend.batchGenerateEmbeddings([topic1Id, topic2Id]);
+          } catch (error) {
+            // Verify error is thrown
+            expect(error).toBeTruthy();
+          }
+
+          // Verify nodes still exist (cleanup should not delete nodes)
+          const topic1 = await backend.getNode(topic1Id);
+          const topic2 = await backend.getNode(topic2Id);
+          expect(topic1).toBeTruthy();
+          expect(topic2).toBeTruthy();
+        } catch (error) {
+          // If getNode returns 500 error, skip this test
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          if (errorMessage.includes('500')) {
+            console.log('[Test] Node retrieval endpoint error - test skipped');
+            expect(error).toBeTruthy();
+          } else {
+            throw error;
+          }
         }
-      }
-    }, 35000);
+      },
+      35000
+    );
   });
 
   describe('Error propagation', () => {
@@ -337,7 +341,7 @@ describe.sequential('Section 10: Edge Cases & Error Handling', () => {
     );
   });
 
-  describe('Mention operation edge cases', () => {
+  describe.skipIf(!shouldUseDatabase())('Mention operation edge cases', () => {
     it('should handle mention creation with non-existent nodes', async () => {
       try {
         // Test with non-existent mentioning node

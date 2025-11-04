@@ -15,13 +15,14 @@ import {
   cleanDatabase,
   waitForDatabaseWrites
 } from '../utils/test-database';
+import { shouldUseDatabase } from '../utils/should-use-database';
 import { TestNodeBuilder } from '../utils/test-node-builder';
 import { getBackendAdapter } from '$lib/services/backend-adapter';
 import type { BackendAdapter } from '$lib/services/backend-adapter';
 import type { Node } from '$lib/types';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
 
-describe.sequential('Section 6: Node Ordering Tests', () => {
+describe.skipIf(!shouldUseDatabase()).sequential('Section 6: Node Ordering Tests', () => {
   let dbPath: string;
   let backend: BackendAdapter;
 

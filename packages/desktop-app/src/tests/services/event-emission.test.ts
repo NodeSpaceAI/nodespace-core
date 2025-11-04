@@ -33,6 +33,7 @@ import {
   cleanDatabase,
   waitForDatabaseWrites
 } from '../utils/test-database';
+import { shouldUseDatabase } from '../utils/should-use-database';
 import { TestNodeBuilder } from '../utils/test-node-builder';
 import { getBackendAdapter } from '$lib/services/backend-adapter';
 import type { BackendAdapter } from '$lib/services/backend-adapter';
@@ -45,7 +46,7 @@ import type {
 } from '$lib/services/event-types';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
 
-describe.sequential('Section 8: Event System Tests', () => {
+describe.skipIf(!shouldUseDatabase()).sequential('Section 8: Event System Tests', () => {
   let dbPath: string;
   let backend: BackendAdapter;
 
