@@ -19,13 +19,13 @@
 
 <script lang="ts">
   import { Collapsible } from 'bits-ui';
+  import * as Select from '$lib/components/ui/select';
   import * as Popover from '$lib/components/ui/popover';
   import { Calendar } from '$lib/components/ui/calendar';
   import { Input } from '$lib/components/ui/input';
   import { schemaService } from '$lib/services/schema-service';
   import { sharedNodeStore } from '$lib/services/shared-node-store';
   import type { SchemaDefinition, SchemaField } from '$lib/types/schema';
-  import type { Node } from '$lib/types';
   import { parseDate, type DateValue } from '@internationalized/date';
 
   // Props
@@ -39,10 +39,19 @@
 
   // State
   let schema = $state<SchemaDefinition | null>(null);
-  let node = $state<Node | null | undefined>(null);
-  let isOpen = $state(true);
+  let isOpen = $state(false); // Collapsed by default
   let isLoadingSchema = $state(false);
   let schemaError = $state<string | null>(null);
+
+  // Reactive node data - updates when store changes
+  let node = $derived(nodeId ? sharedNodeStore.getNode(nodeId) : null);
+
+  // Combobox state for text fields that could have autocomplete (like assignee)
+  let comboboxOpen = $state<Record<string, boolean>>({});
+  let comboboxSearch = $state<Record<string, string>>({});
+
+  // Assignee options (empty for now - will be populated from user service later)
+  const assigneeOptions: Array<{ value: string; label: string }> = [];
 
   // Load schema when nodeType changes
   $effect(() => {
@@ -65,16 +74,6 @@
     }
 
     loadSchema();
-  });
-
-  // Load node data
-  $effect(() => {
-    if (!nodeId) {
-      node = null;
-      return;
-    }
-
-    node = sharedNodeStore.getNode(nodeId);
   });
 
   // Calculate field completion stats
@@ -106,7 +105,19 @@
 
     // Find status field (enum type, common in task schemas)
     const statusField = schema.fields.find((f) => f.name === 'status' && f.type === 'enum');
-    const status = statusField ? node.properties?.[statusField.name] : null;
+    // Use current value or default value from schema
+    const statusValue = statusField
+      ? node.properties?.[statusField.name] || statusField.default || null
+      : null;
+    // Ensure status is a string - handle arrays incorrectly stored
+    let status: string | null = null;
+    if (statusValue) {
+      if (Array.isArray(statusValue)) {
+        status = statusValue.join(''); // Fix incorrectly stored array
+      } else {
+        status = String(statusValue);
+      }
+    }
 
     // Find due date field
     const dueDateField = schema.fields.find((f) => f.name === 'dueDate' || f.name === 'due_date');
@@ -124,11 +135,23 @@
       [fieldName]: value
     };
 
+    console.log('[SchemaPropertyForm] Updating property:', {
+      fieldName,
+      value,
+      nodeId,
+      currentProperties: node.properties,
+      updatedProperties
+    });
+
     sharedNodeStore.updateNode(
       nodeId,
       { properties: updatedProperties },
       { type: 'viewer', viewerId: 'schema-property-form' }
     );
+
+    // Check if update worked
+    const updatedNode = sharedNodeStore.getNode(nodeId);
+    console.log('[SchemaPropertyForm] After update, node properties:', updatedNode?.properties);
   }
 
   // Get enum values for a field (core + user values combined)
@@ -193,11 +216,12 @@
       .join(' ');
   }
 
-  // Get current enum value as string
+  // Get current enum value as string (with fallback to default)
   function getEnumValue(field: SchemaField): string {
-    if (!node) return '';
+    if (!node) return field.default ? String(field.default) : '';
     const value = node.properties?.[field.name];
-    return value ? String(value) : '';
+    // Use current value, or fall back to schema default, or empty string
+    return value ? String(value) : field.default ? String(field.default) : '';
   }
 </script>
 
@@ -210,27 +234,27 @@
     <span class="text-sm text-destructive">Error: {schemaError}</span>
   </div>
 {:else if schema && node && fieldStats().total > 0}
-  <div class="property-form-container">
+  <!-- Wrapper with border-b (matches demo structure) -->
+  <div class="border-b">
     <Collapsible.Root bind:open={isOpen}>
       <Collapsible.Trigger
-        class="flex w-full items-center justify-between py-3 font-medium transition-all hover:opacity-80 border-b border-border"
+        class="flex w-full items-center justify-between py-3 font-medium transition-all hover:opacity-80"
       >
         <div class="flex items-center gap-3">
           <!-- Status Badge (if available) -->
           {#if headerSummary()?.status}
+            {@const status = headerSummary()!.status!}
             <span
               class="inline-flex items-center rounded-md border border-border bg-muted px-2.5 py-0.5 text-xs font-medium text-foreground"
             >
-              {formatEnumLabel(String(headerSummary()?.status))}
+              {formatEnumLabel(status)}
             </span>
           {/if}
 
-          <!-- Due Date (if available) -->
-          {#if headerSummary()?.dueDate}
-            <span class="text-sm text-muted-foreground">
-              Due {formatDateDisplay(headerSummary()?.dueDate)}
-            </span>
-          {/if}
+          <!-- Due Date (always show, with "None" if not set) -->
+          <span class="text-sm text-muted-foreground">
+            Due: {headerSummary()?.dueDate ? formatDateDisplay(headerSummary()?.dueDate) : 'None'}
+          </span>
         </div>
 
         <!-- Field Completion + Chevron -->
@@ -257,7 +281,7 @@
 
       <Collapsible.Content class="pb-4">
         <!-- Property Grid (2 columns) -->
-        <div class="grid grid-cols-2 gap-4 pt-4">
+        <div class="grid grid-cols-2 gap-4">
           {#each schema.fields.filter((f) => f.protection === 'user') as field (field.name)}
             {@const fieldId = `property-${nodeId}-${field.name}`}
             <div class="space-y-2">
@@ -266,22 +290,27 @@
               </label>
 
               {#if field.type === 'enum'}
-                <!-- Enum Field → Native Select styled with Tailwind -->
+                <!-- Enum Field → shadcn Select Component (Fixed with bind:value) -->
                 {@const enumValues = getEnumValues(field)}
                 {@const currentValue = getEnumValue(field)}
-                <select
-                  id={fieldId}
-                  class="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                <Select.Root
+                  type="single"
                   value={currentValue}
-                  onchange={(e) => {
-                    updateProperty(field.name, e.currentTarget.value);
+                  onValueChange={(newValue) => {
+                    if (newValue) {
+                      updateProperty(field.name, newValue);
+                    }
                   }}
                 >
-                  <option value="">Select...</option>
-                  {#each enumValues as enumValue}
-                    <option value={enumValue}>{formatEnumLabel(enumValue)}</option>
-                  {/each}
-                </select>
+                  <Select.Trigger class="w-full">
+                    {formatEnumLabel(currentValue)}
+                  </Select.Trigger>
+                  <Select.Content>
+                    {#each enumValues as enumValue}
+                      <Select.Item value={enumValue} label={formatEnumLabel(enumValue)} />
+                    {/each}
+                  </Select.Content>
+                </Select.Root>
               {:else if field.type === 'date'}
                 <!-- Date Field → Calendar with Popover -->
                 {@const rawDateValue = parsePropertyValue(field, node.properties?.[field.name])}
@@ -328,16 +357,94 @@
                   </Popover.Content>
                 </Popover.Root>
               {:else if field.type === 'text' || field.type === 'string'}
-                <!-- Text Field → Input Component -->
-                <Input
-                  id={fieldId}
-                  type="text"
-                  value={(node.properties?.[field.name] as string) || ''}
-                  oninput={(e) => {
-                    updateProperty(field.name, e.currentTarget.value);
-                  }}
-                  placeholder={field.default ? String(field.default) : ''}
-                />
+                <!-- Text Field → Combobox for assignee, Input for others -->
+                {#if field.name === 'assignee'}
+                  <!-- Assignee Combobox (matches demo structure) -->
+                  {@const currentValue = (node.properties?.[field.name] as string) || ''}
+                  {@const isOpen = comboboxOpen[field.name] || false}
+                  {@const searchValue = comboboxSearch[field.name] || ''}
+                  <Popover.Root
+                    open={isOpen}
+                    onOpenChange={(open) => {
+                      comboboxOpen[field.name] = open;
+                    }}
+                  >
+                    <Popover.Trigger
+                      class="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none"
+                    >
+                      <span class={currentValue ? '' : 'text-muted-foreground'}>
+                        {currentValue || 'Select assignee...'}
+                      </span>
+                      <svg class="h-4 w-4 opacity-50" viewBox="0 0 16 16" fill="none">
+                        <path
+                          d="M4 6l4 4 4-4"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                      </svg>
+                    </Popover.Trigger>
+                    <Popover.Content class="w-[200px] p-0" align="start">
+                      <div class="flex flex-col">
+                        <input
+                          type="text"
+                          placeholder="Search assignee..."
+                          value={searchValue}
+                          oninput={(e) => {
+                            comboboxSearch[field.name] = e.currentTarget.value;
+                          }}
+                          class="flex h-10 w-full border-b border-input bg-background px-3 py-2 text-sm focus-visible:outline-none"
+                        />
+                        <div class="max-h-[200px] overflow-y-auto">
+                          {#if assigneeOptions.length === 0}
+                            <div class="px-3 py-2 text-sm text-muted-foreground">
+                              No assignees available
+                            </div>
+                          {:else}
+                            {#each assigneeOptions.filter((a) => a.label
+                                .toLowerCase()
+                                .includes(searchValue.toLowerCase())) as assignee}
+                              <button
+                                type="button"
+                                class="relative flex w-full cursor-pointer select-none items-center rounded-sm px-3 py-2 text-sm outline-none hover:bg-muted"
+                                onclick={() => {
+                                  updateProperty(field.name, assignee.value);
+                                  comboboxOpen[field.name] = false;
+                                  comboboxSearch[field.name] = '';
+                                }}
+                              >
+                                {assignee.label}
+                                {#if currentValue === assignee.value}
+                                  <svg class="ml-auto h-4 w-4" viewBox="0 0 16 16" fill="none">
+                                    <path
+                                      d="M3 8l4 4 6-8"
+                                      stroke="currentColor"
+                                      stroke-width="2"
+                                      stroke-linecap="round"
+                                      stroke-linejoin="round"
+                                    />
+                                  </svg>
+                                {/if}
+                              </button>
+                            {/each}
+                          {/if}
+                        </div>
+                      </div>
+                    </Popover.Content>
+                  </Popover.Root>
+                {:else}
+                  <!-- Regular Text Input -->
+                  <Input
+                    id={fieldId}
+                    type="text"
+                    value={(node.properties?.[field.name] as string) || ''}
+                    oninput={(e) => {
+                      updateProperty(field.name, e.currentTarget.value);
+                    }}
+                    placeholder={field.default ? String(field.default) : ''}
+                  />
+                {/if}
               {:else if field.type === 'number'}
                 <!-- Number Field → Input Component -->
                 <Input
@@ -364,10 +471,6 @@
 {/if}
 
 <style>
-  .property-form-container {
-    margin-top: 1rem;
-  }
-
   .property-form-loading,
   .property-form-error {
     padding: 1rem;

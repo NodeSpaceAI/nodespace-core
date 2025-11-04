@@ -1470,6 +1470,14 @@
 
   <!-- Scrollable Node Content Area (children structure) -->
   <div class="node-content-area" bind:this={scrollContainer}>
+    <!-- Schema-Driven Properties Panel - appears after header, before children -->
+    {#if nodeId}
+      {@const currentNode = sharedNodeStore.getNode(nodeId)}
+      {#if currentNode && currentNode.nodeType !== 'text'}
+        <SchemaPropertyForm {nodeId} nodeType={currentNode.nodeType} />
+      {/if}
+    {/if}
+
     {#each nodeManager.visibleNodes(nodeId) as node (node.id)}
       {@const relativeDepth = (node.depth || 0) - minDepth()}
       <div
@@ -1647,14 +1655,6 @@
         </div>
       </div>
     {/each}
-
-    <!-- Schema-Driven Properties Panel - appears after node content -->
-    {#if nodeId}
-      {@const currentNode = sharedNodeStore.getNode(nodeId)}
-      {#if currentNode && currentNode.nodeType !== 'text'}
-        <SchemaPropertyForm {nodeId} nodeType={currentNode.nodeType} />
-      {/if}
-    {/if}
 
     <!-- Backlinks Panel - fixed at bottom of this viewer -->
     {#if nodeId}
