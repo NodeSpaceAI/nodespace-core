@@ -701,6 +701,17 @@ async fn create_node(
 ) -> Result<String, MCPError> {
     // Create node via NodeOperations (enforces all business rules)
     // Container node ID is provided from the pre-created container
+
+    // Provide required properties based on node type
+    let properties = match node_type {
+        "task" => {
+            // Task nodes require status field per schema
+            // Default to "OPEN" (schema default)
+            json!({"status": "OPEN"})
+        }
+        _ => json!({}),
+    };
+
     operations
         .create_node(CreateNodeParams {
             id: None, // MCP generates IDs server-side
@@ -709,7 +720,7 @@ async fn create_node(
             parent_id,
             container_node_id,
             before_sibling_id,
-            properties: json!({}),
+            properties,
         })
         .await
         .map_err(|e| {

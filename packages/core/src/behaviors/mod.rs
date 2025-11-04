@@ -163,7 +163,7 @@ pub trait NodeBehavior: Send + Sync {
     ///     "task".to_string(),
     ///     "Do something".to_string(),
     ///     None,
-    ///     json!({"status": "pending"}),
+    ///     json!({"status": "OPEN"}),
     /// );
     /// assert!(behavior.validate(&node).is_ok());
     /// ```
@@ -396,12 +396,17 @@ impl NodeBehavior for HeaderNodeBehavior {
 ///
 /// Task nodes represent actionable items with status tracking.
 ///
-/// # Valid Status Values
+/// # Valid Status Values (Schema-Defined)
 ///
-/// - "pending" - Not started
-/// - "in_progress" - Currently being worked on
-/// - "completed" - Finished
-/// - "cancelled" - No longer needed
+/// Status values are defined in the task schema and validated dynamically.
+/// Core values (protected, cannot be removed):
+/// - "OPEN" - Not started (default)
+/// - "IN_PROGRESS" - Currently being worked on
+/// - "DONE" - Finished
+///
+/// User-extensible values (can be added via schema):
+/// - "BLOCKED" - Waiting on dependencies (included by default)
+/// - Custom values can be added by users
 ///
 /// # Examples
 ///
@@ -415,7 +420,7 @@ impl NodeBehavior for HeaderNodeBehavior {
 ///     "task".to_string(),
 ///     "Implement NodeBehavior trait".to_string(),
 ///     None,
-///     json!({"status": "in_progress"}),
+///     json!({"status": "IN_PROGRESS"}),
 /// );
 /// assert!(behavior.validate(&node).is_ok());
 /// ```
@@ -444,22 +449,25 @@ impl NodeBehavior for TaskNodeBehavior {
         // Try new nested format first, fall back to old flat format
         let task_props = node.properties.get("task").or(Some(&node.properties)); // Fallback to root for backward compat
 
-        // If task properties exist, validate them
+        // If task properties exist, validate their TYPES (not values)
+        // VALUE validation (e.g., valid status enum values) is handled by schema system
         if let Some(props) = task_props {
-            // NOTE: Status validation is now handled by the schema system
-            // The schema defines valid enum values dynamically, allowing user customization
-            // We only verify it's a string type here
+            // Validate status type (must be string if present)
+            // Schema system validates the actual value against allowed enum values
             if let Some(status) = props.get("status") {
-                status.as_str().ok_or_else(|| {
-                    NodeValidationError::InvalidProperties("Status must be a string".to_string())
-                })?;
+                if !status.is_string() && !status.is_null() {
+                    return Err(NodeValidationError::InvalidProperties(
+                        "Status must be a string".to_string(),
+                    ));
+                }
             }
 
-            // Validate priority if present
+            // Validate priority type (must be string enum if present)
+            // Schema system validates the actual value against allowed enum values
             if let Some(priority) = props.get("priority") {
-                if !priority.is_i64() && !priority.is_null() {
+                if !priority.is_string() && !priority.is_null() {
                     return Err(NodeValidationError::InvalidProperties(
-                        "Priority must be a number".to_string(),
+                        "Priority must be a string".to_string(),
                     ));
                 }
             }
@@ -479,8 +487,8 @@ impl NodeBehavior for TaskNodeBehavior {
     fn default_metadata(&self) -> serde_json::Value {
         serde_json::json!({
             "task": {
-                "status": "pending",
-                "priority": 2,
+                "status": "OPEN",
+                "priority": "MEDIUM",
                 "due_date": null,
                 "assignee_id": null
             }
@@ -1132,7 +1140,7 @@ mod tests {
             "task".to_string(),
             "Implement feature".to_string(),
             None,
-            json!({"status": "in_progress"}),
+            json!({"status": "IN_PROGRESS"}),
         );
         assert!(behavior.validate(&valid_node_old_format).is_ok());
 
@@ -1141,7 +1149,7 @@ mod tests {
             "task".to_string(),
             "Implement feature".to_string(),
             None,
-            json!({"task": {"status": "in_progress"}}),
+            json!({"task": {"status": "IN_PROGRESS"}}),
         );
         assert!(behavior.validate(&valid_node_new_format).is_ok());
 
@@ -1152,8 +1160,8 @@ mod tests {
             None,
             json!({
                 "task": {
-                    "status": "completed",
-                    "priority": 3,
+                    "status": "DONE",
+                    "priority": "HIGH",
                     "due_date": "2025-01-10"
                 }
             }),
@@ -1178,12 +1186,12 @@ mod tests {
         );
         assert!(behavior.validate(&bad_status_type).is_err());
 
-        // Invalid: priority not a number (new format)
+        // Invalid: priority not a string (priority is an enum in schema)
         let bad_priority_node = Node::new(
             "task".to_string(),
             "Task".to_string(),
             None,
-            json!({"task": {"priority": "high"}}),
+            json!({"task": {"priority": 123}}), // number instead of string enum
         );
         assert!(behavior.validate(&bad_priority_node).is_err());
     }
@@ -1203,8 +1211,8 @@ mod tests {
         let metadata = behavior.default_metadata();
 
         // Properties are now nested under "task" namespace (Issue #397)
-        assert_eq!(metadata["task"]["status"], "pending");
-        assert_eq!(metadata["task"]["priority"], 2);
+        assert_eq!(metadata["task"]["status"], "OPEN");
+        assert_eq!(metadata["task"]["priority"], "MEDIUM");
         assert!(metadata["task"]["due_date"].is_null());
         assert!(metadata["task"]["assignee_id"].is_null());
     }
@@ -1223,8 +1231,8 @@ mod tests {
             None,
             json!({
                 "task": {
-                    "status": "in_progress",
-                    "priority": 3,
+                    "status": "IN_PROGRESS",
+                    "priority": "HIGH",
                     "due_date": "2025-01-15"
                 }
             }),
@@ -1232,8 +1240,8 @@ mod tests {
 
         // Verify initial validation passes
         assert!(behavior.validate(&task_node).is_ok());
-        assert_eq!(task_node.properties["task"]["status"], "in_progress");
-        assert_eq!(task_node.properties["task"]["priority"], 3);
+        assert_eq!(task_node.properties["task"]["status"], "IN_PROGRESS");
+        assert_eq!(task_node.properties["task"]["priority"], "HIGH");
 
         // Convert to text node (simulate type conversion)
         task_node.node_type = "text".to_string();
@@ -1241,8 +1249,8 @@ mod tests {
         // Task properties should still exist in the properties JSON
         // (even though it's no longer a task node)
         assert!(task_node.properties["task"].is_object());
-        assert_eq!(task_node.properties["task"]["status"], "in_progress");
-        assert_eq!(task_node.properties["task"]["priority"], 3);
+        assert_eq!(task_node.properties["task"]["status"], "IN_PROGRESS");
+        assert_eq!(task_node.properties["task"]["priority"], "HIGH");
         assert_eq!(task_node.properties["task"]["due_date"], "2025-01-15");
 
         // Convert back to task node
@@ -1250,8 +1258,8 @@ mod tests {
 
         // Properties should still be there and validate correctly
         assert!(behavior.validate(&task_node).is_ok());
-        assert_eq!(task_node.properties["task"]["status"], "in_progress");
-        assert_eq!(task_node.properties["task"]["priority"], 3);
+        assert_eq!(task_node.properties["task"]["status"], "IN_PROGRESS");
+        assert_eq!(task_node.properties["task"]["priority"], "HIGH");
         assert_eq!(task_node.properties["task"]["due_date"], "2025-01-15");
 
         // This demonstrates the key benefit: properties survive type conversions
@@ -1361,7 +1369,7 @@ mod tests {
             "task".to_string(),
             "Do something".to_string(),
             None,
-            json!({"status": "pending"}),
+            json!({"status": "OPEN"}),
         );
         assert!(registry.validate_node(&task_node).is_ok());
 

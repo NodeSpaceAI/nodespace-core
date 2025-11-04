@@ -30,7 +30,7 @@
 //!     "Implement Pure JSON schema".to_string(),
 //!     Some("2025-01-03".to_string()),
 //!     json!({
-//!         "status": "in_progress",
+//!         "status": "IN_PROGRESS",
 //!         "priority": "high",
 //!         "due_date": "2025-01-10"
 //!     }),
@@ -538,7 +538,7 @@ where
 /// let update = NodeUpdate {
 ///     content: Some("New content".to_string()),
 ///     parent_id: Some(Some("new-parent-id".to_string())),  // Set to specific value
-///     properties: Some(json!({"status": "completed"})),
+///     properties: Some(json!({"status": "DONE"})),
 ///     ..Default::default()
 /// };
 /// ```
@@ -1578,16 +1578,16 @@ mod tests {
             "Implement feature".to_string(),
             Some("2025-01-03".to_string()),
             json!({
-                "status": "in_progress",
+                "status": "IN_PROGRESS",
                 "assignee": "person-123",
                 "due_date": "2025-01-10",
-                "priority": "high"
+                "priority": "HIGH"
             }),
         );
 
         assert_eq!(task.node_type, "task");
-        assert_eq!(task.properties["status"], "in_progress");
-        assert_eq!(task.properties["priority"], "high");
+        assert_eq!(task.properties["status"], "IN_PROGRESS");
+        assert_eq!(task.properties["priority"], "HIGH");
         assert!(!task.is_root());
     }
 }

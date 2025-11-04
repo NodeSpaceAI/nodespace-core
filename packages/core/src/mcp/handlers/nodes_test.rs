@@ -1137,7 +1137,7 @@ mod integration_tests {
                 parent_id: Some(container.clone()),
                 container_node_id: Some(container.clone()),
                 before_sibling_id: None,
-                properties: json!({}),
+                properties: json!({"task": {"status": "OPEN"}}),
             })
             .await
             .unwrap();
@@ -1150,7 +1150,7 @@ mod integration_tests {
                 parent_id: Some(container.clone()),
                 container_node_id: Some(container),
                 before_sibling_id: Some(node1.clone()),
-                properties: json!({}),
+                properties: json!({"task": {"status": "OPEN"}}),
             })
             .await
             .unwrap();
