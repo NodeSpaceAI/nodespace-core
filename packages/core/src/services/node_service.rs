@@ -2447,11 +2447,32 @@ impl NodeService {
         })?;
 
         for (id, update) in updates {
-            // Apply update similar to update_node but in transaction
-            let existing = self
-                .get_node(&id)
-                .await?
-                .ok_or_else(|| NodeServiceError::node_not_found(&id))?;
+            // Query node directly within transaction (avoid backfill_schema_version deadlock)
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version,
+                            created_at, modified_at, properties, embedding_vector
+                     FROM nodes WHERE id = ?",
+                )
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
+                })?;
+
+            let mut rows = stmt.query([id.as_str()]).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
+            })?;
+
+            let existing = if let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            {
+                self.row_to_node(row)?
+            } else {
+                let _rollback = conn.execute("ROLLBACK", ()).await;
+                return Err(NodeServiceError::node_not_found(&id));
+            };
 
             let mut updated = existing.clone();
 
@@ -4762,8 +4783,8 @@ mod tests {
             // Create a date node
             let date_node = Node::new_with_id(
                 "2025-10-24".to_string(),
-                "text".to_string(),
-                "October 24".to_string(),
+                "date".to_string(),
+                "2025-10-24".to_string(),
                 None,
                 json!({}),
             );

@@ -104,6 +104,12 @@ fn test_all_expected_tools_present() {
         "update_container_from_markdown",
         // Search
         "search_containers",
+        // Schema management
+        "add_schema_field",
+        "remove_schema_field",
+        "extend_schema_enum",
+        "remove_schema_enum_value",
+        "get_schema_definition",
     ];
 
     for expected_tool in &expected_tools {
@@ -114,8 +120,8 @@ fn test_all_expected_tools_present() {
         );
     }
 
-    // Verify we have exactly 16 tools (8 original + 5 hierarchy + 3 batch operations)
-    assert_eq!(tools.len(), 16, "Expected exactly 16 tools");
+    // Verify we have exactly 21 tools (16 original + 5 schema management)
+    assert_eq!(tools.len(), 21, "Expected exactly 21 tools");
 }
 
 #[test]

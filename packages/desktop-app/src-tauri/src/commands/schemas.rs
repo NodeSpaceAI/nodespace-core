@@ -9,10 +9,10 @@
 //! ## Architecture Pattern
 //!
 //! These commands follow the established dual entry point pattern:
-//! ```
-//! Tauri Commands (desktop app)  ───┐
-//!                                  ├──▶ SchemaService (shared backend)
-//! MCP Handlers (external AI)    ───┘
+//! ```text
+//! Tauri Commands (desktop app)  ---+
+//!                                  +---> SchemaService (shared backend)
+//! MCP Handlers (external AI)    ---+
 //! ```
 //!
 //! Both Tauri commands and MCP handlers call the same SchemaService to ensure

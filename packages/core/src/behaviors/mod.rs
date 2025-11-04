@@ -1263,7 +1263,8 @@ mod tests {
         assert!(types.contains(&"quote-block".to_string()));
         assert!(types.contains(&"ordered-list".to_string()));
         assert!(types.contains(&"date".to_string()));
-        assert_eq!(types.len(), 7);
+        assert!(types.contains(&"schema".to_string()));
+        assert_eq!(types.len(), 8);
     }
 
     #[test]
