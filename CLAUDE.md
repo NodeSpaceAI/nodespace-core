@@ -12,13 +12,15 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 >
 > 1. **Check git status**: `git status` - commit any pending changes first
 > 2. **Pull latest changes**: `git fetch origin && git pull origin main` - ensure you're working from the latest codebase
-> 3. **Determine branching strategy**: Check parent issue for specified approach (single branch vs. individual branches)
-> 4. **Create/switch to branch**: Based on strategy - either `git checkout -b feature/issue-<number>-brief-description` OR switch to existing parent issue branch
-> 5. **Assign issue**: `bun run gh:assign <number> "@me"`
-> 6. **Update project status**: `bun run gh:status <number> "In Progress"`
-> 7. **Select subagent**: Choose appropriate specialized agent based on task complexity and type
-> 8. **Read issue requirements**: Understand all acceptance criteria
-> 9. **Plan implementation**: Self-contained approach with appropriate subagent
+> 3. **Run test baseline**: `bun run test:all` - record passing/failing counts and specific failing test names
+> 4. **Document baseline**: Add comment to issue with baseline test status
+> 5. **Determine branching strategy**: Check parent issue for specified approach (single branch vs. individual branches)
+> 6. **Create/switch to branch**: Based on strategy - either `git checkout -b feature/issue-<number>-brief-description` OR switch to existing parent issue branch
+> 7. **Assign issue**: `bun run gh:assign <number> "@me"`
+> 8. **Update project status**: `bun run gh:status <number> "In Progress"`
+> 9. **Select subagent**: Choose appropriate specialized agent based on task complexity and type
+> 10. **Read issue requirements**: Understand all acceptance criteria
+> 11. **Plan implementation**: Self-contained approach with appropriate subagent
 > 
 > **🔴 CRITICAL PROCESS VIOLATIONS**
 > 
@@ -29,6 +31,7 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 > 
 > **Common mistakes agents make:**
 > - **Skipping `git pull`** - Starting work without pulling latest changes leads to merge conflicts
+> - **Skipping test baseline** - Not recording initial test status leads to regressions
 > - Reading files before creating feature branch
 > - Planning implementation before assigning issue
 > - Using TodoWrite without including startup sequence as first item
@@ -312,9 +315,15 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    - Some tests conditionally skip in in-memory mode (require full database persistence)
    - See [Testing Guide](docs/architecture/development/testing-guide.md) for details
 
-5. **Run Quality Checks & Create PR**
+5. **Run Tests & Quality Checks Before PR**
    ```bash
-   # ⚠️ MANDATORY: Run quality:fix before creating PR
+   # ⚠️ MANDATORY STEP 1: Verify no new test failures
+   bun run test:all
+   # Compare results to baseline from step 3
+   # If any NEW failures: STOP and fix them before PR
+   # Document any pre-existing failures in PR description
+
+   # ⚠️ MANDATORY STEP 2: Run quality:fix
    bun run quality:fix
 
    # If quality:fix made changes, commit them
@@ -325,8 +334,10 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    git push -u origin feature/issue-<number>-brief-description
    bun run gh:pr <number>
    ```
-   **CRITICAL**: Always run `bun run quality:fix` before creating a PR to catch lint/format issues.
-   Automatically updates project status to "Ready for Review"
+   **CRITICAL**:
+   - Run `bun run test:all` FIRST - no new test failures allowed
+   - Run `bun run quality:fix` SECOND - no lint/format issues allowed
+   - Automatically updates project status to "Ready for Review"
 
 6. **Conduct Code Review**
    - **FOLLOW UNIVERSAL PROCESS**: Use the code review guidelines in the [PR review documentation](docs/architecture/development/process/pr-review.md) 
@@ -334,14 +345,14 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    - All quality gates and review requirements apply universally to AI agents and human reviewers
 
 **TodoWrite Tool Users - UPDATED:**
-- Your **FIRST todo item** must be: "Complete startup sequence: git status, pull latest (git fetch origin && git pull origin main), branch strategy, create branch, assign issue (bun run gh:assign N '@me'), update status (bun run gh:status N 'In Progress'), select subagent"
-- Your **LAST todo items** must include: "Run quality:fix and commit changes" and "Create PR"
+- Your **FIRST todo item** must be: "Complete startup sequence: git status, pull latest, run test baseline (bun run test:all), document baseline in issue, branch strategy, create branch, assign issue (bun run gh:assign N '@me'), update status (bun run gh:status N 'In Progress'), select subagent"
+- Your **LAST todo items** must include: "Run test:all to verify no new failures", "Run quality:fix and commit changes", and "Create PR"
 - All GitHub operations now use **bun commands** (no Claude Code approval prompts)
 - Do NOT break the startup sequence into separate todo items
 - Only after completing the startup sequence should you add implementation todos
 
 **Before Starting Any Task:**
-1. **COMPLETE THE MANDATORY STARTUP SEQUENCE** (steps 1-9 above, including pulling latest changes)
+1. **COMPLETE THE MANDATORY STARTUP SEQUENCE** (steps 1-11 above, including test baseline)
 2. **READ THE DEVELOPMENT PROCESS DOCUMENTATION** - Start with the [overview](docs/architecture/development/overview.md) and [startup sequence](docs/architecture/development/process/startup-sequence.md)
 3. **Select appropriate subagent** based on task complexity and type
 4. Check issue acceptance criteria and requirements
@@ -505,9 +516,11 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 **EVERY AGENT MUST COMPLETE THIS CHECKLIST FOR EACH TASK:**
 
-**Startup Sequence (MANDATORY - Steps 1-9 from above):**
+**Startup Sequence (MANDATORY - Steps 1-11 from above):**
 - [ ] Checked git status and committed any pending changes
 - [ ] **Pulled latest changes** (`git fetch origin && git pull origin main`)
+- [ ] **Recorded test baseline** (`bun run test:all` - noted passing/failing counts)
+- [ ] **Documented baseline in issue** (commented with test status and specific failures)
 - [ ] Determined branching strategy from parent issue (single branch vs. individual branches)
 - [ ] Created/switched to appropriate branch based on strategy
 - [ ] Assigned issue to self (`bun run gh:assign <number> "@me"`)
@@ -528,12 +541,15 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - [ ] All acceptance criteria completed and checked off
 - [ ] Comprehensive testing with mock services
 - [ ] Code follows project standards
+- [ ] **Run `bun run test:all` - verify no new test failures vs baseline**
 - [ ] **Run `bun run quality:fix` and commit any changes**
 
 **PR and Review:**
-- [ ] Run `bun run quality:fix` one final time
+- [ ] **Verify test suite**: Run `bun run test:all` - no new failures allowed
+- [ ] **Verify code quality**: Run `bun run quality:fix` one final time
 - [ ] Commit any linting/formatting fixes
 - [ ] Created PR with proper title and description
+- [ ] **Document test status in PR**: Note baseline vs current test results
 - [ ] Updated GitHub project status using CLI: In Progress → Ready for Review
 - [ ] Used appropriate subagent for code review if needed
 - [ ] Merged immediately if review passes, or addressed feedback
