@@ -19,15 +19,24 @@ This command is used AFTER a PR has been reviewed (typically via `/pragmatic-cod
    ```
    Ensure you're on the feature branch that was reviewed.
 
-2. **Locate the review recommendations**:
-   - The user should provide the review findings in the conversation
-   - If not available, check recent conversation history for the code review report
+2. **Fetch PR review comments**:
+   ```bash
+   # Get PR number
+   gh pr view --json number
+
+   # Fetch all review comments and reviews
+   gh pr view --json reviews,comments
+   ```
+
+3. **Locate the review recommendations**:
+   - **Primary source**: PR comments from `/pragmatic-code-review`
+   - **Fallback**: Recent conversation history or user-provided review report
    - Review recommendations are typically categorized as:
      - 🔴 **Critical**: MUST fix (security, bugs, broken functionality)
      - 🟡 **Important**: SHOULD fix (performance, maintainability, best practices)
      - 🟢 **Suggestion**: NICE TO HAVE (style improvements, optimizations, refactoring)
 
-3. **Extract issue number** from the current branch name (e.g., `feature/issue-98-description` → issue #98)
+4. **Extract issue number** from the current branch name (e.g., `feature/issue-98-description` → issue #98)
 
 ## Your Task
 
@@ -125,8 +134,44 @@ For each recommendation you decide to address:
    git push
    ```
 
-5. **Update the PR** (optional):
-   Comment on the PR summarizing the changes made and any recommendations skipped with justification.
+5. **Post summary comment to PR**:
+   ```bash
+   gh pr comment <pr-number> --body "<summary-of-changes-and-skipped-items>"
+   ```
+
+6. **CRITICAL: Determine if re-review is needed**:
+   Analyze the changes made and provide a clear recommendation:
+
+   **Re-review IS needed if**:
+   - Critical (🔴) issues were addressed with significant code changes
+   - Important (🟡) architectural or design changes were made
+   - New functionality was added to address feedback
+   - Complex refactoring was performed
+   - You're uncertain if the implementation properly addresses the feedback
+   - Multiple interconnected changes were made
+
+   **Re-review is NOT needed if**:
+   - Only minor style/formatting changes
+   - Simple typo fixes or documentation updates
+   - Trivial refactoring with no logic changes
+   - All changes are straightforward and low-risk
+
+   **Output the decision clearly**:
+   ```
+   ## Re-Review Decision
+
+   **Decision**: [RE-REVIEW NEEDED | NO RE-REVIEW NEEDED]
+
+   **Rationale**: [Clear explanation of why re-review is or isn't needed]
+
+   **If re-review needed**: Run `/pragmatic-code-review` again. The reviewer will:
+   - Detect existing review comments
+   - Review ONLY the new commits since last review
+   - Verify previous feedback was properly addressed
+   - Check for any new issues introduced
+
+   **If no re-review needed**: The PR is ready for merge (pending any other approvals).
+   ```
 
 ## Output Format
 

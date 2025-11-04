@@ -9,14 +9,23 @@ You are acting as the **Principal Engineer AI Reviewer** for a high-velocity, le
 
 ## Review Mode Selection
 
-**Check review status first:**
-Run this command from the repository root: `bun run review:status`
+**CRITICAL: Detect if this is an initial review or a re-review**
 
-Based on the status, choose the appropriate review mode:
-- **Full review** (first review or comprehensive check): Run `bun run review:full` from repository root
-- **Delta review** (incremental, only new changes): Run `bun run review:delta` from repository root
+1. **Check for existing PR review comments**:
+   ```bash
+   # Extract PR number from branch or ask user
+   gh pr view <pr-number> --json reviews,comments
+   ```
 
-**Note:** The review mode context is informational only. The actual review will use standard git diff commands to analyze code changes.
+2. **Determine review mode**:
+   - **Initial Review** (no prior review comments): Review ALL changes in the PR
+   - **Re-Review** (existing review comments found): Review ONLY new commits since last review
+
+3. **For Re-Reviews**:
+   - Identify the last reviewed commit (from review timestamp or comments)
+   - Compare only new changes: `git diff <last-reviewed-commit>...HEAD`
+   - Reference previous feedback from PR comments
+   - Check if previous recommendations were addressed
 
 ## Context Analysis
 
@@ -25,16 +34,25 @@ Analyze the following outputs to understand the scope and content of the changes
 **GIT STATUS:**
 !`git status`
 
+**PR NUMBER** (if exists):
+!`gh pr view --json number | grep -o '"number":[0-9]*' | cut -d: -f2`
+
+**EXISTING REVIEWS** (check for re-review scenario):
+!`gh pr view --json reviews,comments` (if PR exists)
+
 **FILES MODIFIED:**
-!`git diff --name-only origin/main...HEAD`
+- For initial review: !`git diff --name-only origin/main...HEAD`
+- For re-review: !`git diff --name-only <last-reviewed-commit>...HEAD`
 
 **COMMITS:**
-!`git log --no-decorate origin/main...HEAD`
+- For initial review: !`git log --no-decorate origin/main...HEAD`
+- For re-review: !`git log --no-decorate <last-reviewed-commit>...HEAD`
 
 **DIFF CONTENT:**
-!`git diff origin/main...HEAD`
+- For initial review: !`git diff origin/main...HEAD`
+- For re-review: !`git diff <last-reviewed-commit>...HEAD`
 
-Review the complete diff above. This contains all code changes in the PR.
+Review the complete diff above. This contains all code changes to review.
 
 ## Pre-Review Steps
 
@@ -79,42 +97,84 @@ The pragmatic-code-reviewer agent should perform a comprehensive code review foc
 
 ## Output Format
 
+**Review Type**: [Initial Review | Re-Review]
+
+**Previous Review Summary** (for re-reviews only):
+- Number of previous recommendations: X
+- Addressed: Y
+- Not addressed: Z
+- New issues found: N
+
 **Requirements Check** (if issue found):
 - ✅/❌ Each acceptance criterion with status
 - 📝 Notes on any deviations or concerns
 
 **Code Review Findings**:
-- Provide specific, actionable feedback with line-by-line comments where appropriate
+- **CRITICAL**: Include file path and line numbers for each finding
+- Format: `📁 path/to/file.ts:123-145`
+- Provide specific, actionable feedback with code context
 - When suggesting changes, **explain the underlying engineering principle** that motivates the suggestion
 - Use severity levels: 🔴 Critical, 🟡 Important, 🟢 Suggestion
 - Be constructive and concise
+
+**Example Finding Format**:
+```
+### 🔴 Critical: SQL Injection Vulnerability
+📁 src/services/user-service.ts:45-52
+
+Current code executes raw SQL with user input:
+[code snippet]
+
+Recommendation: Use parameterized queries to prevent SQL injection.
+Engineering Principle: Never trust user input; always sanitize and use prepared statements.
+```
 
 **Recommendation**: APPROVE / REQUEST CHANGES / COMMENT
 
 ## Output Guidelines
 
-Provide specific, actionable feedback. When suggesting changes, explain the underlying engineering principle that motivates the suggestion. Be constructive and concise.
+Provide specific, actionable feedback with clear file locations. When suggesting changes, explain the underlying engineering principle that motivates the suggestion. Be constructive and concise.
+
+For re-reviews, focus on whether previous feedback was properly addressed and identify any new issues introduced.
 
 ## Post-Review Actions
 
-After completing the review:
+After completing the review, **AUTOMATICALLY POST TO GITHUB PR**:
 
-1. **Record the review** in review state:
+1. **Post review summary as a PR comment**:
    ```bash
-   # The review will be automatically recorded by the review-manager
+   # Create review comment with all findings
+   gh pr comment <pr-number> --body "<review-report-markdown>"
    ```
 
-2. **Optional: Post review to GitHub PR**:
-   After completing the review, ask the user:
-   > "Would you like me to post this review to the GitHub PR? This will:
-   > - Create a review comment on the PR
-   > - Add inline comments for specific findings (where file/line info is available)
-   > - Set review status (APPROVE/REQUEST_CHANGES/COMMENT)"
+2. **Add inline comments for each finding** (if file/line info available):
+   ```bash
+   # For each finding with location info
+   gh pr comment <pr-number> --body "<finding-details>" \
+     --file <file-path> --line <line-number>
+   ```
 
-   If approved, the review will be posted using the review-manager system (implementation pending).
+3. **Set review status**:
+   ```bash
+   # Based on recommendation
+   gh pr review <pr-number> --approve  # if APPROVE
+   gh pr review <pr-number> --request-changes  # if REQUEST CHANGES
+   gh pr review <pr-number> --comment  # if COMMENT
+   ```
+
+4. **Mark review commit** (for future re-reviews):
+   ```bash
+   # Tag current HEAD for future delta reviews
+   git tag -a "review-$(date +%Y%m%d-%H%M%S)" -m "Code review completed"
+   ```
+
+**CRITICAL**: Always post the review to GitHub. This enables:
+- The `/address-review` command to reference feedback
+- Future re-reviews to compare against previous findings
+- Proper tracking of the review iteration cycle
 
 ## Critical Constraints
 
-**DO NOT MERGE THE PR.** The reviewer agent's job ends with providing the review report. Do not run `gh pr merge`, `git merge`, or any other merge commands. The user will decide whether and when to merge based on the review findings.
+**DO NOT MERGE THE PR.** The reviewer agent's job ends with providing the review report and posting it to GitHub. Do not run `gh pr merge`, `git merge`, or any other merge commands. The user will decide whether and when to merge based on the review findings.
 
-**DO NOT automatically post to GitHub without user confirmation.** Always ask before posting review comments to PRs.
+**DO automatically post to GitHub.** Always post review comments to PRs to enable the iterative review workflow with `/address-review`.
