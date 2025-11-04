@@ -3670,7 +3670,7 @@ mod tests {
             "Child 3".to_string(),
             Some("2025-10-05".to_string()),
             Some("2025-10-05".to_string()),
-            json!({"status": "pending"}),
+            json!({"status": "OPEN"}),
         );
 
         service.create_node(child1.clone()).await.unwrap();
@@ -4072,7 +4072,7 @@ mod tests {
                 "task".to_string(),
                 "Schedule meeting".to_string(),
                 Some(container_id.clone()),
-                json!({}),
+                json!({"task": {"status": "OPEN"}}),
             );
             let task_id = service.create_node(task).await.unwrap();
 
@@ -4140,7 +4140,7 @@ mod tests {
                 "task".to_string(),
                 "Task with @target-node reference".to_string(),
                 Some(container_id.clone()),
-                json!({}),
+                json!({"task": {"status": "OPEN"}}),
             );
             let task_id = service.create_node(task).await.unwrap();
             service.create_mention(&task_id, &target_id).await.unwrap();
@@ -4190,7 +4190,7 @@ mod tests {
                 "task".to_string(),
                 "Container task".to_string(),
                 None,
-                json!({}),
+                json!({"task": {"status": "OPEN"}}),
             );
             let container_task_id = service.create_node(container_task).await.unwrap();
 
@@ -4199,7 +4199,7 @@ mod tests {
                 "task".to_string(),
                 "Child task".to_string(),
                 Some(container_task_id.clone()),
-                json!({}),
+                json!({"task": {"status": "OPEN"}}),
             );
             service.create_node(child_task).await.unwrap();
 
@@ -4238,7 +4238,7 @@ mod tests {
                 "task".to_string(),
                 "UniqueDefaultTest Task".to_string(),
                 None,
-                json!({}),
+                json!({"task": {"status": "OPEN"}}),
             );
             service.create_node(task).await.unwrap();
 
@@ -4580,7 +4580,7 @@ mod tests {
                 "task".to_string(),
                 "From container 3".to_string(),
                 Some(container3_id.clone()),
-                json!({}),
+                json!({"task": {"status": "OPEN"}}),
             );
             let task_id = service.create_node(task).await.unwrap();
 

@@ -1186,12 +1186,12 @@ mod tests {
         );
         assert!(behavior.validate(&bad_status_type).is_err());
 
-        // Invalid: priority not a number (new format)
+        // Invalid: priority not a string (priority is an enum in schema)
         let bad_priority_node = Node::new(
             "task".to_string(),
             "Task".to_string(),
             None,
-            json!({"task": {"priority": "high"}}),
+            json!({"task": {"priority": 123}}), // number instead of string enum
         );
         assert!(behavior.validate(&bad_priority_node).is_err());
     }
@@ -1258,8 +1258,8 @@ mod tests {
 
         // Properties should still be there and validate correctly
         assert!(behavior.validate(&task_node).is_ok());
-        assert_eq!(task_node.properties["task"]["status"], "in_progress");
-        assert_eq!(task_node.properties["task"]["priority"], 3);
+        assert_eq!(task_node.properties["task"]["status"], "IN_PROGRESS");
+        assert_eq!(task_node.properties["task"]["priority"], "HIGH");
         assert_eq!(task_node.properties["task"]["due_date"], "2025-01-15");
 
         // This demonstrates the key benefit: properties survive type conversions

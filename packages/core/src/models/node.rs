@@ -1581,13 +1581,13 @@ mod tests {
                 "status": "IN_PROGRESS",
                 "assignee": "person-123",
                 "due_date": "2025-01-10",
-                "priority": "high"
+                "priority": "HIGH"
             }),
         );
 
         assert_eq!(task.node_type, "task");
-        assert_eq!(task.properties["status"], "in_progress");
-        assert_eq!(task.properties["priority"], "high");
+        assert_eq!(task.properties["status"], "IN_PROGRESS");
+        assert_eq!(task.properties["priority"], "HIGH");
         assert!(!task.is_root());
     }
 }
