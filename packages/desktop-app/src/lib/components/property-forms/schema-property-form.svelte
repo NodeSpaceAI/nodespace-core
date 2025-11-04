@@ -106,6 +106,26 @@
     loadSchema();
   });
 
+  /**
+   * Get property value with backward compatibility (Issue #397)
+   *
+   * Supports both formats:
+   * - New nested: properties.task.status
+   * - Old flat: properties.status
+   */
+  function getPropertyValue(fieldName: string): unknown {
+    if (!node) return undefined;
+
+    // Try new nested format first: properties[nodeType][fieldName]
+    const typeNamespace = node.properties?.[nodeType];
+    if (typeNamespace && typeof typeNamespace === 'object' && fieldName in typeNamespace) {
+      return (typeNamespace as Record<string, unknown>)[fieldName];
+    }
+
+    // Fall back to old flat format: properties[fieldName]
+    return node.properties?.[fieldName];
+  }
+
   // Calculate field completion stats
   const fieldStats = $derived(() => {
     if (!schema || !node) {
@@ -120,7 +140,7 @@
     const filled = allFields.filter((field) => {
       // Type guard to ensure node is not null
       if (!node) return false;
-      const value = node.properties?.[field.name];
+      const value = getPropertyValue(field.name);
       if (value === null || value === undefined) return false;
       if (typeof value === 'string' && value.trim() === '') return false;
       return true;
@@ -137,7 +157,7 @@
     const statusField = schema.fields.find((f) => f.name === 'status' && f.type === 'enum');
     // Use current value or default value from schema
     const statusValue = statusField
-      ? node.properties?.[statusField.name] || statusField.default || null
+      ? getPropertyValue(statusField.name) || statusField.default || null
       : null;
     // Ensure status is a string - handle arrays incorrectly stored
     let status: string | null = null;
@@ -151,19 +171,55 @@
 
     // Find due date field
     const dueDateField = schema.fields.find((f) => f.name === 'dueDate' || f.name === 'due_date');
-    const dueDate = dueDateField ? node.properties?.[dueDateField.name] : null;
+    const dueDate = dueDateField ? getPropertyValue(dueDateField.name) : null;
 
     return { status, dueDate };
   });
 
   // Update node property
   function updateProperty(fieldName: string, value: unknown) {
-    if (!node) return;
+    if (!node || !schema) return;
 
-    const updatedProperties = {
+    // AUTO-MIGRATION (Issue #397): If this is the first write and node is still in old
+    // flat format, migrate all existing properties to new nested format. This prevents
+    // mixed-format properties within the same node and ensures clean data migration.
+    const typeNamespace = node.properties?.[nodeType];
+    const isOldFormat = !typeNamespace || typeof typeNamespace !== 'object';
+
+    let migratedNamespace: Record<string, unknown> = {};
+
+    if (isOldFormat) {
+      // Migrate all schema fields from old flat format to new nested format
+      schema.fields.forEach((field) => {
+        // Type guard: node is guaranteed non-null due to early return above
+        if (!node) return;
+        const oldValue = node.properties?.[field.name];
+        if (oldValue !== undefined) {
+          migratedNamespace[field.name] = oldValue;
+        }
+      });
+    } else {
+      // Already in new format, just copy existing namespace
+      migratedNamespace = { ...(typeNamespace as Record<string, unknown>) };
+    }
+
+    // Apply the update
+    migratedNamespace[fieldName] = value;
+
+    // Build updated properties with nested namespace
+    const updatedProperties: Record<string, unknown> = {
       ...node.properties,
-      [fieldName]: value
+      [nodeType]: migratedNamespace
     };
+
+    // If we migrated from old format, remove the old flat properties
+    if (isOldFormat) {
+      schema.fields.forEach((field) => {
+        // Type guard: node is guaranteed non-null due to early return above
+        if (!node) return;
+        delete updatedProperties[field.name];
+      });
+    }
 
     sharedNodeStore.updateNode(
       nodeId,

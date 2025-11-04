@@ -433,21 +433,35 @@ impl NodeBehavior for TaskNodeBehavior {
             ));
         }
 
-        // NOTE: Status validation is now handled by the schema system
-        // The schema defines valid enum values dynamically, allowing user customization
-        // We only verify it's a string type here
-        if let Some(status) = node.properties.get("status") {
-            status.as_str().ok_or_else(|| {
-                NodeValidationError::InvalidProperties("Status must be a string".to_string())
-            })?;
-        }
+        // Type-namespaced property validation (Issue #397)
+        // Properties are stored under type-specific namespaces: properties.task.*
+        // This allows preserving properties when converting between types
+        //
+        // BACKWARD COMPATIBILITY: Accept both formats during transition:
+        // - New format: properties.task.status
+        // - Old format: properties.status (deprecated, will be auto-migrated)
 
-        // Validate priority if present
-        if let Some(priority) = node.properties.get("priority") {
-            if !priority.is_i64() && !priority.is_null() {
-                return Err(NodeValidationError::InvalidProperties(
-                    "Priority must be a number".to_string(),
-                ));
+        // Try new nested format first, fall back to old flat format
+        let task_props = node.properties.get("task").or(Some(&node.properties)); // Fallback to root for backward compat
+
+        // If task properties exist, validate them
+        if let Some(props) = task_props {
+            // NOTE: Status validation is now handled by the schema system
+            // The schema defines valid enum values dynamically, allowing user customization
+            // We only verify it's a string type here
+            if let Some(status) = props.get("status") {
+                status.as_str().ok_or_else(|| {
+                    NodeValidationError::InvalidProperties("Status must be a string".to_string())
+                })?;
+            }
+
+            // Validate priority if present
+            if let Some(priority) = props.get("priority") {
+                if !priority.is_i64() && !priority.is_null() {
+                    return Err(NodeValidationError::InvalidProperties(
+                        "Priority must be a number".to_string(),
+                    ));
+                }
             }
         }
 
@@ -464,10 +478,12 @@ impl NodeBehavior for TaskNodeBehavior {
 
     fn default_metadata(&self) -> serde_json::Value {
         serde_json::json!({
-            "status": "pending",
-            "priority": 2,
-            "due_date": null,
-            "assignee_id": null
+            "task": {
+                "status": "pending",
+                "priority": 2,
+                "due_date": null,
+                "assignee_id": null
+            }
         })
     }
 }
@@ -1111,48 +1127,63 @@ mod tests {
     fn test_task_node_behavior_validation() {
         let behavior = TaskNodeBehavior;
 
-        // Valid task with status
-        let valid_node = Node::new(
+        // Valid task with status (old flat format - backward compatibility)
+        let valid_node_old_format = Node::new(
             "task".to_string(),
             "Implement feature".to_string(),
             None,
             json!({"status": "in_progress"}),
         );
-        assert!(behavior.validate(&valid_node).is_ok());
+        assert!(behavior.validate(&valid_node_old_format).is_ok());
 
-        // Valid task with all fields
+        // Valid task with status (new nested format - Issue #397)
+        let valid_node_new_format = Node::new(
+            "task".to_string(),
+            "Implement feature".to_string(),
+            None,
+            json!({"task": {"status": "in_progress"}}),
+        );
+        assert!(behavior.validate(&valid_node_new_format).is_ok());
+
+        // Valid task with all fields (new nested format)
         let complete_node = Node::new(
             "task".to_string(),
             "Complete task".to_string(),
             None,
             json!({
-                "status": "completed",
-                "priority": 3,
-                "due_date": "2025-01-10"
+                "task": {
+                    "status": "completed",
+                    "priority": 3,
+                    "due_date": "2025-01-10"
+                }
             }),
         );
         assert!(behavior.validate(&complete_node).is_ok());
 
         // Invalid: empty content
-        let mut invalid_node = valid_node.clone();
+        let mut invalid_node = valid_node_new_format.clone();
         invalid_node.content = String::new();
         assert!(behavior.validate(&invalid_node).is_err());
 
-        // Invalid: bad status
-        let bad_status_node = Node::new(
+        // NOTE: Status value validation (e.g., "OPEN" vs "INVALID_STATUS") will be handled
+        // by the schema system in the future. Currently we only validate type correctness
+        // (string vs number, etc.)
+
+        // Invalid: status not a string (new format)
+        let bad_status_type = Node::new(
             "task".to_string(),
             "Task".to_string(),
             None,
-            json!({"status": "invalid_status"}),
+            json!({"task": {"status": 123}}), // number instead of string
         );
-        assert!(behavior.validate(&bad_status_node).is_err());
+        assert!(behavior.validate(&bad_status_type).is_err());
 
-        // Invalid: priority not a number
+        // Invalid: priority not a number (new format)
         let bad_priority_node = Node::new(
             "task".to_string(),
             "Task".to_string(),
             None,
-            json!({"priority": "high"}),
+            json!({"task": {"priority": "high"}}),
         );
         assert!(behavior.validate(&bad_priority_node).is_err());
     }
@@ -1171,10 +1202,60 @@ mod tests {
         let behavior = TaskNodeBehavior;
         let metadata = behavior.default_metadata();
 
-        assert_eq!(metadata["status"], "pending");
-        assert_eq!(metadata["priority"], 2);
-        assert!(metadata["due_date"].is_null());
-        assert!(metadata["assignee_id"].is_null());
+        // Properties are now nested under "task" namespace (Issue #397)
+        assert_eq!(metadata["task"]["status"], "pending");
+        assert_eq!(metadata["task"]["priority"], 2);
+        assert!(metadata["task"]["due_date"].is_null());
+        assert!(metadata["task"]["assignee_id"].is_null());
+    }
+
+    #[test]
+    fn test_type_conversion_preserves_properties() {
+        // Core value proposition of Issue #397: Properties should be preserved
+        // when converting between node types (e.g., task → text → task)
+
+        let behavior = TaskNodeBehavior;
+
+        // Create a task node with properties in the new nested format
+        let mut task_node = Node::new(
+            "task".to_string(),
+            "Important task".to_string(),
+            None,
+            json!({
+                "task": {
+                    "status": "in_progress",
+                    "priority": 3,
+                    "due_date": "2025-01-15"
+                }
+            }),
+        );
+
+        // Verify initial validation passes
+        assert!(behavior.validate(&task_node).is_ok());
+        assert_eq!(task_node.properties["task"]["status"], "in_progress");
+        assert_eq!(task_node.properties["task"]["priority"], 3);
+
+        // Convert to text node (simulate type conversion)
+        task_node.node_type = "text".to_string();
+
+        // Task properties should still exist in the properties JSON
+        // (even though it's no longer a task node)
+        assert!(task_node.properties["task"].is_object());
+        assert_eq!(task_node.properties["task"]["status"], "in_progress");
+        assert_eq!(task_node.properties["task"]["priority"], 3);
+        assert_eq!(task_node.properties["task"]["due_date"], "2025-01-15");
+
+        // Convert back to task node
+        task_node.node_type = "task".to_string();
+
+        // Properties should still be there and validate correctly
+        assert!(behavior.validate(&task_node).is_ok());
+        assert_eq!(task_node.properties["task"]["status"], "in_progress");
+        assert_eq!(task_node.properties["task"]["priority"], 3);
+        assert_eq!(task_node.properties["task"]["due_date"], "2025-01-15");
+
+        // This demonstrates the key benefit: properties survive type conversions
+        // without data loss, enabling flexible node type changes in the UI
     }
 
     #[test]

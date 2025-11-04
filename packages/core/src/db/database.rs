@@ -404,7 +404,8 @@ impl DatabaseService {
 
     /// Seed core schemas as nodes
     ///
-    /// Creates schema definition nodes for core entity types (task, person, date, project, text).
+    /// Creates schema definition nodes for core entity types (task, person, date, project, text,
+    /// header, code-block, quote-block, ordered-list).
     /// These schemas define the structure and indexed fields for each node type using the
     /// Schema-as-Node pattern.
     ///
@@ -494,6 +495,8 @@ impl DatabaseService {
         // Person schema
         let person_schema = json!({
             "is_core": true,
+            "version": 1,
+            "description": "Person entity schema",
             "fields": [
                 {"name": "name", "type": "text", "indexed": true},
                 {"name": "email", "type": "text", "indexed": true}
@@ -513,6 +516,8 @@ impl DatabaseService {
         // Date schema
         let date_schema = json!({
             "is_core": true,
+            "version": 1,
+            "description": "Date node schema",
             "fields": [
                 {"name": "date", "type": "date", "indexed": true}
             ]
@@ -531,6 +536,8 @@ impl DatabaseService {
         // Project schema
         let project_schema = json!({
             "is_core": true,
+            "version": 1,
+            "description": "Project management schema",
             "fields": [
                 {"name": "name", "type": "text", "indexed": true},
                 {"name": "status", "type": "text", "indexed": true}
@@ -550,6 +557,8 @@ impl DatabaseService {
         // Text schema (minimal - just content)
         let text_schema = json!({
             "is_core": true,
+            "version": 1,
+            "description": "Plain text content",
             "fields": []
         });
 
@@ -564,11 +573,12 @@ impl DatabaseService {
         })?;
 
         // Header schema (markdown headers h1-h6)
+        // Markdown nodes don't have properties - content contains full markdown syntax
         let header_schema = json!({
             "is_core": true,
-            "fields": [
-                {"name": "headerLevel", "type": "number", "indexed": false}
-            ]
+            "version": 1,
+            "description": "Markdown header (h1-h6)",
+            "fields": []
         });
 
         conn.execute(
@@ -579,6 +589,63 @@ impl DatabaseService {
         .await
         .map_err(|e| {
             DatabaseError::sql_execution(format!("Failed to seed header schema: {}", e))
+        })?;
+
+        // Code block schema (code blocks with syntax highlighting)
+        // Markdown nodes don't have properties - content contains full markdown syntax
+        let code_block_schema = json!({
+            "is_core": true,
+            "version": 1,
+            "description": "Code block with syntax highlighting",
+            "fields": []
+        });
+
+        conn.execute(
+            "INSERT OR IGNORE INTO nodes (id, node_type, content, properties, created_at, modified_at)
+             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            ("code-block", "schema", "Code Block", code_block_schema.to_string()),
+        )
+        .await
+        .map_err(|e| {
+            DatabaseError::sql_execution(format!("Failed to seed code-block schema: {}", e))
+        })?;
+
+        // Quote block schema (markdown block quotes)
+        // Markdown nodes don't have properties - content contains full markdown syntax
+        let quote_block_schema = json!({
+            "is_core": true,
+            "version": 1,
+            "description": "Markdown block quote",
+            "fields": []
+        });
+
+        conn.execute(
+            "INSERT OR IGNORE INTO nodes (id, node_type, content, properties, created_at, modified_at)
+             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            ("quote-block", "schema", "Quote Block", quote_block_schema.to_string()),
+        )
+        .await
+        .map_err(|e| {
+            DatabaseError::sql_execution(format!("Failed to seed quote-block schema: {}", e))
+        })?;
+
+        // Ordered list schema (numbered list items)
+        // Markdown nodes don't have properties - content contains full markdown syntax
+        let ordered_list_schema = json!({
+            "is_core": true,
+            "version": 1,
+            "description": "Numbered list item",
+            "fields": []
+        });
+
+        conn.execute(
+            "INSERT OR IGNORE INTO nodes (id, node_type, content, properties, created_at, modified_at)
+             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            ("ordered-list", "schema", "Ordered List", ordered_list_schema.to_string()),
+        )
+        .await
+        .map_err(|e| {
+            DatabaseError::sql_execution(format!("Failed to seed ordered-list schema: {}", e))
         })?;
 
         Ok(())
@@ -818,7 +885,7 @@ mod tests {
         let db_service = DatabaseService::new(db_path).await.unwrap();
         let conn = db_service.connect().unwrap();
 
-        // Verify all 6 core schemas exist
+        // Verify all 9 core schemas exist (including markdown node types)
         let mut stmt = conn
             .prepare(
                 "SELECT id, node_type, content FROM nodes WHERE node_type = 'schema' ORDER BY id",
@@ -828,10 +895,13 @@ mod tests {
         let mut rows = stmt.query(()).await.unwrap();
 
         let expected_schemas = vec![
+            ("code-block", "Code Block"),
             ("date", "Date"),
             ("header", "Header"),
+            ("ordered-list", "Ordered List"),
             ("person", "Person"),
             ("project", "Project"),
+            ("quote-block", "Quote Block"),
             ("task", "Task"),
             ("text", "Text"),
         ];
@@ -907,7 +977,7 @@ mod tests {
 
         let conn = db_service2.connect().unwrap();
 
-        // Should still have exactly 6 schema nodes
+        // Should still have exactly 9 schema nodes (task, person, date, project, text, header, code-block, quote-block, ordered-list)
         let mut stmt = conn
             .prepare("SELECT COUNT(*) FROM nodes WHERE node_type = 'schema'")
             .await
@@ -916,7 +986,7 @@ mod tests {
         let row = rows.next().await.unwrap().unwrap();
         let count: i64 = row.get(0).unwrap();
 
-        assert_eq!(count, 6);
+        assert_eq!(count, 9);
     }
 
     #[tokio::test]
