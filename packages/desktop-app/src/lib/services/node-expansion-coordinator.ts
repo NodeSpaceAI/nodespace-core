@@ -198,7 +198,8 @@ export class NodeExpansionCoordinator {
   static getExpandedNodeIds(viewerId: string): string[] {
     const entry = this.viewerRegistry.get(viewerId);
     if (!entry) {
-      this.warn(`Viewer not found for extraction: ${viewerId}`);
+      // Silently return empty array if viewer not registered yet
+      // This is normal during app startup before viewers mount
       return [];
     }
 

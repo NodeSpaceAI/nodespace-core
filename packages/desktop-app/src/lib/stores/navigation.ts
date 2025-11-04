@@ -72,20 +72,32 @@ export const tabState = writable<TabState>(initialTabState);
 // Track initialization state to prevent overwriting loaded state
 let isInitialized = false;
 
-// Subscribe to state changes and persist automatically
+// Debounce timer for persistence
+let persistenceTimer: number | undefined;
+const PERSISTENCE_DEBOUNCE_MS = 500;
+
+// Subscribe to state changes and persist automatically (debounced)
 tabState.subscribe((state) => {
   // Only persist after initialization to avoid overwriting loaded state
   if (isInitialized) {
-    // Enrich tabs with expansion state before saving
-    const enrichedTabs = state.tabs.map((tab) => ({
-      ...tab,
-      expandedNodeIds: NodeExpansionCoordinator.getExpandedNodeIds(tab.id)
-    }));
+    // Clear existing timer
+    if (persistenceTimer !== undefined) {
+      clearTimeout(persistenceTimer);
+    }
 
-    TabPersistenceService.save({
-      ...state,
-      tabs: enrichedTabs
-    });
+    // Debounce persistence to avoid rapid-fire saves during interactions
+    persistenceTimer = setTimeout(() => {
+      // Enrich tabs with expansion state before saving
+      const enrichedTabs = state.tabs.map((tab) => ({
+        ...tab,
+        expandedNodeIds: NodeExpansionCoordinator.getExpandedNodeIds(tab.id)
+      }));
+
+      TabPersistenceService.save({
+        ...state,
+        tabs: enrichedTabs
+      });
+    }, PERSISTENCE_DEBOUNCE_MS) as unknown as number;
   }
 });
 
