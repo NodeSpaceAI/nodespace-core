@@ -16,6 +16,7 @@ import {
   TextareaController,
   type TextareaControllerEvents
 } from '../../lib/design/components/textarea-controller';
+import { DEFAULT_PANE_ID } from '../../lib/stores/navigation';
 
 // Type for tracking event calls in tests
 interface EventCallRecord {
@@ -148,7 +149,7 @@ describe('TextareaController', () => {
       }
     };
 
-    controller = new TextareaController(element, 'test-node', 'text', 'default', mockEvents);
+    controller = new TextareaController(element, 'test-node', 'text', DEFAULT_PANE_ID, mockEvents);
   });
 
   afterEach(() => {
@@ -239,7 +240,7 @@ describe('TextareaController', () => {
       expect(eventCalls.contentChanged?.[0]).toBe('updated test');
     });
 
-    it('should handle Enter key for new node creation', () => {
+    it('should handle Enter key for new node creation', async () => {
       controller.initialize('test', true);
 
       // Set cursor position
@@ -250,22 +251,36 @@ describe('TextareaController', () => {
       const enterEvent = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true });
       element.dispatchEvent(enterEvent);
 
-      expect(eventCalls.createNewNode).toHaveLength(1);
+      // Wait for async command execution
+      await vi.waitFor(
+        () => {
+          expect(eventCalls.createNewNode).toHaveLength(1);
+        },
+        { timeout: 100 }
+      );
+
       expect(eventCalls.createNewNode?.[0]?.afterNodeId).toBe('test-node');
     });
 
-    it('should handle Tab key for indentation', () => {
+    it('should handle Tab key for indentation', async () => {
       controller.initialize('test', true);
 
       // Simulate Tab key
       const tabEvent = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true });
       element.dispatchEvent(tabEvent);
 
-      expect(eventCalls.indentNode).toHaveLength(1);
+      // Wait for async command execution
+      await vi.waitFor(
+        () => {
+          expect(eventCalls.indentNode).toHaveLength(1);
+        },
+        { timeout: 100 }
+      );
+
       expect(eventCalls.indentNode?.[0]?.nodeId).toBe('test-node');
     });
 
-    it('should handle Shift+Tab for outdentation', () => {
+    it('should handle Shift+Tab for outdentation', async () => {
       controller.initialize('test', true);
 
       // Simulate Shift+Tab
@@ -276,7 +291,14 @@ describe('TextareaController', () => {
       });
       element.dispatchEvent(shiftTabEvent);
 
-      expect(eventCalls.outdentNode).toHaveLength(1);
+      // Wait for async command execution
+      await vi.waitFor(
+        () => {
+          expect(eventCalls.outdentNode).toHaveLength(1);
+        },
+        { timeout: 100 }
+      );
+
       expect(eventCalls.outdentNode?.[0]?.nodeId).toBe('test-node');
     });
 
@@ -504,9 +526,16 @@ describe('TextareaController', () => {
       mockEvents.navigateArrow = navigateArrowSpy;
 
       // Create controller with multiline enabled
-      controller = new TextareaController(element, 'test-node', 'text', 'default', mockEvents, {
-        allowMultiline: true
-      });
+      controller = new TextareaController(
+        element,
+        'test-node',
+        'text',
+        DEFAULT_PANE_ID,
+        mockEvents,
+        {
+          allowMultiline: true
+        }
+      );
     });
 
     it('should detect cursor on first line correctly', () => {
@@ -576,9 +605,16 @@ describe('TextareaController', () => {
       }
 
       // Create controller with multiline enabled
-      controller = new TextareaController(element, 'test-node', 'text', 'default', mockEvents, {
-        allowMultiline: true
-      });
+      controller = new TextareaController(
+        element,
+        'test-node',
+        'text',
+        DEFAULT_PANE_ID,
+        mockEvents,
+        {
+          allowMultiline: true
+        }
+      );
     });
 
     it('should allow Shift+Enter to create new lines', () => {
@@ -611,9 +647,16 @@ describe('TextareaController', () => {
       }
 
       // Create controller with multiline disabled
-      controller = new TextareaController(element, 'task-node', 'task', 'default', mockEvents, {
-        allowMultiline: false
-      });
+      controller = new TextareaController(
+        element,
+        'task-node',
+        'task',
+        DEFAULT_PANE_ID,
+        mockEvents,
+        {
+          allowMultiline: false
+        }
+      );
     });
 
     it('should not allow multiline in single-line mode', () => {
@@ -833,7 +876,7 @@ describe('TextareaController', () => {
   });
 
   describe('Keyboard command integration', () => {
-    it('should handle Cmd+B for bold formatting', () => {
+    it('should handle Cmd+B for bold formatting', async () => {
       controller.initialize('text', true);
 
       // Select "text"
@@ -848,11 +891,16 @@ describe('TextareaController', () => {
       });
       element.dispatchEvent(cmdBEvent);
 
-      // Should apply bold formatting
-      expect(element.value).toBe('**text**');
+      // Wait for async command execution
+      await vi.waitFor(
+        () => {
+          expect(element.value).toBe('**text**');
+        },
+        { timeout: 100 }
+      );
     });
 
-    it('should handle Cmd+I for italic formatting', () => {
+    it('should handle Cmd+I for italic formatting', async () => {
       controller.initialize('text', true);
 
       // Select "text"
@@ -867,11 +915,16 @@ describe('TextareaController', () => {
       });
       element.dispatchEvent(cmdIEvent);
 
-      // Should apply italic formatting
-      expect(element.value).toBe('*text*');
+      // Wait for async command execution
+      await vi.waitFor(
+        () => {
+          expect(element.value).toBe('*text*');
+        },
+        { timeout: 100 }
+      );
     });
 
-    it('should handle Ctrl+B for bold formatting (cross-platform)', () => {
+    it('should handle Ctrl+B for bold formatting (cross-platform)', async () => {
       controller.initialize('text', true);
 
       // Select "text"
@@ -886,8 +939,13 @@ describe('TextareaController', () => {
       });
       element.dispatchEvent(ctrlBEvent);
 
-      // Should apply bold formatting
-      expect(element.value).toBe('**text**');
+      // Wait for async command execution
+      await vi.waitFor(
+        () => {
+          expect(element.value).toBe('**text**');
+        },
+        { timeout: 100 }
+      );
     });
   });
 

@@ -86,6 +86,7 @@ impl IndexManager {
 
         // Set busy timeout on this connection
         // PRAGMA statements return rows, so we must use query() instead of execute()
+        // Regression: Using execute() caused test failures in issue #406
         let mut stmt = conn
             .prepare("PRAGMA busy_timeout = 5000")
             .await

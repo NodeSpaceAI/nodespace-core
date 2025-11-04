@@ -311,7 +311,7 @@ describe('TabPersistenceService', () => {
   });
 
   describe('flush', () => {
-    it('clears pending save timer', () => {
+    it('saves immediately and clears pending timer', () => {
       const spy = vi.spyOn(window.localStorage, 'setItem');
 
       const mockState: TabState = {
@@ -323,14 +323,17 @@ describe('TabPersistenceService', () => {
 
       TabPersistenceService.save(mockState);
 
-      // Flush before debounce completes
+      // Flush before debounce completes - this should save immediately
       TabPersistenceService.flush();
 
-      // Advance timers
+      // Should have saved once (from flush)
+      expect(spy).toHaveBeenCalledOnce();
+
+      // Advance timers to verify timer was cleared (no second save)
       vi.advanceTimersByTime(1000);
 
-      // Should not have saved
-      expect(spy).not.toHaveBeenCalled();
+      // Should still be called only once (timer was cleared)
+      expect(spy).toHaveBeenCalledOnce();
     });
 
     it('can be called multiple times safely', () => {

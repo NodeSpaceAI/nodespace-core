@@ -290,7 +290,7 @@ mod tests {
             "task".to_string(),
             "Task as container".to_string(),
             None,
-            json!({}),
+            json!({"status": "OPEN"}),
         );
         let task_id = task_container.id.clone();
         service.create_node(task_container).await.unwrap();
