@@ -202,13 +202,21 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 
 **4a. Testing (Required)**
    ```bash
-   # Fast in-memory tests (use during development)
-   bun run test                    # Run all tests once
+   # Fast unit tests with Happy-DOM (use during development)
+   bun run test                    # Run all unit tests once
+   bun run test:unit               # Same as above (explicit)
    bun run test:watch              # Watch mode (recommended for TDD)
 
    # Test specific files
    bun run test src/tests/integration/my-test.test.ts
    bun run test:watch src/tests/unit/my-component.test.ts
+
+   # Browser tests with real DOM (Chromium via Playwright)
+   bun run test:browser            # Run browser tests (for focus, events, etc.)
+   bun run test:browser:watch      # Watch mode for browser tests
+
+   # Run all tests (unit + browser)
+   bun run test:all                # Runs both unit and browser tests
 
    # Database integration tests (use before merging)
    bun run test:db                 # Full integration with SQLite
@@ -218,9 +226,29 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    bun run test:coverage
    ```
 
+   **Hybrid Testing Strategy:**
+   NodeSpace uses a **two-tier testing approach** for optimal speed and reliability:
+
+   1. **Happy-DOM (Fast Unit Tests)** - 728+ tests, ~10-20 seconds
+      - Controller logic, services, utilities
+      - Pattern matching, content processing
+      - State management, data transformations
+      - Use: `bun run test` or `bun run test:unit`
+      - Location: `src/tests/**/*.test.ts` (excluding `browser/`)
+
+   2. **Vitest Browser Mode (Real Browser Integration Tests)** - Targeted critical tests
+      - Focus management (focus/blur events)
+      - Edit mode activation and transitions
+      - Dropdown interactions (slash commands, @mentions)
+      - Cross-node navigation with real browser behavior
+      - Use: `bun run test:browser`
+      - Location: `src/tests/browser/**/*.test.ts`
+      - **Note**: Requires Playwright browsers installed (`bunx playwright install chromium`)
+
    **When to use which mode:**
-   - **In-memory mode (default)**: Fast (100x), perfect for TDD and CI/CD
-   - **Database mode**: Full integration validation before merging critical changes
+   - **Happy-DOM (default)**: 99% of tests - logic, services, utilities (fast, TDD-friendly)
+   - **Browser Mode**: Only when you need real focus/blur events or browser-specific DOM APIs
+   - **Database Mode**: Full integration validation before merging critical changes
    - Some tests conditionally skip in in-memory mode (require full database persistence)
    - See [Testing Guide](docs/architecture/development/testing-guide.md) for details
 
