@@ -85,11 +85,16 @@ impl IndexManager {
         let conn = self.db.connect().map_err(DatabaseError::LibsqlError)?;
 
         // Set busy timeout on this connection
-        conn.execute("PRAGMA busy_timeout = 5000", ())
+        // PRAGMA statements return rows, so we must use query() instead of execute()
+        let mut stmt = conn
+            .prepare("PRAGMA busy_timeout = 5000")
             .await
             .map_err(|e| {
-                DatabaseError::sql_execution(format!("Failed to set busy timeout: {}", e))
+                DatabaseError::sql_execution(format!("Failed to prepare busy timeout: {}", e))
             })?;
+        let _ = stmt.query(()).await.map_err(|e| {
+            DatabaseError::sql_execution(format!("Failed to set busy timeout: {}", e))
+        })?;
 
         Ok(conn)
     }
@@ -339,8 +344,11 @@ mod tests {
         let db = Arc::new(libsql::Builder::new_local(&db_path).build().await.unwrap());
 
         // Create nodes table for testing
-        // Note: Test setup uses synchronous connect() since it's not in concurrent context
-        let conn = db.connect().unwrap();
+        // Use IndexManager's connect_with_timeout for proper concurrency support
+        // This ensures the busy_timeout PRAGMA is set correctly, preventing race conditions
+        // when tests run concurrently (see Issue #398)
+        let index_manager = IndexManager::new(db.clone());
+        let conn = index_manager.connect_with_timeout().await.unwrap();
         conn.execute(
             "CREATE TABLE nodes (
                 id TEXT PRIMARY KEY,
