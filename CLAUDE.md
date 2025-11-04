@@ -306,6 +306,108 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 - Link commits to issues: `git commit -m "Add TextNode component (closes #4)"`
 - Include Claude Code attribution in commit messages
 
+**Mid-Implementation Commits & Session Handoffs:**
+
+When an issue is lengthy or implementation has gone longer than expected, commit work-in-progress to enable fresh session pickup. These handoff commits require **complete context for the next AI agent session**.
+
+**When to Create Handoff Commits:**
+- Implementation spans multiple logical phases/milestones
+- Session approaching context limits or complexity threshold
+- Natural breakpoint in work (completed subsystem, before major refactor)
+- Need to preserve progress before tackling risky changes
+- Work-in-progress needs to be saved for continuation later
+
+**Handoff Commit Message Format:**
+
+```
+WIP: [Brief description of what was accomplished]
+
+## Completed in This Session
+- [x] Phase 1: [Specific accomplishment with details]
+- [x] Phase 2: [Specific accomplishment with details]
+- [x] [Any other completed items]
+
+## Remaining Work
+- [ ] Phase 3: [What needs to be done next]
+- [ ] Phase 4: [Subsequent task]
+- [ ] [Final tasks to complete the issue]
+
+## Current State
+- Files modified: [List key files changed]
+- Tests status: [Passing/Failing/Not yet written]
+- Known issues: [Any blockers or concerns]
+- Dependencies: [What this work depends on or what depends on this]
+
+## Context for Next Session
+[2-3 sentences explaining the overall approach, any important decisions
+made, and what the next agent should focus on]
+
+## Acceptance Criteria Status
+From issue #[number]:
+- [x] [Completed criterion]
+- [ ] [Remaining criterion]
+- [ ] [Remaining criterion]
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+**Example Handoff Commit:**
+
+```
+WIP: Implement schema-driven property UI - Phases 1-2 complete
+
+## Completed in This Session
+- [x] Phase 1: Created SchemaPropertyForm component with type detection
+- [x] Phase 2: Implemented text, number, and boolean property renderers
+- [x] Added form validation with error display
+- [x] Integrated with existing node type system
+
+## Remaining Work
+- [ ] Phase 3: Implement date/select/multi-value property types
+- [ ] Phase 4: Add property reordering and deletion
+- [ ] Phase 5: Write integration tests
+- [ ] Phase 6: Update documentation
+
+## Current State
+- Files modified:
+  - src/lib/components/property-forms/schema-property-form.svelte (new)
+  - src/lib/services/schema-service.ts (extended)
+  - src/lib/types/schema.ts (added PropertyRenderer type)
+- Tests status: Unit tests passing, integration tests not yet written
+- Known issues: None - all current functionality working
+- Dependencies: Requires SchemaService, works with BaseNode
+
+## Context for Next Session
+The foundation is solid - basic property types render correctly with
+validation. Focus next on complex types (date pickers, dropdowns) and
+then the editing capabilities (reorder, delete). The component is already
+integrated into the node system, so new property types just need renderers.
+
+## Acceptance Criteria Status
+From issue #193:
+- [x] Schema properties display in node cards
+- [x] Basic property types supported (text, number, boolean)
+- [ ] All property types supported (date, select, multi-value)
+- [ ] Properties can be reordered
+- [ ] Properties can be deleted
+- [ ] Comprehensive tests written
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+**Critical Guidelines:**
+- **Do NOT use "WIP" commits for normal development** - only for intentional session handoffs
+- **Push WIP commits immediately** so next session can pull them
+- **Update issue comments** with handoff summary and link to commit
+- **Be specific** - next agent shouldn't have to reverse-engineer your work
+- **Include acceptance criteria status** - clearly show progress against original issue
+- **Explain architectural decisions** made during implementation
+- **Note any deviations** from original plan and why
+
 **Documentation:**
 - Update relevant docs when changing architecture
 - Include code examples in component documentation
