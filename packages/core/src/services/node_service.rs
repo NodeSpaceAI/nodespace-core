@@ -404,6 +404,97 @@ impl NodeService {
         }
     }
 
+    /// Validate a node's properties against its schema definition
+    ///
+    /// Performs schema-driven validation of property values, including:
+    /// - Enum value validation (core + user values)
+    /// - Required field checking
+    /// - Type validation (future enhancement)
+    ///
+    /// This method implements Step 2 of the hybrid validation approach:
+    /// behaviors handle basic type checking, schemas handle value validation.
+    ///
+    /// # Arguments
+    ///
+    /// * `node` - The node to validate
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if validation passes, or an error describing the validation failure.
+    /// Returns `Ok(())` if no schema exists for the node type (not all types have schemas).
+    ///
+    /// # Errors
+    ///
+    /// - `InvalidUpdate`: Property value violates schema constraints
+    /// - `QueryFailed`: Database error while fetching schema
+    async fn validate_node_against_schema(&self, node: &Node) -> Result<(), NodeServiceError> {
+        // Try to get schema for this node type
+        // If no schema exists, validation passes (not all types have schemas)
+        let schema_json = match self.get_schema_for_type(&node.node_type).await? {
+            Some(s) => s,
+            None => return Ok(()), // No schema = no validation needed
+        };
+
+        // Parse schema definition
+        // If parsing fails (e.g., old schema format), skip schema validation gracefully
+        let schema: crate::models::SchemaDefinition = match serde_json::from_value(schema_json) {
+            Ok(s) => s,
+            Err(_) => {
+                // Schema exists but can't be parsed - skip schema validation
+                // This handles backward compatibility with old schema formats
+                return Ok(());
+            }
+        };
+
+        // Get properties for this node type (supports both flat and nested formats)
+        let node_props = node
+            .properties
+            .get(&node.node_type)
+            .or(Some(&node.properties))
+            .and_then(|p| p.as_object());
+
+        // Validate each field in the schema
+        for field in &schema.fields {
+            let field_value = node_props.and_then(|props| props.get(&field.name));
+
+            // Check required fields
+            if field.required.unwrap_or(false) && field_value.is_none() {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "Required field '{}' is missing from {} node",
+                    field.name, node.node_type
+                )));
+            }
+
+            // Validate enum fields
+            if field.field_type == "enum" {
+                if let Some(value) = field_value {
+                    if let Some(value_str) = value.as_str() {
+                        // Get all valid enum values (core + user)
+                        let valid_values = schema.get_enum_values(&field.name).unwrap_or_default();
+
+                        if !valid_values.contains(&value_str.to_string()) {
+                            return Err(NodeServiceError::invalid_update(format!(
+                                "Invalid value '{}' for enum field '{}'. Valid values: {}",
+                                value_str,
+                                field.name,
+                                valid_values.join(", ")
+                            )));
+                        }
+                    } else if !value.is_null() {
+                        return Err(NodeServiceError::invalid_update(format!(
+                            "Enum field '{}' must be a string or null",
+                            field.name
+                        )));
+                    }
+                }
+            }
+
+            // Future: Add more type validation (number ranges, string formats, etc.)
+        }
+
+        Ok(())
+    }
+
     /// Backfill _schema_version for a node if it doesn't have one (Phase 1 lazy migration)
     ///
     /// # Arguments
@@ -522,8 +613,16 @@ impl NodeService {
             node.node_type = "date".to_string();
         }
 
-        // Validate node using behavior registry
+        // Step 1: Core behavior validation (PROTECTED)
+        // Validates basic data integrity (non-empty content, correct types, etc.)
         self.behaviors.validate_node(&node)?;
+
+        // Step 2: Schema validation (USER-EXTENSIBLE)
+        // Validates property values against schema definitions (enum values, required fields, etc.)
+        // Skip schema validation for schema nodes themselves to avoid circular dependency
+        if node.node_type != "schema" {
+            self.validate_node_against_schema(&node).await?;
+        }
 
         // Validate parent exists if parent_id is set
         // Auto-create date nodes if they don't exist
@@ -950,8 +1049,14 @@ impl NodeService {
             updated.embedding_vector = embedding_vector;
         }
 
-        // Validate updated node
+        // Step 1: Core behavior validation (PROTECTED)
         self.behaviors.validate_node(&updated)?;
+
+        // Step 2: Schema validation (USER-EXTENSIBLE)
+        // Skip schema validation for schema nodes themselves to avoid circular dependency
+        if updated.node_type != "schema" {
+            self.validate_node_against_schema(&updated).await?;
+        }
 
         // Execute update - database will auto-update modified_at via trigger or default
         let conn = self.db.connect_with_timeout().await?;
@@ -1144,8 +1249,13 @@ impl NodeService {
             updated.embedding_vector = embedding_vector;
         }
 
-        // Validate updated node
+        // Step 1: Core behavior validation (PROTECTED)
         self.behaviors.validate_node(&updated)?;
+
+        // Step 2: Schema validation (USER-EXTENSIBLE)
+        if updated.node_type != "schema" {
+            self.validate_node_against_schema(&updated).await?;
+        }
 
         // Execute update with version check
         let conn = self.db.connect_with_timeout().await?;
@@ -2343,9 +2453,15 @@ impl NodeService {
             return Ok(Vec::new());
         }
 
-        // Validate all nodes first
+        // Validate all nodes first (two-step validation)
         for node in &nodes {
+            // Step 1: Core behavior validation
             self.behaviors.validate_node(node)?;
+
+            // Step 2: Schema validation
+            if node.node_type != "schema" {
+                self.validate_node_against_schema(node).await?;
+            }
         }
 
         let conn = self.db.connect()?;
@@ -2506,13 +2622,24 @@ impl NodeService {
 
             updated.modified_at = Utc::now();
 
-            // Validate updated node
+            // Step 1: Core behavior validation
             if let Err(e) = self.behaviors.validate_node(&updated) {
                 let _rollback = conn.execute("ROLLBACK", ()).await;
                 return Err(NodeServiceError::bulk_operation_failed(format!(
                     "Failed to validate node {}: {}",
                     id, e
                 )));
+            }
+
+            // Step 2: Schema validation
+            if updated.node_type != "schema" {
+                if let Err(e) = self.validate_node_against_schema(&updated).await {
+                    let _rollback = conn.execute("ROLLBACK", ()).await;
+                    return Err(NodeServiceError::bulk_operation_failed(format!(
+                        "Failed schema validation for node {}: {}",
+                        id, e
+                    )));
+                }
             }
 
             // Execute update in transaction - database auto-updates modified_at

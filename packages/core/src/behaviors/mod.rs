@@ -444,18 +444,20 @@ impl NodeBehavior for TaskNodeBehavior {
         // Try new nested format first, fall back to old flat format
         let task_props = node.properties.get("task").or(Some(&node.properties)); // Fallback to root for backward compat
 
-        // If task properties exist, validate them
+        // If task properties exist, validate their TYPES (not values)
+        // VALUE validation (e.g., valid status enum values) is handled by schema system
         if let Some(props) = task_props {
-            // NOTE: Status validation is now handled by the schema system
-            // The schema defines valid enum values dynamically, allowing user customization
-            // We only verify it's a string type here
+            // Validate status type (must be string if present)
+            // Schema system validates the actual value against allowed enum values
             if let Some(status) = props.get("status") {
-                status.as_str().ok_or_else(|| {
-                    NodeValidationError::InvalidProperties("Status must be a string".to_string())
-                })?;
+                if !status.is_string() && !status.is_null() {
+                    return Err(NodeValidationError::InvalidProperties(
+                        "Status must be a string".to_string(),
+                    ));
+                }
             }
 
-            // Validate priority if present
+            // Validate priority type (must be number if present)
             if let Some(priority) = props.get("priority") {
                 if !priority.is_i64() && !priority.is_null() {
                     return Err(NodeValidationError::InvalidProperties(

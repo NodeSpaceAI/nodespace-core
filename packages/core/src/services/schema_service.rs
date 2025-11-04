@@ -464,6 +464,110 @@ impl SchemaService {
 
         Ok(())
     }
+
+    /// Validate a node's properties against its schema definition
+    ///
+    /// Performs schema-driven validation of property values, including:
+    /// - Enum value validation (core + user values)
+    /// - Required field checking
+    /// - Type validation (future enhancement)
+    ///
+    /// This method implements Step 2 of the hybrid validation approach:
+    /// behaviors handle basic type checking, schemas handle value validation.
+    ///
+    /// # Arguments
+    ///
+    /// * `node` - The node to validate
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if validation passes, or an error describing the validation failure
+    ///
+    /// # Errors
+    ///
+    /// - `InvalidUpdate`: Property value violates schema constraints
+    /// - Any errors from `get_schema`
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::{SchemaService, NodeService};
+    /// # use nodespace_core::models::Node;
+    /// # use serde_json::json;
+    /// # async fn example(service: SchemaService) -> Result<(), Box<dyn std::error::Error>> {
+    /// let node = Node::new(
+    ///     "task".to_string(),
+    ///     "Do something".to_string(),
+    ///     None,
+    ///     json!({"task": {"status": "INVALID_STATUS"}}),
+    /// );
+    ///
+    /// // This will fail because "INVALID_STATUS" is not in the schema
+    /// let result = service.validate_node_against_schema(&node).await;
+    /// assert!(result.is_err());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn validate_node_against_schema(
+        &self,
+        node: &crate::models::Node,
+    ) -> Result<(), NodeServiceError> {
+        // Try to get schema for this node type
+        // If no schema exists, validation passes (not all types have schemas)
+        let schema = match self.get_schema(&node.node_type).await {
+            Ok(s) => s,
+            Err(NodeServiceError::NodeNotFound { .. }) => return Ok(()), // No schema = no validation needed
+            Err(e) => return Err(e),
+        };
+
+        // Get properties for this node type (supports both flat and nested formats)
+        let node_props = node
+            .properties
+            .get(&node.node_type)
+            .or(Some(&node.properties))
+            .and_then(|p| p.as_object());
+
+        // Validate each field in the schema
+        for field in &schema.fields {
+            let field_value = node_props.and_then(|props| props.get(&field.name));
+
+            // Check required fields
+            if field.required.unwrap_or(false) && field_value.is_none() {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "Required field '{}' is missing from {} node",
+                    field.name, node.node_type
+                )));
+            }
+
+            // Validate enum fields
+            if field.field_type == "enum" {
+                if let Some(value) = field_value {
+                    if let Some(value_str) = value.as_str() {
+                        // Get all valid enum values (core + user)
+                        let valid_values = schema.get_enum_values(&field.name).unwrap_or_default();
+
+                        if !valid_values.contains(&value_str.to_string()) {
+                            return Err(NodeServiceError::invalid_update(format!(
+                                "Invalid value '{}' for enum field '{}'. Valid values: {}",
+                                value_str,
+                                field.name,
+                                valid_values.join(", ")
+                            )));
+                        }
+                    } else if !value.is_null() {
+                        return Err(NodeServiceError::invalid_update(format!(
+                            "Enum field '{}' must be a string or null",
+                            field.name
+                        )));
+                    }
+                }
+            }
+
+            // Future: Add more type validation (number ranges, string formats, etc.)
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -709,5 +813,151 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Cannot remove core value"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_node_against_schema_valid_enum() {
+        let (service, _temp) = setup_test_service().await;
+        let _schema_id = create_test_schema(&service).await;
+
+        let node = Node::new(
+            "test_widget".to_string(),
+            "My widget".to_string(),
+            None,
+            json!({"test_widget": {"status": "OPEN", "priority": 5}}),
+        );
+
+        let result = service.validate_node_against_schema(&node).await;
+        assert!(result.is_ok(), "Valid enum value should pass validation");
+    }
+
+    #[tokio::test]
+    async fn test_validate_node_against_schema_invalid_enum() {
+        let (service, _temp) = setup_test_service().await;
+        let _schema_id = create_test_schema(&service).await;
+
+        let node = Node::new(
+            "test_widget".to_string(),
+            "My widget".to_string(),
+            None,
+            json!({"test_widget": {"status": "INVALID_STATUS"}}),
+        );
+
+        let result = service.validate_node_against_schema(&node).await;
+        assert!(result.is_err(), "Invalid enum value should fail validation");
+        assert!(
+            result.unwrap_err().to_string().contains("Invalid value"),
+            "Error should mention invalid value"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_node_against_schema_user_extended_enum() {
+        let (service, _temp) = setup_test_service().await;
+        let schema_id = create_test_schema(&service).await;
+
+        // Extend enum with user value
+        service
+            .extend_enum_field(&schema_id, "status", "BLOCKED".to_string())
+            .await
+            .unwrap();
+
+        // Should accept user-added enum value
+        let node = Node::new(
+            "test_widget".to_string(),
+            "My widget".to_string(),
+            None,
+            json!({"test_widget": {"status": "BLOCKED"}}),
+        );
+
+        let result = service.validate_node_against_schema(&node).await;
+        assert!(
+            result.is_ok(),
+            "User-extended enum value should pass validation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_node_against_schema_no_schema() {
+        let (service, _temp) = setup_test_service().await;
+
+        // Node type with no schema should pass validation
+        let node = Node::new(
+            "unknown_type".to_string(),
+            "Content".to_string(),
+            None,
+            json!({"some_field": "value"}),
+        );
+
+        let result = service.validate_node_against_schema(&node).await;
+        assert!(result.is_ok(), "Node with no schema should pass validation");
+    }
+
+    #[tokio::test]
+    async fn test_validate_node_against_schema_required_field_missing() {
+        let (service, _temp) = setup_test_service().await;
+        let _schema_id = create_test_schema(&service).await;
+
+        // Node missing required field (status is required in test schema)
+        let node = Node::new(
+            "test_widget".to_string(),
+            "My widget".to_string(),
+            None,
+            json!({"test_widget": {"priority": 5}}), // Missing required "status" field
+        );
+
+        let result = service.validate_node_against_schema(&node).await;
+        assert!(result.is_err(), "Missing required field should fail");
+        assert!(
+            result.unwrap_err().to_string().contains("Required field"),
+            "Error should mention required field"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_node_against_schema_enum_must_be_string() {
+        let (service, _temp) = setup_test_service().await;
+        let _schema_id = create_test_schema(&service).await;
+
+        // Enum field with non-string value
+        let node = Node::new(
+            "test_widget".to_string(),
+            "My widget".to_string(),
+            None,
+            json!({"test_widget": {"status": 123}}), // status must be string, not number
+        );
+
+        let result = service.validate_node_against_schema(&node).await;
+        assert!(
+            result.is_err(),
+            "Enum field with non-string value should fail"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must be a string or null"),
+            "Error should mention type requirement"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_node_against_schema_backward_compat_flat_properties() {
+        let (service, _temp) = setup_test_service().await;
+        let _schema_id = create_test_schema(&service).await;
+
+        // Backward compatibility: flat properties format (old style)
+        let node = Node::new(
+            "test_widget".to_string(),
+            "My widget".to_string(),
+            None,
+            json!({"status": "DONE"}), // Flat format, not nested under "test_widget"
+        );
+
+        let result = service.validate_node_against_schema(&node).await;
+        assert!(
+            result.is_ok(),
+            "Flat properties format should work for backward compatibility"
+        );
     }
 }
