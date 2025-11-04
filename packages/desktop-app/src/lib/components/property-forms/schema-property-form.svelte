@@ -71,7 +71,16 @@
   let comboboxOpen = $state<Record<string, boolean>>({});
   let comboboxSearch = $state<Record<string, string>>({});
 
-  // Assignee options (empty for now - will be populated from user service later)
+  /**
+   * Assignee options - currently empty placeholder
+   *
+   * TODO: Populate from UserService once implemented
+   * - Will integrate with user management system (planned)
+   * - Should provide autocomplete for user names/emails
+   * - Consider caching user list for performance
+   *
+   * Related: User service integration (future enhancement)
+   */
   const assigneeOptions: Array<{ value: string; label: string }> = [];
 
   // Load schema when nodeType changes
@@ -156,23 +165,11 @@
       [fieldName]: value
     };
 
-    console.log('[SchemaPropertyForm] Updating property:', {
-      fieldName,
-      value,
-      nodeId,
-      currentProperties: node.properties,
-      updatedProperties
-    });
-
     sharedNodeStore.updateNode(
       nodeId,
       { properties: updatedProperties },
       { type: 'viewer', viewerId: 'schema-property-form' }
     );
-
-    // Check if update worked
-    const updatedNode = sharedNodeStore.getNode(nodeId);
-    console.log('[SchemaPropertyForm] After update, node properties:', updatedNode?.properties);
   }
 
   // Get enum values for a field (core + user values combined)

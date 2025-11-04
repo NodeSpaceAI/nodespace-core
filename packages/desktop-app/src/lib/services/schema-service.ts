@@ -12,6 +12,7 @@
  * - Get complete schema definitions
  * - Protection level enforcement (core fields protected)
  * - User-friendly error messages
+ * - LRU cache for schema definitions (reduces redundant backend calls)
  *
  * ## Usage Example
  *
@@ -43,7 +44,7 @@
  * - Uses BackendAdapter pattern for Tauri and HTTP mode support
  * - All operations enforce protection levels
  * - Schema version automatically incremented on changes
- * - Stateless design (no caching) - backend is fast enough for current needs
+ * - LRU cache with max 50 schemas (auto-invalidation on mutations)
  *
  * @see packages/core/src/services/schema_service.rs - Rust implementation
  * @see packages/desktop-app/src/lib/services/backend-adapter.ts - Backend adapter pattern
@@ -104,15 +105,67 @@ function formatSchemaError(error: unknown, operation: string, schemaId: string):
 }
 
 /**
+ * Simple LRU Cache for schema definitions
+ *
+ * Caches schema definitions to reduce redundant backend calls.
+ * Automatically evicts least recently used schemas when max size reached.
+ */
+class LRUCache<K, V> {
+  private cache = new Map<K, V>();
+  private maxSize: number;
+
+  constructor(maxSize = 50) {
+    this.maxSize = maxSize;
+  }
+
+  get(key: K): V | undefined {
+    if (!this.cache.has(key)) return undefined;
+
+    // Move to end (most recently used)
+    const value = this.cache.get(key)!;
+    this.cache.delete(key);
+    this.cache.set(key, value);
+    return value;
+  }
+
+  set(key: K, value: V): void {
+    // Delete if exists (to reinsert at end)
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    }
+
+    // Evict oldest if at capacity
+    if (this.cache.size >= this.maxSize) {
+      const firstKey = this.cache.keys().next().value;
+      if (firstKey !== undefined) {
+        this.cache.delete(firstKey);
+      }
+    }
+
+    this.cache.set(key, value);
+  }
+
+  delete(key: K): void {
+    this.cache.delete(key);
+  }
+
+  clear(): void {
+    this.cache.clear();
+  }
+}
+
+/**
  * Schema Service class
  *
  * Wraps Rust backend schema operations with TypeScript interface
  */
 export class SchemaService {
   private adapter: BackendAdapter;
+  private schemaCache: LRUCache<string, SchemaDefinition>;
 
   constructor(adapter?: BackendAdapter) {
     this.adapter = adapter ?? getBackendAdapter();
+    this.schemaCache = new LRUCache(50);
   }
 
   /**
@@ -134,9 +187,20 @@ export class SchemaService {
       throw new SchemaOperationError('Schema ID cannot be empty', schemaId, 'get');
     }
 
+    // Check cache first
+    const cached = this.schemaCache.get(schemaId);
+    if (cached) {
+      return cached;
+    }
+
     try {
       // Adapter handles Tauri vs HTTP automatically and performs case conversion
-      return await this.adapter.getSchema(schemaId);
+      const schema = await this.adapter.getSchema(schemaId);
+
+      // Cache the result
+      this.schemaCache.set(schemaId, schema);
+
+      return schema;
     } catch (error) {
       const message = formatSchemaError(error, 'get', schemaId);
       throw new SchemaOperationError(message, schemaId, 'get', error);
@@ -181,7 +245,12 @@ export class SchemaService {
     }
 
     try {
-      return await this.adapter.addSchemaField(schemaId, config);
+      const result = await this.adapter.addSchemaField(schemaId, config);
+
+      // Invalidate cache since schema was modified
+      this.schemaCache.delete(schemaId);
+
+      return result;
     } catch (error) {
       const message = formatSchemaError(error, 'add field', schemaId);
       throw new SchemaOperationError(message, schemaId, 'addField', error);
@@ -216,7 +285,12 @@ export class SchemaService {
     }
 
     try {
-      return await this.adapter.removeSchemaField(schemaId, fieldName);
+      const result = await this.adapter.removeSchemaField(schemaId, fieldName);
+
+      // Invalidate cache since schema was modified
+      this.schemaCache.delete(schemaId);
+
+      return result;
     } catch (error) {
       const message = formatSchemaError(error, 'remove field', schemaId);
       throw new SchemaOperationError(message, schemaId, 'removeField', error);
@@ -256,7 +330,12 @@ export class SchemaService {
     }
 
     try {
-      return await this.adapter.extendSchemaEnum(schemaId, fieldName, value);
+      const result = await this.adapter.extendSchemaEnum(schemaId, fieldName, value);
+
+      // Invalidate cache since schema was modified
+      this.schemaCache.delete(schemaId);
+
+      return result;
     } catch (error) {
       const message = formatSchemaError(error, 'extend enum', schemaId);
       throw new SchemaOperationError(message, schemaId, 'extendEnum', error);
@@ -299,7 +378,12 @@ export class SchemaService {
     }
 
     try {
-      return await this.adapter.removeSchemaEnumValue(schemaId, fieldName, value);
+      const result = await this.adapter.removeSchemaEnumValue(schemaId, fieldName, value);
+
+      // Invalidate cache since schema was modified
+      this.schemaCache.delete(schemaId);
+
+      return result;
     } catch (error) {
       const message = formatSchemaError(error, 'remove enum value', schemaId);
       throw new SchemaOperationError(message, schemaId, 'removeEnumValue', error);
