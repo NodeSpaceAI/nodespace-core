@@ -39,16 +39,17 @@
  *
  * ## Architecture
  *
- * - Frontend Service (this file) → Tauri Commands → SchemaService → NodeService → Database
+ * - Frontend Service (this file) → BackendAdapter (Tauri IPC or HTTP) → SchemaService → NodeService → Database
+ * - Uses BackendAdapter pattern for Tauri and HTTP mode support
  * - All operations enforce protection levels
  * - Schema version automatically incremented on changes
  * - Stateless design (no caching) - backend is fast enough for current needs
  *
- * @see packages/desktop-app/src-tauri/src/commands/schemas.rs - Tauri commands
  * @see packages/core/src/services/schema_service.rs - Rust implementation
+ * @see packages/desktop-app/src/lib/services/backend-adapter.ts - Backend adapter pattern
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { getBackendAdapter, type BackendAdapter } from './backend-adapter';
 import {
   SchemaOperationError,
   type SchemaDefinition,
@@ -105,9 +106,15 @@ function formatSchemaError(error: unknown, operation: string, schemaId: string):
 /**
  * Schema Service class
  *
- * Wraps Rust backend MCP schema tools with TypeScript interface
+ * Wraps Rust backend schema operations with TypeScript interface
  */
 export class SchemaService {
+  private adapter: BackendAdapter;
+
+  constructor(adapter?: BackendAdapter) {
+    this.adapter = adapter ?? getBackendAdapter();
+  }
+
   /**
    * Get a schema definition by schema ID
    *
@@ -122,53 +129,14 @@ export class SchemaService {
    * ```
    */
   async getSchema(schemaId: string): Promise<SchemaDefinition> {
-    // Validate input before expensive IPC call
+    // Validate input
     if (!schemaId || schemaId.trim() === '') {
       throw new SchemaOperationError('Schema ID cannot be empty', schemaId, 'get');
     }
 
     try {
-      // Call Tauri command directly
-      const schema = await invoke<{
-        is_core: boolean;
-        version: number;
-        description: string;
-        fields: Array<{
-          name: string;
-          field_type: string;
-          protection: string;
-          core_values?: string[];
-          user_values?: string[];
-          indexed: boolean;
-          required?: boolean;
-          extensible?: boolean;
-          default?: unknown;
-          description?: string;
-          item_type?: string;
-        }>;
-      }>('get_schema_definition', {
-        schemaId
-      });
-
-      // Convert from snake_case (Rust) to camelCase (TypeScript)
-      return {
-        isCore: schema.is_core,
-        version: schema.version,
-        description: schema.description,
-        fields: schema.fields.map((field) => ({
-          name: field.name,
-          type: field.field_type,
-          protection: field.protection as 'core' | 'user' | 'system',
-          coreValues: field.core_values,
-          userValues: field.user_values,
-          indexed: field.indexed,
-          required: field.required,
-          extensible: field.extensible,
-          default: field.default,
-          description: field.description,
-          itemType: field.item_type
-        }))
-      };
+      // Adapter handles Tauri vs HTTP automatically and performs case conversion
+      return await this.adapter.getSchema(schemaId);
     } catch (error) {
       const message = formatSchemaError(error, 'get', schemaId);
       throw new SchemaOperationError(message, schemaId, 'get', error);
@@ -201,7 +169,7 @@ export class SchemaService {
    * ```
    */
   async addField(schemaId: string, config: AddFieldConfig): Promise<AddFieldResult> {
-    // Validate input before expensive IPC call
+    // Validate input
     if (!schemaId || schemaId.trim() === '') {
       throw new SchemaOperationError('Schema ID cannot be empty', schemaId, 'addField');
     }
@@ -213,30 +181,7 @@ export class SchemaService {
     }
 
     try {
-      // Call Tauri command directly
-      const result = await invoke<{
-        schema_id: string;
-        new_version: number;
-      }>('add_schema_field', {
-        schemaId,
-        field: {
-          name: config.fieldName,
-          fieldType: config.fieldType,
-          indexed: config.indexed ?? false,
-          required: config.required,
-          default: config.default,
-          description: config.description,
-          itemType: config.itemType,
-          enumValues: config.enumValues,
-          extensible: config.extensible
-        }
-      });
-
-      return {
-        schemaId: result.schema_id,
-        newVersion: result.new_version,
-        success: true
-      };
+      return await this.adapter.addSchemaField(schemaId, config);
     } catch (error) {
       const message = formatSchemaError(error, 'add field', schemaId);
       throw new SchemaOperationError(message, schemaId, 'addField', error);
@@ -262,7 +207,7 @@ export class SchemaService {
    * ```
    */
   async removeField(schemaId: string, fieldName: string): Promise<RemoveFieldResult> {
-    // Validate input before expensive IPC call
+    // Validate input
     if (!schemaId || schemaId.trim() === '') {
       throw new SchemaOperationError('Schema ID cannot be empty', schemaId, 'removeField');
     }
@@ -271,20 +216,7 @@ export class SchemaService {
     }
 
     try {
-      // Call Tauri command directly
-      const result = await invoke<{
-        schema_id: string;
-        new_version: number;
-      }>('remove_schema_field', {
-        schemaId,
-        fieldName
-      });
-
-      return {
-        schemaId: result.schema_id,
-        newVersion: result.new_version,
-        success: true
-      };
+      return await this.adapter.removeSchemaField(schemaId, fieldName);
     } catch (error) {
       const message = formatSchemaError(error, 'remove field', schemaId);
       throw new SchemaOperationError(message, schemaId, 'removeField', error);
@@ -312,7 +244,7 @@ export class SchemaService {
    * ```
    */
   async extendEnum(schemaId: string, fieldName: string, value: string): Promise<ExtendEnumResult> {
-    // Validate input before expensive IPC call
+    // Validate input
     if (!schemaId || schemaId.trim() === '') {
       throw new SchemaOperationError('Schema ID cannot be empty', schemaId, 'extendEnum');
     }
@@ -324,21 +256,7 @@ export class SchemaService {
     }
 
     try {
-      // Call Tauri command directly
-      const result = await invoke<{
-        schema_id: string;
-        new_version: number;
-      }>('extend_schema_enum', {
-        schemaId,
-        fieldName,
-        value
-      });
-
-      return {
-        schemaId: result.schema_id,
-        newVersion: result.new_version,
-        success: true
-      };
+      return await this.adapter.extendSchemaEnum(schemaId, fieldName, value);
     } catch (error) {
       const message = formatSchemaError(error, 'extend enum', schemaId);
       throw new SchemaOperationError(message, schemaId, 'extendEnum', error);
@@ -369,7 +287,7 @@ export class SchemaService {
     fieldName: string,
     value: string
   ): Promise<RemoveEnumValueResult> {
-    // Validate input before expensive IPC call
+    // Validate input
     if (!schemaId || schemaId.trim() === '') {
       throw new SchemaOperationError('Schema ID cannot be empty', schemaId, 'removeEnumValue');
     }
@@ -381,21 +299,7 @@ export class SchemaService {
     }
 
     try {
-      // Call Tauri command directly
-      const result = await invoke<{
-        schema_id: string;
-        new_version: number;
-      }>('remove_schema_enum_value', {
-        schemaId,
-        fieldName,
-        value
-      });
-
-      return {
-        schemaId: result.schema_id,
-        newVersion: result.new_version,
-        success: true
-      };
+      return await this.adapter.removeSchemaEnumValue(schemaId, fieldName, value);
     } catch (error) {
       const message = formatSchemaError(error, 'remove enum value', schemaId);
       throw new SchemaOperationError(message, schemaId, 'removeEnumValue', error);
@@ -466,6 +370,7 @@ export class SchemaService {
 /**
  * Factory function to create a new SchemaService instance
  *
+ * @param adapter - Optional backend adapter (defaults to auto-detected adapter)
  * @returns New SchemaService instance
  *
  * @example
@@ -477,8 +382,8 @@ export class SchemaService {
  * </script>
  * ```
  */
-export function createSchemaService(): SchemaService {
-  return new SchemaService();
+export function createSchemaService(adapter?: BackendAdapter): SchemaService {
+  return new SchemaService(adapter);
 }
 
 /**

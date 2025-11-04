@@ -282,7 +282,7 @@
       aria-controls={`tab-panel-${tab.id}`}
       aria-grabbed={isDragging}
       aria-dropeffect={showDropIndicator ? 'move' : 'none'}
-      onkeydown={(event) => handleTabKeydown(event, tab.id)}
+      onkeydown={(event: KeyboardEvent) => handleTabKeydown(event, tab.id)}
       use:droppable={{
         container: `tab-${i}`,
         callbacks: {
@@ -298,7 +298,7 @@
         role="button"
         tabindex="0"
         onclick={() => handleTabClick(tab.id)}
-        onkeydown={(e) => {
+        onkeydown={(e: KeyboardEvent) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             handleTabClick(tab.id);

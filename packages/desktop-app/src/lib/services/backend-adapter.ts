@@ -37,6 +37,14 @@ import type {
   NodeDeletedEvent,
   HierarchyChangedEvent
 } from './event-types';
+import type {
+  SchemaDefinition,
+  AddFieldConfig,
+  AddFieldResult,
+  RemoveFieldResult,
+  ExtendEnumResult,
+  RemoveEnumValueResult
+} from '$lib/types/schema';
 
 /**
  * Query parameters for node queries (Phase 2)
@@ -309,6 +317,58 @@ export interface BackendAdapter {
    * @throws {NodeOperationError} If deletion fails
    */
   deleteNodeMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void>;
+
+  // === Schema Management Operations ===
+
+  /**
+   * Get a schema definition by schema ID
+   * @param schemaId - Schema ID (e.g., "task", "person")
+   * @returns Complete schema definition with fields and metadata
+   * @throws {NodeOperationError} If schema not found
+   */
+  getSchema(schemaId: string): Promise<SchemaDefinition>;
+
+  /**
+   * Add a new field to a schema
+   * @param schemaId - Schema ID to modify
+   * @param config - Field configuration
+   * @returns Result with new schema version
+   * @throws {NodeOperationError} If field already exists or validation fails
+   */
+  addSchemaField(schemaId: string, config: AddFieldConfig): Promise<AddFieldResult>;
+
+  /**
+   * Remove a field from a schema (user fields only)
+   * @param schemaId - Schema ID to modify
+   * @param fieldName - Name of the field to remove
+   * @returns Result with new schema version
+   * @throws {NodeOperationError} If field is protected or not found
+   */
+  removeSchemaField(schemaId: string, fieldName: string): Promise<RemoveFieldResult>;
+
+  /**
+   * Extend an enum field with a new value
+   * @param schemaId - Schema ID to modify
+   * @param fieldName - Name of the enum field
+   * @param value - Value to add to user_values
+   * @returns Result with new schema version
+   * @throws {NodeOperationError} If field is not extensible or value exists
+   */
+  extendSchemaEnum(schemaId: string, fieldName: string, value: string): Promise<ExtendEnumResult>;
+
+  /**
+   * Remove a value from an enum field (user values only)
+   * @param schemaId - Schema ID to modify
+   * @param fieldName - Name of the enum field
+   * @param value - Value to remove from user_values
+   * @returns Result with new schema version
+   * @throws {NodeOperationError} If value is a core value or not found
+   */
+  removeSchemaEnumValue(
+    schemaId: string,
+    fieldName: string,
+    value: string
+  ): Promise<RemoveEnumValueResult>;
 }
 
 /**
@@ -627,6 +687,165 @@ export class TauriAdapter implements BackendAdapter {
         `${mentioningNodeId} -> ${mentionedNodeId}`,
         'deleteNodeMention'
       );
+    }
+  }
+
+  // === Schema Management Operations ===
+
+  async getSchema(schemaId: string): Promise<SchemaDefinition> {
+    try {
+      // Call actual Tauri command (created by #388)
+      const schema = await invoke<{
+        is_core: boolean;
+        version: number;
+        description: string;
+        fields: Array<{
+          name: string;
+          field_type: string;
+          protection: string;
+          core_values?: string[];
+          user_values?: string[];
+          indexed: boolean;
+          required?: boolean;
+          extensible?: boolean;
+          default?: unknown;
+          description?: string;
+          item_type?: string;
+        }>;
+      }>('get_schema_definition', {
+        schemaId
+      });
+
+      // Convert from snake_case (Rust) to camelCase (TypeScript)
+      return {
+        isCore: schema.is_core,
+        version: schema.version,
+        description: schema.description,
+        fields: schema.fields.map((field) => ({
+          name: field.name,
+          type: field.field_type,
+          protection: field.protection as 'core' | 'user' | 'system',
+          coreValues: field.core_values,
+          userValues: field.user_values,
+          indexed: field.indexed,
+          required: field.required,
+          extensible: field.extensible,
+          default: field.default,
+          description: field.description,
+          itemType: field.item_type
+        }))
+      };
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, schemaId, 'getSchema');
+    }
+  }
+
+  async addSchemaField(schemaId: string, config: AddFieldConfig): Promise<AddFieldResult> {
+    try {
+      // Call actual Tauri command (created by #388)
+      const result = await invoke<{
+        schema_id: string;
+        new_version: number;
+      }>('add_schema_field', {
+        schemaId,
+        field: {
+          name: config.fieldName,
+          fieldType: config.fieldType,
+          indexed: config.indexed ?? false,
+          required: config.required,
+          default: config.default,
+          description: config.description,
+          itemType: config.itemType,
+          enumValues: config.enumValues,
+          extensible: config.extensible
+        }
+      });
+
+      return {
+        schemaId: result.schema_id,
+        newVersion: result.new_version,
+        success: true
+      };
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, schemaId, 'addSchemaField');
+    }
+  }
+
+  async removeSchemaField(schemaId: string, fieldName: string): Promise<RemoveFieldResult> {
+    try {
+      // Call actual Tauri command (created by #388)
+      const result = await invoke<{
+        schema_id: string;
+        new_version: number;
+      }>('remove_schema_field', {
+        schemaId,
+        fieldName
+      });
+
+      return {
+        schemaId: result.schema_id,
+        newVersion: result.new_version,
+        success: true
+      };
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, schemaId, 'removeSchemaField');
+    }
+  }
+
+  async extendSchemaEnum(
+    schemaId: string,
+    fieldName: string,
+    value: string
+  ): Promise<ExtendEnumResult> {
+    try {
+      // Call actual Tauri command (created by #388)
+      const result = await invoke<{
+        schema_id: string;
+        new_version: number;
+      }>('extend_schema_enum', {
+        schemaId,
+        fieldName,
+        value
+      });
+
+      return {
+        schemaId: result.schema_id,
+        newVersion: result.new_version,
+        success: true
+      };
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, schemaId, 'extendSchemaEnum');
+    }
+  }
+
+  async removeSchemaEnumValue(
+    schemaId: string,
+    fieldName: string,
+    value: string
+  ): Promise<RemoveEnumValueResult> {
+    try {
+      // Call actual Tauri command (created by #388)
+      const result = await invoke<{
+        schema_id: string;
+        new_version: number;
+      }>('remove_schema_enum_value', {
+        schemaId,
+        fieldName,
+        value
+      });
+
+      return {
+        schemaId: result.schema_id,
+        newVersion: result.new_version,
+        success: true
+      };
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, schemaId, 'removeSchemaEnumValue');
     }
   }
 }
@@ -1228,6 +1447,92 @@ export class HttpAdapter implements BackendAdapter {
         'deleteNodeMention'
       );
     }
+  }
+
+  // === Schema Management Operations ===
+  //
+  // NOTE: Schema operations use retryOnTransientError wrapper to handle SQLite write lock contention.
+  // This is consistent with the established pattern for mutation operations (see node and embedding endpoints).
+  // Read operations also use retry for consistency, though they're less likely to encounter lock errors.
+
+  async getSchema(schemaId: string): Promise<SchemaDefinition> {
+    return await this.retryOnTransientError(async () => {
+      const response = await globalThis.fetch(
+        `${this.baseUrl}/api/schemas/${encodeURIComponent(schemaId)}`,
+        {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
+
+      return await this.handleResponse<SchemaDefinition>(response);
+    });
+  }
+
+  async addSchemaField(schemaId: string, config: AddFieldConfig): Promise<AddFieldResult> {
+    return await this.retryOnTransientError(async () => {
+      const response = await globalThis.fetch(
+        `${this.baseUrl}/api/schemas/${encodeURIComponent(schemaId)}/fields`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config)
+        }
+      );
+
+      return await this.handleResponse<AddFieldResult>(response);
+    });
+  }
+
+  async removeSchemaField(schemaId: string, fieldName: string): Promise<RemoveFieldResult> {
+    return await this.retryOnTransientError(async () => {
+      const response = await globalThis.fetch(
+        `${this.baseUrl}/api/schemas/${encodeURIComponent(schemaId)}/fields/${encodeURIComponent(fieldName)}`,
+        {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
+
+      return await this.handleResponse<RemoveFieldResult>(response);
+    });
+  }
+
+  async extendSchemaEnum(
+    schemaId: string,
+    fieldName: string,
+    value: string
+  ): Promise<ExtendEnumResult> {
+    return await this.retryOnTransientError(async () => {
+      const response = await globalThis.fetch(
+        `${this.baseUrl}/api/schemas/${encodeURIComponent(schemaId)}/fields/${encodeURIComponent(fieldName)}/enum-values`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value })
+        }
+      );
+
+      return await this.handleResponse<ExtendEnumResult>(response);
+    });
+  }
+
+  async removeSchemaEnumValue(
+    schemaId: string,
+    fieldName: string,
+    value: string
+  ): Promise<RemoveEnumValueResult> {
+    return await this.retryOnTransientError(async () => {
+      const response = await globalThis.fetch(
+        `${this.baseUrl}/api/schemas/${encodeURIComponent(schemaId)}/fields/${encodeURIComponent(fieldName)}/enum-values/${encodeURIComponent(value)}`,
+        {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
+
+      return await this.handleResponse<RemoveEnumValueResult>(response);
+    });
   }
 }
 

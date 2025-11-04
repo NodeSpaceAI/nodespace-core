@@ -2,7 +2,7 @@
  * Schema Service Tests
  *
  * Tests for the TypeScript schema service wrapper. Uses Vitest mocking
- * to simulate Tauri IPC calls without requiring the full Rust backend.
+ * to simulate BackendAdapter without requiring the full Rust backend.
  *
  * ## Test Coverage
  *
@@ -17,20 +17,42 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SchemaService, createSchemaService } from '$lib/services/schema-service';
+import type { BackendAdapter } from '$lib/services/backend-adapter';
+import type {
+  SchemaDefinition,
+  AddFieldResult,
+  RemoveFieldResult,
+  ExtendEnumResult,
+  RemoveEnumValueResult
+} from '$lib/types/schema';
 
-// Mock Tauri's invoke function
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn()
-}));
-
-import { invoke } from '@tauri-apps/api/core';
-const mockInvoke = vi.mocked(invoke);
+// Mock BackendAdapter
+const mockAdapter: BackendAdapter = {
+  getSchema: vi.fn(),
+  addSchemaField: vi.fn(),
+  removeSchemaField: vi.fn(),
+  extendSchemaEnum: vi.fn(),
+  removeSchemaEnumValue: vi.fn(),
+  // Add stubs for other required BackendAdapter methods (not used in these tests)
+  createNode: vi.fn(),
+  getNode: vi.fn(),
+  updateNode: vi.fn(),
+  deleteNode: vi.fn(),
+  listNodes: vi.fn(),
+  queryNodes: vi.fn(),
+  createNodeMention: vi.fn(),
+  deleteNodeMention: vi.fn(),
+  listNodeMentions: vi.fn(),
+  getEmbedding: vi.fn(),
+  generateEmbedding: vi.fn()
+} as unknown as BackendAdapter;
 
 describe('SchemaService', () => {
   let service: SchemaService;
 
   beforeEach(() => {
-    service = createSchemaService();
+    // Create service with mocked adapter
+    service = new SchemaService(mockAdapter);
     vi.clearAllMocks();
   });
 
@@ -40,17 +62,17 @@ describe('SchemaService', () => {
 
   describe('getSchema', () => {
     it('should retrieve a schema definition', async () => {
-      const mockSchema = {
-        is_core: true,
+      const mockSchema: SchemaDefinition = {
+        isCore: true,
         version: 2,
         description: 'Task tracking schema',
         fields: [
           {
             name: 'status',
-            field_type: 'enum',
+            type: 'enum',
             protection: 'core',
-            core_values: ['OPEN', 'IN_PROGRESS', 'DONE'],
-            user_values: ['BLOCKED'],
+            coreValues: ['OPEN', 'IN_PROGRESS', 'DONE'],
+            userValues: ['BLOCKED'],
             indexed: true,
             required: true,
             extensible: true,
@@ -59,7 +81,7 @@ describe('SchemaService', () => {
           },
           {
             name: 'priority',
-            field_type: 'number',
+            type: 'number',
             protection: 'user',
             indexed: false,
             required: false,
@@ -69,13 +91,11 @@ describe('SchemaService', () => {
         ]
       };
 
-      mockInvoke.mockResolvedValueOnce(mockSchema);
+      vi.mocked(mockAdapter.getSchema).mockResolvedValueOnce(mockSchema);
 
       const result = await service.getSchema('task');
 
-      expect(mockInvoke).toHaveBeenCalledWith('get_schema_definition', {
-        schemaId: 'task'
-      });
+      expect(mockAdapter.getSchema).toHaveBeenCalledWith('task');
 
       expect(result).toEqual({
         isCore: true,
@@ -92,28 +112,23 @@ describe('SchemaService', () => {
             required: true,
             extensible: true,
             default: 'OPEN',
-            description: 'Task status',
-            itemType: undefined
+            description: 'Task status'
           },
           {
             name: 'priority',
             type: 'number',
             protection: 'user',
-            coreValues: undefined,
-            userValues: undefined,
             indexed: false,
             required: false,
-            extensible: undefined,
             default: 0,
-            description: 'Task priority',
-            itemType: undefined
+            description: 'Task priority'
           }
         ]
       });
     });
 
     it('should throw user-friendly error when schema not found', async () => {
-      mockInvoke.mockRejectedValueOnce(new Error('Schema not found'));
+      vi.mocked(mockAdapter.getSchema).mockRejectedValueOnce(new Error('Schema not found'));
 
       await expect(service.getSchema('nonexistent')).rejects.toThrow(
         "Schema 'nonexistent' not found"
@@ -123,10 +138,13 @@ describe('SchemaService', () => {
 
   describe('addField', () => {
     it('should add a new field to a schema', async () => {
-      mockInvoke.mockResolvedValueOnce({
-        schema_id: 'task',
-        new_version: 3
-      });
+      const mockResult: AddFieldResult = {
+        schemaId: 'task',
+        newVersion: 3,
+        success: true
+      };
+
+      vi.mocked(mockAdapter.addSchemaField).mockResolvedValueOnce(mockResult);
 
       const result = await service.addField('task', {
         fieldName: 'due_date',
@@ -136,19 +154,12 @@ describe('SchemaService', () => {
         description: 'Task due date'
       });
 
-      expect(mockInvoke).toHaveBeenCalledWith('add_schema_field', {
-        schemaId: 'task',
-        field: {
-          name: 'due_date',
-          fieldType: 'string',
-          indexed: false,
-          required: false,
-          default: undefined,
-          description: 'Task due date',
-          itemType: undefined,
-          enumValues: undefined,
-          extensible: undefined
-        }
+      expect(mockAdapter.addSchemaField).toHaveBeenCalledWith('task', {
+        fieldName: 'due_date',
+        fieldType: 'string',
+        indexed: false,
+        required: false,
+        description: 'Task due date'
       });
 
       expect(result).toEqual({
@@ -159,7 +170,7 @@ describe('SchemaService', () => {
     });
 
     it('should handle field already exists error', async () => {
-      mockInvoke.mockRejectedValueOnce(
+      vi.mocked(mockAdapter.addSchemaField).mockRejectedValueOnce(
         new Error("Field 'priority' already exists in schema 'task'")
       );
 
@@ -172,10 +183,13 @@ describe('SchemaService', () => {
     });
 
     it('should add enum field with values', async () => {
-      mockInvoke.mockResolvedValueOnce({
-        schema_id: 'task',
-        new_version: 3
-      });
+      const mockResult: AddFieldResult = {
+        schemaId: 'task',
+        newVersion: 3,
+        success: true
+      };
+
+      vi.mocked(mockAdapter.addSchemaField).mockResolvedValueOnce(mockResult);
 
       await service.addField('task', {
         fieldName: 'category',
@@ -186,36 +200,30 @@ describe('SchemaService', () => {
         default: 'FEATURE'
       });
 
-      expect(mockInvoke).toHaveBeenCalledWith('add_schema_field', {
-        schemaId: 'task',
-        field: {
-          name: 'category',
-          fieldType: 'enum',
-          indexed: false,
-          required: false,
-          default: 'FEATURE',
-          description: undefined,
-          itemType: undefined,
-          enumValues: ['BUG', 'FEATURE', 'ENHANCEMENT'],
-          extensible: true
-        }
+      expect(mockAdapter.addSchemaField).toHaveBeenCalledWith('task', {
+        fieldName: 'category',
+        fieldType: 'enum',
+        enumValues: ['BUG', 'FEATURE', 'ENHANCEMENT'],
+        extensible: true,
+        required: false,
+        default: 'FEATURE'
       });
     });
   });
 
   describe('removeField', () => {
     it('should remove a user field from schema', async () => {
-      mockInvoke.mockResolvedValueOnce({
-        schema_id: 'task',
-        new_version: 3
-      });
+      const mockResult: RemoveFieldResult = {
+        schemaId: 'task',
+        newVersion: 3,
+        success: true
+      };
+
+      vi.mocked(mockAdapter.removeSchemaField).mockResolvedValueOnce(mockResult);
 
       const result = await service.removeField('task', 'priority');
 
-      expect(mockInvoke).toHaveBeenCalledWith('remove_schema_field', {
-        schemaId: 'task',
-        fieldName: 'priority'
-      });
+      expect(mockAdapter.removeSchemaField).toHaveBeenCalledWith('task', 'priority');
 
       expect(result).toEqual({
         schemaId: 'task',
@@ -225,7 +233,7 @@ describe('SchemaService', () => {
     });
 
     it('should throw error when removing core field', async () => {
-      mockInvoke.mockRejectedValueOnce(
+      vi.mocked(mockAdapter.removeSchemaField).mockRejectedValueOnce(
         new Error("Cannot remove field 'status' with protection level Core")
       );
 
@@ -235,7 +243,9 @@ describe('SchemaService', () => {
     });
 
     it('should throw error when field not found', async () => {
-      mockInvoke.mockRejectedValueOnce(new Error("Field 'nonexistent' not found in schema 'task'"));
+      vi.mocked(mockAdapter.removeSchemaField).mockRejectedValueOnce(
+        new Error("Field 'nonexistent' not found in schema 'task'")
+      );
 
       await expect(service.removeField('task', 'nonexistent')).rejects.toThrow('not found');
     });
@@ -243,18 +253,17 @@ describe('SchemaService', () => {
 
   describe('extendEnum', () => {
     it('should add value to enum field', async () => {
-      mockInvoke.mockResolvedValueOnce({
-        schema_id: 'task',
-        new_version: 3
-      });
+      const mockResult: ExtendEnumResult = {
+        schemaId: 'task',
+        newVersion: 3,
+        success: true
+      };
+
+      vi.mocked(mockAdapter.extendSchemaEnum).mockResolvedValueOnce(mockResult);
 
       const result = await service.extendEnum('task', 'status', 'BLOCKED');
 
-      expect(mockInvoke).toHaveBeenCalledWith('extend_schema_enum', {
-        schemaId: 'task',
-        fieldName: 'status',
-        value: 'BLOCKED'
-      });
+      expect(mockAdapter.extendSchemaEnum).toHaveBeenCalledWith('task', 'status', 'BLOCKED');
 
       expect(result).toEqual({
         schemaId: 'task',
@@ -264,13 +273,17 @@ describe('SchemaService', () => {
     });
 
     it('should throw error when field is not enum', async () => {
-      mockInvoke.mockRejectedValueOnce(new Error("Field 'priority' is not an enum (type: number)"));
+      vi.mocked(mockAdapter.extendSchemaEnum).mockRejectedValueOnce(
+        new Error("Field 'priority' is not an enum (type: number)")
+      );
 
       await expect(service.extendEnum('task', 'priority', 'HIGH')).rejects.toThrow('not an enum');
     });
 
     it('should throw error when enum not extensible', async () => {
-      mockInvoke.mockRejectedValueOnce(new Error("Enum field 'status' is not extensible"));
+      vi.mocked(mockAdapter.extendSchemaEnum).mockRejectedValueOnce(
+        new Error("Enum field 'status' is not extensible")
+      );
 
       await expect(service.extendEnum('task', 'status', 'ARCHIVED')).rejects.toThrow(
         'not extensible'
@@ -278,7 +291,7 @@ describe('SchemaService', () => {
     });
 
     it('should throw error when value already exists', async () => {
-      mockInvoke.mockRejectedValueOnce(
+      vi.mocked(mockAdapter.extendSchemaEnum).mockRejectedValueOnce(
         new Error("Value 'BLOCKED' already exists in enum 'status'")
       );
 
@@ -290,18 +303,17 @@ describe('SchemaService', () => {
 
   describe('removeEnumValue', () => {
     it('should remove user value from enum', async () => {
-      mockInvoke.mockResolvedValueOnce({
-        schema_id: 'task',
-        new_version: 3
-      });
+      const mockResult: RemoveEnumValueResult = {
+        schemaId: 'task',
+        newVersion: 3,
+        success: true
+      };
+
+      vi.mocked(mockAdapter.removeSchemaEnumValue).mockResolvedValueOnce(mockResult);
 
       const result = await service.removeEnumValue('task', 'status', 'BLOCKED');
 
-      expect(mockInvoke).toHaveBeenCalledWith('remove_schema_enum_value', {
-        schemaId: 'task',
-        fieldName: 'status',
-        value: 'BLOCKED'
-      });
+      expect(mockAdapter.removeSchemaEnumValue).toHaveBeenCalledWith('task', 'status', 'BLOCKED');
 
       expect(result).toEqual({
         schemaId: 'task',
@@ -311,7 +323,7 @@ describe('SchemaService', () => {
     });
 
     it('should throw error when removing core value', async () => {
-      mockInvoke.mockRejectedValueOnce(
+      vi.mocked(mockAdapter.removeSchemaEnumValue).mockRejectedValueOnce(
         new Error("Cannot remove core value 'OPEN' from enum 'status'")
       );
 
@@ -321,7 +333,7 @@ describe('SchemaService', () => {
     });
 
     it('should throw error when value not found', async () => {
-      mockInvoke.mockRejectedValueOnce(
+      vi.mocked(mockAdapter.removeSchemaEnumValue).mockRejectedValueOnce(
         new Error("Value 'ARCHIVED' not found in user values of enum 'status'")
       );
 
@@ -333,22 +345,24 @@ describe('SchemaService', () => {
 
   describe('getEnumValues', () => {
     it('should return all enum values (core + user)', async () => {
-      mockInvoke.mockResolvedValueOnce({
-        is_core: true,
+      const mockSchema: SchemaDefinition = {
+        isCore: true,
         version: 2,
         description: 'Task schema',
         fields: [
           {
             name: 'status',
-            field_type: 'enum',
+            type: 'enum',
             protection: 'core',
-            core_values: ['OPEN', 'IN_PROGRESS', 'DONE'],
-            user_values: ['BLOCKED', 'WAITING'],
+            coreValues: ['OPEN', 'IN_PROGRESS', 'DONE'],
+            userValues: ['BLOCKED', 'WAITING'],
             indexed: true,
             required: true
           }
         ]
-      });
+      };
+
+      vi.mocked(mockAdapter.getSchema).mockResolvedValueOnce(mockSchema);
 
       const values = await service.getEnumValues('task', 'status');
 
@@ -356,12 +370,14 @@ describe('SchemaService', () => {
     });
 
     it('should throw error when field not found', async () => {
-      mockInvoke.mockResolvedValueOnce({
-        is_core: true,
+      const mockSchema: SchemaDefinition = {
+        isCore: true,
         version: 1,
         description: 'Task schema',
         fields: []
-      });
+      };
+
+      vi.mocked(mockAdapter.getSchema).mockResolvedValueOnce(mockSchema);
 
       await expect(service.getEnumValues('task', 'nonexistent')).rejects.toThrow(
         "Field 'nonexistent' not found"
@@ -369,19 +385,21 @@ describe('SchemaService', () => {
     });
 
     it('should throw error when field is not enum', async () => {
-      mockInvoke.mockResolvedValueOnce({
-        is_core: true,
+      const mockSchema: SchemaDefinition = {
+        isCore: true,
         version: 1,
         description: 'Task schema',
         fields: [
           {
             name: 'priority',
-            field_type: 'number',
+            type: 'number',
             protection: 'user',
             indexed: false
           }
         ]
-      });
+      };
+
+      vi.mocked(mockAdapter.getSchema).mockResolvedValueOnce(mockSchema);
 
       await expect(service.getEnumValues('task', 'priority')).rejects.toThrow('not an enum field');
     });
@@ -389,19 +407,21 @@ describe('SchemaService', () => {
 
   describe('canDeleteField', () => {
     it('should return true for user-protected fields', async () => {
-      mockInvoke.mockResolvedValueOnce({
-        is_core: true,
+      const mockSchema: SchemaDefinition = {
+        isCore: true,
         version: 1,
         description: 'Task schema',
         fields: [
           {
             name: 'priority',
-            field_type: 'number',
+            type: 'number',
             protection: 'user',
             indexed: false
           }
         ]
-      });
+      };
+
+      vi.mocked(mockAdapter.getSchema).mockResolvedValueOnce(mockSchema);
 
       const canDelete = await service.canDeleteField('task', 'priority');
 
@@ -409,19 +429,21 @@ describe('SchemaService', () => {
     });
 
     it('should return false for core-protected fields', async () => {
-      mockInvoke.mockResolvedValueOnce({
-        is_core: true,
+      const mockSchema: SchemaDefinition = {
+        isCore: true,
         version: 1,
         description: 'Task schema',
         fields: [
           {
             name: 'status',
-            field_type: 'enum',
+            type: 'enum',
             protection: 'core',
             indexed: true
           }
         ]
-      });
+      };
+
+      vi.mocked(mockAdapter.getSchema).mockResolvedValueOnce(mockSchema);
 
       const canDelete = await service.canDeleteField('task', 'status');
 
@@ -429,12 +451,14 @@ describe('SchemaService', () => {
     });
 
     it('should return false when field not found', async () => {
-      mockInvoke.mockResolvedValueOnce({
-        is_core: true,
+      const mockSchema: SchemaDefinition = {
+        isCore: true,
         version: 1,
         description: 'Task schema',
         fields: []
-      });
+      };
+
+      vi.mocked(mockAdapter.getSchema).mockResolvedValueOnce(mockSchema);
 
       const canDelete = await service.canDeleteField('task', 'nonexistent');
 
@@ -444,7 +468,7 @@ describe('SchemaService', () => {
 
   describe('error handling', () => {
     it('should format validation errors', async () => {
-      mockInvoke.mockRejectedValueOnce(
+      vi.mocked(mockAdapter.addSchemaField).mockRejectedValueOnce(
         new Error('Cannot add core-protected fields. Field has protection: Core')
       );
 
@@ -457,13 +481,13 @@ describe('SchemaService', () => {
     });
 
     it('should format unknown errors', async () => {
-      mockInvoke.mockRejectedValueOnce('Unexpected error string');
+      vi.mocked(mockAdapter.getSchema).mockRejectedValueOnce('Unexpected error string');
 
       await expect(service.getSchema('task')).rejects.toThrow('Unexpected error string');
     });
 
     it('should handle non-Error objects', async () => {
-      mockInvoke.mockRejectedValueOnce({ someProperty: 'value' });
+      vi.mocked(mockAdapter.getSchema).mockRejectedValueOnce({ someProperty: 'value' });
 
       await expect(service.getSchema('task')).rejects.toThrow('Unknown error');
     });

@@ -29,6 +29,14 @@ import type {
   CreateContainerNodeInput
 } from '$lib/services/backend-adapter';
 import type { Node, NodeUpdate } from '$lib/types';
+import type {
+  SchemaDefinition,
+  AddFieldConfig,
+  AddFieldResult,
+  RemoveFieldResult,
+  ExtendEnumResult,
+  RemoveEnumValueResult
+} from '$lib/types/schema';
 
 /**
  * Mock implementation of BackendAdapter using in-memory Map storage
@@ -189,6 +197,36 @@ export class MockBackendAdapter implements BackendAdapter {
 
   async deleteNodeMention(_mentioningNodeId: string, _mentionedNodeId: string): Promise<void> {
     // No-op for sibling chain tests
+  }
+
+  // === Schema Management Operations (Not Needed for Sibling Chain Tests) ===
+
+  async getSchema(_schemaId: string): Promise<SchemaDefinition> {
+    throw new Error('getSchema not implemented in MockBackendAdapter');
+  }
+
+  async addSchemaField(_schemaId: string, _config: AddFieldConfig): Promise<AddFieldResult> {
+    throw new Error('addSchemaField not implemented in MockBackendAdapter');
+  }
+
+  async removeSchemaField(_schemaId: string, _fieldName: string): Promise<RemoveFieldResult> {
+    throw new Error('removeSchemaField not implemented in MockBackendAdapter');
+  }
+
+  async extendSchemaEnum(
+    _schemaId: string,
+    _fieldName: string,
+    _value: string
+  ): Promise<ExtendEnumResult> {
+    throw new Error('extendSchemaEnum not implemented in MockBackendAdapter');
+  }
+
+  async removeSchemaEnumValue(
+    _schemaId: string,
+    _fieldName: string,
+    _value: string
+  ): Promise<RemoveEnumValueResult> {
+    throw new Error('removeSchemaEnumValue not implemented in MockBackendAdapter');
   }
 
   /**
