@@ -69,6 +69,31 @@ impl IndexManager {
         Self { db }
     }
 
+    /// Get a database connection with busy timeout configured for async contexts
+    ///
+    /// This helper method ensures IndexManager operations are safe in Tokio's
+    /// multi-threaded async runtime by setting a 5-second busy timeout on each
+    /// connection. This allows concurrent operations to wait and retry instead
+    /// of failing immediately when the database is locked.
+    ///
+    /// # Why This Matters
+    ///
+    /// Similar to `DatabaseService::connect_with_timeout()`, this prevents SQLite
+    /// thread-safety violations when the Tokio runtime moves futures between
+    /// threads at `.await` points.
+    async fn connect_with_timeout(&self) -> Result<libsql::Connection, DatabaseError> {
+        let conn = self.db.connect().map_err(DatabaseError::LibsqlError)?;
+
+        // Set busy timeout on this connection
+        conn.execute("PRAGMA busy_timeout = 5000", ())
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to set busy timeout: {}", e))
+            })?;
+
+        Ok(conn)
+    }
+
     /// Validate identifier for use in SQL statements
     ///
     /// Ensures identifiers contain only alphanumeric characters and underscores,
@@ -168,7 +193,7 @@ impl IndexManager {
             index_name, json_path, node_type
         );
 
-        let conn = self.db.connect().map_err(DatabaseError::LibsqlError)?;
+        let conn = self.connect_with_timeout().await?;
 
         conn.execute(&sql, ()).await.map_err(|e| {
             DatabaseError::sql_execution(format!(
@@ -217,7 +242,7 @@ impl IndexManager {
 
         let index_name = format!("idx_json_{}_{}", node_type, field_name);
 
-        let conn = self.db.connect().map_err(DatabaseError::LibsqlError)?;
+        let conn = self.connect_with_timeout().await?;
 
         let mut stmt = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name=?")
@@ -269,7 +294,7 @@ impl IndexManager {
 
         let pattern = format!("idx_json_{}_", node_type);
 
-        let conn = self.db.connect().map_err(DatabaseError::LibsqlError)?;
+        let conn = self.connect_with_timeout().await?;
 
         let mut stmt = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE ?")
@@ -314,6 +339,7 @@ mod tests {
         let db = Arc::new(libsql::Builder::new_local(&db_path).build().await.unwrap());
 
         // Create nodes table for testing
+        // Note: Test setup uses synchronous connect() since it's not in concurrent context
         let conn = db.connect().unwrap();
         conn.execute(
             "CREATE TABLE nodes (

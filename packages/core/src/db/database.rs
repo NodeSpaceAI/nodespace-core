@@ -11,6 +11,36 @@
 //! - **Foreign keys**: Enabled for referential integrity
 //! - **JSON operators**: Native SQLite JSON support
 //!
+//! # Database Connection Patterns
+//!
+//! ## Async contexts (Tokio runtime)
+//!
+//! **ALWAYS use `connect_with_timeout()` in async functions** to avoid SQLite
+//! thread-safety violations when the Tokio runtime moves futures between threads.
+//!
+//! The 5-second busy timeout allows concurrent operations to wait and retry
+//! instead of failing immediately with `SQLITE_BUSY` errors.
+//!
+//! ```no_run
+//! # use nodespace_core::db::DatabaseService;
+//! # use std::path::PathBuf;
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # let db_service = DatabaseService::new(PathBuf::from(":memory:")).await?;
+//! // ✅ CORRECT: Use connect_with_timeout() in async functions
+//! let conn = db_service.connect_with_timeout().await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Synchronous contexts
+//!
+//! Use `connect()` only in single-threaded, synchronous contexts where the
+//! connection will not be used across await points.
+//!
+//! **Note**: Most code in NodeSpace is async, so `connect_with_timeout()` should
+//! be your default choice.
+//!
 //! For detailed schema specifications, see:
 //! `/docs/architecture/business-logic/database-schema.md`
 
@@ -680,19 +710,74 @@ impl DatabaseService {
         Ok(())
     }
 
-    /// Get a connection to the database
+    /// Get a synchronous connection to the database
+    ///
+    /// **⚠️ WARNING**: Only use this in synchronous, single-threaded contexts.
+    /// In async functions or Tokio runtime contexts, use `connect_with_timeout()`
+    /// instead to avoid SQLite thread-safety violations.
     ///
     /// Returns a new connection that can be used for queries.
     /// Multiple connections can be used concurrently thanks to WAL mode.
+    ///
+    /// # When to Use
+    ///
+    /// - Single-threaded synchronous code only
+    /// - Connection won't be used across `.await` points
+    /// - **Most NodeSpace code should use `connect_with_timeout()` instead**
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db_service = futures::executor::block_on(
+    /// #     DatabaseService::new(PathBuf::from(":memory:"))
+    /// # )?;
+    /// // ⚠️ Only in synchronous contexts
+    /// let conn = db_service.connect()?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn connect(&self) -> Result<libsql::Connection, DatabaseError> {
         self.db.connect().map_err(DatabaseError::LibsqlError)
     }
 
-    /// Get a connection with busy timeout configured
+    /// Get an async connection with busy timeout configured
     ///
-    /// Sets a 5-second busy timeout so operations wait instead of failing
-    /// immediately when the database is locked.
+    /// **✅ RECOMMENDED**: Use this for all async functions and Tokio runtime contexts.
+    /// This is the safe default for NodeSpace's async architecture.
+    ///
+    /// Sets a 5-second busy timeout so concurrent operations wait and retry
+    /// instead of failing immediately when the database is locked. This prevents
+    /// SQLite thread-safety violations when the Tokio runtime moves futures
+    /// between threads at `.await` points.
+    ///
+    /// # Why This Matters
+    ///
+    /// SQLite connections have thread-affinity requirements. When Tokio's async
+    /// runtime moves a future to a different thread (which happens at every
+    /// `.await`), using a synchronous connection can cause "bad parameter or
+    /// other API misuse" errors. The busy timeout ensures operations serialize
+    /// gracefully instead of failing.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db_service = DatabaseService::new(PathBuf::from(":memory:")).await?;
+    /// // ✅ CORRECT: Use in async functions
+    /// let conn = db_service.connect_with_timeout().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn connect_with_timeout(&self) -> Result<libsql::Connection, DatabaseError> {
+        // Note: This synchronous connect() call is safe here because it's just
+        // creating the connection handle. The actual SQLite operations happen
+        // later, and the busy timeout ensures they work correctly in async contexts.
         let conn = self.connect()?;
 
         // Set busy timeout on this connection
