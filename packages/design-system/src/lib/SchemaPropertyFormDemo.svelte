@@ -11,8 +11,8 @@
   let backlinksOpen = $state(false);
   let theme = $state<'light' | 'dark'>('light');
 
-  let selectedStatus = $state({ value: "IN_PROGRESS", label: "In Progress" });
-  let selectedPriority = $state({ value: "HIGH", label: "High" });
+  let selectedStatus = $state("IN_PROGRESS");
+  let selectedPriority = $state("HIGH");
 
   let dueDate = $state(new CalendarDate(2025, 10, 15));
   let startedAt = $state(new CalendarDate(2025, 10, 8));
@@ -87,7 +87,7 @@
           <div class="flex items-center gap-3">
             <!-- Status Badge -->
             <span class="inline-flex items-center rounded-md border border-border bg-muted px-2.5 py-0.5 text-xs font-medium text-foreground">
-              {taskData.status}
+              {selectedStatus === "OPEN" ? "Open" : selectedStatus === "IN_PROGRESS" ? "In Progress" : selectedStatus === "DONE" ? "Done" : "Blocked"}
             </span>
 
             <!-- Due Date -->
@@ -114,9 +114,9 @@
             <!-- Status Field -->
             <div class="space-y-2">
               <label class="text-sm font-medium">Status</label>
-              <Select.Root bind:selected={selectedStatus} type="single">
+              <Select.Root bind:value={selectedStatus} type="single">
                 <Select.Trigger class="w-full">
-                  {selectedStatus.label}
+                  {selectedStatus === "OPEN" ? "Open" : selectedStatus === "IN_PROGRESS" ? "In Progress" : selectedStatus === "DONE" ? "Done" : "Blocked"}
                 </Select.Trigger>
                 <Select.Content>
                   <Select.Item value="OPEN" label="Open" />
@@ -130,9 +130,9 @@
             <!-- Priority Field -->
             <div class="space-y-2">
               <label class="text-sm font-medium">Priority</label>
-              <Select.Root bind:selected={selectedPriority} type="single">
+              <Select.Root bind:value={selectedPriority} type="single">
                 <Select.Trigger class="w-full">
-                  {selectedPriority.label}
+                  {selectedPriority === "LOW" ? "Low" : selectedPriority === "MEDIUM" ? "Medium" : "High"}
                 </Select.Trigger>
                 <Select.Content>
                   <Select.Item value="LOW" label="Low" />

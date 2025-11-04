@@ -419,11 +419,65 @@ impl DatabaseService {
         // Task schema
         let task_schema = json!({
             "is_core": true,
+            "version": 1,
+            "description": "Task tracking schema",
             "fields": [
-                {"name": "status", "type": "text", "indexed": true},
-                {"name": "assignee", "type": "person", "indexed": true},
-                {"name": "due_date", "type": "date", "indexed": true},
-                {"name": "description", "type": "text", "indexed": false}
+                {
+                    "name": "status",
+                    "type": "enum",
+                    "protection": "core",
+                    "core_values": ["OPEN", "IN_PROGRESS", "DONE"],
+                    "user_values": ["BLOCKED"],
+                    "indexed": true,
+                    "required": true,
+                    "extensible": true,
+                    "default": "OPEN",
+                    "description": "Status"
+                },
+                {
+                    "name": "priority",
+                    "type": "enum",
+                    "protection": "user",
+                    "core_values": ["LOW", "MEDIUM", "HIGH"],
+                    "user_values": [],
+                    "indexed": true,
+                    "required": false,
+                    "extensible": true,
+                    "default": "MEDIUM",
+                    "description": "Priority"
+                },
+                {
+                    "name": "due_date",
+                    "type": "date",
+                    "protection": "user",
+                    "indexed": true,
+                    "required": false,
+                    "description": "Due Date"
+                },
+                {
+                    "name": "started_at",
+                    "type": "date",
+                    "protection": "user",
+                    "indexed": false,
+                    "required": false,
+                    "description": "Started At"
+                },
+                {
+                    "name": "completed_at",
+                    "type": "date",
+                    "protection": "user",
+                    "indexed": false,
+                    "required": false,
+                    "description": "Completed At"
+                },
+                {
+                    "name": "assignee",
+                    "type": "text",
+                    "protection": "user",
+                    "indexed": true,
+                    "required": false,
+                    "description": "Assignee"
+                }
             ]
         });
 

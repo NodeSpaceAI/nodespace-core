@@ -13,6 +13,7 @@
   import { pluginRegistry } from '$lib/components/viewers/index';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import BacklinksPanel from '$lib/design/components/backlinks-panel.svelte';
+  import SchemaPropertyForm from '$lib/components/property-forms/schema-property-form.svelte';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { sharedNodeStore } from '$lib/services/shared-node-store';
   import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
@@ -1469,6 +1470,14 @@
 
   <!-- Scrollable Node Content Area (children structure) -->
   <div class="node-content-area" bind:this={scrollContainer}>
+    <!-- Schema-Driven Properties Panel - appears after header, before children -->
+    {#if nodeId}
+      {@const currentNode = sharedNodeStore.getNode(nodeId)}
+      {#if currentNode}
+        <SchemaPropertyForm {nodeId} nodeType={currentNode.nodeType} />
+      {/if}
+    {/if}
+
     {#each nodeManager.visibleNodes(nodeId) as node (node.id)}
       {@const relativeDepth = (node.depth || 0) - minDepth()}
       <div

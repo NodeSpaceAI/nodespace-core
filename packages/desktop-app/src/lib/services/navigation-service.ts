@@ -89,10 +89,10 @@ export class NavigationService {
         node = fetchedNode;
 
         // Add to store for future use
-        // skipPersistence=true will automatically mark node as persisted in setNode()
+        // Use type 'database' so node gets marked as persisted in persistedNodeIds
         sharedNodeStore.setNode(
           node,
-          { type: 'external', source: 'navigation-service', description: 'fetched-for-link-click' },
+          { type: 'database', reason: 'fetched-for-link-click' },
           true // skipPersistence - already in backend
         );
       } catch (error) {

@@ -433,19 +433,13 @@ impl NodeBehavior for TaskNodeBehavior {
             ));
         }
 
-        // Validate status field if present
+        // NOTE: Status validation is now handled by the schema system
+        // The schema defines valid enum values dynamically, allowing user customization
+        // We only verify it's a string type here
         if let Some(status) = node.properties.get("status") {
-            let status_str = status.as_str().ok_or_else(|| {
+            status.as_str().ok_or_else(|| {
                 NodeValidationError::InvalidProperties("Status must be a string".to_string())
             })?;
-
-            let valid_statuses = ["pending", "in_progress", "completed", "cancelled"];
-            if !valid_statuses.contains(&status_str) {
-                return Err(NodeValidationError::InvalidProperties(format!(
-                    "Invalid task status: {}. Must be one of: {:?}",
-                    status_str, valid_statuses
-                )));
-            }
         }
 
         // Validate priority if present
