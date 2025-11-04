@@ -3295,15 +3295,15 @@ mod tests {
             "task".to_string(),
             "Implement NodeService".to_string(),
             None,
-            json!({"status": "in_progress", "priority": 1}),
+            json!({"status": "IN_PROGRESS", "priority": "HIGH"}),
         );
 
         let id = service.create_node(node).await.unwrap();
         let retrieved = service.get_node(&id).await.unwrap().unwrap();
 
         assert_eq!(retrieved.node_type, "task");
-        assert_eq!(retrieved.properties["status"], "in_progress");
-        assert_eq!(retrieved.properties["priority"], 1);
+        assert_eq!(retrieved.properties["status"], "IN_PROGRESS");
+        assert_eq!(retrieved.properties["priority"], "HIGH");
     }
 
     #[tokio::test]
@@ -3455,7 +3455,7 @@ mod tests {
                 "task".to_string(),
                 "Task 1".to_string(),
                 None,
-                json!({"status": "pending"}),
+                json!({"status": "OPEN"}),
             ))
             .await
             .unwrap();
@@ -3487,7 +3487,7 @@ mod tests {
                 "task".to_string(),
                 "Bulk Task".to_string(),
                 None,
-                json!({"status": "pending"}),
+                json!({"status": "OPEN"}),
             ),
         ];
 
@@ -3995,7 +3995,7 @@ mod tests {
                 "task".to_string(),
                 "UniqueBasicFilter Task".to_string(),
                 Some(container_id.clone()),
-                json!({"status": "pending"}),
+                json!({"status": "OPEN"}),
             );
             let task_id = service.create_node(task).await.unwrap();
 
@@ -4410,7 +4410,7 @@ mod tests {
                 "task".to_string(),
                 "Review @target".to_string(),
                 Some(container_id.clone()),
-                json!({"status": "pending"}),
+                json!({"status": "OPEN"}),
             );
             let task_id = service.create_node(task).await.unwrap();
 
