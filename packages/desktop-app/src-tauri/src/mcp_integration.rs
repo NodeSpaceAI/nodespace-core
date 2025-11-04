@@ -32,6 +32,13 @@ struct NodeDeletedEvent {
     node_id: String,
 }
 
+/// Event payload for schema-updated event
+#[derive(Debug, Serialize)]
+struct SchemaUpdatedEvent {
+    schema_id: String,
+    new_version: i32,
+}
+
 /// Run MCP server with Tauri event emissions
 ///
 /// Uses the core MCP server with a callback that emits Tauri events after
@@ -194,6 +201,23 @@ fn emit_event_for_method(app: &AppHandle, method: &str, result: &Value) {
                             break; // Only emit once for the container, not for each child
                         }
                     }
+                }
+            }
+        }
+        "add_schema_field"
+        | "remove_schema_field"
+        | "extend_schema_enum"
+        | "remove_schema_enum_value" => {
+            // Schema mutation operations - emit schema-updated event
+            if let (Some(schema_id), Some(new_version)) =
+                (result["schema_id"].as_str(), result["new_version"].as_i64())
+            {
+                let event = SchemaUpdatedEvent {
+                    schema_id: schema_id.to_string(),
+                    new_version: new_version as i32,
+                };
+                if let Err(e) = app.emit("schema-updated", &event) {
+                    warn!("Failed to emit schema-updated event: {}", e);
                 }
             }
         }

@@ -6,3 +6,4 @@ pub mod db;
 pub mod embeddings;
 pub mod models;
 pub mod nodes;
+pub mod schemas;

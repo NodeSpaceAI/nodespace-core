@@ -2,7 +2,7 @@
  * Schema Service - TypeScript Wrapper for Schema Management
  *
  * Provides a type-safe TypeScript wrapper around the Rust backend's schema
- * management MCP tools. Enables frontend components to manage user-defined
+ * management operations. Enables frontend components to manage user-defined
  * entity schemas with full type safety.
  *
  * ## Features
@@ -39,13 +39,13 @@
  *
  * ## Architecture
  *
- * - Frontend Service (this file) → Tauri IPC → MCP Tools → SchemaService → NodeService → Database
+ * - Frontend Service (this file) → Tauri Commands → SchemaService → NodeService → Database
  * - All operations enforce protection levels
  * - Schema version automatically incremented on changes
  * - Stateless design (no caching) - backend is fast enough for current needs
  *
+ * @see packages/desktop-app/src-tauri/src/commands/schemas.rs - Tauri commands
  * @see packages/core/src/services/schema_service.rs - Rust implementation
- * @see packages/core/src/mcp/handlers/schema.rs - MCP tool handlers
  */
 
 import { invoke } from '@tauri-apps/api/core';
@@ -128,26 +128,14 @@ export class SchemaService {
     }
 
     try {
-      const result = await invoke<{ schema: unknown; schemaId: string; success: boolean }>(
-        'mcp_call_tool',
-        {
-          name: 'get_schema_definition',
-          arguments: { schema_id: schemaId }
-        }
-      );
-
-      if (!result.success || !result.schema) {
-        throw new Error(`Failed to retrieve schema '${schemaId}'`);
-      }
-
-      // Convert from snake_case (Rust) to camelCase (TypeScript)
-      const schema = result.schema as {
+      // Call Tauri command directly
+      const schema = await invoke<{
         is_core: boolean;
         version: number;
         description: string;
         fields: Array<{
           name: string;
-          type: string;
+          field_type: string;
           protection: string;
           core_values?: string[];
           user_values?: string[];
@@ -158,15 +146,18 @@ export class SchemaService {
           description?: string;
           item_type?: string;
         }>;
-      };
+      }>('get_schema_definition', {
+        schemaId
+      });
 
+      // Convert from snake_case (Rust) to camelCase (TypeScript)
       return {
         isCore: schema.is_core,
         version: schema.version,
         description: schema.description,
         fields: schema.fields.map((field) => ({
           name: field.name,
-          type: field.type,
+          type: field.field_type,
           protection: field.protection as 'core' | 'user' | 'system',
           coreValues: field.core_values,
           userValues: field.user_values,
@@ -222,22 +213,21 @@ export class SchemaService {
     }
 
     try {
+      // Call Tauri command directly
       const result = await invoke<{
         schema_id: string;
         new_version: number;
-        success: boolean;
-      }>('mcp_call_tool', {
-        name: 'add_schema_field',
-        arguments: {
-          schema_id: schemaId,
-          field_name: config.fieldName,
-          field_type: config.fieldType,
+      }>('add_schema_field', {
+        schemaId,
+        field: {
+          name: config.fieldName,
+          fieldType: config.fieldType,
           indexed: config.indexed ?? false,
           required: config.required,
           default: config.default,
           description: config.description,
-          item_type: config.itemType,
-          enum_values: config.enumValues,
+          itemType: config.itemType,
+          enumValues: config.enumValues,
           extensible: config.extensible
         }
       });
@@ -245,7 +235,7 @@ export class SchemaService {
       return {
         schemaId: result.schema_id,
         newVersion: result.new_version,
-        success: result.success
+        success: true
       };
     } catch (error) {
       const message = formatSchemaError(error, 'add field', schemaId);
@@ -281,22 +271,19 @@ export class SchemaService {
     }
 
     try {
+      // Call Tauri command directly
       const result = await invoke<{
         schema_id: string;
         new_version: number;
-        success: boolean;
-      }>('mcp_call_tool', {
-        name: 'remove_schema_field',
-        arguments: {
-          schema_id: schemaId,
-          field_name: fieldName
-        }
+      }>('remove_schema_field', {
+        schemaId,
+        fieldName
       });
 
       return {
         schemaId: result.schema_id,
         newVersion: result.new_version,
-        success: result.success
+        success: true
       };
     } catch (error) {
       const message = formatSchemaError(error, 'remove field', schemaId);
@@ -337,23 +324,20 @@ export class SchemaService {
     }
 
     try {
+      // Call Tauri command directly
       const result = await invoke<{
         schema_id: string;
         new_version: number;
-        success: boolean;
-      }>('mcp_call_tool', {
-        name: 'extend_schema_enum',
-        arguments: {
-          schema_id: schemaId,
-          field_name: fieldName,
-          value: value
-        }
+      }>('extend_schema_enum', {
+        schemaId,
+        fieldName,
+        value
       });
 
       return {
         schemaId: result.schema_id,
         newVersion: result.new_version,
-        success: result.success
+        success: true
       };
     } catch (error) {
       const message = formatSchemaError(error, 'extend enum', schemaId);
@@ -397,23 +381,20 @@ export class SchemaService {
     }
 
     try {
+      // Call Tauri command directly
       const result = await invoke<{
         schema_id: string;
         new_version: number;
-        success: boolean;
-      }>('mcp_call_tool', {
-        name: 'remove_schema_enum_value',
-        arguments: {
-          schema_id: schemaId,
-          field_name: fieldName,
-          value: value
-        }
+      }>('remove_schema_enum_value', {
+        schemaId,
+        fieldName,
+        value
       });
 
       return {
         schemaId: result.schema_id,
         newVersion: result.new_version,
-        success: result.success
+        success: true
       };
     } catch (error) {
       const message = formatSchemaError(error, 'remove enum value', schemaId);
