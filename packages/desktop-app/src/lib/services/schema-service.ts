@@ -60,76 +60,6 @@ import {
   type RemoveEnumValueResult
 } from '$lib/types/schema';
 
-// Check if running in Tauri or browser mode
-const isTauriAvailable = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-
-// Mock schema data for browser mode testing
-const MOCK_SCHEMAS: Record<string, SchemaDefinition> = {
-  task: {
-    isCore: true,
-    version: 1,
-    description: 'Task tracking schema',
-    fields: [
-      {
-        name: 'status',
-        type: 'enum',
-        protection: 'user',
-        coreValues: ['OPEN', 'IN_PROGRESS', 'DONE'],
-        userValues: ['BLOCKED'],
-        indexed: true,
-        required: true,
-        extensible: true,
-        default: 'OPEN',
-        description: 'Status'
-      },
-      {
-        name: 'priority',
-        type: 'enum',
-        protection: 'user',
-        coreValues: ['LOW', 'MEDIUM', 'HIGH'],
-        userValues: [],
-        indexed: true,
-        required: false,
-        extensible: true,
-        default: 'MEDIUM',
-        description: 'Priority'
-      },
-      {
-        name: 'due_date',
-        type: 'date',
-        protection: 'user',
-        indexed: true,
-        required: false,
-        description: 'Due Date'
-      },
-      {
-        name: 'started_at',
-        type: 'date',
-        protection: 'user',
-        indexed: false,
-        required: false,
-        description: 'Started At'
-      },
-      {
-        name: 'completed_at',
-        type: 'date',
-        protection: 'user',
-        indexed: false,
-        required: false,
-        description: 'Completed At'
-      },
-      {
-        name: 'assignee',
-        type: 'text',
-        protection: 'user',
-        indexed: true,
-        required: false,
-        description: 'Assignee'
-      }
-    ]
-  }
-};
-
 /**
  * Helper function to convert backend errors to user-friendly messages
  */
@@ -202,20 +132,6 @@ export class SchemaService {
     // Validate input
     if (!schemaId || schemaId.trim() === '') {
       throw new SchemaOperationError('Schema ID cannot be empty', schemaId, 'get');
-    }
-
-    // Browser mode fallback - use mock data
-    if (!isTauriAvailable) {
-      console.log('[SchemaService] Running in browser mode, using mock schema data');
-      const mockSchema = MOCK_SCHEMAS[schemaId];
-      if (!mockSchema) {
-        throw new SchemaOperationError(
-          `Schema '${schemaId}' not found in mock data (browser mode)`,
-          schemaId,
-          'get'
-        );
-      }
-      return mockSchema;
     }
 
     try {

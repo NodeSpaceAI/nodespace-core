@@ -103,12 +103,12 @@
       return { filled: 0, total: 0 };
     }
 
-    // Count only user-modifiable fields (not core/system)
-    const userFields = schema.fields.filter((f) => f.protection === 'user');
-    const total = userFields.length;
+    // Count all fields (core, user, and system)
+    const allFields = schema.fields;
+    const total = allFields.length;
 
     // Count filled fields (non-null, non-undefined, non-empty)
-    const filled = userFields.filter((field) => {
+    const filled = allFields.filter((field) => {
       // Type guard to ensure node is not null
       if (!node) return false;
       const value = node.properties?.[field.name];
@@ -303,7 +303,7 @@
       <Collapsible.Content class="pb-4">
         <!-- Property Grid (2 columns) -->
         <div class="grid grid-cols-2 gap-4">
-          {#each schema.fields.filter((f) => f.protection === 'user') as field (field.name)}
+          {#each schema.fields as field (field.name)}
             {@const fieldId = `property-${nodeId}-${field.name}`}
             <div class="space-y-2">
               <label for={fieldId} class="text-sm font-medium">

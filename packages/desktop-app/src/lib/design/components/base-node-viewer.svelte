@@ -1473,7 +1473,7 @@
     <!-- Schema-Driven Properties Panel - appears after header, before children -->
     {#if nodeId}
       {@const currentNode = sharedNodeStore.getNode(nodeId)}
-      {#if currentNode && currentNode.nodeType !== 'text'}
+      {#if currentNode}
         <SchemaPropertyForm {nodeId} nodeType={currentNode.nodeType} />
       {/if}
     {/if}

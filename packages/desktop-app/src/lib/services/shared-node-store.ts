@@ -364,8 +364,13 @@ export class SharedNodeStore {
           'parentId' in changes || 'beforeSiblingId' in changes || 'containerNodeId' in changes;
         const isContentChange = 'content' in changes;
         const isNodeTypeChange = 'nodeType' in changes;
+        const isPropertyChange = 'properties' in changes;
         const shouldPersist =
-          source.type !== 'viewer' || isStructuralChange || isContentChange || isNodeTypeChange;
+          source.type !== 'viewer' ||
+          isStructuralChange ||
+          isContentChange ||
+          isNodeTypeChange ||
+          isPropertyChange;
 
         // Skip persisting placeholder nodes - they exist in UI but not in database
         // Placeholders are nodes with only type-specific prefixes and no actual content
