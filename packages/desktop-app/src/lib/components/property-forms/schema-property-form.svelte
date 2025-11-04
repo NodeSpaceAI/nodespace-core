@@ -26,6 +26,7 @@
   import { schemaService } from '$lib/services/schema-service';
   import { sharedNodeStore } from '$lib/services/shared-node-store';
   import type { SchemaDefinition, SchemaField } from '$lib/types/schema';
+  import type { Node } from '$lib/types';
   import { parseDate, type DateValue } from '@internationalized/date';
 
   // Props
@@ -43,8 +44,28 @@
   let isLoadingSchema = $state(false);
   let schemaError = $state<string | null>(null);
 
-  // Reactive node data - updates when store changes
-  let node = $derived(nodeId ? sharedNodeStore.getNode(nodeId) : null);
+  // Reactive node data - updates when store changes via subscription
+  let node = $state<Node | null>(nodeId ? sharedNodeStore.getNode(nodeId) || null : null);
+
+  // Subscribe to node changes
+  $effect(() => {
+    if (!nodeId) {
+      node = null;
+      return;
+    }
+
+    // Initial load
+    node = sharedNodeStore.getNode(nodeId) || null;
+
+    // Subscribe to updates
+    const unsubscribe = sharedNodeStore.subscribe(nodeId, (updatedNode) => {
+      node = updatedNode;
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  });
 
   // Combobox state for text fields that could have autocomplete (like assignee)
   let comboboxOpen = $state<Record<string, boolean>>({});
@@ -292,10 +313,9 @@
               {#if field.type === 'enum'}
                 <!-- Enum Field → shadcn Select Component (Fixed with bind:value) -->
                 {@const enumValues = getEnumValues(field)}
-                {@const currentValue = getEnumValue(field)}
                 <Select.Root
                   type="single"
-                  value={currentValue}
+                  value={getEnumValue(field)}
                   onValueChange={(newValue) => {
                     if (newValue) {
                       updateProperty(field.name, newValue);
@@ -303,7 +323,7 @@
                   }}
                 >
                   <Select.Trigger class="w-full">
-                    {formatEnumLabel(currentValue)}
+                    {formatEnumLabel(getEnumValue(field))}
                   </Select.Trigger>
                   <Select.Content>
                     {#each enumValues as enumValue}
@@ -318,7 +338,11 @@
                   | DateValue
                   | DateValue[]
                   | undefined}
-                <Popover.Root>
+                {@const popoverOpenKey = `date_${field.name}`}
+                {#if comboboxOpen[popoverOpenKey] === undefined}
+                  {((comboboxOpen[popoverOpenKey] = false), '')}
+                {/if}
+                <Popover.Root bind:open={comboboxOpen[popoverOpenKey]}>
                   <Popover.Trigger
                     id={fieldId}
                     class="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none"
@@ -351,6 +375,8 @@
                         // Handle single date value (not array)
                         const singleValue = Array.isArray(newValue) ? newValue[0] : newValue;
                         updateProperty(field.name, formatDateForStorage(singleValue));
+                        // Close the popover after selecting a date
+                        comboboxOpen[popoverOpenKey] = false;
                       }}
                       type="single"
                     />
