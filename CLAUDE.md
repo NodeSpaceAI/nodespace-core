@@ -86,6 +86,10 @@ bun run gh:edit <issue-number> --state "closed"
 bun run gh:view <issue-number>
 ```
 
+**When creating or modifying issues:**
+- **MUST follow**: [Issue Workflow Guide](docs/architecture/development/process/issue-workflow.md)
+- Contains templates, formatting rules, and quality gates
+
 **Issue Priority Guidelines:**
 - Issues labeled `foundation` - Core infrastructure (highest priority)
 - Issues labeled `design-system` - UI foundation components
