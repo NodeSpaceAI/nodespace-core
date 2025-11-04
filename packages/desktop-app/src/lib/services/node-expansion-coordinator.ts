@@ -156,7 +156,7 @@ export class NodeExpansionCoordinator {
    * @param service - The ReactiveNodeService instance
    */
   static registerViewer(viewerId: string, service: ReactiveNodeService): void {
-    this.log(`Registering viewer: ${viewerId}`);
+    // Silently register viewer (no log spam)
 
     this.viewerRegistry.set(viewerId, {
       service,
@@ -169,7 +169,7 @@ export class NodeExpansionCoordinator {
     // Check if there are pending expansion states to restore
     const pendingStates = this.pendingRestorations.get(viewerId);
     if (pendingStates && pendingStates.length > 0) {
-      this.log(`Applying ${pendingStates.length} pending expansions for viewer: ${viewerId}`);
+      this.log(`Restoring ${pendingStates.length} expansions for viewer: ${viewerId}`);
       this.restoreExpansionStates(viewerId, pendingStates);
       this.pendingRestorations.delete(viewerId);
     }
@@ -182,7 +182,7 @@ export class NodeExpansionCoordinator {
    * @param viewerId - The viewer ID to unregister
    */
   static unregisterViewer(viewerId: string): void {
-    this.log(`Unregistering viewer: ${viewerId}`);
+    // Silently unregister viewer (no log spam)
     this.viewerRegistry.delete(viewerId);
     // Also clean up any pending restorations that weren't applied
     this.pendingRestorations.delete(viewerId);
@@ -218,7 +218,7 @@ export class NodeExpansionCoordinator {
       }
     }
 
-    this.log(`Extracted ${expandedIds.length} expanded nodes from viewer: ${viewerId}`);
+    // Silently return (no log spam for routine extraction)
     return expandedIds;
   }
 
