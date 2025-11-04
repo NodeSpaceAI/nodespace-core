@@ -146,7 +146,7 @@ impl SchemaService {
     /// # use nodespace_core::models::schema::{SchemaField, ProtectionLevel};
     /// # async fn example(service: SchemaService) -> Result<(), Box<dyn std::error::Error>> {
     /// let field = SchemaField {
-    ///     name: "priority".to_string(),
+    ///     name: "custom:priority".to_string(),  // User fields must have namespace prefix
     ///     field_type: "number".to_string(),
     ///     protection: ProtectionLevel::User,
     ///     indexed: false,
@@ -167,6 +167,37 @@ impl SchemaService {
         schema_id: &str,
         field: SchemaField,
     ) -> Result<(), NodeServiceError> {
+        // Namespace validation: Enforce prefix requirements
+        if field.protection == ProtectionLevel::Core {
+            // Core fields must NOT have namespace prefix
+            if field.name.contains(':') {
+                return Err(NodeServiceError::invalid_update(
+                    "Core properties cannot use namespace prefix. \
+                     Core fields use simple names like 'status', 'priority', 'due_date'."
+                        .to_string(),
+                ));
+            }
+        } else {
+            // User/plugin fields MUST have namespace prefix
+            let valid_prefixes = ["custom:", "org:", "plugin:"];
+            let has_valid_prefix = valid_prefixes
+                .iter()
+                .any(|prefix| field.name.starts_with(prefix));
+
+            if !has_valid_prefix {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "User properties must use namespace prefix to prevent conflicts with future core properties.\n\
+                     Valid namespaces:\n\
+                     - 'custom:{}' for personal custom properties\n\
+                     - 'org:{}' for organization-specific properties\n\
+                     - 'plugin:name:{}' for plugin-provided properties\n\n\
+                     See: docs/architecture/development/schema-management-implementation-guide.md\n\
+                     This ensures your custom properties will never conflict with future NodeSpace core features.",
+                    field.name, field.name, field.name
+                )));
+            }
+        }
+
         // Protection: Only user fields can be added
         if field.protection != ProtectionLevel::User {
             return Err(NodeServiceError::invalid_update(format!(
@@ -562,12 +593,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_add_user_field() {
+    async fn test_add_user_field_with_custom_namespace_succeeds() {
         let (service, _temp) = setup_test_service().await;
         let schema_id = create_test_schema(&service).await;
 
         let new_field = SchemaField {
-            name: "due_date".to_string(),
+            name: "custom:due_date".to_string(), // User field with namespace prefix
             field_type: "string".to_string(),
             protection: ProtectionLevel::User,
             core_values: None,
@@ -585,7 +616,138 @@ mod tests {
         let schema = service.get_schema(&schema_id).await.unwrap();
         assert_eq!(schema.version, 2); // Version incremented
         assert_eq!(schema.fields.len(), 3);
-        assert_eq!(schema.fields[2].name, "due_date");
+        assert_eq!(schema.fields[2].name, "custom:due_date");
+    }
+
+    #[tokio::test]
+    async fn test_add_user_field_without_namespace_rejected() {
+        let (service, _temp) = setup_test_service().await;
+        let schema_id = create_test_schema(&service).await;
+
+        let invalid_field = SchemaField {
+            name: "estimatedHours".to_string(), // Missing namespace prefix
+            field_type: "number".to_string(),
+            protection: ProtectionLevel::User,
+            core_values: None,
+            user_values: None,
+            indexed: false,
+            required: Some(false),
+            extensible: None,
+            default: None,
+            description: Some("Estimated hours".to_string()),
+            item_type: None,
+        };
+
+        let result = service.add_field(&schema_id, invalid_field).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("User properties must use namespace prefix"));
+        assert!(err_msg.contains("custom:estimatedHours"));
+        assert!(err_msg.contains("org:estimatedHours"));
+        assert!(err_msg.contains("plugin:name:estimatedHours"));
+    }
+
+    #[tokio::test]
+    async fn test_add_user_field_with_custom_namespace() {
+        let (service, _temp) = setup_test_service().await;
+        let schema_id = create_test_schema(&service).await;
+
+        let field = SchemaField {
+            name: "custom:estimatedHours".to_string(),
+            field_type: "number".to_string(),
+            protection: ProtectionLevel::User,
+            core_values: None,
+            user_values: None,
+            indexed: false,
+            required: Some(false),
+            extensible: None,
+            default: Some(json!(8)),
+            description: Some("Estimated hours".to_string()),
+            item_type: None,
+        };
+
+        service.add_field(&schema_id, field).await.unwrap();
+
+        let schema = service.get_schema(&schema_id).await.unwrap();
+        assert_eq!(schema.fields.len(), 3);
+        assert_eq!(schema.fields[2].name, "custom:estimatedHours");
+    }
+
+    #[tokio::test]
+    async fn test_add_user_field_with_org_namespace() {
+        let (service, _temp) = setup_test_service().await;
+        let schema_id = create_test_schema(&service).await;
+
+        let field = SchemaField {
+            name: "org:departmentCode".to_string(),
+            field_type: "string".to_string(),
+            protection: ProtectionLevel::User,
+            core_values: None,
+            user_values: None,
+            indexed: true,
+            required: Some(false),
+            extensible: None,
+            default: None,
+            description: Some("Department code".to_string()),
+            item_type: None,
+        };
+
+        service.add_field(&schema_id, field).await.unwrap();
+
+        let schema = service.get_schema(&schema_id).await.unwrap();
+        assert_eq!(schema.fields.len(), 3);
+        assert_eq!(schema.fields[2].name, "org:departmentCode");
+    }
+
+    #[tokio::test]
+    async fn test_add_user_field_with_plugin_namespace() {
+        let (service, _temp) = setup_test_service().await;
+        let schema_id = create_test_schema(&service).await;
+
+        let field = SchemaField {
+            name: "plugin:jira:issueId".to_string(),
+            field_type: "string".to_string(),
+            protection: ProtectionLevel::User,
+            core_values: None,
+            user_values: None,
+            indexed: true,
+            required: Some(false),
+            extensible: None,
+            default: None,
+            description: Some("JIRA issue ID".to_string()),
+            item_type: None,
+        };
+
+        service.add_field(&schema_id, field).await.unwrap();
+
+        let schema = service.get_schema(&schema_id).await.unwrap();
+        assert_eq!(schema.fields.len(), 3);
+        assert_eq!(schema.fields[2].name, "plugin:jira:issueId");
+    }
+
+    #[tokio::test]
+    async fn test_core_field_with_namespace_rejected() {
+        let (service, _temp) = setup_test_service().await;
+        let schema_id = create_test_schema(&service).await;
+
+        let invalid_core_field = SchemaField {
+            name: "custom:status".to_string(), // Core field should not have prefix
+            field_type: "string".to_string(),
+            protection: ProtectionLevel::Core,
+            core_values: None,
+            user_values: None,
+            indexed: false,
+            required: Some(false),
+            extensible: None,
+            default: None,
+            description: None,
+            item_type: None,
+        };
+
+        let result = service.add_field(&schema_id, invalid_core_field).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Core properties cannot use namespace prefix"));
     }
 
     #[tokio::test]

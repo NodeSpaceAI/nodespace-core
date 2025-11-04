@@ -88,9 +88,19 @@ pub struct GetSchemaDefinitionParams {
 /// cannot be added through MCP (only user fields allowed). The schema version
 /// will be incremented automatically.
 ///
+/// **IMPORTANT: Namespace Requirement**
+/// All user-defined field names MUST include a namespace prefix to prevent conflicts
+/// with future core properties. Valid namespace prefixes are:
+/// - `custom:` - For personal custom properties (e.g., `custom:estimatedHours`)
+/// - `org:` - For organization-specific properties (e.g., `org:departmentCode`)
+/// - `plugin:` - For plugin-provided properties (e.g., `plugin:jira:issueId`)
+///
+/// Core properties (added by NodeSpace) use simple names without prefixes
+/// (e.g., `status`, `priority`, `due_date`).
+///
 /// # Parameters
 /// - `schema_id`: ID of the schema to modify (matches node_type)
-/// - `field_name`: Name of the new field
+/// - `field_name`: Name of the new field (MUST include namespace prefix: `custom:`, `org:`, or `plugin:`)
 /// - `field_type`: Type of the field (string, number, boolean, enum, array)
 /// - `indexed`: Whether to index this field for search (default: false)
 /// - `required`: Whether this field is required (optional)
@@ -106,7 +116,7 @@ pub struct GetSchemaDefinitionParams {
 /// - `success`: true
 ///
 /// # Errors
-/// - `VALIDATION_ERROR`: If trying to add a non-user field or field already exists
+/// - `VALIDATION_ERROR`: If field name lacks namespace prefix, trying to add a non-user field, or field already exists
 /// - `NODE_NOT_FOUND`: If schema doesn't exist
 pub async fn handle_add_schema_field(
     schema_service: &Arc<SchemaService>,
@@ -396,7 +406,7 @@ mod tests {
 
         let params = json!({
             "schema_id": "test_schema",
-            "field_name": "custom_field",
+            "field_name": "custom:custom_field",  // User field with namespace prefix
             "field_type": "string",
             "indexed": true,
             "description": "Custom user field"
@@ -412,9 +422,34 @@ mod tests {
 
         // Verify field was added
         let schema = schema_service.get_schema("test_schema").await.unwrap();
-        let field = schema.fields.iter().find(|f| f.name == "custom_field");
+        let field = schema
+            .fields
+            .iter()
+            .find(|f| f.name == "custom:custom_field");
         assert!(field.is_some());
         assert_eq!(field.unwrap().protection, ProtectionLevel::User);
+    }
+
+    #[tokio::test]
+    async fn test_add_schema_field_without_namespace_rejected() {
+        let (schema_service, node_service, _temp) = setup_test_service().await;
+        create_test_schema(&node_service).await;
+
+        let params = json!({
+            "schema_id": "test_schema",
+            "field_name": "estimatedHours",  // Missing namespace prefix
+            "field_type": "number",
+            "indexed": false,
+            "description": "Estimated hours"
+        });
+
+        let result = handle_add_schema_field(&schema_service, params).await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error
+            .message
+            .contains("User properties must use namespace prefix"));
     }
 
     #[tokio::test]
@@ -422,10 +457,10 @@ mod tests {
         let (schema_service, node_service, _temp) = setup_test_service().await;
         create_test_schema(&node_service).await;
 
-        // First add a user field
+        // First add a user field with namespace
         let add_params = json!({
             "schema_id": "test_schema",
-            "field_name": "temp_field",
+            "field_name": "custom:temp_field",
             "field_type": "string",
             "indexed": false
         });
@@ -436,7 +471,7 @@ mod tests {
         // Then remove it
         let remove_params = json!({
             "schema_id": "test_schema",
-            "field_name": "temp_field"
+            "field_name": "custom:temp_field"
         });
 
         let result = handle_remove_schema_field(&schema_service, remove_params)
@@ -448,7 +483,7 @@ mod tests {
 
         // Verify field was removed
         let schema = schema_service.get_schema("test_schema").await.unwrap();
-        let field = schema.fields.iter().find(|f| f.name == "temp_field");
+        let field = schema.fields.iter().find(|f| f.name == "custom:temp_field");
         assert!(field.is_none());
     }
 

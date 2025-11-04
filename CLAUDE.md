@@ -111,7 +111,63 @@ bun run gh:view <issue-number>
 - Build-time plugins: Compile-time extensibility for performance
 - Design system driven: Consistent UI patterns from the start
 
-### 4. Component Architecture (CRITICAL)
+### 4. Node Type System & Schema Architecture (CRITICAL)
+
+**🚨 MANDATORY READING BEFORE IMPLEMENTING NODE TYPES OR PROPERTIES:**
+
+NodeSpace uses a **hybrid architecture** combining hardcoded behaviors with schema-driven extensions. Understanding this is critical to avoid breaking changes and maintenance hell.
+
+#### Core Architecture Documents (READ THESE FIRST)
+
+**1. Node Behavior System**
+- **Location**: [`/docs/architecture/business-logic/node-behavior-system.md`](docs/architecture/business-logic/node-behavior-system.md)
+- **When to read**: Before modifying/creating ANY node type (task, text, date, etc.)
+- **Key concepts**:
+  - Hybrid approach: Core (hardcoded) vs Extension (schema-driven)
+  - When to use behaviors vs schemas
+  - Property ownership model
+  - Validation hierarchy
+
+**2. Schema Management**
+- **Location**: [`/docs/architecture/development/schema-management-implementation-guide.md`](docs/architecture/development/schema-management-implementation-guide.md)
+- **When to read**: Before adding properties to nodes or creating custom types
+- **Key concepts**:
+  - **Namespace enforcement** (CRITICAL for preventing conflicts)
+  - User properties MUST use prefixes (`custom:`, `org:`, `plugin:`)
+  - Core properties use simple names (reserved for future)
+  - Protection levels and lazy migration
+
+#### Quick Decision Tree
+
+**Adding a property to a core node type (task, text, date, etc.):**
+```
+Is it a CORE property the UI depends on?
+  ✅ YES → Edit hardcoded behavior in packages/core/src/behaviors/mod.rs
+  ❌ NO → Use schema system with NAMESPACE PREFIX (custom:propertyName)
+```
+
+**Creating a new node type:**
+```
+Is it a built-in core type everyone needs?
+  ✅ YES → Create hardcoded behavior + schema (requires issue approval)
+  ❌ NO → Create schema-only type (no behavior needed)
+```
+
+#### Critical Rules
+
+**DO:**
+- ✅ Read node-behavior-system.md before touching node types
+- ✅ Use namespace prefixes for user properties (`custom:`, `org:`, `plugin:`)
+- ✅ Follow the hybrid architecture pattern
+- ✅ Check issue #400 for namespace enforcement status
+
+**DON'T:**
+- ❌ Add user properties without namespace prefix (will conflict with future core properties)
+- ❌ Delete core properties from schemas (breaks UI)
+- ❌ Create hardcoded behaviors for plugin/custom types
+- ❌ Skip reading the architecture docs (leads to breaking changes)
+
+### 5. Component Architecture (CRITICAL)
 
 **Established Naming Conventions** (Follow these patterns exactly):
 
