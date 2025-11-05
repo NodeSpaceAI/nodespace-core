@@ -10,14 +10,47 @@
 import type { Node } from '$lib/types';
 
 /**
- * Source of a node update
- * Used to track where changes originated for conflict resolution and debugging
+ * Source of a node update - tracks data provenance for debugging and conflict resolution.
+ *
+ * IMPORTANT: UpdateSource describes WHERE the update originated from (data provenance),
+ * NOT whether the node should be persisted. Use UpdateOptions.persist for persistence control.
+ *
+ * Type Semantics (Phase 1 Refactor - Issue #393):
+ * - 'viewer': User interaction in the UI (typing, clicking, editing)
+ * - 'database': Loaded from backend database (navigation, fetch, initial load)
+ * - 'mcp-server': Synchronized from external MCP client (future Phase 3)
+ *
+ * Persistence Control:
+ * - Use UpdateOptions.persist to control persistence behavior explicitly
+ * - Use UpdateOptions.markAsPersistedOnly to track backend-loaded nodes
+ * - See UpdateOptions documentation for detailed examples
+ *
+ * @example
+ * // User typing in UI
+ * { type: 'viewer', viewerId: 'editor-1' }
+ *
+ * // Loaded from backend database (mark as already persisted)
+ * store.setNode(
+ *   node,
+ *   { type: 'database', reason: 'navigation' },
+ *   { markAsPersistedOnly: true }
+ * )
+ *
+ * // Internal operation requiring immediate persistence
+ * store.updateNode(
+ *   nodeId,
+ *   changes,
+ *   { type: 'database', reason: 'reconciliation' },
+ *   { persist: 'immediate' }
+ * )
+ *
+ * // Future: MCP client sync
+ * { type: 'mcp-server', serverId: 'obsidian-plugin' }
  */
 export type UpdateSource =
   | { type: 'viewer'; viewerId: string; userId?: string }
   | { type: 'database'; reason: string }
-  | { type: 'mcp-server'; serverId?: string; agentId?: string }
-  | { type: 'external'; source: string; description?: string };
+  | { type: 'mcp-server'; serverId?: string; agentId?: string };
 
 /**
  * Complete node update with metadata for tracking and conflict resolution
@@ -133,4 +166,45 @@ export interface UpdateOptions {
    * Used for pattern conversions where content + nodeType must persist together
    */
   batch?: BatchOptions;
+  /**
+   * Explicit persistence control (NEW - Phase 1 of UpdateSource refactor)
+   *
+   * Clarifies persistence intent independently of UpdateSource type:
+   * - 'immediate': Persist immediately (bypasses debouncing)
+   * - 'debounced': Use normal debounced persistence (default for user edits)
+   * - false: Skip persistence (for in-memory/temporary updates)
+   * - true: Trigger persistence with auto-determined mode (structural=immediate, content=debounced)
+   * - undefined: Use auto-determined persistence based on source type (legacy default)
+   *
+   * The difference between `true` and `undefined`:
+   * - `true`: Explicitly request persistence with auto mode selection
+   * - `undefined`: Defer to legacy source.type-based behavior (Phase 1 backward compatibility)
+   *
+   * @example
+   * // Explicit immediate persistence (instead of using 'external' source)
+   * store.setNode(node, source, { persist: 'immediate' })
+   *
+   * // Explicitly skip persistence (clearer than skipPersistence flag)
+   * store.setNode(node, source, { persist: false })
+   *
+   * // Force persistence with auto-determined mode (useful for structural changes)
+   * store.updateNode(nodeId, { parentId: newParent }, source, { persist: true })
+   *
+   * // Mark node as already persisted without re-persisting
+   * store.setNode(node, source, { markAsPersistedOnly: true })
+   */
+  persist?: boolean | 'debounced' | 'immediate';
+  /**
+   * Mark node as already persisted in database without triggering persistence operation.
+   *
+   * Use when loading nodes from backend to track persistence state explicitly.
+   * Replaces implicit side-effect of using `type: 'database'` source.
+   *
+   * @example
+   * // Loading node from backend (new explicit approach)
+   * store.setNode(node, { type: 'backend-load', reason: 'navigation' }, {
+   *   markAsPersistedOnly: true  // Explicitly mark as persisted
+   * })
+   */
+  markAsPersistedOnly?: boolean;
 }

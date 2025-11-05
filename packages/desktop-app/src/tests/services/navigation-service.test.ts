@@ -34,11 +34,7 @@ describe('NavigationService - navigateToNodeInOtherPane', () => {
       createdAt: Date.now().toString(),
       modifiedAt: Date.now().toString()
     };
-    sharedNodeStore.setNode(
-      testNode,
-      { type: 'external', source: 'test', description: 'test node' },
-      true
-    );
+    sharedNodeStore.setNode(testNode, { type: 'database', reason: 'test-setup' }, true);
   });
 
   describe('Single pane behavior', () => {
@@ -124,11 +120,7 @@ describe('NavigationService - navigateToNodeInOtherPane', () => {
         createdAt: Date.now().toString(),
         modifiedAt: Date.now().toString()
       };
-      sharedNodeStore.setNode(
-        testNode2,
-        { type: 'external', source: 'test', description: 'test node 2' },
-        true
-      );
+      sharedNodeStore.setNode(testNode2, { type: 'database', reason: 'test-setup' }, true);
     });
 
     it('opens in other pane when 2 panes exist', async () => {

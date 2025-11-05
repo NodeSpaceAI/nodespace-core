@@ -152,6 +152,63 @@ export class SharedNodeStore {
   }
 
   // ========================================================================
+  // Persistence Control (Phase 1 of UpdateSource Refactor)
+  // ========================================================================
+
+  /**
+   * Determine persistence behavior from explicit options or legacy source type.
+   *
+   * This helper implements the new explicit persistence API while maintaining
+   * backward compatibility with the legacy `source.type === 'database'` checks.
+   *
+   * Priority (highest to lowest):
+   * 1. options.markAsPersistedOnly - Mark as persisted without re-persisting
+   * 2. options.skipPersistence - Skip persistence
+   * 3. options.persist - Explicit persistence control
+   * 4. Legacy: source.type === 'database' - Auto-skip persistence
+   * 5. Default: Auto-determine based on source type and changes
+   *
+   * @returns Object with shouldPersist and shouldMarkAsPersisted flags
+   */
+  private determinePersistenceBehavior(
+    source: UpdateSource,
+    options: UpdateOptions,
+    _changes?: Partial<Node>
+  ): { shouldPersist: boolean; shouldMarkAsPersisted: boolean } {
+    // Priority 1: Explicit mark-as-persisted-only (no actual persistence)
+    if (options.markAsPersistedOnly) {
+      return { shouldPersist: false, shouldMarkAsPersisted: true };
+    }
+
+    // Priority 2: Skip persistence flag (legacy compatibility)
+    if (options.skipPersistence) {
+      return { shouldPersist: false, shouldMarkAsPersisted: false };
+    }
+
+    // Priority 3: Explicit persist option (new API)
+    if (options.persist !== undefined) {
+      if (options.persist === false) {
+        // Explicitly skip persistence
+        return { shouldPersist: false, shouldMarkAsPersisted: false };
+      }
+      // persist === true, 'debounced', or 'immediate' - all trigger persistence
+      // (Mode selection handled by PersistenceCoordinator)
+      return { shouldPersist: true, shouldMarkAsPersisted: false };
+    }
+
+    // Priority 4: Legacy source.type === 'database' behavior
+    // Database sources mean "loaded from backend, already persisted"
+    if (source.type === 'database') {
+      return { shouldPersist: false, shouldMarkAsPersisted: true };
+    }
+
+    // Priority 5: Default auto-determination
+    // External sources and MCP sources trigger persistence
+    // Viewer sources depend on context (handled by caller)
+    return { shouldPersist: true, shouldMarkAsPersisted: false };
+  }
+
+  // ========================================================================
   // Core Node Operations
   // ========================================================================
 
@@ -338,7 +395,8 @@ export class SharedNodeStore {
       // - Structural changes (parentId, beforeSiblingId, containerNodeId) persist immediately
       // - Content changes persist in debounced mode
       // This ensures hierarchy operations work while debouncing rapid typing
-      if (!options.skipPersistence && source.type !== 'database') {
+      const persistBehavior = this.determinePersistenceBehavior(source, options, changes);
+      if (persistBehavior.shouldPersist) {
         // CRITICAL: Check if beforeSiblingId references an unpersisted placeholder
         // Placeholders use skipPersistence, so there's no operation to wait for
         // Remove beforeSiblingId from changes to avoid FOREIGN KEY constraint violation
@@ -550,10 +608,12 @@ export class SharedNodeStore {
     this.versions.set(node.id, this.getNextVersion(node.id));
     this.notifySubscribers(node.id, node, source);
 
-    // Mark as persisted ONLY if loaded from backend (database source)
-    // CRITICAL: Do NOT mark as persisted if skipPersistence=true (placeholder nodes)
-    // Placeholder nodes are in-memory only until user adds content
-    if (source.type === 'database') {
+    // Determine persistence behavior using new explicit API
+    const options: UpdateOptions = { skipPersistence };
+    const { shouldMarkAsPersisted } = this.determinePersistenceBehavior(source, options);
+
+    // Mark as persisted if explicitly requested or loaded from backend
+    if (shouldMarkAsPersisted) {
       this.persistedNodeIds.add(node.id);
     }
 
@@ -567,7 +627,8 @@ export class SharedNodeStore {
     // This ensures createNode() persistence works while avoiding duplicate writes on updates
     //
     // EXCEPTION: Placeholders should persist nodeType but NOT content (to avoid backend validation errors)
-    if (!skipPersistence && !isPlaceholderFromViewer && source.type !== 'database') {
+    const persistBehavior = this.determinePersistenceBehavior(source, options);
+    if (!isPlaceholderFromViewer && persistBehavior.shouldPersist) {
       const shouldPersist = source.type !== 'viewer' || isNewNode;
 
       if (shouldPersist) {
@@ -725,7 +786,8 @@ export class SharedNodeStore {
       } as never);
 
       // Phase 2.4: Persist deletion to database
-      if (!skipPersistence && source.type !== 'database') {
+      const persistBehavior = this.determinePersistenceBehavior(source, { skipPersistence });
+      if (persistBehavior.shouldPersist) {
         // Filter dependencies to only include nodes with pending persistence operations
         const pendingDeps = dependencies.filter((depId) =>
           PersistenceCoordinator.getInstance().isPending(depId)
@@ -932,22 +994,19 @@ export class SharedNodeStore {
     }
 
     // Update each node's beforeSiblingId through normal updateNode flow
-    // Use 'external' source to trigger persistence while avoiding viewer-specific logic
+    // Use 'database' source with explicit immediate persistence (no longer need 'external' workaround)
     const reconciliationSource: UpdateSource = {
-      type: 'external',
-      source: 'SharedNodeStore',
-      description: 'deferred-sibling-reference-reconciliation'
+      type: 'database',
+      reason: 'deferred-sibling-reference-reconciliation'
     };
 
     for (const nodeId of nodesToUpdate) {
       // Trigger update through SharedNodeStore (not direct database call)
       // This respects the architecture: SharedNodeStore → PersistenceCoordinator → Database
-      this.updateNode(
-        nodeId,
-        { beforeSiblingId: newlyPersistedNodeId },
-        reconciliationSource,
-        { skipConflictDetection: true } // Skip conflict detection for reconciliation
-      );
+      this.updateNode(nodeId, { beforeSiblingId: newlyPersistedNodeId }, reconciliationSource, {
+        skipConflictDetection: true, // Skip conflict detection for reconciliation
+        persist: 'immediate' // Explicit immediate persistence (replaces 'external' workaround)
+      });
     }
   }
 
@@ -1402,7 +1461,7 @@ export class SharedNodeStore {
       if (node) {
         for (const sub of subs) {
           try {
-            sub.callback(node, { type: 'external', source: 'store-cleared' });
+            sub.callback(node, { type: 'database', reason: 'store-cleared' });
           } catch (error) {
             console.error(`[SharedNodeStore] Subscription callback error:`, error);
           }

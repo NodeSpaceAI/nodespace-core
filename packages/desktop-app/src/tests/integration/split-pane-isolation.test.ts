@@ -66,10 +66,10 @@ describe('Split-Pane Content Isolation', () => {
       properties: {}
     };
 
-    sharedNodeStore.setNode(parentA, { type: 'external', source: 'test' });
-    sharedNodeStore.setNode(parentB, { type: 'external', source: 'test' });
-    sharedNodeStore.setNode(childA1, { type: 'external', source: 'test' });
-    sharedNodeStore.setNode(childB1, { type: 'external', source: 'test' });
+    sharedNodeStore.setNode(parentA, { type: 'database', reason: 'test-setup' });
+    sharedNodeStore.setNode(parentB, { type: 'database', reason: 'test-setup' });
+    sharedNodeStore.setNode(childA1, { type: 'database', reason: 'test-setup' });
+    sharedNodeStore.setNode(childB1, { type: 'database', reason: 'test-setup' });
 
     // Create service (simulating nodeManager)
     const mockEvents = { emit: () => {}, on: () => () => {}, hierarchyChanged: () => {} };
@@ -115,8 +115,8 @@ describe('Split-Pane Content Isolation', () => {
       properties: {}
     };
 
-    sharedNodeStore.setNode(parent, { type: 'external', source: 'test' });
-    sharedNodeStore.setNode(child1, { type: 'external', source: 'test' });
+    sharedNodeStore.setNode(parent, { type: 'database', reason: 'test-setup' });
+    sharedNodeStore.setNode(child1, { type: 'database', reason: 'test-setup' });
 
     const mockEvents = { emit: () => {}, on: () => () => {}, hierarchyChanged: () => {} };
     const service = createReactiveNodeService(mockEvents as never);
@@ -147,7 +147,7 @@ describe('Split-Pane Content Isolation', () => {
       properties: {}
     };
 
-    sharedNodeStore.setNode(rootNode, { type: 'external', source: 'test' });
+    sharedNodeStore.setNode(rootNode, { type: 'database', reason: 'test-setup' });
 
     const mockEvents = { emit: () => {}, on: () => () => {}, hierarchyChanged: () => {} };
     const service = createReactiveNodeService(mockEvents as never);

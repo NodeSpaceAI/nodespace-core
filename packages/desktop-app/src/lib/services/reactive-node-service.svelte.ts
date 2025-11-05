@@ -776,14 +776,18 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const combinedContent = previousNode.content + cleanedContent;
     const mergePosition = previousNode.content.length;
 
-    // Use external source to ensure content update persists
-    // (using viewerSource would skip persistence for content-only changes per line 254 in shared-node-store.ts)
-    const contentUpdateSource = {
-      type: 'external' as const,
-      source: 'ReactiveNodeService',
-      description: 'combineNodes content merge'
+    // Use viewer source with explicit immediate persistence (no longer need 'external' workaround)
+    // The explicit persist option ensures the content update persists immediately
+    const contentUpdateSource: UpdateSource = {
+      type: 'viewer' as const,
+      viewerId: paneId // Use paneId as viewerId since we're in a standalone function
     };
-    sharedNodeStore.updateNode(previousNodeId, { content: combinedContent }, contentUpdateSource);
+    sharedNodeStore.updateNode(
+      previousNodeId,
+      { content: combinedContent },
+      contentUpdateSource,
+      { persist: 'immediate' } // Explicit immediate persistence (replaces 'external' workaround)
+    );
     _uiState[previousNodeId] = { ..._uiState[previousNodeId], autoFocus: false };
 
     // Handle child promotion using shared depth-aware logic
