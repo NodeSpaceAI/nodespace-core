@@ -446,6 +446,67 @@ impl NodeService {
             }
         };
 
+        // Use the helper function to validate with the parsed schema
+        self.validate_node_with_schema(node, &schema)
+    }
+
+    /// Apply schema default values to missing fields using a pre-loaded schema
+    ///
+    /// For each field in the schema that has a default value, if the field is missing
+    /// from the node's properties, add it with the default value.
+    ///
+    /// # Arguments
+    ///
+    /// * `node` - Mutable reference to the node to apply defaults to
+    /// * `schema` - Pre-loaded schema definition to use
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Defaults applied successfully
+    /// * `Err` - Error applying defaults
+    fn apply_schema_defaults_with_schema(
+        &self,
+        node: &mut Node,
+        schema: &crate::models::SchemaDefinition,
+    ) -> Result<(), NodeServiceError> {
+        // Ensure properties is an object
+        if !node.properties.is_object() {
+            node.properties = serde_json::json!({});
+        }
+
+        // Get mutable reference to properties object
+        let props_obj = node.properties.as_object_mut().unwrap();
+
+        // Apply defaults for missing fields
+        for field in &schema.fields {
+            // Check if field is missing
+            if !props_obj.contains_key(&field.name) {
+                // Apply default value if one is defined
+                if let Some(default_value) = &field.default {
+                    props_obj.insert(field.name.clone(), default_value.clone());
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate a node against a pre-loaded schema definition
+    ///
+    /// # Arguments
+    ///
+    /// * `node` - The node to validate
+    /// * `schema` - Pre-loaded schema definition to validate against
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Validation passed
+    /// * `Err` - Validation failed
+    fn validate_node_with_schema(
+        &self,
+        node: &Node,
+        schema: &crate::models::SchemaDefinition,
+    ) -> Result<(), NodeServiceError> {
         // Get properties for this node type (supports both flat and nested formats)
         let node_props = node
             .properties
@@ -617,11 +678,23 @@ impl NodeService {
         // Validates basic data integrity (non-empty content, correct types, etc.)
         self.behaviors.validate_node(&node)?;
 
-        // Step 2: Schema validation (USER-EXTENSIBLE)
-        // Validates property values against schema definitions (enum values, required fields, etc.)
-        // Skip schema validation for schema nodes themselves to avoid circular dependency
+        // Step 1.5: Apply schema defaults and validate
+        // Apply default values for missing fields before validation
+        // Skip for schema nodes to avoid circular dependency
         if node.node_type != "schema" {
-            self.validate_node_against_schema(&node).await?;
+            // Fetch schema once and reuse it for both operations
+            if let Some(schema_json) = self.get_schema_for_type(&node.node_type).await? {
+                // Parse schema definition
+                if let Ok(schema) =
+                    serde_json::from_value::<crate::models::SchemaDefinition>(schema_json.clone())
+                {
+                    // Apply defaults
+                    self.apply_schema_defaults_with_schema(&mut node, &schema)?;
+
+                    // Validate with the same schema
+                    self.validate_node_with_schema(&node, &schema)?;
+                }
+            }
         }
 
         // Validate parent exists if parent_id is set
@@ -3304,6 +3377,29 @@ mod tests {
         assert_eq!(retrieved.node_type, "task");
         assert_eq!(retrieved.properties["status"], "IN_PROGRESS");
         assert_eq!(retrieved.properties["priority"], "HIGH");
+    }
+
+    #[tokio::test]
+    async fn test_create_task_node_with_defaults() {
+        let (service, _temp) = create_test_service().await;
+
+        // Create a task node WITHOUT providing status field
+        // The schema default should apply (status = "OPEN")
+        let node = Node::new(
+            "task".to_string(),
+            "Task without explicit status".to_string(),
+            None,
+            json!({}), // Empty properties - no status provided
+        );
+
+        let id = service.create_node(node).await.unwrap();
+        let retrieved = service.get_node(&id).await.unwrap().unwrap();
+
+        assert_eq!(retrieved.node_type, "task");
+        // Verify the default status was applied
+        assert_eq!(retrieved.properties["status"], "OPEN");
+        // Priority should NOT be set (no default, optional field)
+        assert!(retrieved.properties.get("priority").is_none());
     }
 
     #[tokio::test]

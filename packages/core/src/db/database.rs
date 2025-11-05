@@ -474,7 +474,6 @@ impl DatabaseService {
                     "indexed": true,
                     "required": false,
                     "extensible": true,
-                    "default": "MEDIUM",
                     "description": "Priority"
                 },
                 {
