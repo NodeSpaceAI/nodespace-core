@@ -8,6 +8,16 @@
 export type { Node, NodeUpdate, NodeUIState } from './node';
 export { isNode, createDefaultUIState } from './node';
 
+// Type-safe node wrappers
+export type { CodeBlockNode } from './code-block-node';
+export { isCodeBlockNode, getLanguage, setLanguage, CodeBlockNodeHelpers } from './code-block-node';
+
+export type { QuoteBlockNode } from './quote-block-node';
+export { isQuoteBlockNode, QuoteBlockNodeHelpers } from './quote-block-node';
+
+export type { OrderedListNode } from './ordered-list-node';
+export { isOrderedListNode, OrderedListNodeHelpers } from './ordered-list-node';
+
 // Error types
 export type { CommandError } from './errors';
 export { isCommandError, toError, DatabaseInitializationError, NodeOperationError } from './errors';
