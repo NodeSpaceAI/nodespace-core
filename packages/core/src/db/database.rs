@@ -527,8 +527,22 @@ impl DatabaseService {
             "version": 1,
             "description": "Person entity schema",
             "fields": [
-                {"name": "name", "type": "text", "indexed": true},
-                {"name": "email", "type": "text", "indexed": true}
+                {
+                    "name": "name",
+                    "type": "text",
+                    "protection": "core",
+                    "indexed": true,
+                    "required": false,
+                    "description": "Person name"
+                },
+                {
+                    "name": "email",
+                    "type": "text",
+                    "protection": "core",
+                    "indexed": true,
+                    "required": false,
+                    "description": "Email address"
+                }
             ]
         });
 
@@ -542,14 +556,12 @@ impl DatabaseService {
             DatabaseError::sql_execution(format!("Failed to seed person schema: {}", e))
         })?;
 
-        // Date schema
+        // Date schema (minimal - date value is stored in node ID)
         let date_schema = json!({
             "is_core": true,
             "version": 1,
             "description": "Date node schema",
-            "fields": [
-                {"name": "date", "type": "date", "indexed": true}
-            ]
+            "fields": []
         });
 
         conn.execute(
@@ -568,8 +580,22 @@ impl DatabaseService {
             "version": 1,
             "description": "Project management schema",
             "fields": [
-                {"name": "name", "type": "text", "indexed": true},
-                {"name": "status", "type": "text", "indexed": true}
+                {
+                    "name": "name",
+                    "type": "text",
+                    "protection": "core",
+                    "indexed": true,
+                    "required": false,
+                    "description": "Project name"
+                },
+                {
+                    "name": "status",
+                    "type": "text",
+                    "protection": "core",
+                    "indexed": true,
+                    "required": false,
+                    "description": "Project status"
+                }
             ]
         });
 

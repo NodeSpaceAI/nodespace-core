@@ -235,6 +235,17 @@ export class TextareaController {
     // Set textarea value - single source of truth!
     this.element.value = content;
 
+    // CRITICAL: Check if initial content matches a pattern for the current nodeType
+    // If a non-text node (e.g., header) is initialized with pattern-matching content (e.g., "## Title"),
+    // mark nodeTypeSetViaPattern=true so bidirectional conversion works correctly
+    if (this.nodeType !== 'text' && content.trim() !== '') {
+      const detection = pluginRegistry.detectPatternInContent(content);
+      if (detection && detection.config.targetNodeType === this.nodeType) {
+        // Content matches the expected pattern for this node type
+        this.nodeTypeSetViaPattern = true;
+      }
+    }
+
     if (autoFocus) {
       this.justCreated = true;
       setTimeout(() => {

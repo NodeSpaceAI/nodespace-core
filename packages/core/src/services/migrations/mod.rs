@@ -5,7 +5,8 @@
 //!
 //! ## Available Migrations
 //!
-//! - `task` - Task schema migrations (v1→v2, v2→v3, v3→v4)
+//! Currently no migrations are registered. Migration infrastructure exists for
+//! future schema evolution post-deployment.
 //!
 //! ## Example Usage
 //!
@@ -14,10 +15,7 @@
 //! # use nodespace_core::services::migrations;
 //! let mut registry = MigrationRegistry::new();
 //!
-//! // Register all migrations for all schemas
-//! migrations::task::register_migrations(&mut registry);
-//! // migrations::person::register_migrations(&mut registry); // Future
-//! // migrations::project::register_migrations(&mut registry); // Future
+//! // Future migrations will be registered here
+//! // migrations::task::register_migrations(&mut registry);
+//! // migrations::person::register_migrations(&mut registry);
 //! ```
-
-pub mod task;

@@ -29,7 +29,6 @@ use crate::db::DatabaseService;
 use crate::models::{Node, NodeFilter, NodeUpdate, OrderBy};
 use crate::services::error::NodeServiceError;
 use crate::services::migration_registry::MigrationRegistry;
-use crate::services::migrations;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use regex::Regex;
 use std::collections::HashSet;
@@ -300,9 +299,9 @@ impl NodeService {
     /// # }
     /// ```
     pub fn new(db: DatabaseService) -> Result<Self, NodeServiceError> {
-        // Create and initialize migration registry with all registered migrations
-        let mut migration_registry = MigrationRegistry::new();
-        migrations::task::register_migrations(&mut migration_registry);
+        // Create empty migration registry (no migrations registered yet - pre-deployment)
+        // Infrastructure exists for future schema evolution post-deployment
+        let migration_registry = MigrationRegistry::new();
 
         Ok(Self {
             db: Arc::new(db),

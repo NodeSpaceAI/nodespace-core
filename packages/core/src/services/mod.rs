@@ -5,8 +5,8 @@
 //! - `NodeService` - CRUD operations and hierarchy management
 //! - `NodeEmbeddingService` - Embedding generation and semantic search
 //! - `EmbeddingProcessor` - Background task for processing stale container embeddings
-//! - `SchemaService` - Schema management with version tracking and migrations
-//! - `MigrationRegistry` - Schema migration infrastructure for lazy upgrades
+//! - `SchemaService` - Schema management with version tracking
+//! - `MigrationRegistry` - Schema migration infrastructure (for future use)
 //! - `SearchService` - Semantic search and query operations (planned)
 //!
 //! Services coordinate between the database layer and application logic,

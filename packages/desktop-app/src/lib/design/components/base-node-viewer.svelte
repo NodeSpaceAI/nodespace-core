@@ -238,8 +238,10 @@
     let updatedNamespace: Record<string, unknown> = {};
 
     if (isOldFormat) {
-      // Migrate from old flat format (minimal migration - just copy existing values)
+      // Migrate from old flat format - copy ALL existing flat properties into namespace
       updatedNamespace = { ...targetNode.properties };
+      // Remove internal fields that shouldn't be in namespace
+      delete updatedNamespace._schema_version;
     } else {
       // Already in new format - copy namespace
       updatedNamespace = { ...(typeNamespace as Record<string, unknown>) };
@@ -248,11 +250,19 @@
     // Apply the update
     updatedNamespace[fieldName] = value;
 
-    // Build final properties with nested namespace
-    const updatedProperties = {
-      ...targetNode.properties,
-      [targetNode.nodeType]: updatedNamespace
-    };
+    // Build final properties with ONLY the nested namespace
+    // CRITICAL: When migrating from old format, ALL flat properties are now in the namespace
+    // So we start fresh with ONLY the nested structure, dropping all flat properties
+    const updatedProperties = isOldFormat
+      ? {
+          // Old format: Start fresh with ONLY nested structure (drops ALL flat properties)
+          [targetNode.nodeType]: updatedNamespace
+        }
+      : {
+          // New format: Preserve existing properties structure
+          ...targetNode.properties,
+          [targetNode.nodeType]: updatedNamespace
+        };
 
     // Persist via sharedNodeStore
     sharedNodeStore.updateNode(

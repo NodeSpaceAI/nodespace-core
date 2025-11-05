@@ -609,10 +609,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const headerLevel = contentProcessor.parseHeaderLevel(content);
     const isPlaceholder = content.trim() === '';
 
-    // CRITICAL: Include nodeType with content updates to prevent type reset
-    // When user converts via slash command (e.g., /task) then types content,
-    // the debounced save must preserve the nodeType that was set earlier
-    sharedNodeStore.updateNode(nodeId, { content, nodeType: node.nodeType }, viewerSource);
+    // DON'T include nodeType in content updates - it prevents pattern-based conversions
+    // Pattern conversions (e.g., typing "## " → header) are handled via separate
+    // nodeTypeConversionDetected events that update nodeType independently
+    // Including nodeType here causes bidirectional conversion failures because
+    // the stale nodeType overwrites the pattern-detected type change
+    sharedNodeStore.updateNode(nodeId, { content }, viewerSource);
 
     _uiState[nodeId] = {
       ..._uiState[nodeId],
