@@ -293,7 +293,7 @@
   // Get current enum value as string (with fallback to default)
   function getEnumValue(field: SchemaField): string {
     if (!node) return field.default ? String(field.default) : '';
-    const value = node.properties?.[field.name];
+    const value = getPropertyValue(field.name);
     // Use current value, or fall back to schema default, or empty string
     return value ? String(value) : field.default ? String(field.default) : '';
   }
@@ -386,7 +386,7 @@
                 </Select.Root>
               {:else if field.type === 'date'}
                 <!-- Date Field → Calendar with Popover -->
-                {@const rawDateValue = parsePropertyValue(field, node.properties?.[field.name])}
+                {@const rawDateValue = parsePropertyValue(field, getPropertyValue(field.name))}
                 {@const dateValue = (rawDateValue ? rawDateValue : undefined) as
                   | DateValue
                   | DateValue[]
@@ -439,7 +439,7 @@
                 <!-- Text Field → Combobox for assignee, Input for others -->
                 {#if field.name === 'assignee'}
                   <!-- Assignee Combobox (matches demo structure) -->
-                  {@const currentValue = (node.properties?.[field.name] as string) || ''}
+                  {@const currentValue = (getPropertyValue(field.name) as string) || ''}
                   {@const isOpen = comboboxOpen[field.name] || false}
                   {@const searchValue = comboboxSearch[field.name] || ''}
                   <Popover.Root
@@ -517,7 +517,7 @@
                   <Input
                     id={fieldId}
                     type="text"
-                    value={(node.properties?.[field.name] as string) || ''}
+                    value={(getPropertyValue(field.name) as string) || ''}
                     oninput={(e) => {
                       updateProperty(field.name, e.currentTarget.value);
                     }}
@@ -529,7 +529,7 @@
                 <Input
                   id={fieldId}
                   type="number"
-                  value={(node.properties?.[field.name] as number) || field.default || 0}
+                  value={(getPropertyValue(field.name) as number) || field.default || 0}
                   oninput={(e) => {
                     updateProperty(field.name, parseFloat(e.currentTarget.value) || 0);
                   }}

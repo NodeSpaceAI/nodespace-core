@@ -183,10 +183,10 @@ impl DatabaseService {
     /// - Foreign keys: Enabled for referential integrity
     /// - JSON support: Native SQLite JSON operators enabled
     async fn initialize_schema(&self, is_new_database: bool) -> Result<(), DatabaseError> {
-        let conn = self
-            .db
-            .connect()
-            .map_err(|e| DatabaseError::initialization_failed(e.to_string()))?;
+        // CRITICAL: Must use connect_with_timeout() in async functions to prevent
+        // SQLite thread-safety violations when Tokio moves futures between threads.
+        // See PR #405 for detailed explanation of this pattern.
+        let conn = self.connect_with_timeout().await?;
 
         // Enable WAL mode for better concurrency
         self.execute_pragma(&conn, "PRAGMA journal_mode = WAL")
@@ -697,7 +697,9 @@ impl DatabaseService {
     /// margin for in-flight operations.
     pub async fn drain_and_checkpoint(&self) -> Result<(), DatabaseError> {
         // Force WAL checkpoint to flush all pending writes
-        let conn = self.connect()?;
+        // CRITICAL: Must use connect_with_timeout() in async functions to prevent
+        // SQLite thread-safety violations when Tokio moves futures between threads.
+        let conn = self.connect_with_timeout().await?;
         self.execute_pragma(&conn, "PRAGMA wal_checkpoint(TRUNCATE)")
             .await?;
 

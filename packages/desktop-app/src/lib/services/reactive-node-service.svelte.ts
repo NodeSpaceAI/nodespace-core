@@ -609,7 +609,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const headerLevel = contentProcessor.parseHeaderLevel(content);
     const isPlaceholder = content.trim() === '';
 
-    sharedNodeStore.updateNode(nodeId, { content }, viewerSource);
+    // CRITICAL: Include nodeType with content updates to prevent type reset
+    // When user converts via slash command (e.g., /task) then types content,
+    // the debounced save must preserve the nodeType that was set earlier
+    sharedNodeStore.updateNode(nodeId, { content, nodeType: node.nodeType }, viewerSource);
 
     _uiState[nodeId] = {
       ..._uiState[nodeId],

@@ -16,6 +16,7 @@
   import SchemaPropertyForm from '$lib/components/property-forms/schema-property-form.svelte';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { sharedNodeStore } from '$lib/services/shared-node-store';
+  import { tauriNodeService } from '$lib/services/tauri-node-service';
   import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
   import { focusManager } from '$lib/services/focus-manager.svelte';
   import { NodeExpansionCoordinator } from '$lib/services/node-expansion-coordinator';
@@ -80,6 +81,10 @@
   // Start as true to prevent watcher from firing before loadChildrenForParent() completes
   let isLoadingInitialNodes = true;
 
+  // Viewer-local placeholder (not in sharedNodeStore until it gets content)
+  // This placeholder is only visible to this viewer instance
+  let viewerPlaceholder = $state<Node | null>(null);
+
   // Scroll position tracking
   // Reference to the scroll container element
   let scrollContainer: HTMLElement | null = null;
@@ -93,7 +98,8 @@
     if (nodeId) {
       loadChildrenForParent(nodeId);
 
-      // Initialize header content from node
+      // Initialize header content from node synchronously
+      // This works now because loadChildrenForParent() loads the parent node first
       const node = sharedNodeStore.getNode(nodeId);
       headerContent = node?.content || '';
 
@@ -169,6 +175,91 @@
    */
   function isStructuredNode(nodeType: string): boolean {
     return STRUCTURED_NODE_TYPES.includes(nodeType as (typeof STRUCTURED_NODE_TYPES)[number]);
+  }
+
+  /**
+   * Extract and transform node properties into component-compatible metadata
+   *
+   * Handles the mismatch between database property storage and component metadata expectations:
+   * - Task nodes: Maps properties.task.status → metadata.taskState (for icon rendering)
+   * - Other nodes: Returns properties as-is for future extension
+   *
+   * @param node - Node with properties from database
+   * @returns Metadata object compatible with node component expectations
+   */
+  function extractNodeMetadata(node: {
+    nodeType: string;
+    properties?: Record<string, unknown>;
+  }): Record<string, unknown> {
+    const properties = node.properties || {};
+
+    // Task nodes: Map schema status to taskState for icon rendering
+    if (node.nodeType === 'task') {
+      const taskProps = properties[node.nodeType] as Record<string, unknown> | undefined;
+      const status = taskProps?.status || properties.status; // Support both nested and flat formats
+
+      // Map task status to NodeState expected by TaskNode
+      let taskState: 'pending' | 'inProgress' | 'completed' = 'pending';
+      if (status === 'IN_PROGRESS') {
+        taskState = 'inProgress';
+      } else if (status === 'DONE') {
+        taskState = 'completed';
+      } else if (status === 'OPEN') {
+        taskState = 'pending';
+      }
+
+      return { taskState, ...properties };
+    }
+
+    // Default: Return properties as-is
+    return properties;
+  }
+
+  /**
+   * Update a schema field value for a node (schema-aware property update)
+   *
+   * Follows the same nested format pattern as schema-property-form.svelte:
+   * - Builds nested structure: properties[nodeType][fieldName] = value
+   * - Handles auto-migration from flat to nested format
+   * - Calls sharedNodeStore.updateNode() to persist
+   *
+   * @param targetNodeId - Node ID to update
+   * @param fieldName - Schema field name (e.g., 'status', 'due_date')
+   * @param value - New value for the field
+   */
+  function updateSchemaField(targetNodeId: string, fieldName: string, value: unknown) {
+    const targetNode = sharedNodeStore.getNode(targetNodeId);
+    if (!targetNode) return;
+
+    // Build nested namespace (properties[nodeType][fieldName])
+    const typeNamespace = targetNode.properties?.[targetNode.nodeType];
+    const isOldFormat = !typeNamespace || typeof typeNamespace !== 'object';
+
+    let updatedNamespace: Record<string, unknown> = {};
+
+    if (isOldFormat) {
+      // Migrate from old flat format (minimal migration - just copy existing values)
+      updatedNamespace = { ...targetNode.properties };
+    } else {
+      // Already in new format - copy namespace
+      updatedNamespace = { ...(typeNamespace as Record<string, unknown>) };
+    }
+
+    // Apply the update
+    updatedNamespace[fieldName] = value;
+
+    // Build final properties with nested namespace
+    const updatedProperties = {
+      ...targetNode.properties,
+      [targetNode.nodeType]: updatedNamespace
+    };
+
+    // Persist via sharedNodeStore
+    sharedNodeStore.updateNode(
+      targetNodeId,
+      { properties: updatedProperties },
+      { type: 'viewer', viewerId: viewerId }
+    );
   }
 
   /**
@@ -627,47 +718,74 @@
       // Clear content tracking BEFORE loading to prevent watcher from firing on stale data
       lastSavedContent.clear();
 
+      // CRITICAL FIX: Load the parent node itself first (for header/title display)
+      // This is especially important for nodes viewed as pages where we need the node
+      // content for the title and properties before loading children.
+      // For virtual nodes (like date nodes), getNode returns null which we handle gracefully.
+      //
+      // SAFETY: Only load if node doesn't already exist in memory
+      // This prevents overwriting nodes with pending unsaved changes
+      if (!sharedNodeStore.hasNode(nodeId)) {
+        const parentNode = await tauriNodeService.getNode(nodeId);
+        if (parentNode) {
+          // Add parent node to shared store so header can access it
+          sharedNodeStore.setNode(parentNode, { type: 'database', reason: 'loaded-from-db' }, true);
+        }
+      }
+
+      // Then load children from database
       const allNodes = await sharedNodeStore.loadChildrenForParent(nodeId);
 
       // Check if we have any nodes at all
       if (allNodes.length === 0) {
-        // Check if placeholder already exists (reuse for multi-tab support)
-        const existingNodes = sharedNodeStore.getNodesForParent(nodeId);
+        // No persisted children - check if there's already a viewer-local placeholder
+        const existingChildren = sharedNodeStore.getNodesForParent(nodeId);
 
-        if (existingNodes.length === 0) {
-          // No placeholder exists - create one
+        if (existingChildren.length === 0) {
+          // No children at all - create viewer-local placeholder
+          // This placeholder will be added to sharedNodeStore by initializeNodes()
+          // It becomes a real persisted node only when content is added
+          // CRITICAL: parentId must be null so it's NOT visible to other viewers
           const placeholderId = globalThis.crypto.randomUUID();
-          const placeholder: Node = {
+          viewerPlaceholder = {
             id: placeholderId,
             nodeType: 'text',
             content: '',
-            parentId: nodeId,
-            containerNodeId: nodeId,
+            parentId: null, // No parent - viewer-local only until content is typed
+            containerNodeId: null,
             beforeSiblingId: null,
             createdAt: new Date().toISOString(),
             modifiedAt: new Date().toISOString(),
-            version: 1, // Placeholder starts at version 1
+            version: 1,
             properties: {},
             mentions: []
           };
 
-          // Initialize with placeholder
-          // initializeNodes() will auto-detect this is a placeholder and use viewer source
-          nodeManager.initializeNodes([placeholder], {
+          // Initialize NodeManager with the local placeholder
+          // initializeNodes() will automatically add it to sharedNodeStore with skipPersistence=true
+          nodeManager.initializeNodes([viewerPlaceholder], {
             expanded: true,
             autoFocus: true,
             inheritHeaderLevel: 0
           });
         } else {
-          // Placeholder exists - initialize UI with existing placeholder
-          // initializeNodes() will auto-detect placeholders and use viewer source
-          nodeManager.initializeNodes(existingNodes, {
+          // Reuse existing placeholder(s) from previous viewer instance
+          viewerPlaceholder = null;
+
+          // Track initial content of existing children
+          existingChildren.forEach((node) => lastSavedContent.set(node.id, node.content));
+
+          // Re-initialize with existing children
+          nodeManager.initializeNodes(existingChildren, {
             expanded: true,
-            autoFocus: true,
+            autoFocus: false,
             inheritHeaderLevel: 0
           });
         }
       } else {
+        // Real children exist - clear any viewer placeholder
+        viewerPlaceholder = null;
+
         // Track initial content of ALL loaded nodes BEFORE initializing
         // This prevents the content watcher from thinking these are new nodes
         allNodes.forEach((node) => lastSavedContent.set(node.id, node.content));
@@ -679,6 +797,12 @@
           inheritHeaderLevel: 0
         });
       }
+
+      // CRITICAL FIX: Register viewer with expansion coordinator AFTER nodes are loaded AND initialized
+      // This ensures restoration can find the nodes instead of skipping them all
+      // Must be inside try block (not finally) to ensure initializeNodes() has completed
+      // Only register once per viewer instance (coordinator handles re-registration gracefully)
+      NodeExpansionCoordinator.registerViewer(tabId, nodeManager);
     } catch (error) {
       console.error('[BaseNodeViewer] Failed to load children for parent:', nodeId, error);
     } finally {
@@ -1310,19 +1434,48 @@
   // Proper Svelte 5 reactivity: use object instead of Map for reactive tracking
   let loadedNodes = $state<Record<string, unknown>>({});
 
+  // Derive the list of nodes to render - either viewer placeholder or real children
+  const nodesToRender = $derived(() => {
+    const realChildren = nodeManager.visibleNodes(nodeId);
+
+    // If we have real children, render those
+    if (realChildren.length > 0) {
+      return realChildren;
+    }
+
+    // If we have a viewer placeholder, render it (with no parent, viewer-local only)
+    if (viewerPlaceholder) {
+      // Convert placeholder to renderable format with UI state
+      return [
+        {
+          ...viewerPlaceholder,
+          depth: 0,
+          children: [],
+          expanded: false,
+          autoFocus: true,
+          inheritHeaderLevel: 0,
+          isPlaceholder: true
+        }
+      ];
+    }
+
+    // No children and no placeholder
+    return [];
+  });
+
   // Calculate minimum depth for relative positioning
   // Children of a container node should start at depth 0 in the viewer
   const minDepth = $derived(() => {
-    const nodes = nodeManager.visibleNodes(nodeId);
+    const nodes = nodesToRender();
     if (nodes.length === 0) return 0;
     return Math.min(...nodes.map((n) => n.depth || 0));
   });
 
   // Pre-load components when component mounts
   onMount(async () => {
-    // Register this viewer with the expansion coordinator
-    // This allows expansion states to be persisted and restored
-    NodeExpansionCoordinator.registerViewer(tabId, nodeManager);
+    // NOTE: Viewer registration with NodeExpansionCoordinator moved to loadChildrenForParent()
+    // This ensures nodes are loaded BEFORE attempting to restore expansion states
+    // Otherwise, all nodes are skipped as "missing" during restoration
 
     async function preloadComponents() {
       // Pre-load all known types
@@ -1403,7 +1556,7 @@
 
   // Reactively load components when node types change
   $effect(() => {
-    const visibleNodes = nodeManager.visibleNodes(nodeId);
+    const visibleNodes = nodesToRender();
 
     // Collect all unique node types
     const nodeTypes = new Set(visibleNodes.map((node) => node.nodeType));
@@ -1433,6 +1586,12 @@
   onDestroy(() => {
     // Unregister this viewer from the expansion coordinator
     NodeExpansionCoordinator.unregisterViewer(tabId);
+
+    // CRITICAL: Commit ALL active batches globally BEFORE flushing
+    // This ensures node type conversions (which use batches) are saved
+    // We must commit globally because visible nodes might be empty if viewer already unmounted
+    console.log('[BaseNodeViewer] onDestroy: Committing all active batches globally');
+    sharedNodeStore.commitAllBatches();
 
     // Flush pending debounced saves to prevent data loss
     PersistenceCoordinator.getInstance().flushPending();
@@ -1478,7 +1637,7 @@
       {/if}
     {/if}
 
-    {#each nodeManager.visibleNodes(nodeId) as node (node.id)}
+    {#each nodesToRender() as node (node.id)}
       {@const relativeDepth = (node.depth || 0) - minDepth()}
       <div
         class="node-container"
@@ -1511,13 +1670,14 @@
           {#if node.nodeType in loadedNodes}
             {#key node.id}
               {@const NodeComponent = loadedNodes[node.nodeType] as typeof BaseNode}
+              {@const nodeMetadata = extractNodeMetadata(node)}
               <NodeComponent
                 nodeId={node.id}
                 nodeType={node.nodeType}
                 autoFocus={node.autoFocus}
                 content={node.content}
                 children={node.children}
-                metadata={node.properties || {}}
+                metadata={nodeMetadata}
                 editableConfig={{ allowMultiline: true }}
                 on:createNewNode={handleCreateNewNode}
                 on:indentNode={handleIndentNode}
@@ -1525,8 +1685,34 @@
                 on:navigateArrow={handleArrowNavigation}
                 on:contentChanged={(e: CustomEvent<{ content: string }>) => {
                   const content = e.detail.content;
-                  // Update node content (placeholder flag is handled automatically)
-                  nodeManager.updateNodeContent(node.id, content);
+
+                  // Check if this is the viewer-local placeholder getting its first content
+                  if (
+                    viewerPlaceholder &&
+                    node.id === viewerPlaceholder.id &&
+                    content.trim() !== '' &&
+                    nodeId
+                  ) {
+                    // Promote placeholder to real node by assigning parent and adding to store
+                    const promotedNode: Node = {
+                      ...viewerPlaceholder,
+                      content,
+                      parentId: nodeId,
+                      containerNodeId: nodeId
+                    };
+
+                    // Add to shared store as a real persisted node
+                    sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
+
+                    // Clear viewer placeholder - now using real node from store
+                    viewerPlaceholder = null;
+
+                    // Reload children to get the newly promoted node
+                    loadChildrenForParent(nodeId);
+                  } else {
+                    // Regular node content update (placeholder flag is handled automatically)
+                    nodeManager.updateNodeContent(node.id, content);
+                  }
                   // Focus management handled by FocusManager (single source of truth)
                 }}
                 on:nodeTypeChanged={(
@@ -1545,22 +1731,14 @@
                   // This ensures focus manager state is ready when the new component mounts
                   focusManager.setEditingNodeFromTypeConversion(node.id, cursorPosition, paneId);
 
-                  // ATOMIC UPDATE: Use batch to ensure content + nodeType persist together
-                  // This prevents race conditions where content persists before nodeType changes
-                  // Timeout auto-resets on each keystroke - only commits after true inactivity
-                  // Batch will auto-commit after timeout (default 2s) or when user navigates away
-                  sharedNodeStore.startBatch(node.id);
-
                   // Update content if cleanedContent is provided (e.g., from contentTemplate)
                   if (cleanedContent !== undefined) {
                     nodeManager.updateNodeContent(node.id, cleanedContent);
                   }
 
                   // Update node type through proper API (triggers component re-render)
+                  // Uses immediate persistence to ensure type change is saved right away
                   nodeManager.updateNodeType(node.id, newNodeType);
-
-                  // Don't commit immediately - let user finish typing
-                  // Batch will auto-commit after timeout or can be manually committed later
                 }}
                 on:slashCommandSelected={(
                   e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
@@ -1572,12 +1750,40 @@
                   // This ensures focus manager state is ready when the new component mounts
                   focusManager.setEditingNodeFromTypeConversion(node.id, cursorPosition, paneId);
 
-                  if (node.isPlaceholder) {
-                    // For placeholder nodes, just update the nodeType locally
-                    if ('updatePlaceholderNodeType' in nodeManager) {
-                      (nodeManager as any).updatePlaceholderNodeType(node.id, e.detail.nodeType);
-                    }
+                  console.log('[BaseNodeViewer] slashCommandSelected:', {
+                    nodeId: node.id,
+                    newType: e.detail.nodeType,
+                    isPlaceholder: node.isPlaceholder,
+                    hasViewerPlaceholder: !!viewerPlaceholder
+                  });
+
+                  // CRITICAL FIX: Treat slash commands on placeholders as real node type changes
+                  // They must persist to database, not just update locally
+                  // Use same batching logic as real nodes to ensure atomic persistence
+                  if (
+                    node.isPlaceholder &&
+                    nodeId &&
+                    viewerPlaceholder &&
+                    node.id === viewerPlaceholder.id
+                  ) {
+                    console.log(
+                      '[BaseNodeViewer] Promoting placeholder to real node with type:',
+                      e.detail.nodeType
+                    );
+                    // Promote placeholder to real node with the new type
+                    const promotedNode: Node = {
+                      ...viewerPlaceholder,
+                      content: node.content || '',
+                      parentId: nodeId,
+                      containerNodeId: nodeId,
+                      nodeType: e.detail.nodeType
+                    };
+
+                    // Add to store and trigger persistence
+                    sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
+                    viewerPlaceholder = null;
                   } else {
+                    console.log('[BaseNodeViewer] Updating node type for real node');
                     // For real nodes, update node type with full persistence
                     nodeManager.updateNodeType(node.id, e.detail.nodeType);
                   }
@@ -1585,12 +1791,25 @@
                 on:iconClick={handleIconClick}
                 on:taskStateChanged={(e) => {
                   const { nodeId, state } = e.detail;
-                  const node = nodeManager.nodes.get(nodeId);
-                  if (node) {
-                    node.properties = { ...node.properties, taskState: state };
-                    // Trigger sync to persist the change
-                    nodeManager.updateNodeContent(nodeId, node.content);
+
+                  // Map UI state to schema enum value
+                  let schemaStatus: string;
+                  switch (state) {
+                    case 'pending':
+                      schemaStatus = 'OPEN';
+                      break;
+                    case 'inProgress':
+                      schemaStatus = 'IN_PROGRESS';
+                      break;
+                    case 'completed':
+                      schemaStatus = 'DONE';
+                      break;
+                    default:
+                      schemaStatus = 'OPEN';
                   }
+
+                  // Update using schema-aware helper (handles nested format correctly)
+                  updateSchemaField(nodeId, 'status', schemaStatus);
                 }}
                 on:combineWithPrevious={handleCombineWithPrevious}
                 on:deleteNode={handleDeleteNode}
@@ -1627,12 +1846,40 @@
                   // This ensures focus manager state is ready when the new component mounts
                   focusManager.setEditingNodeFromTypeConversion(node.id, cursorPosition, paneId);
 
-                  if (node.isPlaceholder) {
-                    // For placeholder nodes, just update the nodeType locally
-                    if ('updatePlaceholderNodeType' in nodeManager) {
-                      (nodeManager as any).updatePlaceholderNodeType(node.id, e.detail.nodeType);
-                    }
+                  console.log('[BaseNodeViewer] slashCommandSelected:', {
+                    nodeId: node.id,
+                    newType: e.detail.nodeType,
+                    isPlaceholder: node.isPlaceholder,
+                    hasViewerPlaceholder: !!viewerPlaceholder
+                  });
+
+                  // CRITICAL FIX: Treat slash commands on placeholders as real node type changes
+                  // They must persist to database, not just update locally
+                  // Use same batching logic as real nodes to ensure atomic persistence
+                  if (
+                    node.isPlaceholder &&
+                    nodeId &&
+                    viewerPlaceholder &&
+                    node.id === viewerPlaceholder.id
+                  ) {
+                    console.log(
+                      '[BaseNodeViewer] Promoting placeholder to real node with type:',
+                      e.detail.nodeType
+                    );
+                    // Promote placeholder to real node with the new type
+                    const promotedNode: Node = {
+                      ...viewerPlaceholder,
+                      content: node.content || '',
+                      parentId: nodeId,
+                      containerNodeId: nodeId,
+                      nodeType: e.detail.nodeType
+                    };
+
+                    // Add to store and trigger persistence
+                    sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
+                    viewerPlaceholder = null;
                   } else {
+                    console.log('[BaseNodeViewer] Updating node type for real node');
                     // For real nodes, update node type with full persistence
                     nodeManager.updateNodeType(node.id, e.detail.nodeType);
                   }
@@ -1640,12 +1887,25 @@
                 on:iconClick={handleIconClick}
                 on:taskStateChanged={(e) => {
                   const { nodeId, state } = e.detail;
-                  const node = nodeManager.nodes.get(nodeId);
-                  if (node) {
-                    node.properties = { ...node.properties, taskState: state };
-                    // Trigger sync to persist the change
-                    nodeManager.updateNodeContent(nodeId, node.content);
+
+                  // Map UI state to schema enum value
+                  let schemaStatus: string;
+                  switch (state) {
+                    case 'pending':
+                      schemaStatus = 'OPEN';
+                      break;
+                    case 'inProgress':
+                      schemaStatus = 'IN_PROGRESS';
+                      break;
+                    case 'completed':
+                      schemaStatus = 'DONE';
+                      break;
+                    default:
+                      schemaStatus = 'OPEN';
                   }
+
+                  // Update using schema-aware helper (handles nested format correctly)
+                  updateSchemaField(nodeId, 'status', schemaStatus);
                 }}
                 on:combineWithPrevious={handleCombineWithPrevious}
                 on:deleteNode={handleDeleteNode}

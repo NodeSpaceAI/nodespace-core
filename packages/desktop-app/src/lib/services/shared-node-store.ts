@@ -1739,6 +1739,18 @@ export class SharedNodeStore {
   }
 
   /**
+   * Commit all active batches globally
+   * Used when component unmounts to ensure all pending batched changes are saved
+   */
+  commitAllBatches(): void {
+    const nodeIds = Array.from(this.activeBatches.keys());
+    console.log('[SharedNodeStore] Committing all batches:', nodeIds.length, 'active');
+    for (const nodeId of nodeIds) {
+      this.commitBatch(nodeId);
+    }
+  }
+
+  /**
    * Reset the auto-commit timeout for an active batch
    * Extends the batch lifetime when user continues making changes
    *
