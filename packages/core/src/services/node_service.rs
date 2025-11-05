@@ -1086,8 +1086,10 @@ impl NodeService {
         // For simplicity with libsql, we'll fetch the node, apply updates, and replace entirely
         let mut updated = existing.clone();
         let mut content_changed = false;
+        let mut node_type_changed = false;
 
         if let Some(node_type) = update.node_type {
+            node_type_changed = updated.node_type != node_type;
             updated.node_type = node_type;
         }
 
@@ -1125,9 +1127,25 @@ impl NodeService {
         // Step 1: Core behavior validation (PROTECTED)
         self.behaviors.validate_node(&updated)?;
 
-        // Step 2: Schema validation (USER-EXTENSIBLE)
-        // Skip schema validation for schema nodes themselves to avoid circular dependency
-        if updated.node_type != "schema" {
+        // Step 1.5: Apply schema defaults and validate (if node type changed)
+        // Apply default values for missing fields when node type changes
+        // Skip for schema nodes to avoid circular dependency
+        if node_type_changed && updated.node_type != "schema" {
+            // Fetch schema once and reuse it for both operations
+            if let Some(schema_json) = self.get_schema_for_type(&updated.node_type).await? {
+                // Parse schema definition
+                if let Ok(schema) =
+                    serde_json::from_value::<crate::models::SchemaDefinition>(schema_json.clone())
+                {
+                    // Apply defaults for the new node type
+                    self.apply_schema_defaults_with_schema(&mut updated, &schema)?;
+
+                    // Validate with the same schema
+                    self.validate_node_with_schema(&updated, &schema)?;
+                }
+            }
+        } else if updated.node_type != "schema" {
+            // Step 2: Schema validation only (node type didn't change)
             self.validate_node_against_schema(&updated).await?;
         }
 

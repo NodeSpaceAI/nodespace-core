@@ -126,6 +126,10 @@ export class TextareaController {
   // Single source of truth - no dual representation!
   private isInitialized: boolean = false;
 
+  // Track whether the node type was set via pattern detection
+  // If false, the node type was set explicitly (e.g., slash command) and should NOT auto-convert back to text
+  private nodeTypeSetViaPattern: boolean = false;
+
   // Cursor state for arrow navigation
   private lastKnownPixelOffset: number = 0;
 
@@ -813,10 +817,15 @@ export class TextareaController {
 
         // CRITICAL: Update internal nodeType so reverse conversion can detect it
         this.nodeType = config.targetNodeType;
+        // Mark that this node type was set via pattern detection
+        this.nodeTypeSetViaPattern = true;
       });
-    } else if (this.nodeType !== 'text') {
-      // No pattern detected AND current node is NOT text
+    } else if (this.nodeType !== 'text' && this.nodeTypeSetViaPattern) {
+      // No pattern detected AND current node is NOT text AND was set via pattern
       // This means user removed the pattern (e.g., backspaced "## " to "##")
+      //
+      // CRITICAL: Only auto-convert back to text if the node type was originally set by pattern detection
+      // If it was set via slash command (nodeTypeSetViaPattern=false), keep the node type
       // CRITICAL: Capture cursor position BEFORE event emission
       const cursorPosition = this.getCursorPosition();
 
@@ -831,6 +840,7 @@ export class TextareaController {
 
         // CRITICAL: Update internal nodeType so future conversions work correctly
         this.nodeType = 'text';
+        this.nodeTypeSetViaPattern = false;
       });
     }
   }
