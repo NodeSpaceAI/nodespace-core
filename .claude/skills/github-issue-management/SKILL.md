@@ -1,6 +1,7 @@
 ---
-allowed-tools: Bash(bun run gh:*), Read
+name: github-issue-management
 description: Autonomously create and update GitHub issues following NodeSpace workflow standards
+allowed-tools: Bash(bun run gh:*), Read
 ---
 
 ## Your Role
