@@ -46,10 +46,10 @@
   import { getIconConfig, resolveNodeState, type NodeType } from '$lib/design/icons/registry';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { focusManager } from '$lib/services/focus-manager.svelte';
+  import type { Node as NodeData } from '$lib/types/node';
   import { positionCursor } from '$lib/actions/position-cursor';
   import { createMockElementForView, findCharacterFromClickFast } from './cursor-positioning';
   import { mapViewPositionToEditPosition } from '$lib/utils/view-edit-mapper';
-  import { NodeSearchService } from '$lib/services/node-search-service';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
 
   // Props (Svelte 5 runes syntax) - nodeReferenceService removed
@@ -302,17 +302,20 @@
       // Get date shortcuts first (always shown)
       const dateShortcuts = getDateShortcuts(query);
 
-      // Get all nodes from the node manager
-      const allNodes = Array.from(services.nodeManager.nodes.values());
-
-      // Filter nodes using NodeSearchService
-      // Rules: Exclude dates, match query, show all non-text + container text only
-      const filtered = NodeSearchService.filterMentionableNodes(allNodes, query).slice(0, 10); // Limit to 10 results
+      // Query backend for mentionable nodes (tasks and containers)
+      // Backend applies SQL-level filtering for performance and scalability
+      // Rules (applied in Rust): Exclude dates (by default), include tasks + container nodes
+      const backendResults: NodeData[] = await services.databaseService.queryNodes({
+        contentContains: query,
+        includeContainersAndTasks: true, // Backend SQL filter: tasks OR containers
+        limit: 10
+      });
 
       // Convert to NodeResult format
-      const nodeResults = filtered.map((node) => ({
+      const nodeResults: NodeResult[] = backendResults.map((node: NodeData) => ({
         id: node.id,
         title: node.content.split('\n')[0] || 'Untitled',
+        // Backend ensures valid node types; fallback to 'text' for type safety
         type: (node.nodeType || 'text') as NodeType
       }));
 
