@@ -267,7 +267,7 @@ class NodeSpaceGitHubManager {
     try {
       // Get issue details for PR
       const issue = await this.client.getIssue(issueNumber);
-      
+
       const prTitle = title || issue.title;
       const prBody = `Closes #${issueNumber}`;
 
@@ -284,6 +284,22 @@ class NodeSpaceGitHubManager {
     } catch (error) {
       console.error(`❌ PR workflow failed: ${error.message}`);
       return false;
+    }
+  }
+
+  // Add comment to issue or PR
+  async addComment(issueNumber: number, body: string) {
+    try {
+      const result = await this.client.addPRComment(issueNumber, body);
+
+      console.log(`✅ Comment added to issue/PR #${issueNumber}`);
+      console.log(`Comment ID: ${result.id}`);
+      console.log(`URL: ${result.url}`);
+
+      return result;
+    } catch (error) {
+      console.error(`❌ Failed to add comment to #${issueNumber}: ${error.message}`);
+      throw error;
     }
   }
 }
@@ -489,16 +505,52 @@ async function main() {
       case "pr:create": {
         const issueNumber = parseInt(args[1]);
         const title = args[2];
-        
+
         if (!issueNumber) {
           console.error('Usage: bun run scripts/gh-utils.ts pr:create 45 "Optional title"');
           process.exit(1);
         }
-        
+
         await manager.createPRWorkflow(issueNumber, title);
         break;
       }
-      
+
+      case "issues:comment":
+      case "pr:comment": {
+        const issueNumber = parseInt(args[1]);
+        let body = "";
+
+        // Support both --body flag and direct string
+        const bodyIndex = args.indexOf("--body");
+        const bodyFileIndex = args.indexOf("--body-file");
+
+        if (bodyIndex !== -1 && args[bodyIndex + 1]) {
+          body = args[bodyIndex + 1];
+        } else if (bodyFileIndex !== -1 && args[bodyFileIndex + 1]) {
+          // Read from file
+          try {
+            body = await Bun.file(args[bodyFileIndex + 1]).text();
+          } catch (error) {
+            console.error(`❌ Failed to read body file: ${error.message}`);
+            process.exit(1);
+          }
+        } else if (args[2]) {
+          // Backward compatibility: direct string as second arg
+          body = args[2];
+        }
+
+        if (!issueNumber || !body) {
+          console.error('Usage:');
+          console.error('  bun run gh:comment 45 --body "Comment text"');
+          console.error('  bun run gh:comment 45 --body-file /path/to/comment.md');
+          console.error('  bun run gh:comment 45 "Comment text"  # Direct (backward compat)');
+          process.exit(1);
+        }
+
+        await manager.addComment(issueNumber, body);
+        break;
+      }
+
       case "help":
       default:
         console.log(`
@@ -511,13 +563,15 @@ async function main() {
   bun run gh:edit 45 --body "New body"        # Edit issue body
   bun run gh:edit 45 --labels "tag1,tag2"     # Update labels
   bun run gh:edit 45 --state "closed"         # Close/reopen issue
+  bun run gh:comment 45 --body "Comment text" # Add comment to issue
+  bun run gh:comment 45 --body-file /path/to/comment.md  # Add comment from file
   bun run gh:status 57,58,59 "In Progress"    # Update status
   bun run gh:assign 60,61,62 "@me"            # Assign issues
   bun run gh:unassign 60,61,62 "@me"          # Unassign issues
   bun run gh:list --status open               # List issues
   bun run gh:list --label foundation          # Filter by label
   bun run gh:list --assignee "@me"            # Your issues
-  
+
 🎯 Issue Workflow:
   bun run gh:startup 45 "Brief description"    # Complete startup sequence
   bun run scripts/gh-utils.ts issues:view 45   # View issue details
@@ -525,6 +579,7 @@ async function main() {
 
 📝 PR Management:
   bun run scripts/gh-utils.ts pr:create 45     # Create PR workflow
+  bun run gh:comment 45 --body "PR comment"    # Add comment to PR (same as issue)
   bun run quality:fix                          # Run quality checks
 
 📊 Available Statuses:
