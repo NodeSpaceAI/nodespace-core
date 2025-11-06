@@ -962,4 +962,12 @@ describe('Indent/Outdent Operations', () => {
     const indented = service.findNode('text-1');
     expect(indented?.parentId).toBe('task-1');
   });
+
+  // TODO (Issue #434): Add automated tests for placeholder persistence behavior
+  // Manual testing performed with Chrome DevTools MCP confirms:
+  // - Placeholder nodes (empty content) are NOT persisted during indent/outdent
+  // - No HTTP 500 errors occur when outdenting empty nodes
+  // - Deferred reference reconciliation works correctly
+  // Automated tests require refactoring ReactiveNodeService API to expose
+  // methods for creating unpersisted placeholders in test scenarios
 });

@@ -397,23 +397,40 @@ export class SharedNodeStore {
       // This ensures hierarchy operations work while debouncing rapid typing
       const persistBehavior = this.determinePersistenceBehavior(source, options, changes);
       if (persistBehavior.shouldPersist) {
-        // CRITICAL: Check if beforeSiblingId references an unpersisted placeholder
+        // GUARD: Check if beforeSiblingId or parentId reference unpersisted placeholders
         // Placeholders use skipPersistence, so there's no operation to wait for
-        // Remove beforeSiblingId from changes to avoid FOREIGN KEY constraint violation
+        // Remove these references to avoid FOREIGN KEY constraint violations
+        //
+        // Type casting explanation: TypeScript doesn't allow deleting properties from Partial<Node>
+        // because it's readonly. We create MutablePartialNode to allow deletion, which is safe
+        // because we're modifying a local changes object, not the original node in the store.
+        type MutablePartialNode = { [K in keyof Partial<Node>]: Partial<Node>[K] };
+        const coordinator = PersistenceCoordinator.getInstance();
+
+        // Check beforeSiblingId
         if ('beforeSiblingId' in changes && changes.beforeSiblingId) {
           const isPersisted = this.persistedNodeIds.has(changes.beforeSiblingId);
-          if (!isPersisted) {
-            // Check if there's a pending operation for this node (would mean it's being persisted)
-            const coordinator = PersistenceCoordinator.getInstance();
-            const hasPendingOp = coordinator.isPending(changes.beforeSiblingId);
-
-            if (!hasPendingOp) {
-              // No pending operation means this is a placeholder that won't be persisted yet
-              // Remove beforeSiblingId to avoid FOREIGN KEY error
-              // It will be set later when the placeholder gets content and is persisted
-              // Use proper type guard to allow deletion from Partial<Node>
-              type MutablePartialNode = { [K in keyof Partial<Node>]: Partial<Node>[K] };
+          const hasPending = coordinator.isPending(changes.beforeSiblingId);
+          if (!isPersisted && !hasPending) {
+            // Check if it's a placeholder node
+            const siblingNode = this.nodes.get(changes.beforeSiblingId);
+            if (siblingNode && isPlaceholderNode(siblingNode)) {
+              // beforeSiblingId points to unpersisted placeholder - defer until placeholder persists
               delete (changes as MutablePartialNode).beforeSiblingId;
+            }
+          }
+        }
+
+        // Check parentId
+        if ('parentId' in changes && changes.parentId) {
+          const isPersisted = this.persistedNodeIds.has(changes.parentId);
+          const hasPending = coordinator.isPending(changes.parentId);
+          if (!isPersisted && !hasPending) {
+            // Check if it's a placeholder node
+            const parentNode = this.nodes.get(changes.parentId);
+            if (parentNode && isPlaceholderNode(parentNode)) {
+              // parentId points to unpersisted placeholder - defer until placeholder persists
+              delete (changes as MutablePartialNode).parentId;
             }
           }
         }
@@ -495,6 +512,19 @@ export class SharedNodeStore {
             nodeId,
             async () => {
               try {
+                // GUARD: Re-check placeholder status at persistence execution time
+                // Prevents persisting empty nodes when structural changes trigger persistence
+                //
+                // EDGE CASE: Eventual consistency in rapid typing scenarios
+                // If user adds content between queueing and execution (due to debouncing),
+                // the node might have valid content by execution time but still be skipped.
+                // This is acceptable because the content update will trigger a new persistence
+                // operation that will succeed. The system is eventually consistent.
+                const currentNode = this.nodes.get(nodeId);
+                if (currentNode && isPlaceholderNode(currentNode)) {
+                  return; // Skip persistence - will retry when content is added
+                }
+
                 // Check if node has been persisted - use in-memory tracking to avoid database query
                 const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
 
@@ -943,6 +973,13 @@ export class SharedNodeStore {
 
     // Check if node needs to be persisted
     if (!this.persistedNodeIds.has(nodeId)) {
+      // GUARD: Skip placeholder nodes - they should not be force-persisted
+      // Placeholder nodes will be persisted when they receive actual content
+      // This prevents invalid nodes from being persisted during ancestor chain resolution
+      if (isPlaceholderNode(node)) {
+        return; // Don't persist placeholders, even in ancestor chain
+      }
+
       // Node was never persisted (e.g., placeholder node created with skipPersistence)
       // Force persist it now before any child operations that reference it
 
@@ -982,16 +1019,39 @@ export class SharedNodeStore {
    * Alternative approaches (conditional persistence, polling) add complexity without
    * significant benefit. This manual reconciliation is a proven pattern.
    *
+   * PERFORMANCE CHARACTERISTICS:
+   * - Complexity: O(n) where n = total nodes in memory
+   * - Typical case: 1-5 nodes need reconciliation (user rarely creates many placeholders)
+   * - Large documents: With 1000+ nodes, this could add ~1-5ms per placeholder persistence
+   * - Mitigation: Placeholders persist on content addition (user typing), not bulk operations
+   * - Future optimization: Could maintain explicit deferred reference map if needed
+   *
    * @param newlyPersistedNodeId - ID of the node that was just persisted
    */
   private updateDeferredSiblingReferences(newlyPersistedNodeId: string): void {
-    // Find all nodes in memory that have this node as their beforeSiblingId
+    // Find all nodes in memory that have this node as their beforeSiblingId OR parentId
     // but haven't persisted that reference yet (due to FOREIGN KEY constraints)
-    const nodesToUpdate: string[] = [];
+    const nodesToUpdate: Array<{ nodeId: string; changes: Partial<Node> }> = [];
+
     for (const [id, node] of this.nodes.entries()) {
-      if (node.beforeSiblingId === newlyPersistedNodeId && this.persistedNodeIds.has(id)) {
-        // This persisted node references the newly-persisted node
-        nodesToUpdate.push(id);
+      if (!this.persistedNodeIds.has(id)) {
+        continue; // Skip unpersisted nodes
+      }
+
+      const changes: Partial<Node> = {};
+
+      // Check if this node has the newly-persisted node as beforeSiblingId
+      if (node.beforeSiblingId === newlyPersistedNodeId) {
+        changes.beforeSiblingId = newlyPersistedNodeId;
+      }
+
+      // Check if this node has the newly-persisted node as parentId
+      if (node.parentId === newlyPersistedNodeId) {
+        changes.parentId = newlyPersistedNodeId;
+      }
+
+      if (Object.keys(changes).length > 0) {
+        nodesToUpdate.push({ nodeId: id, changes });
       }
     }
 
@@ -999,19 +1059,17 @@ export class SharedNodeStore {
       return; // No deferred updates needed
     }
 
-    // Update each node's beforeSiblingId through normal updateNode flow
-    // Use 'database' source with explicit immediate persistence (no longer need 'external' workaround)
+    // Update each node through normal updateNode flow
+    // Use 'database' source with explicit immediate persistence
     const reconciliationSource: UpdateSource = {
       type: 'database',
-      reason: 'deferred-sibling-reference-reconciliation'
+      reason: 'deferred-reference-reconciliation'
     };
 
-    for (const nodeId of nodesToUpdate) {
-      // Trigger update through SharedNodeStore (not direct database call)
-      // This respects the architecture: SharedNodeStore → PersistenceCoordinator → Database
-      this.updateNode(nodeId, { beforeSiblingId: newlyPersistedNodeId }, reconciliationSource, {
+    for (const { nodeId, changes } of nodesToUpdate) {
+      this.updateNode(nodeId, changes, reconciliationSource, {
         skipConflictDetection: true, // Skip conflict detection for reconciliation
-        persist: 'immediate' // Explicit immediate persistence (replaces 'external' workaround)
+        persist: 'immediate' // Explicit immediate persistence
       });
     }
   }
