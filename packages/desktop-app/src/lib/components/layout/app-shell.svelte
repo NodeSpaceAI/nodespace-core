@@ -11,7 +11,6 @@
   import { registerCorePlugins } from '$lib/plugins/core-plugins';
   import { pluginRegistry } from '$lib/plugins/index';
   import { toggleTheme } from '$lib/design/theme';
-  import { isValidDateString } from '$lib/utils/date-formatting';
   import { SharedNodeStore } from '$lib/services/shared-node-store';
   import { MCP_EVENTS } from '$lib/constants';
   import type { Node } from '$lib/types';
@@ -150,10 +149,10 @@
         nodeId = nodeId.substring(0, queryIndex);
       }
 
-      // Validate node ID format (UUID or date format YYYY-MM-DD)
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (!uuidRegex.test(nodeId) && !isValidDateString(nodeId)) {
-        console.error(`${LOG_PREFIX} Invalid node ID format: ${nodeId}`);
+      // Validate node ID is not empty
+      // NavigationService will handle resolution (UUIDs, date nodes, etc.)
+      if (!nodeId || nodeId.trim() === '') {
+        console.error(`${LOG_PREFIX} Empty node ID in link`);
         return;
       }
 

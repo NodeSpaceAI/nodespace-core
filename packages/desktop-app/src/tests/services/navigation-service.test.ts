@@ -79,6 +79,21 @@ describe('NavigationService - navigateToNodeInOtherPane', () => {
     });
 
     it('handles date nodes correctly', async () => {
+      // Mock a date node in the store (backend would return this for YYYY-MM-DD IDs)
+      const dateNode: Node = {
+        id: '2025-12-25',
+        nodeType: 'date',
+        content: '2025-12-25', // Date nodes have content matching ID
+        version: 1,
+        parentId: null,
+        containerNodeId: null,
+        beforeSiblingId: null,
+        properties: {},
+        createdAt: Date.now().toString(),
+        modifiedAt: Date.now().toString()
+      };
+      sharedNodeStore.setNode(dateNode, { type: 'database', reason: 'test-setup' }, true);
+
       await navService.navigateToNodeInOtherPane('2025-12-25');
 
       const state = get(tabState);

@@ -307,20 +307,18 @@ impl NodeOperations {
 
         // Auto-create the date container
         // IMPORTANT: Date node content MUST match the date ID for validation
-        let date_node = Node::new(
+        // Use new_with_id to set both id and content to the date string
+        let date_node = Node::new_with_id(
+            node_id.to_string(), // ID is the date string (YYYY-MM-DD)
             "date".to_string(),
-            node_id.to_string(), // Content must be the date string (YYYY-MM-DD)
+            node_id.to_string(), // Content MUST match ID for validation
             None,                // Date nodes are always root-level (no parent, no container)
             json!({}),
         );
 
-        // Override the ID to be the date string (YYYY-MM-DD)
-        let mut date_node_with_id = date_node;
-        date_node_with_id.id = node_id.to_string();
-
         // Create the date container directly via NodeService
         // Skip NodeOperations to avoid infinite recursion
-        self.node_service.create_node(date_node_with_id).await?;
+        self.node_service.create_node(date_node).await?;
 
         Ok(())
     }

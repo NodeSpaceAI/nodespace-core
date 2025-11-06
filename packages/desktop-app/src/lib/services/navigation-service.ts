@@ -25,7 +25,7 @@ import {
 import { sharedNodeStore } from './shared-node-store';
 import { get } from 'svelte/store';
 import type { Node } from '$lib/types';
-import { formatDateTitle, isValidDateString } from '$lib/utils/date-formatting';
+import { formatDateTitle } from '$lib/utils/date-formatting';
 import { formatTabTitle } from '$lib/utils/text-formatting';
 
 // Constants
@@ -52,31 +52,17 @@ export class NavigationService {
   /**
    * Resolve a node UUID to navigation target information
    *
-   * Date nodes (YYYY-MM-DD format) are virtual and don't need to exist in the store.
-   * They are created on-demand when children are added.
+   * All nodes (including virtual date nodes) are handled uniformly by the backend.
+   * The backend returns virtual date nodes automatically for YYYY-MM-DD format IDs.
    *
-   * Regular nodes are fetched from store (sync) or backend (async) if not in store.
+   * Nodes are fetched from store (sync) or backend (async) if not in store.
    */
   async resolveNodeTarget(nodeId: string): Promise<NavigationTarget | null> {
-    // Check if it's a date node (format: YYYY-MM-DD with semantic validation)
-    if (isValidDateString(nodeId)) {
-      // Date nodes are virtual - they don't need to exist in database
-      // DateNodeViewer will use getNodesForParent(nodeId) to fetch children
-      const date = new Date(nodeId);
-      console.log(`${LOG_PREFIX} Virtual date node: ${nodeId}`);
-
-      return {
-        nodeId: nodeId,
-        nodeType: 'date',
-        title: formatDateTitle(date)
-      };
-    }
-
-    // For regular nodes, check store first (synchronous)
+    // Check store first (synchronous)
     let node = sharedNodeStore.getNode(nodeId);
 
     if (!node) {
-      // Not in store, fetch from backend
+      // Not in store, fetch from backend (handles virtual dates automatically)
       console.log(`${LOG_PREFIX} Node ${nodeId} not in store, fetching from backend...`);
       const { backendAdapter } = await import('./backend-adapter');
 
@@ -93,7 +79,7 @@ export class NavigationService {
         sharedNodeStore.setNode(
           node,
           { type: 'database', reason: 'fetched-for-link-click' },
-          true // skipPersistence - already in backend
+          true // skipPersistence - already in backend (or virtual)
         );
       } catch (error) {
         console.error(`${LOG_PREFIX} Failed to fetch node ${nodeId}:`, error);
