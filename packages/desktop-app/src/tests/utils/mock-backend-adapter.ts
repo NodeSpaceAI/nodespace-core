@@ -140,18 +140,18 @@ export class MockBackendAdapter implements BackendAdapter {
   }
 
   /**
-   * Mention autocomplete mock - filters for tasks and containers
+   * Mention autocomplete mock - filters for tasks and containers (excluding schemas)
    */
   async mentionAutocomplete(query: string, limit?: number): Promise<Node[]> {
     const lowerQuery = query.toLowerCase();
     const results = Array.from(this.nodes.values()).filter((node) => {
-      // Exclude date nodes
-      if (node.nodeType === 'date') return false;
+      // Exclude date and schema nodes
+      if (node.nodeType === 'date' || node.nodeType === 'schema') return false;
 
       // Match query in content
       if (!node.content.toLowerCase().includes(lowerQuery)) return false;
 
-      // Include tasks OR containers (containerNodeId === null)
+      // Include tasks OR containers (containerNodeId === null, but not schemas)
       return node.nodeType === 'task' || node.containerNodeId === null;
     });
 

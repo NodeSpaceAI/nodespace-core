@@ -2236,8 +2236,8 @@ impl NodeService {
 
         let prefix = table_alias.map(|a| format!("{}.", a)).unwrap_or_default();
         format!(
-            " AND ({}node_type = 'task' OR {}container_node_id IS NULL)",
-            prefix, prefix
+            " AND ({}node_type = 'task' OR ({}container_node_id IS NULL AND {}node_type NOT IN ('date', 'schema')))",
+            prefix, prefix, prefix
         )
     }
 
