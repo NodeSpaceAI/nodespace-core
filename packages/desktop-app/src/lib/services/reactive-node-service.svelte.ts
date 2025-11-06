@@ -22,7 +22,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { ContentProcessor } from './content-processor';
 import { eventBus } from './event-bus';
-import { sharedNodeStore } from './shared-node-store';
+import { SharedNodeStore } from './shared-node-store';
 import { getFocusManager } from './focus-manager.svelte';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import type { Node, NodeUIState } from '$lib/types';
@@ -52,6 +52,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
   // Focus management - single source of truth
   const focusManager = getFocusManager();
+
+  // Get SharedNodeStore instance dynamically (important for tests that call resetInstance())
+  const sharedNodeStore = SharedNodeStore.getInstance();
 
   // UI state only - node data stored in SharedNodeStore
   const _uiState = $state<Record<string, NodeUIState>>({});
@@ -609,12 +612,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const headerLevel = contentProcessor.parseHeaderLevel(content);
     const isPlaceholder = content.trim() === '';
 
-    // DON'T include nodeType in content updates - it prevents pattern-based conversions
-    // Pattern conversions (e.g., typing "## " → header) are handled via separate
-    // nodeTypeConversionDetected events that update nodeType independently
-    // Including nodeType here causes bidirectional conversion failures because
-    // the stale nodeType overwrites the pattern-detected type change
-    sharedNodeStore.updateNode(nodeId, { content }, viewerSource);
+    // Issue #424 FIX: Always include nodeType to preserve slash command conversions
+    // Pattern conversions work correctly because they call updateNodeType() separately
+    // BEFORE the content update, so both the pattern-detected type and content persist together
+    sharedNodeStore.updateNode(nodeId, { content, nodeType: node.nodeType }, viewerSource);
 
     _uiState[nodeId] = {
       ..._uiState[nodeId],
