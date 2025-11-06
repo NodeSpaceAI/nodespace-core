@@ -554,6 +554,57 @@ pub async fn query_nodes_simple(
     service.query_nodes_simple(query).await.map_err(Into::into)
 }
 
+/// Mention autocomplete query - specialized endpoint for @mention feature
+///
+/// Provides optimized autocomplete suggestions for @mention syntax.
+/// Designed to evolve with ranking, scoring, and relevance features.
+///
+/// # Arguments
+/// * `service` - Node service instance from Tauri state
+/// * `query` - Search query string
+/// * `limit` - Maximum number of results (default: 10)
+///
+/// # Returns
+/// * `Ok(Vec<Node>)` - Array of matching nodes (tasks and containers only)
+/// * `Err(CommandError)` - Error if query fails
+///
+/// # Filter Behavior
+/// - Includes: Task nodes and container nodes (top-level documents)
+/// - Excludes: Date nodes (accessible via date shortcuts), nested text children
+/// - Search: Case-insensitive content matching
+///
+/// # Future Enhancements (Phase 2)
+/// - Relevance scoring (recency, frequency, proximity)
+/// - Context-aware ranking
+/// - User preference learning
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// const results = await invoke('mention_autocomplete', {
+///   query: 'project',
+///   limit: 10
+/// });
+/// ```
+#[tauri::command]
+pub async fn mention_autocomplete(
+    service: State<'_, NodeService>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<Node>, CommandError> {
+    // Build NodeQuery with mention-specific defaults
+    let node_query = NodeQuery {
+        content_contains: if query.is_empty() { None } else { Some(query) },
+        include_containers_and_tasks: Some(true),
+        limit,
+        ..Default::default()
+    };
+
+    service
+        .query_nodes_simple(node_query)
+        .await
+        .map_err(Into::into)
+}
+
 /// Save a node with automatic parent creation - unified upsert operation
 ///
 /// Ensures the parent node exists (creates if needed), then upserts the node.

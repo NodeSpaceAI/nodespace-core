@@ -25,10 +25,10 @@ use crate::dev_server::AppState;
 use axum::{
     extract::{Path, Query, State},
     response::Json,
-    routing::get,
+    routing::{get, post},
     Router,
 };
-use nodespace_core::{Node, NodeFilter};
+use nodespace_core::{Node, NodeFilter, NodeQuery};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -220,6 +220,81 @@ async fn get_nodes_by_container_id(
     Ok(Json(nodes))
 }
 
+/// Request body for mention autocomplete
+#[derive(Debug, Deserialize)]
+pub struct MentionAutocompleteRequest {
+    /// Search query string
+    pub query: String,
+    /// Maximum number of results (default: 10)
+    pub limit: Option<usize>,
+}
+
+/// Mention autocomplete endpoint - specialized for @mention feature
+///
+/// Provides optimized autocomplete suggestions for @mention syntax.
+/// Returns tasks and container nodes matching the query.
+///
+/// # Request Body
+/// ```json
+/// {
+///   "query": "project",
+///   "limit": 10
+/// }
+/// ```
+///
+/// # Response
+/// Array of matching nodes (tasks and containers only)
+///
+/// # Example
+/// ```bash
+/// curl -X POST http://localhost:3001/api/mentions/autocomplete \
+///   -H "Content-Type: application/json" \
+///   -d '{"query": "project", "limit": 10}'
+/// ```
+async fn mention_autocomplete(
+    State(state): State<AppState>,
+    Json(req): Json<MentionAutocompleteRequest>,
+) -> Result<Json<Vec<Node>>, HttpError> {
+    tracing::debug!(
+        "Mention autocomplete: query={}, limit={:?}",
+        req.query,
+        req.limit
+    );
+
+    // Get node service from state
+    let node_service = {
+        let lock = state.node_service.read().map_err(|e| {
+            HttpError::new(
+                format!("Failed to acquire node service read lock: {}", e),
+                "LOCK_ERROR",
+            )
+        })?;
+        Arc::clone(&*lock)
+    };
+
+    // Build NodeQuery with mention-specific defaults
+    let query = NodeQuery {
+        content_contains: if req.query.is_empty() {
+            None
+        } else {
+            Some(req.query.clone())
+        },
+        include_containers_and_tasks: Some(true),
+        limit: req.limit,
+        ..Default::default()
+    };
+
+    // Execute query
+    let nodes = node_service
+        .query_nodes_simple(query)
+        .await
+        .map_err(|e| HttpError::from_anyhow(e.into(), "MENTION_QUERY_ERROR"))?;
+
+    tracing::debug!("Mention autocomplete: found {} results", nodes.len());
+
+    Ok(Json(nodes))
+}
+
 /// Create router with all Phase 2 query endpoints
 ///
 /// This function is called by the main router in `mod.rs` to register
@@ -231,5 +306,6 @@ pub fn routes(state: AppState) -> Router {
             "/api/nodes/by-container/:container_id",
             get(get_nodes_by_container_id),
         )
+        .route("/api/mentions/autocomplete", post(mention_autocomplete))
         .with_state(state)
 }

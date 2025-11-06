@@ -198,6 +198,15 @@ export interface BackendAdapter {
    */
   getNodesByContainerId(containerId: string): Promise<Node[]>;
 
+  /**
+   * Mention autocomplete - specialized query for @mention feature
+   * @since Phase 2
+   * @param query - Search query string
+   * @param limit - Maximum number of results (default: 10)
+   * @returns Array of matching nodes (tasks and containers only)
+   */
+  mentionAutocomplete(query: string, limit?: number): Promise<Node[]>;
+
   // === Phase 3: Embedding Operations ===
 
   /**
@@ -543,6 +552,15 @@ export class TauriAdapter implements BackendAdapter {
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, containerId, 'getNodesByContainerId');
+    }
+  }
+
+  async mentionAutocomplete(query: string, limit?: number): Promise<Node[]> {
+    try {
+      return await invoke<Node[]>('mention_autocomplete', { query, limit });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, query, 'mentionAutocomplete');
     }
   }
 
@@ -1168,6 +1186,22 @@ export class HttpAdapter implements BackendAdapter {
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, containerId, 'getNodesByContainerId');
+    }
+  }
+
+  async mentionAutocomplete(query: string, limit?: number): Promise<Node[]> {
+    try {
+      const response = await globalThis.fetch(`${this.baseUrl}/api/mentions/autocomplete`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ query, limit })
+      });
+      return await this.handleResponse<Node[]>(response);
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, query, 'mentionAutocomplete');
     }
   }
 

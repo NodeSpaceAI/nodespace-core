@@ -139,6 +139,25 @@ export class MockBackendAdapter implements BackendAdapter {
     return Array.from(this.nodes.values()).filter((node) => node.containerNodeId === containerId);
   }
 
+  /**
+   * Mention autocomplete mock - filters for tasks and containers
+   */
+  async mentionAutocomplete(query: string, limit?: number): Promise<Node[]> {
+    const lowerQuery = query.toLowerCase();
+    const results = Array.from(this.nodes.values()).filter((node) => {
+      // Exclude date nodes
+      if (node.nodeType === 'date') return false;
+
+      // Match query in content
+      if (!node.content.toLowerCase().includes(lowerQuery)) return false;
+
+      // Include tasks OR containers (containerNodeId === null)
+      return node.nodeType === 'task' || node.containerNodeId === null;
+    });
+
+    return limit ? results.slice(0, limit) : results;
+  }
+
   // === Phase 3: Embedding Operations (Not Needed for Sibling Chain Tests) ===
 
   async generateContainerEmbedding(_containerId: string): Promise<void> {

@@ -262,6 +262,14 @@ export class TauriNodeService {
     this.ensureInitialized();
 
     try {
+      // Use specialized mention_autocomplete for mention queries
+      // This provides a dedicated, evolvable API that works in both Tauri and HTTP modes
+      if (query.includeContainersAndTasks && query.contentContains !== undefined) {
+        return await this.adapter.mentionAutocomplete(query.contentContains, query.limit);
+      }
+
+      // Fall back to generic query for other query types (still uses universalInvoke)
+      // TODO: Migrate remaining queries to adapter pattern
       const nodes = await universalInvoke<Node[]>('query_nodes_simple', { query });
       return nodes;
     } catch (error) {
