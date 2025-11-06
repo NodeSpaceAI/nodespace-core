@@ -9,12 +9,12 @@
       ],
       "env": {}
     },
-    "puppeteer": {
+    "playwright": {
       "type": "stdio",
-      "command": "bunx",
+      "command": "npx",
       "args": [
-        "--bun",
-        "@modelcontextprotocol/server-puppeteer"
+        "-y",
+        "@executeautomation/playwright-mcp-server"
       ],
       "env": {}
     },

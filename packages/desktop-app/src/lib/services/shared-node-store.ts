@@ -930,6 +930,12 @@ export class SharedNodeStore {
       return;
     }
 
+    // Skip date nodes - backend handles their persistence (virtual or real)
+    // Frontend should never try to persist date nodes - that's backend's responsibility
+    if (node.nodeType === 'date') {
+      return;
+    }
+
     // If node has a parent, recursively ensure parent chain is persisted first
     if (node.parentId) {
       await this.ensureAncestorChainPersisted(node.parentId);

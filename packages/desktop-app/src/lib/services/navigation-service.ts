@@ -75,11 +75,12 @@ export class NavigationService {
         node = fetchedNode;
 
         // Add to store for future use
-        // Use type 'database' so node gets marked as persisted in persistedNodeIds
+        // Use type 'database' and skipPersistence since already in backend (or virtual)
+        // Date nodes are handled specially by ensureAncestorChainPersisted (skips them)
         sharedNodeStore.setNode(
           node,
           { type: 'database', reason: 'fetched-for-link-click' },
-          true // skipPersistence - already in backend (or virtual)
+          true // skipPersistence - already in backend or virtual
         );
       } catch (error) {
         console.error(`${LOG_PREFIX} Failed to fetch node ${nodeId}:`, error);
