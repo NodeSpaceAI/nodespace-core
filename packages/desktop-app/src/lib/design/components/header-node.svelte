@@ -144,11 +144,8 @@
 </div>
 
 <style>
-  /* Header wrapper must take full available width to prevent content cutoff */
-  .header-node-wrapper {
-    width: 100%;
-    display: block;
-  }
+  /* Header wrapper - width handled by parent .node-content-wrapper flex rule */
+  /* No additional styles needed - flex: 1 applied by parent */
 
   /* Header-specific typography and icon positioning */
   .header-h1 {

@@ -2066,6 +2066,14 @@
     align-items: flex-start;
     gap: 0.25rem; /* 4px gap between chevron/spacer and text content */
     position: relative; /* Enable absolute positioning for chevrons */
+    width: 100%; /* Ensure wrapper fills parent so flex children can inherit */
+  }
+
+  /* Flex children (node wrappers) should fill available space */
+  /* Use :global() to apply across component boundaries (TaskNode, CodeBlock, etc. have different scopes) */
+  .node-content-wrapper > :global(:not(.chevron-icon):not(.chevron-spacer)) {
+    flex: 1;
+    min-width: 0; /* Allow flex item to shrink below content size if needed */
   }
 
   /* 

@@ -128,8 +128,13 @@ export class NavigationService {
    * Navigate to a node by UUID
    * @param nodeId - The UUID of the node to navigate to
    * @param openInNewTab - If true, always create a new tab. If false, switch to existing tab if present.
+   * @param sourcePaneId - The pane ID where the click originated (optional, defaults to active pane)
    */
-  async navigateToNode(nodeId: string, openInNewTab: boolean = false): Promise<void> {
+  async navigateToNode(
+    nodeId: string,
+    openInNewTab: boolean = false,
+    sourcePaneId?: string
+  ): Promise<void> {
     const target = await this.resolveNodeTarget(nodeId);
 
     if (!target) {
@@ -140,7 +145,8 @@ export class NavigationService {
     const currentState = get(tabState);
 
     if (openInNewTab) {
-      // Cmd+Click: Always create new tab in the active pane
+      // Cmd+Click: Always create new tab in the source pane (or active pane if no source provided)
+      const targetPaneId = sourcePaneId ?? currentState.activePaneId;
       const newTab = {
         id: uuidv4(),
         title: target.title,
@@ -150,7 +156,7 @@ export class NavigationService {
           nodeType: target.nodeType
         },
         closeable: true,
-        paneId: currentState.activePaneId
+        paneId: targetPaneId
       };
 
       addTab(newTab);
@@ -175,12 +181,13 @@ export class NavigationService {
    * - Opens the node in the new pane
    *
    * If two panes exist:
-   * - Opens the node in the pane that is NOT currently active
+   * - Opens the node in the pane that is NOT the source pane
    * - Switches focus to that pane
    *
    * @param nodeId - The UUID of the node to navigate to
+   * @param sourcePaneId - The pane ID where the click originated (optional, defaults to active pane)
    */
-  async navigateToNodeInOtherPane(nodeId: string): Promise<void> {
+  async navigateToNodeInOtherPane(nodeId: string, sourcePaneId?: string): Promise<void> {
     const target = await this.resolveNodeTarget(nodeId);
 
     if (!target) {
@@ -189,7 +196,8 @@ export class NavigationService {
     }
 
     const currentState = get(tabState);
-    const currentPaneId = currentState.activePaneId;
+    // Use provided source pane, or fall back to active pane
+    const currentPaneId = sourcePaneId ?? currentState.activePaneId;
 
     if (currentState.panes.length === 1) {
       // Create second pane (automatically sets 50/50 split)

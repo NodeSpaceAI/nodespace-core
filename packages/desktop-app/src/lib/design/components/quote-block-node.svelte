@@ -228,9 +228,8 @@
 <style>
   /* Quote block wrapper */
   .quote-block-node-wrapper {
-    width: 100%;
-    display: block;
     position: relative;
+    /* width: 100% handled by parent .node-content-wrapper flex child rule */
   }
 
   /* Apply quote styling to the content area only (BaseNode wraps it) */

@@ -241,9 +241,8 @@
 <style>
   /* Ordered list wrapper */
   .ordered-list-node-wrapper {
-    width: 100%;
-    display: block;
     position: relative;
+    /* width: 100% handled by parent .node-content-wrapper flex child rule */
   }
 
   /* Apply ordered list styling to the content area only (BaseNode wraps it) */

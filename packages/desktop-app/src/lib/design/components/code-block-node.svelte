@@ -87,6 +87,20 @@
   // Check if this node is being edited (from FocusManager)
   let isEditing = $derived(focusManager.editingNodeId === nodeId);
 
+  // Track if user is actively typing (hide buttons during typing)
+  let isTyping = $state(false);
+  let typingTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function handleTypingStart() {
+    isTyping = true;
+    // Clear existing timer
+    if (typingTimer) clearTimeout(typingTimer);
+    // Hide buttons for 1 second after last keypress
+    typingTimer = setTimeout(() => {
+      isTyping = false;
+    }, 1000);
+  }
+
   // Dropdown state
   let showLanguageDropdown = $state(false);
   let wrapperElement = $state<HTMLDivElement | undefined>(undefined);
@@ -260,7 +274,7 @@
 </script>
 
 <!-- Wrap BaseNode with code-block-specific styling -->
-<div class="code-block-node-wrapper" bind:this={wrapperElement}>
+<div class="code-block-node-wrapper" class:typing={isTyping} bind:this={wrapperElement}>
   <BaseNode
     {nodeId}
     {nodeType}
@@ -272,6 +286,7 @@
     metadata={codeMetadata}
     on:createNewNode={handleCreateNewNode}
     on:contentChanged={handleContentChange}
+    on:keydown={handleTypingStart}
     on:indentNode={forwardEvent('indentNode')}
     on:outdentNode={forwardEvent('outdentNode')}
     on:navigateArrow={forwardEvent('navigateArrow')}
@@ -353,9 +368,8 @@
 <style>
   /* Code block wrapper - icon outside, content with background */
   .code-block-node-wrapper {
-    width: 100%;
-    display: block;
     position: relative;
+    /* width: 100% handled by parent .node-content-wrapper flex child rule */
   }
 
   /* Apply muted background to the content area only (BaseNode wraps it) */
@@ -388,7 +402,8 @@
     text-align: left;
   }
 
-  .code-block-node-wrapper:hover .code-language-button {
+  /* Show language button on hover, but hide while actively typing */
+  .code-block-node-wrapper:hover:not(.typing) .code-language-button {
     opacity: 1;
   }
 
@@ -452,7 +467,8 @@
     text-transform: lowercase;
   }
 
-  .code-block-node-wrapper:hover .code-copy-button {
+  /* Show copy button on hover, but hide while actively typing */
+  .code-block-node-wrapper:hover:not(.typing) .code-copy-button {
     opacity: 1;
   }
 

@@ -177,10 +177,16 @@
         const { getNavigationService } = await import('$lib/services/navigation-service');
         const navService = getNavigationService();
 
+        // Find which pane the click originated from by traversing up the DOM
+        const sourcePaneElement = (event.target as HTMLElement).closest('[data-pane-id]');
+        const sourcePaneId = sourcePaneElement?.getAttribute('data-pane-id') ?? undefined;
+
         if (openInOtherPane) {
-          navService.navigateToNodeInOtherPane(nodeId);
+          // Cmd+Shift+Click: Open in OTHER pane (not the source pane)
+          navService.navigateToNodeInOtherPane(nodeId, sourcePaneId);
         } else {
-          navService.navigateToNode(nodeId, openInNewTab);
+          // Regular/Cmd+Click: Navigate in source pane
+          navService.navigateToNode(nodeId, openInNewTab, sourcePaneId);
         }
       })();
     };

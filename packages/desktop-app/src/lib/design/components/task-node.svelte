@@ -14,9 +14,14 @@
 -->
 
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, getContext } from 'svelte';
   import BaseNode from './base-node.svelte';
   import type { NodeState } from '$lib/design/icons/registry';
+  import { getNavigationService } from '$lib/services/navigation-service';
+  import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
+
+  // Get paneId from context (set by PaneContent) - identifies which pane this node is in
+  const sourcePaneId = getContext<string>('paneId') ?? DEFAULT_PANE_ID;
 
   // Props using Svelte 5 runes mode - same interface as BaseNode
   let {
@@ -36,6 +41,20 @@
   } = $props();
 
   const dispatch = createEventDispatcher();
+
+  // Track if user is actively typing (hide button during typing)
+  let isTyping = $state(false);
+  let typingTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function handleTypingStart() {
+    isTyping = true;
+    // Clear existing timer
+    if (typingTimer) clearTimeout(typingTimer);
+    // Hide button for 1 second after last keypress
+    typingTimer = setTimeout(() => {
+      isTyping = false;
+    }, 1000);
+  }
 
   // REFACTOR (Issue #316): Removed $effect for prop sync, will use bind:content instead
   // Replaced $effect with $derived.by() for task state detection
@@ -156,6 +175,27 @@
    */
 
   /**
+   * Handle open button click to navigate to task viewer
+   */
+  async function handleOpenClick(event: MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const navigationService = getNavigationService();
+
+    // Regular click: Open in dedicated viewer pane (other pane)
+    // Modifier keys provide alternative behaviors
+    if (event.metaKey || event.ctrlKey) {
+      // Cmd+Click: Open in new tab in source pane (where button was clicked)
+      await navigationService.navigateToNode(nodeId, true, sourcePaneId);
+    } else {
+      // Regular click: Open in dedicated viewer pane (creates new pane if needed)
+      // Pass sourcePaneId so it opens in the OTHER pane, not based on focus
+      await navigationService.navigateToNodeInOtherPane(nodeId, sourcePaneId);
+    }
+  }
+
+  /**
    * Forward all other events to parent components
    */
   function forwardEvent<T>(eventName: string) {
@@ -165,7 +205,11 @@
 
 <!-- Wrap BaseNode with task-specific styling -->
 <!-- REFACTOR (Issue #316): Using bind:content and on:contentChanged instead of internalContent and handleContentChange -->
-<div class="task-node-wrapper" class:task-completed={taskState === 'completed'}>
+<div
+  class="task-node-wrapper"
+  class:task-completed={taskState === 'completed'}
+  class:typing={isTyping}
+>
   <BaseNode
     {nodeId}
     {nodeType}
@@ -187,10 +231,28 @@
     on:nodeReferenceSelected={forwardEvent('nodeReferenceSelected')}
     on:slashCommandSelected={forwardEvent('slashCommandSelected')}
     on:nodeTypeChanged={forwardEvent('nodeTypeChanged')}
+    on:keydown={handleTypingStart}
   />
+
+  <!-- Open button (appears on hover) -->
+  <button
+    class="task-open-button"
+    onclick={handleOpenClick}
+    type="button"
+    aria-label="Open task in dedicated viewer pane (Cmd+Click for new tab in same pane)"
+    title="Open task in viewer"
+  >
+    open
+  </button>
 </div>
 
 <style>
+  /* Task node wrapper - position relative for absolute button positioning */
+  .task-node-wrapper {
+    position: relative;
+    /* width: 100% handled by parent .node-content-wrapper flex child rule */
+  }
+
   /* Completed task styling following design system */
   .task-completed {
     text-decoration: line-through;
@@ -200,5 +262,33 @@
   .task-completed :global(.node__content) {
     text-decoration: line-through;
     opacity: 0.7;
+  }
+
+  /* Open button (top-right, appears on hover) - matches code block copy button */
+  .task-open-button {
+    position: absolute;
+    top: 0.25rem;
+    right: 0.25rem;
+    background: hsl(var(--background));
+    border: 1px solid hsl(var(--border));
+    color: hsl(var(--foreground));
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    text-transform: lowercase;
+    z-index: 5; /* Below popovers (1001) but above node content */
+  }
+
+  /* Show button on hover, but hide while actively typing */
+  .task-node-wrapper:hover:not(.typing) .task-open-button {
+    opacity: 1;
+  }
+
+  /* Hover state for better feedback */
+  .task-open-button:hover {
+    background: hsl(var(--muted));
   }
 </style>
