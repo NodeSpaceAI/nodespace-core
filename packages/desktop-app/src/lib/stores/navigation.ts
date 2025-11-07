@@ -436,8 +436,9 @@ export function closeTab(tabId: string) {
 /**
  * Adds a new tab to the specified pane
  * @param tab - The tab to add
+ * @param makeActive - Whether to make the new tab active (default: true)
  */
-export function addTab(tab: Tab) {
+export function addTab(tab: Tab, makeActive: boolean = true) {
   tabState.update((state) => {
     // Verify pane exists
     const paneExists = state.panes.some((pane) => pane.id === tab.paneId);
@@ -457,16 +458,22 @@ export function addTab(tab: Tab) {
       return pane;
     });
 
-    return {
+    // Only update active tab/pane if makeActive is true
+    const newState = {
       ...state,
       tabs: [...state.tabs, tab],
-      panes: updatedPanes,
-      activePaneId: tab.paneId,
-      activeTabIds: {
+      panes: updatedPanes
+    };
+
+    if (makeActive) {
+      newState.activePaneId = tab.paneId;
+      newState.activeTabIds = {
         ...state.activeTabIds,
         [tab.paneId]: tab.id
-      }
-    };
+      };
+    }
+
+    return newState;
   });
 }
 

@@ -726,13 +726,18 @@ export class SharedNodeStore {
                   await tauriNodeService.updateNode(node.id, currentVersion, nodeToPersist);
                 } catch (updateError) {
                   // If UPDATE fails because node doesn't exist, try CREATE instead
-                  if (
-                    updateError instanceof Error &&
-                    (updateError.message.includes('NodeNotFound') ||
-                      updateError.message.includes('does not exist'))
-                  ) {
+                  const errorMessage =
+                    updateError instanceof Error
+                      ? updateError.message.toLowerCase()
+                      : String(updateError).toLowerCase();
+                  const isNodeNotFound =
+                    errorMessage.includes('nodenotfound') ||
+                    errorMessage.includes('not found') ||
+                    errorMessage.includes('does not exist');
+
+                  if (isNodeNotFound) {
                     console.warn(
-                      `[SharedNodeStore] Node ${node.id} not found in database, creating instead of updating`
+                      `[SharedNodeStore] Node ${node.id} not found in database, creating instead of updating (error: ${errorMessage})`
                     );
                     await tauriNodeService.createNode(nodeToPersist);
                     this.persistedNodeIds.add(node.id);

@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { LayoutPersistenceService } from '$lib/services/layout-persistence-service';
 
 export interface LayoutState {
   sidebarCollapsed: boolean;
@@ -20,6 +21,47 @@ const initialLayoutState: LayoutState = {
 };
 
 export const layoutState = writable<LayoutState>(initialLayoutState);
+
+// Track initialization state to prevent overwriting loaded state
+let isInitialized = false;
+
+// Subscribe to state changes and persist automatically
+// Note: LayoutPersistenceService.save() handles debouncing internally
+layoutState.subscribe((state) => {
+  // Only persist after initialization to avoid overwriting loaded state
+  if (isInitialized) {
+    LayoutPersistenceService.save(state);
+  }
+});
+
+/**
+ * Load persisted layout state from storage
+ * Should be called once on application startup
+ * Idempotent - safe to call multiple times (subsequent calls are no-ops)
+ * @returns True if state was loaded successfully, false if no saved state exists or loading failed
+ */
+export function loadPersistedLayoutState(): boolean {
+  // Guard against multiple initializations (e.g., component remounting)
+  if (isInitialized) {
+    console.warn('[Layout] loadPersistedLayoutState called after initialization, ignoring');
+    return false;
+  }
+
+  const persisted = LayoutPersistenceService.load();
+
+  if (persisted) {
+    // Restore the state
+    layoutState.set({
+      sidebarCollapsed: persisted.sidebarCollapsed,
+      activePane: 'today' // Keep activePane at default for now (not persisted)
+    });
+  }
+
+  // Enable persistence after load attempt (whether successful or not)
+  isInitialized = true;
+
+  return !!persisted;
+}
 
 // Navigation items store - updated to match design system patterns.html
 export const navigationItems = writable<NavigationItem[]>([

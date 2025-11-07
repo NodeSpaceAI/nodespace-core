@@ -56,6 +56,14 @@
     }, 1000);
   }
 
+  // Reset typing state on mouse movement
+  function handleMouseMove() {
+    if (isTyping) {
+      if (typingTimer) clearTimeout(typingTimer);
+      isTyping = false;
+    }
+  }
+
   // REFACTOR (Issue #316): Removed $effect for prop sync, will use bind:content instead
   // Replaced $effect with $derived.by() for task state detection
 
@@ -209,6 +217,9 @@
   class="task-node-wrapper"
   class:task-completed={taskState === 'completed'}
   class:typing={isTyping}
+  onmousemove={handleMouseMove}
+  role="group"
+  aria-label="Task node"
 >
   <BaseNode
     {nodeId}
@@ -220,7 +231,10 @@
     metadata={taskMetadata}
     on:iconClick={handleIconClick}
     on:createNewNode={forwardEvent('createNewNode')}
-    on:contentChanged
+    on:contentChanged={(e) => {
+      handleTypingStart(); // Track typing to hide Open button
+      dispatch('contentChanged', e.detail);
+    }}
     on:indentNode={forwardEvent('indentNode')}
     on:outdentNode={forwardEvent('outdentNode')}
     on:navigateArrow={forwardEvent('navigateArrow')}
@@ -231,7 +245,6 @@
     on:nodeReferenceSelected={forwardEvent('nodeReferenceSelected')}
     on:slashCommandSelected={forwardEvent('slashCommandSelected')}
     on:nodeTypeChanged={forwardEvent('nodeTypeChanged')}
-    on:keydown={handleTypingStart}
   />
 
   <!-- Open button (appears on hover) -->

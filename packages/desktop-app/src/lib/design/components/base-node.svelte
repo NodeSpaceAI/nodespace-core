@@ -130,7 +130,6 @@
   let autocompletePosition = $state({ x: 0, y: 0 });
   let currentQuery = $state('');
   let autocompleteResults = $state<NodeResult[]>([]);
-  let autocompleteLoading = $state(false);
 
   // Slash command modal state
   let showSlashCommands = $state(false);
@@ -288,11 +287,13 @@
     }
   });
 
+  // Cache to avoid redundant searches when typing after failed search
+  let lastSearchQuery = '';
+  let lastSearchHadResults = false;
+
   // Perform real search using the node manager
   async function performRealSearch(query: string) {
     try {
-      autocompleteLoading = true;
-
       // Guard clause: Early return if nodeManager is not available
       if (!services?.nodeManager) {
         autocompleteResults = [];
@@ -301,6 +302,30 @@
 
       // Get date shortcuts first (always shown)
       const dateShortcuts = getDateShortcuts(query);
+
+      // Only search backend if query is at least 3 characters
+      // This prevents unnecessary searches and reduces load
+      if (query.length < 3) {
+        // Show only date shortcuts for short queries
+        autocompleteResults = dateShortcuts;
+        lastSearchQuery = ''; // Reset cache when below 3 characters
+        lastSearchHadResults = false;
+        return;
+      }
+
+      // Optimization: Skip search if we're just adding characters to a query that had no results
+      // For example: if "abc" returned no results, don't search for "abcd", "abcde", etc.
+      // Only applies when extending a query (startsWith), not when modifying it
+      if (
+        query.length > lastSearchQuery.length &&
+        query.startsWith(lastSearchQuery) &&
+        !lastSearchHadResults &&
+        lastSearchQuery.length >= 3
+      ) {
+        // Just show date shortcuts, no need to search again
+        autocompleteResults = dateShortcuts;
+        return;
+      }
 
       // Query backend for mentionable nodes (tasks and containers)
       // Backend applies SQL-level filtering for performance and scalability
@@ -319,13 +344,15 @@
         type: (node.nodeType || 'text') as NodeType
       }));
 
+      // Update cache for next search
+      lastSearchQuery = query;
+      lastSearchHadResults = nodeResults.length > 0;
+
       // Combine: date shortcuts first, then search results
       autocompleteResults = [...dateShortcuts, ...nodeResults];
     } catch (error) {
       console.error('[NodeSearch] Search failed:', error);
       autocompleteResults = [];
-    } finally {
-      autocompleteLoading = false;
     }
   }
 
@@ -409,9 +436,20 @@
       const newNodeId = uuidv4();
 
       // Find the last root node to get the correct order
+      // IMPORTANT: Only use persisted nodes to avoid FOREIGN KEY constraint errors
       const allNodes = Array.from(nodeManager.nodes.values());
       const rootNodes = allNodes.filter(isContainerNode);
-      const lastRootNode = rootNodes[rootNodes.length - 1];
+
+      // Filter to only persisted root nodes (those that exist in the database)
+      // Check if SharedNodeStore has persistedNodeIds tracking
+      const sharedNodeStore = (
+        nodeManager as { sharedNodeStore?: { persistedNodeIds: Set<string> } }
+      ).sharedNodeStore;
+      const persistedRootNodes = sharedNodeStore?.persistedNodeIds
+        ? rootNodes.filter((node) => sharedNodeStore.persistedNodeIds.has(node.id))
+        : rootNodes; // Fallback to all nodes if tracking not available
+
+      const lastRootNode = persistedRootNodes[persistedRootNodes.length - 1];
       const beforeSiblingId = lastRootNode ? lastRootNode.id : null;
 
       // Create node using backend adapter (works in both Tauri and browser)
@@ -428,6 +466,17 @@
 
       // The backend adapter emits events that update nodeManager automatically
       // So we don't need to manually update nodeManager.nodes here
+
+      // Open the newly created node in a new tab (without focusing it)
+      // This allows users to continue working while having the new node ready for later
+      const { getNavigationService } = await import('$lib/services/navigation-service');
+      const navService = getNavigationService();
+      navService.navigateToNode(
+        newNodeId,
+        true /* openInNewTab */,
+        undefined /* sourcePaneId - use current pane */,
+        false /* makeTabActive - don't switch focus */
+      );
 
       return newNodeId;
     } catch (error) {
@@ -942,7 +991,6 @@
     position={autocompletePosition}
     query={currentQuery}
     results={autocompleteResults}
-    loading={autocompleteLoading}
     visible={showAutocomplete}
     onselect={handleAutocompleteSelect}
     onclose={handleAutocompleteClose}
@@ -954,7 +1002,6 @@
   position={slashCommandPosition}
   query={currentSlashQuery}
   commands={slashCommands}
-  loading={false}
   visible={showSlashCommands}
   onselect={handleSlashCommandSelect}
   onclose={handleSlashCommandClose}

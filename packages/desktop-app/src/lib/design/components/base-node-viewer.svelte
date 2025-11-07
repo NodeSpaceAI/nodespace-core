@@ -85,6 +85,9 @@
   // This placeholder is only visible to this viewer instance
   let viewerPlaceholder = $state<Node | null>(null);
 
+  // Track the viewed node reactively for schema form display
+  let currentViewedNode = $state<Node | null>(null);
+
   // Scroll position tracking
   // Reference to the scroll container element
   let scrollContainer: HTMLElement | null = null;
@@ -96,15 +99,26 @@
     // Removed setViewParentId - now pass nodeId directly to visibleNodes()
 
     if (nodeId) {
-      loadChildrenForParent(nodeId);
+      // Load children asynchronously - this will load the parent node first
+      loadChildrenForParent(nodeId).then(() => {
+        // After loading completes, initialize header content and update tab title
+        // This ensures the node is loaded before we try to read its content
+        const node = sharedNodeStore.getNode(nodeId);
+        headerContent = node?.content || '';
 
-      // Initialize header content from node synchronously
-      // This works now because loadChildrenForParent() loads the parent node first
-      const node = sharedNodeStore.getNode(nodeId);
-      headerContent = node?.content || '';
+        // Update reactive node reference for schema form
+        currentViewedNode = node || null;
 
-      // Update tab title on load
-      updateTabTitle(headerContent);
+        // Update tab title after node is loaded
+        // Skip if this is a date node - DateNodeViewer handles its own title formatting
+        const isDateNode = /^\d{4}-\d{2}-\d{2}$/.test(nodeId);
+        if (!isDateNode) {
+          updateTabTitle(headerContent);
+        }
+      });
+    } else {
+      // Clear when no nodeId
+      currentViewedNode = null;
     }
   });
 
@@ -1473,6 +1487,40 @@
     return [];
   });
 
+  // Reactive effect: Create placeholder when children drop to zero
+  $effect(() => {
+    const realChildren = nodeManager.visibleNodes(nodeId);
+
+    // If we have no real children and no placeholder, create one
+    if (realChildren.length === 0 && !viewerPlaceholder && nodeId) {
+      const placeholderId = globalThis.crypto.randomUUID();
+      viewerPlaceholder = {
+        id: placeholderId,
+        nodeType: 'text',
+        content: '',
+        parentId: null, // Viewer-local only
+        containerNodeId: null,
+        beforeSiblingId: null,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        version: 1,
+        properties: {},
+        mentions: []
+      };
+
+      // Initialize NodeManager with the placeholder
+      nodeManager.initializeNodes([viewerPlaceholder], {
+        expanded: true,
+        autoFocus: false, // Don't steal focus when auto-creating
+        inheritHeaderLevel: 0
+      });
+    }
+    // Clear placeholder when real children exist
+    else if (realChildren.length > 0 && viewerPlaceholder) {
+      viewerPlaceholder = null;
+    }
+  });
+
   // Calculate minimum depth for relative positioning
   // Children of a container node should start at depth 0 in the viewer
   const minDepth = $derived(() => {
@@ -1640,11 +1688,8 @@
   <!-- Scrollable Node Content Area (children structure) -->
   <div class="node-content-area" bind:this={scrollContainer}>
     <!-- Schema-Driven Properties Panel - appears after header, before children -->
-    {#if nodeId}
-      {@const currentNode = sharedNodeStore.getNode(nodeId)}
-      {#if currentNode}
-        <SchemaPropertyForm {nodeId} nodeType={currentNode.nodeType} />
-      {/if}
+    {#if currentViewedNode && nodeId}
+      <SchemaPropertyForm {nodeId} nodeType={currentViewedNode.nodeType} />
     {/if}
 
     {#each nodesToRender() as node (node.id)}

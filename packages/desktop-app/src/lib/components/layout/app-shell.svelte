@@ -7,7 +7,7 @@
   import ThemeProvider from '$lib/design/components/theme-provider.svelte';
   import NodeServiceContext from '$lib/contexts/node-service-context.svelte';
   import { initializeTheme } from '$lib/design/theme';
-  import { layoutState, toggleSidebar } from '$lib/stores/layout';
+  import { layoutState, toggleSidebar, loadPersistedLayoutState } from '$lib/stores/layout';
   import { registerCorePlugins } from '$lib/plugins/core-plugins';
   import { pluginRegistry } from '$lib/plugins/index';
   import { toggleTheme } from '$lib/design/theme';
@@ -95,6 +95,14 @@
       console.log(`${LOG_PREFIX} Persisted tab state loaded successfully`);
     } else {
       console.log(`${LOG_PREFIX} No persisted tab state found, using default state`);
+    }
+
+    // Load persisted layout state (sidebar collapsed/expanded) from storage
+    const layoutStateLoaded = loadPersistedLayoutState();
+    if (layoutStateLoaded) {
+      console.log(`${LOG_PREFIX} Persisted layout state loaded successfully`);
+    } else {
+      console.log(`${LOG_PREFIX} No persisted layout state found, using default state`);
     }
 
     // Initialize the unified plugin registry with core plugins

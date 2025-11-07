@@ -32,6 +32,8 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
   });
 
   afterAll(async () => {
+    // Final cleanup to ensure no leftover nodes
+    await cleanDatabase(backend);
     await cleanupDatabaseIfNeeded(dbPath);
   });
 
@@ -47,6 +49,11 @@ describe.sequential('Section 9: Content Processing & Advanced Operations', () =>
 
     // Clear any test errors from previous tests
     sharedNodeStore.clearTestErrors();
+  });
+
+  afterEach(async () => {
+    // Additional cleanup after each test to handle any nodes created in try-catch blocks
+    await cleanDatabase(backend);
   });
 
   describe('Content processing with embeddings', () => {

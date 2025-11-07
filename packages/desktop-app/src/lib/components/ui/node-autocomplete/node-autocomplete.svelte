@@ -21,8 +21,20 @@
   export let position: { x: number; y: number } = { x: 0, y: 0 };
   export let query: string = '';
   export let results: NodeResult[] = [];
-  export let loading: boolean = false;
   export let visible: boolean = false;
+
+  /**
+   * UX Decision: Loading state removed (previously showed "Searching..." message)
+   *
+   * Rationale:
+   * 1. 3-character minimum search threshold prevents premature backend calls
+   * 2. Results appear fast enough that loading state creates visual noise
+   * 3. Empty results state is sufficient feedback during search
+   * 4. Avoids flickering "Searching..." → results transition
+   *
+   * Parent component (base-node.svelte) implements smart caching to minimize
+   * backend calls, making loading indicators unnecessary for this UX pattern.
+   */
 
   // Event handler props (Svelte 5 pattern)
   export let onselect: ((_result: NodeResult) => void) | undefined = undefined;
@@ -190,23 +202,7 @@
     role="listbox"
     aria-label="Node reference autocomplete"
   >
-    {#if loading}
-      <div
-        style="padding: 2rem; display: flex; align-items: center; justify-content: center; gap: 0.75rem; color: hsl(var(--muted-foreground));"
-      >
-        <div
-          style="
-          width: 16px;
-          height: 16px;
-          border: 2px solid hsl(var(--border));
-          border-top: 2px solid hsl(var(--primary));
-          border-radius: 50%;
-          animation: spin 1s linear infinite;
-        "
-        ></div>
-        <span>Searching nodes...</span>
-      </div>
-    {:else if results.length === 0}
+    {#if results.length === 0}
       <!-- Always show "Create new" option when no results, never show "No nodes found" -->
       {#if query}
         <div

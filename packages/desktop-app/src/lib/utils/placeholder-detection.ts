@@ -127,6 +127,11 @@ export function isPlaceholderNode(node: PlaceholderCheckable): boolean {
       // The backend validates task description separately
       return trimmedContent === '';
 
+    case 'date':
+      // Date nodes are virtual/backend-managed containers, never placeholders
+      // They have empty content by design and are created on-demand by the backend
+      return false;
+
     default:
       // For unknown node types, use simple empty check
       return trimmedContent === '';

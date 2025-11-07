@@ -963,6 +963,70 @@ describe('Indent/Outdent Operations', () => {
     expect(indented?.parentId).toBe('task-1');
   });
 
+  it('should persist outdent when parent becomes a date container', async () => {
+    // Regression test for bug where outdenting nodes to date container level
+    // failed to persist because date nodes (with empty content) were incorrectly
+    // treated as placeholders and stripped from parentId changes
+
+    // Setup: Create date container with nested nodes
+    const dateContainer = await createNodeForCurrentMode(adapter, {
+      id: '2025-11-07',
+      nodeType: 'date',
+      content: '', // Date nodes have empty content by design
+      parentId: null,
+      containerNodeId: null,
+      beforeSiblingId: null,
+      properties: {},
+      embeddingVector: null,
+      mentions: []
+    });
+
+    const parent = await createNodeForCurrentMode(adapter, {
+      id: 'parent',
+      nodeType: 'text',
+      content: 'Parent',
+      parentId: '2025-11-07',
+      containerNodeId: '2025-11-07',
+      beforeSiblingId: null,
+      properties: {},
+      embeddingVector: null,
+      mentions: []
+    });
+
+    const child = await createNodeForCurrentMode(adapter, {
+      id: 'child',
+      nodeType: 'text',
+      content: 'Test',
+      parentId: 'parent',
+      containerNodeId: '2025-11-07',
+      beforeSiblingId: null,
+      properties: {},
+      embeddingVector: null,
+      mentions: []
+    });
+
+    service.initializeNodes([dateContainer, parent, child], { expanded: true });
+
+    // Act: Outdent child (should move from parent → date container)
+    const result = service.outdentNode('child');
+
+    // Verify: Outdent succeeded
+    expect(result).toBe(true);
+
+    // CRITICAL: Wait for async database writes to complete
+    await waitForDatabaseWrites();
+
+    // Verify: In-memory state updated
+    const outdentedChild = service.findNode('child');
+    expect(outdentedChild?.parentId).toBe('2025-11-07');
+
+    // Verify: Database state persisted (this was failing before fix)
+    if (shouldUseDatabase()) {
+      const dbNode = await adapter.getNode('child');
+      expect(dbNode?.parentId).toBe('2025-11-07');
+    }
+  });
+
   // TODO (Issue #434): Add automated tests for placeholder persistence behavior
   // Manual testing performed with Chrome DevTools MCP confirms:
   // - Placeholder nodes (empty content) are NOT persisted during indent/outdent

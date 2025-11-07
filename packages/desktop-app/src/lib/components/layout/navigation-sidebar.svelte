@@ -1,13 +1,72 @@
 <script lang="ts">
   import { layoutState, navigationItems, toggleSidebar } from '$lib/stores/layout.js';
+  import { tabState, setActiveTab, addTab, DEFAULT_PANE_ID } from '$lib/stores/navigation.js';
+  import { formatDateISO } from '$lib/utils/date-formatting.js';
+  import { v4 as uuidv4 } from 'uuid';
 
   // Subscribe to stores
   $: isCollapsed = $layoutState.sidebarCollapsed;
   $: navItems = $navigationItems;
 
+  /**
+   * Get today's date in YYYY-MM-DD format
+   */
+  function getTodayDateId(): string {
+    return formatDateISO(new Date());
+  }
+
+  /**
+   * Find if today's date is already open in any tab
+   * @returns The tab with today's date if found, null otherwise
+   */
+  function findTodayDateTab() {
+    const todayId = getTodayDateId();
+    const currentState = $tabState;
+
+    return currentState.tabs.find(
+      (tab) => tab.content?.nodeId === todayId && tab.content?.nodeType === 'date'
+    );
+  }
+
+  /**
+   * Handle Daily Journal navigation
+   * 1. First look for existing tab with today's date
+   * 2. If found, make it active
+   * 3. If not found, create new tab in left pane (pane-1)
+   */
+  function handleDailyJournalClick() {
+    const existingTab = findTodayDateTab();
+
+    if (existingTab) {
+      // Tab with today's date found - activate it
+      setActiveTab(existingTab.id, existingTab.paneId);
+    } else {
+      // No tab with today's date - create new one in left pane
+      const todayId = getTodayDateId();
+      const newTab = {
+        id: uuidv4(),
+        title: 'Daily Journal',
+        type: 'node' as const,
+        content: {
+          nodeId: todayId,
+          nodeType: 'date'
+        },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID // Always create in left pane
+      };
+
+      addTab(newTab, true); // Make it active
+    }
+  }
+
   // Handle navigation item clicks
   function handleNavItemClick(itemId: string) {
-    // For now, just update active state in navigation items
+    // Special handling for Daily Journal
+    if (itemId === 'daily-journal') {
+      handleDailyJournalClick();
+    }
+
+    // Update active state in navigation items
     navigationItems.update((items) =>
       items.map((item) => ({
         ...item,

@@ -133,7 +133,8 @@ export class NavigationService {
   async navigateToNode(
     nodeId: string,
     openInNewTab: boolean = false,
-    sourcePaneId?: string
+    sourcePaneId?: string,
+    makeTabActive: boolean = true
   ): Promise<void> {
     const target = await this.resolveNodeTarget(nodeId);
 
@@ -159,7 +160,7 @@ export class NavigationService {
         paneId: targetPaneId
       };
 
-      addTab(newTab);
+      addTab(newTab, makeTabActive);
       return;
     }
 
