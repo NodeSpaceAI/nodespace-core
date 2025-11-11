@@ -10,11 +10,19 @@
 //! The database layer uses the Pure JSON schema approach where all entity
 //! data is stored in the `properties` field, eliminating the need for
 //! ALTER TABLE operations on user machines.
+//!
+//! # Abstraction Layer (Phase 1 - Epic #461)
+//!
+//! The `NodeStore` trait provides a database abstraction layer that enables
+//! multiple backend implementations (Turso, SurrealDB) without changing
+//! business logic in NodeService.
 
 mod database;
 mod error;
 mod index_manager;
+mod node_store;
 
 pub use database::DatabaseService;
 pub use error::DatabaseError;
 pub use index_manager::IndexManager;
+pub use node_store::NodeStore;
