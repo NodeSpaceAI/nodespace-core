@@ -1083,11 +1083,106 @@ impl DatabaseService {
         let rows_affected = conn
             .execute("DELETE FROM nodes WHERE id = ?", [id])
             .await
-            .map_err(|e| {
-                DatabaseError::sql_execution(format!("Failed to delete node: {}", e))
-            })?;
+            .map_err(|e| DatabaseError::sql_execution(format!("Failed to delete node: {}", e)))?;
 
         Ok(rows_affected)
+    }
+
+    //
+    // QUERY OPERATIONS (Phase 1: SQL Extraction)
+    // These methods contain SQL logic for complex queries, extracted from NodeService.
+    //
+
+    /// Query nodes with filtering by node_type, parent_id, or container_node_id
+    ///
+    /// This is the core SQL logic for NodeFilter queries, extracted from NodeService.
+    /// Supports filtering by type, parent, or container with optional ordering and limits.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_type` - Optional node type filter
+    /// * `parent_id` - Optional parent ID filter
+    /// * `container_node_id` - Optional container ID filter
+    /// * `order_clause` - SQL ORDER BY clause (e.g., " ORDER BY created_at ASC")
+    /// * `limit_clause` - SQL LIMIT clause (e.g., " LIMIT 10")
+    ///
+    /// # Returns
+    ///
+    /// Rows iterator from the database query
+    ///
+    /// # Notes
+    ///
+    /// - Returns raw libsql::Rows iterator (NodeService processes rows)
+    /// - Filters are mutually exclusive (priority: type > parent > container > all)
+    /// - Does NOT apply migrations or populate mentions (NodeService handles that)
+    /// - Caller must consume rows iterator before connection is dropped
+    pub async fn db_query_nodes(
+        &self,
+        node_type: Option<&str>,
+        parent_id: Option<&str>,
+        container_node_id: Option<&str>,
+        order_clause: &str,
+        limit_clause: &str,
+    ) -> Result<libsql::Rows, DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        if let Some(node_type) = node_type {
+            // Query by node_type
+            let query = format!(
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes WHERE node_type = ?{}{}",
+                order_clause, limit_clause
+            );
+
+            let mut stmt = conn.prepare(&query).await.map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to prepare query: {}", e))
+            })?;
+
+            stmt.query([node_type]).await.map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to execute query: {}", e))
+            })
+        } else if let Some(parent_id) = parent_id {
+            // Query by parent_id
+            let query = format!(
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes WHERE parent_id = ?{}{}",
+                order_clause, limit_clause
+            );
+
+            let mut stmt = conn.prepare(&query).await.map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to prepare query: {}", e))
+            })?;
+
+            stmt.query([parent_id]).await.map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to execute query: {}", e))
+            })
+        } else if let Some(container_node_id) = container_node_id {
+            // Query by container_node_id
+            let query = format!(
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes WHERE container_node_id = ?{}{}",
+                order_clause, limit_clause
+            );
+
+            let mut stmt = conn.prepare(&query).await.map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to prepare query: {}", e))
+            })?;
+
+            stmt.query([container_node_id]).await.map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to execute query: {}", e))
+            })
+        } else {
+            // Default: return all nodes (with optional ordering/limit)
+            let query = format!(
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes{}{}",
+                order_clause, limit_clause
+            );
+
+            let mut stmt = conn.prepare(&query).await.map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to prepare query: {}", e))
+            })?;
+
+            stmt.query(()).await.map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to execute query: {}", e))
+            })
+        }
     }
 }
 

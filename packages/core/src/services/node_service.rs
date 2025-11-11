@@ -1868,141 +1868,7 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn query_nodes(&self, filter: NodeFilter) -> Result<Vec<Node>, NodeServiceError> {
-        // Use connection with busy timeout for better concurrency handling
-        let conn = self.db.connect_with_timeout().await?;
-
-        // For simple queries, we'll use specific patterns. Complex dynamic queries need a query builder
-        // For this implementation, we'll handle the most common cases
-
-        if let Some(ref node_type) = filter.node_type {
-            // Query by node_type
-            let order_clause = match filter.order_by {
-                Some(OrderBy::CreatedAsc) => " ORDER BY created_at ASC",
-                Some(OrderBy::CreatedDesc) => " ORDER BY created_at DESC",
-                Some(OrderBy::ModifiedAsc) => " ORDER BY modified_at ASC",
-                Some(OrderBy::ModifiedDesc) => " ORDER BY modified_at DESC",
-                _ => "",
-            };
-
-            let limit_clause = filter
-                .limit
-                .map(|l| format!(" LIMIT {}", l))
-                .unwrap_or_default();
-
-            let query = format!(
-                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes WHERE node_type = ?{}{}",
-                order_clause, limit_clause
-            );
-
-            let mut stmt = conn.prepare(&query).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
-            })?;
-
-            let mut rows = stmt.query([node_type.as_str()]).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
-            })?;
-
-            let mut nodes = Vec::new();
-            while let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-            {
-                let mut node = self.row_to_node(row)?;
-                self.backfill_schema_version(&mut node).await?;
-                self.apply_lazy_migration(&mut node).await?;
-                nodes.push(node);
-            }
-
-            return Ok(nodes);
-        } else if let Some(ref parent_id) = filter.parent_id {
-            // Query by parent_id
-            let order_clause = match filter.order_by {
-                Some(OrderBy::CreatedAsc) => " ORDER BY created_at ASC",
-                Some(OrderBy::CreatedDesc) => " ORDER BY created_at DESC",
-                Some(OrderBy::ModifiedAsc) => " ORDER BY modified_at ASC",
-                Some(OrderBy::ModifiedDesc) => " ORDER BY modified_at DESC",
-                _ => "",
-            };
-
-            let limit_clause = filter
-                .limit
-                .map(|l| format!(" LIMIT {}", l))
-                .unwrap_or_default();
-
-            let query = format!(
-                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes WHERE parent_id = ?{}{}",
-                order_clause, limit_clause
-            );
-
-            let mut stmt = conn.prepare(&query).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
-            })?;
-
-            let mut rows = stmt.query([parent_id.as_str()]).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
-            })?;
-
-            let mut nodes = Vec::new();
-            while let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-            {
-                let mut node = self.row_to_node(row)?;
-                self.backfill_schema_version(&mut node).await?;
-                self.apply_lazy_migration(&mut node).await?;
-                nodes.push(node);
-            }
-
-            return Ok(nodes);
-        } else if let Some(ref container_node_id) = filter.container_node_id {
-            // Query by container_node_id (bulk fetch optimization)
-            let order_clause = match filter.order_by {
-                Some(OrderBy::CreatedAsc) => " ORDER BY created_at ASC",
-                Some(OrderBy::CreatedDesc) => " ORDER BY created_at DESC",
-                Some(OrderBy::ModifiedAsc) => " ORDER BY modified_at ASC",
-                Some(OrderBy::ModifiedDesc) => " ORDER BY modified_at DESC",
-                _ => "",
-            };
-
-            let limit_clause = filter
-                .limit
-                .map(|l| format!(" LIMIT {}", l))
-                .unwrap_or_default();
-
-            let query = format!(
-                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes WHERE container_node_id = ?{}{}",
-                order_clause, limit_clause
-            );
-
-            let mut stmt = conn.prepare(&query).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
-            })?;
-
-            let mut rows = stmt
-                .query([container_node_id.as_str()])
-                .await
-                .map_err(|e| {
-                    NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
-                })?;
-
-            let mut nodes = Vec::new();
-            while let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-            {
-                let mut node = self.row_to_node(row)?;
-                self.backfill_schema_version(&mut node).await?;
-                self.apply_lazy_migration(&mut node).await?;
-                nodes.push(node);
-            }
-
-            return Ok(nodes);
-        }
-
-        // Default: return all nodes (with optional ordering/limit)
+        // Build order clause
         let order_clause = match filter.order_by {
             Some(OrderBy::CreatedAsc) => " ORDER BY created_at ASC",
             Some(OrderBy::CreatedDesc) => " ORDER BY created_at DESC",
@@ -2011,31 +1877,35 @@ impl NodeService {
             _ => "",
         };
 
+        // Build limit clause
         let limit_clause = filter
             .limit
             .map(|l| format!(" LIMIT {}", l))
             .unwrap_or_default();
 
-        let query = format!(
-            "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes{}{}",
-            order_clause, limit_clause
-        );
+        // Delegate SQL query to DatabaseService
+        let mut rows = self
+            .db
+            .db_query_nodes(
+                filter.node_type.as_deref(),
+                filter.parent_id.as_deref(),
+                filter.container_node_id.as_deref(),
+                order_clause,
+                &limit_clause,
+            )
+            .await?;
 
-        let mut stmt = conn.prepare(&query).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
-        })?;
-
-        let mut rows = stmt.query(()).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
-        })?;
-
+        // Convert rows to nodes and apply migrations
         let mut nodes = Vec::new();
         while let Some(row) = rows
             .next()
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
         {
-            nodes.push(self.row_to_node(row)?);
+            let mut node = self.row_to_node(row)?;
+            self.backfill_schema_version(&mut node).await?;
+            self.apply_lazy_migration(&mut node).await?;
+            nodes.push(node);
         }
 
         Ok(nodes)
