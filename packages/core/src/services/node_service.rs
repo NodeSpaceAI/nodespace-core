@@ -2398,12 +2398,14 @@ impl NodeService {
 
             // Step 2: Schema validation
             if updated.node_type != "schema" {
-                self.validate_node_against_schema(&updated).await.map_err(|e| {
-                    NodeServiceError::bulk_operation_failed(format!(
-                        "Failed schema validation for node {}: {}",
-                        id, e
-                    ))
-                })?;
+                self.validate_node_against_schema(&updated)
+                    .await
+                    .map_err(|e| {
+                        NodeServiceError::bulk_operation_failed(format!(
+                            "Failed schema validation for node {}: {}",
+                            id, e
+                        ))
+                    })?;
             }
 
             // Serialize properties for database

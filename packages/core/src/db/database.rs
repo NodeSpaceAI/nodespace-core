@@ -1599,11 +1599,9 @@ impl DatabaseService {
         let conn = self.connect_with_timeout().await?;
 
         // Begin transaction
-        conn.execute("BEGIN TRANSACTION", ())
-            .await
-            .map_err(|e| {
-                DatabaseError::sql_execution(format!("Failed to begin transaction: {}", e))
-            })?;
+        conn.execute("BEGIN TRANSACTION", ()).await.map_err(|e| {
+            DatabaseError::sql_execution(format!("Failed to begin transaction: {}", e))
+        })?;
 
         let mut created_ids = Vec::new();
 
@@ -1704,18 +1702,14 @@ impl DatabaseService {
         let conn = self.connect_with_timeout().await?;
 
         // Begin transaction
-        conn.execute("BEGIN TRANSACTION", ())
-            .await
-            .map_err(|e| {
-                DatabaseError::sql_execution(format!("Failed to begin transaction: {}", e))
-            })?;
+        conn.execute("BEGIN TRANSACTION", ()).await.map_err(|e| {
+            DatabaseError::sql_execution(format!("Failed to begin transaction: {}", e))
+        })?;
 
         for (id, params) in updates {
             // Query node directly within transaction
             let mut stmt = conn
-                .prepare(
-                    "SELECT id FROM nodes WHERE id = ?",
-                )
+                .prepare("SELECT id FROM nodes WHERE id = ?")
                 .await
                 .map_err(|e| {
                     DatabaseError::sql_execution(format!("Failed to prepare query: {}", e))
