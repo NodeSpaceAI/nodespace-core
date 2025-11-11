@@ -383,36 +383,10 @@ impl NodeService {
         &self,
         node_type: &str,
     ) -> Result<Option<serde_json::Value>, NodeServiceError> {
-        let conn = self.db.connect_with_timeout().await?;
-
-        let mut stmt = conn
-            .prepare("SELECT properties FROM nodes WHERE id = ? AND node_type = 'schema'")
+        self.db
+            .db_get_schema(node_type)
             .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to prepare schema query: {}", e))
-            })?;
-
-        let mut rows = stmt
-            .query([node_type])
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to get schema: {}", e)))?;
-
-        if let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-        {
-            let properties_str: String = row.get(0).map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to get properties column: {}", e))
-            })?;
-
-            let schema: serde_json::Value = serde_json::from_str(&properties_str)
-                .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
-
-            Ok(Some(schema))
-        } else {
-            Ok(None)
-        }
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 
     /// Validate a node's properties against its schema definition

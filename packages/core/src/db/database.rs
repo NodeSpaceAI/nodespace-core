@@ -1241,10 +1241,7 @@ impl DatabaseService {
             .prepare("SELECT node_id FROM node_mentions WHERE mentions_node_id = ?")
             .await
             .map_err(|e| {
-                DatabaseError::sql_execution(format!(
-                    "Failed to prepare mentioned_by query: {}",
-                    e
-                ))
+                DatabaseError::sql_execution(format!("Failed to prepare mentioned_by query: {}", e))
             })?;
 
         let mut rows = stmt.query([node_id]).await.map_err(|e| {
@@ -1329,6 +1326,67 @@ impl DatabaseService {
         }
 
         Ok(containers)
+    }
+
+    //
+    // SCHEMA OPERATIONS (Phase 1: SQL Extraction)
+    // These methods contain SQL logic for schema queries, extracted from NodeService.
+    //
+
+    /// Get schema definition for a node type
+    ///
+    /// This is the core SQL logic for schema retrieval, extracted from NodeService.
+    /// Returns the JSON properties field from the schema node.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_type` - The node type to get schema for
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(json))` - Schema found and parsed
+    /// * `Ok(None)` - No schema exists for this type
+    /// * `Err(DatabaseError)` - Query failed or JSON parsing failed
+    ///
+    /// # Notes
+    ///
+    /// - Schema nodes have id=node_type and node_type='schema'
+    /// - Returns parsed JSON from properties column
+    /// - Does NOT apply migrations or defaults (NodeService handles that)
+    pub async fn db_get_schema(
+        &self,
+        node_type: &str,
+    ) -> Result<Option<serde_json::Value>, DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        let mut stmt = conn
+            .prepare("SELECT properties FROM nodes WHERE id = ? AND node_type = 'schema'")
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to prepare schema query: {}", e))
+            })?;
+
+        let mut rows = stmt
+            .query([node_type])
+            .await
+            .map_err(|e| DatabaseError::sql_execution(format!("Failed to get schema: {}", e)))?;
+
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::sql_execution(e.to_string()))?
+        {
+            let properties_str: String = row.get(0).map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to get properties column: {}", e))
+            })?;
+
+            let schema: serde_json::Value = serde_json::from_str(&properties_str)
+                .map_err(|e| DatabaseError::sql_execution(format!("Failed to parse schema JSON: {}", e)))?;
+
+            Ok(Some(schema))
+        } else {
+            Ok(None)
+        }
     }
 
     //
