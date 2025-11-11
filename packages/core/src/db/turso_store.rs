@@ -142,10 +142,10 @@ impl TursoStore {
             row.get(10).context("Failed to get embedding_vector")?;
 
         // Parse timestamps - handles both SQLite and RFC3339 formats
-        let created_at = Self::parse_timestamp(&created_at_str)
-            .context("Failed to parse created_at")?;
-        let modified_at = Self::parse_timestamp(&modified_at_str)
-            .context("Failed to parse modified_at")?;
+        let created_at =
+            Self::parse_timestamp(&created_at_str).context("Failed to parse created_at")?;
+        let modified_at =
+            Self::parse_timestamp(&modified_at_str).context("Failed to parse modified_at")?;
 
         // Parse properties JSON
         let properties: Value =
