@@ -47,7 +47,7 @@ use crate::db::{DatabaseService, DbCreateNodeParams, DbUpdateNodeParams};
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use libsql::Row;
 use serde_json::Value;
 use std::sync::Arc;
@@ -85,6 +85,27 @@ impl TursoStore {
         Self { db }
     }
 
+    /// Parse timestamp from database - handles both SQLite and RFC3339 formats
+    ///
+    /// SQLite CURRENT_TIMESTAMP returns: "YYYY-MM-DD HH:MM:SS"
+    /// Old data might use RFC3339: "YYYY-MM-DDTHH:MM:SSZ"
+    fn parse_timestamp(s: &str) -> Result<DateTime<Utc>> {
+        // Try SQLite format first: "YYYY-MM-DD HH:MM:SS"
+        if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+            return Ok(naive.and_utc());
+        }
+
+        // Try RFC3339 format (for old data): "YYYY-MM-DDTHH:MM:SSZ"
+        if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+            return Ok(dt.with_timezone(&Utc));
+        }
+
+        Err(anyhow::anyhow!(
+            "Unable to parse timestamp '{}' as SQLite or RFC3339 format",
+            s
+        ))
+    }
+
     /// Convert libsql::Row to Node model
     ///
     /// Handles all field conversions including optional fields and JSON properties.
@@ -120,13 +141,11 @@ impl TursoStore {
         let embedding_vector: Option<Vec<u8>> =
             row.get(10).context("Failed to get embedding_vector")?;
 
-        // Parse timestamps from RFC3339 format
-        let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-            .context("Failed to parse created_at")?
-            .with_timezone(&Utc);
-        let modified_at = DateTime::parse_from_rfc3339(&modified_at_str)
-            .context("Failed to parse modified_at")?
-            .with_timezone(&Utc);
+        // Parse timestamps - handles both SQLite and RFC3339 formats
+        let created_at = Self::parse_timestamp(&created_at_str)
+            .context("Failed to parse created_at")?;
+        let modified_at = Self::parse_timestamp(&modified_at_str)
+            .context("Failed to parse modified_at")?;
 
         // Parse properties JSON
         let properties: Value =
@@ -626,16 +645,18 @@ mod tests {
     use super::*;
     use crate::models::Node;
     use serde_json::json;
-    use std::path::PathBuf;
+    use tempfile::TempDir;
 
-    async fn create_test_store() -> Result<TursoStore> {
-        let db = Arc::new(DatabaseService::new(PathBuf::from(":memory:")).await?);
-        Ok(TursoStore::new(db))
+    async fn create_test_store() -> Result<(TursoStore, TempDir)> {
+        let temp_dir = TempDir::new()?;
+        let db_path = temp_dir.path().join("test.db");
+        let db = Arc::new(DatabaseService::new(db_path).await?);
+        Ok((TursoStore::new(db), temp_dir))
     }
 
     #[tokio::test]
     async fn test_create_and_get_node() -> Result<()> {
-        let store = create_test_store().await?;
+        let (store, _temp_dir) = create_test_store().await?;
 
         let node = Node::new(
             "text".to_string(),
@@ -657,7 +678,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_node() -> Result<()> {
-        let store = create_test_store().await?;
+        let (store, _temp_dir) = create_test_store().await?;
 
         let node = Node::new(
             "text".to_string(),
@@ -681,7 +702,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_node() -> Result<()> {
-        let store = create_test_store().await?;
+        let (store, _temp_dir) = create_test_store().await?;
 
         let node = Node::new(
             "text".to_string(),
@@ -703,7 +724,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_children() -> Result<()> {
-        let store = create_test_store().await?;
+        let (store, _temp_dir) = create_test_store().await?;
 
         let parent = Node::new("text".to_string(), "Parent".to_string(), None, json!({}));
         let parent = store.create_node(parent).await?;
@@ -732,7 +753,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mentions() -> Result<()> {
-        let store = create_test_store().await?;
+        let (store, _temp_dir) = create_test_store().await?;
 
         let source = Node::new("text".to_string(), "Source".to_string(), None, json!({}));
         let target = Node::new("text".to_string(), "Target".to_string(), None, json!({}));
@@ -764,7 +785,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_schema_operations() -> Result<()> {
-        let store = create_test_store().await?;
+        let (store, _temp_dir) = create_test_store().await?;
 
         let schema = json!({
             "type": "object",
