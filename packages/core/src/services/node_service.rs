@@ -1493,12 +1493,8 @@ impl NodeService {
         &self,
         id: &str,
     ) -> Result<crate::models::DeleteResult, NodeServiceError> {
-        let conn = self.db.connect_with_timeout().await?;
-
-        let rows_affected = conn
-            .execute("DELETE FROM nodes WHERE id = ?", [id])
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to delete node: {}", e)))?;
+        // Delegate SQL to DatabaseService
+        let rows_affected = self.db.db_delete_node(id).await?;
 
         // Idempotent delete: return success even if node doesn't exist
         // This follows RESTful best practices and prevents race conditions

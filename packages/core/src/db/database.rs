@@ -1057,6 +1057,38 @@ impl DatabaseService {
 
         Ok(())
     }
+
+    /// Delete a node from the database
+    ///
+    /// This is the core SQL logic for node deletion, extracted from NodeService.
+    /// Uses CASCADE to automatically delete children and related data.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The node ID to delete
+    ///
+    /// # Returns
+    ///
+    /// Number of rows affected (0 = node didn't exist, >0 = node deleted)
+    ///
+    /// # Notes
+    ///
+    /// - DELETE CASCADE automatically removes children (parent_id foreign key)
+    /// - DELETE CASCADE automatically removes mentions (node_mentions table)
+    /// - Idempotent: deleting non-existent node returns 0 (success)
+    /// - Does NOT handle business logic (NodeService handles that)
+    pub async fn db_delete_node(&self, id: &str) -> Result<u64, DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        let rows_affected = conn
+            .execute("DELETE FROM nodes WHERE id = ?", [id])
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to delete node: {}", e))
+            })?;
+
+        Ok(rows_affected)
+    }
 }
 
 #[cfg(test)]
