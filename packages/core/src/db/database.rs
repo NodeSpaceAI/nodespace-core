@@ -1767,6 +1767,252 @@ impl DatabaseService {
 
         Ok(())
     }
+
+    /// Get all children of a parent node
+    ///
+    /// This is the core SQL logic for fetching child nodes, extracted from NodeService.
+    /// Returns nodes filtered by parent_id, ordered by created_at timestamp.
+    ///
+    /// # Arguments
+    ///
+    /// * `parent_id` - The ID of the parent node
+    ///
+    /// # Returns
+    ///
+    /// `libsql::Rows` iterator containing matching child nodes
+    ///
+    /// # Notes
+    ///
+    /// - Returns nodes in creation order (not sibling order)
+    /// - NodeService handles sibling ordering via before_sibling_id
+    /// - Does NOT validate parent exists (NodeService handles that)
+    /// - Empty result is NOT an error (parent may have no children)
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = DatabaseService::new(PathBuf::from(":memory:")).await?;
+    /// // Fetch all children of a parent node
+    /// let mut rows = db.db_get_children("parent-123").await?;
+    /// while let Some(row) = rows.next().await? {
+    ///     let id: String = row.get(0)?;
+    ///     let node_type: String = row.get(1)?;
+    ///     println!("Child: {} (type: {})", id, node_type);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn db_get_children(&self, parent_id: &str) -> Result<libsql::Rows, DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version,
+                        created_at, modified_at, properties, embedding_vector
+                 FROM nodes WHERE parent_id = ? ORDER BY created_at ASC",
+            )
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to prepare get_children query: {}", e))
+            })?;
+
+        stmt.query([parent_id]).await.map_err(|e| {
+            DatabaseError::sql_execution(format!("Failed to execute get_children query: {}", e))
+        })
+    }
+
+    /// Get all nodes belonging to a container node
+    ///
+    /// This is the core SQL logic for fetching nodes by container, extracted from NodeService.
+    /// Enables efficient bulk loading of complete document trees in a single query.
+    ///
+    /// # Arguments
+    ///
+    /// * `container_node_id` - The ID of the container/origin node (e.g., date page ID)
+    ///
+    /// # Returns
+    ///
+    /// `libsql::Rows` iterator containing all nodes with matching container_node_id
+    ///
+    /// # Notes
+    ///
+    /// - Returns nodes in creation order (not hierarchical or sibling order)
+    /// - NodeService handles tree reconstruction and sibling ordering
+    /// - Does NOT validate container exists (NodeService handles that)
+    /// - Empty result is NOT an error (container may be empty)
+    /// - More efficient than recursive parent_id queries for full document loading
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = DatabaseService::new(PathBuf::from(":memory:")).await?;
+    /// // Fetch all nodes belonging to a date page
+    /// let mut rows = db.db_get_nodes_by_container("2025-10-05").await?;
+    /// let mut count = 0;
+    /// while let Some(_row) = rows.next().await? {
+    ///     count += 1;
+    /// }
+    /// println!("Found {} nodes in container", count);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn db_get_nodes_by_container(
+        &self,
+        container_node_id: &str,
+    ) -> Result<libsql::Rows, DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version,
+                        created_at, modified_at, properties, embedding_vector
+                 FROM nodes WHERE container_node_id = ?",
+            )
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!(
+                    "Failed to prepare get_nodes_by_container query: {}",
+                    e
+                ))
+            })?;
+
+        stmt.query([container_node_id]).await.map_err(|e| {
+            DatabaseError::sql_execution(format!(
+                "Failed to execute get_nodes_by_container query: {}",
+                e
+            ))
+        })
+    }
+
+    /// Update a node's parent_id (move operation)
+    ///
+    /// This is the core SQL logic for moving nodes in the hierarchy, extracted from NodeService.
+    /// Updates the parent_id field to change a node's position in the tree.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The ID of the node to move
+    /// * `new_parent_id` - The new parent node ID (None = make root node)
+    ///
+    /// # Returns
+    ///
+    /// Number of rows affected (0 = node didn't exist, 1 = moved successfully)
+    ///
+    /// # Notes
+    ///
+    /// - Updates modified_at timestamp automatically
+    /// - Does NOT validate node or parent exist (NodeService handles that)
+    /// - Does NOT check for circular references (NodeService handles that)
+    /// - Does NOT update container_node_id (NodeService handles that separately)
+    /// - Idempotent: moving to current parent is allowed (no-op)
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = DatabaseService::new(PathBuf::from(":memory:")).await?;
+    /// // Move node under new parent
+    /// let rows_affected = db.db_move_node("child-123", Some("parent-456")).await?;
+    /// assert_eq!(rows_affected, 1);
+    ///
+    /// // Make node a root (remove parent)
+    /// let rows_affected = db.db_move_node("child-123", None).await?;
+    /// assert_eq!(rows_affected, 1);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn db_move_node(
+        &self,
+        node_id: &str,
+        new_parent_id: Option<&str>,
+    ) -> Result<u64, DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        let rows_affected = conn
+            .execute(
+                "UPDATE nodes SET parent_id = ?, modified_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (new_parent_id, node_id),
+            )
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to move node: {}", e))
+            })?;
+
+        Ok(rows_affected)
+    }
+
+    /// Update a node's before_sibling_id (reorder operation)
+    ///
+    /// This is the core SQL logic for reordering siblings, extracted from NodeService.
+    /// Updates the before_sibling_id field to change a node's position in its sibling list.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The ID of the node to reorder
+    /// * `before_sibling_id` - The sibling to position after (None = move to end)
+    ///
+    /// # Returns
+    ///
+    /// Number of rows affected (0 = node didn't exist, 1 = reordered successfully)
+    ///
+    /// # Notes
+    ///
+    /// - Updates modified_at timestamp automatically
+    /// - Does NOT validate node or sibling exist (NodeService handles that)
+    /// - Does NOT validate siblings share same parent (NodeService handles that)
+    /// - Idempotent: setting same before_sibling_id is allowed (no-op)
+    /// - Nodes form a linked list via before_sibling_id:
+    ///   - before_sibling_id = None means first in list
+    ///   - before_sibling_id = Some(id) means comes after that node
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = DatabaseService::new(PathBuf::from(":memory:")).await?;
+    /// // Position node after sibling-123
+    /// let rows_affected = db.db_reorder_node("node-456", Some("sibling-123")).await?;
+    /// assert_eq!(rows_affected, 1);
+    ///
+    /// // Move node to front of sibling list
+    /// let rows_affected = db.db_reorder_node("node-456", None).await?;
+    /// assert_eq!(rows_affected, 1);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn db_reorder_node(
+        &self,
+        node_id: &str,
+        before_sibling_id: Option<&str>,
+    ) -> Result<u64, DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        let rows_affected = conn
+            .execute(
+                "UPDATE nodes SET before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (before_sibling_id, node_id),
+            )
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to reorder node: {}", e))
+            })?;
+
+        Ok(rows_affected)
+    }
 }
 
 #[cfg(test)]
