@@ -22,7 +22,7 @@ mod error;
 mod index_manager;
 mod node_store;
 
-pub use database::DatabaseService;
+pub use database::{DatabaseService, DbCreateNodeParams};
 pub use error::DatabaseError;
 pub use index_manager::IndexManager;
 pub use node_store::NodeStore;

@@ -682,8 +682,7 @@ pub trait NodeStore: Send + Sync {
     /// # Ok(())
     /// # }
     /// ```
-    async fn search_by_embedding(&self, embedding: &[u8], limit: i64)
-        -> Result<Vec<(Node, f64)>>;
+    async fn search_by_embedding(&self, embedding: &[u8], limit: i64) -> Result<Vec<(Node, f64)>>;
 
     //
     // BATCH OPERATIONS

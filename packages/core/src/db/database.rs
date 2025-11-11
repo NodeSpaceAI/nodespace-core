@@ -75,6 +75,18 @@ pub struct DatabaseService {
     pub db_path: PathBuf,
 }
 
+/// Parameters for node insertion (avoids too-many-arguments lint)
+pub struct DbCreateNodeParams<'a> {
+    pub id: &'a str,
+    pub node_type: &'a str,
+    pub content: &'a str,
+    pub parent_id: Option<&'a str>,
+    pub container_node_id: Option<&'a str>,
+    pub before_sibling_id: Option<&'a str>,
+    pub properties: &'a str,
+    pub embedding_vector: Option<&'a [u8]>,
+}
+
 impl DatabaseService {
     /// Create a new DatabaseService with the specified database path
     ///
@@ -812,6 +824,75 @@ impl DatabaseService {
             .await?;
 
         Ok(conn)
+    }
+
+    //
+    // NODE STORE OPERATIONS (Phase 1: SQL Extraction)
+    // These methods contain the SQL logic extracted from NodeService.
+    // They are designed to be wrapped by the NodeStore trait implementation.
+    //
+
+    /// Insert a node into the database
+    ///
+    /// This is the core SQL logic for node creation, extracted from NodeService.
+    /// Handles both container and non-container nodes with appropriate embedding stale flags.
+    ///
+    /// # Arguments
+    ///
+    /// * `params` - Node creation parameters (see DbCreateNodeParams)
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if successful
+    ///
+    /// # Notes
+    ///
+    /// - Container nodes (container_node_id = None) are marked with embedding_stale = TRUE
+    /// - Non-container nodes are inserted without stale flag
+    /// - Created_at and modified_at are set automatically by database
+    pub async fn db_create_node(&self, params: DbCreateNodeParams<'_>) -> Result<(), DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        // Container nodes (container_node_id = None) need stale flag for embedding generation
+        let is_container = params.container_node_id.is_none();
+
+        if is_container {
+            conn.execute(
+                "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector, embedding_stale, last_content_update)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, CURRENT_TIMESTAMP)",
+                (
+                    params.id,
+                    params.node_type,
+                    params.content,
+                    params.parent_id,
+                    params.container_node_id,
+                    params.before_sibling_id,
+                    params.properties,
+                    params.embedding_vector,
+                ),
+            )
+            .await
+            .map_err(|e| DatabaseError::sql_execution(format!("Failed to insert node: {}", e)))?;
+        } else {
+            conn.execute(
+                "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    params.id,
+                    params.node_type,
+                    params.content,
+                    params.parent_id,
+                    params.container_node_id,
+                    params.before_sibling_id,
+                    params.properties,
+                    params.embedding_vector,
+                ),
+            )
+            .await
+            .map_err(|e| DatabaseError::sql_execution(format!("Failed to insert node: {}", e)))?;
+        }
+
+        Ok(())
     }
 }
 

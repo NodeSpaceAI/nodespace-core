@@ -784,10 +784,6 @@ impl NodeService {
             }
         }
 
-        // Insert into database
-        // Database defaults handle created_at and modified_at timestamps automatically
-        let conn = self.db.connect_with_timeout().await?;
-
         // Add schema version to properties
         // Get schema for this node type and extract version
         let mut properties = node.properties.clone();
@@ -814,46 +810,20 @@ impl NodeService {
             .as_deref()
             .filter(|id| *id != ROOT_CONTAINER_ID);
 
-        // Mark container nodes as stale for initial embedding generation
-        // Container nodes are identified by container_node_id being NULL
-        // This ensures new containers will be picked up by the background embedding processor
-        let is_container = container_node_id_value.is_none();
-
-        if is_container {
-            conn.execute(
-                "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector, embedding_stale, last_content_update)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, CURRENT_TIMESTAMP)",
-                (
-                    node.id.as_str(),
-                    node.node_type.as_str(),
-                    node.content.as_str(),
-                    node.parent_id.as_deref(),
-                    container_node_id_value,
-                    node.before_sibling_id.as_deref(),
-                    properties_json.as_str(),
-                    node.embedding_vector.as_deref(),
-                ),
-            )
+        // Delegate SQL insertion to DatabaseService
+        self.db
+            .db_create_node(crate::db::DbCreateNodeParams {
+                id: node.id.as_str(),
+                node_type: node.node_type.as_str(),
+                content: node.content.as_str(),
+                parent_id: node.parent_id.as_deref(),
+                container_node_id: container_node_id_value,
+                before_sibling_id: node.before_sibling_id.as_deref(),
+                properties: properties_json.as_str(),
+                embedding_vector: node.embedding_vector.as_deref(),
+            })
             .await
             .map_err(|e| NodeServiceError::query_failed(format!("Failed to insert node: {}", e)))?;
-        } else {
-            conn.execute(
-                "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    node.id.as_str(),
-                    node.node_type.as_str(),
-                    node.content.as_str(),
-                    node.parent_id.as_deref(),
-                    container_node_id_value,
-                    node.before_sibling_id.as_deref(),
-                    properties_json.as_str(),
-                    node.embedding_vector.as_deref(),
-                ),
-            )
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to insert node: {}", e)))?;
-        }
 
         Ok(node.id)
     }
