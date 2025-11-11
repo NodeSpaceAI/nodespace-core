@@ -2935,32 +2935,10 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn get_mentions(&self, node_id: &str) -> Result<Vec<String>, NodeServiceError> {
-        let conn = self.db.connect_with_timeout().await?;
-
-        let mut stmt = conn
-            .prepare("SELECT mentions_node_id FROM node_mentions WHERE node_id = ?")
+        self.db
+            .db_get_outgoing_mentions(node_id)
             .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to prepare mentions query: {}", e))
-            })?;
-
-        let mut rows = stmt.query([node_id]).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to execute mentions query: {}", e))
-        })?;
-
-        let mut mentions = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-        {
-            let mentioned_id: String = row
-                .get(0)
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-            mentions.push(mentioned_id);
-        }
-
-        Ok(mentions)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 
     /// Get all nodes that mention a specific node (incoming references/backlinks)
@@ -2988,35 +2966,10 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn get_mentioned_by(&self, node_id: &str) -> Result<Vec<String>, NodeServiceError> {
-        let conn = self.db.connect_with_timeout().await?;
-
-        let mut stmt = conn
-            .prepare("SELECT node_id FROM node_mentions WHERE mentions_node_id = ?")
+        self.db
+            .db_get_incoming_mentions(node_id)
             .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!(
-                    "Failed to prepare mentioned_by query: {}",
-                    e
-                ))
-            })?;
-
-        let mut rows = stmt.query([node_id]).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to execute mentioned_by query: {}", e))
-        })?;
-
-        let mut mentioned_by = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-        {
-            let mentioning_id: String = row
-                .get(0)
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-            mentioned_by.push(mentioning_id);
-        }
-
-        Ok(mentioned_by)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 
     /// Get container nodes of nodes that mention the target node (backlinks at container level).
@@ -3046,46 +2999,10 @@ impl NodeService {
         &self,
         node_id: &str,
     ) -> Result<Vec<String>, NodeServiceError> {
-        let conn = self.db.connect_with_timeout().await?;
-
-        let query = "
-            SELECT DISTINCT
-                CASE
-                    WHEN n.node_type IN ('task', 'ai-chat') THEN n.id
-                    ELSE COALESCE(n.container_node_id, n.id)
-                END as container_id
-            FROM node_mentions nm
-            JOIN nodes n ON nm.node_id = n.id
-            WHERE nm.mentions_node_id = ?
-        ";
-
-        let mut stmt = conn.prepare(query).await.map_err(|e| {
-            NodeServiceError::query_failed(format!(
-                "Failed to prepare mentioning_containers query: {}",
-                e
-            ))
-        })?;
-
-        let mut rows = stmt.query([node_id]).await.map_err(|e| {
-            NodeServiceError::query_failed(format!(
-                "Failed to execute mentioning_containers query: {}",
-                e
-            ))
-        })?;
-
-        let mut containers = Vec::new();
-        while let Some(row) = rows
-            .next()
+        self.db
+            .db_get_mentioning_containers(node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-        {
-            let container_id: String = row
-                .get(0)
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-            containers.push(container_id);
-        }
-
-        Ok(containers)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 }
 

@@ -1165,6 +1165,172 @@ impl DatabaseService {
         Ok(())
     }
 
+    /// Get all nodes mentioned by a specific node (outgoing mentions)
+    ///
+    /// This is the core SQL logic for querying outgoing mentions, extracted from NodeService.
+    /// Returns node IDs that are mentioned by the source node.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The node ID to get mentions for
+    ///
+    /// # Returns
+    ///
+    /// Vector of mentioned node IDs
+    ///
+    /// # Notes
+    ///
+    /// - Returns empty vector if node has no mentions
+    /// - Does NOT validate node existence (NodeService handles that)
+    pub async fn db_get_outgoing_mentions(
+        &self,
+        node_id: &str,
+    ) -> Result<Vec<String>, DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        let mut stmt = conn
+            .prepare("SELECT mentions_node_id FROM node_mentions WHERE node_id = ?")
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to prepare mentions query: {}", e))
+            })?;
+
+        let mut rows = stmt.query([node_id]).await.map_err(|e| {
+            DatabaseError::sql_execution(format!("Failed to execute mentions query: {}", e))
+        })?;
+
+        let mut mentions = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::sql_execution(e.to_string()))?
+        {
+            let mentioned_id: String = row
+                .get(0)
+                .map_err(|e| DatabaseError::sql_execution(e.to_string()))?;
+            mentions.push(mentioned_id);
+        }
+
+        Ok(mentions)
+    }
+
+    /// Get all nodes that mention a specific node (incoming mentions/backlinks)
+    ///
+    /// This is the core SQL logic for querying incoming mentions, extracted from NodeService.
+    /// Returns node IDs that mention the target node.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The node ID to get backlinks for
+    ///
+    /// # Returns
+    ///
+    /// Vector of node IDs that mention this node
+    ///
+    /// # Notes
+    ///
+    /// - Returns empty vector if node has no backlinks
+    /// - Does NOT validate node existence (NodeService handles that)
+    pub async fn db_get_incoming_mentions(
+        &self,
+        node_id: &str,
+    ) -> Result<Vec<String>, DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        let mut stmt = conn
+            .prepare("SELECT node_id FROM node_mentions WHERE mentions_node_id = ?")
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!(
+                    "Failed to prepare mentioned_by query: {}",
+                    e
+                ))
+            })?;
+
+        let mut rows = stmt.query([node_id]).await.map_err(|e| {
+            DatabaseError::sql_execution(format!("Failed to execute mentioned_by query: {}", e))
+        })?;
+
+        let mut mentioned_by = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::sql_execution(e.to_string()))?
+        {
+            let mentioning_id: String = row
+                .get(0)
+                .map_err(|e| DatabaseError::sql_execution(e.to_string()))?;
+            mentioned_by.push(mentioning_id);
+        }
+
+        Ok(mentioned_by)
+    }
+
+    /// Get container nodes of nodes that mention the target node (container-level backlinks)
+    ///
+    /// This is the core SQL logic for container-level backlinks, extracted from NodeService.
+    /// Resolves incoming mentions to their container nodes and deduplicates.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The target node ID
+    ///
+    /// # Returns
+    ///
+    /// Vector of container node IDs (deduplicated)
+    ///
+    /// # Notes
+    ///
+    /// - Task and ai-chat nodes use their own ID as container (they are self-contained)
+    /// - Other nodes use their container_node_id (or their own ID if root)
+    /// - Results are deduplicated via DISTINCT
+    /// - Returns empty vector if no nodes mention the target
+    pub async fn db_get_mentioning_containers(
+        &self,
+        node_id: &str,
+    ) -> Result<Vec<String>, DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        let query = "
+            SELECT DISTINCT
+                CASE
+                    WHEN n.node_type IN ('task', 'ai-chat') THEN n.id
+                    ELSE COALESCE(n.container_node_id, n.id)
+                END as container_id
+            FROM node_mentions nm
+            JOIN nodes n ON nm.node_id = n.id
+            WHERE nm.mentions_node_id = ?
+        ";
+
+        let mut stmt = conn.prepare(query).await.map_err(|e| {
+            DatabaseError::sql_execution(format!(
+                "Failed to prepare mentioning_containers query: {}",
+                e
+            ))
+        })?;
+
+        let mut rows = stmt.query([node_id]).await.map_err(|e| {
+            DatabaseError::sql_execution(format!(
+                "Failed to execute mentioning_containers query: {}",
+                e
+            ))
+        })?;
+
+        let mut containers = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::sql_execution(e.to_string()))?
+        {
+            let container_id: String = row
+                .get(0)
+                .map_err(|e| DatabaseError::sql_execution(e.to_string()))?;
+            containers.push(container_id);
+        }
+
+        Ok(containers)
+    }
+
     //
     // QUERY OPERATIONS (Phase 1: SQL Extraction)
     // These methods contain SQL logic for complex queries, extracted from NodeService.
