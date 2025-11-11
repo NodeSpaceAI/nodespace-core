@@ -1093,6 +1093,83 @@ impl DatabaseService {
     // These methods contain SQL logic for complex queries, extracted from NodeService.
     //
 
+    /// Search nodes by content substring (case-insensitive LIKE)
+    ///
+    /// This is the core SQL logic for content search, extracted from NodeService.
+    /// Supports optional node_type filtering and additional container/task filter.
+    ///
+    /// # Arguments
+    ///
+    /// * `content_pattern` - SQL LIKE pattern (e.g., "%search%")
+    /// * `node_type` - Optional node type to filter by
+    /// * `container_task_filter` - Optional SQL filter clause for containers/tasks
+    /// * `limit_clause` - SQL LIMIT clause (e.g., " LIMIT 10")
+    ///
+    /// # Returns
+    ///
+    /// Rows iterator from the database query
+    ///
+    /// # Notes
+    ///
+    /// - Returns raw libsql::Rows iterator (NodeService processes rows)
+    /// - Uses LIKE operator for substring matching (not full-text search)
+    /// - Does NOT apply migrations or populate mentions (NodeService handles that)
+    pub async fn db_search_nodes_by_content(
+        &self,
+        content_pattern: &str,
+        node_type: Option<&str>,
+        container_task_filter: &str,
+        limit_clause: &str,
+    ) -> Result<libsql::Rows, DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        if let Some(node_type) = node_type {
+            // Filter by both content and node_type
+            let sql = format!(
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector
+                 FROM nodes WHERE content LIKE ? AND node_type = ?{}{}",
+                container_task_filter, limit_clause
+            );
+
+            let mut stmt = conn.prepare(&sql).await.map_err(|e| {
+                DatabaseError::sql_execution(format!(
+                    "Failed to prepare content_contains query: {}",
+                    e
+                ))
+            })?;
+
+            stmt.query([content_pattern, node_type])
+                .await
+                .map_err(|e| {
+                    DatabaseError::sql_execution(format!(
+                        "Failed to execute content_contains query: {}",
+                        e
+                    ))
+                })
+        } else {
+            // Filter by content only
+            let sql = format!(
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector
+                 FROM nodes WHERE content LIKE ?{}{}",
+                container_task_filter, limit_clause
+            );
+
+            let mut stmt = conn.prepare(&sql).await.map_err(|e| {
+                DatabaseError::sql_execution(format!(
+                    "Failed to prepare content_contains query: {}",
+                    e
+                ))
+            })?;
+
+            stmt.query([content_pattern]).await.map_err(|e| {
+                DatabaseError::sql_execution(format!(
+                    "Failed to execute content_contains query: {}",
+                    e
+                ))
+            })
+        }
+    }
+
     /// Query nodes with filtering by node_type, parent_id, or container_node_id
     ///
     /// This is the core SQL logic for NodeFilter queries, extracted from NodeService.

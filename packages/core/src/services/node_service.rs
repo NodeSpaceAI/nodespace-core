@@ -2081,52 +2081,16 @@ impl NodeService {
             // Generate filter clause without table alias (queries nodes table directly)
             let container_task_filter = Self::build_container_task_filter(filter_enabled, None);
 
-            // Determine SQL query based on whether node_type is specified
-            let mut rows = if let Some(ref node_type) = query.node_type {
-                // Case 1: Filter by both content and node_type
-                let sql = format!(
-                    "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector
-                     FROM nodes WHERE content LIKE ? AND node_type = ?{}{}",
-                    container_task_filter, limit_clause
-                );
-
-                let mut stmt = conn.prepare(&sql).await.map_err(|e| {
-                    NodeServiceError::query_failed(format!(
-                        "Failed to prepare content_contains query: {}",
-                        e
-                    ))
-                })?;
-
-                stmt.query([content_pattern.as_str(), node_type.as_str()])
-                    .await
-                    .map_err(|e| {
-                        NodeServiceError::query_failed(format!(
-                            "Failed to execute content_contains query: {}",
-                            e
-                        ))
-                    })?
-            } else {
-                // Case 2: Filter by content only
-                let sql = format!(
-                    "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector
-                     FROM nodes WHERE content LIKE ?{}{}",
-                    container_task_filter, limit_clause
-                );
-
-                let mut stmt = conn.prepare(&sql).await.map_err(|e| {
-                    NodeServiceError::query_failed(format!(
-                        "Failed to prepare content_contains query: {}",
-                        e
-                    ))
-                })?;
-
-                stmt.query([content_pattern.as_str()]).await.map_err(|e| {
-                    NodeServiceError::query_failed(format!(
-                        "Failed to execute content_contains query: {}",
-                        e
-                    ))
-                })?
-            };
+            // Delegate SQL query to DatabaseService
+            let mut rows = self
+                .db
+                .db_search_nodes_by_content(
+                    &content_pattern,
+                    query.node_type.as_deref(),
+                    &container_task_filter,
+                    &limit_clause,
+                )
+                .await?;
 
             // Collect results with mentions populated
             let mut nodes = Vec::new();
