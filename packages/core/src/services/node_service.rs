@@ -902,15 +902,10 @@ impl NodeService {
             }
         }
 
-        let conn = self.db.connect_with_timeout().await?;
-
-        conn.execute(
-            "INSERT OR IGNORE INTO node_mentions (node_id, mentions_node_id)
-             VALUES (?, ?)",
-            (mentioning_node_id, mentioned_node_id),
-        )
-        .await
-        .map_err(|e| NodeServiceError::query_failed(format!("Failed to create mention: {}", e)))?;
+        self.db
+            .db_create_mention(mentioning_node_id, mentioned_node_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         Ok(())
     }

@@ -1089,6 +1089,48 @@ impl DatabaseService {
     }
 
     //
+    // MENTION OPERATIONS (Phase 1: SQL Extraction)
+    // These methods contain SQL logic for node mention relationships, extracted from NodeService.
+    //
+
+    /// Create a mention relationship between two nodes
+    ///
+    /// This is the core SQL logic for creating mentions, extracted from NodeService.
+    /// Inserts a row into the node_mentions table.
+    ///
+    /// # Arguments
+    ///
+    /// * `source_id` - ID of the node that contains the mention
+    /// * `target_id` - ID of the node being mentioned
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if successful (idempotent - INSERT OR IGNORE)
+    ///
+    /// # Notes
+    ///
+    /// - Uses INSERT OR IGNORE for idempotency
+    /// - Does NOT validate node existence or prevent self-references (NodeService handles that)
+    /// - Cascade deletion handled by foreign key constraints
+    pub async fn db_create_mention(
+        &self,
+        source_id: &str,
+        target_id: &str,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        conn.execute(
+            "INSERT OR IGNORE INTO node_mentions (node_id, mentions_node_id)
+             VALUES (?, ?)",
+            (source_id, target_id),
+        )
+        .await
+        .map_err(|e| DatabaseError::sql_execution(format!("Failed to create mention: {}", e)))?;
+
+        Ok(())
+    }
+
+    //
     // QUERY OPERATIONS (Phase 1: SQL Extraction)
     // These methods contain SQL logic for complex queries, extracted from NodeService.
     //
@@ -1138,14 +1180,12 @@ impl DatabaseService {
                 ))
             })?;
 
-            stmt.query([content_pattern, node_type])
-                .await
-                .map_err(|e| {
-                    DatabaseError::sql_execution(format!(
-                        "Failed to execute content_contains query: {}",
-                        e
-                    ))
-                })
+            stmt.query([content_pattern, node_type]).await.map_err(|e| {
+                DatabaseError::sql_execution(format!(
+                    "Failed to execute content_contains query: {}",
+                    e
+                ))
+            })
         } else {
             // Filter by content only
             let sql = format!(
