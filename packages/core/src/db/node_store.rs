@@ -56,8 +56,21 @@
 //! - Refactor NodeService to use trait instead of direct DatabaseService
 //! - Validate: Zero test regressions, <5% performance overhead
 //!
-//! For detailed architecture, see:
-//! `/docs/architecture/data/node-store-abstraction.md`
+//! # Implementation Status
+//!
+//! **Phase 1 (Current - Issue #462)**: Trait defined, SQL extracted to DatabaseService
+//! - ✅ NodeStore trait with 22 methods fully documented
+//! - ✅ SQL operations extracted from NodeService to DatabaseService (13 methods)
+//! - ⏳ TursoStore implementation (not yet implemented)
+//! - ⏳ NodeService refactoring to use trait (not yet implemented)
+//!
+//! **Phase 2 (Future)**: SurrealDB implementation with hybrid schema
+//! - Create SurrealStore implementing NodeStore trait
+//! - Implement dual-table architecture (universal + type-specific tables)
+//! - Migration tooling from Turso → SurrealDB
+//!
+//! For detailed architecture documentation, see:
+//! - `/docs/architecture/data/surrealdb-schema-design.md` (Phase 2 target schema)
 
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate};
 use anyhow::Result;
