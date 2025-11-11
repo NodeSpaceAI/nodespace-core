@@ -1945,9 +1945,7 @@ impl DatabaseService {
                 (new_parent_id, node_id),
             )
             .await
-            .map_err(|e| {
-                DatabaseError::sql_execution(format!("Failed to move node: {}", e))
-            })?;
+            .map_err(|e| DatabaseError::sql_execution(format!("Failed to move node: {}", e)))?;
 
         Ok(rows_affected)
     }
@@ -2012,6 +2010,329 @@ impl DatabaseService {
             })?;
 
         Ok(rows_affected)
+    }
+    //
+    // SCHEMA OPERATIONS (Phase 1: SQL Extraction - Additional)
+    // These methods contain SQL logic for schema updates, extracted for SurrealDB migration.
+    //
+
+    /// Insert or update a schema definition for a node type
+    ///
+    /// This is the core SQL logic for schema persistence, extracted for the SurrealDB migration.
+    /// Stores schema definitions as nodes with node_type='schema' and id=node_type name.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_type` - The node type this schema defines (e.g., "task", "person")
+    /// * `schema_name` - Human-readable name for the schema (stored in content field)
+    /// * `properties` - JSON schema definition with fields, validation rules, etc.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if successful (idempotent - INSERT OR REPLACE)
+    ///
+    /// # Notes
+    ///
+    /// - Uses INSERT OR REPLACE for idempotency
+    /// - Schema nodes have id=node_type, node_type='schema', content=schema_name
+    /// - properties field contains the actual schema JSON
+    /// - Automatically sets created_at and modified_at timestamps
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # use serde_json::json;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db_service = DatabaseService::new(PathBuf::from(":memory:")).await?;
+    /// let schema = json!({
+    ///     "is_core": false,
+    ///     "version": 1,
+    ///     "fields": [{"name": "priority", "type": "enum"}]
+    /// });
+    /// db_service.db_update_schema("custom-type", "Custom Type", &schema.to_string()).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn db_update_schema(
+        &self,
+        node_type: &str,
+        schema_name: &str,
+        properties: &str,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO nodes (id, node_type, content, properties, created_at, modified_at)
+             VALUES (?, 'schema', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            (node_type, schema_name, properties),
+        )
+        .await
+        .map_err(|e| DatabaseError::sql_execution(format!("Failed to update schema: {}", e)))?;
+
+        Ok(())
+    }
+
+    //
+    // EMBEDDING OPERATIONS (Phase 1: SQL Extraction)
+    // These methods contain SQL logic for embedding generation and search, extracted for SurrealDB migration.
+    //
+
+    /// Get nodes that need embeddings (embedding_vector IS NULL or embedding_stale = TRUE)
+    ///
+    /// This is the core SQL logic for querying stale embeddings, extracted for the SurrealDB migration.
+    /// Returns nodes that either have no embedding or have stale embeddings that need regeneration.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - Maximum number of nodes to return (for batch processing)
+    ///
+    /// # Returns
+    ///
+    /// Vector of node IDs that need embedding generation
+    ///
+    /// # Notes
+    ///
+    /// - Filters to container nodes only (container_node_id IS NULL)
+    /// - Orders by last_content_update DESC (most recently edited first)
+    /// - Returns raw node IDs (caller must fetch full nodes if needed)
+    /// - Used by embedding batch processor for background sync
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db_service = DatabaseService::new(PathBuf::from(":memory:")).await?;
+    /// let stale_ids = db_service.db_get_nodes_without_embeddings(10).await?;
+    /// for node_id in stale_ids {
+    ///     println!("Node {} needs embedding", node_id);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn db_get_nodes_without_embeddings(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<String>, DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id FROM nodes
+                 WHERE container_node_id IS NULL
+                   AND (embedding_vector IS NULL OR embedding_stale = TRUE)
+                 ORDER BY last_content_update DESC
+                 LIMIT ?",
+            )
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!(
+                    "Failed to prepare get_nodes_without_embeddings query: {}",
+                    e
+                ))
+            })?;
+
+        let mut rows = stmt.query([limit as i64]).await.map_err(|e| {
+            DatabaseError::sql_execution(format!(
+                "Failed to execute get_nodes_without_embeddings query: {}",
+                e
+            ))
+        })?;
+
+        let mut node_ids = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::sql_execution(e.to_string()))?
+        {
+            let id: String = row
+                .get(0)
+                .map_err(|e| DatabaseError::sql_execution(format!("Failed to get id: {}", e)))?;
+            node_ids.push(id);
+        }
+
+        Ok(node_ids)
+    }
+
+    /// Update embedding vector for a node and mark as fresh (embedding_stale = FALSE)
+    ///
+    /// This is the core SQL logic for storing embeddings, extracted for the SurrealDB migration.
+    /// Updates the embedding_vector and clears the stale flag.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - ID of the node to update
+    /// * `embedding_blob` - Raw embedding vector as F32_BLOB (384 dimensions for bge-small-en-v1.5)
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if successful
+    ///
+    /// # Notes
+    ///
+    /// - Sets embedding_stale = FALSE to mark embedding as fresh
+    /// - Updates last_embedding_update timestamp
+    /// - Does NOT update modified_at (embeddings are metadata, not content changes)
+    /// - Expects caller to generate embedding_blob using EmbeddingService::to_blob()
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db_service = DatabaseService::new(PathBuf::from(":memory:")).await?;
+    /// // Generate embedding blob (normally from EmbeddingService)
+    /// let embedding_blob = vec![0u8; 384 * 4]; // 384 f32 values = 1536 bytes
+    /// db_service.db_update_embedding("node-id", &embedding_blob).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn db_update_embedding(
+        &self,
+        node_id: &str,
+        embedding_blob: &[u8],
+    ) -> Result<(), DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        conn.execute(
+            "UPDATE nodes
+             SET embedding_vector = ?,
+                 embedding_stale = FALSE,
+                 last_embedding_update = CURRENT_TIMESTAMP
+             WHERE id = ?",
+            (embedding_blob, node_id),
+        )
+        .await
+        .map_err(|e| DatabaseError::sql_execution(format!("Failed to update embedding: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Search nodes by embedding vector similarity using Turso's vector_distance_cosine
+    ///
+    /// This is the core SQL logic for semantic search, extracted for the SurrealDB migration.
+    /// Uses cosine distance for similarity (lower = more similar).
+    ///
+    /// # Arguments
+    ///
+    /// * `query_blob` - Query embedding vector as F32_BLOB (384 dimensions)
+    /// * `threshold` - Maximum distance threshold (0.0-2.0, lower = more similar)
+    /// * `limit` - Maximum number of results to return
+    ///
+    /// # Returns
+    ///
+    /// Rows iterator with node data and distance scores
+    ///
+    /// # Notes
+    ///
+    /// - Uses vector_distance_cosine() for exact similarity calculation
+    /// - Filters to container nodes only (container_node_id IS NULL)
+    /// - Excludes nodes without embeddings (embedding_vector IS NOT NULL)
+    /// - Orders by distance ASC (most similar first)
+    /// - Returns raw libsql::Rows (caller must convert to Node structs)
+    /// - For approximate search with indexes, use vector_top_k() instead
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db_service = DatabaseService::new(PathBuf::from(":memory:")).await?;
+    /// let query_blob = vec![0u8; 384 * 4]; // Query embedding
+    /// let mut rows = db_service.db_search_by_embedding(&query_blob, 0.7, 20).await?;
+    /// while let Some(row) = rows.next().await? {
+    ///     // Process row...
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn db_search_by_embedding(
+        &self,
+        query_blob: &[u8],
+        threshold: f32,
+        limit: usize,
+    ) -> Result<libsql::Rows, DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT
+                    id, node_type, content, parent_id, container_node_id,
+                    before_sibling_id, version, created_at, modified_at, properties,
+                    embedding_vector,
+                    vector_distance_cosine(embedding_vector, vector(?)) as distance
+                 FROM nodes
+                 WHERE container_node_id IS NULL
+                   AND embedding_vector IS NOT NULL
+                   AND vector_distance_cosine(embedding_vector, vector(?)) < ?
+                 ORDER BY distance ASC
+                 LIMIT ?",
+            )
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!(
+                    "Failed to prepare search_by_embedding query: {}",
+                    e
+                ))
+            })?;
+
+        stmt.query((query_blob, query_blob, threshold, limit as i64))
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!(
+                    "Failed to execute search_by_embedding query: {}",
+                    e
+                ))
+            })
+    }
+
+    /// Close database connections gracefully
+    ///
+    /// This is the core SQL logic for connection cleanup, extracted for the SurrealDB migration.
+    /// Ensures WAL is checkpointed before closing to prevent data loss.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if successful
+    ///
+    /// # Notes
+    ///
+    /// - Performs TRUNCATE checkpoint to flush all WAL entries to main database file
+    /// - This is critical for preventing "no such table" errors after database swaps
+    /// - Should be called before application shutdown or database path changes
+    /// - libsql connections are automatically dropped, this ensures clean state
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db_service = DatabaseService::new(PathBuf::from(":memory:")).await?;
+    /// // Before app shutdown or database swap
+    /// db_service.db_close().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn db_close(&self) -> Result<(), DatabaseError> {
+        // Checkpoint WAL to ensure all writes are flushed
+        let conn = self.connect_with_timeout().await?;
+        self.execute_pragma(&conn, "PRAGMA wal_checkpoint(TRUNCATE)")
+            .await?;
+
+        // Connection will be automatically dropped when it goes out of scope
+        // libsql handles connection cleanup internally
+        Ok(())
     }
 }
 
