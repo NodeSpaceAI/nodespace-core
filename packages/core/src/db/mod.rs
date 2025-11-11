@@ -21,8 +21,10 @@ mod database;
 mod error;
 mod index_manager;
 mod node_store;
+mod turso_store;
 
 pub use database::{DatabaseService, DbCreateNodeParams, DbUpdateNodeParams};
 pub use error::DatabaseError;
 pub use index_manager::IndexManager;
 pub use node_store::NodeStore;
+pub use turso_store::TursoStore;
