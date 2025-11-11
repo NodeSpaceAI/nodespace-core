@@ -25,7 +25,7 @@
 //! - Child node: `container_node_id = Some("parent-id")` (e.g., notes within a topic)
 
 use crate::behaviors::NodeBehaviorRegistry;
-use crate::db::DatabaseService;
+use crate::db::{DatabaseService, DbCreateNodeParams, DbUpdateNodeParams};
 use crate::models::{Node, NodeFilter, NodeUpdate, OrderBy};
 use crate::services::error::NodeServiceError;
 use crate::services::migration_registry::MigrationRegistry;
@@ -2273,56 +2273,34 @@ impl NodeService {
             }
         }
 
-        let conn = self.db.connect_with_timeout().await?;
-
-        // Begin transaction
-        conn.execute("BEGIN TRANSACTION", ()).await.map_err(|e| {
-            NodeServiceError::transaction_failed(format!("Failed to begin transaction: {}", e))
-        })?;
-
-        let mut ids = Vec::new();
-
-        // Insert all nodes
-        // Database defaults handle created_at and modified_at timestamps automatically
+        // Serialize properties for all nodes first (need to own strings for lifetime)
+        let mut properties_json_vec: Vec<String> = Vec::new();
         for node in &nodes {
             let properties_json = serde_json::to_string(&node.properties)
                 .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
-
-            let result = conn.execute(
-                "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    node.id.as_str(),
-                    node.node_type.as_str(),
-                    node.content.as_str(),
-                    node.parent_id.as_deref(),
-                    node.container_node_id.as_deref(),
-                    node.before_sibling_id.as_deref(),
-                    properties_json.as_str(),
-                    node.embedding_vector.as_deref(),
-                ),
-            )
-            .await;
-
-            if let Err(e) = result {
-                // Rollback on error
-                let _rollback = conn.execute("ROLLBACK", ()).await;
-                return Err(NodeServiceError::bulk_operation_failed(format!(
-                    "Failed to insert node {}: {}",
-                    node.id, e
-                )));
-            }
-
-            ids.push(node.id.clone());
+            properties_json_vec.push(properties_json);
         }
 
-        // Commit transaction
-        conn.execute("COMMIT", ()).await.map_err(|e| {
-            std::mem::drop(conn.execute("ROLLBACK", ()));
-            NodeServiceError::transaction_failed(format!("Failed to commit transaction: {}", e))
-        })?;
+        // Prepare parameters for database batch insert
+        let mut db_params = Vec::new();
+        for (i, node) in nodes.iter().enumerate() {
+            db_params.push(DbCreateNodeParams {
+                id: &node.id,
+                node_type: &node.node_type,
+                content: &node.content,
+                parent_id: node.parent_id.as_deref(),
+                container_node_id: node.container_node_id.as_deref(),
+                before_sibling_id: node.before_sibling_id.as_deref(),
+                properties: &properties_json_vec[i],
+                embedding_vector: node.embedding_vector.as_deref(),
+            });
+        }
 
-        Ok(ids)
+        // Call database service to execute batch insert in transaction
+        self.db
+            .db_batch_create_nodes(db_params)
+            .await
+            .map_err(NodeServiceError::from)
     }
 
     /// Bulk update multiple nodes in a transaction
@@ -2364,128 +2342,114 @@ impl NodeService {
             return Ok(());
         }
 
-        let conn = self.db.connect_with_timeout().await?;
+        // Fetch all existing nodes, apply updates, validate, and prepare database parameters
+        let mut validated_updates: Vec<(&str, DbUpdateNodeParams)> = Vec::new();
+        let mut properties_json_vec: Vec<String> = Vec::new();
+        let mut updated_nodes: Vec<Node> = Vec::new();
+        let mut existing_nodes: Vec<Node> = Vec::new();
 
-        // Begin transaction
-        conn.execute("BEGIN TRANSACTION", ()).await.map_err(|e| {
-            NodeServiceError::transaction_failed(format!("Failed to begin transaction: {}", e))
-        })?;
-
-        for (id, update) in updates {
-            // Query node directly within transaction (avoid backfill_schema_version deadlock)
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version,
-                            created_at, modified_at, properties, embedding_vector
-                     FROM nodes WHERE id = ?",
-                )
-                .await
-                .map_err(|e| {
-                    NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
-                })?;
-
-            let mut rows = stmt.query([id.as_str()]).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
-            })?;
-
-            let existing = if let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-            {
-                self.row_to_node(row)?
-            } else {
-                let _rollback = conn.execute("ROLLBACK", ()).await;
-                return Err(NodeServiceError::node_not_found(&id));
-            };
+        for (id, update) in &updates {
+            // Fetch existing node
+            let existing = self
+                .get_node(id)
+                .await?
+                .ok_or_else(|| NodeServiceError::node_not_found(id))?;
 
             let mut updated = existing.clone();
 
-            if let Some(node_type) = update.node_type {
-                updated.node_type = node_type;
+            // Apply partial updates
+            if let Some(node_type) = &update.node_type {
+                updated.node_type = node_type.clone();
             }
 
-            if let Some(content) = update.content {
-                updated.content = content;
+            if let Some(content) = &update.content {
+                updated.content = content.clone();
             }
 
-            if let Some(parent_id) = update.parent_id {
-                updated.parent_id = parent_id;
+            if let Some(parent_id) = &update.parent_id {
+                updated.parent_id = parent_id.clone();
             }
 
-            if let Some(container_node_id) = update.container_node_id {
-                updated.container_node_id = container_node_id;
+            if let Some(container_node_id) = &update.container_node_id {
+                updated.container_node_id = container_node_id.clone();
             }
 
-            if let Some(before_sibling_id) = update.before_sibling_id {
-                updated.before_sibling_id = before_sibling_id;
+            if let Some(before_sibling_id) = &update.before_sibling_id {
+                updated.before_sibling_id = before_sibling_id.clone();
             }
 
-            if let Some(properties) = update.properties {
-                updated.properties = properties;
+            if let Some(properties) = &update.properties {
+                updated.properties = properties.clone();
             }
 
-            if let Some(embedding_vector) = update.embedding_vector {
-                updated.embedding_vector = embedding_vector;
+            if let Some(embedding_vector) = &update.embedding_vector {
+                updated.embedding_vector = embedding_vector.clone();
             }
 
             updated.modified_at = Utc::now();
 
             // Step 1: Core behavior validation
-            if let Err(e) = self.behaviors.validate_node(&updated) {
-                let _rollback = conn.execute("ROLLBACK", ()).await;
-                return Err(NodeServiceError::bulk_operation_failed(format!(
+            self.behaviors.validate_node(&updated).map_err(|e| {
+                NodeServiceError::bulk_operation_failed(format!(
                     "Failed to validate node {}: {}",
                     id, e
-                )));
-            }
+                ))
+            })?;
 
             // Step 2: Schema validation
             if updated.node_type != "schema" {
-                if let Err(e) = self.validate_node_against_schema(&updated).await {
-                    let _rollback = conn.execute("ROLLBACK", ()).await;
-                    return Err(NodeServiceError::bulk_operation_failed(format!(
+                self.validate_node_against_schema(&updated).await.map_err(|e| {
+                    NodeServiceError::bulk_operation_failed(format!(
                         "Failed schema validation for node {}: {}",
                         id, e
-                    )));
-                }
+                    ))
+                })?;
             }
 
-            // Execute update in transaction - database auto-updates modified_at
+            // Serialize properties for database
             let properties_json = serde_json::to_string(&updated.properties)
                 .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
-            let result = conn.execute(
-                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ? WHERE id = ?",
-                (
-                    updated.node_type.as_str(),
-                    updated.content.as_str(),
-                    updated.parent_id.as_deref(),
-                    updated.container_node_id.as_deref(),
-                    updated.before_sibling_id.as_deref(),
-                    properties_json.as_str(),
-                    updated.embedding_vector.as_deref(),
-                    id.as_str(),
-                ),
-            )
-            .await;
-
-            if let Err(e) = result {
-                let _rollback = conn.execute("ROLLBACK", ()).await;
-                return Err(NodeServiceError::bulk_operation_failed(format!(
-                    "Failed to update node {}: {}",
-                    id, e
-                )));
-            }
+            properties_json_vec.push(properties_json);
+            existing_nodes.push(existing);
+            updated_nodes.push(updated);
         }
 
-        // Commit transaction
-        conn.execute("COMMIT", ()).await.map_err(|e| {
-            std::mem::drop(conn.execute("ROLLBACK", ()));
-            NodeServiceError::transaction_failed(format!("Failed to commit transaction: {}", e))
-        })?;
+        // Now prepare database parameters using stored nodes and JSON strings
+        for (i, (id, update)) in updates.iter().enumerate() {
+            let existing = &existing_nodes[i];
+            let updated = &updated_nodes[i];
 
-        Ok(())
+            // Detect content change
+            let content_changed = update.content.is_some();
+            let is_container = updated.container_node_id.is_none();
+            let old_container_id = existing.container_node_id.as_deref();
+            let new_container_id = updated.container_node_id.as_deref();
+
+            validated_updates.push((
+                id.as_str(),
+                DbUpdateNodeParams {
+                    id: id.as_str(),
+                    node_type: &updated.node_type,
+                    content: &updated.content,
+                    parent_id: updated.parent_id.as_deref(),
+                    container_node_id: updated.container_node_id.as_deref(),
+                    before_sibling_id: updated.before_sibling_id.as_deref(),
+                    properties: &properties_json_vec[i],
+                    embedding_vector: updated.embedding_vector.as_deref(),
+                    content_changed,
+                    is_container,
+                    old_container_id,
+                    new_container_id,
+                },
+            ));
+        }
+
+        // Call database service to execute batch update in transaction
+        self.db
+            .db_batch_update_nodes(validated_updates)
+            .await
+            .map_err(NodeServiceError::from)
     }
 
     /// Bulk delete multiple nodes in a transaction

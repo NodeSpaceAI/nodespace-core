@@ -1380,8 +1380,9 @@ impl DatabaseService {
                 DatabaseError::sql_execution(format!("Failed to get properties column: {}", e))
             })?;
 
-            let schema: serde_json::Value = serde_json::from_str(&properties_str)
-                .map_err(|e| DatabaseError::sql_execution(format!("Failed to parse schema JSON: {}", e)))?;
+            let schema: serde_json::Value = serde_json::from_str(&properties_str).map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to parse schema JSON: {}", e))
+            })?;
 
             Ok(Some(schema))
         } else {
@@ -1559,6 +1560,218 @@ impl DatabaseService {
                 DatabaseError::sql_execution(format!("Failed to execute query: {}", e))
             })
         }
+    }
+
+    /// Batch create multiple nodes in a transaction
+    ///
+    /// Inserts multiple nodes atomically within a single transaction.
+    /// All nodes are inserted with database-generated timestamps.
+    ///
+    /// # Arguments
+    ///
+    /// * `nodes` - Vector of node creation parameters
+    ///
+    /// # Returns
+    ///
+    /// Vector of created node IDs in the same order as input
+    ///
+    /// # Errors
+    ///
+    /// Returns `DatabaseError` if:
+    /// - Transaction cannot be started
+    /// - Any INSERT fails (transaction is rolled back)
+    /// - Transaction cannot be committed
+    ///
+    /// # Notes
+    ///
+    /// - Container nodes are marked with embedding_stale = TRUE
+    /// - Non-container nodes are inserted without stale flag
+    /// - All validations should be done BEFORE calling this method
+    /// - Transaction is automatically rolled back on any error
+    pub async fn db_batch_create_nodes(
+        &self,
+        nodes: Vec<DbCreateNodeParams<'_>>,
+    ) -> Result<Vec<String>, DatabaseError> {
+        if nodes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.connect_with_timeout().await?;
+
+        // Begin transaction
+        conn.execute("BEGIN TRANSACTION", ())
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to begin transaction: {}", e))
+            })?;
+
+        let mut created_ids = Vec::new();
+
+        for params in nodes {
+            let is_container = params.container_node_id.is_none();
+
+            let result = if is_container {
+                conn.execute(
+                    "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector, embedding_stale, last_content_update)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, CURRENT_TIMESTAMP)",
+                    (
+                        params.id,
+                        params.node_type,
+                        params.content,
+                        params.parent_id,
+                        params.container_node_id,
+                        params.before_sibling_id,
+                        params.properties,
+                        params.embedding_vector,
+                    ),
+                )
+                .await
+            } else {
+                conn.execute(
+                    "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        params.id,
+                        params.node_type,
+                        params.content,
+                        params.parent_id,
+                        params.container_node_id,
+                        params.before_sibling_id,
+                        params.properties,
+                        params.embedding_vector,
+                    ),
+                )
+                .await
+            };
+
+            if let Err(e) = result {
+                // Rollback on error
+                let _rollback = conn.execute("ROLLBACK", ()).await;
+                return Err(DatabaseError::sql_execution(format!(
+                    "Failed to insert node {}: {}",
+                    params.id, e
+                )));
+            }
+
+            created_ids.push(params.id.to_string());
+        }
+
+        // Commit transaction
+        conn.execute("COMMIT", ()).await.map_err(|e| {
+            std::mem::drop(conn.execute("ROLLBACK", ()));
+            DatabaseError::sql_execution(format!("Failed to commit transaction: {}", e))
+        })?;
+
+        Ok(created_ids)
+    }
+
+    /// Batch update multiple nodes in a transaction
+    ///
+    /// Updates multiple nodes atomically within a single transaction.
+    /// Each update requires first fetching the existing node to support
+    /// partial updates.
+    ///
+    /// # Arguments
+    ///
+    /// * `updates` - Vector of (node_id, update_params) tuples
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if all updates succeed
+    ///
+    /// # Errors
+    ///
+    /// Returns `DatabaseError` if:
+    /// - Transaction cannot be started
+    /// - Any node is not found (transaction is rolled back)
+    /// - Any UPDATE fails (transaction is rolled back)
+    /// - Transaction cannot be committed
+    ///
+    /// # Notes
+    ///
+    /// - All validations should be done BEFORE calling this method
+    /// - Each update fetches existing node via SELECT within transaction
+    /// - Database auto-updates modified_at timestamp
+    /// - Transaction is automatically rolled back on any error
+    pub async fn db_batch_update_nodes(
+        &self,
+        updates: Vec<(&str, DbUpdateNodeParams<'_>)>,
+    ) -> Result<(), DatabaseError> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        let conn = self.connect_with_timeout().await?;
+
+        // Begin transaction
+        conn.execute("BEGIN TRANSACTION", ())
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to begin transaction: {}", e))
+            })?;
+
+        for (id, params) in updates {
+            // Query node directly within transaction
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id FROM nodes WHERE id = ?",
+                )
+                .await
+                .map_err(|e| {
+                    DatabaseError::sql_execution(format!("Failed to prepare query: {}", e))
+                })?;
+
+            let mut rows = stmt.query([id]).await.map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to execute query: {}", e))
+            })?;
+
+            // Verify node exists
+            if rows
+                .next()
+                .await
+                .map_err(|e| DatabaseError::sql_execution(e.to_string()))?
+                .is_none()
+            {
+                let _rollback = conn.execute("ROLLBACK", ()).await;
+                return Err(DatabaseError::sql_execution(format!(
+                    "Node not found: {}",
+                    id
+                )));
+            }
+
+            // Execute update in transaction
+            let result = conn
+                .execute(
+                    "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ? WHERE id = ?",
+                    (
+                        params.node_type,
+                        params.content,
+                        params.parent_id,
+                        params.container_node_id,
+                        params.before_sibling_id,
+                        params.properties,
+                        params.embedding_vector,
+                        id,
+                    ),
+                )
+                .await;
+
+            if let Err(e) = result {
+                let _rollback = conn.execute("ROLLBACK", ()).await;
+                return Err(DatabaseError::sql_execution(format!(
+                    "Failed to update node {}: {}",
+                    id, e
+                )));
+            }
+        }
+
+        // Commit transaction
+        conn.execute("COMMIT", ()).await.map_err(|e| {
+            std::mem::drop(conn.execute("ROLLBACK", ()));
+            DatabaseError::sql_execution(format!("Failed to commit transaction: {}", e))
+        })?;
+
+        Ok(())
     }
 }
 
