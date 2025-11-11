@@ -1130,6 +1130,41 @@ impl DatabaseService {
         Ok(())
     }
 
+    /// Delete a mention relationship between two nodes
+    ///
+    /// This is the core SQL logic for deleting mentions, extracted from NodeService.
+    /// Removes a row from the node_mentions table.
+    ///
+    /// # Arguments
+    ///
+    /// * `source_id` - ID of the node that contains the mention
+    /// * `target_id` - ID of the node being mentioned
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if successful (idempotent - succeeds even if mention doesn't exist)
+    ///
+    /// # Notes
+    ///
+    /// - Idempotent: deleting non-existent mention succeeds
+    /// - Does NOT validate node existence (NodeService handles that)
+    pub async fn db_delete_mention(
+        &self,
+        source_id: &str,
+        target_id: &str,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        conn.execute(
+            "DELETE FROM node_mentions WHERE node_id = ? AND mentions_node_id = ?",
+            (source_id, target_id),
+        )
+        .await
+        .map_err(|e| DatabaseError::sql_execution(format!("Failed to delete mention: {}", e)))?;
+
+        Ok(())
+    }
+
     //
     // QUERY OPERATIONS (Phase 1: SQL Extraction)
     // These methods contain SQL logic for complex queries, extracted from NodeService.

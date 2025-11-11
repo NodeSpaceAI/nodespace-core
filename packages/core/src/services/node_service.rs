@@ -942,14 +942,10 @@ impl NodeService {
         mentioning_node_id: &str,
         mentioned_node_id: &str,
     ) -> Result<(), NodeServiceError> {
-        let conn = self.db.connect_with_timeout().await?;
-
-        conn.execute(
-            "DELETE FROM node_mentions WHERE node_id = ? AND mentions_node_id = ?",
-            (mentioning_node_id, mentioned_node_id),
-        )
-        .await
-        .map_err(|e| NodeServiceError::query_failed(format!("Failed to delete mention: {}", e)))?;
+        self.db
+            .db_delete_mention(mentioning_node_id, mentioned_node_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         Ok(())
     }
