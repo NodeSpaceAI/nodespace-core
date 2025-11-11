@@ -25,10 +25,15 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
 
         let db_service = DatabaseService::new(db_path).await.unwrap();
-        let node_service = Arc::new(NodeService::new(db_service.clone()).unwrap());
-        let db_service = Arc::new(db_service);
+        let db_service_arc = Arc::new(db_service);
 
-        (node_service, db_service, temp_dir)
+        // Initialize NodeStore trait wrapper
+        let store: Arc<dyn crate::db::NodeStore> =
+            Arc::new(crate::db::TursoStore::new(db_service_arc.clone()));
+
+        let node_service = Arc::new(NodeService::new(store, db_service_arc.clone()).unwrap());
+
+        (node_service, db_service_arc, temp_dir)
     }
 
     /// Helper to check if a node is marked as stale in the database

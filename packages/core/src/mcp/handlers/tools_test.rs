@@ -136,7 +136,12 @@ mod async_integration_tests {
 
         // Clone db for both services
         let db_arc = Arc::new(db);
-        let node_service = Arc::new(NodeService::new((*db_arc).clone()).unwrap());
+
+        // Initialize NodeStore trait wrapper
+        let store: Arc<dyn crate::db::NodeStore> =
+            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
+
+        let node_service = Arc::new(NodeService::new(store, db_arc.clone()).unwrap());
         let node_operations = Arc::new(NodeOperations::new(node_service.clone()));
 
         // Create NLP engine for embedding service

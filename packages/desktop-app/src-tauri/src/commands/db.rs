@@ -134,8 +134,12 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
 
     let db_arc = Arc::new(db_service.clone());
 
-    // Initialize node service
-    let node_service = NodeService::new(db_service.clone())
+    // Initialize NodeStore trait wrapper
+    let store: Arc<dyn nodespace_core::db::NodeStore> =
+        Arc::new(nodespace_core::db::TursoStore::new(db_arc.clone()));
+
+    // Initialize node service with NodeStore trait
+    let node_service = NodeService::new(store, db_arc.clone())
         .map_err(|e| format!("Failed to initialize node service: {}", e))?;
 
     // Initialize NodeOperations business logic layer (wraps NodeService)

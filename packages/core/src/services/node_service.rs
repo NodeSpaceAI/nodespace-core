@@ -25,7 +25,7 @@
 //! - Child node: `container_node_id = Some("parent-id")` (e.g., notes within a topic)
 
 use crate::behaviors::NodeBehaviorRegistry;
-use crate::db::{DatabaseService, DbCreateNodeParams, DbUpdateNodeParams};
+use crate::db::{DatabaseService, DbCreateNodeParams, DbUpdateNodeParams, NodeStore};
 use crate::models::{Node, NodeFilter, NodeUpdate, OrderBy};
 use crate::services::error::NodeServiceError;
 use crate::services::migration_registry::MigrationRegistry;
@@ -277,7 +277,11 @@ fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, String> {
 /// ```
 #[derive(Clone)]
 pub struct NodeService {
-    /// Database service for persistence
+    /// NodeStore trait abstraction for persistence
+    store: Arc<dyn NodeStore>,
+
+    /// Direct database access for operations not yet in trait
+    /// TODO: Remove this once all operations are migrated to NodeStore trait
     db: Arc<DatabaseService>,
 
     /// Behavior registry for validation
@@ -310,13 +314,17 @@ impl NodeService {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new(db: DatabaseService) -> Result<Self, NodeServiceError> {
+    pub fn new(
+        store: Arc<dyn NodeStore>,
+        db: Arc<DatabaseService>,
+    ) -> Result<Self, NodeServiceError> {
         // Create empty migration registry (no migrations registered yet - pre-deployment)
         // Infrastructure exists for future schema evolution post-deployment
         let migration_registry = MigrationRegistry::new();
 
         Ok(Self {
-            db: Arc::new(db),
+            store,
+            db,
             behaviors: Arc::new(NodeBehaviorRegistry::new()),
             migration_registry: Arc::new(migration_registry),
         })
@@ -951,9 +959,12 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn get_node(&self, id: &str) -> Result<Option<Node>, NodeServiceError> {
-        // Delegate SQL to DatabaseService
-        if let Some(row) = self.db.db_get_node(id).await? {
-            let mut node = self.row_to_node(row)?;
+        // Delegate to NodeStore trait
+        if let Some(mut node) = self.store.get_node(id).await.map_err(|e| {
+            NodeServiceError::DatabaseError(crate::db::DatabaseError::SqlExecutionError {
+                context: format!("NodeStore operation failed: {}", e),
+            })
+        })? {
             self.populate_mentions(&mut node).await?;
             self.backfill_schema_version(&mut node).await?;
             self.apply_lazy_migration(&mut node).await?;
@@ -1458,8 +1469,12 @@ impl NodeService {
         &self,
         id: &str,
     ) -> Result<crate::models::DeleteResult, NodeServiceError> {
-        // Delegate SQL to DatabaseService
-        let rows_affected = self.db.db_delete_node(id).await?;
+        // Delegate to NodeStore trait
+        let result = self.store.delete_node(id).await.map_err(|e| {
+            NodeServiceError::DatabaseError(crate::db::DatabaseError::SqlExecutionError {
+                context: format!("NodeStore operation failed: {}", e),
+            })
+        })?;
 
         // Idempotent delete: return success even if node doesn't exist
         // This follows RESTful best practices and prevents race conditions
@@ -1468,11 +1483,7 @@ impl NodeService {
         //
         // The DeleteResult provides visibility for debugging/auditing while
         // maintaining idempotence.
-        Ok(if rows_affected > 0 {
-            crate::models::DeleteResult::existed()
-        } else {
-            crate::models::DeleteResult::not_found()
-        })
+        Ok(result)
     }
 
     /// Delete node with optimistic concurrency control (version check)
@@ -2956,7 +2967,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
         let db = DatabaseService::new(db_path).await.unwrap();
-        let service = NodeService::new(db).unwrap();
+        let db_arc = Arc::new(db);
+
+        // Initialize NodeStore trait wrapper
+        let store: Arc<dyn crate::db::NodeStore> =
+            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
+
+        let service = NodeService::new(store, db_arc).unwrap();
         (service, temp_dir)
     }
 
