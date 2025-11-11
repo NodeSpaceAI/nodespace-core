@@ -1133,90 +1133,29 @@ impl NodeService {
             self.validate_node_against_schema(&updated).await?;
         }
 
-        // Execute update - database will auto-update modified_at via trigger or default
-        let conn = self.db.connect_with_timeout().await?;
+        // Delegate SQL to DatabaseService
         let properties_json = serde_json::to_string(&updated.properties)
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
         // Determine if this node is a container (container_node_id IS NULL)
         let is_container = updated.container_node_id.is_none();
 
-        // If content changed and this is a container node, mark as stale
-        if content_changed && is_container {
-            conn.execute(
-                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ?, embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
-                (
-                    updated.node_type.as_str(),
-                    updated.content.as_str(),
-                    updated.parent_id.as_deref(),
-                    updated.container_node_id.as_deref(),
-                    updated.before_sibling_id.as_deref(),
-                    properties_json.as_str(),
-                    updated.embedding_vector.as_deref(),
-                    id,
-                ),
-            )
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to update node: {}", e)))?;
-        } else {
-            conn.execute(
-                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ? WHERE id = ?",
-                (
-                    updated.node_type.as_str(),
-                    updated.content.as_str(),
-                    updated.parent_id.as_deref(),
-                    updated.container_node_id.as_deref(),
-                    updated.before_sibling_id.as_deref(),
-                    properties_json.as_str(),
-                    updated.embedding_vector.as_deref(),
-                    id,
-                ),
-            )
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to update node: {}", e)))?;
-        }
-
-        // If content changed in a child node, mark the parent container as stale too
-        // This ensures container embeddings stay fresh when children are modified
-        if content_changed && !is_container {
-            if let Some(ref container_id) = updated.container_node_id {
-                conn.execute(
-                    "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
-                    [container_id.as_str()],
-                )
-                .await
-                .map_err(|e| NodeServiceError::query_failed(format!("Failed to mark parent container as stale: {}", e)))?;
-            }
-        }
-
-        // If container_node_id changed (node moved between containers), mark both old and new containers as stale
-        // Moving a node affects the content of both containers semantically
-        if update.container_node_id.is_some()
-            && existing.container_node_id != updated.container_node_id
-        {
-            // Mark old container as stale (if it exists)
-            if let Some(ref old_container_id) = existing.container_node_id {
-                conn.execute(
-                    "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
-                    [old_container_id.as_str()],
-                )
-                .await
-                .ok(); // Don't fail update if old container no longer exists
-            }
-
-            // Mark new container as stale (if different from what content_changed handled)
-            // Only needed if content didn't change (content_changed already handled new container above)
-            if !content_changed {
-                if let Some(ref new_container_id) = updated.container_node_id {
-                    conn.execute(
-                        "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
-                        [new_container_id.as_str()],
-                    )
-                    .await
-                    .ok(); // Don't fail update if new container doesn't exist
-                }
-            }
-        }
+        self.db
+            .db_update_node(crate::db::DbUpdateNodeParams {
+                id,
+                node_type: &updated.node_type,
+                content: &updated.content,
+                parent_id: updated.parent_id.as_deref(),
+                container_node_id: updated.container_node_id.as_deref(),
+                before_sibling_id: updated.before_sibling_id.as_deref(),
+                properties: &properties_json,
+                embedding_vector: updated.embedding_vector.as_deref(),
+                content_changed,
+                is_container,
+                old_container_id: existing.container_node_id.as_deref(),
+                new_container_id: updated.container_node_id.as_deref(),
+            })
+            .await?;
 
         // Sync mentions if content changed
         if content_changed {

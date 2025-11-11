@@ -87,6 +87,22 @@ pub struct DbCreateNodeParams<'a> {
     pub embedding_vector: Option<&'a [u8]>,
 }
 
+/// Parameters for node update (avoids too-many-arguments lint)
+pub struct DbUpdateNodeParams<'a> {
+    pub id: &'a str,
+    pub node_type: &'a str,
+    pub content: &'a str,
+    pub parent_id: Option<&'a str>,
+    pub container_node_id: Option<&'a str>,
+    pub before_sibling_id: Option<&'a str>,
+    pub properties: &'a str,
+    pub embedding_vector: Option<&'a [u8]>,
+    pub content_changed: bool,
+    pub is_container: bool,
+    pub old_container_id: Option<&'a str>,
+    pub new_container_id: Option<&'a str>,
+}
+
 impl DatabaseService {
     /// Create a new DatabaseService with the specified database path
     ///
@@ -918,10 +934,7 @@ impl DatabaseService {
     /// - Returns raw Row from libsql (caller must convert to Node)
     /// - Does NOT handle virtual date nodes (NodeService handles that)
     /// - Does NOT populate mentions or apply migrations (NodeService handles that)
-    pub async fn db_get_node(
-        &self,
-        id: &str,
-    ) -> Result<Option<libsql::Row>, DatabaseError> {
+    pub async fn db_get_node(&self, id: &str) -> Result<Option<libsql::Row>, DatabaseError> {
         let conn = self.connect_with_timeout().await?;
 
         let mut stmt = conn
@@ -942,6 +955,107 @@ impl DatabaseService {
         rows.next()
             .await
             .map_err(|e| DatabaseError::sql_execution(e.to_string()))
+    }
+
+    /// Update a node in the database
+    ///
+    /// This is the core SQL logic for node updates, extracted from NodeService.
+    /// Handles embedding stale marking for content changes and container moves.
+    ///
+    /// # Arguments
+    ///
+    /// * `params` - Node update parameters (see DbUpdateNodeParams)
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if successful
+    ///
+    /// # Notes
+    ///
+    /// - Updates modified_at automatically
+    /// - Marks container nodes as stale when content changes
+    /// - Marks parent containers as stale when child content changes
+    /// - Handles container moves (marks both old and new containers as stale)
+    /// - Does NOT validate node structure or handle mentions (NodeService handles that)
+    pub async fn db_update_node(
+        &self,
+        params: DbUpdateNodeParams<'_>,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        // Main node update - mark as stale if content changed and is container
+        if params.content_changed && params.is_container {
+            conn.execute(
+                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ?, embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+                (
+                    params.node_type,
+                    params.content,
+                    params.parent_id,
+                    params.container_node_id,
+                    params.before_sibling_id,
+                    params.properties,
+                    params.embedding_vector,
+                    params.id,
+                ),
+            )
+            .await
+            .map_err(|e| DatabaseError::sql_execution(format!("Failed to update node: {}", e)))?;
+        } else {
+            conn.execute(
+                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ? WHERE id = ?",
+                (
+                    params.node_type,
+                    params.content,
+                    params.parent_id,
+                    params.container_node_id,
+                    params.before_sibling_id,
+                    params.properties,
+                    params.embedding_vector,
+                    params.id,
+                ),
+            )
+            .await
+            .map_err(|e| DatabaseError::sql_execution(format!("Failed to update node: {}", e)))?;
+        }
+
+        // If content changed in a child node, mark the parent container as stale
+        if params.content_changed && !params.is_container {
+            if let Some(container_id) = params.new_container_id {
+                conn.execute(
+                    "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+                    [container_id],
+                )
+                .await
+                .map_err(|e| DatabaseError::sql_execution(format!("Failed to mark parent container as stale: {}", e)))?;
+            }
+        }
+
+        // If container_node_id changed (node moved between containers), mark both old and new containers as stale
+        if params.old_container_id != params.new_container_id {
+            // Mark old container as stale (if it exists)
+            if let Some(old_container_id) = params.old_container_id {
+                conn.execute(
+                    "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+                    [old_container_id],
+                )
+                .await
+                .ok(); // Don't fail update if old container no longer exists
+            }
+
+            // Mark new container as stale (only if content didn't change - content_changed already handled it above)
+            if !params.content_changed {
+                if let Some(new_container_id) = params.new_container_id {
+                    conn.execute(
+                        "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+                        [new_container_id],
+                    )
+                    .await
+                    .ok(); // Don't fail update if new container doesn't exist
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
