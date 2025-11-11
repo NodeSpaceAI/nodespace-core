@@ -986,28 +986,8 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn get_node(&self, id: &str) -> Result<Option<Node>, NodeServiceError> {
-        let conn = self.db.connect_with_timeout().await?;
-
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version,
-                        created_at, modified_at, properties, embedding_vector
-                 FROM nodes WHERE id = ?",
-            )
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
-            })?;
-
-        let mut rows = stmt.query([id]).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
-        })?;
-
-        if let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-        {
+        // Delegate SQL to DatabaseService
+        if let Some(row) = self.db.db_get_node(id).await? {
             let mut node = self.row_to_node(row)?;
             self.populate_mentions(&mut node).await?;
             self.backfill_schema_version(&mut node).await?;

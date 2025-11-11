@@ -850,7 +850,10 @@ impl DatabaseService {
     /// - Container nodes (container_node_id = None) are marked with embedding_stale = TRUE
     /// - Non-container nodes are inserted without stale flag
     /// - Created_at and modified_at are set automatically by database
-    pub async fn db_create_node(&self, params: DbCreateNodeParams<'_>) -> Result<(), DatabaseError> {
+    pub async fn db_create_node(
+        &self,
+        params: DbCreateNodeParams<'_>,
+    ) -> Result<(), DatabaseError> {
         let conn = self.connect_with_timeout().await?;
 
         // Container nodes (container_node_id = None) need stale flag for embedding generation
@@ -893,6 +896,52 @@ impl DatabaseService {
         }
 
         Ok(())
+    }
+
+    /// Retrieve a single node by ID from the database
+    ///
+    /// This is the core SQL logic for fetching a node, extracted from NodeService.
+    /// Returns the raw database row data without applying business logic transformations.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The node ID to retrieve
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(row))` - Node found, returns the libsql Row
+    /// * `Ok(None)` - Node not found in database
+    /// * `Err(DatabaseError)` - Query execution failed
+    ///
+    /// # Notes
+    ///
+    /// - Returns raw Row from libsql (caller must convert to Node)
+    /// - Does NOT handle virtual date nodes (NodeService handles that)
+    /// - Does NOT populate mentions or apply migrations (NodeService handles that)
+    pub async fn db_get_node(
+        &self,
+        id: &str,
+    ) -> Result<Option<libsql::Row>, DatabaseError> {
+        let conn = self.connect_with_timeout().await?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version,
+                        created_at, modified_at, properties, embedding_vector
+                 FROM nodes WHERE id = ?",
+            )
+            .await
+            .map_err(|e| {
+                DatabaseError::sql_execution(format!("Failed to prepare get_node query: {}", e))
+            })?;
+
+        let mut rows = stmt.query([id]).await.map_err(|e| {
+            DatabaseError::sql_execution(format!("Failed to execute get_node query: {}", e))
+        })?;
+
+        rows.next()
+            .await
+            .map_err(|e| DatabaseError::sql_execution(e.to_string()))
     }
 }
 
