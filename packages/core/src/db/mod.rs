@@ -23,8 +23,14 @@ mod index_manager;
 mod node_store;
 mod turso_store;
 
+#[cfg(feature = "surrealdb")]
+mod surreal_store;
+
 pub use database::{DatabaseService, DbCreateNodeParams, DbUpdateNodeParams};
 pub use error::DatabaseError;
 pub use index_manager::IndexManager;
 pub use node_store::NodeStore;
 pub use turso_store::TursoStore;
+
+#[cfg(feature = "surrealdb")]
+pub use surreal_store::SurrealStore;
