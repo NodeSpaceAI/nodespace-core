@@ -17,7 +17,7 @@ pub enum DatabaseError {
     #[error("Failed to connect to database at {path}: {source}")]
     ConnectionFailed {
         path: PathBuf,
-        source: libsql::Error,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
 
     /// Failed to initialize database schema
@@ -36,9 +36,9 @@ pub enum DatabaseError {
     #[error("Failed to create parent directory for database: {0}")]
     DirectoryCreationFailed(#[from] std::io::Error),
 
-    /// libsql operation error
+    /// SurrealDB operation error
     #[error("Database operation failed: {0}")]
-    LibsqlError(#[from] libsql::Error),
+    OperationError(String),
 
     /// SQL execution error with context
     #[error("SQL execution failed: {context}")]
@@ -47,7 +47,10 @@ pub enum DatabaseError {
 
 impl DatabaseError {
     /// Create a connection failed error
-    pub fn connection_failed(path: PathBuf, source: libsql::Error) -> Self {
+    pub fn connection_failed(
+        path: PathBuf,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    ) -> Self {
         Self::ConnectionFailed { path, source }
     }
 

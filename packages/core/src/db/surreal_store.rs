@@ -42,10 +42,8 @@
 //! }
 //! ```
 
-use crate::db::node_store::NodeStore;
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate};
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -241,9 +239,8 @@ impl SurrealStore {
     }
 }
 
-#[async_trait]
-impl NodeStore for SurrealStore {
-    async fn create_node(&self, node: Node) -> Result<Node> {
+impl SurrealStore {
+    pub async fn create_node(&self, node: Node) -> Result<Node> {
         // Generate SurrealDB Record ID
         let record_id = Self::to_record_id(&node.node_type, &node.id);
 
@@ -309,7 +306,7 @@ impl NodeStore for SurrealStore {
             .ok_or_else(|| anyhow::anyhow!("Node not found after creation"))
     }
 
-    async fn get_node(&self, id: &str) -> Result<Option<Node>> {
+    pub async fn get_node(&self, id: &str) -> Result<Option<Node>> {
         // Query by UUID field
         let query = "SELECT * FROM nodes WHERE uuid = $uuid LIMIT 1;";
         let mut response = self
@@ -326,7 +323,7 @@ impl NodeStore for SurrealStore {
         Ok(surreal_nodes.into_iter().map(Into::into).next())
     }
 
-    async fn update_node(&self, id: &str, update: NodeUpdate) -> Result<Node> {
+    pub async fn update_node(&self, id: &str, update: NodeUpdate) -> Result<Node> {
         // Fetch current node
         let current = self
             .get_node(id)
@@ -371,7 +368,7 @@ impl NodeStore for SurrealStore {
             .ok_or_else(|| anyhow::anyhow!("Node not found after update"))
     }
 
-    async fn delete_node(&self, id: &str) -> Result<DeleteResult> {
+    pub async fn delete_node(&self, id: &str) -> Result<DeleteResult> {
         // Get node to determine type for Record ID
         let node = match self.get_node(id).await? {
             Some(n) => n,
@@ -398,7 +395,32 @@ impl NodeStore for SurrealStore {
         Ok(DeleteResult { existed: true })
     }
 
-    async fn query_nodes(&self, query: NodeQuery) -> Result<Vec<Node>> {
+    /// Delete a node with version check (optimistic locking)
+    ///
+    /// Only deletes the node if its version matches the expected version.
+    /// Returns the number of rows affected (0 if version mismatch, 1 if deleted).
+    pub async fn delete_with_version_check(
+        &self,
+        id: &str,
+        expected_version: i64,
+    ) -> Result<usize> {
+        // First get the node to check version
+        let node = match self.get_node(id).await? {
+            Some(n) => n,
+            None => return Ok(0), // Node doesn't exist
+        };
+
+        // Check version match
+        if node.version != expected_version {
+            return Ok(0); // Version mismatch, no deletion
+        }
+
+        // Version matches, proceed with deletion
+        let result = self.delete_node(id).await?;
+        Ok(if result.existed { 1 } else { 0 })
+    }
+
+    pub async fn query_nodes(&self, query: NodeQuery) -> Result<Vec<Node>> {
         let sql = if let Some(_node_type) = &query.node_type {
             if query.limit.is_some() {
                 "SELECT * FROM nodes WHERE node_type = $node_type LIMIT $limit;"
@@ -428,7 +450,7 @@ impl NodeStore for SurrealStore {
         Ok(surreal_nodes.into_iter().map(Into::into).collect())
     }
 
-    async fn get_children(&self, parent_id: Option<&str>) -> Result<Vec<Node>> {
+    pub async fn get_children(&self, parent_id: Option<&str>) -> Result<Vec<Node>> {
         let (query, has_parent) = if parent_id.is_some() {
             ("SELECT * FROM nodes WHERE parent_id = $parent_id;", true)
         } else {
@@ -448,7 +470,7 @@ impl NodeStore for SurrealStore {
         Ok(surreal_nodes.into_iter().map(Into::into).collect())
     }
 
-    async fn get_nodes_by_container(&self, container_id: &str) -> Result<Vec<Node>> {
+    pub async fn get_nodes_by_container(&self, container_id: &str) -> Result<Vec<Node>> {
         let query = "SELECT * FROM nodes WHERE container_node_id = $container_id;";
         let mut response = self
             .db
@@ -463,7 +485,7 @@ impl NodeStore for SurrealStore {
         Ok(surreal_nodes.into_iter().map(Into::into).collect())
     }
 
-    async fn search_nodes_by_content(
+    pub async fn search_nodes_by_content(
         &self,
         search_query: &str,
         limit: Option<i64>,
@@ -490,7 +512,7 @@ impl NodeStore for SurrealStore {
         Ok(surreal_nodes.into_iter().map(Into::into).collect())
     }
 
-    async fn move_node(&self, id: &str, new_parent_id: Option<&str>) -> Result<()> {
+    pub async fn move_node(&self, id: &str, new_parent_id: Option<&str>) -> Result<()> {
         self.db
             .query("UPDATE nodes SET parent_id = $parent_id WHERE uuid = $uuid;")
             .bind(("uuid", id.to_string()))
@@ -501,7 +523,7 @@ impl NodeStore for SurrealStore {
         Ok(())
     }
 
-    async fn reorder_node(&self, id: &str, new_before_sibling_id: Option<&str>) -> Result<()> {
+    pub async fn reorder_node(&self, id: &str, new_before_sibling_id: Option<&str>) -> Result<()> {
         self.db
             .query("UPDATE nodes SET before_sibling_id = $before_sibling_id WHERE uuid = $uuid;")
             .bind(("uuid", id.to_string()))
@@ -515,7 +537,7 @@ impl NodeStore for SurrealStore {
         Ok(())
     }
 
-    async fn create_mention(
+    pub async fn create_mention(
         &self,
         source_id: &str,
         target_id: &str,
@@ -532,7 +554,7 @@ impl NodeStore for SurrealStore {
         Ok(())
     }
 
-    async fn delete_mention(&self, source_id: &str, target_id: &str) -> Result<()> {
+    pub async fn delete_mention(&self, source_id: &str, target_id: &str) -> Result<()> {
         self.db
             .query("DELETE FROM mentions WHERE in = $source AND out = $target;")
             .bind(("source", source_id.to_string()))
@@ -543,7 +565,7 @@ impl NodeStore for SurrealStore {
         Ok(())
     }
 
-    async fn get_outgoing_mentions(&self, node_id: &str) -> Result<Vec<String>> {
+    pub async fn get_outgoing_mentions(&self, node_id: &str) -> Result<Vec<String>> {
         let query = "SELECT out FROM mentions WHERE in = $node_id;";
         let mut response = self
             .db
@@ -561,7 +583,7 @@ impl NodeStore for SurrealStore {
             .collect())
     }
 
-    async fn get_incoming_mentions(&self, node_id: &str) -> Result<Vec<String>> {
+    pub async fn get_incoming_mentions(&self, node_id: &str) -> Result<Vec<String>> {
         let query = "SELECT in FROM mentions WHERE out = $node_id;";
         let mut response = self
             .db
@@ -579,7 +601,7 @@ impl NodeStore for SurrealStore {
             .collect())
     }
 
-    async fn get_mentioning_containers(&self, node_id: &str) -> Result<Vec<Node>> {
+    pub async fn get_mentioning_containers(&self, node_id: &str) -> Result<Vec<Node>> {
         let query = "SELECT DISTINCT container_id FROM mentions WHERE out = $node_id;";
         let mut response = self
             .db
@@ -602,13 +624,13 @@ impl NodeStore for SurrealStore {
         Ok(nodes)
     }
 
-    async fn get_schema(&self, node_type: &str) -> Result<Option<Value>> {
+    pub async fn get_schema(&self, node_type: &str) -> Result<Option<Value>> {
         let schema_id = format!("schema:{}", node_type);
         let node = self.get_node(&schema_id).await?;
         Ok(node.map(|n| n.properties))
     }
 
-    async fn update_schema(&self, node_type: &str, schema: &Value) -> Result<()> {
+    pub async fn update_schema(&self, node_type: &str, schema: &Value) -> Result<()> {
         let schema_id = format!("schema:{}", node_type);
 
         // Check if schema node exists
@@ -634,7 +656,7 @@ impl NodeStore for SurrealStore {
         Ok(())
     }
 
-    async fn get_nodes_without_embeddings(&self, limit: Option<i64>) -> Result<Vec<Node>> {
+    pub async fn get_nodes_without_embeddings(&self, limit: Option<i64>) -> Result<Vec<Node>> {
         let sql = if limit.is_some() {
             "SELECT * FROM nodes WHERE embedding_vector IS NONE LIMIT $limit;"
         } else {
@@ -656,7 +678,7 @@ impl NodeStore for SurrealStore {
         Ok(surreal_nodes.into_iter().map(Into::into).collect())
     }
 
-    async fn update_embedding(&self, node_id: &str, embedding: &[u8]) -> Result<()> {
+    pub async fn update_embedding(&self, node_id: &str, embedding: &[u8]) -> Result<()> {
         self.db
             .query("UPDATE nodes SET embedding_vector = $embedding WHERE uuid = $uuid;")
             .bind(("uuid", node_id.to_string()))
@@ -667,7 +689,7 @@ impl NodeStore for SurrealStore {
         Ok(())
     }
 
-    async fn search_by_embedding(
+    pub async fn search_by_embedding(
         &self,
         _embedding: &[u8],
         _limit: i64,
@@ -679,7 +701,7 @@ impl NodeStore for SurrealStore {
         Ok(Vec::new())
     }
 
-    async fn batch_create_nodes(&self, nodes: Vec<Node>) -> Result<Vec<Node>> {
+    pub async fn batch_create_nodes(&self, nodes: Vec<Node>) -> Result<Vec<Node>> {
         let mut created_nodes = Vec::new();
 
         for node in nodes {
@@ -690,7 +712,7 @@ impl NodeStore for SurrealStore {
         Ok(created_nodes)
     }
 
-    async fn close(&self) -> Result<()> {
+    pub async fn close(&self) -> Result<()> {
         // SurrealDB handles cleanup automatically on drop
         Ok(())
     }
