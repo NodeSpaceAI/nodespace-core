@@ -119,7 +119,7 @@ pub enum ValidationError {
 ///     }),
 /// );
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Node {
     /// Unique identifier (UUID or deterministic like YYYY-MM-DD for dates)

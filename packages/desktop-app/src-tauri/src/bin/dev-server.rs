@@ -88,7 +88,13 @@ async fn main() -> anyhow::Result<()> {
     let db_service = DatabaseService::new(db_path.clone()).await?;
     // DatabaseService::clone() is cheap - it clones the inner Arc<Database> and PathBuf
     let db_arc_for_embedding = Arc::new(db_service.clone());
-    let node_service = NodeService::new(db_service.clone())?;
+
+    // Initialize NodeStore trait wrapper
+    let store: Arc<dyn nodespace_core::db::NodeStore> = Arc::new(
+        nodespace_core::db::TursoStore::new(db_arc_for_embedding.clone()),
+    );
+
+    let node_service = NodeService::new(store, db_arc_for_embedding.clone())?;
 
     // Initialize embedding service with defaults (requires Arc<DatabaseService>)
     let embedding_service = NodeEmbeddingService::new_with_defaults(db_arc_for_embedding)

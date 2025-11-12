@@ -351,7 +351,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
         let db = DatabaseService::new(db_path).await.unwrap();
-        let node_service = Arc::new(NodeService::new(db).unwrap());
+        let db_arc = Arc::new(db);
+
+        // Initialize NodeStore trait wrapper
+        let store: Arc<dyn crate::db::NodeStore> =
+            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
+
+        let node_service = Arc::new(NodeService::new(store, db_arc).unwrap());
         let schema_service = Arc::new(SchemaService::new(node_service.clone()));
         (schema_service, node_service, temp_dir)
     }

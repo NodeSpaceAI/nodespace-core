@@ -151,7 +151,13 @@ mod occ_tests {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
         let db = DatabaseService::new(db_path).await?;
-        let node_service = Arc::new(NodeService::new(db)?);
+        let db_arc = Arc::new(db);
+
+        // Initialize NodeStore trait wrapper
+        let store: Arc<dyn crate::db::NodeStore> =
+            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
+
+        let node_service = Arc::new(NodeService::new(store, db_arc)?);
         let operations = Arc::new(NodeOperations::new(node_service.clone()));
         let schema_service = Arc::new(SchemaService::new(node_service));
         Ok((operations, schema_service, temp_dir))
@@ -515,7 +521,13 @@ mod integration_tests {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
         let db = DatabaseService::new(db_path).await?;
-        let node_service = Arc::new(NodeService::new(db)?);
+        let db_arc = Arc::new(db);
+
+        // Initialize NodeStore trait wrapper
+        let store: Arc<dyn crate::db::NodeStore> =
+            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
+
+        let node_service = Arc::new(NodeService::new(store, db_arc)?);
         let operations = Arc::new(NodeOperations::new(node_service.clone()));
         let schema_service = Arc::new(SchemaService::new(node_service));
         Ok((operations, schema_service, temp_dir))

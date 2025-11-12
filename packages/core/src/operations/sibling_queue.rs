@@ -180,7 +180,13 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
         let db = DatabaseService::new(db_path).await?;
-        let node_service = NodeService::new(db)?;
+        let db_arc = Arc::new(db);
+
+        // Initialize NodeStore trait wrapper
+        let store: Arc<dyn crate::db::NodeStore> =
+            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
+
+        let node_service = NodeService::new(store, db_arc)?;
         let operations = Arc::new(NodeOperations::new(Arc::new(node_service)));
         Ok((operations, temp_dir))
     }

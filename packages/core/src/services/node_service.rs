@@ -25,7 +25,7 @@
 //! - Child node: `container_node_id = Some("parent-id")` (e.g., notes within a topic)
 
 use crate::behaviors::NodeBehaviorRegistry;
-use crate::db::DatabaseService;
+use crate::db::{DatabaseService, DbUpdateNodeParams, NodeStore};
 use crate::models::{Node, NodeFilter, NodeUpdate, OrderBy};
 use crate::services::error::NodeServiceError;
 use crate::services::migration_registry::MigrationRegistry;
@@ -277,7 +277,11 @@ fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, String> {
 /// ```
 #[derive(Clone)]
 pub struct NodeService {
-    /// Database service for persistence
+    /// NodeStore trait abstraction for persistence
+    store: Arc<dyn NodeStore>,
+
+    /// Direct database access for operations not yet in trait
+    /// TODO: Remove this once all operations are migrated to NodeStore trait
     db: Arc<DatabaseService>,
 
     /// Behavior registry for validation
@@ -310,13 +314,17 @@ impl NodeService {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new(db: DatabaseService) -> Result<Self, NodeServiceError> {
+    pub fn new(
+        store: Arc<dyn NodeStore>,
+        db: Arc<DatabaseService>,
+    ) -> Result<Self, NodeServiceError> {
         // Create empty migration registry (no migrations registered yet - pre-deployment)
         // Infrastructure exists for future schema evolution post-deployment
         let migration_registry = MigrationRegistry::new();
 
         Ok(Self {
-            db: Arc::new(db),
+            store,
+            db,
             behaviors: Arc::new(NodeBehaviorRegistry::new()),
             migration_registry: Arc::new(migration_registry),
         })
@@ -383,36 +391,10 @@ impl NodeService {
         &self,
         node_type: &str,
     ) -> Result<Option<serde_json::Value>, NodeServiceError> {
-        let conn = self.db.connect_with_timeout().await?;
-
-        let mut stmt = conn
-            .prepare("SELECT properties FROM nodes WHERE id = ? AND node_type = 'schema'")
+        self.store
+            .get_schema(node_type)
             .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to prepare schema query: {}", e))
-            })?;
-
-        let mut rows = stmt
-            .query([node_type])
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to get schema: {}", e)))?;
-
-        if let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-        {
-            let properties_str: String = row.get(0).map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to get properties column: {}", e))
-            })?;
-
-            let schema: serde_json::Value = serde_json::from_str(&properties_str)
-                .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
-
-            Ok(Some(schema))
-        } else {
-            Ok(None)
-        }
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 
     /// Validate a node's properties against its schema definition
@@ -784,10 +766,6 @@ impl NodeService {
             }
         }
 
-        // Insert into database
-        // Database defaults handle created_at and modified_at timestamps automatically
-        let conn = self.db.connect_with_timeout().await?;
-
         // Add schema version to properties
         // Get schema for this node type and extract version
         let mut properties = node.properties.clone();
@@ -814,46 +792,20 @@ impl NodeService {
             .as_deref()
             .filter(|id| *id != ROOT_CONTAINER_ID);
 
-        // Mark container nodes as stale for initial embedding generation
-        // Container nodes are identified by container_node_id being NULL
-        // This ensures new containers will be picked up by the background embedding processor
-        let is_container = container_node_id_value.is_none();
-
-        if is_container {
-            conn.execute(
-                "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector, embedding_stale, last_content_update)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, CURRENT_TIMESTAMP)",
-                (
-                    node.id.as_str(),
-                    node.node_type.as_str(),
-                    node.content.as_str(),
-                    node.parent_id.as_deref(),
-                    container_node_id_value,
-                    node.before_sibling_id.as_deref(),
-                    properties_json.as_str(),
-                    node.embedding_vector.as_deref(),
-                ),
-            )
+        // Delegate SQL insertion to DatabaseService
+        self.db
+            .db_create_node(crate::db::DbCreateNodeParams {
+                id: node.id.as_str(),
+                node_type: node.node_type.as_str(),
+                content: node.content.as_str(),
+                parent_id: node.parent_id.as_deref(),
+                container_node_id: container_node_id_value,
+                before_sibling_id: node.before_sibling_id.as_deref(),
+                properties: properties_json.as_str(),
+                embedding_vector: node.embedding_vector.as_deref(),
+            })
             .await
             .map_err(|e| NodeServiceError::query_failed(format!("Failed to insert node: {}", e)))?;
-        } else {
-            conn.execute(
-                "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    node.id.as_str(),
-                    node.node_type.as_str(),
-                    node.content.as_str(),
-                    node.parent_id.as_deref(),
-                    container_node_id_value,
-                    node.before_sibling_id.as_deref(),
-                    properties_json.as_str(),
-                    node.embedding_vector.as_deref(),
-                ),
-            )
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to insert node: {}", e)))?;
-        }
 
         Ok(node.id)
     }
@@ -932,15 +884,10 @@ impl NodeService {
             }
         }
 
-        let conn = self.db.connect_with_timeout().await?;
-
-        conn.execute(
-            "INSERT OR IGNORE INTO node_mentions (node_id, mentions_node_id)
-             VALUES (?, ?)",
-            (mentioning_node_id, mentioned_node_id),
-        )
-        .await
-        .map_err(|e| NodeServiceError::query_failed(format!("Failed to create mention: {}", e)))?;
+        self.db
+            .db_create_mention(mentioning_node_id, mentioned_node_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         Ok(())
     }
@@ -977,14 +924,10 @@ impl NodeService {
         mentioning_node_id: &str,
         mentioned_node_id: &str,
     ) -> Result<(), NodeServiceError> {
-        let conn = self.db.connect_with_timeout().await?;
-
-        conn.execute(
-            "DELETE FROM node_mentions WHERE node_id = ? AND mentions_node_id = ?",
-            (mentioning_node_id, mentioned_node_id),
-        )
-        .await
-        .map_err(|e| NodeServiceError::query_failed(format!("Failed to delete mention: {}", e)))?;
+        self.db
+            .db_delete_mention(mentioning_node_id, mentioned_node_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         Ok(())
     }
@@ -1016,29 +959,12 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn get_node(&self, id: &str) -> Result<Option<Node>, NodeServiceError> {
-        let conn = self.db.connect_with_timeout().await?;
-
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version,
-                        created_at, modified_at, properties, embedding_vector
-                 FROM nodes WHERE id = ?",
-            )
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
-            })?;
-
-        let mut rows = stmt.query([id]).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
-        })?;
-
-        if let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-        {
-            let mut node = self.row_to_node(row)?;
+        // Delegate to NodeStore trait
+        if let Some(mut node) = self.store.get_node(id).await.map_err(|e| {
+            NodeServiceError::DatabaseError(crate::db::DatabaseError::SqlExecutionError {
+                context: format!("NodeStore operation failed: {}", e),
+            })
+        })? {
             self.populate_mentions(&mut node).await?;
             self.backfill_schema_version(&mut node).await?;
             self.apply_lazy_migration(&mut node).await?;
@@ -1183,90 +1109,29 @@ impl NodeService {
             self.validate_node_against_schema(&updated).await?;
         }
 
-        // Execute update - database will auto-update modified_at via trigger or default
-        let conn = self.db.connect_with_timeout().await?;
+        // Delegate SQL to DatabaseService
         let properties_json = serde_json::to_string(&updated.properties)
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
         // Determine if this node is a container (container_node_id IS NULL)
         let is_container = updated.container_node_id.is_none();
 
-        // If content changed and this is a container node, mark as stale
-        if content_changed && is_container {
-            conn.execute(
-                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ?, embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
-                (
-                    updated.node_type.as_str(),
-                    updated.content.as_str(),
-                    updated.parent_id.as_deref(),
-                    updated.container_node_id.as_deref(),
-                    updated.before_sibling_id.as_deref(),
-                    properties_json.as_str(),
-                    updated.embedding_vector.as_deref(),
-                    id,
-                ),
-            )
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to update node: {}", e)))?;
-        } else {
-            conn.execute(
-                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ? WHERE id = ?",
-                (
-                    updated.node_type.as_str(),
-                    updated.content.as_str(),
-                    updated.parent_id.as_deref(),
-                    updated.container_node_id.as_deref(),
-                    updated.before_sibling_id.as_deref(),
-                    properties_json.as_str(),
-                    updated.embedding_vector.as_deref(),
-                    id,
-                ),
-            )
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to update node: {}", e)))?;
-        }
-
-        // If content changed in a child node, mark the parent container as stale too
-        // This ensures container embeddings stay fresh when children are modified
-        if content_changed && !is_container {
-            if let Some(ref container_id) = updated.container_node_id {
-                conn.execute(
-                    "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
-                    [container_id.as_str()],
-                )
-                .await
-                .map_err(|e| NodeServiceError::query_failed(format!("Failed to mark parent container as stale: {}", e)))?;
-            }
-        }
-
-        // If container_node_id changed (node moved between containers), mark both old and new containers as stale
-        // Moving a node affects the content of both containers semantically
-        if update.container_node_id.is_some()
-            && existing.container_node_id != updated.container_node_id
-        {
-            // Mark old container as stale (if it exists)
-            if let Some(ref old_container_id) = existing.container_node_id {
-                conn.execute(
-                    "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
-                    [old_container_id.as_str()],
-                )
-                .await
-                .ok(); // Don't fail update if old container no longer exists
-            }
-
-            // Mark new container as stale (if different from what content_changed handled)
-            // Only needed if content didn't change (content_changed already handled new container above)
-            if !content_changed {
-                if let Some(ref new_container_id) = updated.container_node_id {
-                    conn.execute(
-                        "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
-                        [new_container_id.as_str()],
-                    )
-                    .await
-                    .ok(); // Don't fail update if new container doesn't exist
-                }
-            }
-        }
+        self.db
+            .db_update_node(crate::db::DbUpdateNodeParams {
+                id,
+                node_type: &updated.node_type,
+                content: &updated.content,
+                parent_id: updated.parent_id.as_deref(),
+                container_node_id: updated.container_node_id.as_deref(),
+                before_sibling_id: updated.before_sibling_id.as_deref(),
+                properties: &properties_json,
+                embedding_vector: updated.embedding_vector.as_deref(),
+                content_changed,
+                is_container,
+                old_container_id: existing.container_node_id.as_deref(),
+                new_container_id: updated.container_node_id.as_deref(),
+            })
+            .await?;
 
         // Sync mentions if content changed
         if content_changed {
@@ -1604,12 +1469,12 @@ impl NodeService {
         &self,
         id: &str,
     ) -> Result<crate::models::DeleteResult, NodeServiceError> {
-        let conn = self.db.connect_with_timeout().await?;
-
-        let rows_affected = conn
-            .execute("DELETE FROM nodes WHERE id = ?", [id])
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to delete node: {}", e)))?;
+        // Delegate to NodeStore trait
+        let result = self.store.delete_node(id).await.map_err(|e| {
+            NodeServiceError::DatabaseError(crate::db::DatabaseError::SqlExecutionError {
+                context: format!("NodeStore operation failed: {}", e),
+            })
+        })?;
 
         // Idempotent delete: return success even if node doesn't exist
         // This follows RESTful best practices and prevents race conditions
@@ -1618,11 +1483,7 @@ impl NodeService {
         //
         // The DeleteResult provides visibility for debugging/auditing while
         // maintaining idempotence.
-        Ok(if rows_affected > 0 {
-            crate::models::DeleteResult::existed()
-        } else {
-            crate::models::DeleteResult::not_found()
-        })
+        Ok(result)
     }
 
     /// Delete node with optimistic concurrency control (version check)
@@ -1983,141 +1844,7 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn query_nodes(&self, filter: NodeFilter) -> Result<Vec<Node>, NodeServiceError> {
-        // Use connection with busy timeout for better concurrency handling
-        let conn = self.db.connect_with_timeout().await?;
-
-        // For simple queries, we'll use specific patterns. Complex dynamic queries need a query builder
-        // For this implementation, we'll handle the most common cases
-
-        if let Some(ref node_type) = filter.node_type {
-            // Query by node_type
-            let order_clause = match filter.order_by {
-                Some(OrderBy::CreatedAsc) => " ORDER BY created_at ASC",
-                Some(OrderBy::CreatedDesc) => " ORDER BY created_at DESC",
-                Some(OrderBy::ModifiedAsc) => " ORDER BY modified_at ASC",
-                Some(OrderBy::ModifiedDesc) => " ORDER BY modified_at DESC",
-                _ => "",
-            };
-
-            let limit_clause = filter
-                .limit
-                .map(|l| format!(" LIMIT {}", l))
-                .unwrap_or_default();
-
-            let query = format!(
-                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes WHERE node_type = ?{}{}",
-                order_clause, limit_clause
-            );
-
-            let mut stmt = conn.prepare(&query).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
-            })?;
-
-            let mut rows = stmt.query([node_type.as_str()]).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
-            })?;
-
-            let mut nodes = Vec::new();
-            while let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-            {
-                let mut node = self.row_to_node(row)?;
-                self.backfill_schema_version(&mut node).await?;
-                self.apply_lazy_migration(&mut node).await?;
-                nodes.push(node);
-            }
-
-            return Ok(nodes);
-        } else if let Some(ref parent_id) = filter.parent_id {
-            // Query by parent_id
-            let order_clause = match filter.order_by {
-                Some(OrderBy::CreatedAsc) => " ORDER BY created_at ASC",
-                Some(OrderBy::CreatedDesc) => " ORDER BY created_at DESC",
-                Some(OrderBy::ModifiedAsc) => " ORDER BY modified_at ASC",
-                Some(OrderBy::ModifiedDesc) => " ORDER BY modified_at DESC",
-                _ => "",
-            };
-
-            let limit_clause = filter
-                .limit
-                .map(|l| format!(" LIMIT {}", l))
-                .unwrap_or_default();
-
-            let query = format!(
-                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes WHERE parent_id = ?{}{}",
-                order_clause, limit_clause
-            );
-
-            let mut stmt = conn.prepare(&query).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
-            })?;
-
-            let mut rows = stmt.query([parent_id.as_str()]).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
-            })?;
-
-            let mut nodes = Vec::new();
-            while let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-            {
-                let mut node = self.row_to_node(row)?;
-                self.backfill_schema_version(&mut node).await?;
-                self.apply_lazy_migration(&mut node).await?;
-                nodes.push(node);
-            }
-
-            return Ok(nodes);
-        } else if let Some(ref container_node_id) = filter.container_node_id {
-            // Query by container_node_id (bulk fetch optimization)
-            let order_clause = match filter.order_by {
-                Some(OrderBy::CreatedAsc) => " ORDER BY created_at ASC",
-                Some(OrderBy::CreatedDesc) => " ORDER BY created_at DESC",
-                Some(OrderBy::ModifiedAsc) => " ORDER BY modified_at ASC",
-                Some(OrderBy::ModifiedDesc) => " ORDER BY modified_at DESC",
-                _ => "",
-            };
-
-            let limit_clause = filter
-                .limit
-                .map(|l| format!(" LIMIT {}", l))
-                .unwrap_or_default();
-
-            let query = format!(
-                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes WHERE container_node_id = ?{}{}",
-                order_clause, limit_clause
-            );
-
-            let mut stmt = conn.prepare(&query).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
-            })?;
-
-            let mut rows = stmt
-                .query([container_node_id.as_str()])
-                .await
-                .map_err(|e| {
-                    NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
-                })?;
-
-            let mut nodes = Vec::new();
-            while let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-            {
-                let mut node = self.row_to_node(row)?;
-                self.backfill_schema_version(&mut node).await?;
-                self.apply_lazy_migration(&mut node).await?;
-                nodes.push(node);
-            }
-
-            return Ok(nodes);
-        }
-
-        // Default: return all nodes (with optional ordering/limit)
+        // Build order clause
         let order_clause = match filter.order_by {
             Some(OrderBy::CreatedAsc) => " ORDER BY created_at ASC",
             Some(OrderBy::CreatedDesc) => " ORDER BY created_at DESC",
@@ -2126,31 +1853,35 @@ impl NodeService {
             _ => "",
         };
 
+        // Build limit clause
         let limit_clause = filter
             .limit
             .map(|l| format!(" LIMIT {}", l))
             .unwrap_or_default();
 
-        let query = format!(
-            "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector FROM nodes{}{}",
-            order_clause, limit_clause
-        );
+        // Delegate SQL query to DatabaseService
+        let mut rows = self
+            .db
+            .db_query_nodes(
+                filter.node_type.as_deref(),
+                filter.parent_id.as_deref(),
+                filter.container_node_id.as_deref(),
+                order_clause,
+                &limit_clause,
+            )
+            .await?;
 
-        let mut stmt = conn.prepare(&query).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
-        })?;
-
-        let mut rows = stmt.query(()).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
-        })?;
-
+        // Convert rows to nodes and apply migrations
         let mut nodes = Vec::new();
         while let Some(row) = rows
             .next()
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
         {
-            nodes.push(self.row_to_node(row)?);
+            let mut node = self.row_to_node(row)?;
+            self.backfill_schema_version(&mut node).await?;
+            self.apply_lazy_migration(&mut node).await?;
+            nodes.push(node);
         }
 
         Ok(nodes)
@@ -2326,52 +2057,16 @@ impl NodeService {
             // Generate filter clause without table alias (queries nodes table directly)
             let container_task_filter = Self::build_container_task_filter(filter_enabled, None);
 
-            // Determine SQL query based on whether node_type is specified
-            let mut rows = if let Some(ref node_type) = query.node_type {
-                // Case 1: Filter by both content and node_type
-                let sql = format!(
-                    "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector
-                     FROM nodes WHERE content LIKE ? AND node_type = ?{}{}",
-                    container_task_filter, limit_clause
-                );
-
-                let mut stmt = conn.prepare(&sql).await.map_err(|e| {
-                    NodeServiceError::query_failed(format!(
-                        "Failed to prepare content_contains query: {}",
-                        e
-                    ))
-                })?;
-
-                stmt.query([content_pattern.as_str(), node_type.as_str()])
-                    .await
-                    .map_err(|e| {
-                        NodeServiceError::query_failed(format!(
-                            "Failed to execute content_contains query: {}",
-                            e
-                        ))
-                    })?
-            } else {
-                // Case 2: Filter by content only
-                let sql = format!(
-                    "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector
-                     FROM nodes WHERE content LIKE ?{}{}",
-                    container_task_filter, limit_clause
-                );
-
-                let mut stmt = conn.prepare(&sql).await.map_err(|e| {
-                    NodeServiceError::query_failed(format!(
-                        "Failed to prepare content_contains query: {}",
-                        e
-                    ))
-                })?;
-
-                stmt.query([content_pattern.as_str()]).await.map_err(|e| {
-                    NodeServiceError::query_failed(format!(
-                        "Failed to execute content_contains query: {}",
-                        e
-                    ))
-                })?
-            };
+            // Delegate SQL query to DatabaseService
+            let mut rows = self
+                .db
+                .db_search_nodes_by_content(
+                    &content_pattern,
+                    query.node_type.as_deref(),
+                    &container_task_filter,
+                    &limit_clause,
+                )
+                .await?;
 
             // Collect results with mentions populated
             let mut nodes = Vec::new();
@@ -2589,56 +2284,15 @@ impl NodeService {
             }
         }
 
-        let conn = self.db.connect_with_timeout().await?;
+        // Call store trait to execute batch insert in transaction
+        let created_nodes = self
+            .store
+            .batch_create_nodes(nodes)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
-        // Begin transaction
-        conn.execute("BEGIN TRANSACTION", ()).await.map_err(|e| {
-            NodeServiceError::transaction_failed(format!("Failed to begin transaction: {}", e))
-        })?;
-
-        let mut ids = Vec::new();
-
-        // Insert all nodes
-        // Database defaults handle created_at and modified_at timestamps automatically
-        for node in &nodes {
-            let properties_json = serde_json::to_string(&node.properties)
-                .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
-
-            let result = conn.execute(
-                "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    node.id.as_str(),
-                    node.node_type.as_str(),
-                    node.content.as_str(),
-                    node.parent_id.as_deref(),
-                    node.container_node_id.as_deref(),
-                    node.before_sibling_id.as_deref(),
-                    properties_json.as_str(),
-                    node.embedding_vector.as_deref(),
-                ),
-            )
-            .await;
-
-            if let Err(e) = result {
-                // Rollback on error
-                let _rollback = conn.execute("ROLLBACK", ()).await;
-                return Err(NodeServiceError::bulk_operation_failed(format!(
-                    "Failed to insert node {}: {}",
-                    node.id, e
-                )));
-            }
-
-            ids.push(node.id.clone());
-        }
-
-        // Commit transaction
-        conn.execute("COMMIT", ()).await.map_err(|e| {
-            std::mem::drop(conn.execute("ROLLBACK", ()));
-            NodeServiceError::transaction_failed(format!("Failed to commit transaction: {}", e))
-        })?;
-
-        Ok(ids)
+        // Extract IDs for return (maintaining backward compatibility)
+        Ok(created_nodes.into_iter().map(|n| n.id).collect())
     }
 
     /// Bulk update multiple nodes in a transaction
@@ -2680,128 +2334,116 @@ impl NodeService {
             return Ok(());
         }
 
-        let conn = self.db.connect_with_timeout().await?;
+        // Fetch all existing nodes, apply updates, validate, and prepare database parameters
+        let mut validated_updates: Vec<(&str, DbUpdateNodeParams)> = Vec::new();
+        let mut properties_json_vec: Vec<String> = Vec::new();
+        let mut updated_nodes: Vec<Node> = Vec::new();
+        let mut existing_nodes: Vec<Node> = Vec::new();
 
-        // Begin transaction
-        conn.execute("BEGIN TRANSACTION", ()).await.map_err(|e| {
-            NodeServiceError::transaction_failed(format!("Failed to begin transaction: {}", e))
-        })?;
-
-        for (id, update) in updates {
-            // Query node directly within transaction (avoid backfill_schema_version deadlock)
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version,
-                            created_at, modified_at, properties, embedding_vector
-                     FROM nodes WHERE id = ?",
-                )
-                .await
-                .map_err(|e| {
-                    NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
-                })?;
-
-            let mut rows = stmt.query([id.as_str()]).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
-            })?;
-
-            let existing = if let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-            {
-                self.row_to_node(row)?
-            } else {
-                let _rollback = conn.execute("ROLLBACK", ()).await;
-                return Err(NodeServiceError::node_not_found(&id));
-            };
+        for (id, update) in &updates {
+            // Fetch existing node
+            let existing = self
+                .get_node(id)
+                .await?
+                .ok_or_else(|| NodeServiceError::node_not_found(id))?;
 
             let mut updated = existing.clone();
 
-            if let Some(node_type) = update.node_type {
-                updated.node_type = node_type;
+            // Apply partial updates
+            if let Some(node_type) = &update.node_type {
+                updated.node_type = node_type.clone();
             }
 
-            if let Some(content) = update.content {
-                updated.content = content;
+            if let Some(content) = &update.content {
+                updated.content = content.clone();
             }
 
-            if let Some(parent_id) = update.parent_id {
-                updated.parent_id = parent_id;
+            if let Some(parent_id) = &update.parent_id {
+                updated.parent_id = parent_id.clone();
             }
 
-            if let Some(container_node_id) = update.container_node_id {
-                updated.container_node_id = container_node_id;
+            if let Some(container_node_id) = &update.container_node_id {
+                updated.container_node_id = container_node_id.clone();
             }
 
-            if let Some(before_sibling_id) = update.before_sibling_id {
-                updated.before_sibling_id = before_sibling_id;
+            if let Some(before_sibling_id) = &update.before_sibling_id {
+                updated.before_sibling_id = before_sibling_id.clone();
             }
 
-            if let Some(properties) = update.properties {
-                updated.properties = properties;
+            if let Some(properties) = &update.properties {
+                updated.properties = properties.clone();
             }
 
-            if let Some(embedding_vector) = update.embedding_vector {
-                updated.embedding_vector = embedding_vector;
+            if let Some(embedding_vector) = &update.embedding_vector {
+                updated.embedding_vector = embedding_vector.clone();
             }
 
             updated.modified_at = Utc::now();
 
             // Step 1: Core behavior validation
-            if let Err(e) = self.behaviors.validate_node(&updated) {
-                let _rollback = conn.execute("ROLLBACK", ()).await;
-                return Err(NodeServiceError::bulk_operation_failed(format!(
+            self.behaviors.validate_node(&updated).map_err(|e| {
+                NodeServiceError::bulk_operation_failed(format!(
                     "Failed to validate node {}: {}",
                     id, e
-                )));
-            }
+                ))
+            })?;
 
             // Step 2: Schema validation
             if updated.node_type != "schema" {
-                if let Err(e) = self.validate_node_against_schema(&updated).await {
-                    let _rollback = conn.execute("ROLLBACK", ()).await;
-                    return Err(NodeServiceError::bulk_operation_failed(format!(
-                        "Failed schema validation for node {}: {}",
-                        id, e
-                    )));
-                }
+                self.validate_node_against_schema(&updated)
+                    .await
+                    .map_err(|e| {
+                        NodeServiceError::bulk_operation_failed(format!(
+                            "Failed schema validation for node {}: {}",
+                            id, e
+                        ))
+                    })?;
             }
 
-            // Execute update in transaction - database auto-updates modified_at
+            // Serialize properties for database
             let properties_json = serde_json::to_string(&updated.properties)
                 .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
-            let result = conn.execute(
-                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ? WHERE id = ?",
-                (
-                    updated.node_type.as_str(),
-                    updated.content.as_str(),
-                    updated.parent_id.as_deref(),
-                    updated.container_node_id.as_deref(),
-                    updated.before_sibling_id.as_deref(),
-                    properties_json.as_str(),
-                    updated.embedding_vector.as_deref(),
-                    id.as_str(),
-                ),
-            )
-            .await;
-
-            if let Err(e) = result {
-                let _rollback = conn.execute("ROLLBACK", ()).await;
-                return Err(NodeServiceError::bulk_operation_failed(format!(
-                    "Failed to update node {}: {}",
-                    id, e
-                )));
-            }
+            properties_json_vec.push(properties_json);
+            existing_nodes.push(existing);
+            updated_nodes.push(updated);
         }
 
-        // Commit transaction
-        conn.execute("COMMIT", ()).await.map_err(|e| {
-            std::mem::drop(conn.execute("ROLLBACK", ()));
-            NodeServiceError::transaction_failed(format!("Failed to commit transaction: {}", e))
-        })?;
+        // Now prepare database parameters using stored nodes and JSON strings
+        for (i, (id, update)) in updates.iter().enumerate() {
+            let existing = &existing_nodes[i];
+            let updated = &updated_nodes[i];
 
-        Ok(())
+            // Detect content change
+            let content_changed = update.content.is_some();
+            let is_container = updated.container_node_id.is_none();
+            let old_container_id = existing.container_node_id.as_deref();
+            let new_container_id = updated.container_node_id.as_deref();
+
+            validated_updates.push((
+                id.as_str(),
+                DbUpdateNodeParams {
+                    id: id.as_str(),
+                    node_type: &updated.node_type,
+                    content: &updated.content,
+                    parent_id: updated.parent_id.as_deref(),
+                    container_node_id: updated.container_node_id.as_deref(),
+                    before_sibling_id: updated.before_sibling_id.as_deref(),
+                    properties: &properties_json_vec[i],
+                    embedding_vector: updated.embedding_vector.as_deref(),
+                    content_changed,
+                    is_container,
+                    old_container_id,
+                    new_container_id,
+                },
+            ));
+        }
+
+        // Call database service to execute batch update in transaction
+        self.db
+            .db_batch_update_nodes(validated_updates)
+            .await
+            .map_err(NodeServiceError::from)
     }
 
     /// Bulk delete multiple nodes in a transaction
@@ -3225,32 +2867,10 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn get_mentions(&self, node_id: &str) -> Result<Vec<String>, NodeServiceError> {
-        let conn = self.db.connect_with_timeout().await?;
-
-        let mut stmt = conn
-            .prepare("SELECT mentions_node_id FROM node_mentions WHERE node_id = ?")
+        self.db
+            .db_get_outgoing_mentions(node_id)
             .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to prepare mentions query: {}", e))
-            })?;
-
-        let mut rows = stmt.query([node_id]).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to execute mentions query: {}", e))
-        })?;
-
-        let mut mentions = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-        {
-            let mentioned_id: String = row
-                .get(0)
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-            mentions.push(mentioned_id);
-        }
-
-        Ok(mentions)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 
     /// Get all nodes that mention a specific node (incoming references/backlinks)
@@ -3278,35 +2898,10 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn get_mentioned_by(&self, node_id: &str) -> Result<Vec<String>, NodeServiceError> {
-        let conn = self.db.connect_with_timeout().await?;
-
-        let mut stmt = conn
-            .prepare("SELECT node_id FROM node_mentions WHERE mentions_node_id = ?")
+        self.db
+            .db_get_incoming_mentions(node_id)
             .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!(
-                    "Failed to prepare mentioned_by query: {}",
-                    e
-                ))
-            })?;
-
-        let mut rows = stmt.query([node_id]).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to execute mentioned_by query: {}", e))
-        })?;
-
-        let mut mentioned_by = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-        {
-            let mentioning_id: String = row
-                .get(0)
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-            mentioned_by.push(mentioning_id);
-        }
-
-        Ok(mentioned_by)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 
     /// Get container nodes of nodes that mention the target node (backlinks at container level).
@@ -3336,46 +2931,10 @@ impl NodeService {
         &self,
         node_id: &str,
     ) -> Result<Vec<String>, NodeServiceError> {
-        let conn = self.db.connect_with_timeout().await?;
-
-        let query = "
-            SELECT DISTINCT
-                CASE
-                    WHEN n.node_type IN ('task', 'ai-chat') THEN n.id
-                    ELSE COALESCE(n.container_node_id, n.id)
-                END as container_id
-            FROM node_mentions nm
-            JOIN nodes n ON nm.node_id = n.id
-            WHERE nm.mentions_node_id = ?
-        ";
-
-        let mut stmt = conn.prepare(query).await.map_err(|e| {
-            NodeServiceError::query_failed(format!(
-                "Failed to prepare mentioning_containers query: {}",
-                e
-            ))
-        })?;
-
-        let mut rows = stmt.query([node_id]).await.map_err(|e| {
-            NodeServiceError::query_failed(format!(
-                "Failed to execute mentioning_containers query: {}",
-                e
-            ))
-        })?;
-
-        let mut containers = Vec::new();
-        while let Some(row) = rows
-            .next()
+        self.db
+            .db_get_mentioning_containers(node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-        {
-            let container_id: String = row
-                .get(0)
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-            containers.push(container_id);
-        }
-
-        Ok(containers)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 }
 
@@ -3389,7 +2948,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
         let db = DatabaseService::new(db_path).await.unwrap();
-        let service = NodeService::new(db).unwrap();
+        let db_arc = Arc::new(db);
+
+        // Initialize NodeStore trait wrapper
+        let store: Arc<dyn crate::db::NodeStore> =
+            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
+
+        let service = NodeService::new(store, db_arc).unwrap();
         (service, temp_dir)
     }
 

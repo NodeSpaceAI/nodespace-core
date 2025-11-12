@@ -148,8 +148,14 @@ async fn init_database(
         .await
         .map_err(|e| HttpError::from_anyhow(e.into(), "DATABASE_INIT_ERROR"))?;
 
+    let new_db_arc = Arc::new(new_db.clone());
+
+    // Initialize NodeStore trait wrapper
+    let store: Arc<dyn nodespace_core::db::NodeStore> =
+        Arc::new(nodespace_core::db::TursoStore::new(new_db_arc.clone()));
+
     // STEP 3: Create NEW node service
-    let new_node_service = NodeService::new(new_db.clone())
+    let new_node_service = NodeService::new(store, new_db_arc)
         .map_err(|e| HttpError::from_anyhow(e.into(), "NODE_SERVICE_INIT_ERROR"))?;
 
     // STEP 4: Atomic swap of both services
