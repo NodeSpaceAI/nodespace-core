@@ -25,7 +25,7 @@
 //! - Child node: `container_node_id = Some("parent-id")` (e.g., notes within a topic)
 
 use crate::behaviors::NodeBehaviorRegistry;
-use crate::db::{DatabaseService, DbCreateNodeParams, DbUpdateNodeParams, NodeStore};
+use crate::db::{DatabaseService, DbUpdateNodeParams, NodeStore};
 use crate::models::{Node, NodeFilter, NodeUpdate, OrderBy};
 use crate::services::error::NodeServiceError;
 use crate::services::migration_registry::MigrationRegistry;
@@ -391,8 +391,8 @@ impl NodeService {
         &self,
         node_type: &str,
     ) -> Result<Option<serde_json::Value>, NodeServiceError> {
-        self.db
-            .db_get_schema(node_type)
+        self.store
+            .get_schema(node_type)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
@@ -2284,34 +2284,15 @@ impl NodeService {
             }
         }
 
-        // Serialize properties for all nodes first (need to own strings for lifetime)
-        let mut properties_json_vec: Vec<String> = Vec::new();
-        for node in &nodes {
-            let properties_json = serde_json::to_string(&node.properties)
-                .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
-            properties_json_vec.push(properties_json);
-        }
-
-        // Prepare parameters for database batch insert
-        let mut db_params = Vec::new();
-        for (i, node) in nodes.iter().enumerate() {
-            db_params.push(DbCreateNodeParams {
-                id: &node.id,
-                node_type: &node.node_type,
-                content: &node.content,
-                parent_id: node.parent_id.as_deref(),
-                container_node_id: node.container_node_id.as_deref(),
-                before_sibling_id: node.before_sibling_id.as_deref(),
-                properties: &properties_json_vec[i],
-                embedding_vector: node.embedding_vector.as_deref(),
-            });
-        }
-
-        // Call database service to execute batch insert in transaction
-        self.db
-            .db_batch_create_nodes(db_params)
+        // Call store trait to execute batch insert in transaction
+        let created_nodes = self
+            .store
+            .batch_create_nodes(nodes)
             .await
-            .map_err(NodeServiceError::from)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        // Extract IDs for return (maintaining backward compatibility)
+        Ok(created_nodes.into_iter().map(|n| n.id).collect())
     }
 
     /// Bulk update multiple nodes in a transaction
