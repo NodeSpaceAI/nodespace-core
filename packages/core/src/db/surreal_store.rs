@@ -46,11 +46,57 @@ use crate::db::node_store::NodeStore;
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 use surrealdb::engine::local::{Db, RocksDb};
 use surrealdb::Surreal;
+
+/// Internal struct matching SurrealDB's schema with 'uuid' field
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SurrealNode {
+    uuid: String,
+    node_type: String,
+    content: String,
+    parent_id: Option<String>,
+    container_node_id: Option<String>,
+    before_sibling_id: Option<String>,
+    version: i64,
+    created_at: String,
+    modified_at: String,
+    properties: Value,
+    embedding_vector: Option<Vec<u8>>,
+    #[serde(default)]
+    mentions: Vec<String>,
+    #[serde(default)]
+    mentioned_by: Vec<String>,
+}
+
+impl From<SurrealNode> for Node {
+    fn from(sn: SurrealNode) -> Self {
+        Node {
+            id: sn.uuid,
+            node_type: sn.node_type,
+            content: sn.content,
+            parent_id: sn.parent_id,
+            container_node_id: sn.container_node_id,
+            before_sibling_id: sn.before_sibling_id,
+            version: sn.version,
+            created_at: DateTime::parse_from_rfc3339(&sn.created_at)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            modified_at: DateTime::parse_from_rfc3339(&sn.modified_at)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            properties: sn.properties,
+            embedding_vector: sn.embedding_vector,
+            mentions: sn.mentions,
+            mentioned_by: sn.mentioned_by,
+        }
+    }
+}
 
 /// SurrealStore implements NodeStore trait for SurrealDB embedded backend
 ///
@@ -204,7 +250,7 @@ impl NodeStore for SurrealStore {
         // Insert into universal nodes table
         let query = "
             CREATE type::thing($table, $id) CONTENT {
-                id: type::thing($table, $id),
+                uuid: $uuid,
                 node_type: $node_type,
                 content: $content,
                 parent_id: $parent_id,
@@ -220,28 +266,14 @@ impl NodeStore for SurrealStore {
 
         self.db
             .query(query)
-            .bind(("table", node.node_type.clone()))
-            .bind(("id", node.id.clone()))
+            .bind(("table", "nodes"))
+            .bind(("id", record_id.clone()))
+            .bind(("uuid", node.id.clone()))
             .bind(("node_type", node.node_type.clone()))
             .bind(("content", node.content.clone()))
-            .bind((
-                "parent_id",
-                node.parent_id
-                    .as_ref()
-                    .map(|id| Self::to_record_id(&node.node_type, id)),
-            ))
-            .bind((
-                "container_node_id",
-                node.container_node_id
-                    .as_ref()
-                    .map(|id| Self::to_record_id(&node.node_type, id)),
-            ))
-            .bind((
-                "before_sibling_id",
-                node.before_sibling_id
-                    .as_ref()
-                    .map(|id| Self::to_record_id(&node.node_type, id)),
-            ))
+            .bind(("parent_id", node.parent_id.clone()))
+            .bind(("container_node_id", node.container_node_id.clone()))
+            .bind(("before_sibling_id", node.before_sibling_id.clone()))
             .bind(("version", node.version))
             .bind(("created_at", node.created_at.to_rfc3339()))
             .bind(("modified_at", node.modified_at.to_rfc3339()))
@@ -259,7 +291,7 @@ impl NodeStore for SurrealStore {
         {
             let mut props = node.properties.clone();
             if let Some(obj) = props.as_object_mut() {
-                obj.insert("id".to_string(), serde_json::json!(record_id));
+                obj.insert("uuid".to_string(), serde_json::json!(node.id));
             }
 
             self.db
@@ -271,42 +303,27 @@ impl NodeStore for SurrealStore {
                 .context("Failed to create node in type-specific table")?;
         }
 
-        // Return the created node
+        // Return the created node by fetching it
         self.get_node(&node.id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Node not found after creation"))
     }
 
     async fn get_node(&self, id: &str) -> Result<Option<Node>> {
-        // Parse ID to determine if it's a Record ID or plain UUID
-        let query_id = if id.contains(':') {
-            id.to_string()
-        } else {
-            // For plain UUIDs, we need to query by the ID field
-            // This is less efficient but maintains compatibility
-            let query = "SELECT * FROM nodes WHERE id CONTAINS $id LIMIT 1;";
-            let mut response = self
-                .db
-                .query(query)
-                .bind(("id", id.to_string()))
-                .await
-                .context("Failed to query node by UUID")?;
-
-            let nodes: Vec<Node> = response.take(0).unwrap_or_default();
-            return Ok(nodes.into_iter().next());
-        };
-
-        // Query by Record ID
-        let query = "SELECT * FROM type::thing($record_id);";
+        // Query by UUID field
+        let query = "SELECT * FROM nodes WHERE uuid = $uuid LIMIT 1;";
         let mut response = self
             .db
             .query(query)
-            .bind(("record_id", query_id))
+            .bind(("uuid", id.to_string()))
             .await
-            .context("Failed to get node")?;
+            .context("Failed to query node by UUID")?;
 
-        let nodes: Vec<Node> = response.take(0).unwrap_or_default();
-        Ok(nodes.into_iter().next())
+        let surreal_nodes: Vec<SurrealNode> = response
+            .take(0)
+            .context("Failed to extract query results")?;
+
+        Ok(surreal_nodes.into_iter().map(Into::into).next())
     }
 
     async fn update_node(&self, id: &str, update: NodeUpdate) -> Result<Node> {
@@ -316,11 +333,9 @@ impl NodeStore for SurrealStore {
             .await?
             .ok_or_else(|| anyhow::anyhow!("Node not found: {}", id))?;
 
-        let record_id = Self::to_record_id(&current.node_type, &current.id);
-
-        // Build update query for universal table
+        // Build update query for universal table by UUID
         let query = "
-            UPDATE type::thing($record_id) SET
+            UPDATE nodes SET
                 content = $content,
                 node_type = $node_type,
                 parent_id = $parent_id,
@@ -329,7 +344,8 @@ impl NodeStore for SurrealStore {
                 modified_at = time::now(),
                 version = version + 1,
                 properties = $properties,
-                embedding_vector = $embedding_vector;
+                embedding_vector = $embedding_vector
+            WHERE uuid = $uuid;
         ";
 
         let updated_content = update.content.unwrap_or(current.content);
@@ -338,7 +354,7 @@ impl NodeStore for SurrealStore {
 
         self.db
             .query(query)
-            .bind(("record_id", record_id.clone()))
+            .bind(("uuid", id.to_string()))
             .bind(("content", updated_content))
             .bind(("node_type", updated_node_type))
             .bind(("parent_id", update.parent_id.flatten()))
@@ -362,71 +378,74 @@ impl NodeStore for SurrealStore {
             None => return Ok(DeleteResult { existed: false }),
         };
 
-        let record_id = Self::to_record_id(&node.node_type, &node.id);
+        // Use transaction for atomicity (all or nothing)
+        let transaction_query = "
+            BEGIN TRANSACTION;
+            DELETE type::thing($table, $id);
+            DELETE FROM nodes WHERE uuid = $uuid;
+            DELETE mentions WHERE in.uuid = $uuid OR out.uuid = $uuid;
+            COMMIT TRANSACTION;
+        ";
 
-        // Delete from type-specific table
         self.db
-            .query(format!("DELETE {};", record_id))
+            .query(transaction_query)
+            .bind(("table", node.node_type.clone()))
+            .bind(("id", node.id.clone()))
+            .bind(("uuid", node.id.clone()))
             .await
-            .context("Failed to delete from type table")?;
-
-        // Delete from universal nodes table
-        self.db
-            .query("DELETE FROM nodes WHERE id = $record_id;")
-            .bind(("record_id", record_id.clone()))
-            .await
-            .context("Failed to delete from nodes table")?;
-
-        // Delete mention relationships
-        self.db
-            .query("DELETE mentions WHERE in = $record_id OR out = $record_id;")
-            .bind(("record_id", record_id))
-            .await
-            .context("Failed to delete mentions")?;
+            .context("Failed to delete node and relations")?;
 
         Ok(DeleteResult { existed: true })
     }
 
     async fn query_nodes(&self, query: NodeQuery) -> Result<Vec<Node>> {
-        let mut sql = "SELECT * FROM nodes".to_string();
-        let mut conditions = Vec::new();
+        let sql = if let Some(_node_type) = &query.node_type {
+            if query.limit.is_some() {
+                "SELECT * FROM nodes WHERE node_type = $node_type LIMIT $limit;"
+            } else {
+                "SELECT * FROM nodes WHERE node_type = $node_type;"
+            }
+        } else if query.limit.is_some() {
+            "SELECT * FROM nodes LIMIT $limit;"
+        } else {
+            "SELECT * FROM nodes;"
+        };
 
-        // Add node_type filter
+        let mut query_builder = self.db.query(sql);
+
         if let Some(node_type) = &query.node_type {
-            conditions.push(format!("node_type = '{}'", node_type));
+            query_builder = query_builder.bind(("node_type", node_type.clone()));
         }
 
-        // Build WHERE clause
-        if !conditions.is_empty() {
-            sql.push_str(&format!(" WHERE {}", conditions.join(" AND ")));
-        }
-
-        // Add limit
         if let Some(limit) = query.limit {
-            sql.push_str(&format!(" LIMIT {}", limit));
+            query_builder = query_builder.bind(("limit", limit));
         }
 
-        sql.push(';');
-
-        let mut response = self.db.query(&sql).await.context("Failed to query nodes")?;
-        let nodes: Vec<Node> = response.take(0).unwrap_or_default();
-        Ok(nodes)
+        let mut response = query_builder.await.context("Failed to query nodes")?;
+        let surreal_nodes: Vec<SurrealNode> = response
+            .take(0)
+            .context("Failed to extract nodes from query response")?;
+        Ok(surreal_nodes.into_iter().map(Into::into).collect())
     }
 
     async fn get_children(&self, parent_id: Option<&str>) -> Result<Vec<Node>> {
-        let query = if let Some(pid) = parent_id {
-            format!("SELECT * FROM nodes WHERE parent_id = '{}';", pid)
+        let (query, has_parent) = if parent_id.is_some() {
+            ("SELECT * FROM nodes WHERE parent_id = $parent_id;", true)
         } else {
-            "SELECT * FROM nodes WHERE parent_id IS NONE;".to_string()
+            ("SELECT * FROM nodes WHERE parent_id IS NONE;", false)
         };
 
-        let mut response = self
-            .db
-            .query(&query)
-            .await
-            .context("Failed to get children")?;
-        let nodes: Vec<Node> = response.take(0).unwrap_or_default();
-        Ok(nodes)
+        let mut query_builder = self.db.query(query);
+
+        if has_parent {
+            query_builder = query_builder.bind(("parent_id", parent_id.unwrap().to_string()));
+        }
+
+        let mut response = query_builder.await.context("Failed to get children")?;
+        let surreal_nodes: Vec<SurrealNode> = response
+            .take(0)
+            .context("Failed to extract children from response")?;
+        Ok(surreal_nodes.into_iter().map(Into::into).collect())
     }
 
     async fn get_nodes_by_container(&self, container_id: &str) -> Result<Vec<Node>> {
@@ -438,8 +457,10 @@ impl NodeStore for SurrealStore {
             .await
             .context("Failed to get nodes by container")?;
 
-        let nodes: Vec<Node> = response.take(0).unwrap_or_default();
-        Ok(nodes)
+        let surreal_nodes: Vec<SurrealNode> = response
+            .take(0)
+            .context("Failed to extract nodes by container from response")?;
+        Ok(surreal_nodes.into_iter().map(Into::into).collect())
     }
 
     async fn search_nodes_by_content(
@@ -447,36 +468,32 @@ impl NodeStore for SurrealStore {
         search_query: &str,
         limit: Option<i64>,
     ) -> Result<Vec<Node>> {
-        let mut query = format!(
-            "SELECT * FROM nodes WHERE content CONTAINS '{}'",
-            search_query
-        );
+        let sql = if limit.is_some() {
+            "SELECT * FROM nodes WHERE content CONTAINS $search_query LIMIT $limit;"
+        } else {
+            "SELECT * FROM nodes WHERE content CONTAINS $search_query;"
+        };
+
+        let mut query_builder = self
+            .db
+            .query(sql)
+            .bind(("search_query", search_query.to_string()));
 
         if let Some(lim) = limit {
-            query.push_str(&format!(" LIMIT {}", lim));
+            query_builder = query_builder.bind(("limit", lim));
         }
-        query.push(';');
 
-        let mut response = self
-            .db
-            .query(&query)
-            .await
-            .context("Failed to search nodes")?;
-        let nodes: Vec<Node> = response.take(0).unwrap_or_default();
-        Ok(nodes)
+        let mut response = query_builder.await.context("Failed to search nodes")?;
+        let surreal_nodes: Vec<SurrealNode> = response
+            .take(0)
+            .context("Failed to extract search results from response")?;
+        Ok(surreal_nodes.into_iter().map(Into::into).collect())
     }
 
     async fn move_node(&self, id: &str, new_parent_id: Option<&str>) -> Result<()> {
-        let node = self
-            .get_node(id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Node not found"))?;
-
-        let record_id = Self::to_record_id(&node.node_type, &node.id);
-
         self.db
-            .query("UPDATE type::thing($record_id) SET parent_id = $parent_id;")
-            .bind(("record_id", record_id))
+            .query("UPDATE nodes SET parent_id = $parent_id WHERE uuid = $uuid;")
+            .bind(("uuid", id.to_string()))
             .bind(("parent_id", new_parent_id.map(|s| s.to_string())))
             .await
             .context("Failed to move node")?;
@@ -485,16 +502,9 @@ impl NodeStore for SurrealStore {
     }
 
     async fn reorder_node(&self, id: &str, new_before_sibling_id: Option<&str>) -> Result<()> {
-        let node = self
-            .get_node(id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Node not found"))?;
-
-        let record_id = Self::to_record_id(&node.node_type, &node.id);
-
         self.db
-            .query("UPDATE type::thing($record_id) SET before_sibling_id = $before_sibling_id;")
-            .bind(("record_id", record_id))
+            .query("UPDATE nodes SET before_sibling_id = $before_sibling_id WHERE uuid = $uuid;")
+            .bind(("uuid", id.to_string()))
             .bind((
                 "before_sibling_id",
                 new_before_sibling_id.map(|s| s.to_string()),
@@ -542,7 +552,9 @@ impl NodeStore for SurrealStore {
             .await
             .context("Failed to get outgoing mentions")?;
 
-        let results: Vec<Value> = response.take(0).unwrap_or_default();
+        let results: Vec<Value> = response
+            .take(0)
+            .context("Failed to extract outgoing mentions from response")?;
         Ok(results
             .into_iter()
             .filter_map(|v| v.get("out").and_then(|o| o.as_str().map(String::from)))
@@ -558,7 +570,9 @@ impl NodeStore for SurrealStore {
             .await
             .context("Failed to get incoming mentions")?;
 
-        let results: Vec<Value> = response.take(0).unwrap_or_default();
+        let results: Vec<Value> = response
+            .take(0)
+            .context("Failed to extract incoming mentions from response")?;
         Ok(results
             .into_iter()
             .filter_map(|v| v.get("in").and_then(|i| i.as_str().map(String::from)))
@@ -574,7 +588,9 @@ impl NodeStore for SurrealStore {
             .await
             .context("Failed to get mentioning containers")?;
 
-        let container_ids: Vec<String> = response.take(0).unwrap_or_default();
+        let container_ids: Vec<String> = response
+            .take(0)
+            .context("Failed to extract container IDs from response")?;
 
         let mut nodes = Vec::new();
         for container_id in container_ids {
@@ -604,8 +620,9 @@ impl NodeStore for SurrealStore {
             };
             self.update_node(&schema_id, update).await?;
         } else {
-            // Create new schema node
-            let node = Node::new(
+            // Create new schema node with deterministic ID
+            let node = Node::new_with_id(
+                schema_id,
                 "schema".to_string(),
                 node_type.to_string(),
                 None,
@@ -618,33 +635,31 @@ impl NodeStore for SurrealStore {
     }
 
     async fn get_nodes_without_embeddings(&self, limit: Option<i64>) -> Result<Vec<Node>> {
-        let mut query = "SELECT * FROM nodes WHERE embedding_vector IS NONE".to_string();
+        let sql = if limit.is_some() {
+            "SELECT * FROM nodes WHERE embedding_vector IS NONE LIMIT $limit;"
+        } else {
+            "SELECT * FROM nodes WHERE embedding_vector IS NONE;"
+        };
+
+        let mut query_builder = self.db.query(sql);
 
         if let Some(lim) = limit {
-            query.push_str(&format!(" LIMIT {}", lim));
+            query_builder = query_builder.bind(("limit", lim));
         }
-        query.push(';');
 
-        let mut response = self
-            .db
-            .query(&query)
+        let mut response = query_builder
             .await
             .context("Failed to get nodes without embeddings")?;
-        let nodes: Vec<Node> = response.take(0).unwrap_or_default();
-        Ok(nodes)
+        let surreal_nodes: Vec<SurrealNode> = response
+            .take(0)
+            .context("Failed to extract nodes without embeddings from response")?;
+        Ok(surreal_nodes.into_iter().map(Into::into).collect())
     }
 
     async fn update_embedding(&self, node_id: &str, embedding: &[u8]) -> Result<()> {
-        let node = self
-            .get_node(node_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Node not found"))?;
-
-        let record_id = Self::to_record_id(&node.node_type, &node.id);
-
         self.db
-            .query("UPDATE type::thing($record_id) SET embedding_vector = $embedding;")
-            .bind(("record_id", record_id))
+            .query("UPDATE nodes SET embedding_vector = $embedding WHERE uuid = $uuid;")
+            .bind(("uuid", node_id.to_string()))
             .bind(("embedding", embedding.to_vec()))
             .await
             .context("Failed to update embedding")?;
