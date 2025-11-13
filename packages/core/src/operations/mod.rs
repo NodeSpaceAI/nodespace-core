@@ -46,13 +46,13 @@
 //! ```no_run
 //! use nodespace_core::operations::NodeOperations;
 //! use nodespace_core::services::NodeService;
-//! use nodespace_core::db::DatabaseService;
+//! use nodespace_core::db::SurrealStore;
 //! use std::path::PathBuf;
 //! use serde_json::json;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let db = DatabaseService::new(PathBuf::from("./data/test.db")).await?;
+//!     let db = SurrealStore::new(PathBuf::from("./data/test.db")).await?;
 //!     let node_service = NodeService::new(db)?;
 //!     let operations = NodeOperations::new(node_service);
 //!
@@ -179,12 +179,12 @@ pub struct CreateNodeParams {
 /// ```no_run
 /// # use nodespace_core::operations::NodeOperations;
 /// # use nodespace_core::services::NodeService;
-/// # use nodespace_core::db::DatabaseService;
+/// # use nodespace_core::db::SurrealStore;
 /// # use std::path::PathBuf;
 /// # use serde_json::json;
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+/// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
 /// # let node_service = NodeService::new(db)?;
 /// let operations = NodeOperations::new(node_service);
 ///
@@ -219,11 +219,11 @@ impl NodeOperations {
     /// ```no_run
     /// # use nodespace_core::operations::NodeOperations;
     /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::DatabaseService;
+    /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
     /// let node_service = NodeService::new(db)?;
     /// let operations = NodeOperations::new(node_service);
     /// # Ok(())
@@ -254,11 +254,11 @@ impl NodeOperations {
     /// ```
     /// # use nodespace_core::operations::NodeOperations;
     /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::DatabaseService;
+    /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
     /// # let node_service = NodeService::new(db)?;
     /// # let operations = NodeOperations::new(node_service);
     /// // These are internal examples for documentation
@@ -519,12 +519,12 @@ impl NodeOperations {
     /// ```no_run
     /// # use nodespace_core::operations::NodeOperations;
     /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::DatabaseService;
+    /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
     /// # use serde_json::json;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
     /// # let node_service = NodeService::new(db)?;
     /// # let operations = NodeOperations::new(node_service);
     /// // Create a date node (container)
@@ -714,11 +714,11 @@ impl NodeOperations {
     /// ```no_run
     /// # use nodespace_core::operations::NodeOperations;
     /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::DatabaseService;
+    /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
     /// # let node_service = NodeService::new(db)?;
     /// # let operations = NodeOperations::new(node_service);
     /// let node = operations.get_node("node-id").await?;
@@ -746,12 +746,12 @@ impl NodeOperations {
     /// ```no_run
     /// # use nodespace_core::operations::NodeOperations;
     /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::DatabaseService;
+    /// # use nodespace_core::db::SurrealStore;
     /// # use nodespace_core::models::NodeFilter;
     /// # use std::path::PathBuf;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
     /// # let node_service = NodeService::new(db)?;
     /// # let operations = NodeOperations::new(node_service);
     /// let filter = NodeFilter::new().with_node_type("text".to_string());
@@ -788,12 +788,12 @@ impl NodeOperations {
     /// ```no_run
     /// # use nodespace_core::operations::NodeOperations;
     /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::DatabaseService;
+    /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
     /// # use serde_json::json;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
     /// # let node_service = NodeService::new(db)?;
     /// # let operations = NodeOperations::new(node_service);
     /// operations.update_node(
@@ -882,11 +882,11 @@ impl NodeOperations {
     /// ```no_run
     /// # use nodespace_core::operations::NodeOperations;
     /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::DatabaseService;
+    /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
     /// # let node_service = NodeService::new(db)?;
     /// # let operations = NodeOperations::new(node_service);
     /// operations.move_node("node-id", Some("new-parent-id")).await?;
@@ -991,11 +991,11 @@ impl NodeOperations {
     /// ```no_run
     /// # use nodespace_core::operations::NodeOperations;
     /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::DatabaseService;
+    /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
     /// # let node_service = NodeService::new(db)?;
     /// # let operations = NodeOperations::new(node_service);
     /// // Move node to end of sibling list
@@ -1168,11 +1168,11 @@ impl NodeOperations {
     /// ```no_run
     /// # use nodespace_core::operations::NodeOperations;
     /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::DatabaseService;
+    /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
     /// # let node_service = NodeService::new(db)?;
     /// # let operations = NodeOperations::new(node_service);
     /// let result = operations.delete_node("node-id").await?;
@@ -1257,7 +1257,22 @@ impl NodeOperations {
             }
         }
 
-        // 3. Delete with version check (optimistic concurrency control)
+        // 3. Cascade delete all children recursively
+        // Get all direct children before deleting the parent
+        let children = self
+            .node_service
+            .query_nodes(NodeFilter::new().with_parent_id(node_id.to_string()))
+            .await?;
+
+        // Recursively delete each child (this will cascade further down the tree)
+        for child in children {
+            // Recursively call delete_node for each child
+            // Use the child's current version for optimistic concurrency
+            // Box the recursive call to avoid infinite future size
+            Box::pin(self.delete_node(&child.id, child.version)).await?;
+        }
+
+        // 4. Delete with version check (optimistic concurrency control)
         let rows_affected = self
             .node_service
             .delete_with_version_check(node_id, expected_version)
@@ -1284,7 +1299,7 @@ impl NodeOperations {
             }
         }
 
-        // 4. Deletion succeeded
+        // 5. Deletion succeeded
         Ok(DeleteResult { existed: true })
     }
 }
@@ -1292,7 +1307,7 @@ impl NodeOperations {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::DatabaseService;
+    use crate::db::SurrealStore;
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -1301,14 +1316,9 @@ mod tests {
     {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
-        let db = DatabaseService::new(db_path).await?;
-        let db_arc = Arc::new(db);
 
-        // Initialize NodeStore trait wrapper
-        let store: Arc<dyn crate::db::NodeStore> =
-            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
-
-        let node_service = NodeService::new(store, db_arc)?;
+        let store = Arc::new(SurrealStore::new(db_path).await?);
+        let node_service = NodeService::new(store)?;
         let operations = NodeOperations::new(Arc::new(node_service));
         Ok((operations, temp_dir))
     }

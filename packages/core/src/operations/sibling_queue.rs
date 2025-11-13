@@ -167,7 +167,7 @@ impl SiblingOperationQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::DatabaseService;
+    use crate::db::SurrealStore;
     use crate::operations::CreateNodeParams;
     use crate::services::NodeService;
     use serde_json::json;
@@ -179,14 +179,9 @@ mod tests {
     ) -> Result<(Arc<NodeOperations>, TempDir), Box<dyn std::error::Error>> {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
-        let db = DatabaseService::new(db_path).await?;
-        let db_arc = Arc::new(db);
 
-        // Initialize NodeStore trait wrapper
-        let store: Arc<dyn crate::db::NodeStore> =
-            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
-
-        let node_service = NodeService::new(store, db_arc)?;
+        let store = Arc::new(SurrealStore::new(db_path).await?);
+        let node_service = NodeService::new(store)?;
         let operations = Arc::new(NodeOperations::new(Arc::new(node_service)));
         Ok((operations, temp_dir))
     }

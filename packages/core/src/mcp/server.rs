@@ -665,22 +665,19 @@ mod tests {
 
     // Helper to create test services
     async fn create_test_services() -> McpServices {
-        use crate::db::DatabaseService;
+        use crate::db::SurrealStore;
         use crate::services::NodeService;
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
-        let db = DatabaseService::new(db_path).await.unwrap();
-        let db_arc = Arc::new(db);
 
-        // Initialize NodeStore trait wrapper
-        let store: Arc<dyn crate::db::NodeStore> =
-            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
-
-        let node_service = Arc::new(NodeService::new(store, db_arc.clone()).unwrap());
+        let store = Arc::new(SurrealStore::new(db_path).await.unwrap());
+        let node_service = Arc::new(NodeService::new(store.clone()).unwrap());
         let node_operations = Arc::new(NodeOperations::new(node_service.clone()));
-        let embedding_service = Arc::new(NodeEmbeddingService::new_with_defaults(db_arc).unwrap());
+        let nlp_engine =
+            Arc::new(nodespace_nlp_engine::EmbeddingService::new(Default::default()).unwrap());
+        let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine));
         let schema_service = Arc::new(SchemaService::new(node_service));
 
         McpServices {

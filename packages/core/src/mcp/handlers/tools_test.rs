@@ -118,7 +118,7 @@ fn test_tools_call_missing_arguments() {
 #[cfg(test)]
 mod async_integration_tests {
     use super::*;
-    use crate::db::DatabaseService;
+    use crate::db::SurrealStore;
     use crate::services::{NodeEmbeddingService, NodeService};
     use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
     use std::sync::Arc;
@@ -132,16 +132,9 @@ mod async_integration_tests {
     ) {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
-        let db = DatabaseService::new(db_path).await.unwrap();
 
-        // Clone db for both services
-        let db_arc = Arc::new(db);
-
-        // Initialize NodeStore trait wrapper
-        let store: Arc<dyn crate::db::NodeStore> =
-            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
-
-        let node_service = Arc::new(NodeService::new(store, db_arc.clone()).unwrap());
+        let store = Arc::new(SurrealStore::new(db_path).await.unwrap());
+        let node_service = Arc::new(NodeService::new(store.clone()).unwrap());
         let node_operations = Arc::new(NodeOperations::new(node_service.clone()));
 
         // Create NLP engine for embedding service
@@ -149,7 +142,7 @@ mod async_integration_tests {
         nlp_engine.initialize().unwrap();
         let nlp_engine = Arc::new(nlp_engine);
 
-        let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, db_arc));
+        let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine));
 
         // Create SchemaService
         let schema_service = Arc::new(SchemaService::new(node_service));
