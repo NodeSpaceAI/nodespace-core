@@ -25,7 +25,7 @@
 import { eventBus } from './event-bus';
 import { tauriNodeService } from './tauri-node-service';
 import { PersistenceCoordinator, OperationCancelledError } from './persistence-coordinator.svelte';
-import { isPlaceholderNode, requiresAtomicBatching } from '$lib/utils/placeholder-detection';
+import { requiresAtomicBatching } from '$lib/utils/placeholder-detection';
 import { shouldLogDatabaseErrors, isTestEnvironment } from '$lib/utils/test-environment';
 import type { Node } from '$lib/types';
 import type {
@@ -402,38 +402,8 @@ export class SharedNodeStore {
         // Remove these references to avoid FOREIGN KEY constraint violations
         //
         // Type casting explanation: TypeScript doesn't allow deleting properties from Partial<Node>
-        // because it's readonly. We create MutablePartialNode to allow deletion, which is safe
-        // because we're modifying a local changes object, not the original node in the store.
-        type MutablePartialNode = { [K in keyof Partial<Node>]: Partial<Node>[K] };
-        const coordinator = PersistenceCoordinator.getInstance();
-
-        // Check beforeSiblingId
-        if ('beforeSiblingId' in changes && changes.beforeSiblingId) {
-          const isPersisted = this.persistedNodeIds.has(changes.beforeSiblingId);
-          const hasPending = coordinator.isPending(changes.beforeSiblingId);
-          if (!isPersisted && !hasPending) {
-            // Check if it's a placeholder node
-            const siblingNode = this.nodes.get(changes.beforeSiblingId);
-            if (siblingNode && isPlaceholderNode(siblingNode)) {
-              // beforeSiblingId points to unpersisted placeholder - defer until placeholder persists
-              delete (changes as MutablePartialNode).beforeSiblingId;
-            }
-          }
-        }
-
-        // Check parentId
-        if ('parentId' in changes && changes.parentId) {
-          const isPersisted = this.persistedNodeIds.has(changes.parentId);
-          const hasPending = coordinator.isPending(changes.parentId);
-          if (!isPersisted && !hasPending) {
-            // Check if it's a placeholder node
-            const parentNode = this.nodes.get(changes.parentId);
-            if (parentNode && isPlaceholderNode(parentNode)) {
-              // parentId points to unpersisted placeholder - defer until placeholder persists
-              delete (changes as MutablePartialNode).parentId;
-            }
-          }
-        }
+        // Issue #479: Remove placeholder checks - all real nodes (even blank) should be persisted
+        // FOREIGN KEY validation will be handled by persistence coordinator dependencies
 
         const isStructuralChange =
           'parentId' in changes || 'beforeSiblingId' in changes || 'containerNodeId' in changes;
@@ -447,16 +417,15 @@ export class SharedNodeStore {
           isNodeTypeChange ||
           isPropertyChange;
 
-        // Skip persisting placeholder nodes - they exist in UI but not in database
-        // Placeholders are nodes with only type-specific prefixes and no actual content
-        // They will be persisted once user adds real content
-        const isPlaceholder = isPlaceholderNode(updatedNode);
+        // Issue #479: Do NOT check isPlaceholder here - that's a UI-only concept
+        // Real nodes created by user actions (Enter key) should persist even if blank
+        // Only BaseNodeViewer's viewer-local placeholder should be unpersisted
 
         // CRITICAL: Skip persistence if batch is active for this node
         // The batch will handle persistence atomically when committed
         const hasBatchActive = this.activeBatches.has(nodeId);
 
-        if (shouldPersist && !isPlaceholder && !hasBatchActive) {
+        if (shouldPersist && !hasBatchActive) {
           // Delegate to PersistenceCoordinator for coordinated persistence
           // Use debounced mode for content changes (typing), immediate for structural changes
           const dependencies: Array<string | (() => Promise<void>)> = [];
@@ -492,8 +461,6 @@ export class SharedNodeStore {
            * Add dependency when:
            * - beforeSiblingId is set
            * - NOT already persisted to database
-           *
-           * NOTE: Placeholder check is done earlier (line 263-274) to avoid FOREIGN KEY violations
            */
           if (
             updatedNode.beforeSiblingId &&
@@ -512,18 +479,8 @@ export class SharedNodeStore {
             nodeId,
             async () => {
               try {
-                // GUARD: Re-check placeholder status at persistence execution time
-                // Prevents persisting empty nodes when structural changes trigger persistence
-                //
-                // EDGE CASE: Eventual consistency in rapid typing scenarios
-                // If user adds content between queueing and execution (due to debouncing),
-                // the node might have valid content by execution time but still be skipped.
-                // This is acceptable because the content update will trigger a new persistence
-                // operation that will succeed. The system is eventually consistent.
-                const currentNode = this.nodes.get(nodeId);
-                if (currentNode && isPlaceholderNode(currentNode)) {
-                  return; // Skip persistence - will retry when content is added
-                }
+                // Issue #479: All real nodes (even blank) should be persisted
+                // No placeholder checks here - viewer-local placeholder never enters this code path
 
                 // Check if node has been persisted - use in-memory tracking to avoid database query
                 const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
@@ -647,21 +604,22 @@ export class SharedNodeStore {
       this.persistedNodeIds.add(node.id);
     }
 
-    // Check if node is a placeholder (node with only type-specific prefix, no actual content)
-    const isPlaceholder = isPlaceholderNode(node);
-    const isPlaceholderFromViewer = isPlaceholder && source.type === 'viewer' && isNewNode;
-
     // Phase 2.4: Persist to database
-    // IMPORTANT: For NEW nodes from viewer, persist immediately (including empty ones!)
+    // IMPORTANT: For NEW nodes from viewer, persist immediately (including blank nodes!)
     // For UPDATES from viewer, skip persistence - BaseNodeViewer handles with debouncing
     // This ensures createNode() persistence works while avoiding duplicate writes on updates
     //
-    // EXCEPTION: Placeholders should persist nodeType but NOT content (to avoid backend validation errors)
+    // Phase 1 of Issue #479: Eliminate ephemeral nodes during editing
+    // - Only skip persistence when explicitly requested via skipPersistence flag
+    // - This flag is ONLY true for initial viewer placeholder (when no children exist)
+    // - All other blank nodes (created via Enter key, etc.) persist immediately
     const persistBehavior = this.determinePersistenceBehavior(source, options);
-    if (!isPlaceholderFromViewer && persistBehavior.shouldPersist) {
+    if (persistBehavior.shouldPersist) {
       const shouldPersist = source.type !== 'viewer' || isNewNode;
 
       if (shouldPersist) {
+        // Issue #479: No placeholder checks - all real nodes should be persisted
+
         // Delegate to PersistenceCoordinator
         const dependencies: Array<string | (() => Promise<void>)> = [];
 
@@ -701,16 +659,10 @@ export class SharedNodeStore {
           dependencies.push(node.beforeSiblingId);
         }
 
-        // For placeholders with specialized nodeType, filter out content to avoid backend validation
-        let nodeToPersist = node;
-        if (isPlaceholder && node.nodeType !== 'text') {
-          // Extract and discard content field (using underscore prefix to indicate intentionally unused)
-          // Content field is omitted to avoid backend validation errors for placeholder nodes
-          const { content: _content, ...nodeWithoutContent } = node;
-          // Type assertion required: backend expects Node but we're omitting content for placeholders
-          // This is safe because backend validation allows missing content for non-text placeholder nodes
-          nodeToPersist = nodeWithoutContent as Node;
-        }
+        // Issue #479: Always persist the full node including content
+        // Real nodes (even with only syntax like "## ") must include content field for backend validation
+        // The old code stripped content for "placeholder" header nodes, but now all user-created nodes
+        // should persist with their full content, even if it's just syntax
 
         // Capture handle to catch cancellation errors
         const handle = PersistenceCoordinator.getInstance().persist(
@@ -723,7 +675,7 @@ export class SharedNodeStore {
                 try {
                   // Get current version for optimistic concurrency control
                   const currentVersion = node.version ?? 1;
-                  await tauriNodeService.updateNode(node.id, currentVersion, nodeToPersist);
+                  await tauriNodeService.updateNode(node.id, currentVersion, node);
                 } catch (updateError) {
                   // If UPDATE fails because node doesn't exist, try CREATE instead
                   const errorMessage =
@@ -739,14 +691,14 @@ export class SharedNodeStore {
                     console.warn(
                       `[SharedNodeStore] Node ${node.id} not found in database, creating instead of updating (error: ${errorMessage})`
                     );
-                    await tauriNodeService.createNode(nodeToPersist);
+                    await tauriNodeService.createNode(node);
                     this.persistedNodeIds.add(node.id);
                   } else {
                     throw updateError;
                   }
                 }
               } else {
-                await tauriNodeService.createNode(nodeToPersist);
+                await tauriNodeService.createNode(node);
                 this.persistedNodeIds.add(node.id); // Track as persisted
               }
             } catch (dbError) {
@@ -899,11 +851,11 @@ export class SharedNodeStore {
     try {
       const nodes = await tauriNodeService.getNodesByContainerId(parentId);
 
-      // Add nodes to store with database source (skips persistence)
-      // skipPersistence=true will automatically mark nodes as persisted in setNode()
+      // Add nodes to store with database source
+      // Database source type will automatically mark nodes as persisted (see determinePersistenceBehavior)
       const databaseSource = { type: 'database' as const, reason: 'loaded-from-db' };
       for (const node of nodes) {
-        this.setNode(node, databaseSource, true); // skipPersistence = true
+        this.setNode(node, databaseSource); // skipPersistence removed - database source handles it
       }
 
       return nodes;
@@ -978,14 +930,7 @@ export class SharedNodeStore {
 
     // Check if node needs to be persisted
     if (!this.persistedNodeIds.has(nodeId)) {
-      // GUARD: Skip placeholder nodes - they should not be force-persisted
-      // Placeholder nodes will be persisted when they receive actual content
-      // This prevents invalid nodes from being persisted during ancestor chain resolution
-      if (isPlaceholderNode(node)) {
-        return; // Don't persist placeholders, even in ancestor chain
-      }
-
-      // Node was never persisted (e.g., placeholder node created with skipPersistence)
+      // Issue #479: No placeholder checks - all real nodes (even blank) should be persisted
       // Force persist it now before any child operations that reference it
 
       // Trigger persistence via PersistenceCoordinator
@@ -1767,21 +1712,10 @@ export class SharedNodeStore {
         return;
       }
 
-      // Check if final state is a placeholder
-      const isPlaceholder = isPlaceholderNode(finalNode);
-      const wasPersisted = this.persistedNodeIds.has(nodeId);
-
-      // Persist if:
-      // 1. Node has real content (not a placeholder), OR
-      // 2. Node became a placeholder but was already persisted (need to update DB)
-      //    Example: User typed "> Hello" (persisted), then deleted back to "> " (placeholder)
-      const shouldPersist = !isPlaceholder || wasPersisted;
-
-      if (shouldPersist) {
-        // Always persist with full batched changes
-        // This handles both new nodes and fixing race conditions where old path persisted first
-        this.persistBatchedChanges(nodeId, batch.changes, finalNode);
-      }
+      // Issue #479: Always persist batched changes - even blank/syntax-only nodes
+      // Real nodes (created by user actions) should always be persisted
+      // The viewer-local placeholder never enters batch system
+      this.persistBatchedChanges(nodeId, batch.changes, finalNode);
     } catch (error) {
       console.error('[SharedNodeStore] Batch commit error', {
         nodeId,

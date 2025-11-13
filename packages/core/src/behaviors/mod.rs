@@ -296,28 +296,26 @@ impl NodeBehavior for TextNodeBehavior {
         "text"
     }
 
-    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // Backend validates data integrity: empty nodes are rejected.
-        // Frontend manages placeholder UX: empty nodes stay in memory until content added.
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+        // Issue #479 Phase 1: Allow blank text nodes
+        // Changed behavior: Backend now accepts blank text nodes
         //
-        // Architecture:
-        // - Frontend: Creates placeholder nodes in _nodes Map when user presses Enter
-        // - Frontend: Only sends nodes to backend AFTER user adds content
-        // - Backend: Enforces data integrity by rejecting empty content
+        // Architecture Change (Issue #479):
+        // - Frontend: Persists blank nodes immediately (with 500ms debounce)
+        // - Backend: Accepts blank text nodes (user responsible for managing them)
+        // - User Experience: Users can create blank nodes via Enter key, burden is on user to maintain or delete
         //
-        // This separation ensures:
-        // 1. Good UX: Users can create nodes via Enter key
-        // 2. Data integrity: Database only contains meaningful content
-        // 3. Clear contract: Frontend handles placeholders, backend validates data
+        // This change:
+        // 1. Eliminates ephemeral-during-editing behavior
+        // 2. Prevents UNIQUE constraint violations when indenting blank nodes
+        // 3. Simplifies frontend persistence logic (Phase 2 will remove deferred update queue)
         //
-        // Unicode Validation:
-        // - Uses is_empty_or_whitespace() to handle Unicode whitespace (U+200B, U+00A0, etc.)
-        // - Rust's char.is_whitespace() correctly identifies all Unicode whitespace
-        if is_empty_or_whitespace(&node.content) {
-            return Err(NodeValidationError::MissingField(
-                "Text nodes must have content".to_string(),
-            ));
-        }
+        // Previous behavior (before Issue #479):
+        // - Backend rejected blank nodes with validation error
+        // - Frontend had to manage ephemeral nodes until content was added
+        // - Caused database constraint issues during indent operations
+
+        // Blank text nodes are now allowed - no validation required
         Ok(())
     }
 
@@ -1031,15 +1029,15 @@ mod tests {
         );
         assert!(behavior.validate(&valid_node).is_ok());
 
-        // Invalid: empty content (backend rejects empty nodes)
+        // Issue #479: Blank text nodes are now allowed (frontend manages persistence)
         let mut empty_node = valid_node.clone();
         empty_node.content = "".to_string();
-        assert!(behavior.validate(&empty_node).is_err());
+        assert!(behavior.validate(&empty_node).is_ok());
 
-        // Invalid: whitespace-only content
+        // Issue #479: Whitespace-only content is also allowed
         let mut whitespace_node = valid_node.clone();
         whitespace_node.content = "   ".to_string();
-        assert!(behavior.validate(&whitespace_node).is_err());
+        assert!(behavior.validate(&whitespace_node).is_ok());
     }
 
     #[test]
@@ -1047,54 +1045,57 @@ mod tests {
         let behavior = TextNodeBehavior;
         let base_node = Node::new("text".to_string(), "Valid".to_string(), None, json!({}));
 
-        // Zero-width space (U+200B) - should be rejected
+        // Issue #479: All whitespace (including Unicode) is now allowed
+        // Backend no longer validates content - frontend manages blank node persistence
+
+        // Zero-width space (U+200B) - now allowed
         let mut node = base_node.clone();
         node.content = "\u{200B}".to_string();
         assert!(
-            behavior.validate(&node).is_err(),
-            "Zero-width space should be rejected"
+            behavior.validate(&node).is_ok(),
+            "Zero-width space should be allowed per Issue #479"
         );
 
-        // Zero-width non-joiner (U+200C) - should be rejected
+        // Zero-width non-joiner (U+200C) - now allowed
         node.content = "\u{200C}".to_string();
         assert!(
-            behavior.validate(&node).is_err(),
-            "Zero-width non-joiner should be rejected"
+            behavior.validate(&node).is_ok(),
+            "Zero-width non-joiner should be allowed per Issue #479"
         );
 
-        // Zero-width joiner (U+200D) - should be rejected
+        // Zero-width joiner (U+200D) - now allowed
         node.content = "\u{200D}".to_string();
         assert!(
-            behavior.validate(&node).is_err(),
-            "Zero-width joiner should be rejected"
+            behavior.validate(&node).is_ok(),
+            "Zero-width joiner should be allowed per Issue #479"
         );
 
-        // Non-breaking space (U+00A0) - should be rejected
+        // Non-breaking space (U+00A0) - now allowed
         node.content = "\u{00A0}".to_string();
         assert!(
-            behavior.validate(&node).is_err(),
-            "Non-breaking space should be rejected"
+            behavior.validate(&node).is_ok(),
+            "Non-breaking space should be allowed per Issue #479"
         );
 
-        // Line separator (U+2028) - should be rejected
+        // Line separator (U+2028) - now allowed
         node.content = "\u{2028}".to_string();
         assert!(
-            behavior.validate(&node).is_err(),
-            "Line separator should be rejected"
+            behavior.validate(&node).is_ok(),
+            "Line separator should be allowed per Issue #479"
         );
 
-        // Paragraph separator (U+2029) - should be rejected
+        // Paragraph separator (U+2029) - now allowed
         node.content = "\u{2029}".to_string();
         assert!(
-            behavior.validate(&node).is_err(),
-            "Paragraph separator should be rejected"
+            behavior.validate(&node).is_ok(),
+            "Paragraph separator should be allowed per Issue #479"
         );
 
-        // Mixed Unicode whitespace - should be rejected
+        // Mixed Unicode whitespace - now allowed
         node.content = "\u{200B}\u{00A0}\u{2028}".to_string();
         assert!(
-            behavior.validate(&node).is_err(),
-            "Mixed Unicode whitespace should be rejected"
+            behavior.validate(&node).is_ok(),
+            "Mixed Unicode whitespace should be allowed per Issue #479"
         );
 
         // Valid: Actual content with Unicode whitespace mixed in - should be accepted

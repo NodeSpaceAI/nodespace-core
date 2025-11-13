@@ -1612,7 +1612,6 @@ impl NodeService {
         container_node_id: &str,
     ) -> Result<Vec<Node>, NodeServiceError> {
         let filter = NodeFilter::new().with_container_node_id(container_node_id.to_string());
-
         self.query_nodes(filter).await
     }
 
@@ -3411,12 +3410,17 @@ mod tests {
 
         // Create one valid node and one invalid node
         let valid_node = Node::new("text".to_string(), "Valid".to_string(), None, json!({}));
-        let mut invalid_node = Node::new("text".to_string(), "".to_string(), None, json!({})); // Empty content invalid for text
-        invalid_node.content = "   ".to_string(); // Whitespace-only content
+        // Issue #479: Blank content is now valid, so use invalid node type instead
+        let invalid_node = Node::new(
+            "invalid-type".to_string(),
+            "Content".to_string(),
+            None,
+            json!({}),
+        );
 
         let nodes = vec![valid_node.clone(), invalid_node];
 
-        // Bulk create should fail
+        // Bulk create should fail (due to invalid node type)
         let result = service.bulk_create(nodes).await;
         assert!(result.is_err());
 

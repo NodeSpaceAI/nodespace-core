@@ -528,15 +528,23 @@
   // This watcher awaits contentSavePhasePromise to ensure new nodes are saved
   // before structural updates reference them. This prevents FOREIGN KEY errors.
   //
-  // IMPORTANT: saveNodeWithParent() saves BOTH content AND structure
-  // This means new nodes don't need a separate structural update - they're already persisted
-  // This watcher only handles structural changes to EXISTING nodes (indent, outdent, reorder)
+  // ISSUE #479: Track PERSISTED structure vs in-memory structure
+  // When Enter+Tab happens rapidly, node is created with wrong parentId, then
+  // immediately indented in SharedNodeStore. The structural watcher must detect
+  // this mismatch and persist the correction.
   // ============================================================================
   // previousStructure is updated in three places (all necessary):
   // 1. Deletion watcher (line ~218): Cleans up beforeSiblingId references to deleted nodes
-  // 2. This watcher (line ~388): Tracks unchanged nodes to prevent redundant updates
+  // 2. This watcher (line ~388): Tracks nodes on first sight
   // 3. This watcher (line ~490): Tracks successfully persisted structural changes (source of truth)
   let previousStructure = new Map<
+    string,
+    { parentId: string | null; beforeSiblingId: string | null }
+  >();
+
+  // Track what structure was actually persisted to database (#479)
+  // This allows detecting when in-memory state differs from persisted state
+  let persistedStructure = new Map<
     string,
     { parentId: string | null; beforeSiblingId: string | null }
   >();
@@ -610,10 +618,9 @@
     }> = [];
 
     for (const node of visibleNodes) {
-      // Skip placeholder nodes
-      if (node.isPlaceholder) {
-        continue;
-      }
+      // Issue #479: Do NOT skip placeholder nodes in structural watcher
+      // isPlaceholder is a UI-only property for viewer styling
+      // All structural changes must be persisted regardless of placeholder status
 
       const currentStructure = {
         parentId: node.parentId,
@@ -621,13 +628,28 @@
       };
 
       const prevStructure = previousStructure.get(node.id);
+      const persisted = persistedStructure.get(node.id);
 
-      if (
+      // Issue #479: Check if current structure differs from what was persisted
+      // This catches cases where Tab indent happened after node was created but before structural watcher ran
+      const needsPersistenceCorrection =
+        persisted &&
+        (persisted.parentId !== currentStructure.parentId ||
+          persisted.beforeSiblingId !== currentStructure.beforeSiblingId);
+
+      if (needsPersistenceCorrection) {
+        // Current in-memory structure differs from persisted - fix database
+        updates.push({
+          nodeId: node.id,
+          parentId: node.parentId,
+          beforeSiblingId: node.beforeSiblingId
+        });
+      } else if (
         prevStructure &&
         (prevStructure.parentId !== currentStructure.parentId ||
           prevStructure.beforeSiblingId !== currentStructure.beforeSiblingId)
       ) {
-        // Structural change detected - queue for persistence
+        // Normal structural change detected - queue for persistence
         updates.push({
           nodeId: node.id,
           parentId: node.parentId,
@@ -635,9 +657,15 @@
         });
       } else {
         // No change detected OR new node - update tracking to current state
-        // New nodes have their structure saved via saveNodeWithParent() in content save watcher
-        // So we can safely track them here to avoid redundant structural updates
         trackStructureChange(node.id, currentStructure);
+        // Issue #479: For nodes loaded from database (first time seeing), query their persisted structure
+        // Don't assume current = persisted, as Enter+Tab can create mismatch
+        if (!persisted && sharedNodeStore.isNodePersisted(node.id)) {
+          // Node exists in database - current structure IS the persisted one (loaded from DB)
+          persistedStructure.set(node.id, currentStructure);
+        }
+        // If node is NOT persisted yet (new node being created), don't track persisted structure
+        // until it actually gets persisted (handled in success callback above)
       }
     }
 
@@ -676,10 +704,13 @@
 
         // Update tracking for succeeded updates
         for (const update of result.succeeded) {
-          trackStructureChange(update.nodeId, {
+          const structure = {
             parentId: update.parentId,
             beforeSiblingId: update.beforeSiblingId
-          });
+          };
+          trackStructureChange(update.nodeId, structure);
+          // Issue #479: Track what was actually persisted to database
+          persistedStructure.set(update.nodeId, structure);
         }
 
         // Handle failed updates: rollback in-memory state and emit error event
@@ -753,7 +784,8 @@
         const parentNode = await tauriNodeService.getNode(nodeId);
         if (parentNode) {
           // Add parent node to shared store so header can access it
-          sharedNodeStore.setNode(parentNode, { type: 'database', reason: 'loaded-from-db' }, true);
+          // Database source type automatically marks node as persisted
+          sharedNodeStore.setNode(parentNode, { type: 'database', reason: 'loaded-from-db' });
         }
       }
 
@@ -766,16 +798,15 @@
         const existingChildren = sharedNodeStore.getNodesForParent(nodeId);
 
         if (existingChildren.length === 0) {
-          // No children at all - create viewer-local placeholder
-          // This placeholder will be added to sharedNodeStore by initializeNodes()
-          // It becomes a real persisted node only when content is added
-          // CRITICAL: parentId must be null so it's NOT visible to other viewers
+          // No children at all - create initial placeholder
+          // Issue #479 Phase 1: Placeholder is completely viewer-local (NOT added to SharedNodeStore)
+          // It's rendered via nodesToRender derived state and promoted to real node when user adds content
           const placeholderId = globalThis.crypto.randomUUID();
           viewerPlaceholder = {
             id: placeholderId,
             nodeType: 'text',
             content: '',
-            parentId: null, // No parent - viewer-local only until content is typed
+            parentId: nodeId, // Set to viewer's container so if persisted, it's properly parented
             containerNodeId: null,
             beforeSiblingId: null,
             createdAt: new Date().toISOString(),
@@ -785,13 +816,9 @@
             mentions: []
           };
 
-          // Initialize NodeManager with the local placeholder
-          // initializeNodes() will automatically add it to sharedNodeStore with skipPersistence=true
-          nodeManager.initializeNodes([viewerPlaceholder], {
-            expanded: true,
-            autoFocus: true,
-            inheritHeaderLevel: 0
-          });
+          // DON'T call initializeNodes() - keep placeholder completely viewer-local!
+          // It will be rendered by nodesToRender derived state (line 1475-1487)
+          // and promoted to real node when user adds content (line 1746-1772)
         } else {
           // Reuse existing placeholder(s) from previous viewer instance
           viewerPlaceholder = null;
@@ -1498,7 +1525,7 @@
         id: placeholderId,
         nodeType: 'text',
         content: '',
-        parentId: null, // Viewer-local only
+        parentId: nodeId, // Issue #479: Set to viewer's container so if persisted, it's properly parented
         containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
@@ -1508,12 +1535,10 @@
         mentions: []
       };
 
-      // Initialize NodeManager with the placeholder
-      nodeManager.initializeNodes([viewerPlaceholder], {
-        expanded: true,
-        autoFocus: false, // Don't steal focus when auto-creating
-        inheritHeaderLevel: 0
-      });
+      // DON'T call initializeNodes() - keep placeholder completely viewer-local!
+      // Issue #479: Placeholder should NOT be in SharedNodeStore
+      // It will be rendered by nodesToRender derived state (line 1475-1487)
+      // and promoted to real node when user adds content (line 1746-1772)
     }
     // Clear placeholder when real children exist
     else if (realChildren.length > 0 && viewerPlaceholder) {

@@ -3,12 +3,18 @@
  *
  * Determines if a node is a placeholder (has only type-specific prefix, no actual content).
  *
- * Placeholders exist in the UI to provide smooth UX when user creates new nodes,
- * but should not be persisted to the database until user adds actual content.
+ * **IMPORTANT - Phase 1 of Issue #479 (Eliminate Ephemeral Nodes):**
+ * This function is now used ONLY for UI styling decisions (gray text, placeholder appearance).
+ * It is NO LONGER used for persistence decisions.
+ *
+ * **Persistence Behavior (as of Issue #479):**
+ * - Only ONE ephemeral node exists: initial placeholder when viewer loads with no children
+ * - All other nodes (including blank ones) persist immediately with 500ms debounce
+ * - Persistence is controlled by explicit `isInitialPlaceholder` flag, not by content detection
  *
  * This utility is shared between:
- * - SharedNodeStore (production persistence logic)
- * - Tests (verifying placeholder detection behavior)
+ * - UI components (for styling placeholder nodes)
+ * - Tests (verifying placeholder UI behavior)
  */
 
 /**
