@@ -23,7 +23,7 @@ impl IndexManager {
     }
 
     /// Stub: Create JSON path index
-    pub async fn create_json_path_index(
+    pub fn create_json_path_index(
         &self,
         _node_type: &str,
         _property_name: &str,

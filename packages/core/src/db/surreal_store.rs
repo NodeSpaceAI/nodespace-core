@@ -689,11 +689,7 @@ impl SurrealStore {
         Ok(())
     }
 
-    pub async fn search_by_embedding(
-        &self,
-        _embedding: &[u8],
-        _limit: i64,
-    ) -> Result<Vec<(Node, f64)>> {
+    pub fn search_by_embedding(&self, _embedding: &[u8], _limit: i64) -> Result<Vec<(Node, f64)>> {
         // SurrealDB doesn't have built-in vector similarity functions yet
         // This is a placeholder implementation that needs to be enhanced
         // For now, return empty results with a warning
@@ -712,7 +708,7 @@ impl SurrealStore {
         Ok(created_nodes)
     }
 
-    pub async fn close(&self) -> Result<()> {
+    pub fn close(&self) -> Result<()> {
         // SurrealDB handles cleanup automatically on drop
         Ok(())
     }

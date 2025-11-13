@@ -124,49 +124,27 @@ async fn init_database(
         .ok_or_else(|| HttpError::new("Invalid database path", "PATH_ERROR"))?
         .to_string();
 
-    // STEP 1: Drain connections from OLD database before swap (Issue #255)
-    // This ensures no stale connections remain after the swap
-    // Clone the Arc BEFORE awaiting to avoid holding RwLock across await boundary
-    let old_db = {
-        let lock = state.db.read().map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire database read lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?;
-        Arc::clone(&*lock)
-    };
-
-    old_db
-        .drain_and_checkpoint()
-        .await
-        .map_err(|e| HttpError::from_anyhow(e.into(), "DRAIN_ERROR"))?;
-
-    // STEP 2: Create NEW database service with schema initialized
-    use nodespace_core::{DatabaseService, NodeService};
-    let new_db = DatabaseService::new(db_path.clone())
+    // STEP 1: Create NEW SurrealDB store with schema initialized
+    use nodespace_core::{NodeService, SurrealStore};
+    let new_store = SurrealStore::new(db_path.clone())
         .await
         .map_err(|e| HttpError::from_anyhow(e.into(), "DATABASE_INIT_ERROR"))?;
 
-    let new_db_arc = Arc::new(new_db.clone());
+    let new_store_arc = Arc::new(new_store);
 
-    // Initialize NodeStore trait wrapper
-    let store: Arc<dyn nodespace_core::db::NodeStore> =
-        Arc::new(nodespace_core::db::TursoStore::new(new_db_arc.clone()));
-
-    // STEP 3: Create NEW node service
-    let new_node_service = NodeService::new(store, new_db_arc)
+    // STEP 2: Create NEW node service
+    let new_node_service = NodeService::new(new_store_arc.clone())
         .map_err(|e| HttpError::from_anyhow(e.into(), "NODE_SERVICE_INIT_ERROR"))?;
 
-    // STEP 4: Atomic swap of both services
+    // STEP 3: Atomic swap of both services
     {
-        let mut db_lock = state.db.write().map_err(|e| {
+        let mut store_lock = state.store.write().map_err(|e| {
             HttpError::new(
-                format!("Failed to acquire database write lock: {}", e),
+                format!("Failed to acquire store write lock: {}", e),
                 "LOCK_ERROR",
             )
         })?;
-        *db_lock = Arc::new(new_db);
+        *store_lock = new_store_arc;
     }
 
     {

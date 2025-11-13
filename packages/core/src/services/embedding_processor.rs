@@ -26,7 +26,9 @@ impl EmbeddingProcessor {
     ///
     /// TODO(#481): Re-enable background embedding processing
     pub fn new(nlp_engine: Arc<EmbeddingService>) -> Result<Self, NodeServiceError> {
-        tracing::warn!("EmbeddingProcessor temporarily disabled during SurrealDB migration (Issue #481)");
+        tracing::warn!(
+            "EmbeddingProcessor temporarily disabled during SurrealDB migration (Issue #481)"
+        );
         let (_shutdown_tx, _) = mpsc::channel(1);
         Ok(Self {
             nlp_engine,
@@ -35,13 +37,13 @@ impl EmbeddingProcessor {
     }
 
     /// Stub: Trigger batch embedding
-    pub async fn trigger_batch_embed(&self) -> Result<(), NodeServiceError> {
+    pub fn trigger_batch_embed(&self) -> Result<(), NodeServiceError> {
         tracing::warn!("Background embedding temporarily disabled (Issue #481)");
         Ok(())
     }
 
     /// Stub: Shutdown processor
-    pub async fn shutdown(self) -> Result<(), NodeServiceError> {
+    pub fn shutdown(self) -> Result<(), NodeServiceError> {
         Ok(())
     }
 }

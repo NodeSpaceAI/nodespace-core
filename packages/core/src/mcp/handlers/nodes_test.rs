@@ -136,11 +136,12 @@ mod tests {
 
 #[cfg(test)]
 mod occ_tests {
+    use crate::db::SurrealStore;
     use crate::mcp::handlers::nodes::{handle_delete_node, handle_update_node};
     use crate::mcp::types::{INVALID_PARAMS, VERSION_CONFLICT};
     use crate::operations::{CreateNodeParams, NodeOperations};
     use crate::services::SchemaService;
-    use crate::{DatabaseService, NodeService};
+    use crate::NodeService;
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -150,14 +151,9 @@ mod occ_tests {
     {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
-        let db = DatabaseService::new(db_path).await?;
-        let db_arc = Arc::new(db);
 
-        // Initialize NodeStore trait wrapper
-        let store: Arc<dyn crate::db::NodeStore> =
-            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
-
-        let node_service = Arc::new(NodeService::new(store, db_arc)?);
+        let store = Arc::new(SurrealStore::new(db_path).await?);
+        let node_service = Arc::new(NodeService::new(store)?);
         let operations = Arc::new(NodeOperations::new(node_service.clone()));
         let schema_service = Arc::new(SchemaService::new(node_service));
         Ok((operations, schema_service, temp_dir))
@@ -503,6 +499,7 @@ mod occ_tests {
 
 #[cfg(test)]
 mod integration_tests {
+    use crate::db::SurrealStore;
     use crate::mcp::handlers::nodes::{
         handle_get_child_at_index, handle_get_children, handle_get_node_tree,
         handle_get_nodes_batch, handle_insert_child_at_index, handle_move_child_to_index,
@@ -510,7 +507,7 @@ mod integration_tests {
     };
     use crate::operations::{CreateNodeParams, NodeOperations};
     use crate::services::SchemaService;
-    use crate::{DatabaseService, NodeService};
+    use crate::NodeService;
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -520,14 +517,9 @@ mod integration_tests {
     {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
-        let db = DatabaseService::new(db_path).await?;
-        let db_arc = Arc::new(db);
 
-        // Initialize NodeStore trait wrapper
-        let store: Arc<dyn crate::db::NodeStore> =
-            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
-
-        let node_service = Arc::new(NodeService::new(store, db_arc)?);
+        let store = Arc::new(SurrealStore::new(db_path).await?);
+        let node_service = Arc::new(NodeService::new(store)?);
         let operations = Arc::new(NodeOperations::new(node_service.clone()));
         let schema_service = Arc::new(SchemaService::new(node_service));
         Ok((operations, schema_service, temp_dir))

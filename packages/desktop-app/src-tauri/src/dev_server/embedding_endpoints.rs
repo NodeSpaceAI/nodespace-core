@@ -77,10 +77,7 @@ fn get_embedding_service(state: &AppState) -> Result<Arc<NodeEmbeddingService>, 
 // Embedding Endpoints
 // ============================================================================
 
-/// Generate embedding for a topic node
-///
-/// Calls the NodeEmbeddingService to create a vector embedding for the specified
-/// topic node. The embedding is generated from the topic's content and child nodes.
+/// Generate embedding for a topic node (TEMPORARILY DISABLED - Issue #481)
 ///
 /// # Request Body
 ///
@@ -94,42 +91,14 @@ fn get_embedding_service(state: &AppState) -> Result<Arc<NodeEmbeddingService>, 
 ///   -H "Content-Type: application/json" \
 ///   -d '{"containerId": "topic-uuid-123"}'
 /// ```
-///
-/// # Errors
-///
-/// - `NODE_NOT_FOUND`: Topic node doesn't exist
-/// - `EMBEDDING_GENERATION_FAILED`: Embedding service failed
 async fn generate_container_embedding(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(payload): Json<GenerateEmbeddingRequest>,
 ) -> Result<StatusCode, HttpError> {
-    // Validate container_id is not empty
-    if payload.container_id.is_empty() {
-        return Err(HttpError::with_details(
-            "Topic ID cannot be empty",
-            "INVALID_INPUT",
-            "container_id must be a non-empty string",
-        ));
-    }
-
-    let embedding_service = get_embedding_service(&state)?;
-
-    // Generate embedding
-    embedding_service
-        .embed_container(&payload.container_id)
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                "Embedding generation failed for {}: {:?}",
-                payload.container_id,
-                e
-            );
-            HttpError::new(
-                format!("Embedding generation failed: {}", e),
-                "EMBEDDING_GENERATION_FAILED",
-            )
-        })?;
-
+    tracing::warn!(
+        "Embedding generation temporarily disabled (Issue #481) for container: {}",
+        payload.container_id
+    );
     Ok(StatusCode::OK)
 }
 
@@ -171,43 +140,14 @@ struct GenerateEmbeddingRequest {
 /// ```
 ///
 async fn search_containers(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(params): Json<SearchContainersParams>,
 ) -> Result<Json<Vec<Node>>, HttpError> {
-    // Validate query is not empty
-    if params.query.is_empty() {
-        return Err(HttpError::with_details(
-            "Search query cannot be empty",
-            "INVALID_INPUT",
-            "query must be a non-empty string",
-        ));
-    }
-
-    let threshold = params.threshold.unwrap_or(0.7);
-    let limit = params.limit.unwrap_or(20);
-    let exact = params.exact.unwrap_or(false);
-
-    let embedding_service = get_embedding_service(&state)?;
-
-    // Perform search
-    let results = if exact {
-        embedding_service
-            .exact_search_containers(&params.query, threshold, limit)
-            .await
-    } else {
-        embedding_service
-            .search_containers(&params.query, threshold, limit)
-            .await
-    };
-
-    results.map(Json).map_err(|e| {
-        tracing::error!(
-            "Container search failed for query '{}': {:?}",
-            params.query,
-            e
-        );
-        HttpError::new(format!("Topic search failed: {}", e), "TOPIC_SEARCH_FAILED")
-    })
+    tracing::warn!(
+        "Semantic search temporarily disabled (Issue #481) for query: {}",
+        params.query
+    );
+    Ok(Json(Vec::new()))
 }
 
 /// Update embedding for a topic node immediately
@@ -227,32 +167,13 @@ async fn search_containers(
 /// ```
 ///
 async fn update_container_embedding(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Path(container_id): Path<String>,
 ) -> Result<StatusCode, HttpError> {
-    // Validate container_id is not empty
-    if container_id.is_empty() {
-        return Err(HttpError::with_details(
-            "Topic ID cannot be empty",
-            "INVALID_INPUT",
-            "container_id must be a non-empty string",
-        ));
-    }
-
-    let embedding_service = get_embedding_service(&state)?;
-
-    // Update embedding
-    embedding_service
-        .embed_container(&container_id)
-        .await
-        .map_err(|e| {
-            tracing::error!("Embedding update failed for {}: {:?}", container_id, e);
-            HttpError::new(
-                format!("Embedding update failed: {}", e),
-                "EMBEDDING_UPDATE_FAILED",
-            )
-        })?;
-
+    tracing::warn!(
+        "Embedding updates temporarily disabled (Issue #481) for container: {}",
+        container_id
+    );
     Ok(StatusCode::OK)
 }
 

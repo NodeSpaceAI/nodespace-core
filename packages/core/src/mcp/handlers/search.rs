@@ -48,8 +48,8 @@ pub struct SearchContainersParams {
 /// let result = handle_search_containers(&embedding_service, params).await?;
 /// // Returns top 10 most relevant containers
 /// ```
-pub async fn handle_search_containers(
-    service: &Arc<NodeEmbeddingService>,
+pub fn handle_search_containers(
+    _service: &Arc<NodeEmbeddingService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     // Parse parameters

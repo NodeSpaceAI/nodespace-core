@@ -30,18 +30,20 @@ impl NodeEmbeddingService {
     ///
     /// TODO(#481): Re-enable once SurrealDB integration complete
     pub fn new(nlp_engine: Arc<EmbeddingService>) -> Self {
-        tracing::warn!("NodeEmbeddingService temporarily disabled during SurrealDB migration (Issue #481)");
+        tracing::warn!(
+            "NodeEmbeddingService temporarily disabled during SurrealDB migration (Issue #481)"
+        );
         Self { nlp_engine }
     }
 
     /// Stub: Embed container
-    pub async fn embed_container(&self, _node: &Node) -> Result<(), NodeServiceError> {
+    pub fn embed_container(&self, _node: &Node) -> Result<(), NodeServiceError> {
         tracing::warn!("Embedding generation temporarily disabled (Issue #481)");
         Ok(())
     }
 
     /// Stub: Batch embed containers
-    pub async fn batch_embed_containers(&self, _limit: Option<usize>) -> Result<usize, NodeServiceError> {
+    pub fn batch_embed_containers(&self, _limit: Option<usize>) -> Result<usize, NodeServiceError> {
         tracing::warn!("Batch embedding temporarily disabled (Issue #481)");
         Ok(0)
     }

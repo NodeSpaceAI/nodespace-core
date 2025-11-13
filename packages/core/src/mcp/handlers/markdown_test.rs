@@ -4,7 +4,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::db::DatabaseService;
+    use crate::db::SurrealStore;
     use crate::mcp::handlers::markdown::{
         handle_create_nodes_from_markdown, handle_update_container_from_markdown,
     };
@@ -17,14 +17,9 @@ mod tests {
     async fn setup_test_service() -> (Arc<NodeOperations>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
-        let db = DatabaseService::new(db_path).await.unwrap();
-        let db_arc = Arc::new(db);
 
-        // Initialize NodeStore trait wrapper
-        let store: Arc<dyn crate::db::NodeStore> =
-            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
-
-        let service = NodeService::new(store, db_arc).unwrap();
+        let store = Arc::new(SurrealStore::new(db_path).await.unwrap());
+        let service = NodeService::new(store).unwrap();
         let operations = NodeOperations::new(Arc::new(service));
         (Arc::new(operations), temp_dir)
     }
