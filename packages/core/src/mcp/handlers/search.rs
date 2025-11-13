@@ -48,8 +48,8 @@ pub struct SearchContainersParams {
 /// let result = handle_search_containers(&embedding_service, params).await?;
 /// // Returns top 10 most relevant containers
 /// ```
-pub fn handle_search_containers(
-    _service: &Arc<NodeEmbeddingService>,
+pub async fn handle_search_containers(
+    service: &Arc<NodeEmbeddingService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     // Parse parameters
@@ -81,11 +81,16 @@ pub fn handle_search_containers(
         ));
     }
 
-    // TODO(#481): Re-enable semantic search after embedding service migration
-    // For now, return empty results since embedding service is temporarily disabled
-    tracing::warn!("Semantic search temporarily disabled during SurrealDB migration (Issue #481)");
-    let results: Result<Vec<crate::models::Node>, crate::services::error::NodeServiceError> =
-        Ok(Vec::new());
+    // Execute search using existing NodeEmbeddingService methods
+    let results = if exact {
+        service
+            .exact_search_containers(&params.query, threshold, limit)
+            .await
+    } else {
+        service
+            .search_containers(&params.query, threshold, limit)
+            .await
+    };
 
     // Map service errors to appropriate MCP errors with granular messages
     let nodes = results.map_err(|e| {

@@ -25,7 +25,7 @@
 //! - Child node: `container_node_id = Some("parent-id")` (e.g., notes within a topic)
 
 use crate::behaviors::NodeBehaviorRegistry;
-use crate::db::SurrealStore;
+use crate::db::{DatabaseService, DbUpdateNodeParams, NodeStore};
 use crate::models::{Node, NodeFilter, NodeUpdate, OrderBy};
 use crate::services::error::NodeServiceError;
 use crate::services::migration_registry::MigrationRegistry;
@@ -230,7 +230,6 @@ pub fn extract_mentions(content: &str) -> Vec<String> {
 }
 
 /// Parse timestamp from database - handles both SQLite and RFC3339 formats
-#[allow(dead_code)]
 fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, String> {
     // Try SQLite format first: "YYYY-MM-DD HH:MM:SS"
     if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
@@ -278,8 +277,12 @@ fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, String> {
 /// ```
 #[derive(Clone)]
 pub struct NodeService {
-    /// SurrealDB store for all persistence operations
-    store: Arc<SurrealStore>,
+    /// NodeStore trait abstraction for persistence
+    store: Arc<dyn NodeStore>,
+
+    /// Direct database access for operations not yet in trait
+    /// TODO: Remove this once all operations are migrated to NodeStore trait
+    db: Arc<DatabaseService>,
 
     /// Behavior registry for validation
     behaviors: Arc<NodeBehaviorRegistry>,
@@ -291,33 +294,37 @@ pub struct NodeService {
 impl NodeService {
     /// Create a new NodeService
     ///
-    /// Initializes the service with SurrealStore and creates a default
+    /// Initializes the service with a DatabaseService and creates a default
     /// NodeBehaviorRegistry with Text, Task, and Date behaviors.
     ///
     /// # Arguments
     ///
-    /// * `store` - SurrealStore instance
+    /// * `db` - DatabaseService instance
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::SurrealStore;
-    /// # use std::sync::Arc;
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use std::path::PathBuf;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let store = Arc::new(SurrealStore::new("./data/nodespace.db".into()).await?);
-    /// let service = NodeService::new(store)?;
+    /// let db = DatabaseService::new(PathBuf::from("./data/test.db")).await?;
+    /// let service = NodeService::new(db)?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new(store: Arc<SurrealStore>) -> Result<Self, NodeServiceError> {
+    pub fn new(
+        store: Arc<dyn NodeStore>,
+        db: Arc<DatabaseService>,
+    ) -> Result<Self, NodeServiceError> {
         // Create empty migration registry (no migrations registered yet - pre-deployment)
         // Infrastructure exists for future schema evolution post-deployment
         let migration_registry = MigrationRegistry::new();
 
         Ok(Self {
             store,
+            db,
             behaviors: Arc::new(NodeBehaviorRegistry::new()),
             migration_registry: Arc::new(migration_registry),
         })
@@ -569,20 +576,22 @@ impl NodeService {
                     props_obj.insert("_schema_version".to_string(), serde_json::json!(version));
                 }
 
-                // Persist the backfilled version to database using SurrealStore
-                let update = NodeUpdate {
-                    properties: Some(updated_props.clone()),
-                    ..Default::default()
-                };
-                self.store
-                    .update_node(&node.id, update)
-                    .await
-                    .map_err(|e| {
-                        NodeServiceError::query_failed(format!(
-                            "Failed to backfill schema version: {}",
-                            e
-                        ))
-                    })?;
+                // Persist the backfilled version to database
+                let conn = self.db.connect_with_timeout().await?;
+                let properties_json = serde_json::to_string(&updated_props)
+                    .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
+
+                conn.execute(
+                    "UPDATE nodes SET properties = ?, modified_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (properties_json.as_str(), node.id.as_str()),
+                )
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!(
+                        "Failed to backfill schema version: {}",
+                        e
+                    ))
+                })?;
 
                 // Update the in-memory node with new properties
                 node.properties = updated_props;
@@ -630,17 +639,19 @@ impl NodeService {
             .migration_registry
             .apply_migrations(node, target_version)?;
 
-        // Persist migrated node to database using SurrealStore
-        let update = NodeUpdate {
-            properties: Some(migrated_node.properties.clone()),
-            ..Default::default()
-        };
-        self.store
-            .update_node(&node.id, update)
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to persist migrated node: {}", e))
-            })?;
+        // Persist migrated node to database
+        let conn = self.db.connect_with_timeout().await?;
+        let properties_json = serde_json::to_string(&migrated_node.properties)
+            .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
+
+        conn.execute(
+            "UPDATE nodes SET properties = ?, modified_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (properties_json.as_str(), node.id.as_str()),
+        )
+        .await
+        .map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to persist migrated node: {}", e))
+        })?;
 
         // Update the in-memory node
         *node = migrated_node;
@@ -676,29 +687,6 @@ impl NodeService {
 
                     // Validate with the same schema
                     self.validate_node_with_schema(&node, &schema)?;
-                }
-            } else {
-                // No schema found - apply behavior defaults as fallback
-                // This ensures built-in node types get their default properties
-                // even when schemas haven't been initialized yet
-                if let Some(behavior) = self.behaviors.get(&node.node_type) {
-                    let defaults = behavior.default_metadata();
-                    if !defaults.is_null() && defaults.is_object() {
-                        // Ensure properties is an object
-                        if !node.properties.is_object() {
-                            node.properties = serde_json::json!({});
-                        }
-
-                        // Merge defaults into node properties (don't override existing values)
-                        let defaults_obj = defaults.as_object().unwrap();
-                        let props_obj = node.properties.as_object_mut().unwrap();
-
-                        for (key, value) in defaults_obj {
-                            if !props_obj.contains_key(key) {
-                                props_obj.insert(key.clone(), value.clone());
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -740,13 +728,27 @@ impl NodeService {
                         embedding_vector: None,
                     };
 
-                    // Insert date node directly using SurrealStore (skip validation to avoid recursion)
-                    self.store.create_node(date_node).await.map_err(|e| {
-                        NodeServiceError::query_failed(format!(
-                            "Failed to auto-create date node: {}",
-                            e
-                        ))
-                    })?;
+                    // Insert date node directly (skip validation to avoid recursion)
+                    let conn = self.db.connect_with_timeout().await?;
+                    let properties_json = serde_json::to_string(&date_node.properties)
+                        .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
+                    conn.execute(
+                        "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, version, properties, embedding_vector)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            date_node.id.as_str(),
+                            date_node.node_type.as_str(),
+                            date_node.content.as_str(),
+                            date_node.parent_id.as_deref(),
+                            date_node.container_node_id.as_deref(),
+                            date_node.before_sibling_id.as_deref(),
+                            date_node.version,
+                            properties_json,
+                            date_node.embedding_vector.as_deref(),
+                        ),
+                    )
+                    .await
+                    .map_err(|e| NodeServiceError::query_failed(format!("Failed to auto-create date node: {}", e)))?;
                 } else {
                     return Err(NodeServiceError::invalid_parent(parent_id));
                 }
@@ -781,11 +783,8 @@ impl NodeService {
             }
         }
 
-        let _properties_json = serde_json::to_string(&properties)
+        let properties_json = serde_json::to_string(&properties)
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
-
-        // Update node with schema-versioned properties
-        node.properties = properties;
 
         // Convert ROOT_CONTAINER_ID to None (null in database)
         let container_node_id_value = node
@@ -793,12 +792,18 @@ impl NodeService {
             .as_deref()
             .filter(|id| *id != ROOT_CONTAINER_ID);
 
-        // Update node with filtered container_node_id
-        node.container_node_id = container_node_id_value.map(String::from);
-
-        // Create node via store
-        self.store
-            .create_node(node.clone())
+        // Delegate SQL insertion to DatabaseService
+        self.db
+            .db_create_node(crate::db::DbCreateNodeParams {
+                id: node.id.as_str(),
+                node_type: node.node_type.as_str(),
+                content: node.content.as_str(),
+                parent_id: node.parent_id.as_deref(),
+                container_node_id: container_node_id_value,
+                before_sibling_id: node.before_sibling_id.as_deref(),
+                properties: properties_json.as_str(),
+                embedding_vector: node.embedding_vector.as_deref(),
+            })
             .await
             .map_err(|e| NodeServiceError::query_failed(format!("Failed to insert node: {}", e)))?;
 
@@ -879,19 +884,8 @@ impl NodeService {
             }
         }
 
-        // Get container ID with special handling for tasks
-        // Tasks are always treated as their own containers (exception rule)
-        let container_id = if mentioning_node.node_type == "task" {
-            mentioning_node_id
-        } else {
-            mentioning_node
-                .container_node_id
-                .as_deref()
-                .unwrap_or(mentioning_node_id)
-        };
-
-        self.store
-            .create_mention(mentioning_node_id, mentioned_node_id, container_id)
+        self.db
+            .db_create_mention(mentioning_node_id, mentioned_node_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -930,8 +924,8 @@ impl NodeService {
         mentioning_node_id: &str,
         mentioned_node_id: &str,
     ) -> Result<(), NodeServiceError> {
-        self.store
-            .delete_mention(mentioning_node_id, mentioned_node_id)
+        self.db
+            .db_delete_mention(mentioning_node_id, mentioned_node_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -1083,18 +1077,7 @@ impl NodeService {
         }
 
         if let Some(properties) = update.properties {
-            // Merge properties instead of replacing them to preserve _schema_version
-            if let (Some(existing_obj), Some(new_obj)) =
-                (updated.properties.as_object_mut(), properties.as_object())
-            {
-                // Merge new properties into existing ones
-                for (key, value) in new_obj {
-                    existing_obj.insert(key.clone(), value.clone());
-                }
-            } else {
-                // If either is not an object, just replace (shouldn't happen normally)
-                updated.properties = properties;
-            }
+            updated.properties = properties;
         }
 
         if let Some(embedding_vector) = update.embedding_vector {
@@ -1126,25 +1109,29 @@ impl NodeService {
             self.validate_node_against_schema(&updated).await?;
         }
 
-        // Update node via store
-        let node_update = crate::models::NodeUpdate {
-            node_type: Some(updated.node_type.clone()),
-            content: Some(updated.content.clone()),
-            parent_id: Some(updated.parent_id.clone()),
-            container_node_id: Some(updated.container_node_id.clone()),
-            before_sibling_id: Some(updated.before_sibling_id.clone()),
-            properties: Some(updated.properties.clone()),
-            embedding_vector: if updated.embedding_vector.is_some() {
-                Some(updated.embedding_vector.clone())
-            } else {
-                None
-            },
-        };
+        // Delegate SQL to DatabaseService
+        let properties_json = serde_json::to_string(&updated.properties)
+            .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
-        self.store
-            .update_node(id, node_update)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        // Determine if this node is a container (container_node_id IS NULL)
+        let is_container = updated.container_node_id.is_none();
+
+        self.db
+            .db_update_node(crate::db::DbUpdateNodeParams {
+                id,
+                node_type: &updated.node_type,
+                content: &updated.content,
+                parent_id: updated.parent_id.as_deref(),
+                container_node_id: updated.container_node_id.as_deref(),
+                before_sibling_id: updated.before_sibling_id.as_deref(),
+                properties: &properties_json,
+                embedding_vector: updated.embedding_vector.as_deref(),
+                content_changed,
+                is_container,
+                old_container_id: existing.container_node_id.as_deref(),
+                new_container_id: updated.container_node_id.as_deref(),
+            })
+            .await?;
 
         // Sync mentions if content changed
         if content_changed {
@@ -1245,18 +1232,7 @@ impl NodeService {
         }
 
         if let Some(properties) = update.properties {
-            // Merge properties instead of replacing them to preserve _schema_version
-            if let (Some(existing_obj), Some(new_obj)) =
-                (updated.properties.as_object_mut(), properties.as_object())
-            {
-                // Merge new properties into existing ones
-                for (key, value) in new_obj {
-                    existing_obj.insert(key.clone(), value.clone());
-                }
-            } else {
-                // If either is not an object, just replace (shouldn't happen normally)
-                updated.properties = properties;
-            }
+            updated.properties = properties;
         }
 
         if let Some(embedding_vector) = update.embedding_vector {
@@ -1271,52 +1247,98 @@ impl NodeService {
             self.validate_node_against_schema(&updated).await?;
         }
 
-        // TODO(#481): Implement atomic version check in SurrealDB
-        // For now, use optimistic approach: check version first, then update
-        tracing::warn!(
-            "update_node_with_version: Using non-atomic version check (Phase 2 limitation)"
-        );
+        // Execute update with version check
+        let conn = self.db.connect_with_timeout().await?;
+        let properties_json = serde_json::to_string(&updated.properties)
+            .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
-        // Check version first
-        let current = self
-            .get_node(id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(id))?;
+        // Determine if this node is a container (container_node_id IS NULL)
+        let is_container = updated.container_node_id.is_none();
 
-        if current.version != expected_version {
-            return Ok(0); // Version mismatch
-        }
-
-        // Create node update
-        let node_update = crate::models::NodeUpdate {
-            node_type: Some(updated.node_type.clone()),
-            content: Some(updated.content.clone()),
-            parent_id: Some(updated.parent_id.clone()),
-            container_node_id: Some(updated.container_node_id.clone()),
-            before_sibling_id: Some(updated.before_sibling_id.clone()),
-            properties: Some(updated.properties.clone()),
-            embedding_vector: if updated.embedding_vector.is_some() {
-                Some(updated.embedding_vector.clone())
-            } else {
-                None
-            },
+        // Build UPDATE query with version check and atomic version increment
+        // Returns 0 rows if version mismatch, 1 row if successful
+        let rows_affected = if content_changed && is_container {
+            conn.execute(
+                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ?, embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP, version = version + 1 WHERE id = ? AND version = ?",
+                (
+                    updated.node_type.as_str(),
+                    updated.content.as_str(),
+                    updated.parent_id.as_deref(),
+                    updated.container_node_id.as_deref(),
+                    updated.before_sibling_id.as_deref(),
+                    properties_json.as_str(),
+                    updated.embedding_vector.as_deref(),
+                    id,
+                    expected_version,
+                ),
+            )
+            .await
+            .map_err(|e| NodeServiceError::query_failed(format!("Failed to update node with version check: {}", e)))?
+        } else {
+            conn.execute(
+                "UPDATE nodes SET node_type = ?, content = ?, parent_id = ?, container_node_id = ?, before_sibling_id = ?, modified_at = CURRENT_TIMESTAMP, properties = ?, embedding_vector = ?, version = version + 1 WHERE id = ? AND version = ?",
+                (
+                    updated.node_type.as_str(),
+                    updated.content.as_str(),
+                    updated.parent_id.as_deref(),
+                    updated.container_node_id.as_deref(),
+                    updated.before_sibling_id.as_deref(),
+                    properties_json.as_str(),
+                    updated.embedding_vector.as_deref(),
+                    id,
+                    expected_version,
+                ),
+            )
+            .await
+            .map_err(|e| NodeServiceError::query_failed(format!("Failed to update node with version check: {}", e)))?
         };
 
-        // Perform update
-        self.store
-            .update_node(id, node_update)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        // If version mismatch (rows_affected = 0), return early
+        // Caller will handle conflict by fetching current state
+        if rows_affected == 0 {
+            return Ok(0);
+        }
 
-        let rows_affected = 1;
+        // Update succeeded - handle side effects (embedding staleness, mention sync)
 
-        // TODO(#481): Implement embedding staleness tracking in SurrealDB
-        // Phase 2 limitation: embedding_stale field not yet implemented
-        tracing::debug!("Skipping embedding staleness updates (Phase 2 limitation)");
+        // If content changed in a child node, mark the parent container as stale too
+        if content_changed && !is_container {
+            if let Some(ref container_id) = updated.container_node_id {
+                conn.execute(
+                    "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+                    [container_id.as_str()],
+                )
+                .await
+                .map_err(|e| NodeServiceError::query_failed(format!("Failed to mark parent container as stale: {}", e)))?;
+            }
+        }
 
-        // Note: The atomic version check is not perfect in this implementation
-        // A race condition between check and update is possible
-        // This will be fixed in Issue #481 with proper SurrealDB transactions
+        // If container_node_id changed (node moved between containers), mark both old and new containers as stale
+        if update.container_node_id.is_some()
+            && existing.container_node_id != updated.container_node_id
+        {
+            // Mark old container as stale (if it exists)
+            if let Some(ref old_container_id) = existing.container_node_id {
+                conn.execute(
+                    "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+                    [old_container_id.as_str()],
+                )
+                .await
+                .ok(); // Don't fail update if old container no longer exists
+            }
+
+            // Mark new container as stale (if different from what content_changed handled)
+            if !content_changed {
+                if let Some(ref new_container_id) = updated.container_node_id {
+                    conn.execute(
+                        "UPDATE nodes SET embedding_stale = TRUE, last_content_update = CURRENT_TIMESTAMP WHERE id = ?",
+                        [new_container_id.as_str()],
+                    )
+                    .await
+                    .ok(); // Don't fail update if new container doesn't exist
+                }
+            }
+        }
 
         // Sync mentions if content changed
         if content_changed {
@@ -1494,15 +1516,22 @@ impl NodeService {
         id: &str,
         expected_version: i64,
     ) -> Result<usize, NodeServiceError> {
-        self.store
-            .delete_with_version_check(id, expected_version)
+        let conn = self.db.connect_with_timeout().await?;
+
+        let rows_affected = conn
+            .execute(
+                "DELETE FROM nodes WHERE id = ? AND version = ?",
+                (id, expected_version),
+            )
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!(
                     "Failed to delete node with version check: {}",
                     e
                 ))
-            })
+            })?;
+
+        Ok(rows_affected as usize)
     }
 
     /// Get children of a node
@@ -1815,75 +1844,47 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn query_nodes(&self, filter: NodeFilter) -> Result<Vec<Node>, NodeServiceError> {
-        // TODO(#481): Implement order_by support in SurrealStore
-        // Phase 2: order_by clauses not yet supported
-        if filter.order_by.is_some() {
-            tracing::debug!(
-                "query_nodes: order_by not yet implemented in SurrealStore (Phase 2 limitation)"
-            );
-        }
-
-        // Handle parent_id filter using dedicated method
-        if let Some(ref parent_id) = filter.parent_id {
-            let nodes = self
-                .store
-                .get_children(Some(parent_id))
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-
-            // Apply migrations and return
-            let mut migrated_nodes = Vec::new();
-            for mut node in nodes {
-                self.backfill_schema_version(&mut node).await?;
-                self.apply_lazy_migration(&mut node).await?;
-                migrated_nodes.push(node);
-            }
-            return Ok(migrated_nodes);
-        }
-
-        // Handle container_node_id filter using dedicated method
-        if let Some(ref container_id) = filter.container_node_id {
-            let nodes = self
-                .store
-                .get_nodes_by_container(container_id)
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-
-            // Apply migrations and return
-            let mut migrated_nodes = Vec::new();
-            for mut node in nodes {
-                self.backfill_schema_version(&mut node).await?;
-                self.apply_lazy_migration(&mut node).await?;
-                migrated_nodes.push(node);
-            }
-            return Ok(migrated_nodes);
-        }
-
-        // Convert NodeFilter to NodeQuery for other cases
-        let query = crate::models::NodeQuery {
-            id: None,
-            node_type: filter.node_type,
-            content_contains: None,
-            mentioned_by: None,
-            limit: filter.limit,
-            include_containers_and_tasks: Some(false),
+        // Build order clause
+        let order_clause = match filter.order_by {
+            Some(OrderBy::CreatedAsc) => " ORDER BY created_at ASC",
+            Some(OrderBy::CreatedDesc) => " ORDER BY created_at DESC",
+            Some(OrderBy::ModifiedAsc) => " ORDER BY modified_at ASC",
+            Some(OrderBy::ModifiedDesc) => " ORDER BY modified_at DESC",
+            _ => "",
         };
 
-        let nodes = self
-            .store
-            .query_nodes(query)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        // Build limit clause
+        let limit_clause = filter
+            .limit
+            .map(|l| format!(" LIMIT {}", l))
+            .unwrap_or_default();
 
-        // Apply migrations
-        let mut migrated_nodes = Vec::new();
-        for mut node in nodes {
+        // Delegate SQL query to DatabaseService
+        let mut rows = self
+            .db
+            .db_query_nodes(
+                filter.node_type.as_deref(),
+                filter.parent_id.as_deref(),
+                filter.container_node_id.as_deref(),
+                order_clause,
+                &limit_clause,
+            )
+            .await?;
+
+        // Convert rows to nodes and apply migrations
+        let mut nodes = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+        {
+            let mut node = self.row_to_node(row)?;
             self.backfill_schema_version(&mut node).await?;
             self.apply_lazy_migration(&mut node).await?;
-            migrated_nodes.push(node);
+            nodes.push(node);
         }
 
-        Ok(migrated_nodes)
+        Ok(nodes)
     }
 
     /// Query nodes with simple query parameters
@@ -1959,7 +1960,6 @@ impl NodeService {
     /// This function only generates hardcoded SQL fragments - no user input is interpolated.
     /// The filter is applied via string concatenation (not parameterized) because it's
     /// structural SQL (column names and operators), not user data.
-    #[allow(dead_code)]
     fn build_container_task_filter(enabled: bool, table_alias: Option<&str>) -> String {
         if !enabled {
             return String::new();
@@ -1976,12 +1976,12 @@ impl NodeService {
         &self,
         query: crate::models::NodeQuery,
     ) -> Result<Vec<Node>, NodeServiceError> {
-        // TODO(#481): Migrate complex query logic to SurrealDB
-        // Phase 2: Using simplified store.query_nodes implementation
-        tracing::debug!("query_nodes_simple: Using store.query_nodes (Phase 2 limitation)");
+        // Use connection with busy timeout to prevent immediate failure on lock contention
+        // This is especially important for queries that might run concurrently with deletes
+        let conn = self.db.connect_with_timeout().await?;
 
         // Determine if container/task filtering should be applied
-        let _filter_enabled = query.include_containers_and_tasks.unwrap_or(false);
+        let filter_enabled = query.include_containers_and_tasks.unwrap_or(false);
 
         // Priority 1: Query by ID (exact match)
         if let Some(ref id) = query.id {
@@ -1992,33 +1992,213 @@ impl NodeService {
             }
         }
 
-        // Priority 2+: Delegate to store.query_nodes
-        // Complex query features (mentioned_by, content_contains, filters) delegated to store
-        let nodes = self
-            .store
-            .query_nodes(query)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        // Priority 2: Query nodes that mention a specific node (mentioned_by)
+        // Uses the node_mentions table for efficient lookups
+        if let Some(ref mentioned_node_id) = query.mentioned_by {
+            let limit_clause = query
+                .limit
+                .map(|l| format!(" LIMIT {}", l))
+                .unwrap_or_default();
 
-        // Apply migrations to results
-        let mut migrated_nodes = Vec::new();
-        for mut node in nodes {
-            self.backfill_schema_version(&mut node).await?;
-            self.apply_lazy_migration(&mut node).await?;
-            migrated_nodes.push(node);
+            let container_task_filter =
+                Self::build_container_task_filter(filter_enabled, Some("n"));
+
+            // Query node_mentions table to find nodes that reference the target
+            let sql_query = format!(
+                "SELECT n.id, n.node_type, n.content, n.parent_id, n.container_node_id, n.before_sibling_id, n.version, n.created_at, n.modified_at, n.properties, n.embedding_vector
+                 FROM nodes n
+                 INNER JOIN node_mentions nm ON n.id = nm.node_id
+                 WHERE nm.mentions_node_id = ?{}{}",
+                container_task_filter, limit_clause
+            );
+
+            let mut stmt = conn.prepare(&sql_query).await.map_err(|e| {
+                NodeServiceError::query_failed(format!(
+                    "Failed to prepare mentioned_by query: {}",
+                    e
+                ))
+            })?;
+
+            let mut rows = stmt
+                .query([mentioned_node_id.as_str()])
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!(
+                        "Failed to execute mentioned_by query: {}",
+                        e
+                    ))
+                })?;
+
+            let mut nodes = Vec::new();
+            // TODO(performance): This creates N+1 query pattern (2 queries per node).
+            // Consider implementing populate_mentions_batch() when queries regularly
+            // return >50 nodes. See issue #158 for batch optimization implementation.
+            while let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            {
+                let mut node = self.row_to_node(row)?;
+                self.populate_mentions(&mut node).await?;
+                nodes.push(node);
+            }
+
+            return Ok(nodes);
         }
 
-        Ok(migrated_nodes)
+        // Priority 3: Query by content substring (case-insensitive LIKE)
+        if let Some(ref content_search) = query.content_contains {
+            let content_pattern = format!("%{}%", content_search);
+            let limit_clause = query
+                .limit
+                .map(|l| format!(" LIMIT {}", l))
+                .unwrap_or_default();
+
+            // Generate filter clause without table alias (queries nodes table directly)
+            let container_task_filter = Self::build_container_task_filter(filter_enabled, None);
+
+            // Delegate SQL query to DatabaseService
+            let mut rows = self
+                .db
+                .db_search_nodes_by_content(
+                    &content_pattern,
+                    query.node_type.as_deref(),
+                    &container_task_filter,
+                    &limit_clause,
+                )
+                .await?;
+
+            // Collect results with mentions populated
+            let mut nodes = Vec::new();
+            // TODO(performance): This creates N+1 query pattern (2 queries per node).
+            // Consider implementing populate_mentions_batch() when queries regularly
+            // return >50 nodes. See issue #158 for batch optimization implementation.
+            while let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            {
+                let mut node = self.row_to_node(row)?;
+                self.populate_mentions(&mut node).await?;
+                nodes.push(node);
+            }
+
+            return Ok(nodes);
+        }
+
+        // Priority 4: Query by node_type only
+        if let Some(ref node_type) = query.node_type {
+            let limit_clause = query
+                .limit
+                .map(|l| format!(" LIMIT {}", l))
+                .unwrap_or_default();
+
+            // Generate filter clause without table alias (queries nodes table directly)
+            let container_task_filter = Self::build_container_task_filter(filter_enabled, None);
+
+            let sql_query = format!(
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector
+                 FROM nodes WHERE node_type = ?{}{}",
+                container_task_filter, limit_clause
+            );
+
+            let mut stmt = conn.prepare(&sql_query).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to prepare node_type query: {}", e))
+            })?;
+
+            let mut rows = stmt.query([node_type.as_str()]).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to execute node_type query: {}", e))
+            })?;
+
+            let mut nodes = Vec::new();
+            while let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            {
+                let mut node = self.row_to_node(row)?;
+                self.backfill_schema_version(&mut node).await?;
+                self.apply_lazy_migration(&mut node).await?;
+                nodes.push(node);
+            }
+
+            return Ok(nodes);
+        }
+
+        // Priority 5: Filter-only query (return nodes matching container/task filter)
+        // This handles cases where only the filter is specified without other query parameters
+        if filter_enabled {
+            let container_task_filter = Self::build_container_task_filter(filter_enabled, None);
+            let limit_clause = query
+                .limit
+                .map(|l| format!(" LIMIT {}", l))
+                .unwrap_or_default();
+
+            // WHERE 1=1 is a SQL idiom for dynamic WHERE clauses - it's always true,
+            // allowing the filter to be appended via AND clause. This is clearer than
+            // conditional WHERE clause generation and maintains consistent query structure.
+            let sql_query = format!(
+                "SELECT id, node_type, content, parent_id, container_node_id, before_sibling_id, version, created_at, modified_at, properties, embedding_vector
+                 FROM nodes WHERE 1=1{}{}",
+                container_task_filter, limit_clause
+            );
+
+            let mut stmt = conn.prepare(&sql_query).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
+            })?;
+
+            let mut rows = stmt.query([] as [&str; 0]).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
+            })?;
+
+            let mut nodes = Vec::new();
+            while let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            {
+                let mut node = self.row_to_node(row)?;
+                self.backfill_schema_version(&mut node).await?;
+                self.apply_lazy_migration(&mut node).await?;
+                nodes.push(node);
+            }
+
+            return Ok(nodes);
+        }
+
+        // Default: Empty query returns no results (safer than returning all nodes)
+        Ok(vec![])
     }
 
     // Helper methods
 
     /// Check if a node exists
     async fn node_exists(&self, id: &str) -> Result<bool, NodeServiceError> {
-        let node = self.store.get_node(id).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to check node existence: {}", e))
+        let conn = self.db.connect_with_timeout().await?;
+
+        let mut stmt = conn
+            .prepare("SELECT COUNT(*) FROM nodes WHERE id = ?")
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to prepare query: {}", e))
+            })?;
+
+        let mut rows = stmt.query([id]).await.map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to execute query: {}", e))
         })?;
-        Ok(node.is_some())
+
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+        {
+            let count: i64 = row
+                .get(0)
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            Ok(count > 0)
+        } else {
+            Ok(false)
+        }
     }
 
     /// Check if potential_descendant is a descendant of node_id
@@ -2154,46 +2334,48 @@ impl NodeService {
             return Ok(());
         }
 
-        // TODO(#481): Implement atomic bulk updates in SurrealDB
-        // Phase 2: Using sequential updates (not transactional)
-        tracing::warn!("bulk_update: Using sequential updates (Phase 2 limitation - not atomic)");
+        // Fetch all existing nodes, apply updates, validate, and prepare database parameters
+        let mut validated_updates: Vec<(&str, DbUpdateNodeParams)> = Vec::new();
+        let mut properties_json_vec: Vec<String> = Vec::new();
+        let mut updated_nodes: Vec<Node> = Vec::new();
+        let mut existing_nodes: Vec<Node> = Vec::new();
 
-        for (id, update) in updates {
+        for (id, update) in &updates {
             // Fetch existing node
             let existing = self
-                .get_node(&id)
+                .get_node(id)
                 .await?
-                .ok_or_else(|| NodeServiceError::node_not_found(&id))?;
+                .ok_or_else(|| NodeServiceError::node_not_found(id))?;
 
             let mut updated = existing.clone();
 
             // Apply partial updates
-            if let Some(node_type) = update.node_type {
-                updated.node_type = node_type;
+            if let Some(node_type) = &update.node_type {
+                updated.node_type = node_type.clone();
             }
 
-            if let Some(content) = update.content {
-                updated.content = content;
+            if let Some(content) = &update.content {
+                updated.content = content.clone();
             }
 
-            if let Some(parent_id) = update.parent_id {
-                updated.parent_id = parent_id;
+            if let Some(parent_id) = &update.parent_id {
+                updated.parent_id = parent_id.clone();
             }
 
-            if let Some(container_node_id) = update.container_node_id {
-                updated.container_node_id = container_node_id;
+            if let Some(container_node_id) = &update.container_node_id {
+                updated.container_node_id = container_node_id.clone();
             }
 
-            if let Some(before_sibling_id) = update.before_sibling_id {
-                updated.before_sibling_id = before_sibling_id;
+            if let Some(before_sibling_id) = &update.before_sibling_id {
+                updated.before_sibling_id = before_sibling_id.clone();
             }
 
-            if let Some(properties) = update.properties {
-                updated.properties = properties;
+            if let Some(properties) = &update.properties {
+                updated.properties = properties.clone();
             }
 
-            if let Some(embedding_vector) = update.embedding_vector {
-                updated.embedding_vector = embedding_vector;
+            if let Some(embedding_vector) = &update.embedding_vector {
+                updated.embedding_vector = embedding_vector.clone();
             }
 
             updated.modified_at = Utc::now();
@@ -2218,33 +2400,50 @@ impl NodeService {
                     })?;
             }
 
-            // Update node via store
-            let node_update = crate::models::NodeUpdate {
-                node_type: Some(updated.node_type.clone()),
-                content: Some(updated.content.clone()),
-                parent_id: Some(updated.parent_id.clone()),
-                container_node_id: Some(updated.container_node_id.clone()),
-                before_sibling_id: Some(updated.before_sibling_id.clone()),
-                properties: Some(updated.properties.clone()),
-                embedding_vector: if updated.embedding_vector.is_some() {
-                    Some(updated.embedding_vector.clone())
-                } else {
-                    None
-                },
-            };
+            // Serialize properties for database
+            let properties_json = serde_json::to_string(&updated.properties)
+                .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
-            self.store
-                .update_node(&id, node_update)
-                .await
-                .map_err(|e| {
-                    NodeServiceError::bulk_operation_failed(format!(
-                        "Failed to update node {}: {}",
-                        id, e
-                    ))
-                })?;
+            properties_json_vec.push(properties_json);
+            existing_nodes.push(existing);
+            updated_nodes.push(updated);
         }
 
-        Ok(())
+        // Now prepare database parameters using stored nodes and JSON strings
+        for (i, (id, update)) in updates.iter().enumerate() {
+            let existing = &existing_nodes[i];
+            let updated = &updated_nodes[i];
+
+            // Detect content change
+            let content_changed = update.content.is_some();
+            let is_container = updated.container_node_id.is_none();
+            let old_container_id = existing.container_node_id.as_deref();
+            let new_container_id = updated.container_node_id.as_deref();
+
+            validated_updates.push((
+                id.as_str(),
+                DbUpdateNodeParams {
+                    id: id.as_str(),
+                    node_type: &updated.node_type,
+                    content: &updated.content,
+                    parent_id: updated.parent_id.as_deref(),
+                    container_node_id: updated.container_node_id.as_deref(),
+                    before_sibling_id: updated.before_sibling_id.as_deref(),
+                    properties: &properties_json_vec[i],
+                    embedding_vector: updated.embedding_vector.as_deref(),
+                    content_changed,
+                    is_container,
+                    old_container_id,
+                    new_container_id,
+                },
+            ));
+        }
+
+        // Call database service to execute batch update in transaction
+        self.db
+            .db_batch_update_nodes(validated_updates)
+            .await
+            .map_err(NodeServiceError::from)
     }
 
     /// Bulk delete multiple nodes in a transaction
@@ -2280,16 +2479,33 @@ impl NodeService {
             return Ok(());
         }
 
-        // Delete nodes one by one using SurrealStore
-        // SurrealDB handles atomicity within each delete operation
+        let conn = self.db.connect_with_timeout().await?;
+
+        // Begin transaction
+        conn.execute("BEGIN TRANSACTION", ()).await.map_err(|e| {
+            NodeServiceError::transaction_failed(format!("Failed to begin transaction: {}", e))
+        })?;
+
         for id in &ids {
-            self.store.delete_node(id).await.map_err(|e| {
-                NodeServiceError::bulk_operation_failed(format!(
+            let result = conn
+                .execute("DELETE FROM nodes WHERE id = ?", [id.as_str()])
+                .await;
+
+            if let Err(e) = result {
+                // Rollback on error
+                let _rollback = conn.execute("ROLLBACK", ()).await;
+                return Err(NodeServiceError::bulk_operation_failed(format!(
                     "Failed to delete node {}: {}",
                     id, e
-                ))
-            })?;
+                )));
+            }
         }
+
+        // Commit transaction
+        conn.execute("COMMIT", ()).await.map_err(|e| {
+            std::mem::drop(conn.execute("ROLLBACK", ()));
+            NodeServiceError::transaction_failed(format!("Failed to commit transaction: {}", e))
+        })?;
 
         Ok(())
     }
@@ -2317,72 +2533,133 @@ impl NodeService {
         container_node_id: &str,
         before_sibling_id: Option<&str>,
     ) -> Result<(), NodeServiceError> {
-        // Ensure parent exists (create if missing)
-        if self
-            .store
-            .get_node(parent_id)
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to check parent existence: {}", e))
-            })?
-            .is_none()
-        {
-            // Create parent as date node
-            let parent_node = Node::new(
-                "date".to_string(),
-                parent_id.to_string(),
-                None,
-                serde_json::json!({}),
-            );
-            self.store.create_node(parent_node).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to create parent node: {}", e))
-            })?;
+        let conn = self.db.connect_with_timeout().await?;
+
+        // Use DEFERRED transaction for better concurrency with WAL mode
+        // Lock is only acquired when first write occurs, not at BEGIN
+        conn.execute("BEGIN DEFERRED", ()).await.map_err(|e| {
+            NodeServiceError::transaction_failed(format!("Failed to begin transaction: {}", e))
+        })?;
+
+        // Use INSERT OR IGNORE for parent - won't error if already exists
+        let parent_result = conn.execute(
+            "INSERT OR IGNORE INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
+             VALUES (?, 'date', ?, NULL, NULL, NULL, '{}', NULL)",
+            (parent_id, parent_id)
+        ).await;
+
+        if let Err(e) = parent_result {
+            let _rollback = conn.execute("ROLLBACK", ()).await;
+            return Err(NodeServiceError::query_failed(format!(
+                "Failed to ensure parent exists: {}",
+                e
+            )));
         }
 
-        // Upsert the node (update if exists, create if not)
-        if let Some(existing) = self.store.get_node(node_id).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to check node existence: {}", e))
-        })? {
-            // Update existing node
-            let update = NodeUpdate {
-                content: Some(content.to_string()),
-                parent_id: Some(Some(parent_id.to_string())),
-                container_node_id: Some(Some(container_node_id.to_string())),
-                before_sibling_id: Some(before_sibling_id.map(|s| s.to_string())),
-                ..Default::default()
-            };
-            self.store
-                .update_node(&existing.id, update)
-                .await
-                .map_err(|e| {
-                    NodeServiceError::query_failed(format!("Failed to update node: {}", e))
-                })?;
-        } else {
-            // Create new node
-            let node = Node {
-                id: node_id.to_string(),
-                node_type: node_type.to_string(),
-                content: content.to_string(),
-                parent_id: Some(parent_id.to_string()),
-                container_node_id: Some(container_node_id.to_string()),
-                before_sibling_id: before_sibling_id.map(|s| s.to_string()),
-                version: 1,
-                properties: serde_json::json!({}),
-                mentions: vec![],
-                mentioned_by: vec![],
-                created_at: chrono::Utc::now(),
-                modified_at: chrono::Utc::now(),
-                embedding_vector: None,
-            };
-            self.store.create_node(node).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to create node: {}", e))
-            })?;
+        // Use INSERT ... ON CONFLICT for node - upsert in single operation
+        let node_result = conn.execute(
+            "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
+             VALUES (?, ?, ?, ?, ?, ?, '{}', NULL)
+             ON CONFLICT(id) DO UPDATE SET
+                content = excluded.content,
+                parent_id = excluded.parent_id,
+                container_node_id = excluded.container_node_id,
+                before_sibling_id = excluded.before_sibling_id,
+                modified_at = CURRENT_TIMESTAMP",
+            (node_id, node_type, content, parent_id, container_node_id, before_sibling_id)
+        ).await;
+
+        if let Err(e) = node_result {
+            let _rollback = conn.execute("ROLLBACK", ()).await;
+            return Err(NodeServiceError::query_failed(format!(
+                "Failed to upsert node: {}",
+                e
+            )));
         }
+
+        // Commit transaction
+        conn.execute("COMMIT", ()).await.map_err(|e| {
+            std::mem::drop(conn.execute("ROLLBACK", ()));
+            NodeServiceError::transaction_failed(format!("Failed to commit transaction: {}", e))
+        })?;
 
         Ok(())
     }
 
     // Helper methods
+
+    /// Convert a database row to a Node
+    fn row_to_node(&self, row: libsql::Row) -> Result<Node, NodeServiceError> {
+        let id: String = row
+            .get(0)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        let node_type: String = row
+            .get(1)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        let content: String = row
+            .get(2)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        let parent_id: Option<String> = row
+            .get(3)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        let container_node_id: Option<String> = row
+            .get(4)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        let before_sibling_id: Option<String> = row
+            .get(5)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        let version: i64 = row
+            .get(6)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        let created_at: String = row
+            .get(7)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        let modified_at: String = row
+            .get(8)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        let properties_json: String = row
+            .get(9)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        let embedding_vector: Option<Vec<u8>> = row
+            .get(10)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        let properties: serde_json::Value =
+            serde_json::from_str(&properties_json).map_err(|e| {
+                NodeServiceError::serialization_error(format!("Failed to parse properties: {}", e))
+            })?;
+
+        // Parse timestamps - handle both SQLite format and RFC3339 (for migration)
+        let created_at = parse_timestamp(&created_at).map_err(|e| {
+            NodeServiceError::serialization_error(format!(
+                "Failed to parse created_at '{}': {}",
+                created_at, e
+            ))
+        })?;
+
+        let modified_at = parse_timestamp(&modified_at).map_err(|e| {
+            NodeServiceError::serialization_error(format!(
+                "Failed to parse modified_at '{}': {}",
+                modified_at, e
+            ))
+        })?;
+
+        Ok(Node {
+            id,
+            node_type,
+            content,
+            parent_id,
+            container_node_id,
+            before_sibling_id,
+            version,
+            created_at,
+            modified_at,
+            properties,
+            embedding_vector,
+            mentions: Vec::new(), // Populated separately via populate_mentions()
+            mentioned_by: Vec::new(), // Populated separately via populate_mentions()
+        })
+    }
 
     /// Populate mentions fields from node_mentions table
     ///
@@ -2393,24 +2670,59 @@ impl NodeService {
     ///
     /// * `node` - Mutable reference to node to populate
     async fn populate_mentions(&self, node: &mut Node) -> Result<(), NodeServiceError> {
+        let conn = self.db.connect_with_timeout().await?;
+
         // Query outgoing mentions (nodes that THIS node references)
-        let mentions = self
-            .store
-            .get_outgoing_mentions(&node.id)
+        let mut stmt = conn
+            .prepare("SELECT mentions_node_id FROM node_mentions WHERE node_id = ?")
             .await
             .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to get outgoing mentions: {}", e))
+                NodeServiceError::query_failed(format!("Failed to prepare mentions query: {}", e))
             })?;
+
+        let mut rows = stmt.query([node.id.as_str()]).await.map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to execute mentions query: {}", e))
+        })?;
+
+        let mut mentions = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+        {
+            let mentioned_id: String = row
+                .get(0)
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            mentions.push(mentioned_id);
+        }
         node.mentions = mentions;
 
         // Query incoming mentions (nodes that reference THIS node)
-        let mentioned_by = self
-            .store
-            .get_incoming_mentions(&node.id)
+        let mut stmt = conn
+            .prepare("SELECT node_id FROM node_mentions WHERE mentions_node_id = ?")
             .await
             .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to get incoming mentions: {}", e))
+                NodeServiceError::query_failed(format!(
+                    "Failed to prepare mentioned_by query: {}",
+                    e
+                ))
             })?;
+
+        let mut rows = stmt.query([node.id.as_str()]).await.map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to execute mentioned_by query: {}", e))
+        })?;
+
+        let mut mentioned_by = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+        {
+            let mentioning_id: String = row
+                .get(0)
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            mentioned_by.push(mentioning_id);
+        }
         node.mentioned_by = mentioned_by;
 
         Ok(())
@@ -2477,12 +2789,15 @@ impl NodeService {
             }
         }
 
-        self.store
-            .create_mention(source_id, target_id, source_id)
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to insert mention: {}", e))
-            })?;
+        let conn = self.db.connect_with_timeout().await?;
+
+        // Use INSERT OR IGNORE to handle duplicates gracefully
+        conn.execute(
+            "INSERT OR IGNORE INTO node_mentions (node_id, mentions_node_id) VALUES (?, ?)",
+            (source_id, target_id),
+        )
+        .await
+        .map_err(|e| NodeServiceError::query_failed(format!("Failed to insert mention: {}", e)))?;
 
         Ok(())
     }
@@ -2515,12 +2830,14 @@ impl NodeService {
         source_id: &str,
         target_id: &str,
     ) -> Result<(), NodeServiceError> {
-        self.store
-            .delete_mention(source_id, target_id)
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to delete mention: {}", e))
-            })?;
+        let conn = self.db.connect_with_timeout().await?;
+
+        conn.execute(
+            "DELETE FROM node_mentions WHERE node_id = ? AND mentions_node_id = ?",
+            (source_id, target_id),
+        )
+        .await
+        .map_err(|e| NodeServiceError::query_failed(format!("Failed to delete mention: {}", e)))?;
 
         Ok(())
     }
@@ -2550,8 +2867,8 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn get_mentions(&self, node_id: &str) -> Result<Vec<String>, NodeServiceError> {
-        self.store
-            .get_outgoing_mentions(node_id)
+        self.db
+            .db_get_outgoing_mentions(node_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
@@ -2581,8 +2898,8 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn get_mentioned_by(&self, node_id: &str) -> Result<Vec<String>, NodeServiceError> {
-        self.store
-            .get_incoming_mentions(node_id)
+        self.db
+            .db_get_incoming_mentions(node_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
@@ -2614,30 +2931,30 @@ impl NodeService {
         &self,
         node_id: &str,
     ) -> Result<Vec<String>, NodeServiceError> {
-        let nodes = self
-            .store
-            .get_mentioning_containers(node_id)
+        self.db
+            .db_get_mentioning_containers(node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-
-        // Extract node IDs from the nodes
-        Ok(nodes.into_iter().map(|n| n.id).collect())
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::SurrealStore;
     use serde_json::json;
     use tempfile::TempDir;
 
     async fn create_test_service() -> (NodeService, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
+        let db = DatabaseService::new(db_path).await.unwrap();
+        let db_arc = Arc::new(db);
 
-        let store = Arc::new(SurrealStore::new(db_path).await.unwrap());
-        let service = NodeService::new(store).unwrap();
+        // Initialize NodeStore trait wrapper
+        let store: Arc<dyn crate::db::NodeStore> =
+            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
+
+        let service = NodeService::new(store, db_arc).unwrap();
         (service, temp_dir)
     }
 
@@ -2696,10 +3013,10 @@ mod tests {
         let retrieved = service.get_node(&id).await.unwrap().unwrap();
 
         assert_eq!(retrieved.node_type, "task");
-        // Verify the default status was applied (nested format from behavior)
-        assert_eq!(retrieved.properties["task"]["status"], "OPEN");
-        // Priority default should also be applied (MEDIUM)
-        assert_eq!(retrieved.properties["task"]["priority"], "MEDIUM");
+        // Verify the default status was applied
+        assert_eq!(retrieved.properties["status"], "OPEN");
+        // Priority should NOT be set (no default, optional field)
+        assert!(retrieved.properties.get("priority").is_none());
     }
 
     #[tokio::test]
@@ -4447,22 +4764,86 @@ mod tests {
                 assert_eq!(retrieved.properties["_schema_version"], 1);
             }
 
-            // TODO(#481): Re-enable after SurrealDB migration complete - requires direct SQL access
-            #[ignore = "Requires direct SQL access (Issue #481)"]
             #[tokio::test]
             async fn test_backfill_existing_nodes_without_version() {
-                // NOTE: Test temporarily disabled - requires direct SQL access to insert nodes without _schema_version
-                // This will be re-enabled after SurrealDB migration provides equivalent functionality
-                unimplemented!("Requires direct SQL access - deferred to Issue #481");
+                let (service, _temp) = create_test_service().await;
+
+                // Manually insert a node without _schema_version (simulating existing data)
+                let conn = service.db.connect_with_timeout().await.unwrap();
+                let node_id = "test-node-no-version";
+                let properties_json = json!({"some_field": "value"}).to_string();
+
+                conn.execute(
+                    "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        node_id,
+                        "text",
+                        "Test content",
+                        None::<&str>,
+                        None::<&str>,
+                        None::<&str>,
+                        properties_json.as_str(),
+                        None::<&str>,
+                    ),
+                )
+                .await
+                .unwrap();
+
+                // Retrieve the node - should trigger backfill
+                let retrieved = service.get_node(node_id).await.unwrap().unwrap();
+
+                // Verify _schema_version was backfilled
+                assert!(retrieved.properties.get("_schema_version").is_some());
+                assert_eq!(retrieved.properties["_schema_version"], 1);
+
+                // Verify original field is still present
+                assert_eq!(retrieved.properties["some_field"], "value");
+
+                // Verify the backfill was persisted to database
+                let retrieved_again = service.get_node(node_id).await.unwrap().unwrap();
+                assert_eq!(retrieved_again.properties["_schema_version"], 1);
             }
 
-            // TODO(#481): Re-enable after SurrealDB migration complete - requires direct SQL access
-            #[ignore = "Requires direct SQL access (Issue #481)"]
             #[tokio::test]
             async fn test_query_nodes_backfills_versions() {
-                // NOTE: Test temporarily disabled - requires direct SQL access to insert nodes without _schema_version
-                // This will be re-enabled after SurrealDB migration provides equivalent functionality
-                unimplemented!("Requires direct SQL access - deferred to Issue #481");
+                let (service, _temp) = create_test_service().await;
+
+                // Manually insert multiple nodes without _schema_version
+                let conn = service.db.connect_with_timeout().await.unwrap();
+
+                for i in 1..=3 {
+                    let node_id = format!("test-node-{}", i);
+                    let properties_json = json!({"field": i}).to_string();
+
+                    conn.execute(
+                        "INSERT INTO nodes (id, node_type, content, parent_id, container_node_id, before_sibling_id, properties, embedding_vector)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            node_id.as_str(),
+                            "text",
+                            format!("Content {}", i).as_str(),
+                            None::<&str>,
+                            None::<&str>,
+                            None::<&str>,
+                            properties_json.as_str(),
+                            None::<&str>,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                }
+
+                // Query all text nodes - should trigger backfill for all
+                let filter = NodeFilter::new().with_node_type("text".to_string());
+                let nodes = service.query_nodes(filter).await.unwrap();
+
+                // Verify all nodes got _schema_version backfilled
+                assert!(nodes.len() >= 3);
+                for node in &nodes {
+                    assert!(node.properties.get("_schema_version").is_some());
+                    assert_eq!(node.properties["_schema_version"], 1);
+                }
             }
 
             #[tokio::test]

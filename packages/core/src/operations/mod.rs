@@ -1257,22 +1257,7 @@ impl NodeOperations {
             }
         }
 
-        // 3. Cascade delete all children recursively
-        // Get all direct children before deleting the parent
-        let children = self
-            .node_service
-            .query_nodes(NodeFilter::new().with_parent_id(node_id.to_string()))
-            .await?;
-
-        // Recursively delete each child (this will cascade further down the tree)
-        for child in children {
-            // Recursively call delete_node for each child
-            // Use the child's current version for optimistic concurrency
-            // Box the recursive call to avoid infinite future size
-            Box::pin(self.delete_node(&child.id, child.version)).await?;
-        }
-
-        // 4. Delete with version check (optimistic concurrency control)
+        // 3. Delete with version check (optimistic concurrency control)
         let rows_affected = self
             .node_service
             .delete_with_version_check(node_id, expected_version)
@@ -1299,7 +1284,7 @@ impl NodeOperations {
             }
         }
 
-        // 5. Deletion succeeded
+        // 4. Deletion succeeded
         Ok(DeleteResult { existed: true })
     }
 }
@@ -1307,7 +1292,7 @@ impl NodeOperations {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::SurrealStore;
+    use crate::db::DatabaseService;
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -1316,9 +1301,14 @@ mod tests {
     {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
+        let db = DatabaseService::new(db_path).await?;
+        let db_arc = Arc::new(db);
 
-        let store = Arc::new(SurrealStore::new(db_path).await?);
-        let node_service = NodeService::new(store)?;
+        // Initialize NodeStore trait wrapper
+        let store: Arc<dyn crate::db::NodeStore> =
+            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
+
+        let node_service = NodeService::new(store, db_arc)?;
         let operations = NodeOperations::new(Arc::new(node_service));
         Ok((operations, temp_dir))
     }

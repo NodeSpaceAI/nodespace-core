@@ -137,7 +137,7 @@ pub async fn handle_tools_call(
         }
 
         // Search
-        "search_containers" => search::handle_search_containers(embedding_service, arguments),
+        "search_containers" => search::handle_search_containers(embedding_service, arguments).await,
 
         // Schema Management
         "add_schema_field" => schema::handle_add_schema_field(schema_service, arguments).await,

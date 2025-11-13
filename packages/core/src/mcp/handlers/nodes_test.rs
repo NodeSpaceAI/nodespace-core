@@ -136,12 +136,11 @@ mod tests {
 
 #[cfg(test)]
 mod occ_tests {
-    use crate::db::SurrealStore;
     use crate::mcp::handlers::nodes::{handle_delete_node, handle_update_node};
     use crate::mcp::types::{INVALID_PARAMS, VERSION_CONFLICT};
     use crate::operations::{CreateNodeParams, NodeOperations};
     use crate::services::SchemaService;
-    use crate::NodeService;
+    use crate::{DatabaseService, NodeService};
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -151,9 +150,14 @@ mod occ_tests {
     {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
+        let db = DatabaseService::new(db_path).await?;
+        let db_arc = Arc::new(db);
 
-        let store = Arc::new(SurrealStore::new(db_path).await?);
-        let node_service = Arc::new(NodeService::new(store)?);
+        // Initialize NodeStore trait wrapper
+        let store: Arc<dyn crate::db::NodeStore> =
+            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
+
+        let node_service = Arc::new(NodeService::new(store, db_arc)?);
         let operations = Arc::new(NodeOperations::new(node_service.clone()));
         let schema_service = Arc::new(SchemaService::new(node_service));
         Ok((operations, schema_service, temp_dir))
@@ -499,7 +503,6 @@ mod occ_tests {
 
 #[cfg(test)]
 mod integration_tests {
-    use crate::db::SurrealStore;
     use crate::mcp::handlers::nodes::{
         handle_get_child_at_index, handle_get_children, handle_get_node_tree,
         handle_get_nodes_batch, handle_insert_child_at_index, handle_move_child_to_index,
@@ -507,7 +510,7 @@ mod integration_tests {
     };
     use crate::operations::{CreateNodeParams, NodeOperations};
     use crate::services::SchemaService;
-    use crate::NodeService;
+    use crate::{DatabaseService, NodeService};
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -517,9 +520,14 @@ mod integration_tests {
     {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
+        let db = DatabaseService::new(db_path).await?;
+        let db_arc = Arc::new(db);
 
-        let store = Arc::new(SurrealStore::new(db_path).await?);
-        let node_service = Arc::new(NodeService::new(store)?);
+        // Initialize NodeStore trait wrapper
+        let store: Arc<dyn crate::db::NodeStore> =
+            Arc::new(crate::db::TursoStore::new(db_arc.clone()));
+
+        let node_service = Arc::new(NodeService::new(store, db_arc)?);
         let operations = Arc::new(NodeOperations::new(node_service.clone()));
         let schema_service = Arc::new(SchemaService::new(node_service));
         Ok((operations, schema_service, temp_dir))
@@ -1551,13 +1559,12 @@ mod integration_tests {
         // - Small concurrent (3 tests): 3.6-4.4ms (mean: 3.7ms, p95: 4.39ms)
         // - Full suite (385 tests):     6.2-6.8ms (mean: 6.5ms, p95: 6.82ms)
         //
-        // UPDATE (455-test suite): Threshold increased to 15ms due to:
-        // - Test suite grew from 385 to 455 tests (+18% more tests)
-        // - Increased database contention from concurrent test execution
-        // - Observed p99: 14.09ms (within expected variance for larger suite)
-        // - Still catches significant regressions (>100% slowdown from 6.8ms baseline)
+        // The 10ms threshold provides:
+        // - 3.2ms safety margin above observed p95 (6.82ms)
+        // - Catches significant regressions (>47% slowdown from 6.8ms baseline)
+        // - Accounts for system load variance during CI/CD execution
         // - Production criterion of <5ms still holds for normal application usage
-        const THRESHOLD_MS: f64 = 15.0;
+        const THRESHOLD_MS: f64 = 10.0;
 
         assert!(
             avg_ms < THRESHOLD_MS,

@@ -2,9 +2,10 @@
 
 use crate::commands::embeddings::EmbeddingState;
 use nodespace_core::operations::NodeOperations;
-use nodespace_core::services::{EmbeddingProcessor, NodeEmbeddingService, SchemaService};
-use nodespace_core::{NodeService, SurrealStore};
-use nodespace_nlp_engine::EmbeddingService;
+use nodespace_core::services::{
+    EmbeddingProcessor, EmbeddingProcessorConfig, NodeEmbeddingService, SchemaService,
+};
+use nodespace_core::{DatabaseService, NodeService};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
@@ -120,55 +121,58 @@ async fn load_db_path_preference(app: &AppHandle) -> Result<Option<PathBuf>, Str
 /// the application must be restarted.
 async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> {
     // Check if state already exists to prevent reinitialization
-    if app.try_state::<SurrealStore>().is_some() {
+    if app.try_state::<DatabaseService>().is_some() {
         return Err(
             "Database already initialized. Restart the app to change location.".to_string(),
         );
     }
 
-    // Initialize SurrealDB store
-    let store = Arc::new(
-        SurrealStore::new(db_path)
-            .await
-            .map_err(|e| format!("Failed to initialize database: {}", e))?,
-    );
+    // Initialize database
+    let db_service = DatabaseService::new(db_path)
+        .await
+        .map_err(|e| format!("Failed to initialize database: {}", e))?;
 
-    // Initialize node service with SurrealStore
-    let node_service = NodeService::new(store.clone())
+    let db_arc = Arc::new(db_service.clone());
+
+    // Initialize NodeStore trait wrapper
+    let store: Arc<dyn nodespace_core::db::NodeStore> =
+        Arc::new(nodespace_core::db::TursoStore::new(db_arc.clone()));
+
+    // Initialize node service with NodeStore trait
+    let node_service = NodeService::new(store, db_arc.clone())
         .map_err(|e| format!("Failed to initialize node service: {}", e))?;
 
-    let node_service_arc = Arc::new(node_service);
-
     // Initialize NodeOperations business logic layer (wraps NodeService)
-    let node_operations = NodeOperations::new(node_service_arc.clone());
+    let node_operations = NodeOperations::new(Arc::new(node_service.clone()));
 
     // Initialize schema service (wraps NodeService for schema operations)
-    let schema_service = SchemaService::new(node_service_arc.clone());
+    let schema_service = SchemaService::new(Arc::new(node_service.clone()));
 
-    // Initialize NLP engine for embeddings (temporarily stubbed - Issue #481)
-    let nlp_engine = Arc::new(
-        EmbeddingService::new(Default::default())
-            .map_err(|e| format!("Failed to initialize NLP engine: {}", e))?,
-    );
-
-    // Initialize embedding service (temporarily stubbed - Issue #481)
-    let embedding_service = NodeEmbeddingService::new(nlp_engine.clone());
+    // Initialize embedding service (creates its own NLP engine internally)
+    let embedding_service = NodeEmbeddingService::new_with_defaults(db_arc.clone())
+        .map_err(|e| format!("Failed to initialize embedding service: {}", e))?;
     let embedding_service_arc = Arc::new(embedding_service);
 
-    // Initialize background embedding processor (temporarily stubbed - Issue #481)
-    let processor = EmbeddingProcessor::new(nlp_engine)
-        .map_err(|e| format!("Failed to initialize embedding processor: {}", e))?;
-    let processor_arc = Arc::new(processor);
+    // Initialize and start background embedding processor
+    let processor_config = EmbeddingProcessorConfig::default();
+    let processor = Arc::new(EmbeddingProcessor::new(
+        embedding_service_arc.clone(),
+        db_arc,
+        processor_config,
+    ));
+
+    // Start the background processor
+    processor.clone().start();
 
     // Manage all services
-    app.manage(store);
-    app.manage(node_service_arc.as_ref().clone());
+    app.manage(db_service);
+    app.manage(node_service);
     app.manage(node_operations);
     app.manage(schema_service);
     app.manage(EmbeddingState {
         service: embedding_service_arc,
     });
-    app.manage(processor_arc);
+    app.manage(processor);
 
     // Initialize MCP server now that NodeService is available
     // MCP will use the same NodeService as Tauri commands

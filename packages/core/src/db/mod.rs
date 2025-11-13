@@ -1,28 +1,43 @@
 //! Database Layer
 //!
-//! This module handles all database interactions using SurrealDB:
+//! This module handles all database interactions using libsql/Turso:
 //!
 //! - Database initialization and connection management
-//! - SCHEMALESS storage for flexible node properties
-//! - Built-in version history support (future feature)
-//! - Fine-grained RBAC for collaborative sync (future feature)
+//! - Pure JSON schema queries with JSON path operators
+//! - Migration system for schema evolution
+//! - Transaction management and error handling
 //!
-//! # Architecture
+//! The database layer uses the Pure JSON schema approach where all entity
+//! data is stored in the `properties` field, eliminating the need for
+//! ALTER TABLE operations on user machines.
 //!
-//! NodeSpace uses SurrealDB as its primary and only database backend.
-//! SurrealDB was chosen for:
+//! # Abstraction Layer (Phase 1 - Epic #461)
 //!
-//! - Built-in record versioning (for version history)
-//! - Native RBAC support (for collaborative sync with permissions)
-//! - High performance query capabilities
-//! - Embedded deployment (no external dependencies)
-//!
-//! For architecture details, see `/docs/architecture/data/surrealdb-schema-design.md`
+//! The `NodeStore` trait provides a database abstraction layer that enables
+//! multiple backend implementations (Turso, SurrealDB) without changing
+//! business logic in NodeService.
 
+mod ab_testing;
+mod database;
 mod error;
 mod index_manager;
+mod metrics;
+mod node_store;
+mod turso_store;
+
+#[cfg(feature = "surrealdb")]
 mod surreal_store;
 
+#[cfg(all(test, feature = "surrealdb"))]
+mod ab_tests;
+
+pub use ab_testing::{ABTestResult, ABTestRunner};
+pub use database::{DatabaseService, DbCreateNodeParams, DbUpdateNodeParams};
 pub use error::DatabaseError;
 pub use index_manager::IndexManager;
+pub use metrics::{MetricsCollector, MetricsStats, OperationMetric};
+pub use node_store::NodeStore;
+pub use turso_store::TursoStore;
+
+#[cfg(feature = "surrealdb")]
 pub use surreal_store::SurrealStore;

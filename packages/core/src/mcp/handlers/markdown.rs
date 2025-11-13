@@ -1093,22 +1093,16 @@ pub async fn handle_update_container_from_markdown(
         .map_err(|e| MCPError::internal_error(format!("Failed to get container: {}", e)))?
         .ok_or_else(|| MCPError::node_not_found(&params.container_id))?;
 
-    // Get all existing descendants (use container_node_id to get ALL nodes in hierarchy, not just direct children)
-    // This is critical because we need to delete nested structures like:
-    //   Container → Header → Tasks
-    // If we only query by parent_id, we'd only get the Header, leaving orphaned Tasks
+    // Get all existing children (use query with parent_id filter)
     use crate::models::{NodeFilter, OrderBy};
     let filter = NodeFilter::new()
-        .with_container_node_id(params.container_id.clone())
+        .with_parent_id(params.container_id.clone())
         .with_order_by(OrderBy::CreatedAsc);
 
     let mut existing_children = operations
         .query_nodes(filter)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to get children: {}", e)))?;
-
-    // Note: get_nodes_by_container() already excludes the container itself
-    // (container has container_node_id = None, not equal to itself)
 
     // Delete in REVERSE order to avoid version conflicts from sibling chain updates.
     // Background: operations.delete_node() updates the next sibling's version when fixing
@@ -1123,32 +1117,9 @@ pub async fn handle_update_container_from_markdown(
     let mut deleted_count = 0;
     let mut deletion_failures = Vec::new();
     for child in existing_children {
-        // CRITICAL: Refetch current version before deletion since sibling chain updates
-        // can increment versions as we delete. Using stale cached version will cause conflicts.
-        let current_node = match operations.get_node(&child.id).await {
-            Ok(Some(node)) => node,
-            Ok(None) => {
-                // Node already deleted (possible if recursive delete)
-                deleted_count += 1;
-                continue;
-            }
-            Err(e) => {
-                tracing::warn!("Failed to fetch node {} before deletion: {}", child.id, e);
-                deletion_failures.push(json!({
-                    "node_id": child.id,
-                    "error": format!("Failed to fetch before deletion: {}", e)
-                }));
-                continue;
-            }
-        };
-
-        match operations
-            .delete_node(&current_node.id, current_node.version)
-            .await
-        {
-            Ok(_) => {
-                deleted_count += 1;
-            }
+        // Note: child.version is already available from existing_children query
+        match operations.delete_node(&child.id, child.version).await {
+            Ok(_) => deleted_count += 1,
             Err(e) => {
                 tracing::warn!("Failed to delete child node {}: {}", child.id, e);
                 deletion_failures.push(json!({
