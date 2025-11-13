@@ -38,6 +38,7 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 tauri-plugin-decorum = "1.1.1"
 nodespace-core = { workspace = true }
+nodespace-nlp-engine = { workspace = true }
 dirs = "5.0"
 tracing = "0.1"
 futures = "0.3"

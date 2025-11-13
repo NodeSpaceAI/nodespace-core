@@ -41,19 +41,13 @@ pub struct EmbeddingState {
 /// ```
 #[tauri::command]
 pub async fn generate_container_embedding(
-    state: State<'_, EmbeddingState>,
+    _state: State<'_, EmbeddingState>,
     container_id: String,
 ) -> Result<(), CommandError> {
-    state
-        .service
-        .embed_container(&container_id)
-        .await
-        .map_err(|e| CommandError {
-            message: format!("Failed to generate embedding: {}", e),
-            code: "EMBEDDING_GENERATION_FAILED".to_string(),
-            details: Some(format!("{:?}", e)),
-        })?;
-
+    tracing::warn!(
+        "Embedding generation temporarily disabled (Issue #481) for container: {}",
+        container_id
+    );
     Ok(())
 }
 
@@ -111,30 +105,14 @@ pub struct SearchContainersParams {
 /// ```
 #[tauri::command]
 pub async fn search_containers(
-    state: State<'_, EmbeddingState>,
+    _state: State<'_, EmbeddingState>,
     params: SearchContainersParams,
 ) -> Result<Vec<Node>, CommandError> {
-    let threshold = params.threshold.unwrap_or(0.7);
-    let limit = params.limit.unwrap_or(20);
-    let exact = params.exact.unwrap_or(false);
-
-    let results = if exact {
-        state
-            .service
-            .exact_search_containers(&params.query, threshold, limit)
-            .await
-    } else {
-        state
-            .service
-            .search_containers(&params.query, threshold, limit)
-            .await
-    };
-
-    results.map_err(|e| CommandError {
-        message: format!("Failed to search topics: {}", e),
-        code: "TOPIC_SEARCH_FAILED".to_string(),
-        details: Some(format!("{:?}", e)),
-    })
+    tracing::warn!(
+        "Semantic search temporarily disabled (Issue #481) for query: {}",
+        params.query
+    );
+    Ok(Vec::new())
 }
 
 /// Update embedding for a topic node immediately
@@ -159,20 +137,13 @@ pub async fn search_containers(
 /// ```
 #[tauri::command]
 pub async fn update_container_embedding(
-    state: State<'_, EmbeddingState>,
+    _state: State<'_, EmbeddingState>,
     container_id: String,
 ) -> Result<(), CommandError> {
-    // Re-embed and mark as fresh
-    state
-        .service
-        .embed_container(&container_id)
-        .await
-        .map_err(|e| CommandError {
-            message: format!("Failed to update embedding: {}", e),
-            code: "EMBEDDING_UPDATE_FAILED".to_string(),
-            details: Some(format!("{:?}", e)),
-        })?;
-
+    tracing::warn!(
+        "Embedding updates temporarily disabled (Issue #481) for container: {}",
+        container_id
+    );
     Ok(())
 }
 
@@ -243,19 +214,13 @@ pub async fn schedule_container_embedding_update(
 /// ```
 #[tauri::command]
 pub async fn on_container_closed(
-    state: State<'_, EmbeddingState>,
+    _state: State<'_, EmbeddingState>,
     container_id: String,
 ) -> Result<(), CommandError> {
-    state
-        .service
-        .on_container_closed(&container_id)
-        .await
-        .map_err(|e| CommandError {
-            message: format!("Failed to process topic close: {}", e),
-            code: "TOPIC_CLOSE_FAILED".to_string(),
-            details: Some(format!("{:?}", e)),
-        })?;
-
+    tracing::warn!(
+        "Container close handler temporarily disabled (Issue #481) for container: {}",
+        container_id
+    );
     Ok(())
 }
 
@@ -285,18 +250,14 @@ pub async fn on_container_closed(
 /// ```
 #[tauri::command]
 pub async fn on_container_idle(
-    state: State<'_, EmbeddingState>,
+    _state: State<'_, EmbeddingState>,
     container_id: String,
 ) -> Result<bool, CommandError> {
-    state
-        .service
-        .on_idle_timeout(&container_id)
-        .await
-        .map_err(|e| CommandError {
-            message: format!("Failed to process idle timeout: {}", e),
-            code: "IDLE_TIMEOUT_FAILED".to_string(),
-            details: Some(format!("{:?}", e)),
-        })
+    tracing::warn!(
+        "Idle timeout handler temporarily disabled (Issue #481) for container: {}",
+        container_id
+    );
+    Ok(false)
 }
 
 /// Manually sync all stale topics
@@ -318,16 +279,9 @@ pub async fn on_container_idle(
 /// console.log(`Synced ${count} topics`);
 /// ```
 #[tauri::command]
-pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<usize, CommandError> {
-    state
-        .service
-        .sync_all_stale_containers()
-        .await
-        .map_err(|e| CommandError {
-            message: format!("Failed to sync embeddings: {}", e),
-            code: "SYNC_FAILED".to_string(),
-            details: Some(format!("{:?}", e)),
-        })
+pub async fn sync_embeddings(_state: State<'_, EmbeddingState>) -> Result<usize, CommandError> {
+    tracing::warn!("Embedding sync temporarily disabled (Issue #481)");
+    Ok(0)
 }
 
 /// Get count of stale topics
@@ -345,18 +299,10 @@ pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<usize, 
 /// ```
 #[tauri::command]
 pub async fn get_stale_container_count(
-    state: State<'_, EmbeddingState>,
+    _state: State<'_, EmbeddingState>,
 ) -> Result<usize, CommandError> {
-    let topics = state
-        .service
-        .get_all_stale_containers()
-        .await
-        .map_err(|e| CommandError {
-            message: format!("Failed to get stale count: {}", e),
-            code: "STALE_COUNT_FAILED".to_string(),
-            details: Some(format!("{:?}", e)),
-        })?;
-    Ok(topics.len())
+    tracing::warn!("Stale container count temporarily disabled (Issue #481)");
+    Ok(0)
 }
 
 /// Batch generate embeddings for multiple topics
@@ -382,28 +328,16 @@ pub async fn get_stale_container_count(
 /// ```
 #[tauri::command]
 pub async fn batch_generate_embeddings(
-    state: State<'_, EmbeddingState>,
+    _state: State<'_, EmbeddingState>,
     container_ids: Vec<String>,
 ) -> Result<BatchEmbeddingResult, CommandError> {
-    let mut success_count = 0;
-    let mut failed_embeddings = Vec::new();
-
-    for container_id in container_ids {
-        match state.service.embed_container(&container_id).await {
-            Ok(()) => success_count += 1,
-            Err(e) => {
-                tracing::error!("Failed to embed topic {}: {}", container_id, e);
-                failed_embeddings.push(BatchEmbeddingError {
-                    container_id: container_id.clone(),
-                    error: e.to_string(),
-                });
-            }
-        }
-    }
-
+    tracing::warn!(
+        "Batch embedding generation temporarily disabled (Issue #481) for {} containers",
+        container_ids.len()
+    );
     Ok(BatchEmbeddingResult {
-        success_count,
-        failed_embeddings,
+        success_count: 0,
+        failed_embeddings: Vec::new(),
     })
 }
 

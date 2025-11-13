@@ -38,7 +38,7 @@ use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 
 use nodespace_core::services::NodeEmbeddingService;
-use nodespace_core::{DatabaseService, NodeService};
+use nodespace_core::{NodeService, SurrealStore};
 
 // Phase 1: Node CRUD endpoints (this issue #209)
 mod node_endpoints;
@@ -72,27 +72,21 @@ type SharedService<T> = Arc<RwLock<Arc<T>>>;
 /// Each test can call /api/database/init with a unique database path, and the init
 /// endpoint will:
 /// 1. Drain connections from the old database
-/// 2. Create a new DatabaseService
+/// 2. Create a new SurrealStore
 /// 3. Atomically swap the services
 ///
 /// This ensures proper synchronization without stale connections.
 ///
-/// # SQLite Write Serialization (Issue #266)
+/// # SurrealDB Write Serialization (Issue #266)
 ///
 /// The `write_lock` mutex serializes all database write operations (create, update, delete)
-/// to reduce SQLite write contention under rapid concurrent operations. This significantly
-/// improves test reliability but does NOT completely eliminate occasional "database is locked"
-/// errors due to SQLite's internal locking behavior.
-///
-/// **Known Limitation**: SQLite can still report "database is locked" even with request-level
-/// serialization due to connection management, WAL mode checkpoints, and busy timeout settings.
-/// Tests may still fail intermittently (~10-20% of runs). For 100% reliability, see Issue #285
-/// (refactor integration tests to use in-memory database instead of HTTP dev-server).
+/// to reduce SurrealDB write contention under rapid concurrent operations. This significantly
+/// improves test reliability.
 ///
 /// Read operations do NOT acquire the write lock and can execute concurrently.
 #[derive(Clone)]
 pub struct AppState {
-    pub db: SharedService<DatabaseService>,
+    pub store: SharedService<SurrealStore>,
     pub node_service: SharedService<NodeService>,
     pub embedding_service: SharedService<NodeEmbeddingService>,
     pub write_lock: Arc<Mutex<()>>,
@@ -169,7 +163,7 @@ fn cors_layer() -> CorsLayer {
 ///
 /// # Arguments
 ///
-/// * `db` - Database service instance
+/// * `store` - SurrealDB store instance
 /// * `node_service` - Node service instance
 /// * `embedding_service` - Embedding service instance
 /// * `port` - Port to listen on (typically 3001)
@@ -178,13 +172,13 @@ fn cors_layer() -> CorsLayer {
 ///
 /// Returns error if server fails to bind or start.
 pub async fn start_server(
-    db: SharedService<DatabaseService>,
+    store: SharedService<SurrealStore>,
     node_service: SharedService<NodeService>,
     embedding_service: SharedService<NodeEmbeddingService>,
     port: u16,
 ) -> anyhow::Result<()> {
     let state = AppState {
-        db,
+        store,
         node_service,
         embedding_service,
         write_lock: Arc::new(Mutex::new(())),

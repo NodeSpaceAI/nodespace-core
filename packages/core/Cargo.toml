@@ -7,17 +7,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[features]
-default = ["turso"]
-turso = []
-surrealdb = ["dep:surrealdb"]
-
 [dependencies]
-# Database - Using libsql for Turso embedded database
-libsql = { workspace = true }
-
-# SurrealDB - Optional for Phase 2 migration
-surrealdb = { workspace = true, optional = true }
+# Database - SurrealDB as the only backend
+surrealdb = { workspace = true }
 
 # NLP Engine for embeddings
 nodespace-nlp-engine = { path = "../nlp-engine" }

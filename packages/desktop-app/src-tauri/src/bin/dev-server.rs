@@ -32,7 +32,7 @@
 //! # Architecture
 //!
 //! The server initializes the same services used by the Tauri app:
-//! 1. DatabaseService - SQLite database access
+//! 1. SurrealStore - SurrealDB database access
 //! 2. NodeService - Node CRUD operations
 //!
 //! Future phases will add embedding services and other functionality.
@@ -42,7 +42,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use nodespace_core::services::NodeEmbeddingService;
-use nodespace_core::{DatabaseService, NodeService};
+use nodespace_core::{NodeService, SurrealStore};
+use nodespace_nlp_engine::EmbeddingService;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -84,31 +85,30 @@ async fn main() -> anyhow::Result<()> {
     // Initialize services (same as Tauri app)
     tracing::info!("🔧 Initializing services...");
 
-    // Create initial database and node service for startup
-    let db_service = DatabaseService::new(db_path.clone()).await?;
-    // DatabaseService::clone() is cheap - it clones the inner Arc<Database> and PathBuf
-    let db_arc_for_embedding = Arc::new(db_service.clone());
+    // Initialize SurrealDB store
+    let store = Arc::new(SurrealStore::new(db_path.clone()).await?);
 
-    // Initialize NodeStore trait wrapper
-    let store: Arc<dyn nodespace_core::db::NodeStore> = Arc::new(
-        nodespace_core::db::TursoStore::new(db_arc_for_embedding.clone()),
+    // Initialize node service with SurrealStore
+    let node_service = NodeService::new(store.clone())?;
+
+    // Initialize NLP engine for embeddings (temporarily stubbed - Issue #481)
+    let nlp_engine = Arc::new(
+        EmbeddingService::new(Default::default())
+            .map_err(|e| anyhow::anyhow!("Failed to initialize NLP engine: {}", e))?,
     );
 
-    let node_service = NodeService::new(store, db_arc_for_embedding.clone())?;
-
-    // Initialize embedding service with defaults (requires Arc<DatabaseService>)
-    let embedding_service = NodeEmbeddingService::new_with_defaults(db_arc_for_embedding)
-        .map_err(|e| anyhow::anyhow!("Failed to initialize embedding service: {}", e))?;
+    // Initialize embedding service (temporarily stubbed - Issue #481)
+    let embedding_service = NodeEmbeddingService::new(nlp_engine);
 
     tracing::info!("✅ Services initialized");
 
     // Wrap services in RwLock for dynamic database switching during tests (Issue #255)
-    let db_arc = Arc::new(RwLock::new(Arc::new(db_service)));
+    let store_arc = Arc::new(RwLock::new(store));
     let ns_arc = Arc::new(RwLock::new(Arc::new(node_service)));
     let es_arc = Arc::new(RwLock::new(Arc::new(embedding_service)));
 
     // Start HTTP server
-    nodespace_app_lib::dev_server::start_server(db_arc, ns_arc, es_arc, port).await?;
+    nodespace_app_lib::dev_server::start_server(store_arc, ns_arc, es_arc, port).await?;
 
     Ok(())
 }

@@ -5,10 +5,10 @@
 //!
 //! # Architecture
 //!
-//! - **Pure JSON Schema**: All entity data stored in `properties` field (no complementary tables)
-//! - **Schema-as-Node**: Schemas stored as nodes with `node_type = "schema"`
-//! - **libsql/Turso**: Embedded SQLite-compatible database with sync capability
-//! - **Zero Migration Risk**: No ALTER TABLE ever required on user machines
+//! - **SurrealDB**: Embedded database with built-in versioning and RBAC support
+//! - **SCHEMALESS Storage**: Flexible property storage for dynamic node types
+//! - **Node Type System**: Trait-based behaviors for validation and processing
+//! - **Future Features**: Version history and collaborative sync with permissions
 //!
 //! # Modules
 //!
@@ -16,7 +16,7 @@
 //! - [`behaviors`] - Node type system and trait-based behaviors
 //! - [`services`] - Business services (NodeService, SchemaService, etc.)
 //! - [`operations`] - Business logic layer enforcing data integrity rules
-//! - [`db`] - Database layer with libsql integration
+//! - [`db`] - Database layer with SurrealDB integration
 //! - [`mcp`] - MCP stdio server for AI agent integration
 
 pub mod behaviors;
@@ -31,7 +31,7 @@ pub use behaviors::{
     DateNodeBehavior, NodeBehavior, NodeBehaviorRegistry, ProcessingError, TaskNodeBehavior,
     TextNodeBehavior,
 };
-pub use db::{DatabaseError, DatabaseService};
+pub use db::{DatabaseError, SurrealStore};
 pub use models::{
     FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter,
     ValidationError,
