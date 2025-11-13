@@ -1,9 +1,9 @@
-//! SurrealStore - NodeStore Implementation for SurrealDB Backend
+//! SurrealStore - Direct SurrealDB Backend Implementation
 //!
-//! This module implements the `NodeStore` trait for SurrealDB embedded database,
-//! providing the abstraction layer that enables hybrid database architecture.
+//! This module provides the primary and only database backend for NodeSpace,
+//! using SurrealDB embedded database with RocksDB storage engine.
 //!
-//! # Phase 2 Architecture
+//! # Architecture
 //!
 //! SurrealStore uses a **hybrid dual-table architecture**:
 //! 1. **Universal `nodes` table** - Common metadata, embeddings, hierarchy
@@ -14,7 +14,7 @@
 //! 1. **Embedded RocksDB**: Desktop-only backend using `kv-rocksdb` engine
 //! 2. **SCHEMALESS Mode**: Core tables use SCHEMALESS for dynamic properties
 //! 3. **Record IDs**: Native SurrealDB format `table:uuid` (type embedded in ID)
-//! 4. **Zero Regressions**: Maintains exact behavior of TursoStore
+//! 4. **Direct Access**: No abstraction layers, SurrealStore used directly by services
 //!
 //! # Performance Targets (from PoC)
 //!
@@ -26,7 +26,7 @@
 //! # Examples
 //!
 //! ```rust,no_run
-//! use nodespace_core::db::{NodeStore, SurrealStore};
+//! use nodespace_core::db::SurrealStore;
 //! use std::path::PathBuf;
 //!
 //! #[tokio::main]
@@ -35,7 +35,7 @@
 //!     let db_path = PathBuf::from("./data/surreal.db");
 //!     let store = SurrealStore::new(db_path).await?;
 //!
-//!     // Use abstraction layer
+//!     // Direct database access
 //!     let node = store.get_node("task:550e8400-e29b-41d4-a716-446655440000").await?;
 //!
 //!     Ok(())
