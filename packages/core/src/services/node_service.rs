@@ -761,6 +761,9 @@ impl NodeService {
         let _properties_json = serde_json::to_string(&properties)
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
+        // Update node with schema-versioned properties
+        node.properties = properties;
+
         // Convert ROOT_CONTAINER_ID to None (null in database)
         let container_node_id_value = node
             .container_node_id
@@ -1052,7 +1055,18 @@ impl NodeService {
         }
 
         if let Some(properties) = update.properties {
-            updated.properties = properties;
+            // Merge properties instead of replacing them to preserve _schema_version
+            if let (Some(existing_obj), Some(new_obj)) =
+                (updated.properties.as_object_mut(), properties.as_object())
+            {
+                // Merge new properties into existing ones
+                for (key, value) in new_obj {
+                    existing_obj.insert(key.clone(), value.clone());
+                }
+            } else {
+                // If either is not an object, just replace (shouldn't happen normally)
+                updated.properties = properties;
+            }
         }
 
         if let Some(embedding_vector) = update.embedding_vector {
@@ -1203,7 +1217,18 @@ impl NodeService {
         }
 
         if let Some(properties) = update.properties {
-            updated.properties = properties;
+            // Merge properties instead of replacing them to preserve _schema_version
+            if let (Some(existing_obj), Some(new_obj)) =
+                (updated.properties.as_object_mut(), properties.as_object())
+            {
+                // Merge new properties into existing ones
+                for (key, value) in new_obj {
+                    existing_obj.insert(key.clone(), value.clone());
+                }
+            } else {
+                // If either is not an object, just replace (shouldn't happen normally)
+                updated.properties = properties;
+            }
         }
 
         if let Some(embedding_vector) = update.embedding_vector {

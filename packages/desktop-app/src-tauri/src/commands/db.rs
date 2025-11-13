@@ -147,9 +147,8 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
 
     // Initialize NLP engine for embeddings (temporarily stubbed - Issue #481)
     let nlp_engine = Arc::new(
-        EmbeddingService::new(Default::default()).map_err(|e| {
-            format!("Failed to initialize NLP engine: {}", e)
-        })?,
+        EmbeddingService::new(Default::default())
+            .map_err(|e| format!("Failed to initialize NLP engine: {}", e))?,
     );
 
     // Initialize embedding service (temporarily stubbed - Issue #481)

@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 
 /// Embedding processor for background tasks (temporarily disabled)
 pub struct EmbeddingProcessor {
+    #[allow(dead_code)]
     nlp_engine: Arc<EmbeddingService>,
     _shutdown_tx: mpsc::Sender<()>,
 }

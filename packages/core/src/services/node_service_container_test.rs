@@ -12,8 +12,10 @@
 //! - Child node content updates mark parent containers as stale
 //! - Node moves between containers mark both old and new containers as stale
 
-#[cfg(all(test, feature = "embedding-tests-disabled-issue-481"))]
-mod tests {
+#[cfg(all(test))]
+#[cfg_attr(test, allow(dead_code, unused_imports))]
+mod disabled_embedding_tests {
+    // These tests are temporarily disabled - see issue #481
     use crate::db::SurrealStore;
     use crate::models::{Node, NodeUpdate};
     use crate::services::NodeService;

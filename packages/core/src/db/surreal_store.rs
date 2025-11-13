@@ -300,10 +300,9 @@ impl SurrealStore {
                 .context("Failed to create node in type-specific table")?;
         }
 
-        // Return the created node by fetching it
-        self.get_node(&node.id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Node not found after creation"))
+        // Return the created node directly (avoids triggering backfill/migration during creation)
+        // The node was successfully created with the values provided, so we can return it as-is
+        Ok(node)
     }
 
     pub async fn get_node(&self, id: &str) -> Result<Option<Node>> {

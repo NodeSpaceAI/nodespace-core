@@ -22,6 +22,7 @@ pub const EMBEDDING_DIMENSION: usize = 384;
 /// Node embedding service (temporarily disabled)
 pub struct NodeEmbeddingService {
     /// NLP engine for generating embeddings
+    #[allow(dead_code)]
     nlp_engine: Arc<EmbeddingService>,
 }
 
