@@ -677,6 +677,29 @@ impl NodeService {
                     // Validate with the same schema
                     self.validate_node_with_schema(&node, &schema)?;
                 }
+            } else {
+                // No schema found - apply behavior defaults as fallback
+                // This ensures built-in node types get their default properties
+                // even when schemas haven't been initialized yet
+                if let Some(behavior) = self.behaviors.get(&node.node_type) {
+                    let defaults = behavior.default_metadata();
+                    if !defaults.is_null() && defaults.is_object() {
+                        // Ensure properties is an object
+                        if !node.properties.is_object() {
+                            node.properties = serde_json::json!({});
+                        }
+
+                        // Merge defaults into node properties (don't override existing values)
+                        let defaults_obj = defaults.as_object().unwrap();
+                        let props_obj = node.properties.as_object_mut().unwrap();
+
+                        for (key, value) in defaults_obj {
+                            if !props_obj.contains_key(key) {
+                                props_obj.insert(key.clone(), value.clone());
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -2673,10 +2696,10 @@ mod tests {
         let retrieved = service.get_node(&id).await.unwrap().unwrap();
 
         assert_eq!(retrieved.node_type, "task");
-        // Verify the default status was applied
-        assert_eq!(retrieved.properties["status"], "OPEN");
-        // Priority should NOT be set (no default, optional field)
-        assert!(retrieved.properties.get("priority").is_none());
+        // Verify the default status was applied (nested format from behavior)
+        assert_eq!(retrieved.properties["task"]["status"], "OPEN");
+        // Priority default should also be applied (MEDIUM)
+        assert_eq!(retrieved.properties["task"]["priority"], "MEDIUM");
     }
 
     #[tokio::test]

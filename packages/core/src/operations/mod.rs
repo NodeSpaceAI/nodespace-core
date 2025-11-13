@@ -1257,7 +1257,22 @@ impl NodeOperations {
             }
         }
 
-        // 3. Delete with version check (optimistic concurrency control)
+        // 3. Cascade delete all children recursively
+        // Get all direct children before deleting the parent
+        let children = self
+            .node_service
+            .query_nodes(NodeFilter::new().with_parent_id(node_id.to_string()))
+            .await?;
+
+        // Recursively delete each child (this will cascade further down the tree)
+        for child in children {
+            // Recursively call delete_node for each child
+            // Use the child's current version for optimistic concurrency
+            // Box the recursive call to avoid infinite future size
+            Box::pin(self.delete_node(&child.id, child.version)).await?;
+        }
+
+        // 4. Delete with version check (optimistic concurrency control)
         let rows_affected = self
             .node_service
             .delete_with_version_check(node_id, expected_version)
@@ -1284,7 +1299,7 @@ impl NodeOperations {
             }
         }
 
-        // 4. Deletion succeeded
+        // 5. Deletion succeeded
         Ok(DeleteResult { existed: true })
     }
 }
