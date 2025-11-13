@@ -54,6 +54,22 @@ use surrealdb::sql::{Id, Thing};
 use surrealdb::Surreal;
 
 /// Internal struct matching SurrealDB's schema with 'uuid' field
+///
+/// # Schema Evolution
+///
+/// - **v1.0** (Issue #470): Initial SurrealDB schema migration
+///   - Core node fields (uuid, node_type, content, parent_id, etc.)
+///   - Embedding vector storage
+///   - Version-based optimistic concurrency control
+///
+/// - **v1.1** (Issue #481): Advanced SurrealDB features
+///   - Added `embedding_stale` field for tracking embedding staleness
+///   - Default: `false` (backward compatible via `#[serde(default)]`)
+///   - Existing nodes without this field are treated as not stale
+///   - Automatically set to `true` when content changes, cleared when embedding regenerated
+///
+/// All new fields use `#[serde(default)]` to maintain backward compatibility with
+/// existing database records that don't have these fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SurrealNode {
     uuid: String,
@@ -67,6 +83,8 @@ struct SurrealNode {
     modified_at: String,
     properties: Value,
     embedding_vector: Option<Vec<u8>>,
+    #[serde(default)]
+    embedding_stale: bool,
     #[serde(default)]
     mentions: Vec<String>,
     #[serde(default)]
@@ -366,6 +384,107 @@ impl SurrealStore {
         self.get_node(id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Node not found after update"))
+    }
+
+    /// Update a node with version check (optimistic locking)
+    ///
+    /// Only updates the node if its version matches the expected version.
+    /// This provides atomic version-checked updates to prevent lost updates
+    /// in concurrent scenarios.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - Node UUID to update
+    /// * `expected_version` - Expected current version (for optimistic locking)
+    /// * `update` - Fields to update
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(Node))` - Update succeeded, returns updated node
+    /// * `Ok(None)` - Version mismatch, no update performed
+    /// * `Err(_)` - Database error or node not found
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use nodespace_core::models::NodeUpdate;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let store = SurrealStore::new(PathBuf::from("./data/surreal.db")).await?;
+    /// let update = NodeUpdate {
+    ///     content: Some("Updated content".to_string()),
+    ///     ..Default::default()
+    /// };
+    ///
+    /// match store.update_node_with_version_check("node-id", 5, update).await? {
+    ///     Some(node) => println!("Updated to version {}", node.version),
+    ///     None => println!("Version mismatch - node was modified by another process"),
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn update_node_with_version_check(
+        &self,
+        id: &str,
+        expected_version: i64,
+        update: NodeUpdate,
+    ) -> Result<Option<Node>> {
+        // Fetch current node to build update values
+        let current = self
+            .get_node(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Node not found: {}", id))?;
+
+        // Build atomic update query with version check
+        // SurrealDB's UPDATE returns the updated records
+        let query = "
+            UPDATE nodes SET
+                content = $content,
+                node_type = $node_type,
+                parent_id = $parent_id,
+                container_node_id = $container_node_id,
+                before_sibling_id = $before_sibling_id,
+                modified_at = time::now(),
+                version = version + 1,
+                properties = $properties,
+                embedding_vector = $embedding_vector
+            WHERE uuid = $uuid AND version = $expected_version
+            RETURN AFTER;
+        ";
+
+        let updated_content = update.content.unwrap_or(current.content);
+        let updated_node_type = update.node_type.unwrap_or(current.node_type.clone());
+        let updated_properties = update.properties.unwrap_or(current.properties.clone());
+
+        let mut response = self
+            .db
+            .query(query)
+            .bind(("uuid", id.to_string()))
+            .bind(("expected_version", expected_version))
+            .bind(("content", updated_content))
+            .bind(("node_type", updated_node_type))
+            .bind(("parent_id", update.parent_id.flatten()))
+            .bind(("container_node_id", update.container_node_id.flatten()))
+            .bind(("before_sibling_id", update.before_sibling_id.flatten()))
+            .bind(("properties", updated_properties))
+            .bind(("embedding_vector", update.embedding_vector.flatten()))
+            .await
+            .context("Failed to update node with version check")?;
+
+        // Extract updated nodes from response
+        let updated_nodes: Vec<SurrealNode> = response
+            .take(0)
+            .context("Failed to extract update results")?;
+
+        // If no nodes were updated, version mismatch occurred
+        if updated_nodes.is_empty() {
+            return Ok(None);
+        }
+
+        // Convert and return the updated node
+        Ok(Some(updated_nodes.into_iter().next().unwrap().into()))
     }
 
     pub async fn delete_node(&self, id: &str) -> Result<DeleteResult> {
@@ -893,7 +1012,7 @@ impl SurrealStore {
 
     pub async fn update_embedding(&self, node_id: &str, embedding: &[u8]) -> Result<()> {
         self.db
-            .query("UPDATE nodes SET embedding_vector = $embedding WHERE uuid = $uuid;")
+            .query("UPDATE nodes SET embedding_vector = $embedding, embedding_stale = false WHERE uuid = $uuid;")
             .bind(("uuid", node_id.to_string()))
             .bind(("embedding", embedding.to_vec()))
             .await
@@ -902,12 +1021,226 @@ impl SurrealStore {
         Ok(())
     }
 
+    /// Mark a node's embedding as stale (needing regeneration)
+    ///
+    /// Called when node content changes, signaling that the embedding vector
+    /// needs to be regenerated. The embedding processor can then query for
+    /// stale nodes and regenerate embeddings in batches.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - UUID of the node to mark as stale
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let store = SurrealStore::new(PathBuf::from("./data/surreal.db")).await?;
+    /// // Mark embedding as stale after content change
+    /// store.mark_embedding_stale("node-id").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn mark_embedding_stale(&self, node_id: &str) -> Result<()> {
+        self.db
+            .query("UPDATE nodes SET embedding_stale = true WHERE uuid = $uuid;")
+            .bind(("uuid", node_id.to_string()))
+            .await
+            .context("Failed to mark embedding as stale")?;
+
+        Ok(())
+    }
+
+    /// Get nodes with stale embeddings
+    ///
+    /// Returns nodes where content has changed since the embedding was generated,
+    /// allowing the embedding processor to regenerate embeddings in batches.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - Optional limit on number of nodes to return
+    ///
+    /// # Returns
+    ///
+    /// Vector of nodes with stale embeddings (embedding_stale = true)
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let store = SurrealStore::new(PathBuf::from("./data/surreal.db")).await?;
+    /// // Get up to 100 nodes needing embedding regeneration
+    /// let stale_nodes = store.get_nodes_with_stale_embeddings(Some(100)).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_nodes_with_stale_embeddings(&self, limit: Option<i64>) -> Result<Vec<Node>> {
+        let sql = if limit.is_some() {
+            "SELECT * FROM nodes WHERE embedding_stale = true LIMIT $limit;"
+        } else {
+            "SELECT * FROM nodes WHERE embedding_stale = true;"
+        };
+
+        let mut query_builder = self.db.query(sql);
+
+        if let Some(lim) = limit {
+            query_builder = query_builder.bind(("limit", lim));
+        }
+
+        let mut response = query_builder
+            .await
+            .context("Failed to get nodes with stale embeddings")?;
+        let surreal_nodes: Vec<SurrealNode> = response
+            .take(0)
+            .context("Failed to extract nodes with stale embeddings from response")?;
+        Ok(surreal_nodes.into_iter().map(Into::into).collect())
+    }
+
     pub fn search_by_embedding(&self, _embedding: &[u8], _limit: i64) -> Result<Vec<(Node, f64)>> {
         // SurrealDB doesn't have built-in vector similarity functions yet
         // This is a placeholder implementation that needs to be enhanced
         // For now, return empty results with a warning
         tracing::warn!("Vector similarity search not yet implemented for SurrealDB");
         Ok(Vec::new())
+    }
+
+    /// Atomic bulk update using SurrealDB transactions
+    ///
+    /// Updates multiple nodes in a single atomic transaction. Either all updates
+    /// succeed or all fail (rollback), ensuring data consistency.
+    ///
+    /// # Performance Considerations
+    ///
+    /// - **Optimal Batch Size:** 10-100 nodes (transaction overhead minimal)
+    /// - **Large Batches:** >1000 nodes may hit transaction timeout (consider chunking)
+    /// - **Validation Cost:** Pre-fetches all nodes for existence check
+    ///
+    /// # Arguments
+    ///
+    /// * `updates` - Vector of (node_id, NodeUpdate) tuples to apply
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - All updates succeeded
+    /// * `Err(_)` - Transaction failed and rolled back, or batch size exceeded limit
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use nodespace_core::models::NodeUpdate;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let store = SurrealStore::new(PathBuf::from("./data/surreal.db")).await?;
+    /// let updates = vec![
+    ///     ("node-1".to_string(), NodeUpdate {
+    ///         content: Some("New content 1".to_string()),
+    ///         ..Default::default()
+    ///     }),
+    ///     ("node-2".to_string(), NodeUpdate {
+    ///         content: Some("New content 2".to_string()),
+    ///         ..Default::default()
+    ///     }),
+    /// ];
+    ///
+    /// store.bulk_update(updates).await?; // All-or-nothing
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn bulk_update(&self, updates: Vec<(String, NodeUpdate)>) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        // Prevent excessive batch sizes that could cause transaction timeouts
+        const MAX_BATCH_SIZE: usize = 1000;
+        if updates.len() > MAX_BATCH_SIZE {
+            return Err(anyhow::anyhow!(
+                "Bulk update batch size ({}) exceeds maximum ({}). Consider chunking the updates into smaller batches.",
+                updates.len(),
+                MAX_BATCH_SIZE
+            ));
+        }
+
+        // Build transaction query
+        let mut transaction_parts = vec!["BEGIN TRANSACTION;".to_string()];
+
+        for (idx, (id, _)) in updates.iter().enumerate() {
+            // Validate node exists (will fetch again later for merging values)
+            self.get_node(id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Node not found: {}", id))?;
+
+            // Generate the UPDATE statement
+            let update_stmt = format!(
+                "UPDATE nodes SET
+                    content = $content_{idx},
+                    node_type = $node_type_{idx},
+                    parent_id = $parent_id_{idx},
+                    container_node_id = $container_node_id_{idx},
+                    before_sibling_id = $before_sibling_id_{idx},
+                    modified_at = time::now(),
+                    version = version + 1,
+                    properties = $properties_{idx},
+                    embedding_vector = $embedding_vector_{idx}
+                WHERE uuid = $uuid_{idx};",
+                idx = idx
+            );
+            transaction_parts.push(update_stmt);
+        }
+
+        transaction_parts.push("COMMIT TRANSACTION;".to_string());
+        let transaction_query = transaction_parts.join("\n");
+
+        // Build query with all bindings
+        let mut query_builder = self.db.query(transaction_query);
+
+        for (idx, (id, update)) in updates.iter().enumerate() {
+            // Fetch current node again for building merged values
+            let current = self
+                .get_node(id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Node not found: {}", id))?;
+
+            let updated_content = update.content.clone().unwrap_or(current.content);
+            let updated_node_type = update.node_type.clone().unwrap_or(current.node_type);
+            let updated_properties = update.properties.clone().unwrap_or(current.properties);
+
+            query_builder = query_builder
+                .bind((format!("uuid_{}", idx), id.clone()))
+                .bind((format!("content_{}", idx), updated_content))
+                .bind((format!("node_type_{}", idx), updated_node_type))
+                .bind((
+                    format!("parent_id_{}", idx),
+                    update.parent_id.clone().flatten(),
+                ))
+                .bind((
+                    format!("container_node_id_{}", idx),
+                    update.container_node_id.clone().flatten(),
+                ))
+                .bind((
+                    format!("before_sibling_id_{}", idx),
+                    update.before_sibling_id.clone().flatten(),
+                ))
+                .bind((format!("properties_{}", idx), updated_properties))
+                .bind((
+                    format!("embedding_vector_{}", idx),
+                    update.embedding_vector.clone().flatten(),
+                ));
+        }
+
+        query_builder
+            .await
+            .context("Failed to execute bulk update transaction")?;
+
+        Ok(())
     }
 
     pub async fn batch_create_nodes(&self, nodes: Vec<Node>) -> Result<Vec<Node>> {

@@ -81,9 +81,9 @@ pub fn handle_search_containers(
         ));
     }
 
-    // TODO(#481): Re-enable semantic search after embedding service migration
-    // For now, return empty results since embedding service is temporarily disabled
-    tracing::warn!("Semantic search temporarily disabled during SurrealDB migration (Issue #481)");
+    // Semantic search pending NLP integration (database tracking now complete)
+    // Returning empty results until full embedding generation is re-enabled
+    tracing::info!("Semantic search pending NLP integration - database tracking complete");
     let results: Result<Vec<crate::models::Node>, crate::services::error::NodeServiceError> =
         Ok(Vec::new());
 

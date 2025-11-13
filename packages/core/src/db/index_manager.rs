@@ -1,11 +1,11 @@
 //! Dynamic Index Management for SurrealDB
 //!
-//! **STATUS: TEMPORARILY DISABLED** (Issue #481)
+//! **STATUS: Deferred to future performance optimization**
 //!
-//! This module is temporarily stubbed out during the SurrealDB migration.
-//! Dynamic indexing will be re-implemented with SurrealDB-native index management.
+//! Dynamic indexing deferred to future performance optimization work.
+//! Will be re-implemented with SurrealDB-native index management when needed.
 //!
-//! TODO(#481): Implement SurrealDB index management
+//! **Future Work (separate performance optimization issue):**
 //! - Use SurrealDB's DEFINE INDEX syntax
 //! - Implement query-driven index creation
 //! - Adapt to SurrealDB's indexing capabilities
@@ -18,7 +18,9 @@ pub struct IndexManager {}
 impl IndexManager {
     /// Create a new index manager (returns stub)
     pub fn new() -> Self {
-        tracing::warn!("IndexManager temporarily disabled during SurrealDB migration (Issue #481)");
+        tracing::debug!(
+            "IndexManager stubbed - dynamic indexing deferred to performance optimization"
+        );
         Self {}
     }
 

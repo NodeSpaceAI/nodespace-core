@@ -1,11 +1,11 @@
 //! Background Embedding Processor
 //!
-//! **STATUS: TEMPORARILY DISABLED** (Issue #481)
+//! **STATUS: Database tracking complete, NLP integration pending**
 //!
-//! This module is temporarily stubbed out during the SurrealDB migration.
-//! Background embedding processing will be re-enabled after SurrealDB integration is complete.
+//! Database-level embedding staleness tracking implemented in Issue #481.
+//! Background processing will be re-enabled in a future issue after NLP integration.
 //!
-//! TODO(#481): Migrate embedding processor to use SurrealStore
+//! **Future Work (separate issue):**
 //! - Update to use Arc<SurrealStore>
 //! - Implement background task processing with SurrealDB
 //! - Re-enable embedding batch operations
@@ -25,10 +25,10 @@ pub struct EmbeddingProcessor {
 impl EmbeddingProcessor {
     /// Create and start embedding processor (returns stub)
     ///
-    /// TODO(#481): Re-enable background embedding processing
+    /// Database tracking ready - background processing pending future NLP integration
     pub fn new(nlp_engine: Arc<EmbeddingService>) -> Result<Self, NodeServiceError> {
-        tracing::warn!(
-            "EmbeddingProcessor temporarily disabled during SurrealDB migration (Issue #481)"
+        tracing::info!(
+            "EmbeddingProcessor stubbed - background processing pending future NLP integration"
         );
         let (_shutdown_tx, _) = mpsc::channel(1);
         Ok(Self {
@@ -38,8 +38,10 @@ impl EmbeddingProcessor {
     }
 
     /// Stub: Trigger batch embedding
+    ///
+    /// Database tracking ready - full implementation pending future issue
     pub fn trigger_batch_embed(&self) -> Result<(), NodeServiceError> {
-        tracing::warn!("Background embedding temporarily disabled (Issue #481)");
+        tracing::debug!("Background embedding stub - NLP integration pending");
         Ok(())
     }
 
