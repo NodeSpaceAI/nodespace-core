@@ -128,7 +128,7 @@ async fn init_database(
     use nodespace_core::{NodeService, SurrealStore};
     let new_store = SurrealStore::new(db_path.clone())
         .await
-        .map_err(|e| HttpError::from_anyhow(e.into(), "DATABASE_INIT_ERROR"))?;
+        .map_err(|e| HttpError::from_anyhow(e, "DATABASE_INIT_ERROR"))?;
 
     let new_store_arc = Arc::new(new_store);
 

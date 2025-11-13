@@ -12,7 +12,7 @@
 //! - Child node content updates mark parent containers as stale
 //! - Node moves between containers mark both old and new containers as stale
 
-#[cfg(all(test))]
+#[cfg(test)]
 #[cfg_attr(test, allow(dead_code, unused_imports))]
 mod disabled_embedding_tests {
     // These tests are temporarily disabled - see issue #481
@@ -36,36 +36,25 @@ mod disabled_embedding_tests {
     }
 
     /// Helper to check if a node is marked as stale in the database
-    async fn is_node_stale(
-        store: &SurrealStore,
-        node_id: &str,
+    /// TODO: Re-implement with SurrealDB queries when embedding tests are re-enabled (Issue #481)
+    #[allow(dead_code)]
+    fn is_node_stale(
+        _store: &SurrealStore,
+        _node_id: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let conn = store.connect_with_timeout().await?;
-        let mut stmt = conn
-            .prepare("SELECT embedding_stale FROM nodes WHERE id = ?")
-            .await?;
-        let mut rows = stmt.query([node_id]).await?;
-
-        if let Some(row) = rows.next().await? {
-            let stale: bool = row.get(0)?;
-            Ok(stale)
-        } else {
-            Err("Node not found".into())
-        }
+        // Disabled during SurrealDB migration
+        unimplemented!("Embedding staleness tests temporarily disabled - see Issue #481")
     }
 
     /// Helper to mark a node as not stale (simulating successful embedding)
-    async fn mark_not_stale(
-        store: &SurrealStore,
-        node_id: &str,
+    /// TODO: Re-implement with SurrealDB queries when embedding tests are re-enabled (Issue #481)
+    #[allow(dead_code)]
+    fn mark_not_stale(
+        _store: &SurrealStore,
+        _node_id: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let conn = store.connect_with_timeout().await?;
-        conn.execute(
-            "UPDATE nodes SET embedding_stale = FALSE WHERE id = ?",
-            [node_id],
-        )
-        .await?;
-        Ok(())
+        // Disabled during SurrealDB migration
+        unimplemented!("Embedding staleness tests temporarily disabled - see Issue #481")
     }
 
     #[tokio::test]
@@ -84,7 +73,7 @@ mod disabled_embedding_tests {
         service.create_node(container_node).await.unwrap();
 
         // Verify container node is marked as stale
-        let is_stale = is_node_stale(&store, &container_id).await.unwrap();
+        let is_stale = is_node_stale(&store, &container_id).unwrap();
         assert!(
             is_stale,
             "Container node should be marked as stale on creation"
@@ -114,7 +103,7 @@ mod disabled_embedding_tests {
         service.create_node(child_node).await.unwrap();
 
         // Verify child node is NOT marked as stale (only containers need embeddings)
-        let is_stale = is_node_stale(&store, &child_id).await.unwrap();
+        let is_stale = is_node_stale(&store, &child_id).unwrap();
         assert!(
             !is_stale,
             "Child node should NOT be marked as stale on creation"
@@ -134,17 +123,17 @@ mod disabled_embedding_tests {
         );
         let container_id = container_node.id.clone();
         service.create_node(container_node).await.unwrap();
-        mark_not_stale(&store, &container_id).await.unwrap();
+        mark_not_stale(&store, &container_id).unwrap();
 
         // Verify it's not stale before update
-        assert!(!is_node_stale(&store, &container_id).await.unwrap());
+        assert!(!is_node_stale(&store, &container_id).unwrap());
 
         // Update container content
         let update = NodeUpdate::new().with_content("Updated content".to_string());
         service.update_node(&container_id, update).await.unwrap();
 
         // Verify container is now marked as stale
-        let is_stale = is_node_stale(&store, &container_id).await.unwrap();
+        let is_stale = is_node_stale(&store, &container_id).unwrap();
         assert!(
             is_stale,
             "Container should be marked as stale after content update"
@@ -160,7 +149,7 @@ mod disabled_embedding_tests {
             Node::new("text".to_string(), "Container".to_string(), None, json!({}));
         let container_id = container_node.id.clone();
         service.create_node(container_node).await.unwrap();
-        mark_not_stale(&store, &container_id).await.unwrap();
+        mark_not_stale(&store, &container_id).unwrap();
 
         // Create child inside container
         let mut child_node = Node::new(
@@ -174,14 +163,14 @@ mod disabled_embedding_tests {
         service.create_node(child_node).await.unwrap();
 
         // Verify container is not stale before child update
-        assert!(!is_node_stale(&store, &container_id).await.unwrap());
+        assert!(!is_node_stale(&store, &container_id).unwrap());
 
         // Update child content
         let update = NodeUpdate::new().with_content("Updated child content".to_string());
         service.update_node(&child_id, update).await.unwrap();
 
         // Verify parent container is now marked as stale
-        let is_stale = is_node_stale(&store, &container_id).await.unwrap();
+        let is_stale = is_node_stale(&store, &container_id).unwrap();
         assert!(
             is_stale,
             "Parent container should be marked as stale when child content changes"
@@ -201,7 +190,7 @@ mod disabled_embedding_tests {
         );
         let container1_id = container1.id.clone();
         service.create_node(container1).await.unwrap();
-        mark_not_stale(&store, &container1_id).await.unwrap();
+        mark_not_stale(&store, &container1_id).unwrap();
 
         let container2 = Node::new(
             "text".to_string(),
@@ -211,7 +200,7 @@ mod disabled_embedding_tests {
         );
         let container2_id = container2.id.clone();
         service.create_node(container2).await.unwrap();
-        mark_not_stale(&store, &container2_id).await.unwrap();
+        mark_not_stale(&store, &container2_id).unwrap();
 
         // Create a child node in container1
         let mut child_node = Node::new(
@@ -225,8 +214,8 @@ mod disabled_embedding_tests {
         service.create_node(child_node).await.unwrap();
 
         // Verify both containers are not stale before move
-        assert!(!is_node_stale(&store, &container1_id).await.unwrap());
-        assert!(!is_node_stale(&store, &container2_id).await.unwrap());
+        assert!(!is_node_stale(&store, &container1_id).unwrap());
+        assert!(!is_node_stale(&store, &container2_id).unwrap());
 
         // Move child from container1 to container2
         let mut update = NodeUpdate::new();
@@ -234,8 +223,8 @@ mod disabled_embedding_tests {
         service.update_node(&child_id, update).await.unwrap();
 
         // Verify BOTH old and new containers are marked as stale
-        let container1_stale = is_node_stale(&store, &container1_id).await.unwrap();
-        let container2_stale = is_node_stale(&store, &container2_id).await.unwrap();
+        let container1_stale = is_node_stale(&store, &container1_id).unwrap();
+        let container2_stale = is_node_stale(&store, &container2_id).unwrap();
 
         assert!(
             container1_stale,
@@ -256,7 +245,7 @@ mod disabled_embedding_tests {
             Node::new("text".to_string(), "Container".to_string(), None, json!({}));
         let container_id = container_node.id.clone();
         service.create_node(container_node).await.unwrap();
-        mark_not_stale(&store, &container_id).await.unwrap();
+        mark_not_stale(&store, &container_id).unwrap();
 
         // Create child inside container
         let mut child_node = Node::new(
@@ -270,14 +259,14 @@ mod disabled_embedding_tests {
         service.create_node(child_node).await.unwrap();
 
         // Verify container is not stale
-        assert!(!is_node_stale(&store, &container_id).await.unwrap());
+        assert!(!is_node_stale(&store, &container_id).unwrap());
 
         // Update child properties (NOT content)
         let update = NodeUpdate::new().with_properties(json!({"key": "value"}));
         service.update_node(&child_id, update).await.unwrap();
 
         // Verify parent container is still NOT stale (only content changes matter)
-        let is_stale = is_node_stale(&store, &container_id).await.unwrap();
+        let is_stale = is_node_stale(&store, &container_id).unwrap();
         assert!(
             !is_stale,
             "Parent container should NOT be marked as stale for non-content child updates"
@@ -300,7 +289,7 @@ mod disabled_embedding_tests {
         service.create_node(task_container).await.unwrap();
 
         // Verify task node is marked as stale (because it's a container)
-        let is_stale = is_node_stale(&store, &task_id).await.unwrap();
+        let is_stale = is_node_stale(&store, &task_id).unwrap();
         assert!(
             is_stale,
             "ANY node type at root level (container_node_id IS NULL) should be marked as stale"
@@ -317,7 +306,7 @@ mod disabled_embedding_tests {
         service.create_node(child).await.unwrap();
 
         // Verify child is NOT marked as stale (even though it's type "text")
-        let is_stale = is_node_stale(&store, &child_id).await.unwrap();
+        let is_stale = is_node_stale(&store, &child_id).unwrap();
         assert!(
             !is_stale,
             "Node with container_node_id should NOT be marked as stale, regardless of type"
@@ -333,7 +322,7 @@ mod disabled_embedding_tests {
             Node::new("text".to_string(), "Container".to_string(), None, json!({}));
         let container_id = container_node.id.clone();
         service.create_node(container_node).await.unwrap();
-        mark_not_stale(&store, &container_id).await.unwrap();
+        mark_not_stale(&store, &container_id).unwrap();
 
         // Create multiple children
         let mut child1 = Node::new("text".to_string(), "Child 1".to_string(), None, json!({}));
@@ -351,10 +340,10 @@ mod disabled_embedding_tests {
         service.update_node(&child1_id, update).await.unwrap();
 
         // Verify container is stale
-        assert!(is_node_stale(&store, &container_id).await.unwrap());
+        assert!(is_node_stale(&store, &container_id).unwrap());
 
         // Mark container as not stale again
-        mark_not_stale(&store, &container_id).await.unwrap();
+        mark_not_stale(&store, &container_id).unwrap();
 
         // Update second child
         let update = NodeUpdate::new().with_content("Updated child 2".to_string());
@@ -362,7 +351,7 @@ mod disabled_embedding_tests {
 
         // Verify container is stale again
         assert!(
-            is_node_stale(&store, &container_id).await.unwrap(),
+            is_node_stale(&store, &container_id).unwrap(),
             "Container should be marked stale for each child content update"
         );
     }

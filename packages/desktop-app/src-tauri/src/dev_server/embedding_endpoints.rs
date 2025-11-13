@@ -217,27 +217,19 @@ async fn batch_generate_embeddings(
         ));
     }
 
-    let embedding_service = get_embedding_service(&state)?;
+    let _embedding_service = get_embedding_service(&state)?;
 
-    let mut success_count = 0;
+    let success_count = 0;
     let mut failed_embeddings = Vec::new();
 
-    // Process each container ID and generate embeddings
-    // TODO: Consider using futures::future::join_all for parallel processing to improve performance
-    // Sequential processing is acceptable for now and ensures proper error tracking per container
+    // TODO(Issue #481): Re-implement with SurrealDB - embedding service API changed during migration
+    // Temporarily disabled - embedding service methods no longer async and signatures changed
+    tracing::warn!("Batch embedding temporarily disabled during SurrealDB migration (Issue #481)");
     for container_id in payload.container_ids {
-        match embedding_service.embed_container(&container_id).await {
-            Ok(()) => {
-                success_count += 1;
-            }
-            Err(e) => {
-                tracing::error!("Failed to generate embedding for {}: {:?}", container_id, e);
-                failed_embeddings.push(crate::commands::embeddings::BatchEmbeddingError {
-                    container_id: container_id.clone(),
-                    error: e.to_string(),
-                });
-            }
-        }
+        failed_embeddings.push(crate::commands::embeddings::BatchEmbeddingError {
+            container_id: container_id.clone(),
+            error: "Embedding service temporarily disabled during SurrealDB migration".to_string(),
+        });
     }
 
     tracing::info!(
@@ -273,18 +265,13 @@ struct BatchGenerateRequest {
 async fn get_stale_container_count(
     State(state): State<AppState>,
 ) -> Result<Json<usize>, HttpError> {
-    let embedding_service = get_embedding_service(&state)?;
+    let _embedding_service = get_embedding_service(&state)?;
 
-    // Get stale containers
-    let containers = embedding_service
-        .get_all_stale_containers()
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to get stale containers: {:?}", e);
-            HttpError::new(format!("Stale count failed: {}", e), "STALE_COUNT_FAILED")
-        })?;
-
-    Ok(Json(containers.len()))
+    // TODO(Issue #481): Re-implement with SurrealDB - method removed during migration
+    tracing::warn!(
+        "Stale container count temporarily disabled during SurrealDB migration (Issue #481)"
+    );
+    Ok(Json(0))
 }
 
 /// Smart trigger: Topic closed/unfocused
@@ -317,20 +304,12 @@ async fn on_container_closed(
         ));
     }
 
-    let embedding_service = get_embedding_service(&state)?;
+    let _embedding_service = get_embedding_service(&state)?;
 
-    // Handle container closed event
-    embedding_service
-        .on_container_closed(&payload.container_id)
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                "Topic close handler failed for {}: {:?}",
-                payload.container_id,
-                e
-            );
-            HttpError::new(format!("Topic close failed: {}", e), "TOPIC_CLOSE_FAILED")
-        })?;
+    // TODO(Issue #481): Re-implement with SurrealDB - method removed during migration
+    tracing::warn!(
+        "Container closed handler temporarily disabled during SurrealDB migration (Issue #481)"
+    );
 
     Ok(StatusCode::OK)
 }
@@ -369,20 +348,13 @@ async fn on_container_idle(
         ));
     }
 
-    let embedding_service = get_embedding_service(&state)?;
+    let _embedding_service = get_embedding_service(&state)?;
 
-    // Handle idle timeout
-    let was_embedded = embedding_service
-        .on_idle_timeout(&payload.container_id)
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                "Idle timeout handler failed for {}: {:?}",
-                payload.container_id,
-                e
-            );
-            HttpError::new(format!("Idle timeout failed: {}", e), "IDLE_TIMEOUT_FAILED")
-        })?;
+    // TODO(Issue #481): Re-implement with SurrealDB - method removed during migration
+    tracing::warn!(
+        "Idle timeout handler temporarily disabled during SurrealDB migration (Issue #481)"
+    );
+    let was_embedded = false;
 
     Ok(Json(was_embedded))
 }
@@ -402,18 +374,13 @@ async fn on_container_idle(
 /// curl -X POST http://localhost:3001/api/embeddings/sync
 /// ```
 async fn sync_embeddings(State(state): State<AppState>) -> Result<Json<usize>, HttpError> {
-    let embedding_service = get_embedding_service(&state)?;
+    let _embedding_service = get_embedding_service(&state)?;
 
-    // Sync all stale containers
-    let count = embedding_service
-        .sync_all_stale_containers()
-        .await
-        .map_err(|e| {
-            tracing::error!("Sync all stale containers failed: {:?}", e);
-            HttpError::new(format!("Sync failed: {}", e), "SYNC_FAILED")
-        })?;
-
-    Ok(Json(count))
+    // TODO(Issue #481): Re-implement with SurrealDB - method removed during migration
+    tracing::warn!(
+        "Sync all stale containers temporarily disabled during SurrealDB migration (Issue #481)"
+    );
+    Ok(Json(0))
 }
 
 /// Request body for topic ID operations

@@ -50,6 +50,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 use surrealdb::engine::local::{Db, RocksDb};
+use surrealdb::sql::{Id, Thing};
 use surrealdb::Surreal;
 
 /// Internal struct matching SurrealDB's schema with 'uuid' field
@@ -542,10 +543,30 @@ impl SurrealStore {
         target_id: &str,
         container_id: &str,
     ) -> Result<()> {
+        // Get node types to construct proper Record IDs
+        let source_node = self
+            .get_node(source_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Source node not found: {}", source_id))?;
+        let target_node = self
+            .get_node(target_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Target node not found: {}", target_id))?;
+
+        // Construct Thing objects for proper Record ID binding
+        let source_record_id = Self::to_record_id(&source_node.node_type, &source_node.id);
+        let target_record_id = Self::to_record_id(&target_node.node_type, &target_node.id);
+
+        let source_thing = Thing::from(("nodes", Id::String(source_record_id)));
+        let target_thing = Thing::from(("nodes", Id::String(target_record_id)));
+
+        // RELATE statement using Thing objects
+        let query = "RELATE $source->mentions->$target CONTENT { container_id: $container_id };";
+
         self.db
-            .query("RELATE $source->mentions->$target CONTENT { container_id: $container_id };")
-            .bind(("source", source_id.to_string()))
-            .bind(("target", target_id.to_string()))
+            .query(query)
+            .bind(("source", source_thing))
+            .bind(("target", target_thing))
             .bind(("container_id", container_id.to_string()))
             .await
             .context("Failed to create mention")?;
@@ -554,10 +575,27 @@ impl SurrealStore {
     }
 
     pub async fn delete_mention(&self, source_id: &str, target_id: &str) -> Result<()> {
+        // Get node types to construct proper Record IDs
+        let source_node = self
+            .get_node(source_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Source node not found: {}", source_id))?;
+        let target_node = self
+            .get_node(target_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Target node not found: {}", target_id))?;
+
+        // Construct Thing objects for proper Record ID binding
+        let source_record_id = Self::to_record_id(&source_node.node_type, &source_node.id);
+        let target_record_id = Self::to_record_id(&target_node.node_type, &target_node.id);
+
+        let source_thing = Thing::from(("nodes", Id::String(source_record_id)));
+        let target_thing = Thing::from(("nodes", Id::String(target_record_id)));
+
         self.db
             .query("DELETE FROM mentions WHERE in = $source AND out = $target;")
-            .bind(("source", source_id.to_string()))
-            .bind(("target", target_id.to_string()))
+            .bind(("source", source_thing))
+            .bind(("target", target_thing))
             .await
             .context("Failed to delete mention")?;
 
@@ -565,47 +603,107 @@ impl SurrealStore {
     }
 
     pub async fn get_outgoing_mentions(&self, node_id: &str) -> Result<Vec<String>> {
-        let query = "SELECT out FROM mentions WHERE in = $node_id;";
+        // Get node type to construct proper Record ID
+        let node = self
+            .get_node(node_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Node not found: {}", node_id))?;
+
+        // Construct Thing for proper Record ID binding
+        let record_id = Self::to_record_id(&node.node_type, &node.id);
+        let thing = Thing::from(("nodes", Id::String(record_id)));
+
+        let query = "SELECT out FROM mentions WHERE in = $node_thing;";
         let mut response = self
             .db
             .query(query)
-            .bind(("node_id", node_id.to_string()))
+            .bind(("node_thing", thing))
             .await
             .context("Failed to get outgoing mentions")?;
 
-        let results: Vec<Value> = response
+        #[derive(Debug, Deserialize)]
+        struct MentionOut {
+            out: Thing,
+        }
+
+        let results: Vec<MentionOut> = response
             .take(0)
             .context("Failed to extract outgoing mentions from response")?;
+
+        // Extract UUIDs from Thing Record IDs
+        // Thing.id is Id::String("node_type:uuid"), so we need to extract just the UUID part
         Ok(results
             .into_iter()
-            .filter_map(|v| v.get("out").and_then(|o| o.as_str().map(String::from)))
+            .filter_map(|m| {
+                if let Id::String(id_str) = &m.out.id {
+                    // id_str format: "node_type:uuid", extract UUID (after last colon)
+                    id_str.split(':').nth(1).map(String::from)
+                } else {
+                    None
+                }
+            })
             .collect())
     }
 
     pub async fn get_incoming_mentions(&self, node_id: &str) -> Result<Vec<String>> {
-        let query = "SELECT in FROM mentions WHERE out = $node_id;";
+        // Get node type to construct proper Record ID
+        let node = self
+            .get_node(node_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Node not found: {}", node_id))?;
+
+        // Construct Thing for proper Record ID binding
+        let record_id = Self::to_record_id(&node.node_type, &node.id);
+        let thing = Thing::from(("nodes", Id::String(record_id)));
+
+        let query = "SELECT in FROM mentions WHERE out = $node_thing;";
         let mut response = self
             .db
             .query(query)
-            .bind(("node_id", node_id.to_string()))
+            .bind(("node_thing", thing))
             .await
             .context("Failed to get incoming mentions")?;
 
-        let results: Vec<Value> = response
+        #[derive(Debug, Deserialize)]
+        struct MentionIn {
+            #[serde(rename = "in")]
+            in_field: Thing,
+        }
+
+        let results: Vec<MentionIn> = response
             .take(0)
             .context("Failed to extract incoming mentions from response")?;
+
+        // Extract UUIDs from Thing Record IDs
         Ok(results
             .into_iter()
-            .filter_map(|v| v.get("in").and_then(|i| i.as_str().map(String::from)))
+            .filter_map(|m| {
+                if let Id::String(id_str) = &m.in_field.id {
+                    // id_str format: "node_type:uuid", extract UUID (after first colon)
+                    id_str.split(':').nth(1).map(String::from)
+                } else {
+                    None
+                }
+            })
             .collect())
     }
 
     pub async fn get_mentioning_containers(&self, node_id: &str) -> Result<Vec<Node>> {
-        let query = "SELECT DISTINCT container_id FROM mentions WHERE out = $node_id;";
+        // Get node type to construct proper Record ID
+        let node = self
+            .get_node(node_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Node not found: {}", node_id))?;
+
+        // Construct Thing for proper Record ID binding
+        let record_id = Self::to_record_id(&node.node_type, &node.id);
+        let thing = Thing::from(("nodes", Id::String(record_id)));
+
+        let query = "SELECT DISTINCT container_id FROM mentions WHERE out = $node_thing;";
         let mut response = self
             .db
             .query(query)
-            .bind(("node_id", node_id.to_string()))
+            .bind(("node_thing", thing))
             .await
             .context("Failed to get mentioning containers")?;
 
