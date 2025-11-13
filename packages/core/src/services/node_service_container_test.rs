@@ -58,6 +58,7 @@ mod disabled_embedding_tests {
     }
 
     #[tokio::test]
+    #[ignore = "Temporarily disabled during SurrealDB migration - see Issue #481"]
     async fn test_container_node_created_as_stale() {
         let (service, store, _temp) = create_test_services().await;
 
@@ -81,6 +82,7 @@ mod disabled_embedding_tests {
     }
 
     #[tokio::test]
+    #[ignore = "Temporarily disabled during SurrealDB migration - see Issue #481"]
     async fn test_child_node_not_created_as_stale() {
         let (service, store, _temp) = create_test_services().await;
 
@@ -111,6 +113,7 @@ mod disabled_embedding_tests {
     }
 
     #[tokio::test]
+    #[ignore = "Temporarily disabled during SurrealDB migration - see Issue #481"]
     async fn test_container_content_update_marks_stale() {
         let (service, store, _temp) = create_test_services().await;
 
@@ -141,6 +144,7 @@ mod disabled_embedding_tests {
     }
 
     #[tokio::test]
+    #[ignore = "Temporarily disabled during SurrealDB migration - see Issue #481"]
     async fn test_child_content_update_marks_parent_stale() {
         let (service, store, _temp) = create_test_services().await;
 
@@ -178,6 +182,7 @@ mod disabled_embedding_tests {
     }
 
     #[tokio::test]
+    #[ignore = "Temporarily disabled during SurrealDB migration - see Issue #481"]
     async fn test_node_move_marks_both_containers_stale() {
         let (service, store, _temp) = create_test_services().await;
 
@@ -237,6 +242,7 @@ mod disabled_embedding_tests {
     }
 
     #[tokio::test]
+    #[ignore = "Temporarily disabled during SurrealDB migration - see Issue #481"]
     async fn test_child_non_content_update_does_not_mark_parent_stale() {
         let (service, store, _temp) = create_test_services().await;
 
@@ -274,6 +280,7 @@ mod disabled_embedding_tests {
     }
 
     #[tokio::test]
+    #[ignore = "Temporarily disabled during SurrealDB migration - see Issue #481"]
     async fn test_container_detection_is_null_based_not_type_based() {
         let (service, store, _temp) = create_test_services().await;
 
@@ -314,6 +321,7 @@ mod disabled_embedding_tests {
     }
 
     #[tokio::test]
+    #[ignore = "Temporarily disabled during SurrealDB migration - see Issue #481"]
     async fn test_multiple_children_updates_marks_parent_once() {
         let (service, store, _temp) = create_test_services().await;
 

@@ -1464,10 +1464,21 @@ Regular text after code."#;
             .await
             .unwrap();
 
+        // Verify all expected content is present (order not guaranteed since order_by not implemented yet)
         assert_eq!(children.len(), 3);
-        assert!(children[0].content.contains("New item 1"));
-        assert!(children[1].content.contains("New item 2"));
-        assert!(children[2].content.contains("New item 3"));
+        let contents: Vec<&str> = children.iter().map(|n| n.content.as_str()).collect();
+        assert!(
+            contents.iter().any(|c| c.contains("New item 1")),
+            "Missing 'New item 1'"
+        );
+        assert!(
+            contents.iter().any(|c| c.contains("New item 2")),
+            "Missing 'New item 2'"
+        );
+        assert!(
+            contents.iter().any(|c| c.contains("New item 3")),
+            "Missing 'New item 3'"
+        );
     }
 
     #[tokio::test]

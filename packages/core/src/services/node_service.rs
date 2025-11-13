@@ -856,11 +856,16 @@ impl NodeService {
             }
         }
 
-        // Get container ID (or use node ID if it's a container itself)
-        let container_id = mentioning_node
-            .container_node_id
-            .as_deref()
-            .unwrap_or(mentioning_node_id);
+        // Get container ID with special handling for tasks
+        // Tasks are always treated as their own containers (exception rule)
+        let container_id = if mentioning_node.node_type == "task" {
+            mentioning_node_id
+        } else {
+            mentioning_node
+                .container_node_id
+                .as_deref()
+                .unwrap_or(mentioning_node_id)
+        };
 
         self.store
             .create_mention(mentioning_node_id, mentioned_node_id, container_id)
@@ -1795,13 +1800,43 @@ impl NodeService {
             );
         }
 
-        // Convert NodeFilter to NodeQuery
-        // TODO(#481): parent_id and container_node_id not yet supported in NodeQuery
-        // These filters will be ignored in Phase 2
-        if filter.parent_id.is_some() || filter.container_node_id.is_some() {
-            tracing::debug!("query_nodes: parent_id/container_node_id filters not yet supported (Phase 2 limitation)");
+        // Handle parent_id filter using dedicated method
+        if let Some(ref parent_id) = filter.parent_id {
+            let nodes = self
+                .store
+                .get_children(Some(parent_id))
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+            // Apply migrations and return
+            let mut migrated_nodes = Vec::new();
+            for mut node in nodes {
+                self.backfill_schema_version(&mut node).await?;
+                self.apply_lazy_migration(&mut node).await?;
+                migrated_nodes.push(node);
+            }
+            return Ok(migrated_nodes);
         }
 
+        // Handle container_node_id filter using dedicated method
+        if let Some(ref container_id) = filter.container_node_id {
+            let nodes = self
+                .store
+                .get_nodes_by_container(container_id)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+            // Apply migrations and return
+            let mut migrated_nodes = Vec::new();
+            for mut node in nodes {
+                self.backfill_schema_version(&mut node).await?;
+                self.apply_lazy_migration(&mut node).await?;
+                migrated_nodes.push(node);
+            }
+            return Ok(migrated_nodes);
+        }
+
+        // Convert NodeFilter to NodeQuery for other cases
         let query = crate::models::NodeQuery {
             id: None,
             node_type: filter.node_type,
