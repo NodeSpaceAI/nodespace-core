@@ -4,10 +4,6 @@ pub mod commands;
 // Shared constants
 pub mod constants;
 
-// HTTP dev server module (feature-gated for development only)
-#[cfg(feature = "dev-server")]
-pub mod dev_server;
-
 // MCP Tauri integration (wraps core MCP with event emissions)
 pub mod mcp_integration;
 

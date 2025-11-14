@@ -9,6 +9,7 @@
     "dev:check": "bun run scripts/check-dev-deps.ts",
     "dev:db": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info file://.nodespace/dev.db",
     "dev:db:memory": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info memory",
+    "dev:db:init": "bun run scripts/init-surrealdb.ts",
     "dev:frontend": "bunx vite dev",
     "dev": "bun run dev:check && bunx concurrently --names \"DB,UI\" --prefix-colors \"blue,green\" \"bun run dev:db\" \"bun run dev:frontend\"",
     "dev:web": "bunx vite dev --port 1421",
@@ -35,8 +36,7 @@
     "build:analyze": "bun run build && bun run analyze",
     "tauri": "bunx tauri",
     "tauri:dev": "bunx tauri dev -- --bin nodespace-app",
-    "tauri:build": "bunx tauri build",
-    "dev:server": "cd src-tauri && cargo run --bin dev-server --features dev-server"
+    "tauri:build": "bunx tauri build"
   },
   "license": "MIT",
   "dependencies": {
