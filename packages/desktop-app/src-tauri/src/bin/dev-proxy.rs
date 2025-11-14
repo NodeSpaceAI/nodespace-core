@@ -24,6 +24,7 @@ use axum::{
     routing::{delete, get, patch, post},
     Router,
 };
+use chrono::Utc;
 use nodespace_core::{
     db::HttpStore,
     models::{Node, NodeFilter, NodeUpdate},
@@ -32,6 +33,7 @@ use nodespace_core::{
 use serde::Deserialize;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
+use uuid::Uuid;
 
 // Type alias for HTTP client NodeService
 type HttpNodeService = NodeService<surrealdb::engine::remote::http::Client>;
@@ -65,6 +67,58 @@ struct UpdateNodeRequest {
 struct MentionRequest {
     pub source_id: String,
     pub target_id: String,
+}
+
+/// Create node request for POST /api/nodes endpoint
+///
+/// The frontend sends a partial node representation containing only the business data.
+/// The backend is responsible for adding infrastructure fields (timestamps, version).
+///
+/// # Field Semantics
+///
+/// - `id`: Optional UUID. If omitted, backend generates a new UUID.
+///   For deterministic IDs (e.g., date nodes use "YYYY-MM-DD"),
+///   the frontend MUST provide this field.
+/// - `node_type`: Required. Must be a registered node type (e.g., "text", "task", "date").
+/// - `content`: Primary text content. MAY be empty string (Issue #484 - blank nodes allowed).
+/// - `parent_id`: Optional parent node for hierarchical relationships.
+/// - `container_node_id`: Optional container for spatial/collection relationships.
+/// - `before_sibling_id`: Optional sibling for ordering within parent.
+/// - `properties`: Schema-driven JSON properties. Backend applies default values if schema exists.
+/// - `embedding_vector`: Optional vector for semantic search (currently unused).
+/// - `mentions`: Outgoing references to other nodes. `mentioned_by` is computed server-side
+///   and NOT accepted here (it's the inverse relationship).
+///
+/// # Validation
+///
+/// Backend performs two-stage validation:
+/// 1. Core behavior validation (via `NodeService.behaviors.validate_node()`)
+/// 2. Schema validation (via `NodeService.validate_node_against_schema()`)
+///
+/// # Example
+///
+/// ```json
+/// {
+///   "nodeType": "text",
+///   "content": "",
+///   "parentId": "550e8400-e29b-41d4-a716-446655440000",
+///   "properties": {},
+///   "mentions": []
+/// }
+/// ```
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateNodeRequest {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub node_type: String,
+    pub content: String,
+    pub parent_id: Option<String>,
+    pub container_node_id: Option<String>,
+    pub before_sibling_id: Option<String>,
+    pub properties: serde_json::Value,
+    pub embedding_vector: Option<Vec<u8>>,
+    pub mentions: Vec<String>,
 }
 
 #[tokio::main]
@@ -186,7 +240,29 @@ async fn init_database() -> Json<serde_json::Value> {
     }))
 }
 
-async fn create_node(State(state): State<AppState>, Json(node): Json<Node>) -> ApiResult<String> {
+async fn create_node(
+    State(state): State<AppState>,
+    Json(req): Json<CreateNodeRequest>,
+) -> ApiResult<String> {
+    // Convert CreateNodeRequest to Node by adding timestamps and version
+    // The frontend sends a partial node without these fields
+    let now = Utc::now();
+    let node = Node {
+        id: req.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
+        node_type: req.node_type,
+        content: req.content,
+        parent_id: req.parent_id,
+        container_node_id: req.container_node_id,
+        before_sibling_id: req.before_sibling_id,
+        version: 1, // New nodes always start at version 1
+        created_at: now,
+        modified_at: now,
+        properties: req.properties,
+        embedding_vector: req.embedding_vector,
+        mentions: req.mentions,
+        mentioned_by: vec![], // New nodes have no backlinks initially
+    };
+
     let id = state
         .node_service
         .create_node(node)
