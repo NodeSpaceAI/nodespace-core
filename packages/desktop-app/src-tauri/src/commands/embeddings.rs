@@ -7,14 +7,38 @@
 
 use crate::commands::nodes::CommandError;
 use nodespace_core::models::Node;
-use nodespace_core::services::NodeEmbeddingService;
+use nodespace_core::services::{EmbeddingProcessor, NodeEmbeddingService};
+use nodespace_core::NodeService;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
 
-/// Application state containing embedding service
+/// Application state containing embedding service and processor
 pub struct EmbeddingState {
     pub service: Arc<NodeEmbeddingService>,
+    pub processor: Arc<EmbeddingProcessor>,
+}
+
+/// Helper to create CommandError instances
+fn command_error(message: impl Into<String>, code: impl Into<String>) -> CommandError {
+    CommandError {
+        message: message.into(),
+        code: code.into(),
+        details: None,
+    }
+}
+
+/// Helper to create CommandError instances with details
+fn command_error_with_details(
+    message: impl Into<String>,
+    code: impl Into<String>,
+    details: impl Into<String>,
+) -> CommandError {
+    CommandError {
+        message: message.into(),
+        code: code.into(),
+        details: Some(details.into()),
+    }
 }
 
 /// Generate embedding for a topic node
@@ -41,13 +65,33 @@ pub struct EmbeddingState {
 /// ```
 #[tauri::command]
 pub async fn generate_container_embedding(
-    _state: State<'_, EmbeddingState>,
+    state: State<'_, EmbeddingState>,
+    node_service: State<'_, NodeService>,
     container_id: String,
 ) -> Result<(), CommandError> {
-    tracing::warn!(
-        "Embedding generation temporarily disabled (Issue #481) for container: {}",
-        container_id
-    );
+    // Get the node from the database
+    let node = node_service
+        .get_node(&container_id)
+        .await
+        .map_err(|e| {
+            command_error_with_details(
+                format!("Failed to get node: {}", e),
+                "DATABASE_ERROR",
+                format!("{:?}", e),
+            )
+        })?
+        .ok_or_else(|| command_error(format!("Node not found: {}", container_id), "NOT_FOUND"))?;
+
+    // Generate and store embedding
+    state.service.embed_container(&node).await.map_err(|e| {
+        command_error_with_details(
+            format!("Failed to generate embedding: {}", e),
+            "EMBEDDING_ERROR",
+            format!("{:?}", e),
+        )
+    })?;
+
+    tracing::info!("Generated embedding for node: {}", container_id);
     Ok(())
 }
 
@@ -108,6 +152,24 @@ pub async fn search_containers(
     _state: State<'_, EmbeddingState>,
     params: SearchContainersParams,
 ) -> Result<Vec<Node>, CommandError> {
+    // Validate query parameter
+    if params.query.trim().is_empty() {
+        return Err(command_error(
+            "Query parameter cannot be empty".to_string(),
+            "INVALID_PARAMETER",
+        ));
+    }
+
+    // Validate threshold if provided
+    if let Some(threshold) = params.threshold {
+        if !(0.0..=1.0).contains(&threshold) {
+            return Err(command_error(
+                "Threshold must be between 0.0 and 1.0".to_string(),
+                "INVALID_PARAMETER",
+            ));
+        }
+    }
+
     tracing::warn!(
         "Semantic search temporarily disabled (Issue #481) for query: {}",
         params.query
@@ -137,13 +199,33 @@ pub async fn search_containers(
 /// ```
 #[tauri::command]
 pub async fn update_container_embedding(
-    _state: State<'_, EmbeddingState>,
+    state: State<'_, EmbeddingState>,
+    node_service: State<'_, NodeService>,
     container_id: String,
 ) -> Result<(), CommandError> {
-    tracing::warn!(
-        "Embedding updates temporarily disabled (Issue #481) for container: {}",
-        container_id
-    );
+    // Get the node from the database
+    let node = node_service
+        .get_node(&container_id)
+        .await
+        .map_err(|e| {
+            command_error_with_details(
+                format!("Failed to get node: {}", e),
+                "DATABASE_ERROR",
+                format!("{:?}", e),
+            )
+        })?
+        .ok_or_else(|| command_error(format!("Node not found: {}", container_id), "NOT_FOUND"))?;
+
+    // Generate and store embedding
+    state.service.embed_container(&node).await.map_err(|e| {
+        command_error_with_details(
+            format!("Failed to update embedding: {}", e),
+            "EMBEDDING_ERROR",
+            format!("{:?}", e),
+        )
+    })?;
+
+    tracing::info!("Updated embedding for node: {}", container_id);
     Ok(())
 }
 
@@ -214,13 +296,33 @@ pub async fn schedule_container_embedding_update(
 /// ```
 #[tauri::command]
 pub async fn on_container_closed(
-    _state: State<'_, EmbeddingState>,
+    state: State<'_, EmbeddingState>,
+    node_service: State<'_, NodeService>,
     container_id: String,
 ) -> Result<(), CommandError> {
-    tracing::warn!(
-        "Container close handler temporarily disabled (Issue #481) for container: {}",
-        container_id
-    );
+    // Get the node from the database
+    let node = node_service
+        .get_node(&container_id)
+        .await
+        .map_err(|e| {
+            command_error_with_details(
+                format!("Failed to get node: {}", e),
+                "DATABASE_ERROR",
+                format!("{:?}", e),
+            )
+        })?
+        .ok_or_else(|| command_error(format!("Node not found: {}", container_id), "NOT_FOUND"))?;
+
+    // Generate embedding (will be marked as stale by background if content changes)
+    state.service.embed_container(&node).await.map_err(|e| {
+        command_error_with_details(
+            format!("Failed to regenerate embedding: {}", e),
+            "EMBEDDING_ERROR",
+            format!("{:?}", e),
+        )
+    })?;
+
+    tracing::info!("Generated embedding on close for node: {}", container_id);
     Ok(())
 }
 
@@ -250,14 +352,34 @@ pub async fn on_container_closed(
 /// ```
 #[tauri::command]
 pub async fn on_container_idle(
-    _state: State<'_, EmbeddingState>,
+    state: State<'_, EmbeddingState>,
+    node_service: State<'_, NodeService>,
     container_id: String,
 ) -> Result<bool, CommandError> {
-    tracing::warn!(
-        "Idle timeout handler temporarily disabled (Issue #481) for container: {}",
-        container_id
-    );
-    Ok(false)
+    // Get the node from the database
+    let node = node_service
+        .get_node(&container_id)
+        .await
+        .map_err(|e| {
+            command_error_with_details(
+                format!("Failed to get node: {}", e),
+                "DATABASE_ERROR",
+                format!("{:?}", e),
+            )
+        })?
+        .ok_or_else(|| command_error(format!("Node not found: {}", container_id), "NOT_FOUND"))?;
+
+    // Generate embedding (returns true to indicate processing was triggered)
+    state.service.embed_container(&node).await.map_err(|e| {
+        command_error_with_details(
+            format!("Failed to regenerate embedding: {}", e),
+            "EMBEDDING_ERROR",
+            format!("{:?}", e),
+        )
+    })?;
+
+    tracing::info!("Generated embedding on idle for node: {}", container_id);
+    Ok(true)
 }
 
 /// Manually sync all stale topics
@@ -279,8 +401,19 @@ pub async fn on_container_idle(
 /// console.log(`Synced ${count} topics`);
 /// ```
 #[tauri::command]
-pub async fn sync_embeddings(_state: State<'_, EmbeddingState>) -> Result<usize, CommandError> {
-    tracing::warn!("Embedding sync temporarily disabled (Issue #481)");
+pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<usize, CommandError> {
+    // Trigger batch embedding and wait for completion
+    state.processor.trigger_batch_embed().await.map_err(|e| {
+        command_error_with_details(
+            format!("Failed to trigger sync: {}", e),
+            "EMBEDDING_ERROR",
+            format!("{:?}", e),
+        )
+    })?;
+
+    // For now, return 0 as we don't wait for completion
+    // The background task will process asynchronously
+    tracing::info!("Triggered batch embedding sync");
     Ok(0)
 }
 
@@ -299,10 +432,23 @@ pub async fn sync_embeddings(_state: State<'_, EmbeddingState>) -> Result<usize,
 /// ```
 #[tauri::command]
 pub async fn get_stale_container_count(
-    _state: State<'_, EmbeddingState>,
+    node_service: State<'_, NodeService>,
 ) -> Result<usize, CommandError> {
-    tracing::warn!("Stale container count temporarily disabled (Issue #481)");
-    Ok(0)
+    // Get store from NodeService to query stale embeddings
+    // Note: This is a workaround - ideally we'd have a count method
+    let store = node_service.store();
+    let stale_nodes = store
+        .get_nodes_with_stale_embeddings(None)
+        .await
+        .map_err(|e| {
+            command_error_with_details(
+                format!("Failed to count stale nodes: {}", e),
+                "DATABASE_ERROR",
+                format!("{:?}", e),
+            )
+        })?;
+
+    Ok(stale_nodes.len())
 }
 
 /// Batch generate embeddings for multiple topics
@@ -328,16 +474,61 @@ pub async fn get_stale_container_count(
 /// ```
 #[tauri::command]
 pub async fn batch_generate_embeddings(
-    _state: State<'_, EmbeddingState>,
+    state: State<'_, EmbeddingState>,
+    node_service: State<'_, NodeService>,
     container_ids: Vec<String>,
 ) -> Result<BatchEmbeddingResult, CommandError> {
-    tracing::warn!(
-        "Batch embedding generation temporarily disabled (Issue #481) for {} containers",
-        container_ids.len()
+    let mut success_count = 0;
+    let mut failed_embeddings = Vec::new();
+
+    for container_id in container_ids {
+        // Get the node from the database
+        match node_service.get_node(&container_id).await {
+            Ok(Some(node)) => {
+                // Generate and store embedding
+                match state.service.embed_container(&node).await {
+                    Ok(_) => {
+                        success_count += 1;
+                        tracing::debug!("Embedded node: {}", container_id);
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Failed to generate embedding: {}", e);
+                        tracing::error!("Node {}: {}", container_id, error_msg);
+                        failed_embeddings.push(BatchEmbeddingError {
+                            container_id: container_id.clone(),
+                            error: error_msg,
+                        });
+                    }
+                }
+            }
+            Ok(None) => {
+                let error_msg = "Node not found".to_string();
+                tracing::error!("Node {}: {}", container_id, error_msg);
+                failed_embeddings.push(BatchEmbeddingError {
+                    container_id: container_id.clone(),
+                    error: error_msg,
+                });
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to get node: {}", e);
+                tracing::error!("Node {}: {}", container_id, error_msg);
+                failed_embeddings.push(BatchEmbeddingError {
+                    container_id: container_id.clone(),
+                    error: error_msg,
+                });
+            }
+        }
+    }
+
+    tracing::info!(
+        "Batch embedding completed: {}/{} successful",
+        success_count,
+        success_count + failed_embeddings.len()
     );
+
     Ok(BatchEmbeddingResult {
-        success_count: 0,
-        failed_embeddings: Vec::new(),
+        success_count,
+        failed_embeddings,
     })
 }
 

@@ -145,18 +145,23 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     // Initialize schema service (wraps NodeService for schema operations)
     let schema_service = SchemaService::new(node_service_arc.clone());
 
-    // Initialize NLP engine for embeddings (temporarily stubbed - Issue #481)
-    let nlp_engine = Arc::new(
-        EmbeddingService::new(Default::default())
-            .map_err(|e| format!("Failed to initialize NLP engine: {}", e))?,
-    );
+    // Initialize NLP engine for embeddings
+    let mut nlp_engine = EmbeddingService::new(Default::default())
+        .map_err(|e| format!("Failed to initialize NLP engine: {}", e))?;
 
-    // Initialize embedding service (temporarily stubbed - Issue #481)
-    let embedding_service = NodeEmbeddingService::new(nlp_engine.clone());
+    // Initialize the NLP engine (loads model)
+    nlp_engine
+        .initialize()
+        .map_err(|e| format!("Failed to load NLP model: {}", e))?;
+
+    let nlp_engine_arc = Arc::new(nlp_engine);
+
+    // Initialize embedding service with SurrealStore
+    let embedding_service = NodeEmbeddingService::new(nlp_engine_arc.clone(), store.clone());
     let embedding_service_arc = Arc::new(embedding_service);
 
-    // Initialize background embedding processor (temporarily stubbed - Issue #481)
-    let processor = EmbeddingProcessor::new(nlp_engine)
+    // Initialize background embedding processor
+    let processor = EmbeddingProcessor::new(embedding_service_arc.clone())
         .map_err(|e| format!("Failed to initialize embedding processor: {}", e))?;
     let processor_arc = Arc::new(processor);
 
@@ -167,6 +172,7 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     app.manage(schema_service);
     app.manage(EmbeddingState {
         service: embedding_service_arc,
+        processor: processor_arc.clone(),
     });
     app.manage(processor_arc);
 

@@ -677,7 +677,7 @@ mod tests {
         let node_operations = Arc::new(NodeOperations::new(node_service.clone()));
         let nlp_engine =
             Arc::new(nodespace_nlp_engine::EmbeddingService::new(Default::default()).unwrap());
-        let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine));
+        let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
         let schema_service = Arc::new(SchemaService::new(node_service));
 
         McpServices {

@@ -142,7 +142,7 @@ mod async_integration_tests {
         nlp_engine.initialize().unwrap();
         let nlp_engine = Arc::new(nlp_engine);
 
-        let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine));
+        let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
 
         // Create SchemaService
         let schema_service = Arc::new(SchemaService::new(node_service));

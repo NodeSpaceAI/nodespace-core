@@ -101,8 +101,8 @@ async fn main() -> anyhow::Result<()> {
     // Initialize NodeOperations for OCC enforcement (requires Arc<NodeService>)
     let node_operations = NodeOperations::new(Arc::new(node_service.clone()));
 
-    // Initialize embedding service (temporarily stubbed - Issue #481)
-    let embedding_service = NodeEmbeddingService::new(nlp_engine);
+    // Initialize embedding service with SurrealStore
+    let embedding_service = NodeEmbeddingService::new(nlp_engine, store.clone());
 
     tracing::info!("✅ Services initialized");
 

@@ -1,29 +1,20 @@
 //! Node Embedding Service
 //!
-//! **STATUS: Database tracking complete (Issue #481), NLP integration pending (Issue #TBD)**
+//! **STATUS: Fully integrated with SurrealDB and NLP engine (Issue #489)**
 //!
-//! ## What's Complete
+//! ## Features
 //!
 //! - ✅ Database-level staleness tracking (`mark_embedding_stale`, `get_nodes_with_stale_embeddings`)
 //! - ✅ Embedding vector storage in SurrealDB (`update_embedding` method)
 //! - ✅ Atomic update operations with version control
-//! - ✅ Service stubs in place for seamless future integration
+//! - ✅ NLP engine integration for embedding generation
+//! - ✅ Background batch processing of stale embeddings
 //!
-//! ## What's Pending (Future Issue #TBD - NLP Integration)
+//! ## Out of Scope (Future Issues)
 //!
-//! - ⏳ NLP engine integration for embedding generation
-//! - ⏳ Background batch processing of stale embeddings
-//! - ⏳ Vector similarity search implementation
-//! - ⏳ Re-enable embedding tests with SurrealStore
-//!
-//! **Migration Path:**
-//! When NLP integration is ready:
-//! 1. Update constructor to take `Arc<SurrealStore>`
-//! 2. Implement `embed_container()` using SurrealStore methods
-//! 3. Use `get_nodes_with_stale_embeddings()` for batch processing
-//! 4. Call `update_embedding()` to store generated vectors and clear stale flag
-//! 5. Implement SurrealDB-native vector search
+//! - ⏳ Vector similarity search implementation (Issue #107 - SurrealDB native vector search)
 
+use crate::db::SurrealStore;
 use crate::models::Node;
 use crate::services::error::NodeServiceError;
 use nodespace_nlp_engine::EmbeddingService;
@@ -32,38 +23,155 @@ use std::sync::Arc;
 /// Embedding vector dimension for BAAI/bge-small-en-v1.5 model
 pub const EMBEDDING_DIMENSION: usize = 384;
 
-/// Node embedding service (temporarily disabled)
+/// Default batch size for processing stale embeddings
+pub const DEFAULT_BATCH_SIZE: usize = 50;
+
+/// Node embedding service with SurrealDB integration
 pub struct NodeEmbeddingService {
     /// NLP engine for generating embeddings
-    #[allow(dead_code)]
     nlp_engine: Arc<EmbeddingService>,
+    /// SurrealDB store for persisting embeddings
+    store: Arc<SurrealStore>,
 }
 
 impl NodeEmbeddingService {
-    /// Create a new NodeEmbeddingService (temporarily returns stub)
+    /// Create a new NodeEmbeddingService with SurrealDB integration
     ///
-    /// Database-level embedding staleness tracking is now implemented.
-    /// Full embedding generation will be re-enabled in a future issue.
-    pub fn new(nlp_engine: Arc<EmbeddingService>) -> Self {
-        tracing::info!(
-            "NodeEmbeddingService stubbed - embedding generation pending future NLP integration"
-        );
-        Self { nlp_engine }
+    /// # Arguments
+    /// * `nlp_engine` - The NLP engine for generating embeddings
+    /// * `store` - The SurrealDB store for persisting embeddings
+    pub fn new(nlp_engine: Arc<EmbeddingService>, store: Arc<SurrealStore>) -> Self {
+        tracing::info!("NodeEmbeddingService initialized with SurrealDB and NLP engine");
+        Self { nlp_engine, store }
     }
 
-    /// Stub: Embed container
+    /// Extract text content from node for embedding
     ///
-    /// Database tracking ready - full implementation pending future issue
-    pub fn embed_container(&self, _node: &Node) -> Result<(), NodeServiceError> {
-        tracing::debug!("Embedding generation stub - NLP integration pending");
+    /// Uses the node's content field. If empty, returns empty string.
+    fn extract_text_from_node(node: &Node) -> String {
+        if node.content.trim().is_empty() {
+            String::new()
+        } else {
+            node.content.clone()
+        }
+    }
+
+    /// Generate and store embedding for a single node
+    ///
+    /// Extracts text from the node, generates an embedding using the NLP engine,
+    /// converts to binary format, and stores in SurrealDB.
+    ///
+    /// # Arguments
+    /// * `node` - The node to embed
+    ///
+    /// # Errors
+    /// Returns error if:
+    /// - Text extraction fails
+    /// - Embedding generation fails
+    /// - Database storage fails
+    pub async fn embed_container(&self, node: &Node) -> Result<(), NodeServiceError> {
+        let text = Self::extract_text_from_node(node);
+
+        if text.trim().is_empty() {
+            tracing::debug!("Skipping empty node: {}", node.id);
+            return Ok(());
+        }
+
+        // Generate embedding using NLP engine
+        let embedding = self.nlp_engine.generate_embedding(&text).map_err(|e| {
+            NodeServiceError::SerializationError(format!("Embedding generation failed: {}", e))
+        })?;
+
+        // Convert to binary blob for storage
+        let blob = EmbeddingService::to_blob(&embedding);
+
+        // Store in SurrealDB (this also clears the stale flag)
+        self.store
+            .update_embedding(&node.id, &blob)
+            .await
+            .map_err(|e| {
+                NodeServiceError::SerializationError(format!("Failed to store embedding: {}", e))
+            })?;
+
+        tracing::debug!("Embedded node: {} ({} bytes)", node.id, blob.len());
         Ok(())
     }
 
-    /// Stub: Batch embed containers
+    /// Batch process stale embeddings
     ///
-    /// Database tracking ready - full implementation pending future issue
-    pub fn batch_embed_containers(&self, _limit: Option<usize>) -> Result<usize, NodeServiceError> {
-        tracing::debug!("Batch embedding stub - NLP integration pending");
-        Ok(0)
+    /// Retrieves stale nodes from the database, generates embeddings in batch
+    /// using the NLP engine for efficiency, and stores all results.
+    ///
+    /// # Arguments
+    /// * `limit` - Maximum number of nodes to process (defaults to DEFAULT_BATCH_SIZE)
+    ///
+    /// # Returns
+    /// Number of successfully embedded nodes
+    ///
+    /// # Errors
+    /// Logs individual failures but continues processing. Returns error only if
+    /// the database query for stale nodes fails.
+    pub async fn batch_embed_containers(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<usize, NodeServiceError> {
+        let batch_size = limit.unwrap_or(DEFAULT_BATCH_SIZE);
+
+        // Get stale nodes from database
+        let stale_nodes = self
+            .store
+            .get_nodes_with_stale_embeddings(Some(batch_size as i64))
+            .await
+            .map_err(|e| {
+                NodeServiceError::SerializationError(format!("Failed to query stale nodes: {}", e))
+            })?;
+
+        if stale_nodes.is_empty() {
+            tracing::debug!("No stale embeddings to process");
+            return Ok(0);
+        }
+
+        tracing::info!("Processing {} stale embeddings", stale_nodes.len());
+
+        // Extract text from all nodes (owned strings to avoid lifetime issues)
+        let texts: Vec<String> = stale_nodes
+            .iter()
+            .map(Self::extract_text_from_node)
+            .collect();
+
+        // Create references for the batch call
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+
+        // Generate embeddings in batch for efficiency
+        let embeddings = self.nlp_engine.generate_batch(text_refs).map_err(|e| {
+            NodeServiceError::SerializationError(format!(
+                "Batch embedding generation failed: {}",
+                e
+            ))
+        })?;
+
+        // Store each embedding
+        let mut success_count = 0;
+        for (node, embedding) in stale_nodes.iter().zip(embeddings.iter()) {
+            let blob = EmbeddingService::to_blob(embedding);
+
+            match self.store.update_embedding(&node.id, &blob).await {
+                Ok(_) => {
+                    success_count += 1;
+                    tracing::debug!("Embedded node: {} ({} bytes)", node.id, blob.len());
+                }
+                Err(e) => {
+                    tracing::error!("Failed to store embedding for node {}: {}", node.id, e);
+                    // Continue processing other nodes
+                }
+            }
+        }
+
+        tracing::info!(
+            "Successfully embedded {}/{} nodes",
+            success_count,
+            stale_nodes.len()
+        );
+        Ok(success_count)
     }
 }

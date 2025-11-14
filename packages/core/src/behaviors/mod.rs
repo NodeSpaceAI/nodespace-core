@@ -1166,10 +1166,10 @@ mod tests {
         );
         assert!(behavior.validate(&complete_node).is_ok());
 
-        // Invalid: empty content
-        let mut invalid_node = valid_node_new_format.clone();
-        invalid_node.content = String::new();
-        assert!(behavior.validate(&invalid_node).is_err());
+        // Valid: empty content (allowed for tasks - users can add description later)
+        let mut empty_content_node = valid_node_new_format.clone();
+        empty_content_node.content = String::new();
+        assert!(behavior.validate(&empty_content_node).is_ok());
 
         // NOTE: Status value validation (e.g., "OPEN" vs "INVALID_STATUS") will be handled
         // by the schema system in the future. Currently we only validate type correctness

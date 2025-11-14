@@ -323,6 +323,13 @@ impl NodeService {
         })
     }
 
+    /// Get access to the underlying SurrealStore
+    ///
+    /// Useful for advanced operations that need direct database access
+    pub fn store(&self) -> &Arc<SurrealStore> {
+        &self.store
+    }
+
     /// Create a new node
     ///
     /// Validates the node using the appropriate behavior (Text, Task, or Date),
