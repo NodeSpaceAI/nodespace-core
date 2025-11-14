@@ -126,15 +126,64 @@ bun run gh:pr <number>
 git clone <repository-url>
 cd nodespace-core
 
-# Install frontend dependencies  
+# Install frontend dependencies
 bun install
 
 # Download AI model (Gemma 3n-E4B-it 8B UQFF)
 # Place in /Users/malibio/nodespace/models/gemma-3-4b-it-UQFF/
 
-# Run in development mode (builds Rust backend + frontend)
+# Run in browser development mode (fast iteration, no Tauri)
+bun run dev
+
+# Or run in desktop mode (builds Rust backend + frontend)
 bun run tauri:dev
 ```
+
+### Browser Development Mode (Recommended for UI Development)
+
+For rapid frontend iteration without Tauri rebuilds:
+
+```bash
+# Start SurrealDB + Vite dev server (single command)
+bun run dev
+```
+
+This starts:
+- SurrealDB server on `http://127.0.0.1:8000` (in-memory mode)
+- Vite dev server on `http://localhost:5173`
+- Auto-initializes database schemas
+
+**Benefits:**
+- ✅ Instant hot-reload for Svelte components
+- ✅ Full browser DevTools access
+- ✅ Database inspection with Surrealist
+- ✅ No Tauri rebuild waiting
+
+**Alternative SurrealDB Modes:**
+
+```bash
+# Persistent database (survives restarts)
+bun run dev:db
+
+# In-memory database (default, clean state)
+bun run dev:db:memory
+
+# Reinitialize schemas manually
+bun run dev:db:init
+```
+
+**Connecting Surrealist** for real-time database inspection:
+
+1. Download [Surrealist](https://surrealdb.com/surrealist)
+2. Create connection:
+   - **Endpoint**: `http://127.0.0.1:8000`
+   - **Namespace**: `nodespace`
+   - **Database**: `dev`
+   - **Username**: `root`
+   - **Password**: `root`
+3. Execute queries like `SELECT * FROM node;` to inspect data
+
+See [Browser Dev Mode Documentation](docs/architecture/development/browser-dev-mode.md) for complete guide.
 
 ### Configuration
 
@@ -190,20 +239,44 @@ Comprehensive architecture documentation is organized in the `docs/architecture/
 
 ## Development Workflow
 
-### Building
+### Development Modes
+
+**Browser Mode (Fast UI Iteration):**
 ```bash
-# Development mode
+# Start SurrealDB + Vite (recommended for UI work)
+bun run dev
+
+# Persistent database mode
+bun run dev:db
+
+# Reinitialize database schemas
+bun run dev:db:init
+```
+
+**Desktop Mode (Full Native Experience):**
+```bash
+# Development mode with hot-reload
 bun run tauri:dev
 
 # Production build
 bun run tauri:build
+```
 
-# Frontend development server
-bun run dev
+### Testing
 
-# Run tests
-bun run test              # Frontend tests with Vitest + Happy DOM (run from repo root)
-cd packages/desktop-app/src-tauri && cargo test  # Rust backend tests
+```bash
+# Run all tests (frontend + Rust)
+bun run test:all
+
+# Frontend tests only (Vitest + Happy DOM)
+bun run test              # Run once
+bun run test:watch        # Watch mode for TDD
+
+# Browser tests (real Chromium via Playwright)
+bun run test:browser      # For focus, events, DOM APIs
+
+# Rust backend tests
+cd packages/desktop-app/src-tauri && cargo test
 ```
 
 **⚠️ IMPORTANT: Test Command Usage**
