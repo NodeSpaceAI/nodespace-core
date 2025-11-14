@@ -926,20 +926,35 @@ export class HttpAdapter implements BackendAdapter {
    * Convert SurrealDB snake_case field names to TypeScript camelCase
    * SurrealDB stores: node_type, parent_id, container_node_id, before_sibling_id, created_at, modified_at, embedding_vector
    * TypeScript expects: nodeType, parentId, containerNodeId, beforeSiblingId, createdAt, modifiedAt, embeddingVector
+   *
+   * IMPORTANT: SurrealDB NONE values come back as undefined, but our TypeScript types expect null.
+   * This method converts undefined → null for optional fields.
    */
   private mapSurrealNodeToTypescript(surrealNode: Record<string, unknown>): Node {
     return {
-      id: (surrealNode.id as string).replace('nodes:', '').replace(/`/g, ''), // Remove table prefix
+      // Remove table prefix (nodes:) and SurrealDB special characters (backticks and angle brackets)
+      id: (surrealNode.id as string).replace('nodes:', '').replace(/[`⟨⟩]/g, ''),
       nodeType: surrealNode.node_type as string,
       content: surrealNode.content as string,
-      parentId: surrealNode.parent_id as string | null,
-      containerNodeId: surrealNode.container_node_id as string | null,
-      beforeSiblingId: surrealNode.before_sibling_id as string | null,
+      // Convert undefined → null for optional fields (SurrealDB NONE behavior)
+      parentId:
+        surrealNode.parent_id === undefined ? null : (surrealNode.parent_id as string | null),
+      containerNodeId:
+        surrealNode.container_node_id === undefined
+          ? null
+          : (surrealNode.container_node_id as string | null),
+      beforeSiblingId:
+        surrealNode.before_sibling_id === undefined
+          ? null
+          : (surrealNode.before_sibling_id as string | null),
       createdAt: surrealNode.created_at as string,
       modifiedAt: surrealNode.modified_at as string,
       version: surrealNode.version as number,
       properties: (surrealNode.properties as Record<string, unknown>) || {},
-      embeddingVector: surrealNode.embedding_vector as number[] | null | undefined,
+      embeddingVector:
+        surrealNode.embedding_vector === undefined
+          ? null
+          : (surrealNode.embedding_vector as number[] | null),
       mentions: surrealNode.mentions as string[] | undefined
     };
   }
@@ -1232,15 +1247,20 @@ export class HttpAdapter implements BackendAdapter {
       const nodeBeforeDeletion = await this.getNode(id);
 
       // Execute DELETE with version check
-      const sql = `DELETE nodes:\`${id}\` WHERE version = ${version};`;
+      const sql = `DELETE nodes:\`${id}\` WHERE version = ${version} RETURN BEFORE;`;
       const result = await this.surrealQuery<Array<Record<string, unknown>>>(sql);
 
+      // SurrealDB DELETE with RETURN BEFORE returns the deleted record(s)
       // Empty result means either version conflict or node doesn't exist
       if (!result || result.length === 0) {
         if (nodeBeforeDeletion) {
-          throw new Error(
-            `Version conflict: expected version ${version} but node has been modified`
-          );
+          // Node exists but wasn't deleted - must be version conflict
+          const currentNode = await this.getNode(id);
+          if (currentNode) {
+            throw new Error(
+              `Version conflict: expected version ${version} but node has version ${currentNode.version}`
+            );
+          }
         }
         // Node doesn't exist - idempotent delete, no error
         return;

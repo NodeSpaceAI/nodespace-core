@@ -796,7 +796,8 @@ Special: !@#$%^&*()`;
       await adapter.createNode(nodeData);
 
       const retrieved = await adapter.getNode('test-null-embedding');
-      expect(retrieved!.embeddingVector).toBeUndefined();
+      // SurrealDB NONE values are converted to null by mapSurrealNodeToTypescript
+      expect(retrieved!.embeddingVector).toBeNull();
     });
   });
 
