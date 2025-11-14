@@ -7,7 +7,7 @@
     "preinstall": "node ../../enforce-bun.js",
     "postinstall": "bun run scripts/check-dev-deps.ts || true",
     "dev:check": "bun run scripts/check-dev-deps.ts",
-    "dev:db": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info file://.nodespace/dev.db",
+    "dev:db": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info file://~/.nodespace/database/nodespace-dev",
     "dev:db:memory": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info memory",
     "dev:db:init": "bun run scripts/init-surrealdb.ts",
     "dev:frontend": "bunx vite dev",
