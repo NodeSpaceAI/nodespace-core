@@ -71,10 +71,26 @@ NodeSpace is a next-generation knowledge management system designed from the gro
 ## Quick Start
 
 ### Prerequisites
-- **Frontend**: Bun 1.0+ (Node.js not required)
-- **Backend**: Rust 1.80+ with Cargo (for Tauri desktop app)
-- 8GB+ RAM recommended for AI model
-- macOS with Metal GPU support (optimal performance)
+
+**Required:**
+- **Bun 1.0+** - Runtime and package manager (Node.js not required)
+  ```bash
+  curl -fsSL https://bun.sh/install | bash
+  ```
+- **SurrealDB** - Database and development server
+  ```bash
+  # macOS/Linux
+  curl -sSf https://install.surrealdb.com | sh
+
+  # Windows (PowerShell)
+  iwr https://install.surrealdb.com -useb | iex
+  ```
+  After installation, add to PATH or restart your terminal.
+
+**Optional (for desktop app):**
+- **Rust 1.80+ with Cargo** - For Tauri desktop application
+- **8GB+ RAM** - Recommended for AI model
+- **macOS with Metal GPU** - Optimal AI performance
 
 ### 🛠️ Development CLI Commands
 
