@@ -25,29 +25,16 @@ You are acting as the **Principal Engineer AI Reviewer** for a high-velocity, le
 
 ## Context Analysis
 
-Analyze the following outputs to understand the scope and content of the changes you must review:
+The pragmatic-code-reviewer agent will need to gather the following information:
 
-**GIT STATUS:**
-!`git status`
+1. **GIT STATUS**: Run `git status` to understand current branch state
+2. **PR NUMBER**: Run `gh pr view --json number` to get PR number
+3. **EXISTING REVIEWS**: Run `gh pr view --json reviews,comments` to check for re-review scenario
+4. **FILES MODIFIED**: Run `git diff --name-only origin/main...HEAD` to see changed files
+5. **COMMITS**: Run `git log --no-decorate origin/main...HEAD` to review commit history
+6. **DIFF CONTENT**: Run `git diff origin/main...HEAD` to get complete changes
 
-**PR NUMBER** (if exists):
-!`gh pr view --json number | grep -o '"number":[0-9]*' | cut -d: -f2`
-
-**EXISTING REVIEWS** (check for re-review scenario):
-!`gh pr view --json reviews,comments`
-
-**FILES MODIFIED:**
-!`git diff --name-only origin/main...HEAD`
-
-**COMMITS:**
-!`git log --no-decorate origin/main...HEAD`
-
-**DIFF CONTENT:**
-!`git diff origin/main...HEAD`
-
-Review the complete diff above. This contains all code changes to review.
-
-**Note for Re-Reviews:** If existing reviews are found, the pragmatic-code-reviewer agent should identify the last reviewed commit from the review data and use git commands to compare only the changes since that commit.
+**Note for Re-Reviews:** If existing reviews are found, the agent should identify the last reviewed commit from the review data and use git commands to compare only the changes since that commit.
 
 ## Pre-Review Steps
 
