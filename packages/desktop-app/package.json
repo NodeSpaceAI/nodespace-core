@@ -5,9 +5,13 @@
   "type": "module",
   "scripts": {
     "preinstall": "node ../../enforce-bun.js",
+    "postinstall": "bun run scripts/check-dev-deps.ts || true",
+    "dev:check": "bun run scripts/check-dev-deps.ts",
     "dev:db": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info file://.nodespace/dev.db",
     "dev:db:memory": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info memory",
-    "dev": "bunx vite dev",
+    "dev:db:init": "bun run scripts/init-surrealdb.ts",
+    "dev:frontend": "bunx vite dev",
+    "dev": "bun run dev:check && bunx concurrently --names \"DB,UI\" --prefix-colors \"blue,green\" \"bun run dev:db\" \"bun run dev:frontend\"",
     "dev:web": "bunx vite dev --port 1421",
     "build": "bunx vite build",
     "preview": "bunx vite preview",
@@ -32,8 +36,7 @@
     "build:analyze": "bun run build && bun run analyze",
     "tauri": "bunx tauri",
     "tauri:dev": "bunx tauri dev -- --bin nodespace-app",
-    "tauri:build": "bunx tauri build",
-    "dev:server": "cd src-tauri && cargo run --bin dev-server --features dev-server"
+    "tauri:build": "bunx tauri build"
   },
   "license": "MIT",
   "dependencies": {
@@ -64,6 +67,7 @@
     "@vitest/coverage-v8": "^2.1.8",
     "autoprefixer": "^10.4.21",
     "bits-ui": "^1.4.7",
+    "concurrently": "^9.2.1",
     "eslint": "^9.32.0",
     "eslint-plugin-filename-rules": "^1.3.1",
     "eslint-plugin-oxlint": "^1.12.0",

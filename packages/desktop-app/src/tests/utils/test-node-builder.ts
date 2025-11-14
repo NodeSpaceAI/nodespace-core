@@ -61,6 +61,23 @@ export class TestNodeBuilder {
   }
 
   /**
+   * Set node type (alias for withType for better API consistency)
+   */
+  withNodeType(
+    nodeType:
+      | 'text'
+      | 'task'
+      | 'date'
+      | 'header'
+      | 'code-block'
+      | 'quote-block'
+      | 'ordered-list'
+      | 'ai-chat'
+  ): this {
+    return this.withType(nodeType);
+  }
+
+  /**
    * Set node content
    */
   withContent(content: string): this {

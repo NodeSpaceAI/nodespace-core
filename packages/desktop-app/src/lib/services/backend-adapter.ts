@@ -873,13 +873,130 @@ export class TauriAdapter implements BackendAdapter {
 }
 
 /**
- * HTTP Dev Server Adapter - Uses fetch() for web mode communication
+ * HTTP Dev Server Adapter - Uses SurrealDB HTTP API for web mode communication
  */
 export class HttpAdapter implements BackendAdapter {
   private readonly baseUrl: string;
+  private readonly auth: string;
 
-  constructor(baseUrl: string = 'http://localhost:3001') {
+  constructor(baseUrl: string = 'http://localhost:8000') {
     this.baseUrl = baseUrl;
+    // Basic auth: root:root (base64 encoded)
+    this.auth = 'Basic ' + globalThis.btoa('root:root');
+  }
+
+  /**
+   * Escape a string for use in SurrealQL queries
+   * Handles double quotes and backslashes
+   *
+   * @param str - String to escape
+   * @returns Escaped string safe for SurrealQL
+   */
+  private escapeSurrealString(str: string): string {
+    return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  }
+
+  /**
+   * Convert a value to SurrealQL representation
+   * Handles null, strings, numbers, booleans, objects, and arrays
+   *
+   * @param value - Value to convert
+   * @returns SurrealQL string representation
+   */
+  private toSurrealValue(value: unknown): string {
+    if (value === null || value === undefined) {
+      return 'NONE';
+    }
+    if (typeof value === 'string') {
+      return `"${this.escapeSurrealString(value)}"`;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    if (Array.isArray(value)) {
+      return JSON.stringify(value);
+    }
+    if (typeof value === 'object') {
+      return JSON.stringify(value);
+    }
+    return 'NONE';
+  }
+
+  /**
+   * Convert SurrealDB snake_case field names to TypeScript camelCase
+   * SurrealDB stores: node_type, parent_id, container_node_id, before_sibling_id, created_at, modified_at, embedding_vector
+   * TypeScript expects: nodeType, parentId, containerNodeId, beforeSiblingId, createdAt, modifiedAt, embeddingVector
+   *
+   * IMPORTANT: SurrealDB NONE values come back as undefined, but our TypeScript types expect null.
+   * This method converts undefined → null for optional fields.
+   */
+  private mapSurrealNodeToTypescript(surrealNode: Record<string, unknown>): Node {
+    return {
+      // Remove table prefix (nodes:) and SurrealDB special characters (backticks and angle brackets)
+      id: (surrealNode.id as string).replace('nodes:', '').replace(/[`⟨⟩]/g, ''),
+      nodeType: surrealNode.node_type as string,
+      content: surrealNode.content as string,
+      // Convert undefined → null for optional fields (SurrealDB NONE behavior)
+      parentId:
+        surrealNode.parent_id === undefined ? null : (surrealNode.parent_id as string | null),
+      containerNodeId:
+        surrealNode.container_node_id === undefined
+          ? null
+          : (surrealNode.container_node_id as string | null),
+      beforeSiblingId:
+        surrealNode.before_sibling_id === undefined
+          ? null
+          : (surrealNode.before_sibling_id as string | null),
+      createdAt: surrealNode.created_at as string,
+      modifiedAt: surrealNode.modified_at as string,
+      version: surrealNode.version as number,
+      properties: (surrealNode.properties as Record<string, unknown>) || {},
+      embeddingVector:
+        surrealNode.embedding_vector === undefined
+          ? null
+          : (surrealNode.embedding_vector as number[] | null),
+      mentions: surrealNode.mentions as string[] | undefined
+    };
+  }
+
+  /**
+   * Execute a SurrealQL query against the SurrealDB HTTP API
+   *
+   * @param sql - SurrealQL query string
+   * @returns Query result (single statement result)
+   * @throws Error if query fails or returns error status
+   */
+  private async surrealQuery<T = unknown>(sql: string): Promise<T> {
+    // Prepend USE statements to ensure namespace/database context
+    // This is needed because HTTP API doesn't maintain session state
+    const fullSql = `USE NS nodespace; USE DB nodes; ${sql}`;
+
+    const response = await globalThis.fetch(`${this.baseUrl}/sql`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        Authorization: this.auth
+      },
+      body: fullSql
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`SurrealDB error (${response.status}): ${error}`);
+    }
+
+    const results = await response.json();
+
+    // SurrealDB returns array of results (one per statement)
+    // The actual query result is at index 2 (after USE NS and USE DB)
+    const queryResult = results[2];
+
+    // Check for errors in result
+    if (queryResult?.status === 'ERR') {
+      throw new Error(`SurrealDB query error: ${queryResult?.result}`);
+    }
+
+    return queryResult?.result;
   }
 
   private async handleResponse<T>(response: globalThis.Response): Promise<T> {
@@ -966,25 +1083,31 @@ export class HttpAdapter implements BackendAdapter {
 
   async createNode(node: Omit<Node, 'createdAt' | 'modifiedAt' | 'version'>): Promise<string> {
     try {
-      // Wrap the HTTP write operation with retry logic
-      const nodeId = await this.retryOnTransientError(async () => {
-        const response = await globalThis.fetch(`${this.baseUrl}/api/nodes`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(node)
-        });
+      // Build SurrealQL CREATE statement
+      const sql = `
+        CREATE nodes:\`${node.id}\` CONTENT {
+          node_type: ${this.toSurrealValue(node.nodeType)},
+          content: ${this.toSurrealValue(node.content)},
+          parent_id: ${this.toSurrealValue(node.parentId)},
+          container_node_id: ${this.toSurrealValue(node.containerNodeId)},
+          before_sibling_id: ${this.toSurrealValue(node.beforeSiblingId)},
+          properties: ${this.toSurrealValue(node.properties)},
+          mentions: ${this.toSurrealValue(node.mentions || [])},
+          embedding_vector: ${this.toSurrealValue(node.embeddingVector || null)},
+          version: 1,
+          created_at: time::now(),
+          modified_at: time::now()
+        };
+      `;
 
-        return await this.handleResponse<string>(response);
-      });
+      await this.surrealQuery(sql);
 
       // Emit node:created event
       eventBus.emit<NodeCreatedEvent>({
         type: 'node:created',
         namespace: 'lifecycle',
         source: 'HttpAdapter',
-        nodeId: nodeId,
+        nodeId: node.id,
         parentId: node.parentId ?? undefined,
         nodeType: node.nodeType
       });
@@ -995,12 +1118,12 @@ export class HttpAdapter implements BackendAdapter {
           type: 'hierarchy:changed',
           namespace: 'lifecycle',
           source: 'HttpAdapter',
-          affectedNodes: [nodeId, node.parentId],
+          affectedNodes: [node.id, node.parentId],
           changeType: 'create'
         });
       }
 
-      return nodeId;
+      return node.id;
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, node.id, 'create');
@@ -1009,10 +1132,15 @@ export class HttpAdapter implements BackendAdapter {
 
   async getNode(id: string): Promise<Node | null> {
     try {
-      const response = await globalThis.fetch(
-        `${this.baseUrl}/api/nodes/${encodeURIComponent(id)}`
-      );
-      return await this.handleResponse<Node | null>(response);
+      const sql = `SELECT * FROM nodes:\`${id}\`;`;
+      const result = await this.surrealQuery<Array<Record<string, unknown>>>(sql);
+
+      // SurrealDB returns array even for single results
+      if (!result || result.length === 0) {
+        return null;
+      }
+
+      return this.mapSurrealNodeToTypescript(result[0]);
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, id, 'get');
@@ -1021,22 +1149,50 @@ export class HttpAdapter implements BackendAdapter {
 
   async updateNode(id: string, version: number, update: NodeUpdate): Promise<Node> {
     try {
-      // Wrap the HTTP write operation with retry logic
-      // IMPORTANT: Backend now returns the updated Node with new version
-      const updatedNode = await this.retryOnTransientError(async () => {
-        const response = await globalThis.fetch(
-          `${this.baseUrl}/api/nodes/${encodeURIComponent(id)}`,
-          {
-            method: 'PATCH',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ ...update, version })
-          }
-        );
+      // Build SET clauses dynamically for provided fields
+      const setClauses: string[] = [];
 
-        return await this.handleResponse<Node>(response);
-      });
+      if (update.nodeType !== undefined) {
+        setClauses.push(`node_type = ${this.toSurrealValue(update.nodeType)}`);
+      }
+      if (update.content !== undefined) {
+        setClauses.push(`content = ${this.toSurrealValue(update.content)}`);
+      }
+      if (update.parentId !== undefined) {
+        setClauses.push(`parent_id = ${this.toSurrealValue(update.parentId)}`);
+      }
+      if (update.containerNodeId !== undefined) {
+        setClauses.push(`container_node_id = ${this.toSurrealValue(update.containerNodeId)}`);
+      }
+      if (update.beforeSiblingId !== undefined) {
+        setClauses.push(`before_sibling_id = ${this.toSurrealValue(update.beforeSiblingId)}`);
+      }
+      if (update.properties !== undefined) {
+        setClauses.push(`properties = ${this.toSurrealValue(update.properties)}`);
+      }
+      if (update.embeddingVector !== undefined) {
+        setClauses.push(`embedding_vector = ${this.toSurrealValue(update.embeddingVector)}`);
+      }
+
+      // Always update version and modified_at
+      setClauses.push(`version = ${version + 1}`);
+      setClauses.push(`modified_at = time::now()`);
+
+      // Build UPDATE query with version check
+      const sql = `
+        UPDATE nodes:\`${id}\`
+        SET ${setClauses.join(', ')}
+        WHERE version = ${version};
+      `;
+
+      const result = await this.surrealQuery<Array<Record<string, unknown>>>(sql);
+
+      // Empty result means version conflict
+      if (!result || result.length === 0) {
+        throw new Error(`Version conflict: expected version ${version} but node has been modified`);
+      }
+
+      const updatedNode = this.mapSurrealNodeToTypescript(result[0]);
 
       // Determine update type based on what fields were updated
       let updateType: 'content' | 'hierarchy' | 'status' | 'metadata' | 'nodeType' = 'content';
@@ -1090,26 +1246,27 @@ export class HttpAdapter implements BackendAdapter {
       // If node doesn't exist, getNode returns null but doesn't throw
       const nodeBeforeDeletion = await this.getNode(id);
 
-      // Wrap the HTTP write operation with retry logic
-      await this.retryOnTransientError(async () => {
-        const response = await globalThis.fetch(
-          `${this.baseUrl}/api/nodes/${encodeURIComponent(id)}`,
-          {
-            method: 'DELETE',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ version })
-          }
-        );
+      // Execute DELETE with version check
+      const sql = `DELETE nodes:\`${id}\` WHERE version = ${version} RETURN BEFORE;`;
+      const result = await this.surrealQuery<Array<Record<string, unknown>>>(sql);
 
-        return await this.handleResponse<void>(response);
-      });
+      // SurrealDB DELETE with RETURN BEFORE returns the deleted record(s)
+      // Empty result means either version conflict or node doesn't exist
+      if (!result || result.length === 0) {
+        if (nodeBeforeDeletion) {
+          // Node exists but wasn't deleted - must be version conflict
+          const currentNode = await this.getNode(id);
+          if (currentNode) {
+            throw new Error(
+              `Version conflict: expected version ${version} but node has version ${currentNode.version}`
+            );
+          }
+        }
+        // Node doesn't exist - idempotent delete, no error
+        return;
+      }
 
       // Only emit events if node existed (successful deletion)
-      // Note: This handles the backend's non-idempotent DELETE behavior
-      // where attempting to delete a non-existent node returns 500 error
-      // Related: Issue #219 - Backend DELETE should be idempotent
       if (nodeBeforeDeletion) {
         // Emit node:deleted event
         eventBus.emit<NodeDeletedEvent>({
@@ -1139,45 +1296,34 @@ export class HttpAdapter implements BackendAdapter {
 
   async getChildren(parentId: string): Promise<Node[]> {
     try {
-      const response = await globalThis.fetch(
-        `${this.baseUrl}/api/nodes/${encodeURIComponent(parentId)}/children`
-      );
-      return await this.handleResponse<Node[]>(response);
+      const sql = `SELECT * FROM nodes WHERE parent_id = ${this.toSurrealValue(parentId)} ORDER BY created_at ASC;`;
+      const result = await this.surrealQuery<Array<Record<string, unknown>>>(sql);
+      return result ? result.map((node) => this.mapSurrealNodeToTypescript(node)) : [];
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, parentId, 'getChildren');
     }
   }
 
-  /**
-   * Build query URL with proper parameter encoding
-   * @param params - Query parameters
-   * @returns Formatted URL string
-   * @private
-   */
-  private buildQueryUrl(params: QueryNodesParams): string {
-    const url = new URL(`${this.baseUrl}/api/nodes/query`);
-
-    // Handle parentId parameter
-    if (params.parentId !== undefined) {
-      // Backend expects "null" string for SQL NULL queries (root nodes)
-      // See query_endpoints.rs:127-137 for backend parsing logic
-      url.searchParams.set('parent_id', params.parentId === null ? 'null' : params.parentId);
-    }
-
-    // Handle containerId parameter
-    if (params.containerId !== undefined) {
-      url.searchParams.set('container_id', params.containerId);
-    }
-
-    return url.toString();
-  }
-
   async queryNodes(params: QueryNodesParams): Promise<Node[]> {
     try {
-      const url = this.buildQueryUrl(params);
-      const response = await globalThis.fetch(url);
-      return await this.handleResponse<Node[]>(response);
+      const conditions: string[] = [];
+
+      // Handle parentId parameter
+      if (params.parentId !== undefined) {
+        conditions.push(`parent_id = ${this.toSurrealValue(params.parentId)}`);
+      }
+
+      // Handle containerId parameter
+      if (params.containerId !== undefined) {
+        conditions.push(`container_node_id = ${this.toSurrealValue(params.containerId)}`);
+      }
+
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const sql = `SELECT * FROM nodes ${whereClause} ORDER BY created_at ASC;`;
+
+      const result = await this.surrealQuery<Array<Record<string, unknown>>>(sql);
+      return result ? result.map((node) => this.mapSurrealNodeToTypescript(node)) : [];
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, params.parentId ?? 'query', 'queryNodes');
@@ -1186,26 +1332,25 @@ export class HttpAdapter implements BackendAdapter {
 
   async getNodesByContainerId(containerId: string): Promise<Node[]> {
     try {
-      const response = await globalThis.fetch(
-        `${this.baseUrl}/api/nodes/by-container/${encodeURIComponent(containerId)}`
-      );
-      return await this.handleResponse<Node[]>(response);
+      const sql = `SELECT * FROM nodes WHERE container_node_id = ${this.toSurrealValue(containerId)} ORDER BY created_at ASC;`;
+      const result = await this.surrealQuery<Array<Record<string, unknown>>>(sql);
+      return result ? result.map((node) => this.mapSurrealNodeToTypescript(node)) : [];
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, containerId, 'getNodesByContainerId');
     }
   }
 
-  async mentionAutocomplete(query: string, limit?: number): Promise<Node[]> {
+  async mentionAutocomplete(query: string, limit: number = 10): Promise<Node[]> {
     try {
-      const response = await globalThis.fetch(`${this.baseUrl}/api/mentions/autocomplete`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ query, limit })
-      });
-      return await this.handleResponse<Node[]>(response);
+      const escapedQuery = this.escapeSurrealString(query);
+      const sql = `
+        SELECT * FROM nodes
+        WHERE string::lowercase(content) CONTAINS string::lowercase("${escapedQuery}")
+        LIMIT ${limit};
+      `;
+      const result = await this.surrealQuery<Array<Record<string, unknown>>>(sql);
+      return result ? result.map((node) => this.mapSurrealNodeToTypescript(node)) : [];
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, query, 'mentionAutocomplete');
@@ -1411,12 +1556,49 @@ export class HttpAdapter implements BackendAdapter {
 
   async createNodeMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
     try {
-      const response = await globalThis.fetch(`${this.baseUrl}/api/nodes/mention`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mentioningNodeId, mentionedNodeId })
-      });
-      await this.handleResponse<void>(response);
+      // Get both nodes to determine their node types and container IDs
+      const [sourceNode, targetNode] = await Promise.all([
+        this.getNode(mentioningNodeId),
+        this.getNode(mentionedNodeId)
+      ]);
+
+      if (!sourceNode || !targetNode) {
+        throw new Error(
+          `Cannot create mention: ${!sourceNode ? 'source' : 'target'} node not found`
+        );
+      }
+
+      // Prevent self-references
+      if (mentioningNodeId === mentionedNodeId) {
+        throw new Error('Cannot create self-referencing mention');
+      }
+
+      // Prevent container-level self-references (child mentioning its own container)
+      if (sourceNode.containerNodeId === mentionedNodeId) {
+        throw new Error('Cannot mention own container node');
+      }
+
+      // Use container ID of the mentioning node (source)
+      const containerId = sourceNode.containerNodeId || mentioningNodeId;
+
+      // Check if mention already exists (idempotent operation)
+      const checkSql = `
+        SELECT id FROM mentions
+        WHERE in = nodes:\`${mentioningNodeId}\`
+        AND out = nodes:\`${mentionedNodeId}\`;
+      `;
+      const existing = await this.surrealQuery<unknown[]>(checkSql);
+
+      // Only create if it doesn't exist
+      if (!existing || existing.length === 0) {
+        const sql = `
+          RELATE nodes:\`${mentioningNodeId}\`->mentions->nodes:\`${mentionedNodeId}\`
+          CONTENT {
+            container_id: ${this.toSurrealValue(containerId)}
+          };
+        `;
+        await this.surrealQuery(sql);
+      }
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(
@@ -1429,13 +1611,25 @@ export class HttpAdapter implements BackendAdapter {
 
   async getOutgoingMentions(nodeId: string): Promise<string[]> {
     try {
-      const response = await globalThis.fetch(
-        `${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/outgoing-mentions`,
-        {
-          method: 'GET'
-        }
-      );
-      return await this.handleResponse<string[]>(response);
+      // Query the mentions graph relation table
+      // Get all nodes that this node mentions (outgoing links)
+      const sql = `
+        SELECT out FROM mentions
+        WHERE in = nodes:\`${nodeId}\`;
+      `;
+      const results = await this.surrealQuery<Array<{ out: string }>>(sql);
+
+      if (!results || results.length === 0) {
+        return [];
+      }
+
+      // Extract node IDs from the 'out' field
+      // SurrealDB returns record IDs like "nodes:uuid", extract just the UUID
+      return results.map((r) => {
+        const recordId = r.out;
+        // Remove 'nodes:' prefix and backticks if present
+        return recordId.replace(/^nodes:`?/, '').replace(/`$/, '');
+      });
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, nodeId, 'getOutgoingMentions');
@@ -1444,13 +1638,25 @@ export class HttpAdapter implements BackendAdapter {
 
   async getIncomingMentions(nodeId: string): Promise<string[]> {
     try {
-      const response = await globalThis.fetch(
-        `${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/incoming-mentions`,
-        {
-          method: 'GET'
-        }
-      );
-      return await this.handleResponse<string[]>(response);
+      // Query the mentions graph relation table
+      // Get all nodes that mention this node (incoming links)
+      const sql = `
+        SELECT in FROM mentions
+        WHERE out = nodes:\`${nodeId}\`;
+      `;
+      const results = await this.surrealQuery<Array<{ in: string }>>(sql);
+
+      if (!results || results.length === 0) {
+        return [];
+      }
+
+      // Extract node IDs from the 'in' field
+      // SurrealDB returns record IDs like "nodes:uuid", extract just the UUID
+      return results.map((r) => {
+        const recordId = r.in;
+        // Remove 'nodes:' prefix and backticks if present
+        return recordId.replace(/^nodes:`?/, '').replace(/`$/, '');
+      });
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, nodeId, 'getIncomingMentions');
@@ -1459,13 +1665,21 @@ export class HttpAdapter implements BackendAdapter {
 
   async getMentioningContainers(nodeId: string): Promise<string[]> {
     try {
-      const response = await globalThis.fetch(
-        `${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/mentioning-containers`,
-        {
-          method: 'GET'
-        }
-      );
-      return await this.handleResponse<string[]>(response);
+      // Get all container_ids from mentions where this node is mentioned
+      // This returns the containers that have nodes mentioning this node
+      const sql = `
+        SELECT container_id FROM mentions
+        WHERE out = nodes:\`${nodeId}\`;
+      `;
+      const results = await this.surrealQuery<Array<{ container_id: string }>>(sql);
+
+      if (!results || results.length === 0) {
+        return [];
+      }
+
+      // Extract unique container IDs
+      const containerIds = new Set(results.map((r) => r.container_id).filter((id) => id));
+      return Array.from(containerIds);
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, nodeId, 'getMentioningContainers');
@@ -1474,12 +1688,13 @@ export class HttpAdapter implements BackendAdapter {
 
   async deleteNodeMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
     try {
-      const response = await globalThis.fetch(`${this.baseUrl}/api/nodes/mention`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mentioningNodeId, mentionedNodeId })
-      });
-      await this.handleResponse<void>(response);
+      // Delete the mention relation from the graph table
+      const sql = `
+        DELETE FROM mentions
+        WHERE in = nodes:\`${mentioningNodeId}\`
+        AND out = nodes:\`${mentionedNodeId}\`;
+      `;
+      await this.surrealQuery(sql);
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(
@@ -1492,22 +1707,27 @@ export class HttpAdapter implements BackendAdapter {
 
   // === Schema Management Operations ===
   //
-  // NOTE: Schema operations use retryOnTransientError wrapper to handle SQLite write lock contention.
-  // This is consistent with the established pattern for mutation operations (see node and embedding endpoints).
-  // Read operations also use retry for consistency, though they're less likely to encounter lock errors.
+  // NOTE: Schema operations query the nodes table where node_type = "schema"
+  // The schema definition is stored in the properties field of the schema node
 
   async getSchema(schemaId: string): Promise<SchemaDefinition> {
-    return await this.retryOnTransientError(async () => {
-      const response = await globalThis.fetch(
-        `${this.baseUrl}/api/schemas/${encodeURIComponent(schemaId)}`,
-        {
-          method: 'GET',
-          headers: { 'Content-Type': 'application/json' }
-        }
-      );
+    try {
+      const sql = `SELECT * FROM nodes:\`${schemaId}\` WHERE node_type = "schema";`;
+      const result = await this.surrealQuery<Array<Record<string, unknown>>>(sql);
 
-      return await this.handleResponse<SchemaDefinition>(response);
-    });
+      if (!result || result.length === 0) {
+        throw new Error(`Schema not found: ${schemaId}`);
+      }
+
+      const schemaNode = this.mapSurrealNodeToTypescript(result[0]);
+
+      // Parse schema definition from properties field
+      // The properties field contains the complete SchemaDefinition
+      return schemaNode.properties as unknown as SchemaDefinition;
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, schemaId, 'getSchema');
+    }
   }
 
   async addSchemaField(schemaId: string, config: AddFieldConfig): Promise<AddFieldResult> {
@@ -1592,7 +1812,7 @@ function isTauriEnvironment(): boolean {
  * Get the appropriate backend adapter based on runtime environment
  *
  * - Tauri desktop app: Returns TauriAdapter (uses IPC)
- * - Web dev mode: Returns HttpAdapter (uses HTTP to port 3001)
+ * - Web dev mode: Returns HttpAdapter (uses SurrealDB HTTP API on port 8000)
  *
  * @returns BackendAdapter instance appropriate for current environment
  */
@@ -1601,7 +1821,7 @@ export function getBackendAdapter(): BackendAdapter {
     console.log('[BackendAdapter] Using Tauri IPC adapter');
     return new TauriAdapter();
   } else {
-    console.log('[BackendAdapter] Using HTTP dev server adapter (port 3001)');
+    console.log('[BackendAdapter] Using SurrealDB HTTP adapter (port 8000)');
     return new HttpAdapter();
   }
 }
