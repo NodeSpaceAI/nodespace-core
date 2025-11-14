@@ -4,7 +4,8 @@
  * This script initializes the SurrealDB database with the NodeSpace schema:
  * 1. Creates namespace and database
  * 2. Defines nodes table (SCHEMALESS for flexibility)
- * 3. Seeds core schema definitions (task, text, date, etc.)
+ * 3. Defines mentions table (graph relation table for node mentions)
+ * 4. Seeds core schema definitions (task, text, date, etc.)
  *
  * Run this script after starting the SurrealDB server (`bun run dev:db`)
  *
@@ -104,6 +105,19 @@ async function createNodesTable(): Promise<void> {
   `);
 
   console.log('✅ Nodes table created');
+}
+
+/**
+ * Create mentions table (graph relation table for node mentions)
+ */
+async function createMentionsTable(): Promise<void> {
+  console.log('🗄️  Creating mentions graph relation table...');
+
+  await query(`
+    DEFINE TABLE IF NOT EXISTS mentions SCHEMALESS;
+  `);
+
+  console.log('✅ Mentions table created');
 }
 
 /**
@@ -361,6 +375,7 @@ async function initialize(): Promise<void> {
     // Initialize database
     await initializeNamespace();
     await createNodesTable();
+    await createMentionsTable();
     await seedCoreSchemas();
 
     console.log('\n✨ SurrealDB initialization complete!');

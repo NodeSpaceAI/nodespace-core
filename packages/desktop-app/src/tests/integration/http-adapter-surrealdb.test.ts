@@ -22,6 +22,17 @@
  * Tests require SurrealDB server running on localhost:8000.
  * Start server with: `bun run dev:db`
  *
+ * ## Test Execution Requirements
+ *
+ * **IMPORTANT**: These tests must run serially (not in parallel) because they share
+ * the same database state and use `beforeEach` cleanup. Running tests in parallel
+ * can cause race conditions where one test's cleanup interferes with another test's
+ * execution.
+ *
+ * Vitest configuration should ensure serial execution for integration tests.
+ * Alternatively, tests could be refactored to use isolated namespaces per test suite
+ * (e.g., `DEFINE NAMESPACE test_${Date.now()};`) to enable safe parallel execution.
+ *
  * ## Skip Conditions
  *
  * Tests are automatically skipped if:
