@@ -58,8 +58,8 @@ async function initializeDatabase(): Promise<void> {
     const response = await globalThis.fetch('http://localhost:8000/sql', {
       method: 'POST',
       headers: {
-        'Accept': 'application/json',
-        'Authorization': 'Basic ' + globalThis.btoa('root:root')
+        Accept: 'application/json',
+        Authorization: 'Basic ' + globalThis.btoa('root:root')
       },
       body: `
         DEFINE NAMESPACE nodespace;
@@ -87,8 +87,8 @@ async function cleanDatabase(): Promise<void> {
     const response = await globalThis.fetch('http://localhost:8000/sql', {
       method: 'POST',
       headers: {
-        'Accept': 'application/json',
-        'Authorization': 'Basic ' + globalThis.btoa('root:root')
+        Accept: 'application/json',
+        Authorization: 'Basic ' + globalThis.btoa('root:root')
       },
       body: 'USE NS nodespace; USE DB nodes; DELETE nodes;'
     });
@@ -125,9 +125,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
 
   describe('Basic CRUD Operations', () => {
     it('should create a node', async () => {
-      const nodeData = TestNodeBuilder.text('Hello SurrealDB')
-        .withId('test-create-node')
-        .build();
+      const nodeData = TestNodeBuilder.text('Hello SurrealDB').withId('test-create-node').build();
 
       const nodeId = await adapter.createNode(nodeData);
 
@@ -142,9 +140,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
     });
 
     it('should get a node by ID', async () => {
-      const nodeData = TestNodeBuilder.text('Get me')
-        .withId('test-get-node')
-        .build();
+      const nodeData = TestNodeBuilder.text('Get me').withId('test-get-node').build();
 
       await adapter.createNode(nodeData);
 
@@ -162,9 +158,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
     });
 
     it('should update a node', async () => {
-      const nodeData = TestNodeBuilder.text('Original content')
-        .withId('test-update-node')
-        .build();
+      const nodeData = TestNodeBuilder.text('Original content').withId('test-update-node').build();
 
       await adapter.createNode(nodeData);
 
@@ -183,9 +177,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
     });
 
     it('should update node type', async () => {
-      const nodeData = TestNodeBuilder.text('Change my type')
-        .withId('test-update-type')
-        .build();
+      const nodeData = TestNodeBuilder.text('Change my type').withId('test-update-type').build();
 
       await adapter.createNode(nodeData);
 
@@ -199,9 +191,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
     });
 
     it('should delete a node', async () => {
-      const nodeData = TestNodeBuilder.text('Delete me')
-        .withId('test-delete-node')
-        .build();
+      const nodeData = TestNodeBuilder.text('Delete me').withId('test-delete-node').build();
 
       await adapter.createNode(nodeData);
 
@@ -228,9 +218,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
 
   describe('Optimistic Concurrency Control', () => {
     it('should detect version conflicts on update', async () => {
-      const nodeData = TestNodeBuilder.text('Version test')
-        .withId('test-version-conflict')
-        .build();
+      const nodeData = TestNodeBuilder.text('Version test').withId('test-version-conflict').build();
 
       await adapter.createNode(nodeData);
 
@@ -260,7 +248,9 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
       });
 
       // Delete with stale version should fail
-      await expect(adapter.deleteNode('test-version-delete', 1)).rejects.toThrow(/Version conflict/);
+      await expect(adapter.deleteNode('test-version-delete', 1)).rejects.toThrow(
+        /Version conflict/
+      );
     });
 
     it('should increment version on each update', async () => {
@@ -290,9 +280,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
 
   describe('Hierarchy Operations', () => {
     it('should create and retrieve parent-child relationship', async () => {
-      const parentData = TestNodeBuilder.text('Parent')
-        .withId('test-parent')
-        .build();
+      const parentData = TestNodeBuilder.text('Parent').withId('test-parent').build();
 
       const childData = TestNodeBuilder.text('Child')
         .withId('test-child')
@@ -311,9 +299,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
     });
 
     it('should maintain sibling order', async () => {
-      const parentData = TestNodeBuilder.text('Parent')
-        .withId('test-sibling-parent')
-        .build();
+      const parentData = TestNodeBuilder.text('Parent').withId('test-sibling-parent').build();
 
       await adapter.createNode(parentData);
 
@@ -351,13 +337,9 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
     });
 
     it('should update parent relationship', async () => {
-      const parent1Data = TestNodeBuilder.text('Parent 1')
-        .withId('test-parent-1')
-        .build();
+      const parent1Data = TestNodeBuilder.text('Parent 1').withId('test-parent-1').build();
 
-      const parent2Data = TestNodeBuilder.text('Parent 2')
-        .withId('test-parent-2')
-        .build();
+      const parent2Data = TestNodeBuilder.text('Parent 2').withId('test-parent-2').build();
 
       const childData = TestNodeBuilder.text('Moveable child')
         .withId('test-moveable-child')
@@ -389,9 +371,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
 
   describe('Query Operations', () => {
     it('should query nodes by parentId', async () => {
-      const parentData = TestNodeBuilder.text('Query parent')
-        .withId('test-query-parent')
-        .build();
+      const parentData = TestNodeBuilder.text('Query parent').withId('test-query-parent').build();
 
       await adapter.createNode(parentData);
 
@@ -418,13 +398,9 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
     });
 
     it('should query root nodes (parentId = null)', async () => {
-      const root1Data = TestNodeBuilder.text('Root 1')
-        .withId('test-root-1')
-        .build();
+      const root1Data = TestNodeBuilder.text('Root 1').withId('test-root-1').build();
 
-      const root2Data = TestNodeBuilder.text('Root 2')
-        .withId('test-root-2')
-        .build();
+      const root2Data = TestNodeBuilder.text('Root 2').withId('test-root-2').build();
 
       await adapter.createNode(root1Data);
       await adapter.createNode(root2Data);
@@ -440,9 +416,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
     });
 
     it('should query nodes by containerId', async () => {
-      const containerData = TestNodeBuilder.text('Container')
-        .withId('test-container')
-        .build();
+      const containerData = TestNodeBuilder.text('Container').withId('test-container').build();
 
       const node1Data = TestNodeBuilder.text('Contained 1')
         .withId('test-contained-1')
@@ -503,9 +477,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
     });
 
     it('should get nodes by container ID', async () => {
-      const containerData = TestNodeBuilder.text('Container')
-        .withId('test-get-container')
-        .build();
+      const containerData = TestNodeBuilder.text('Container').withId('test-get-container').build();
 
       const node1Data = TestNodeBuilder.text('Node 1')
         .withId('test-get-node-1')
@@ -538,9 +510,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
         .withId('test-mention-2')
         .build();
 
-      const node3Data = TestNodeBuilder.text('Deep learning')
-        .withId('test-mention-3')
-        .build();
+      const node3Data = TestNodeBuilder.text('Deep learning').withId('test-mention-3').build();
 
       await adapter.createNode(node1Data);
       await adapter.createNode(node2Data);
@@ -571,9 +541,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
     it('should respect limit parameter', async () => {
       // Create many matching nodes
       for (let i = 0; i < 20; i++) {
-        const nodeData = TestNodeBuilder.text(`Limit test ${i}`)
-          .withId(`test-limit-${i}`)
-          .build();
+        const nodeData = TestNodeBuilder.text(`Limit test ${i}`).withId(`test-limit-${i}`).build();
         await adapter.createNode(nodeData);
       }
 
@@ -628,9 +596,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
     });
 
     it('should store timestamps (createdAt, modifiedAt)', async () => {
-      const nodeData = TestNodeBuilder.text('Timestamp test')
-        .withId('test-timestamps')
-        .build();
+      const nodeData = TestNodeBuilder.text('Timestamp test').withId('test-timestamps').build();
 
       await adapter.createNode(nodeData);
 
@@ -643,9 +609,7 @@ describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', (
     });
 
     it('should update modifiedAt on update', async () => {
-      const nodeData = TestNodeBuilder.text('Modified test')
-        .withId('test-modified')
-        .build();
+      const nodeData = TestNodeBuilder.text('Modified test').withId('test-modified').build();
 
       await adapter.createNode(nodeData);
 
@@ -697,9 +661,7 @@ Line 2
 Tab:\there
 Special: !@#$%^&*()`;
 
-      const nodeData = TestNodeBuilder.text(specialContent)
-        .withId('test-special-chars')
-        .build();
+      const nodeData = TestNodeBuilder.text(specialContent).withId('test-special-chars').build();
 
       await adapter.createNode(nodeData);
 
@@ -710,9 +672,7 @@ Special: !@#$%^&*()`;
     it('should prevent SQL injection via content', async () => {
       const maliciousContent = '"; DELETE FROM nodes; --';
 
-      const nodeData = TestNodeBuilder.text(maliciousContent)
-        .withId('test-sql-injection')
-        .build();
+      const nodeData = TestNodeBuilder.text(maliciousContent).withId('test-sql-injection').build();
 
       await adapter.createNode(nodeData);
 
@@ -736,9 +696,7 @@ Special: !@#$%^&*()`;
     });
 
     it('should correctly map parentId', async () => {
-      const parentData = TestNodeBuilder.text('Parent')
-        .withId('test-parent-mapping')
-        .build();
+      const parentData = TestNodeBuilder.text('Parent').withId('test-parent-mapping').build();
 
       const childData = TestNodeBuilder.text('Child')
         .withId('test-child-mapping')
@@ -803,9 +761,7 @@ Special: !@#$%^&*()`;
 
   describe('Null Value Handling', () => {
     it('should handle null parentId (root node)', async () => {
-      const nodeData = TestNodeBuilder.text('Root node')
-        .withId('test-null-parent')
-        .build();
+      const nodeData = TestNodeBuilder.text('Root node').withId('test-null-parent').build();
 
       await adapter.createNode(nodeData);
 
@@ -814,9 +770,7 @@ Special: !@#$%^&*()`;
     });
 
     it('should handle null containerNodeId', async () => {
-      const nodeData = TestNodeBuilder.text('No container')
-        .withId('test-null-container')
-        .build();
+      const nodeData = TestNodeBuilder.text('No container').withId('test-null-container').build();
 
       await adapter.createNode(nodeData);
 
@@ -837,9 +791,7 @@ Special: !@#$%^&*()`;
     });
 
     it('should handle null embeddingVector', async () => {
-      const nodeData = TestNodeBuilder.text('No embedding')
-        .withId('test-null-embedding')
-        .build();
+      const nodeData = TestNodeBuilder.text('No embedding').withId('test-null-embedding').build();
 
       await adapter.createNode(nodeData);
 
@@ -853,7 +805,11 @@ Special: !@#$%^&*()`;
       // Access private method for testing
       const invalidQuery = 'INVALID SQL SYNTAX HERE';
 
-      await expect((adapter as unknown as { surrealQuery: (sql: string) => Promise<unknown> }).surrealQuery(invalidQuery)).rejects.toThrow();
+      await expect(
+        (adapter as unknown as { surrealQuery: (sql: string) => Promise<unknown> }).surrealQuery(
+          invalidQuery
+        )
+      ).rejects.toThrow();
     });
 
     it('should throw error on update with non-existent node', async () => {
