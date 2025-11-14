@@ -1536,12 +1536,49 @@ export class HttpAdapter implements BackendAdapter {
 
   async createNodeMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
     try {
-      const response = await globalThis.fetch(`${this.baseUrl}/api/nodes/mention`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mentioningNodeId, mentionedNodeId })
-      });
-      await this.handleResponse<void>(response);
+      // Get both nodes to determine their node types and container IDs
+      const [sourceNode, targetNode] = await Promise.all([
+        this.getNode(mentioningNodeId),
+        this.getNode(mentionedNodeId)
+      ]);
+
+      if (!sourceNode || !targetNode) {
+        throw new Error(
+          `Cannot create mention: ${!sourceNode ? 'source' : 'target'} node not found`
+        );
+      }
+
+      // Prevent self-references
+      if (mentioningNodeId === mentionedNodeId) {
+        throw new Error('Cannot create self-referencing mention');
+      }
+
+      // Prevent container-level self-references (child mentioning its own container)
+      if (sourceNode.containerNodeId === mentionedNodeId) {
+        throw new Error('Cannot mention own container node');
+      }
+
+      // Use container ID of the mentioning node (source)
+      const containerId = sourceNode.containerNodeId || mentioningNodeId;
+
+      // Check if mention already exists (idempotent operation)
+      const checkSql = `
+        SELECT id FROM mentions
+        WHERE in = nodes:\`${mentioningNodeId}\`
+        AND out = nodes:\`${mentionedNodeId}\`;
+      `;
+      const existing = await this.surrealQuery<unknown[]>(checkSql);
+
+      // Only create if it doesn't exist
+      if (!existing || existing.length === 0) {
+        const sql = `
+          RELATE nodes:\`${mentioningNodeId}\`->mentions->nodes:\`${mentionedNodeId}\`
+          CONTENT {
+            container_id: ${this.toSurrealValue(containerId)}
+          };
+        `;
+        await this.surrealQuery(sql);
+      }
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(
@@ -1554,13 +1591,25 @@ export class HttpAdapter implements BackendAdapter {
 
   async getOutgoingMentions(nodeId: string): Promise<string[]> {
     try {
-      const response = await globalThis.fetch(
-        `${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/outgoing-mentions`,
-        {
-          method: 'GET'
-        }
-      );
-      return await this.handleResponse<string[]>(response);
+      // Query the mentions graph relation table
+      // Get all nodes that this node mentions (outgoing links)
+      const sql = `
+        SELECT out FROM mentions
+        WHERE in = nodes:\`${nodeId}\`;
+      `;
+      const results = await this.surrealQuery<Array<{ out: string }>>(sql);
+
+      if (!results || results.length === 0) {
+        return [];
+      }
+
+      // Extract node IDs from the 'out' field
+      // SurrealDB returns record IDs like "nodes:uuid", extract just the UUID
+      return results.map((r) => {
+        const recordId = r.out;
+        // Remove 'nodes:' prefix and backticks if present
+        return recordId.replace(/^nodes:`?/, '').replace(/`$/, '');
+      });
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, nodeId, 'getOutgoingMentions');
@@ -1569,13 +1618,25 @@ export class HttpAdapter implements BackendAdapter {
 
   async getIncomingMentions(nodeId: string): Promise<string[]> {
     try {
-      const response = await globalThis.fetch(
-        `${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/incoming-mentions`,
-        {
-          method: 'GET'
-        }
-      );
-      return await this.handleResponse<string[]>(response);
+      // Query the mentions graph relation table
+      // Get all nodes that mention this node (incoming links)
+      const sql = `
+        SELECT in FROM mentions
+        WHERE out = nodes:\`${nodeId}\`;
+      `;
+      const results = await this.surrealQuery<Array<{ in: string }>>(sql);
+
+      if (!results || results.length === 0) {
+        return [];
+      }
+
+      // Extract node IDs from the 'in' field
+      // SurrealDB returns record IDs like "nodes:uuid", extract just the UUID
+      return results.map((r) => {
+        const recordId = r.in;
+        // Remove 'nodes:' prefix and backticks if present
+        return recordId.replace(/^nodes:`?/, '').replace(/`$/, '');
+      });
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, nodeId, 'getIncomingMentions');
@@ -1584,13 +1645,21 @@ export class HttpAdapter implements BackendAdapter {
 
   async getMentioningContainers(nodeId: string): Promise<string[]> {
     try {
-      const response = await globalThis.fetch(
-        `${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/mentioning-containers`,
-        {
-          method: 'GET'
-        }
-      );
-      return await this.handleResponse<string[]>(response);
+      // Get all container_ids from mentions where this node is mentioned
+      // This returns the containers that have nodes mentioning this node
+      const sql = `
+        SELECT container_id FROM mentions
+        WHERE out = nodes:\`${nodeId}\`;
+      `;
+      const results = await this.surrealQuery<Array<{ container_id: string }>>(sql);
+
+      if (!results || results.length === 0) {
+        return [];
+      }
+
+      // Extract unique container IDs
+      const containerIds = new Set(results.map((r) => r.container_id).filter((id) => id));
+      return Array.from(containerIds);
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, nodeId, 'getMentioningContainers');
@@ -1599,12 +1668,13 @@ export class HttpAdapter implements BackendAdapter {
 
   async deleteNodeMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
     try {
-      const response = await globalThis.fetch(`${this.baseUrl}/api/nodes/mention`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mentioningNodeId, mentionedNodeId })
-      });
-      await this.handleResponse<void>(response);
+      // Delete the mention relation from the graph table
+      const sql = `
+        DELETE FROM mentions
+        WHERE in = nodes:\`${mentioningNodeId}\`
+        AND out = nodes:\`${mentionedNodeId}\`;
+      `;
+      await this.surrealQuery(sql);
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(
