@@ -38,7 +38,7 @@ import type {
   StoreMetrics,
   UpdateOptions
 } from '$lib/types/update-protocol';
-import type { ConflictResolvedEvent, UpdateRolledBackEvent } from './event-types';
+import type { ConflictResolvedEvent, UpdateRolledBackEvent, NodeUpdatedEvent } from './event-types';
 import { createDefaultResolver } from './conflict-resolvers';
 
 // ============================================================================
@@ -615,9 +615,32 @@ export class SharedNodeStore {
    */
   setNode(node: Node, source: UpdateSource, skipPersistence = false): void {
     const isNewNode = !this.persistedNodeIds.has(node.id);
+
+    // Emit event for HierarchyService cache invalidation
+    // ONLY when hierarchical relationships change (parent, siblings, new nodes)
+    // Content-only updates should not trigger hierarchy cache invalidation
+    const existingNode = this.nodes.get(node.id);
+    const isHierarchyChange =
+      !existingNode ||
+      existingNode.parentId !== node.parentId ||
+      existingNode.beforeSiblingId !== node.beforeSiblingId;
+
     this.nodes.set(node.id, node);
     this.versions.set(node.id, this.getNextVersion(node.id));
     this.notifySubscribers(node.id, node, source);
+
+    if (isHierarchyChange) {
+      const event: NodeUpdatedEvent = {
+        type: 'node:updated',
+        namespace: 'lifecycle',
+        source: source.type,
+        nodeId: node.id,
+        updateType: 'hierarchy',
+        newValue: node,
+        timestamp: Date.now()
+      };
+      eventBus.emit(event as never); // Keep 'as never' only for eventBus.emit signature issue
+    }
 
     // Determine persistence behavior using new explicit API
     const options: UpdateOptions = { skipPersistence };

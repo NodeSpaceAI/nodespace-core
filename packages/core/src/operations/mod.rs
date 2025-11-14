@@ -947,12 +947,20 @@ impl NodeOperations {
                     .await?
                     .ok_or_else(|| NodeOperationError::node_not_found(new_parent_id.to_string()))?;
 
-                let new_container = parent.container_node_id.ok_or_else(|| {
-                    NodeOperationError::invalid_operation(format!(
-                        "Parent '{}' has no container_node_id",
+                // Get container from parent:
+                // - If parent has container_node_id, use it
+                // - If parent IS a container (parent_id=None), use parent's ID
+                let new_container = if let Some(container) = parent.container_node_id {
+                    container
+                } else if parent.is_root() {
+                    // Parent is a container node (e.g., date node) - use parent's ID as container
+                    new_parent_id.to_string()
+                } else {
+                    return Err(NodeOperationError::invalid_operation(format!(
+                        "Parent '{}' has no container_node_id and is not a container",
                         new_parent_id
-                    ))
-                })?;
+                    )));
+                };
 
                 // Validate parent-container consistency
                 self.validate_parent_container_consistency(Some(new_parent_id), &new_container)
@@ -1124,12 +1132,20 @@ impl NodeOperations {
                 .await?
                 .ok_or_else(|| NodeOperationError::node_not_found(parent_id.to_string()))?;
 
-            parent.container_node_id.ok_or_else(|| {
-                NodeOperationError::invalid_operation(format!(
-                    "Parent '{}' has no container_node_id (parent should be in a container or be a container itself)",
+            // Get container from parent:
+            // - If parent has container_node_id, use it
+            // - If parent IS a container (parent_id=None), use parent's ID
+            if let Some(container) = parent.container_node_id {
+                container
+            } else if parent.is_root() {
+                // Parent is a container node (e.g., date node) - use parent's ID as container
+                parent_id.to_string()
+            } else {
+                return Err(NodeOperationError::invalid_operation(format!(
+                    "Parent '{}' has no container_node_id and is not a container",
                     parent_id
-                ))
-            })?
+                )));
+            }
         } else {
             // Moving to root - node must have explicit container
             node.container_node_id.ok_or_else(|| {

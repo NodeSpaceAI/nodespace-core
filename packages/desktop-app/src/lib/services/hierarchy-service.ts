@@ -484,6 +484,8 @@ export class HierarchyService {
     // Listen for node updates to invalidate relevant caches
     eventBus.subscribe('node:updated', (event) => {
       const nodeEvent = event as import('./event-types').NodeUpdatedEvent;
+      // CRITICAL: Listen for 'hierarchy' updateType to invalidate depth caches
+      // This is essential for cache invalidation when nodes are added/moved
       if (nodeEvent.updateType === 'hierarchy') {
         // Hierarchy changes affect multiple nodes, invalidate broadly
         this.invalidateNodeCache(nodeEvent.nodeId);

@@ -761,6 +761,35 @@
     }
   });
 
+  /**
+   * Helper function to promote a viewer-local placeholder to a real node
+   * Extracts core Node properties without UI state (depth, children, expanded)
+   *
+   * @param placeholder - The viewer-local placeholder node
+   * @param nodeId - The parent node ID
+   * @param overrides - Content and/or nodeType to override from placeholder
+   * @returns Promoted node with core properties only
+   */
+  function promotePlaceholderToNode(
+    placeholder: Node,
+    nodeId: string,
+    overrides: { content?: string; nodeType?: string }
+  ): Node {
+    return {
+      id: placeholder.id,
+      nodeType: overrides.nodeType ?? placeholder.nodeType,
+      content: overrides.content ?? placeholder.content,
+      parentId: nodeId,
+      containerNodeId: placeholder.containerNodeId,
+      beforeSiblingId: placeholder.beforeSiblingId,
+      version: placeholder.version,
+      createdAt: placeholder.createdAt,
+      modifiedAt: new Date().toISOString(),
+      properties: placeholder.properties,
+      mentions: placeholder.mentions || []
+    };
+  }
+
   async function loadChildrenForParent(nodeId: string) {
     try {
       // Set loading flag to prevent watchers from triggering during initial load
@@ -798,12 +827,19 @@
           // Issue #479 Phase 1: Placeholder is completely viewer-local (NOT added to SharedNodeStore)
           // It's rendered via nodesToRender derived state and promoted to real node when user adds content
           const placeholderId = globalThis.crypto.randomUUID();
+
+          // Get viewer's node to inherit correct container
+          const viewerNode = sharedNodeStore.getNode(nodeId);
+
+          // Inherit container: use parent's containerNodeId if available, otherwise parent IS the container
+          const inheritedContainer = viewerNode?.containerNodeId ?? nodeId;
+
           viewerPlaceholder = {
             id: placeholderId,
             nodeType: 'text',
             content: '',
-            parentId: nodeId, // Set to viewer's container so if persisted, it's properly parented
-            containerNodeId: nodeId, // Same as parentId - viewer's nodeId is the container
+            parentId: nodeId,
+            containerNodeId: inheritedContainer,
             beforeSiblingId: null,
             createdAt: new Date().toISOString(),
             modifiedAt: new Date().toISOString(),
@@ -1710,12 +1746,9 @@
                     nodeId
                   ) {
                     // Promote placeholder to real node by assigning parent and adding to store
-                    const promotedNode: Node = {
-                      ...viewerPlaceholder,
-                      content,
-                      parentId: nodeId,
-                      containerNodeId: nodeId
-                    };
+                    const promotedNode = promotePlaceholderToNode(viewerPlaceholder, nodeId, {
+                      content
+                    });
 
                     // Add to shared store (in-memory only, don't persist yet)
                     // Subsequent typing will trigger updateNodeContent() which handles persistence
@@ -1788,13 +1821,10 @@
                       e.detail.nodeType
                     );
                     // Promote placeholder to real node with the new type
-                    const promotedNode: Node = {
-                      ...viewerPlaceholder,
+                    const promotedNode = promotePlaceholderToNode(viewerPlaceholder, nodeId, {
                       content: node.content || '',
-                      parentId: nodeId,
-                      containerNodeId: nodeId,
                       nodeType: e.detail.nodeType
-                    };
+                    });
 
                     // Add to store and trigger persistence
                     sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
@@ -1884,13 +1914,10 @@
                       e.detail.nodeType
                     );
                     // Promote placeholder to real node with the new type
-                    const promotedNode: Node = {
-                      ...viewerPlaceholder,
+                    const promotedNode = promotePlaceholderToNode(viewerPlaceholder, nodeId, {
                       content: node.content || '',
-                      parentId: nodeId,
-                      containerNodeId: nodeId,
                       nodeType: e.detail.nodeType
-                    };
+                    });
 
                     // Add to store and trigger persistence
                     sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);

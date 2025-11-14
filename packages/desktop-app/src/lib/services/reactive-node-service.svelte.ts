@@ -70,7 +70,24 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   // Subscribe to SharedNodeStore changes for reactive updates
   // Wildcard subscription - updates _updateTrigger when any node changes
   // Note: Unsubscribe handled automatically when service instance is garbage collected
-  const _unsubscribe = sharedNodeStore.subscribeAll(() => {
+  const _unsubscribe = sharedNodeStore.subscribeAll((node) => {
+    // CRITICAL: Initialize UI state for new nodes (e.g., promoted placeholders)
+    // If UI state doesn't exist, compute depth and create default state
+    if (!_uiState[node.id]) {
+      // Compute depth recursively
+      const computeDepth = (nodeId: string, visited = new Set<string>()): number => {
+        if (visited.has(nodeId)) return 0; // Prevent infinite recursion
+        visited.add(nodeId);
+
+        const n = sharedNodeStore.getNode(nodeId);
+        if (!n || !n.parentId) return 0;
+        return 1 + computeDepth(n.parentId, visited);
+      };
+
+      const depth = computeDepth(node.id);
+      _uiState[node.id] = createDefaultUIState(node.id, { depth });
+    }
+
     _updateTrigger++;
   });
 
