@@ -6,8 +6,8 @@
   "scripts": {
     "preinstall": "node ../../enforce-bun.js",
     "dev:check": "bun run scripts/check-dev-deps.ts",
-    "dev:db": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info file://.nodespace/dev.db",
-    "dev:db:memory": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info memory",
+    "dev:db": "$HOME/.surrealdb/surreal start --bind 127.0.0.1:8000 --user root --pass root --log info file://.nodespace/dev.db",
+    "dev:db:memory": "$HOME/.surrealdb/surreal start --bind 127.0.0.1:8000 --user root --pass root --log info memory",
     "dev:frontend": "bunx vite dev",
     "dev": "bun run dev:check && bunx concurrently --names \"DB,UI\" --prefix-colors \"blue,green\" \"bun run dev:db\" \"bun run dev:frontend\"",
     "dev:web": "bunx vite dev --port 1421",

@@ -12,16 +12,34 @@ const execAsync = promisify(exec);
 
 async function checkSurrealDB(): Promise<boolean> {
   try {
-    const { stdout } = await execAsync('surreal version');
-    console.log('✅ SurrealDB installed:', stdout.split('\n')[0]);
-    return true;
+    // Try common installation locations
+    const surrealPaths = [
+      `${process.env.HOME}/.surrealdb/surreal`,
+      '/usr/local/bin/surreal',
+      'surreal' // In PATH
+    ];
+
+    for (const surrealPath of surrealPaths) {
+      try {
+        const { stdout } = await execAsync(`${surrealPath} version`);
+        console.log('✅ SurrealDB installed:', stdout.split('\n')[0]);
+        console.log(`   Location: ${surrealPath}`);
+        return true;
+      } catch {
+        continue;
+      }
+    }
+
+    throw new Error('SurrealDB not found in any location');
   } catch {
     console.error('❌ SurrealDB not found');
     console.error('\nInstallation instructions:');
-    console.error('  macOS:   brew install surrealdb/tap/surreal');
+    console.error('  macOS:   curl -sSf https://install.surrealdb.com | sh');
     console.error('  Linux:   curl -sSf https://install.surrealdb.com | sh');
     console.error('  Windows: iwr https://install.surrealdb.com -useb | iex');
     console.error('\nDocs: https://surrealdb.com/docs/installation');
+    console.error('\nNote: After installation, restart your terminal or run:');
+    console.error('  export PATH="$HOME/.surrealdb:$PATH"');
     return false;
   }
 }
