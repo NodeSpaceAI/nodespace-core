@@ -952,15 +952,17 @@ export class HttpAdapter implements BackendAdapter {
    * @throws Error if query fails or returns error status
    */
   private async surrealQuery<T = unknown>(sql: string): Promise<T> {
+    // Prepend USE statements to ensure namespace/database context
+    // This is needed because HTTP API doesn't maintain session state
+    const fullSql = `USE NS nodespace; USE DB nodes; ${sql}`;
+
     const response = await globalThis.fetch(`${this.baseUrl}/sql`, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
-        Authorization: this.auth,
-        NS: 'nodespace',
-        DB: 'nodes'
+        Authorization: this.auth
       },
-      body: sql
+      body: fullSql
     });
 
     if (!response.ok) {
@@ -971,12 +973,15 @@ export class HttpAdapter implements BackendAdapter {
     const results = await response.json();
 
     // SurrealDB returns array of results (one per statement)
+    // The actual query result is at index 2 (after USE NS and USE DB)
+    const queryResult = results[2];
+
     // Check for errors in result
-    if (results[0]?.status === 'ERR') {
-      throw new Error(`SurrealDB query error: ${results[0]?.result}`);
+    if (queryResult?.status === 'ERR') {
+      throw new Error(`SurrealDB query error: ${queryResult?.result}`);
     }
 
-    return results[0]?.result;
+    return queryResult?.result;
   }
 
   private async handleResponse<T>(response: globalThis.Response): Promise<T> {
