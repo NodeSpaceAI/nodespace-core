@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "preinstall": "node ../../enforce-bun.js",
+    "postinstall": "bun run scripts/check-dev-deps.ts || true",
     "dev:check": "bun run scripts/check-dev-deps.ts",
     "dev:db": "$HOME/.surrealdb/surreal start --bind 127.0.0.1:8000 --user root --pass root --log info file://.nodespace/dev.db",
     "dev:db:memory": "$HOME/.surrealdb/surreal start --bind 127.0.0.1:8000 --user root --pass root --log info memory",
