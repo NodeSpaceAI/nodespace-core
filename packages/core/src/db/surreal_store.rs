@@ -248,7 +248,9 @@ impl SurrealStore {
         tracing::info!("🌱 Seeding core schemas...");
 
         // Create temporary SurrealStore to use create_node method
-        let store = Self { db: db.clone().into() };
+        let store = Self {
+            db: db.clone().into(),
+        };
 
         let now = Utc::now();
 

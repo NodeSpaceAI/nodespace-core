@@ -218,7 +218,7 @@ pub async fn select_db_location(app: AppHandle) -> Result<String, String> {
         FilePath::Url(url) => PathBuf::from(url.path()),
     };
 
-    let db_path = folder_path.join("nodespace.db");
+    let db_path = folder_path.join("nodespace");
 
     // Save preference
     save_db_path_preference(&app, &db_path).await?;
@@ -245,7 +245,7 @@ async fn migrate_database_if_needed(app: &AppHandle) -> Result<(), String> {
         .path()
         .app_data_dir()
         .map_err(|e| format!("Failed to get old app data directory: {}", e))?
-        .join("nodespace.db");
+        .join("nodespace");
 
     if !old_path.exists() {
         return Ok(()); // Nothing to migrate
@@ -256,7 +256,7 @@ async fn migrate_database_if_needed(app: &AppHandle) -> Result<(), String> {
     let new_path = home_dir
         .join(".nodespace")
         .join("database")
-        .join("nodespace.db");
+        .join("nodespace");
 
     if new_path.exists() {
         return Ok(()); // Already migrated
@@ -325,7 +325,7 @@ pub async fn initialize_database(app: AppHandle) -> Result<String, String> {
         home_dir
             .join(".nodespace")
             .join("database")
-            .join("nodespace.db")
+            .join("nodespace")
     };
 
     // Ensure database directory exists
