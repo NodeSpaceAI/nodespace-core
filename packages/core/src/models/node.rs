@@ -1223,7 +1223,7 @@ mod tests {
     }
 
     #[test]
-    fn test_node_validation_empty_content() {
+    fn test_node_validation_accepts_blank_content() {
         // Issue #484: Blank content is now allowed (supports ephemeral node elimination from #479)
         let mut node = Node::new(
             "text".to_string(),
