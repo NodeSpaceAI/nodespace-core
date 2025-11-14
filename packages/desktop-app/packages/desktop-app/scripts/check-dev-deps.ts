@@ -34,12 +34,13 @@ async function checkSurrealDB(): Promise<boolean> {
   } catch {
     console.error('❌ SurrealDB not found');
     console.error('\nInstallation instructions:');
-    console.error('  macOS:   curl -sSf https://install.surrealdb.com | sh');
-    console.error('  Linux:   curl -sSf https://install.surrealdb.com | sh');
-    console.error('  Windows: iwr https://install.surrealdb.com -useb | iex');
+    console.error('  macOS/Linux: curl -sSf https://install.surrealdb.com | sh');
+    console.error('  Windows:     iwr https://install.surrealdb.com -useb | iex');
     console.error('\nDocs: https://surrealdb.com/docs/installation');
-    console.error('\nNote: After installation, restart your terminal or run:');
-    console.error('  export PATH="$HOME/.surrealdb:$PATH"');
+    console.error('\nNote: After installation, you may need to:');
+    console.error('  • Restart your terminal');
+    console.error('  • Unix: Add to PATH with: export PATH="$HOME/.surrealdb:$PATH"');
+    console.error('  • Windows: The installer should add to PATH automatically');
     return false;
   }
 }
