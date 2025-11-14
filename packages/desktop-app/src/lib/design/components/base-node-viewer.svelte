@@ -110,11 +110,7 @@
         currentViewedNode = node || null;
 
         // Update tab title after node is loaded
-        // Skip if this is a date node - DateNodeViewer handles its own title formatting
-        const isDateNode = /^\d{4}-\d{2}-\d{2}$/.test(nodeId);
-        if (!isDateNode) {
-          updateTabTitle(headerContent);
-        }
+        updateTabTitle(headerContent);
       });
     } else {
       // Clear when no nodeId
@@ -807,7 +803,7 @@
             nodeType: 'text',
             content: '',
             parentId: nodeId, // Set to viewer's container so if persisted, it's properly parented
-            containerNodeId: null,
+            containerNodeId: nodeId, // Same as parentId - viewer's nodeId is the container
             beforeSiblingId: null,
             createdAt: new Date().toISOString(),
             modifiedAt: new Date().toISOString(),
@@ -875,52 +871,6 @@
     // No-op: PersistenceCoordinator handles dependency ordering automatically
     // via the dependencies array in persist() calls
     return Promise.resolve();
-  }
-
-  /**
-   * Save hierarchy changes (parent_id, before_sibling_id) after indent/outdent operations
-   * Updates immediately without debouncing since these are explicit user actions
-   *
-   * Delegates to SharedNodeStore for persistence.
-   * Skips placeholder nodes - they should not be persisted yet
-   */
-  async function saveHierarchyChange(childNodeId: string) {
-    if (!nodeId) return;
-
-    try {
-      const node = nodeManager.findNode(childNodeId);
-      if (!node) {
-        console.error('[BaseNodeViewer] Cannot save hierarchy - node not found:', childNodeId);
-        return;
-      }
-
-      // Check if node is a placeholder by looking at visibleNodes which includes UI state
-      const visibleNode = nodeManager.visibleNodes(nodeId).find((n) => n.id === childNodeId);
-      const isPlaceholder = visibleNode?.isPlaceholder || false;
-
-      // Skip placeholder nodes - they should not be persisted yet
-      if (isPlaceholder) {
-        return;
-      }
-
-      // Update node with structural changes (was saveNodeImmediately)
-      const fullNode: Node = {
-        id: childNodeId,
-        nodeType: node.nodeType,
-        content: node.content,
-        parentId: node.parentId || nodeId,
-        containerNodeId: node.containerNodeId || nodeId,
-        beforeSiblingId: node.beforeSiblingId,
-        createdAt: node.createdAt || new Date().toISOString(),
-        modifiedAt: new Date().toISOString(),
-        version: node.version || 1, // Use existing version or default to 1
-        properties: node.properties || {},
-        mentions: node.mentions || []
-      };
-      sharedNodeStore.setNode(fullNode, VIEWER_SOURCE);
-    } catch (error) {
-      console.error('[BaseNodeViewer] Failed to save hierarchy change:', childNodeId, error);
-    }
   }
 
   // Focus handling function with proper cursor positioning using tree walker
@@ -1065,10 +1015,13 @@
       return;
     }
 
-    // Update current node content if provided
+    // Update current node content if provided and actually changed
     if (currentContent !== undefined) {
-      // Use updateNodeContent for node splitting - with new reactive architecture no forcing needed
-      nodeManager.updateNodeContent(afterNodeId, currentContent);
+      const existingNode = nodeManager.findNode(afterNodeId);
+      if (existingNode && existingNode.content !== currentContent) {
+        // Use updateNodeContent for node splitting - with new reactive architecture no forcing needed
+        nodeManager.updateNodeContent(afterNodeId, currentContent);
+      }
     }
 
     // Create new node using NodeManager - placeholder if empty, real if has content
@@ -1153,8 +1106,8 @@
       const success = nodeManager.indentNode(nodeId);
 
       if (success) {
-        // Persist hierarchy change - AWAIT to ensure it completes
-        await saveHierarchyChange(nodeId);
+        // NodeManager.indentNode() already persists via updateNode()
+        // No need for separate saveHierarchyChange() call (was causing double-write)
 
         // Restore cursor position after DOM update
         setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
@@ -1246,30 +1199,13 @@
       // Store cursor position before DOM changes
       const cursorPosition = saveCursorPosition(nodeId);
 
-      // Get existing children of the node BEFORE outdenting
-      const childrenBefore = Array.from(nodeManager.nodes.values())
-        .filter((n) => n.parentId === nodeId)
-        .map((n) => n.id);
-
       // Use NodeManager to handle outdentation
       const success = nodeManager.outdentNode(nodeId);
 
       if (success) {
-        // Get children of outdented node AFTER outdenting (includes transferred siblings)
-        const childrenAfter = Array.from(nodeManager.nodes.values())
-          .filter((n) => n.parentId === nodeId)
-          .map((n) => n.id);
-
-        // Find the transferred siblings (nodes that are now children but weren't before)
-        const transferredSiblings = childrenAfter.filter((id) => !childrenBefore.includes(id));
-
-        // Persist hierarchy change for the outdented node
-        await saveHierarchyChange(nodeId);
-
-        // Persist hierarchy changes for all transferred siblings
-        for (const siblingId of transferredSiblings) {
-          await saveHierarchyChange(siblingId);
-        }
+        // NodeManager.outdentNode() already persists via updateNode()
+        // No need for separate saveHierarchyChange() calls (was causing double-write)
+        // Both the outdented node and transferred siblings are persisted automatically
 
         // Restore cursor position after DOM update
         setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
@@ -1781,14 +1717,15 @@
                       containerNodeId: nodeId
                     };
 
-                    // Add to shared store as a real persisted node
-                    sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
+                    // Add to shared store (in-memory only, don't persist yet)
+                    // Subsequent typing will trigger updateNodeContent() which handles persistence
+                    sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, true);
 
                     // Clear viewer placeholder - now using real node from store
                     viewerPlaceholder = null;
 
-                    // Reload children to get the newly promoted node
-                    loadChildrenForParent(nodeId);
+                    // No need to reload - promoted node is already in shared store
+                    // Database query won't find it yet (CREATE is debounced)
                   } else {
                     // Regular node content update (placeholder flag is handled automatically)
                     nodeManager.updateNodeContent(node.id, content);

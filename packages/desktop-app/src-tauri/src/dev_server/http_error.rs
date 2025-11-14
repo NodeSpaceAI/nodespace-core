@@ -63,9 +63,49 @@ impl IntoResponse for HttpError {
             "NODE_NOT_FOUND" | "RESOURCE_NOT_FOUND" => StatusCode::NOT_FOUND,
             "INVALID_INPUT" | "INVALID_NODE_TYPE" | "VALIDATION_ERROR" => StatusCode::BAD_REQUEST,
             "NOT_IMPLEMENTED" => StatusCode::NOT_IMPLEMENTED,
+            "VERSION_CONFLICT" => StatusCode::CONFLICT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         (status, Json(self)).into_response()
+    }
+}
+
+impl From<nodespace_core::operations::NodeOperationError> for HttpError {
+    fn from(err: nodespace_core::operations::NodeOperationError) -> Self {
+        use nodespace_core::operations::NodeOperationError;
+
+        match err {
+            NodeOperationError::NodeNotFound { node_id } => {
+                HttpError::new(
+                    format!("Node not found: {}", node_id),
+                    "NODE_NOT_FOUND"
+                )
+            }
+            NodeOperationError::VersionConflict {
+                node_id,
+                expected_version,
+                actual_version,
+                ..
+            } => {
+                HttpError::with_details(
+                    format!(
+                        "Version conflict for node '{}': expected version {}, but current version is {}",
+                        node_id, expected_version, actual_version
+                    ),
+                    "VERSION_CONFLICT",
+                    format!(
+                        "node_id: {}, expected: {}, actual: {}",
+                        node_id, expected_version, actual_version
+                    )
+                )
+            }
+            NodeOperationError::DatabaseError(message) => {
+                HttpError::new(message, "DATABASE_ERROR")
+            }
+            _ => {
+                HttpError::new(format!("{}", err), "VALIDATION_ERROR")
+            }
+        }
     }
 }

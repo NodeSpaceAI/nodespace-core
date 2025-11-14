@@ -1043,6 +1043,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     invalidateSortedChildrenCache(node.parentId); // Old parent
     invalidateSortedChildrenCache(targetParentId); // New parent
 
+    // Ensure the target parent is expanded to show the newly indented child
+    // This prevents the parent from appearing collapsed after indent
+    setExpanded(targetParentId, true);
+
     events.hierarchyChanged();
     _updateTrigger++;
 
@@ -1246,6 +1250,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     invalidateSortedChildrenCache(oldParentId); // Old parent
     invalidateSortedChildrenCache(newParentId); // New parent
     invalidateSortedChildrenCache(nodeId); // Outdented node (now has new children)
+
+    // If siblings were transferred as children, expand the outdented node to show them
+    if (siblingsBelow.length > 0) {
+      setExpanded(nodeId, true);
+    }
 
     events.hierarchyChanged();
     _updateTrigger++;
@@ -1487,8 +1496,31 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    */
   function setExpanded(nodeId: string, expanded: boolean): boolean {
     try {
-      const uiState = _uiState[nodeId];
-      if (!uiState) return false;
+      // Ensure node exists in SharedNodeStore first
+      const node = sharedNodeStore.getNode(nodeId);
+      if (!node) return false;
+
+      // Initialize UIState if it doesn't exist (e.g., when indenting creates new parent-child relationship)
+      let uiState = _uiState[nodeId];
+      if (!uiState) {
+        // Compute depth by walking parent chain
+        let depth = 0;
+        let currentNode = node;
+        const visited = new Set<string>();
+        while (currentNode.parentId && !visited.has(currentNode.id)) {
+          visited.add(currentNode.id);
+          const parent = sharedNodeStore.getNode(currentNode.parentId);
+          if (!parent) break;
+          depth++;
+          currentNode = parent;
+        }
+
+        uiState = createDefaultUIState(nodeId, { depth, expanded });
+        _uiState[nodeId] = uiState;
+        _updateTrigger++;
+        events.hierarchyChanged();
+        return true;
+      }
 
       // No change needed
       if (uiState.expanded === expanded) return false;

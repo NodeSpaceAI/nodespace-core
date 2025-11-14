@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 use crate::commands::nodes::CreateNodeInput;
 use crate::dev_server::{AppState, HttpError};
+use nodespace_core::operations::CreateNodeParams;
 use nodespace_core::{Node, NodeUpdate};
 
 /// Query parameters for database initialization
@@ -48,6 +49,17 @@ pub struct InitDbResponse {
 pub struct HealthStatus {
     pub status: String,
     pub version: String,
+}
+
+/// Update node request with OCC version
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateNodeRequest {
+    /// Expected version for optimistic concurrency control
+    pub version: i64,
+    /// Fields to update
+    #[serde(flatten)]
+    pub update: NodeUpdate,
 }
 
 /// Health check endpoint
@@ -132,11 +144,14 @@ async fn init_database(
 
     let new_store_arc = Arc::new(new_store);
 
-    // STEP 2: Create NEW node service
+    // STEP 2: Create NEW node service and operations
     let new_node_service = NodeService::new(new_store_arc.clone())
         .map_err(|e| HttpError::from_anyhow(e.into(), "NODE_SERVICE_INIT_ERROR"))?;
 
-    // STEP 3: Atomic swap of both services
+    use nodespace_core::operations::NodeOperations;
+    let new_node_operations = NodeOperations::new(Arc::new(new_node_service.clone()));
+
+    // STEP 3: Atomic swap of all services
     {
         let mut store_lock = state.store.write().map_err(|e| {
             HttpError::new(
@@ -155,6 +170,16 @@ async fn init_database(
             )
         })?;
         *ns_lock = Arc::new(new_node_service);
+    }
+
+    {
+        let mut no_lock = state.node_operations.write().map_err(|e| {
+            HttpError::new(
+                format!("Failed to acquire node operations write lock: {}", e),
+                "LOCK_ERROR",
+            )
+        })?;
+        *no_lock = Arc::new(new_node_operations);
     }
 
     tracing::info!("🔄 Database SWAPPED to: {}", db_path_str);
@@ -191,7 +216,6 @@ async fn create_node(
     Json(node): Json<CreateNodeInput>,
 ) -> Result<Json<String>, HttpError> {
     use crate::constants::ALLOWED_NODE_TYPES;
-    use chrono::Utc;
 
     // Acquire write lock to serialize database writes (Issue #266)
     let _write_guard = state.write_lock.lock().await;
@@ -211,42 +235,35 @@ async fn create_node(
         ));
     }
 
-    let now = Utc::now();
-    let full_node = Node {
-        id: node.id.clone(),
-        node_type: node.node_type,
-        content: node.content,
-        parent_id: node.parent_id,
-        container_node_id: node.container_node_id,
-        before_sibling_id: node.before_sibling_id,
-        created_at: now,
-        modified_at: now,
-        properties: node.properties,
-        embedding_vector: node.embedding_vector,
-        mentions: Vec::new(),
-        mentioned_by: Vec::new(),
-        version: 1, // New nodes always start at version 1
-    };
-
-    // Use shared NodeService (Issue #255 - proper fix with connection draining)
-    let node_service = {
-        let lock = state.node_service.read().map_err(|e| {
+    // Use NodeOperations for OCC enforcement (matches Tauri command architecture)
+    let operations = {
+        let lock = state.node_operations.read().map_err(|e| {
             HttpError::new(
-                format!("Failed to acquire node service read lock: {}", e),
+                format!("Failed to acquire node operations read lock: {}", e),
                 "LOCK_ERROR",
             )
         })?;
         Arc::clone(&*lock)
     };
 
-    node_service.create_node(full_node).await.map_err(|e| {
-        tracing::error!("❌ Node creation failed for {}: {:?}", node.id, e);
-        HttpError::from_anyhow(e.into(), "NODE_SERVICE_ERROR")
-    })?;
+    // Build CreateNodeParams matching Tauri command structure
+    let params = CreateNodeParams {
+        id: Some(node.id.clone()),
+        node_type: node.node_type,
+        content: node.content,
+        parent_id: node.parent_id,
+        container_node_id: node.container_node_id,
+        before_sibling_id: node.before_sibling_id,
+        properties: node.properties,
+    };
 
-    tracing::debug!("✅ Created node: {}", node.id);
+    // Create via NodeOperations (with OCC enforcement)
+    // Returns the node ID as a String
+    let node_id = operations.create_node(params).await?;
 
-    Ok(Json(node.id))
+    tracing::debug!("✅ Created node: {}", node_id);
+
+    Ok(Json(node_id))
     // Write lock is automatically released when _write_guard goes out of scope
 }
 
@@ -291,85 +308,110 @@ async fn get_node(
 ///
 /// # Request Body
 ///
-/// JSON object with fields to update (partial update supported)
+/// JSON object with version and fields to update (OCC enforced)
 ///
 /// # Example
 ///
 /// ```bash
 /// curl -X PATCH http://localhost:3001/api/nodes/test-node-1 \
 ///   -H "Content-Type: application/json" \
-///   -d '{"content": "Updated content"}'
+///   -d '{"version": 1, "content": "Updated content"}'
 /// ```
+///
+/// Returns 409 Conflict if version mismatch (version conflict)
+/// Returns updated Node with new version to keep frontend in sync
 async fn update_node(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(update): Json<NodeUpdate>,
-) -> Result<StatusCode, HttpError> {
+    Json(request): Json<UpdateNodeRequest>,
+) -> Result<Json<Node>, HttpError> {
     // Acquire write lock to serialize database writes (Issue #266)
     let _write_guard = state.write_lock.lock().await;
 
     tracing::info!(
-        "📝 UPDATE request for node: {} with update: {:?}",
+        "📝 UPDATE request for node: {} version: {} with update: {:?}",
         id,
-        update
+        request.version,
+        request.update
     );
-    let node_service = {
-        let lock = state.node_service.read().map_err(|e| {
+
+    // Use NodeOperations for OCC enforcement (matches Tauri command architecture)
+    let operations = {
+        let lock = state.node_operations.read().map_err(|e| {
             HttpError::new(
-                format!("Failed to acquire node service read lock: {}", e),
+                format!("Failed to acquire node operations read lock: {}", e),
                 "LOCK_ERROR",
             )
         })?;
         Arc::clone(&*lock)
     };
 
-    let result = node_service.update_node(&id, update).await;
+    // Update via NodeOperations with version check
+    // IMPORTANT: Return the updated Node so frontend can refresh its local version
+    // Use update_node_with_hierarchy to handle both content AND hierarchy changes
+    let updated_node = operations
+        .update_node_with_hierarchy(&id, request.version, request.update)
+        .await?;
 
-    match result {
-        Ok(_) => {
-            tracing::info!("✅ Updated node: {}", id);
-            Ok(StatusCode::OK)
-        }
-        Err(e) => {
-            tracing::error!("❌ Node update failed for {}: {:?}", id, e);
-            Err(HttpError::from_anyhow(e.into(), "NODE_SERVICE_ERROR"))
-        }
-    }
+    tracing::info!(
+        "✅ Updated node: {} (new version: {})",
+        id,
+        updated_node.version
+    );
+    Ok(Json(updated_node))
     // Write lock is automatically released when _write_guard goes out of scope
 }
 
-/// Delete a node by ID
+/// Delete a node by ID with version check
 ///
 /// # Path Parameters
 ///
 /// - `id`: Node ID
 ///
+/// # Query Parameters
+///
+/// - `version`: Expected version for OCC
+///
 /// # Example
 ///
 /// ```bash
-/// curl -X DELETE http://localhost:3001/api/nodes/test-node-1
+/// curl -X DELETE "http://localhost:3001/api/nodes/test-node-1?version=1"
 /// ```
+///
+/// Returns 409 Conflict if version mismatch
 async fn delete_node(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<StatusCode, HttpError> {
     // Acquire write lock to serialize database writes (Issue #266)
     let _write_guard = state.write_lock.lock().await;
 
-    let node_service = {
-        let lock = state.node_service.read().map_err(|e| {
+    // Extract version from query parameters
+    let version = params
+        .get("version")
+        .ok_or_else(|| HttpError::new("Missing 'version' query parameter", "INVALID_INPUT"))?
+        .parse::<i64>()
+        .map_err(|e| {
+            HttpError::with_details(
+                "Invalid version parameter",
+                "INVALID_INPUT",
+                format!("Version must be a valid integer: {}", e),
+            )
+        })?;
+
+    // Use NodeOperations for OCC enforcement (matches Tauri command architecture)
+    let operations = {
+        let lock = state.node_operations.read().map_err(|e| {
             HttpError::new(
-                format!("Failed to acquire node service read lock: {}", e),
+                format!("Failed to acquire node operations read lock: {}", e),
                 "LOCK_ERROR",
             )
         })?;
         Arc::clone(&*lock)
     };
 
-    let result = node_service
-        .delete_node(&id)
-        .await
-        .map_err(|e| HttpError::from_anyhow(e.into(), "NODE_SERVICE_ERROR"))?;
+    let result = operations.delete_node(&id, version).await?;
 
     if result.existed {
         tracing::debug!("✅ Deleted node: {}", id);

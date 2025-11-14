@@ -77,7 +77,7 @@ export class MockBackendAdapter implements BackendAdapter {
   /**
    * Update a node in memory
    */
-  async updateNode(id: string, version: number, update: NodeUpdate): Promise<void> {
+  async updateNode(id: string, version: number, update: NodeUpdate): Promise<Node> {
     const existingNode = this.nodes.get(id);
     if (!existingNode) {
       throw new Error(`Node ${id} not found`);
@@ -98,6 +98,7 @@ export class MockBackendAdapter implements BackendAdapter {
     };
 
     this.nodes.set(id, updatedNode);
+    return updatedNode; // Return the updated node
   }
 
   /**

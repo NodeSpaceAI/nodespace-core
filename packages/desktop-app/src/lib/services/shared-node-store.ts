@@ -496,7 +496,20 @@ export class SharedNodeStore {
                   const currentVersion = currentNode?.version ?? 1;
 
                   try {
-                    await tauriNodeService.updateNode(nodeId, currentVersion, updatePayload);
+                    // CRITICAL: Capture updated node to get new version from backend
+                    // This prevents version conflicts on subsequent updates
+                    const updatedNodeFromBackend = await tauriNodeService.updateNode(
+                      nodeId,
+                      currentVersion,
+                      updatePayload
+                    );
+
+                    // Update local node with backend version
+                    const localNode = this.nodes.get(nodeId);
+                    if (localNode && updatedNodeFromBackend) {
+                      localNode.version = updatedNodeFromBackend.version;
+                      this.nodes.set(nodeId, localNode);
+                    }
                   } catch (updateError) {
                     // If UPDATE fails because node doesn't exist, try CREATE instead
                     // This handles cases where persistedNodeIds is out of sync (page reload, database reset)
@@ -520,6 +533,17 @@ export class SharedNodeStore {
                   // Node doesn't exist yet (was a placeholder or new node)
                   await tauriNodeService.createNode(updatedNode);
                   this.persistedNodeIds.add(nodeId); // Track as persisted
+
+                  // CRITICAL: Fetch the created node to get its version from backend
+                  // This prevents version conflicts on subsequent updates
+                  const createdNode = await tauriNodeService.getNode(nodeId);
+                  if (createdNode) {
+                    const localNode = this.nodes.get(nodeId);
+                    if (localNode) {
+                      localNode.version = createdNode.version;
+                      this.nodes.set(nodeId, localNode); // Update local node with backend version
+                    }
+                  }
 
                   // CRITICAL: After persisting a placeholder that now has content,
                   // update any nodes that reference this node in their beforeSiblingId
@@ -700,6 +724,14 @@ export class SharedNodeStore {
               } else {
                 await tauriNodeService.createNode(node);
                 this.persistedNodeIds.add(node.id); // Track as persisted
+
+                // CRITICAL: Fetch the created node to get its version from backend
+                // This prevents version conflicts on subsequent updates
+                const createdNode = await tauriNodeService.getNode(node.id);
+                if (createdNode) {
+                  node.version = createdNode.version;
+                  this.nodes.set(node.id, node); // Update local node with backend version
+                }
               }
             } catch (dbError) {
               const error = dbError instanceof Error ? dbError : new Error(String(dbError));
@@ -719,7 +751,10 @@ export class SharedNodeStore {
             }
           },
           {
-            mode: 'immediate',
+            // CRITICAL: Use debounce mode for new viewer nodes to coalesce rapid updates
+            // This prevents double-write where setNode() CREATE fires immediately,
+            // then updateNode() fires debounced UPDATE shortly after
+            mode: source.type === 'viewer' && isNewNode ? 'debounce' : 'immediate',
             dependencies: dependencies.length > 0 ? dependencies : undefined
           }
         );
@@ -1854,6 +1889,14 @@ export class SharedNodeStore {
             try {
               await tauriNodeService.createNode(finalNode);
               this.persistedNodeIds.add(nodeId);
+
+              // CRITICAL: Fetch the created node to get its version from backend
+              // This prevents version conflicts on subsequent updates
+              const createdNode = await tauriNodeService.getNode(nodeId);
+              if (createdNode) {
+                finalNode.version = createdNode.version;
+                this.nodes.set(nodeId, finalNode); // Update local node with backend version
+              }
 
               // Update deferred sibling references
               this.updateDeferredSiblingReferences(nodeId);

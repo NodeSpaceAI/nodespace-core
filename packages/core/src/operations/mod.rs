@@ -861,6 +861,207 @@ impl NodeOperations {
         Ok(updated_node)
     }
 
+    /// Update a node with content and/or hierarchy changes in a single atomic operation
+    ///
+    /// This method combines content and hierarchy updates, orchestrating calls to
+    /// specialized methods while maintaining business rules and version consistency.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The node to update
+    /// * `expected_version` - Version for OCC
+    /// * `update` - Full NodeUpdate with any combination of changes
+    ///
+    /// # Returns
+    ///
+    /// Returns the updated Node with new version number
+    ///
+    /// # Business Rules Enforced
+    ///
+    /// - Hierarchy changes use move_node() and reorder_node() (maintains validation)
+    /// - Content changes use update_node()
+    /// - All operations respect OCC versioning
+    /// - Sibling chain integrity maintained
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::operations::NodeOperations;
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::DatabaseService;
+    /// # use nodespace_core::models::NodeUpdate;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = DatabaseService::new(PathBuf::from("./test.db")).await?;
+    /// # let node_service = NodeService::new(db)?;
+    /// # let operations = NodeOperations::new(node_service);
+    /// let mut update = NodeUpdate::new();
+    /// update.parent_id = Some(Some("new-parent".to_string()));
+    /// update.content = Some("Updated content".to_string());
+    /// let updated = operations.update_node_with_hierarchy("node-id", 1, update).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn update_node_with_hierarchy(
+        &self,
+        node_id: &str,
+        expected_version: i64,
+        update: NodeUpdate,
+    ) -> Result<Node, NodeOperationError> {
+        // Validate update has changes
+        if update.is_empty() {
+            return Err(NodeOperationError::invalid_operation(
+                "Update contains no changes".to_string(),
+            ));
+        }
+
+        // Fetch current node for validation
+        let current = self
+            .node_service
+            .get_node(node_id)
+            .await?
+            .ok_or_else(|| NodeOperationError::node_not_found(node_id.to_string()))?;
+
+        // Validate hierarchy changes (if any) before applying
+        let parent_changed = update
+            .parent_id
+            .as_ref()
+            .map(|new_parent| new_parent.as_deref() != current.parent_id.as_deref())
+            .unwrap_or(false);
+
+        if parent_changed {
+            // Validate container node cannot be moved
+            if current.is_root() {
+                return Err(NodeOperationError::invalid_operation(format!(
+                    "Container node '{}' cannot be moved (it's a root node)",
+                    node_id
+                )));
+            }
+
+            // Validate new parent exists and get its container
+            if let Some(Some(new_parent_id)) = &update.parent_id {
+                let parent = self
+                    .node_service
+                    .get_node(new_parent_id)
+                    .await?
+                    .ok_or_else(|| NodeOperationError::node_not_found(new_parent_id.to_string()))?;
+
+                let new_container = parent.container_node_id.ok_or_else(|| {
+                    NodeOperationError::invalid_operation(format!(
+                        "Parent '{}' has no container_node_id",
+                        new_parent_id
+                    ))
+                })?;
+
+                // Validate parent-container consistency
+                self.validate_parent_container_consistency(Some(new_parent_id), &new_container)
+                    .await?;
+            }
+        }
+
+        let sibling_changed = update
+            .before_sibling_id
+            .as_ref()
+            .map(|new_sibling| new_sibling.as_deref() != current.before_sibling_id.as_deref())
+            .unwrap_or(false);
+
+        if sibling_changed {
+            // Validate container node cannot be reordered
+            if current.is_root() {
+                return Err(NodeOperationError::invalid_operation(format!(
+                    "Container node '{}' cannot be reordered (it's a root node)",
+                    node_id
+                )));
+            }
+
+            // Fix sibling chain BEFORE reordering (maintain chain integrity)
+            // Find node that currently points to this one and update it
+            if let Some(parent_id) = &current.parent_id {
+                let siblings = self
+                    .node_service
+                    .query_nodes(NodeFilter::new().with_parent_id(parent_id.clone()))
+                    .await?;
+
+                // Find the next sibling that points to this node
+                if let Some(next_sibling) = siblings
+                    .iter()
+                    .find(|n| n.before_sibling_id.as_deref() == Some(node_id))
+                {
+                    // Update next sibling to point to what this node was pointing to
+                    // This removes this node from the chain before we move it
+                    let mut chain_fix = NodeUpdate::new();
+                    chain_fix.before_sibling_id = Some(current.before_sibling_id.clone());
+
+                    // Retry on version conflicts
+                    let max_retries = 3;
+                    for attempt in 0..max_retries {
+                        let fresh = self
+                            .node_service
+                            .get_node(&next_sibling.id)
+                            .await?
+                            .ok_or_else(|| {
+                                NodeOperationError::node_not_found(next_sibling.id.clone())
+                            })?;
+
+                        match self
+                            .node_service
+                            .update_with_version_check(
+                                &next_sibling.id,
+                                fresh.version,
+                                chain_fix.clone(),
+                            )
+                            .await
+                        {
+                            Ok(_) => break,
+                            Err(_e) if attempt < max_retries - 1 => {
+                                tracing::warn!(
+                                    "Sibling chain update conflict, retrying ({}/{})",
+                                    attempt + 1,
+                                    max_retries
+                                );
+                                continue;
+                            }
+                            Err(e) => return Err(e.into()),
+                        }
+                    }
+                }
+            }
+        }
+
+        // All validation passed - apply update in ONE database operation
+        // NodeService::update_with_version_check handles all fields atomically
+        let rows_affected = self
+            .node_service
+            .update_with_version_check(node_id, expected_version, update)
+            .await?;
+
+        // Handle version conflict
+        if rows_affected == 0 {
+            let current = self
+                .node_service
+                .get_node(node_id)
+                .await?
+                .ok_or_else(|| NodeOperationError::node_not_found(node_id.to_string()))?;
+
+            return Err(NodeOperationError::version_conflict(
+                node_id.to_string(),
+                expected_version,
+                current.version,
+                current,
+            ));
+        }
+
+        // Fetch and return the updated node with its new version
+        let updated_node = self
+            .node_service
+            .get_node(node_id)
+            .await?
+            .ok_or_else(|| NodeOperationError::node_not_found(node_id.to_string()))?;
+
+        Ok(updated_node)
+    }
+
     /// Move a node to a new parent
     ///
     /// This method enforces Rules 2, 4, and 5:
@@ -2424,5 +2625,269 @@ mod tests {
             }
             _ => panic!("Expected VersionConflict error"),
         }
+    }
+
+    // =========================================================================
+    // update_node_with_hierarchy() Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_update_node_with_hierarchy_content_only() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        // Create container and node
+        let container_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "date".to_string(),
+                content: "2025-11-13".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Original".to_string(),
+                parent_id: Some(container_id.clone()),
+                container_node_id: Some(container_id.clone()),
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Update content only (no hierarchy changes)
+        let mut update = NodeUpdate::new();
+        update.content = Some("Updated content".to_string());
+
+        let updated = operations
+            .update_node_with_hierarchy(&node_id, 1, update)
+            .await
+            .unwrap();
+
+        assert_eq!(updated.content, "Updated content");
+        assert_eq!(updated.version, 2);
+        assert_eq!(updated.parent_id.as_deref(), Some(container_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn test_update_node_with_hierarchy_hierarchy_only() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        // Create container
+        let container_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "date".to_string(),
+                content: "2025-11-13".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Create parent node
+        let parent_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Parent".to_string(),
+                parent_id: Some(container_id.clone()),
+                container_node_id: Some(container_id.clone()),
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Create child as sibling first
+        let child_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Child".to_string(),
+                parent_id: Some(container_id.clone()),
+                container_node_id: Some(container_id.clone()),
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Indent: change parent and clear sibling (hierarchy-only update)
+        let mut update = NodeUpdate::new();
+        update.parent_id = Some(Some(parent_id.clone()));
+        update.before_sibling_id = Some(None);
+
+        let updated = operations
+            .update_node_with_hierarchy(&child_id, 1, update)
+            .await
+            .unwrap();
+
+        assert_eq!(updated.parent_id.as_deref(), Some(parent_id.as_str()));
+        assert_eq!(updated.before_sibling_id, None);
+        assert_eq!(updated.version, 2); // 1→2 in single UPDATE (both parent and sibling)
+    }
+
+    #[tokio::test]
+    async fn test_update_node_with_hierarchy_combined_update() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        // Create container and parent
+        let container_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "date".to_string(),
+                content: "2025-11-13".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        let parent_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Parent".to_string(),
+                parent_id: Some(container_id.clone()),
+                container_node_id: Some(container_id.clone()),
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        let child_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Child".to_string(),
+                parent_id: Some(container_id.clone()),
+                container_node_id: Some(container_id.clone()),
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Combined update: change content AND hierarchy
+        let mut update = NodeUpdate::new();
+        update.content = Some("Updated child".to_string());
+        update.parent_id = Some(Some(parent_id.clone()));
+        update.before_sibling_id = Some(None);
+
+        let updated = operations
+            .update_node_with_hierarchy(&child_id, 1, update)
+            .await
+            .unwrap();
+
+        assert_eq!(updated.content, "Updated child");
+        assert_eq!(updated.parent_id.as_deref(), Some(parent_id.as_str()));
+        assert_eq!(updated.before_sibling_id, None);
+        assert_eq!(updated.version, 2); // 1→2 in single UPDATE (hierarchy + content together)
+    }
+
+    #[tokio::test]
+    async fn test_update_node_with_hierarchy_empty_update_fails() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        let container_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "date".to_string(),
+                content: "2025-11-13".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Test".to_string(),
+                parent_id: Some(container_id.clone()),
+                container_node_id: Some(container_id.clone()),
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Empty update should fail
+        let update = NodeUpdate::new();
+        let result = operations
+            .update_node_with_hierarchy(&node_id, 1, update)
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(NodeOperationError::InvalidOperation { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_update_node_with_hierarchy_version_conflict() {
+        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
+
+        let container_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "date".to_string(),
+                content: "2025-11-13".to_string(),
+                parent_id: None,
+                container_node_id: None,
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        let node_id = operations
+            .create_node(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Original".to_string(),
+                parent_id: Some(container_id.clone()),
+                container_node_id: Some(container_id.clone()),
+                before_sibling_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Update to version 2
+        let mut update1 = NodeUpdate::new();
+        update1.content = Some("First update".to_string());
+        operations
+            .update_node_with_hierarchy(&node_id, 1, update1)
+            .await
+            .unwrap();
+
+        // Try to update with stale version
+        let mut update2 = NodeUpdate::new();
+        update2.content = Some("Conflicting update".to_string());
+        let result = operations
+            .update_node_with_hierarchy(&node_id, 1, update2)
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(NodeOperationError::VersionConflict { .. })
+        ));
     }
 }

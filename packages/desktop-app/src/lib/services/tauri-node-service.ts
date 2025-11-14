@@ -149,12 +149,13 @@ export class TauriNodeService {
    * @param id - ID of the node to update
    * @param version - Expected version for optimistic concurrency control
    * @param update - Fields to update (partial)
+   * @returns Updated node with new version number
    * @throws NodeOperationError if node doesn't exist or update fails
    * @throws Version conflict error if version doesn't match current version
    */
-  async updateNode(id: string, version: number, update: NodeUpdate): Promise<void> {
+  async updateNode(id: string, version: number, update: NodeUpdate): Promise<Node> {
     this.ensureInitialized();
-    await this.adapter.updateNode(id, version, update);
+    return await this.adapter.updateNode(id, version, update);
   }
 
   /**

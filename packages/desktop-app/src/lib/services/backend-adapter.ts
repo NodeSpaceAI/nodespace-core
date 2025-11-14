@@ -163,9 +163,10 @@ export interface BackendAdapter {
    * @param id - Node ID
    * @param version - Expected version for optimistic concurrency control
    * @param update - Fields to update (partial)
+   * @returns Updated node with new version number
    * @throws Version conflict error if version doesn't match current version
    */
-  updateNode(id: string, version: number, update: NodeUpdate): Promise<void>;
+  updateNode(id: string, version: number, update: NodeUpdate): Promise<Node>;
 
   /**
    * Delete a node by ID
@@ -439,9 +440,10 @@ export class TauriAdapter implements BackendAdapter {
     }
   }
 
-  async updateNode(id: string, version: number, update: NodeUpdate): Promise<void> {
+  async updateNode(id: string, version: number, update: NodeUpdate): Promise<Node> {
     try {
-      await invoke<void>('update_node', { id, version, update });
+      // IMPORTANT: Backend now returns the updated Node with new version
+      const updatedNode = await invoke<Node>('update_node', { id, version, update });
 
       // Determine update type based on what fields were updated
       let updateType: 'content' | 'hierarchy' | 'status' | 'metadata' | 'nodeType' = 'content';
@@ -481,6 +483,8 @@ export class TauriAdapter implements BackendAdapter {
           changeType: 'move'
         });
       }
+
+      return updatedNode;
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, id, 'update');
@@ -1015,10 +1019,11 @@ export class HttpAdapter implements BackendAdapter {
     }
   }
 
-  async updateNode(id: string, version: number, update: NodeUpdate): Promise<void> {
+  async updateNode(id: string, version: number, update: NodeUpdate): Promise<Node> {
     try {
       // Wrap the HTTP write operation with retry logic
-      await this.retryOnTransientError(async () => {
+      // IMPORTANT: Backend now returns the updated Node with new version
+      const updatedNode = await this.retryOnTransientError(async () => {
         const response = await globalThis.fetch(
           `${this.baseUrl}/api/nodes/${encodeURIComponent(id)}`,
           {
@@ -1030,7 +1035,7 @@ export class HttpAdapter implements BackendAdapter {
           }
         );
 
-        return await this.handleResponse<void>(response);
+        return await this.handleResponse<Node>(response);
       });
 
       // Determine update type based on what fields were updated
@@ -1071,6 +1076,8 @@ export class HttpAdapter implements BackendAdapter {
           changeType: 'move'
         });
       }
+
+      return updatedNode;
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, id, 'update');

@@ -41,6 +41,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use nodespace_core::operations::NodeOperations;
 use nodespace_core::services::NodeEmbeddingService;
 use nodespace_core::{NodeService, SurrealStore};
 use nodespace_nlp_engine::EmbeddingService;
@@ -97,6 +98,9 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("Failed to initialize NLP engine: {}", e))?,
     );
 
+    // Initialize NodeOperations for OCC enforcement (requires Arc<NodeService>)
+    let node_operations = NodeOperations::new(Arc::new(node_service.clone()));
+
     // Initialize embedding service (temporarily stubbed - Issue #481)
     let embedding_service = NodeEmbeddingService::new(nlp_engine);
 
@@ -105,10 +109,11 @@ async fn main() -> anyhow::Result<()> {
     // Wrap services in RwLock for dynamic database switching during tests (Issue #255)
     let store_arc = Arc::new(RwLock::new(store));
     let ns_arc = Arc::new(RwLock::new(Arc::new(node_service)));
+    let no_arc = Arc::new(RwLock::new(Arc::new(node_operations)));
     let es_arc = Arc::new(RwLock::new(Arc::new(embedding_service)));
 
-    // Start HTTP server
-    nodespace_app_lib::dev_server::start_server(store_arc, ns_arc, es_arc, port).await?;
+    // Start HTTP server with NodeOperations for OCC enforcement
+    nodespace_app_lib::dev_server::start_server(store_arc, ns_arc, no_arc, es_arc, port).await?;
 
     Ok(())
 }
