@@ -1,6 +1,9 @@
 // Tauri commands module (public for dev-server access)
 pub mod commands;
 
+// Application preferences management
+pub mod preferences;
+
 // Shared constants
 pub mod constants;
 

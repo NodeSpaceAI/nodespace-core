@@ -5,101 +5,10 @@ use nodespace_core::operations::NodeOperations;
 use nodespace_core::services::{EmbeddingProcessor, NodeEmbeddingService, SchemaService};
 use nodespace_core::{NodeService, SurrealStore};
 use nodespace_nlp_engine::EmbeddingService;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tokio::fs;
-
-const DB_PATH_PREFERENCE_KEY: &str = "database_path";
-
-/// Save database path preference to app config
-///
-/// This function merges the new database path into existing preferences,
-/// preserving any other settings. Uses atomic write-then-rename pattern
-/// to prevent corruption on crash/power loss.
-///
-/// # Arguments
-/// * `app` - Tauri application handle
-/// * `path` - Database file path to save
-///
-/// # Returns
-/// * `Ok(())` on success
-/// * `Err(String)` with error description on failure
-async fn save_db_path_preference(app: &AppHandle, path: &Path) -> Result<(), String> {
-    let config_dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("Failed to get config directory: {}", e))?;
-
-    fs::create_dir_all(&config_dir)
-        .await
-        .map_err(|e| format!("Failed to create config directory: {}", e))?;
-
-    let pref_file = config_dir.join("preferences.json");
-
-    // Load existing preferences or create new
-    let mut prefs = if pref_file.exists() {
-        let contents = fs::read_to_string(&pref_file)
-            .await
-            .map_err(|e| format!("Failed to read existing preferences: {}", e))?;
-        serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    // Update only the database path, preserving other settings
-    prefs[DB_PATH_PREFERENCE_KEY] = serde_json::json!(path.to_string_lossy().to_string());
-
-    // Atomic write: write to temp file then rename
-    let temp_file = config_dir.join("preferences.json.tmp");
-    let serialized = serde_json::to_string_pretty(&prefs)
-        .map_err(|e| format!("Failed to serialize preferences: {}", e))?;
-
-    fs::write(&temp_file, serialized)
-        .await
-        .map_err(|e| format!("Failed to write preferences: {}", e))?;
-
-    fs::rename(&temp_file, &pref_file)
-        .await
-        .map_err(|e| format!("Failed to save preferences: {}", e))?;
-
-    Ok(())
-}
-
-/// Load database path preference from app config
-///
-/// # Arguments
-/// * `app` - Tauri application handle
-///
-/// # Returns
-/// * `Ok(Some(PathBuf))` - Previously saved database path
-/// * `Ok(None)` - No saved preference exists
-/// * `Err(String)` - Error reading or parsing preferences
-async fn load_db_path_preference(app: &AppHandle) -> Result<Option<PathBuf>, String> {
-    let config_dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("Failed to get config directory: {}", e))?;
-
-    let pref_file = config_dir.join("preferences.json");
-
-    if !pref_file.exists() {
-        return Ok(None);
-    }
-
-    let contents = fs::read_to_string(&pref_file)
-        .await
-        .map_err(|e| format!("Failed to read preferences: {}", e))?;
-
-    let prefs: serde_json::Value = serde_json::from_str(&contents)
-        .map_err(|e| format!("Failed to parse preferences: {}", e))?;
-
-    if let Some(path_str) = prefs.get(DB_PATH_PREFERENCE_KEY).and_then(|v| v.as_str()) {
-        Ok(Some(PathBuf::from(path_str)))
-    } else {
-        Ok(None)
-    }
-}
 
 /// Initialize database services with user-selected or default path
 ///
@@ -227,65 +136,14 @@ pub async fn select_db_location(app: AppHandle) -> Result<String, String> {
     let db_path = folder_path.join("nodespace");
 
     // Save preference
-    save_db_path_preference(&app, &db_path).await?;
+    let mut prefs = crate::preferences::load_preferences(&app).await?;
+    prefs.database_path = Some(db_path.clone());
+    crate::preferences::save_preferences(&app, &prefs).await?;
 
     // Initialize services
     init_services(&app, db_path.clone()).await?;
 
     Ok(db_path.to_string_lossy().to_string())
-}
-
-/// Migrate database from old platform-specific location to ~/.nodespace/
-///
-/// Automatically moves existing database from:
-/// - macOS: ~/Library/Application Support/com.nodespace.app/nodespace.db
-/// - Windows: %APPDATA%/com.nodespace.app/nodespace.db
-/// - Linux: ~/.config/com.nodespace.app/nodespace.db
-///
-/// To new unified location:
-/// - All platforms: ~/.nodespace/database/nodespace.db
-///
-/// This migration happens transparently on first run after update.
-async fn migrate_database_if_needed(app: &AppHandle) -> Result<(), String> {
-    let old_path = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get old app data directory: {}", e))?
-        .join("nodespace");
-
-    if !old_path.exists() {
-        return Ok(()); // Nothing to migrate
-    }
-
-    let home_dir = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
-
-    let new_path = home_dir
-        .join(".nodespace")
-        .join("database")
-        .join("nodespace");
-
-    if new_path.exists() {
-        return Ok(()); // Already migrated
-    }
-
-    // Create new directory
-    if let Some(parent) = new_path.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("Failed to create new database directory: {}", e))?;
-    }
-
-    // Copy database to new location
-    fs::copy(&old_path, &new_path)
-        .await
-        .map_err(|e| format!("Failed to migrate database: {}", e))?;
-
-    // Save new preference
-    save_db_path_preference(app, new_path.as_path()).await?;
-
-    tracing::info!("Migrated database from {:?} to {:?}", old_path, new_path);
-
-    Ok(())
 }
 
 /// Initialize database with saved preference or default path
@@ -319,19 +177,16 @@ async fn migrate_database_if_needed(app: &AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn initialize_database(app: AppHandle) -> Result<String, String> {
     // Attempt migration from old location
-    migrate_database_if_needed(&app).await?;
+    crate::preferences::migrate_legacy_database_if_needed(&app).await?;
 
-    let db_path = if let Some(saved) = load_db_path_preference(&app).await? {
-        saved
+    // Load preferences
+    let prefs = crate::preferences::load_preferences(&app).await?;
+
+    // Determine database path
+    let db_path = if let Some(saved_path) = prefs.database_path {
+        saved_path
     } else {
-        // Use unified ~/.nodespace/database/ location
-        let home_dir =
-            dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
-
-        home_dir
-            .join(".nodespace")
-            .join("database")
-            .join("nodespace")
+        crate::preferences::get_default_database_path()?
     };
 
     // Ensure database directory exists
