@@ -102,8 +102,14 @@ pub struct SearchContainersParams {
     /// Search query text
     pub query: String,
 
-    /// Similarity threshold (0.0-1.0, lower = more similar)
-    /// Default: 0.7
+    /// Minimum similarity threshold (0.0-1.0, higher = more similar)
+    /// - 1.0 = Identical content
+    /// - 0.7-0.9 = Highly similar (semantic equivalents)
+    /// - 0.5-0.7 = Moderately similar (related topics)
+    /// - 0.3-0.5 = Loosely related
+    /// - < 0.3 = Unrelated content
+    ///
+    /// Default: 0.5 (moderate similarity)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threshold: Option<f32>,
 
@@ -118,18 +124,21 @@ pub struct SearchContainersParams {
     pub exact: Option<bool>,
 }
 
-/// Search topics by semantic similarity
+/// Search containers by semantic similarity using vector embeddings
 ///
-/// Uses Turso's native vector search (DiskANN) for fast approximate
-/// nearest neighbors, or exact cosine distance for accurate results.
+/// Uses SurrealDB's native `vector::similarity::cosine()` function to find
+/// semantically similar nodes based on their content embeddings.
 ///
 /// # Arguments
 ///
-/// * `params` - Search parameters (query, threshold, limit, exact)
+/// * `params` - Search parameters (query, threshold, limit)
+///   - `query`: Text to search for (will be converted to embedding)
+///   - `threshold`: Minimum similarity score (0.0-1.0, default: 0.5)
+///   - `limit`: Maximum number of results (default: 20)
 ///
 /// # Returns
 ///
-/// Vector of topic nodes sorted by similarity (most similar first)
+/// Vector of nodes sorted by similarity score descending (most similar first)
 ///
 /// # Example (from frontend)
 ///
@@ -138,18 +147,18 @@ pub struct SearchContainersParams {
 ///
 /// const results = await invoke('search_containers', {
 ///   params: {
-///     query: 'machine learning',
-///     threshold: 0.7,
-///     limit: 20,
-///     exact: false
+///     query: 'machine learning algorithms',
+///     threshold: 0.5,  // 0.5 = moderate similarity (default)
+///     limit: 20
 ///   }
 /// });
 ///
-/// console.log(`Found ${results.length} similar topics`);
+/// console.log(`Found ${results.length} similar nodes`);
 /// ```
 #[tauri::command]
 pub async fn search_containers(
-    _state: State<'_, EmbeddingState>,
+    state: State<'_, EmbeddingState>,
+    node_service: State<'_, NodeService>,
     params: SearchContainersParams,
 ) -> Result<Vec<Node>, CommandError> {
     // Validate query parameter
@@ -170,11 +179,41 @@ pub async fn search_containers(
         }
     }
 
-    tracing::warn!(
-        "Semantic search temporarily disabled (Issue #481) for query: {}",
-        params.query
-    );
-    Ok(Vec::new())
+    // Generate embedding for search query
+    let query_embedding = state
+        .service
+        .nlp_engine()
+        .generate_embedding(&params.query)
+        .map_err(|e| {
+            command_error_with_details(
+                "Failed to generate query embedding".to_string(),
+                "EMBEDDING_ERROR",
+                format!("{:?}", e),
+            )
+        })?;
+
+    // Convert to binary blob
+    let query_blob = nodespace_nlp_engine::EmbeddingService::to_blob(&query_embedding);
+
+    // Search with default/custom parameters
+    let limit = params.limit.unwrap_or(20) as i64;
+    let threshold = params.threshold.map(|t| t as f64);
+
+    // Execute search
+    let store = node_service.store();
+    let results = store
+        .search_by_embedding(&query_blob, limit, threshold)
+        .await
+        .map_err(|e| {
+            command_error_with_details(
+                "Vector search failed".to_string(),
+                "DATABASE_ERROR",
+                format!("{:?}", e),
+            )
+        })?;
+
+    // Return only nodes (discard similarity scores for now)
+    Ok(results.into_iter().map(|(node, _score)| node).collect())
 }
 
 /// Update embedding for a topic node immediately

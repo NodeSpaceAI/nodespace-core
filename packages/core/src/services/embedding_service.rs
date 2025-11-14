@@ -45,6 +45,11 @@ impl NodeEmbeddingService {
         Self { nlp_engine, store }
     }
 
+    /// Get reference to the NLP engine for direct embedding operations
+    pub fn nlp_engine(&self) -> &Arc<EmbeddingService> {
+        &self.nlp_engine
+    }
+
     /// Extract text content from node for embedding
     ///
     /// Uses the node's content field. If empty, returns empty string.

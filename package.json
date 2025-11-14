@@ -45,6 +45,7 @@
     "review:help": "bun run scripts/review-manager.ts --help",
     "rust:test": "cargo test --lib -p nodespace-core -- --test-threads=2",
     "rust:test:lib": "cargo test --lib -p nodespace-core -- --test-threads=2",
+    "rust:test:long": "RUN_LONG_TESTS=1 cargo test --lib -p nodespace-core -- --test-threads=2",
     "rust:test:doc": "cargo test --doc",
     "rust:benchmark": "cargo test --lib -- --ignored --nocapture",
     "rust:benchmark:get": "cargo test --lib benchmark_get_nodes_batch -- --ignored --nocapture",
