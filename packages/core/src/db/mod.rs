@@ -25,4 +25,4 @@ mod surreal_store;
 
 pub use error::DatabaseError;
 pub use index_manager::IndexManager;
-pub use surreal_store::SurrealStore;
+pub use surreal_store::{EmbeddedStore, HttpStore, SurrealStore};

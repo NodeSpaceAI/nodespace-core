@@ -277,9 +277,12 @@ fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, String> {
 /// }
 /// ```
 #[derive(Clone)]
-pub struct NodeService {
+pub struct NodeService<C = surrealdb::engine::local::Db>
+where
+    C: surrealdb::Connection,
+{
     /// SurrealDB store for all persistence operations
-    store: Arc<SurrealStore>,
+    store: Arc<SurrealStore<C>>,
 
     /// Behavior registry for validation
     behaviors: Arc<NodeBehaviorRegistry>,
@@ -288,7 +291,10 @@ pub struct NodeService {
     migration_registry: Arc<MigrationRegistry>,
 }
 
-impl NodeService {
+impl<C> NodeService<C>
+where
+    C: surrealdb::Connection,
+{
     /// Create a new NodeService
     ///
     /// Initializes the service with SurrealStore and creates a default
@@ -311,7 +317,7 @@ impl NodeService {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new(store: Arc<SurrealStore>) -> Result<Self, NodeServiceError> {
+    pub fn new(store: Arc<SurrealStore<C>>) -> Result<Self, NodeServiceError> {
         // Create empty migration registry (no migrations registered yet - pre-deployment)
         // Infrastructure exists for future schema evolution post-deployment
         let migration_registry = MigrationRegistry::new();
@@ -326,7 +332,7 @@ impl NodeService {
     /// Get access to the underlying SurrealStore
     ///
     /// Useful for advanced operations that need direct database access
-    pub fn store(&self) -> &Arc<SurrealStore> {
+    pub fn store(&self) -> &Arc<SurrealStore<C>> {
         &self.store
     }
 

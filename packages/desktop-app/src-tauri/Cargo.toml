@@ -17,6 +17,10 @@ tauri-build = { version = "2", features = [] }
 name = "nodespace-app"
 path = "src/main.rs"
 
+[[bin]]
+name = "dev-proxy"
+path = "src/bin/dev-proxy.rs"
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
@@ -32,5 +36,9 @@ nodespace-core = { workspace = true }
 nodespace-nlp-engine = { workspace = true }
 dirs = "5.0"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures = "0.3"
+axum = "0.7"
+tower-http = { version = "0.6", features = ["cors"] }
+surrealdb = { workspace = true }
 

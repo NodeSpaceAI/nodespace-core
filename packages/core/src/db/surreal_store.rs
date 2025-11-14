@@ -50,6 +50,8 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 use surrealdb::engine::local::{Db, RocksDb};
+use surrealdb::engine::remote::http::{Client, Http};
+use surrealdb::opt::auth::Root;
 use surrealdb::sql::{Id, Thing};
 use surrealdb::Surreal;
 
@@ -150,16 +152,28 @@ impl From<SurrealNode> for Node {
     }
 }
 
-/// SurrealStore implements NodeStore trait for SurrealDB embedded backend
+/// SurrealStore implements NodeStore trait for SurrealDB backend
 ///
-/// Uses RocksDB engine for embedded desktop storage with hybrid dual-table
-/// architecture for optimal query performance.
-pub struct SurrealStore {
-    /// SurrealDB connection (embedded RocksDB)
-    db: Arc<Surreal<Db>>,
+/// Supports two connection modes:
+/// - **Embedded RocksDB**: Desktop production mode (Surreal<Db>)
+/// - **HTTP Client**: Dev-proxy mode (Surreal<Client>)
+///
+/// Uses hybrid dual-table architecture for optimal query performance.
+pub struct SurrealStore<C = Db>
+where
+    C: surrealdb::Connection,
+{
+    /// SurrealDB connection
+    db: Arc<Surreal<C>>,
 }
 
-impl SurrealStore {
+/// Type alias for embedded RocksDB store
+pub type EmbeddedStore = SurrealStore<Db>;
+
+/// Type alias for HTTP client store
+pub type HttpStore = SurrealStore<Client>;
+
+impl SurrealStore<Db> {
     /// Create a new SurrealStore with embedded RocksDB backend
     ///
     /// # Arguments
@@ -189,7 +203,7 @@ impl SurrealStore {
     /// # }
     /// ```
     pub async fn new(db_path: PathBuf) -> Result<Self> {
-        // Initialize embedded RocksDB
+        // Initialize embedded RocksDb
         let db = Surreal::new::<RocksDb>(db_path)
             .await
             .context("Failed to initialize SurrealDB with RocksDB backend")?;
@@ -210,12 +224,88 @@ impl SurrealStore {
 
         Ok(Self { db })
     }
+}
 
+impl SurrealStore<Client> {
+    /// Create HTTP client store for dev-proxy mode
+    ///
+    /// This connects to a remote SurrealDB server via HTTP API.
+    /// Used by dev-proxy to enable Surrealist inspection while preserving business logic.
+    ///
+    /// # Arguments
+    ///
+    /// * `endpoint` - SurrealDB server address (e.g., "127.0.0.1:8000")
+    /// * `namespace` - Database namespace (e.g., "nodespace")
+    /// * `database` - Database name (e.g., "nodes")
+    /// * `username` - Auth username (e.g., "root")
+    /// * `password` - Auth password (e.g., "root")
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use nodespace_core::db::SurrealStore;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> anyhow::Result<()> {
+    ///     let store = SurrealStore::new_http(
+    ///         "127.0.0.1:8000",
+    ///         "nodespace",
+    ///         "nodes",
+    ///         "root",
+    ///         "root"
+    ///     ).await?;
+    ///
+    ///     // Use store normally - same API as embedded mode
+    ///     let node = store.get_node("some-id").await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn new_http(
+        endpoint: &str,
+        namespace: &str,
+        database: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<Self> {
+        tracing::info!("Connecting to SurrealDB HTTP server at {}", endpoint);
+
+        // Create HTTP client connection to remote SurrealDB server
+        let db = Surreal::new::<Http>(endpoint)
+            .await
+            .context("Failed to connect to SurrealDB HTTP server")?;
+
+        // Authenticate with root credentials
+        db.signin(Root { username, password })
+            .await
+            .context("Failed to authenticate with SurrealDB")?;
+
+        // Set namespace and database
+        db.use_ns(namespace)
+            .use_db(database)
+            .await
+            .context("Failed to set namespace/database")?;
+
+        let db = Arc::new(db);
+
+        // IMPORTANT: Do NOT call initialize_schema() or seed_core_schemas()
+        // In HTTP mode, the server should already be initialized.
+        // Calling these would try to recreate tables/schemas.
+        tracing::info!("✅ Connected to SurrealDB HTTP server");
+
+        Ok(Self { db })
+    }
+}
+
+impl<C> SurrealStore<C>
+where
+    C: surrealdb::Connection,
+{
     /// Initialize database schema (universal nodes table + core type tables)
     ///
     /// Creates SCHEMALESS tables for flexible property handling while maintaining
     /// core field structure.
-    async fn initialize_schema(db: &Surreal<Db>) -> Result<()> {
+    async fn initialize_schema(db: &Arc<Surreal<Db>>) -> Result<()> {
         // Universal nodes table - SCHEMALESS for maximum flexibility
         db.query(
             "
@@ -261,7 +351,7 @@ impl SurrealStore {
     ///
     /// Creates schema nodes (node_type = "schema") with schema definitions
     /// stored in properties. Checks for existing schemas to be idempotent.
-    async fn seed_core_schemas(db: &Surreal<Db>) -> Result<()> {
+    async fn seed_core_schemas(db: &Arc<Surreal<Db>>) -> Result<()> {
         use serde_json::json;
 
         // Check if schemas already exist by trying to get one
@@ -283,9 +373,7 @@ impl SurrealStore {
         tracing::info!("🌱 Seeding core schemas...");
 
         // Create temporary SurrealStore to use create_node method
-        let store = Self {
-            db: db.clone().into(),
-        };
+        let store = SurrealStore::<Db> { db: Arc::clone(db) };
 
         let now = Utc::now();
 
@@ -550,7 +638,10 @@ impl SurrealStore {
     }
 }
 
-impl SurrealStore {
+impl<C> SurrealStore<C>
+where
+    C: surrealdb::Connection,
+{
     /// Convert binary blob embedding to f32 array for SurrealDB vector functions
     ///
     /// Embeddings are stored as Vec<u8> (bytes), but SurrealDB vector functions
@@ -1833,7 +1924,7 @@ mod tests {
         let floats = [1.0f32, 2.5f32, -0.5f32];
         let blob: Vec<u8> = floats.iter().flat_map(|f| f.to_le_bytes()).collect();
 
-        let result = SurrealStore::blob_to_f32_array(&blob).unwrap();
+        let result = EmbeddedStore::blob_to_f32_array(&blob).unwrap();
         assert_eq!(result.len(), 3);
         assert_eq!(result[0], 1.0);
         assert_eq!(result[1], 2.5);
@@ -1845,7 +1936,7 @@ mod tests {
         // Invalid blob: 13 bytes (not divisible by 4)
         let invalid_blob = vec![0u8; 13];
 
-        let result = SurrealStore::blob_to_f32_array(&invalid_blob);
+        let result = EmbeddedStore::blob_to_f32_array(&invalid_blob);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
