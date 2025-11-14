@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
     let db_path: PathBuf = home_dir
         .join(".nodespace")
         .join("database")
-        .join("nodespace-dev.db");
+        .join("nodespace-dev");
 
     // Ensure database directory exists
     if let Some(parent) = db_path.parent() {

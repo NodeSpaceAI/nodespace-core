@@ -430,11 +430,8 @@ impl NodeBehavior for TaskNodeBehavior {
     }
 
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        if node.content.trim().is_empty() {
-            return Err(NodeValidationError::MissingField(
-                "Task nodes must have a description".to_string(),
-            ));
-        }
+        // Allow empty content for tasks - users can add description after creation
+        // Content validation removed (Issue: tasks should allow empty content initially)
 
         // Type-namespaced property validation (Issue #397)
         // Properties are stored under type-specific namespaces: properties.task.*

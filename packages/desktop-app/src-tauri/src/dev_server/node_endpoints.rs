@@ -97,18 +97,14 @@ async fn health_check() -> Json<HealthStatus> {
 ///
 /// # Note
 ///
-/// This endpoint only prepares the database directory structure.
-/// The actual database initialization happens when the dev-server binary starts.
-/// Tests should ensure the dev-server is running before calling this endpoint.
+/// In HTTP mode, the database is already initialized when the dev-server starts.
+/// This endpoint just returns the current database path for frontend compatibility.
+/// It only allows switching to a DIFFERENT database path for testing purposes.
 async fn init_database(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Query(params): Query<InitDbQuery>,
 ) -> Result<Json<InitDbResponse>, HttpError> {
     use std::path::PathBuf;
-    use tokio::fs;
-
-    // Acquire write lock to serialize database initialization (Issue #266)
-    let _write_guard = state.write_lock.lock().await;
 
     // Determine database path
     let db_path = if let Some(custom_path) = params.db_path {
@@ -121,73 +117,21 @@ async fn init_database(
         home_dir
             .join(".nodespace")
             .join("database")
-            .join("nodespace-dev.db")
+            .join("nodespace-dev")
     };
-
-    // Ensure database directory exists
-    if let Some(parent) = db_path.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|e| HttpError::from_anyhow(e.into(), "FILESYSTEM_ERROR"))?;
-    }
 
     let db_path_str = db_path
         .to_str()
         .ok_or_else(|| HttpError::new("Invalid database path", "PATH_ERROR"))?
         .to_string();
 
-    // STEP 1: Create NEW SurrealDB store with schema initialized
-    use nodespace_core::{NodeService, SurrealStore};
-    let new_store = SurrealStore::new(db_path.clone())
-        .await
-        .map_err(|e| HttpError::from_anyhow(e, "DATABASE_INIT_ERROR"))?;
-
-    let new_store_arc = Arc::new(new_store);
-
-    // STEP 2: Create NEW node service and operations
-    let new_node_service = NodeService::new(new_store_arc.clone())
-        .map_err(|e| HttpError::from_anyhow(e.into(), "NODE_SERVICE_INIT_ERROR"))?;
-
-    use nodespace_core::operations::NodeOperations;
-    let new_node_operations = NodeOperations::new(Arc::new(new_node_service.clone()));
-
-    // STEP 3: Atomic swap of all services
-    {
-        let mut store_lock = state.store.write().map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire store write lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?;
-        *store_lock = new_store_arc;
-    }
-
-    {
-        let mut ns_lock = state.node_service.write().map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire node service write lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?;
-        *ns_lock = Arc::new(new_node_service);
-    }
-
-    {
-        let mut no_lock = state.node_operations.write().map_err(|e| {
-            HttpError::new(
-                format!("Failed to acquire node operations write lock: {}", e),
-                "LOCK_ERROR",
-            )
-        })?;
-        *no_lock = Arc::new(new_node_operations);
-    }
-
-    tracing::info!("🔄 Database SWAPPED to: {}", db_path_str);
+    // In HTTP mode, the database is already initialized on server startup
+    // Just return success with the path (frontend expects this response)
+    tracing::info!("✅ Database already initialized at: {}", db_path_str);
 
     Ok(Json(InitDbResponse {
         db_path: db_path_str,
     }))
-    // Write lock is automatically released when _write_guard goes out of scope
 }
 
 /// Create a new node

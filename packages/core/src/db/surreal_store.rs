@@ -167,8 +167,11 @@ impl SurrealStore {
 
         let db = Arc::new(db);
 
-        // Initialize schema
+        // Initialize schema (create tables)
         Self::initialize_schema(&db).await?;
+
+        // Seed core schemas (create schema nodes)
+        Self::seed_core_schemas(&db).await?;
 
         Ok(Self { db })
     }
@@ -215,6 +218,258 @@ impl SurrealStore {
         )
         .await
         .context("Failed to create mentions table")?;
+
+        Ok(())
+    }
+
+    /// Seed core schema definitions as nodes
+    ///
+    /// Creates schema nodes (node_type = "schema") with schema definitions
+    /// stored in properties. Checks for existing schemas to be idempotent.
+    async fn seed_core_schemas(db: &Surreal<Db>) -> Result<()> {
+        use serde_json::json;
+
+        // Check if schemas already exist by trying to get one
+        // If any schema exists, assume all are seeded (they're created atomically)
+        let task_exists = db
+            .query("SELECT * FROM nodes WHERE uuid = 'task' LIMIT 1")
+            .await
+            .context("Failed to check for existing schemas")?
+            .take::<Option<SurrealNode>>(0)
+            .ok()
+            .flatten()
+            .is_some();
+
+        if task_exists {
+            tracing::info!("✅ Core schemas already seeded");
+            return Ok(());
+        }
+
+        tracing::info!("🌱 Seeding core schemas...");
+
+        // Create temporary SurrealStore to use create_node method
+        let store = Self { db: db.clone().into() };
+
+        let now = Utc::now();
+
+        // Task schema
+        let task_node = Node {
+            id: "task".to_string(),
+            node_type: "schema".to_string(),
+            content: "Task".to_string(),
+            parent_id: None,
+            container_node_id: None,
+            before_sibling_id: None,
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            properties: json!({
+                "is_core": true,
+                "version": 1,
+                "description": "Task tracking schema",
+                "fields": [
+                    {
+                        "name": "status",
+                        "type": "enum",
+                        "protection": "core",
+                        "core_values": ["OPEN", "IN_PROGRESS", "DONE"],
+                        "user_values": [],
+                        "indexed": true,
+                        "required": true,
+                        "extensible": true,
+                        "default": "OPEN",
+                        "description": "Task status"
+                    },
+                    {
+                        "name": "priority",
+                        "type": "enum",
+                        "protection": "user",
+                        "core_values": ["LOW", "MEDIUM", "HIGH"],
+                        "user_values": [],
+                        "indexed": true,
+                        "required": false,
+                        "extensible": true,
+                        "description": "Task priority"
+                    },
+                    {
+                        "name": "due_date",
+                        "type": "date",
+                        "protection": "user",
+                        "indexed": true,
+                        "required": false,
+                        "description": "Due date"
+                    },
+                    {
+                        "name": "started_at",
+                        "type": "date",
+                        "protection": "user",
+                        "indexed": false,
+                        "required": false,
+                        "description": "Started at"
+                    },
+                    {
+                        "name": "completed_at",
+                        "type": "date",
+                        "protection": "user",
+                        "indexed": false,
+                        "required": false,
+                        "description": "Completed at"
+                    },
+                    {
+                        "name": "assignee",
+                        "type": "text",
+                        "protection": "user",
+                        "indexed": true,
+                        "required": false,
+                        "description": "Assignee"
+                    }
+                ]
+            }),
+            embedding_vector: None,
+            mentions: vec![],
+            mentioned_by: vec![],
+        };
+        store.create_node(task_node).await?;
+
+        // Date schema
+        let date_node = Node {
+            id: "date".to_string(),
+            node_type: "schema".to_string(),
+            content: "Date".to_string(),
+            parent_id: None,
+            container_node_id: None,
+            before_sibling_id: None,
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            properties: json!({
+                "is_core": true,
+                "version": 1,
+                "description": "Date node schema",
+                "fields": []
+            }),
+            embedding_vector: None,
+            mentions: vec![],
+            mentioned_by: vec![],
+        };
+        store.create_node(date_node).await?;
+
+        // Text schema
+        let text_node = Node {
+            id: "text".to_string(),
+            node_type: "schema".to_string(),
+            content: "Text".to_string(),
+            parent_id: None,
+            container_node_id: None,
+            before_sibling_id: None,
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            properties: json!({
+                "is_core": true,
+                "version": 1,
+                "description": "Plain text content",
+                "fields": []
+            }),
+            embedding_vector: None,
+            mentions: vec![],
+            mentioned_by: vec![],
+        };
+        store.create_node(text_node).await?;
+
+        // Header schema
+        let header_node = Node {
+            id: "header".to_string(),
+            node_type: "schema".to_string(),
+            content: "Header".to_string(),
+            parent_id: None,
+            container_node_id: None,
+            before_sibling_id: None,
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            properties: json!({
+                "is_core": true,
+                "version": 1,
+                "description": "Markdown header (h1-h6)",
+                "fields": []
+            }),
+            embedding_vector: None,
+            mentions: vec![],
+            mentioned_by: vec![],
+        };
+        store.create_node(header_node).await?;
+
+        // Code block schema
+        let code_block_node = Node {
+            id: "code-block".to_string(),
+            node_type: "schema".to_string(),
+            content: "Code Block".to_string(),
+            parent_id: None,
+            container_node_id: None,
+            before_sibling_id: None,
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            properties: json!({
+                "is_core": true,
+                "version": 1,
+                "description": "Code block with syntax highlighting",
+                "fields": []
+            }),
+            embedding_vector: None,
+            mentions: vec![],
+            mentioned_by: vec![],
+        };
+        store.create_node(code_block_node).await?;
+
+        // Quote block schema
+        let quote_block_node = Node {
+            id: "quote-block".to_string(),
+            node_type: "schema".to_string(),
+            content: "Quote Block".to_string(),
+            parent_id: None,
+            container_node_id: None,
+            before_sibling_id: None,
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            properties: json!({
+                "is_core": true,
+                "version": 1,
+                "description": "Blockquote for citations",
+                "fields": []
+            }),
+            embedding_vector: None,
+            mentions: vec![],
+            mentioned_by: vec![],
+        };
+        store.create_node(quote_block_node).await?;
+
+        // Ordered list schema
+        let ordered_list_node = Node {
+            id: "ordered-list".to_string(),
+            node_type: "schema".to_string(),
+            content: "Ordered List".to_string(),
+            parent_id: None,
+            container_node_id: None,
+            before_sibling_id: None,
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            properties: json!({
+                "is_core": true,
+                "version": 1,
+                "description": "Numbered list item",
+                "fields": []
+            }),
+            embedding_vector: None,
+            mentions: vec![],
+            mentioned_by: vec![],
+        };
+        store.create_node(ordered_list_node).await?;
+
+        tracing::info!("✅ Core schemas seeded successfully");
 
         Ok(())
     }
