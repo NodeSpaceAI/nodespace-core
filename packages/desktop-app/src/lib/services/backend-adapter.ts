@@ -717,13 +717,14 @@ export class TauriAdapter implements BackendAdapter {
   async getSchema(schemaId: string): Promise<SchemaDefinition> {
     try {
       // Call actual Tauri command (created by #388)
+      // Note: Rust uses #[serde(rename = "type")] so field_type is already renamed to "type"
       const schema = await invoke<{
         is_core: boolean;
         version: number;
         description: string;
         fields: Array<{
           name: string;
-          field_type: string;
+          type: string; // Already renamed by Rust's #[serde(rename = "type")]
           protection: string;
           core_values?: string[];
           user_values?: string[];
@@ -745,7 +746,7 @@ export class TauriAdapter implements BackendAdapter {
         description: schema.description,
         fields: schema.fields.map((field) => ({
           name: field.name,
-          type: field.field_type,
+          type: field.type, // Use renamed field directly
           protection: field.protection as 'core' | 'user' | 'system',
           coreValues: field.core_values,
           userValues: field.user_values,
