@@ -150,42 +150,42 @@
       {
         id: 'mock-node-1',
         title: 'Welcome to NodeSpace',
-        type: 'text',
+        nodeType: 'text',
         subtitle: 'Getting started with your knowledge management system',
         metadata: '2 days ago'
       },
       {
         id: 'mock-node-2',
         title: 'Project Notes',
-        type: 'document',
+        nodeType: 'document',
         subtitle: 'Comprehensive project documentation and meeting notes',
         metadata: '1 week ago'
       },
       {
         id: 'mock-node-3',
         title: 'Task List',
-        type: 'task',
+        nodeType: 'task',
         subtitle: 'Important tasks and action items for the current sprint',
         metadata: '3 days ago'
       },
       {
         id: 'mock-node-4',
         title: 'AI Research Chat',
-        type: 'ai-chat',
+        nodeType: 'ai-chat',
         subtitle: 'Conversation about machine learning and AI development',
         metadata: '5 days ago'
       },
       {
         id: 'mock-node-5',
         title: 'User Research Findings',
-        type: 'user',
+        nodeType: 'user',
         subtitle: 'Key insights from user interviews and usability testing',
         metadata: '1 week ago'
       },
       {
         id: 'mock-node-6',
         title: 'Search Query Examples',
-        type: 'query',
+        nodeType: 'query',
         subtitle: 'Commonly used search patterns and filters',
         metadata: '4 days ago'
       }
@@ -246,10 +246,10 @@
    * These are static shortcuts that don't change during component lifecycle
    */
   const DATE_SHORTCUTS: readonly NodeResult[] = [
-    { id: 'today', title: 'Today', type: 'date', isShortcut: true },
-    { id: 'tomorrow', title: 'Tomorrow', type: 'date', isShortcut: true },
-    { id: 'yesterday', title: 'Yesterday', type: 'date', isShortcut: true },
-    { id: 'date-picker', title: 'Select date...', type: 'date', isShortcut: true }
+    { id: 'today', title: 'Today', nodeType: 'date', isShortcut: true },
+    { id: 'tomorrow', title: 'Tomorrow', nodeType: 'date', isShortcut: true },
+    { id: 'yesterday', title: 'Yesterday', nodeType: 'date', isShortcut: true },
+    { id: 'date-picker', title: 'Select date...', nodeType: 'date', isShortcut: true }
   ] as const;
 
   /**
@@ -341,7 +341,7 @@
         id: node.id,
         title: node.content.split('\n')[0] || 'Untitled',
         // Backend ensures valid node types; fallback to 'text' for type safety
-        type: (node.nodeType || 'text') as NodeType
+        nodeType: (node.nodeType || 'text') as NodeType
       }));
 
       // Update cache for next search

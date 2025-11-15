@@ -5,6 +5,7 @@ import svelte from 'eslint-plugin-svelte';
 import svelteParser from 'svelte-eslint-parser';
 import oxlint from 'eslint-plugin-oxlint';
 import unicorn from 'eslint-plugin-unicorn';
+import enforceNodeType from './eslint-rules/enforce-nodetype.js';
 
 // Common ESLint rule configuration to avoid duplication
 const commonUnusedVarsRule = ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }];
@@ -74,7 +75,12 @@ export default [
     plugins: {
       '@typescript-eslint': ts,
       oxlint,
-      unicorn
+      unicorn,
+      'nodespace': {
+        rules: {
+          'enforce-nodetype': enforceNodeType
+        }
+      }
     },
     rules: {
       ...oxlint.configs.recommended.rules,
@@ -83,6 +89,8 @@ export default [
       '@typescript-eslint/no-unused-vars': commonUnusedVarsRule,
       '@typescript-eslint/no-explicit-any': 'warn',
       'no-console': process.env.NODE_ENV === 'production' ? 'error' : 'off',
+      // Custom NodeSpace rules
+      'nodespace/enforce-nodetype': 'warn',
       // File naming conventions for TypeScript files
       'unicorn/filename-case': ['error', {
         cases: {

@@ -148,7 +148,7 @@ export const MOCK_NODE_HIERARCHY = [
 export interface NodeResult {
   id: string;
   title: string;
-  type: NodeType;
+  nodeType: NodeType;
   subtitle?: string;
   metadata?: string;
 }
@@ -160,35 +160,35 @@ export const MOCK_AUTOCOMPLETE_RESULTS: NodeResult[] = [
   {
     id: 'node-1',
     title: 'First Node',
-    type: 'text',
+    nodeType: 'text',
     subtitle: 'Sample',
     metadata: '1 day ago'
   },
   {
     id: 'node-2',
     title: 'Second Node',
-    type: 'document',
+    nodeType: 'document',
     subtitle: 'Docs',
     metadata: '2 days ago'
   },
   {
     id: 'node-3',
     title: 'Third Node',
-    type: 'task',
+    nodeType: 'task',
     subtitle: 'Todo',
     metadata: 'Today'
   },
   {
     id: 'node-4',
     title: 'Another Test',
-    type: 'text',
+    nodeType: 'text',
     subtitle: 'Sample',
     metadata: '3 days ago'
   },
   {
     id: 'node-5',
     title: 'Project Documentation',
-    type: 'document',
+    nodeType: 'document',
     subtitle: 'Docs',
     metadata: '1 week ago'
   }

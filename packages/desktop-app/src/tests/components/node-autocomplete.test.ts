@@ -21,7 +21,7 @@ import { waitForEffects, MOCK_AUTOCOMPLETE_RESULTS } from '../helpers';
 interface NodeResult {
   id: string;
   title: string;
-  type: NodeType;
+  nodeType: NodeType;
   subtitle?: string;
   metadata?: string;
 }
@@ -247,7 +247,7 @@ describe('NodeAutocomplete', () => {
       await waitForEffects();
 
       // Update results (simulating new search)
-      const newResults: NodeResult[] = [{ id: 'node-4', title: 'New Node', type: 'text' }];
+      const newResults: NodeResult[] = [{ id: 'node-4', title: 'New Node', nodeType: 'text' }];
       await result.rerender({ results: newResults });
       await waitForEffects();
 
@@ -666,7 +666,7 @@ describe('NodeAutocomplete', () => {
 
   describe('Edge Cases', () => {
     it('should handle single result', () => {
-      const singleResult: NodeResult[] = [{ id: 'node-1', title: 'Only Node', type: 'text' }];
+      const singleResult: NodeResult[] = [{ id: 'node-1', title: 'Only Node', nodeType: 'text' }];
 
       render(NodeAutocomplete, {
         props: {
@@ -684,7 +684,7 @@ describe('NodeAutocomplete', () => {
 
     it('should handle results with missing optional fields', () => {
       const minimalResults: NodeResult[] = [
-        { id: 'node-1', title: 'Minimal Node', type: 'text' }
+        { id: 'node-1', title: 'Minimal Node', nodeType: 'text' }
         // No subtitle or metadata
       ];
 
@@ -730,10 +730,10 @@ describe('NodeAutocomplete', () => {
 
     it('should handle various node types', () => {
       const diverseResults: NodeResult[] = [
-        { id: 'node-1', title: 'Text Node', type: 'text' },
-        { id: 'node-2', title: 'Task Node', type: 'task' },
-        { id: 'node-3', title: 'Document Node', type: 'document' },
-        { id: 'node-4', title: 'AI Chat Node', type: 'ai-chat' }
+        { id: 'node-1', title: 'Text Node', nodeType: 'text' },
+        { id: 'node-2', title: 'Task Node', nodeType: 'task' },
+        { id: 'node-3', title: 'Document Node', nodeType: 'document' },
+        { id: 'node-4', title: 'AI Chat Node', nodeType: 'ai-chat' }
       ];
 
       render(NodeAutocomplete, {

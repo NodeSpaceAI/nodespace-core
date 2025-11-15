@@ -10,7 +10,7 @@
   interface NodeResult {
     id: string;
     title: string;
-    type: NodeType;
+    nodeType: NodeType;
     subtitle?: string;
     metadata?: string;
     isShortcut?: boolean;
@@ -211,12 +211,12 @@
           tabindex="0"
           on:mousedown={(e) => {
             e.preventDefault();
-            onselect?.({ id: 'new', title: query, type: 'text' });
+            onselect?.({ id: 'new', title: query, nodeType: 'text' });
           }}
           on:keydown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              onselect?.({ id: 'new', title: query, type: 'text' });
+              onselect?.({ id: 'new', title: query, nodeType: 'text' });
             }
           }}
           on:mouseover={(e) => {
@@ -284,9 +284,9 @@
               <div
                 style="width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;"
               >
-                {#if result.type && getNodeConfig(result.type)}
+                {#if result.nodeType && getNodeConfig(result.nodeType)}
                   <!-- Future: Dynamic icon based on node type -->
-                  <Icon name={result.type as any} size={16} />
+                  <Icon name={result.nodeType as any} size={16} />
                 {:else}
                   <!-- Fallback: Static text circle -->
                   <div class="node-icon">
@@ -315,12 +315,12 @@
           tabindex="0"
           on:mousedown={(e) => {
             e.preventDefault();
-            onselect?.({ id: 'new', title: query, type: 'text' });
+            onselect?.({ id: 'new', title: query, nodeType: 'text' });
           }}
           on:keydown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              onselect?.({ id: 'new', title: query, type: 'text' });
+              onselect?.({ id: 'new', title: query, nodeType: 'text' });
             }
           }}
           on:mouseover={(e) => {
