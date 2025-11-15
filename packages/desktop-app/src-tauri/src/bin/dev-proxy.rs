@@ -27,26 +27,78 @@ use axum::{
 use chrono::Utc;
 use nodespace_core::{
     db::HttpStore,
-    models::{Node, NodeFilter, NodeUpdate},
-    services::NodeService,
+    models::{
+        schema::{ProtectionLevel, SchemaDefinition, SchemaField},
+        Node, NodeFilter, NodeUpdate,
+    },
+    services::{NodeService, NodeServiceError, SchemaService},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
-// Type alias for HTTP client NodeService
+// Type alias for HTTP client types
 type HttpNodeService = NodeService<surrealdb::engine::remote::http::Client>;
+type HttpSchemaService = SchemaService<surrealdb::engine::remote::http::Client>;
 
 /// Application state shared across handlers
 #[derive(Clone)]
 struct AppState {
     node_service: Arc<HttpNodeService>,
+    schema_service: Arc<HttpSchemaService>,
 }
 
-/// Standard error response format
-type ApiResult<T> = Result<Json<T>, (StatusCode, String)>;
-type ApiStatusResult = Result<StatusCode, (StatusCode, String)>;
+/// Structured error response matching Tauri's CommandError format
+///
+/// Provides consistent error handling between HTTP (browser mode) and
+/// Tauri (desktop app) by returning the same JSON structure:
+/// ```json
+/// {
+///   "message": "User-facing error message",
+///   "code": "MACHINE_READABLE_CODE",
+///   "details": "Optional debugging information"
+/// }
+/// ```
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiError {
+    /// User-facing error message
+    pub message: String,
+    /// Machine-readable error code
+    pub code: String,
+    /// Optional detailed error information for debugging
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+}
+
+impl ApiError {
+    fn new(code: &str, message: String) -> Self {
+        Self {
+            message: message.clone(),
+            code: code.to_string(),
+            details: Some(message),
+        }
+    }
+}
+
+/// Result of schema field mutation operations
+///
+/// Matches Tauri's SchemaFieldResult to ensure consistent responses
+/// between HTTP and Tauri entry points.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SchemaFieldResult {
+    /// ID of the modified schema
+    pub schema_id: String,
+    /// New schema version after the operation
+    pub new_version: i32,
+}
+
+/// Standard result types for HTTP handlers
+type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ApiError>)>;
+type ApiStatusResult = Result<StatusCode, (StatusCode, Json<ApiError>)>;
+type ApiSchemaResult = Result<Json<SchemaFieldResult>, (StatusCode, Json<ApiError>)>;
 
 /// Update node request with OCC version
 #[derive(Debug, Deserialize)]
@@ -67,6 +119,89 @@ struct UpdateNodeRequest {
 struct MentionRequest {
     pub source_id: String,
     pub target_id: String,
+}
+
+/// Add schema field request
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddSchemaFieldRequest {
+    pub name: String,
+    pub field_type: String,
+    pub indexed: bool,
+    pub required: Option<bool>,
+    pub default: Option<serde_json::Value>,
+    pub description: Option<String>,
+    pub item_type: Option<String>,
+    pub enum_values: Option<Vec<String>>,
+    pub extensible: Option<bool>,
+}
+
+/// Extend enum field request
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtendEnumRequest {
+    pub value: String,
+}
+
+// === Error Mapping Helpers ===
+
+/// Maps NodeServiceError to HTTP status code and structured ApiError
+///
+/// This centralizes error mapping logic to ensure consistent HTTP responses
+/// across all endpoints. Follows REST best practices:
+/// - 404 NOT FOUND: Resource doesn't exist
+/// - 400 BAD REQUEST: Validation failures
+/// - 409 CONFLICT: Version conflicts (OCC failures)
+/// - 500 INTERNAL SERVER ERROR: Unexpected errors
+fn map_node_service_error(err: NodeServiceError) -> (StatusCode, Json<ApiError>) {
+    let error_str = err.to_string();
+
+    let (status, code) = if error_str.contains("not found") {
+        (StatusCode::NOT_FOUND, "RESOURCE_NOT_FOUND")
+    } else if error_str.contains("already exists") {
+        (StatusCode::BAD_REQUEST, "ALREADY_EXISTS")
+    } else if error_str.contains("validation") {
+        (StatusCode::BAD_REQUEST, "VALIDATION_ERROR")
+    } else if error_str.contains("version") || error_str.contains("conflict") {
+        (StatusCode::CONFLICT, "VERSION_CONFLICT")
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR")
+    };
+
+    (
+        status,
+        Json(ApiError::new(
+            code,
+            format!("Operation failed: {}", error_str),
+        )),
+    )
+}
+
+/// Maps NodeServiceError to HTTP status code and structured ApiError for schema operations
+///
+/// Provides more specific error codes for schema-related operations.
+fn map_schema_error(err: NodeServiceError) -> (StatusCode, Json<ApiError>) {
+    let error_str = err.to_string();
+
+    let (status, code) = if error_str.contains("not found") {
+        (StatusCode::NOT_FOUND, "SCHEMA_NOT_FOUND")
+    } else if error_str.contains("already exists") {
+        (StatusCode::BAD_REQUEST, "FIELD_ALREADY_EXISTS")
+    } else if error_str.contains("validation") || error_str.contains("protected") {
+        (StatusCode::BAD_REQUEST, "VALIDATION_ERROR")
+    } else if error_str.contains("version") || error_str.contains("conflict") {
+        (StatusCode::CONFLICT, "VERSION_CONFLICT")
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, "SCHEMA_SERVICE_ERROR")
+    };
+
+    (
+        status,
+        Json(ApiError::new(
+            code,
+            format!("Schema operation failed: {}", error_str),
+        )),
+    )
 }
 
 /// Create node request for POST /api/nodes endpoint
@@ -163,7 +298,15 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let state = AppState { node_service };
+    // Initialize SchemaService
+    println!("🔖 Initializing SchemaService...");
+    let schema_service = Arc::new(SchemaService::new(node_service.clone()));
+    println!("✅ SchemaService initialized");
+
+    let state = AppState {
+        node_service,
+        schema_service,
+    };
 
     // Build HTTP router
     let app = Router::new()
@@ -200,6 +343,16 @@ async fn main() -> anyhow::Result<()> {
         )
         // Schema endpoints
         .route("/api/schemas/:id", get(get_schema))
+        .route("/api/schemas/:id/fields", post(add_schema_field))
+        .route("/api/schemas/:id/fields/:name", delete(remove_schema_field))
+        .route(
+            "/api/schemas/:id/fields/:name/enum",
+            post(extend_schema_enum),
+        )
+        .route(
+            "/api/schemas/:id/fields/:name/enum/:value",
+            delete(remove_schema_enum_value),
+        )
         .with_state(state)
         .layer(CorsLayer::permissive()); // Allow CORS from frontend (localhost:5173)
 
@@ -267,7 +420,7 @@ async fn create_node(
         .node_service
         .create_node(node)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(map_node_service_error)?;
 
     Ok(Json(id))
 }
@@ -285,7 +438,7 @@ async fn get_node(
         .node_service
         .get_node(&id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(map_node_service_error)?;
 
     Ok(Json(node))
 }
@@ -301,34 +454,17 @@ async fn update_node(
         .node_service
         .update_node(&id, request.update)
         .await
-        .map_err(|e| {
-            let error_str = e.to_string();
-
-            // Map NodeService errors to HTTP status codes
-            // This helps frontend handle errors correctly
-            if error_str.contains("version") || error_str.contains("Version conflict") {
-                (StatusCode::CONFLICT, error_str) // 409 Conflict
-            } else if error_str.contains("not found") {
-                (StatusCode::NOT_FOUND, error_str) // 404 Not Found
-            } else if error_str.contains("validation") {
-                (StatusCode::BAD_REQUEST, error_str) // 400 Bad Request
-            } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, error_str) // 500 Internal Error
-            }
-        })?;
+        .map_err(map_node_service_error)?;
 
     Ok(StatusCode::NO_CONTENT) // 204 No Content (success)
 }
 
 async fn delete_node(State(state): State<AppState>, Path(id): Path<String>) -> ApiStatusResult {
-    state.node_service.delete_node(&id).await.map_err(|e| {
-        let error_str = e.to_string();
-        if error_str.contains("not found") {
-            (StatusCode::NOT_FOUND, error_str)
-        } else {
-            (StatusCode::INTERNAL_SERVER_ERROR, error_str)
-        }
-    })?;
+    state
+        .node_service
+        .delete_node(&id)
+        .await
+        .map_err(map_node_service_error)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -341,7 +477,7 @@ async fn get_children(
         .node_service
         .get_children(&parent_id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(map_node_service_error)?;
 
     Ok(Json(children))
 }
@@ -354,7 +490,7 @@ async fn query_nodes(
         .node_service
         .query_nodes(filter)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(map_node_service_error)?;
 
     Ok(Json(nodes))
 }
@@ -367,7 +503,7 @@ async fn get_nodes_by_container(
         .node_service
         .get_nodes_by_container_id(&container_id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(map_node_service_error)?;
 
     Ok(Json(nodes))
 }
@@ -380,7 +516,7 @@ async fn create_mention(
         .node_service
         .create_mention(&request.source_id, &request.target_id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(map_node_service_error)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -393,7 +529,7 @@ async fn delete_mention(
         .node_service
         .delete_mention(&request.source_id, &request.target_id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(map_node_service_error)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -406,7 +542,7 @@ async fn get_outgoing_mentions(
         .node_service
         .get_mentions(&id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(map_node_service_error)?;
 
     Ok(Json(mentions))
 }
@@ -419,7 +555,7 @@ async fn get_incoming_mentions(
         .node_service
         .get_mentioned_by(&id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(map_node_service_error)?;
 
     Ok(Json(mentions))
 }
@@ -432,26 +568,308 @@ async fn get_mentioning_containers(
         .node_service
         .get_mentioning_containers(&id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(map_node_service_error)?;
 
     Ok(Json(container_ids))
 }
 
+/// Get schema definition by schema ID
+///
+/// Retrieves the complete schema definition including all fields,
+/// protection levels, and metadata. Uses SchemaService for proper
+/// schema validation and retrieval.
+///
+/// # HTTP Endpoint
+/// ```text
+/// GET /api/schemas/:id
+/// ```
+///
+/// # Parameters
+/// - `id`: Schema ID (e.g., "task", "person", "project")
+///
+/// # Response (200 OK)
+/// ```json
+/// {
+///   "id": "task",
+///   "name": "Task",
+///   "version": 1,
+///   "fields": [
+///     {
+///       "name": "status",
+///       "fieldType": "enum",
+///       "protection": "core",
+///       "coreValues": ["todo", "in_progress", "done"],
+///       "indexed": true
+///     }
+///   ]
+/// }
+/// ```
+///
+/// # Errors
+/// - `404 NOT FOUND`: Schema doesn't exist
+/// - `500 INTERNAL SERVER ERROR`: Database error
 async fn get_schema(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> ApiResult<serde_json::Value> {
-    // Get the schema node (schemas are stored as nodes with id = node_type)
-    let schema_node = state
-        .node_service
-        .get_node(&id)
+) -> ApiResult<SchemaDefinition> {
+    let schema = state
+        .schema_service
+        .get_schema(&id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(map_schema_error)?;
 
-    // Return just the properties (SchemaDefinition), not the whole node
-    // Frontend expects SchemaDefinition, not Node
-    match schema_node {
-        Some(node) => Ok(Json(node.properties)),
-        None => Err((StatusCode::NOT_FOUND, format!("Schema not found: {}", id))),
-    }
+    Ok(Json(schema))
+}
+
+/// Add a new field to a schema
+///
+/// Creates a new user-protected field in the specified schema. Only user
+/// fields can be added through this endpoint - core and system fields
+/// require schema definition changes.
+///
+/// The schema version is automatically incremented on success, and the
+/// new version is returned in the response (matching Tauri behavior).
+///
+/// # HTTP Endpoint
+/// ```text
+/// POST /api/schemas/:id/fields
+/// Content-Type: application/json
+/// ```
+///
+/// # Parameters
+/// - `id`: Schema ID to modify (e.g., "task", "person")
+///
+/// # Request Body
+/// ```json
+/// {
+///   "name": "custom:priority",
+///   "fieldType": "number",
+///   "indexed": false,
+///   "required": false,
+///   "default": 0,
+///   "description": "Task priority level"
+/// }
+/// ```
+///
+/// # Response (200 OK)
+/// ```json
+/// {
+///   "schemaId": "task",
+///   "newVersion": 2
+/// }
+/// ```
+///
+/// # Errors
+/// - `404 NOT FOUND`: Schema doesn't exist
+/// - `400 BAD REQUEST`: Field already exists, validation error, or protection violation
+/// - `500 INTERNAL SERVER ERROR`: Database error
+///
+/// # Field Naming
+/// User fields MUST use namespace prefixes (e.g., `custom:`, `org:`, `plugin:`)
+/// to prevent conflicts with future core fields.
+async fn add_schema_field(
+    State(state): State<AppState>,
+    Path(schema_id): Path<String>,
+    Json(request): Json<AddSchemaFieldRequest>,
+) -> ApiSchemaResult {
+    // Build SchemaField from request
+    let field = SchemaField {
+        name: request.name,
+        field_type: request.field_type,
+        protection: ProtectionLevel::User, // Only user fields can be added
+        core_values: None,                 // User fields don't have core values
+        user_values: request.enum_values,
+        indexed: request.indexed,
+        required: request.required,
+        extensible: request.extensible,
+        default: request.default,
+        description: request.description,
+        item_type: request.item_type,
+    };
+
+    // Add field to schema
+    state
+        .schema_service
+        .add_field(&schema_id, field)
+        .await
+        .map_err(map_schema_error)?;
+
+    // Get updated schema to return new version (matches Tauri behavior)
+    let updated_schema = state
+        .schema_service
+        .get_schema(&schema_id)
+        .await
+        .map_err(map_schema_error)?;
+
+    Ok(Json(SchemaFieldResult {
+        schema_id,
+        new_version: updated_schema.version as i32,
+    }))
+}
+
+/// Remove a field from a schema
+///
+/// Removes a user-protected field from the specified schema. Core and
+/// system fields cannot be removed through this endpoint.
+///
+/// The schema version is automatically incremented on success.
+///
+/// # HTTP Endpoint
+/// ```text
+/// DELETE /api/schemas/:id/fields/:name
+/// ```
+///
+/// # Parameters
+/// - `id`: Schema ID (e.g., "task")
+/// - `name`: Field name to remove (e.g., "custom:priority")
+///
+/// # Response (200 OK)
+/// ```json
+/// {
+///   "schemaId": "task",
+///   "newVersion": 3
+/// }
+/// ```
+///
+/// # Errors
+/// - `404 NOT FOUND`: Schema or field doesn't exist
+/// - `400 BAD REQUEST`: Cannot remove core/system field (protection violation)
+/// - `500 INTERNAL SERVER ERROR`: Database error
+async fn remove_schema_field(
+    State(state): State<AppState>,
+    Path((schema_id, field_name)): Path<(String, String)>,
+) -> ApiSchemaResult {
+    // Remove field from schema
+    state
+        .schema_service
+        .remove_field(&schema_id, &field_name)
+        .await
+        .map_err(map_schema_error)?;
+
+    // Get updated schema to return new version (matches Tauri behavior)
+    let updated_schema = state
+        .schema_service
+        .get_schema(&schema_id)
+        .await
+        .map_err(map_schema_error)?;
+
+    Ok(Json(SchemaFieldResult {
+        schema_id,
+        new_version: updated_schema.version as i32,
+    }))
+}
+
+/// Extend an enum field with a new user value
+///
+/// Adds a new user value to an extensible enum field. Only works on
+/// fields with `extensible: true` and adds to `userValues` array
+/// (core values cannot be modified).
+///
+/// The schema version is automatically incremented on success.
+///
+/// # HTTP Endpoint
+/// ```text
+/// POST /api/schemas/:id/fields/:name/enum
+/// Content-Type: application/json
+/// ```
+///
+/// # Parameters
+/// - `id`: Schema ID (e.g., "task")
+/// - `name`: Enum field name (e.g., "status")
+///
+/// # Request Body
+/// ```json
+/// {
+///   "value": "blocked"
+/// }
+/// ```
+///
+/// # Response (200 OK)
+/// ```json
+/// {
+///   "schemaId": "task",
+///   "newVersion": 4
+/// }
+/// ```
+///
+/// # Errors
+/// - `404 NOT FOUND`: Schema or field doesn't exist
+/// - `400 BAD REQUEST`: Field is not an enum, not extensible, or value already exists
+/// - `500 INTERNAL SERVER ERROR`: Database error
+async fn extend_schema_enum(
+    State(state): State<AppState>,
+    Path((schema_id, field_name)): Path<(String, String)>,
+    Json(request): Json<ExtendEnumRequest>,
+) -> ApiSchemaResult {
+    // Extend enum field with new user value
+    state
+        .schema_service
+        .extend_enum_field(&schema_id, &field_name, request.value)
+        .await
+        .map_err(map_schema_error)?;
+
+    // Get updated schema to return new version (matches Tauri behavior)
+    let updated_schema = state
+        .schema_service
+        .get_schema(&schema_id)
+        .await
+        .map_err(map_schema_error)?;
+
+    Ok(Json(SchemaFieldResult {
+        schema_id,
+        new_version: updated_schema.version as i32,
+    }))
+}
+
+/// Remove a user value from an enum field
+///
+/// Removes a user value from an enum field's `userValues` array. Core
+/// values cannot be removed through this endpoint.
+///
+/// The schema version is automatically incremented on success.
+///
+/// # HTTP Endpoint
+/// ```text
+/// DELETE /api/schemas/:id/fields/:name/enum/:value
+/// ```
+///
+/// # Parameters
+/// - `id`: Schema ID (e.g., "task")
+/// - `name`: Enum field name (e.g., "status")
+/// - `value`: Value to remove (e.g., "blocked")
+///
+/// # Response (200 OK)
+/// ```json
+/// {
+///   "schemaId": "task",
+///   "newVersion": 5
+/// }
+/// ```
+///
+/// # Errors
+/// - `404 NOT FOUND`: Schema, field, or value doesn't exist
+/// - `400 BAD REQUEST`: Cannot remove core value (protection violation)
+/// - `500 INTERNAL SERVER ERROR`: Database error
+async fn remove_schema_enum_value(
+    State(state): State<AppState>,
+    Path((schema_id, field_name, value)): Path<(String, String, String)>,
+) -> ApiSchemaResult {
+    // Remove user value from enum field
+    state
+        .schema_service
+        .remove_enum_value(&schema_id, &field_name, &value)
+        .await
+        .map_err(map_schema_error)?;
+
+    // Get updated schema to return new version (matches Tauri behavior)
+    let updated_schema = state
+        .schema_service
+        .get_schema(&schema_id)
+        .await
+        .map_err(map_schema_error)?;
+
+    Ok(Json(SchemaFieldResult {
+        schema_id,
+        new_version: updated_schema.version as i32,
+    }))
 }

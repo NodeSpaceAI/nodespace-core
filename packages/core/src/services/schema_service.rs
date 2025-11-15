@@ -59,17 +59,23 @@ use std::sync::Arc;
 ///
 /// Wraps NodeService to provide specialized operations for schema nodes,
 /// enforcing protection levels and maintaining version integrity.
-pub struct SchemaService {
-    node_service: Arc<NodeService>,
+pub struct SchemaService<C = surrealdb::engine::local::Db>
+where
+    C: surrealdb::Connection,
+{
+    node_service: Arc<NodeService<C>>,
 }
 
-impl SchemaService {
+impl<C> SchemaService<C>
+where
+    C: surrealdb::Connection,
+{
     /// Create a new SchemaService
     ///
     /// # Arguments
     ///
     /// * `node_service` - NodeService instance for node operations
-    pub fn new(node_service: Arc<NodeService>) -> Self {
+    pub fn new(node_service: Arc<NodeService<C>>) -> Self {
         Self { node_service }
     }
 
