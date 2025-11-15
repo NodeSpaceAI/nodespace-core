@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.nodespace.app",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "bunx vite dev --port 1420",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "bun run build",
     "frontendDist": "../build"
