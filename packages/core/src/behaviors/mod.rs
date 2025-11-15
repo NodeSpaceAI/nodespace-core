@@ -364,13 +364,10 @@ impl NodeBehavior for HeaderNodeBehavior {
         "header"
     }
 
-    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // Header nodes must have content (same validation as text nodes)
-        if is_empty_or_whitespace(&node.content) {
-            return Err(NodeValidationError::MissingField(
-                "Header nodes must have content".to_string(),
-            ));
-        }
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+        // Issue #484: Allow blank header nodes (e.g., "##" with no content)
+        // Similar to text nodes, headers can be created blank and filled in later
+        // Frontend manages the UX of blank headers (e.g., showing placeholder text)
         Ok(())
     }
 
@@ -519,14 +516,10 @@ impl NodeBehavior for CodeBlockNodeBehavior {
         "code-block"
     }
 
-    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // Code blocks must have content
-        // Note: Frontend manages empty placeholders, backend rejects truly empty content
-        if is_empty_or_whitespace(&node.content) {
-            return Err(NodeValidationError::MissingField(
-                "Code block nodes must have content".to_string(),
-            ));
-        }
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+        // Issue #484: Allow blank code blocks (e.g., "```language" with no code)
+        // Users can create blank code blocks and fill in code later
+        // Frontend manages the UX of blank code blocks (e.g., showing placeholder text)
         Ok(())
     }
 
@@ -573,27 +566,10 @@ impl NodeBehavior for QuoteBlockNodeBehavior {
         "quote-block"
     }
 
-    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // Quote blocks must have actual content beyond the "> " prefix
-        // Strip "> " or ">" from all lines and check if any content remains
-        let content_without_prefix: String = node
-            .content
-            .lines()
-            .map(|line| {
-                // Remove "> " or ">" from start of each line using strip_prefix
-                line.strip_prefix("> ")
-                    .or_else(|| line.strip_prefix('>'))
-                    .unwrap_or(line)
-            })
-            .collect::<Vec<&str>>()
-            .join("\n");
-
-        // Check if there's any actual content after stripping prefixes
-        if is_empty_or_whitespace(&content_without_prefix) {
-            return Err(NodeValidationError::MissingField(
-                "Quote block nodes must have content beyond the '> ' prefix".to_string(),
-            ));
-        }
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+        // Issue #484: Allow blank quote blocks (e.g., ">" with no content)
+        // Users can create blank quote blocks and fill in quoted text later
+        // Frontend manages the UX of blank quote blocks (e.g., showing placeholder text)
         Ok(())
     }
 
@@ -640,15 +616,15 @@ impl NodeBehavior for OrderedListNodeBehavior {
         "ordered-list"
     }
 
-    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // ARCHITECTURAL DECISION: Allow ordered list placeholders ("1. " with no content)
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+        // Issue #484: Allow blank ordered list nodes (consistent with headers, quotes, etc.)
         //
-        // Unlike TextNode and HeaderNode which reject empty content after stripping whitespace,
-        // OrderedListNode accepts "1. " as valid placeholder content because:
+        // ARCHITECTURAL DECISION: Blank ordered lists are semantically valid:
         //
         // 1. The "1. " prefix is STRUCTURAL SYNTAX, not user content
-        //    - Similar to how markdown "# " is structural for headers
+        //    - Similar to how markdown "## " is structural for headers
         //    - The prefix defines the node type and formatting
+        //    - Just like blank headers ("##"), blank ordered lists ("1. ") are valid
         //
         // 2. Empty ordered list items are semantically valid
         //    - HTML allows <li></li> (empty list items)
@@ -660,15 +636,13 @@ impl NodeBehavior for OrderedListNodeBehavior {
         //    - User expects immediate persistence without requiring content first
         //    - Backend should accept what frontend naturally generates
         //
-        // This differs from TextNode/HeaderNode where empty content has no semantic meaning.
-        // For ordered lists, "1. " represents a valid empty list item in the list structure.
+        // 4. Consistency with other node types (Issue #484)
+        //    - Headers allow blank content after "##"
+        //    - Quote blocks allow blank content after ">"
+        //    - Code blocks allow blank content after "```"
+        //    - Ordered lists should allow blank content after "1. "
         //
-        // Validation: Content must have SOME characters (at minimum the "1. " prefix)
-        if node.content.is_empty() {
-            return Err(NodeValidationError::MissingField(
-                "Ordered list nodes must have content (at least '1. ' prefix)".to_string(),
-            ));
-        }
+        // Frontend manages the UX of blank ordered list nodes (e.g., showing placeholder text)
         Ok(())
     }
 
@@ -1127,6 +1101,142 @@ mod tests {
         assert_eq!(metadata["markdown_enabled"], true);
         assert_eq!(metadata["auto_save"], true);
         assert_eq!(metadata["word_wrap"], true);
+    }
+
+    #[test]
+    fn test_header_node_behavior_validation() {
+        let behavior = HeaderNodeBehavior;
+
+        // Valid header with content
+        let valid_node = Node::new(
+            "header".to_string(),
+            "## Hello World".to_string(),
+            None,
+            json!({"headerLevel": 2}),
+        );
+        assert!(behavior.validate(&valid_node).is_ok());
+
+        // Issue #484: Blank headers are now allowed (e.g., "##" with no content)
+        let mut blank_node = valid_node.clone();
+        blank_node.content = "".to_string();
+        assert!(
+            behavior.validate(&blank_node).is_ok(),
+            "Blank header nodes should be allowed per Issue #484"
+        );
+
+        // Issue #484: Whitespace-only headers are allowed
+        let mut whitespace_node = valid_node.clone();
+        whitespace_node.content = "   ".to_string();
+        assert!(
+            behavior.validate(&whitespace_node).is_ok(),
+            "Whitespace-only header nodes should be allowed per Issue #484"
+        );
+    }
+
+    #[test]
+    fn test_code_block_behavior_validation() {
+        let behavior = CodeBlockNodeBehavior;
+
+        // Valid code block with content
+        let valid_node = Node::new(
+            "code-block".to_string(),
+            "```javascript\nconst x = 1;".to_string(),
+            None,
+            json!({"language": "javascript"}),
+        );
+        assert!(behavior.validate(&valid_node).is_ok());
+
+        // Issue #484: Blank code blocks are now allowed
+        let mut blank_node = valid_node.clone();
+        blank_node.content = "".to_string();
+        assert!(
+            behavior.validate(&blank_node).is_ok(),
+            "Blank code blocks should be allowed per Issue #484"
+        );
+
+        // Issue #484: Whitespace-only code blocks are allowed
+        let mut whitespace_node = valid_node.clone();
+        whitespace_node.content = "   ".to_string();
+        assert!(
+            behavior.validate(&whitespace_node).is_ok(),
+            "Whitespace-only code blocks should be allowed per Issue #484"
+        );
+    }
+
+    #[test]
+    fn test_quote_block_behavior_validation() {
+        let behavior = QuoteBlockNodeBehavior;
+
+        // Valid quote block with content
+        let valid_node = Node::new(
+            "quote-block".to_string(),
+            "> Hello world".to_string(),
+            None,
+            json!({}),
+        );
+        assert!(behavior.validate(&valid_node).is_ok());
+
+        // Issue #484: Blank quote blocks are now allowed (e.g., ">" with no content)
+        let mut blank_node = valid_node.clone();
+        blank_node.content = "".to_string();
+        assert!(
+            behavior.validate(&blank_node).is_ok(),
+            "Blank quote blocks should be allowed per Issue #484"
+        );
+
+        // Issue #484: Quote with just prefix and whitespace
+        let mut prefix_only_node = valid_node.clone();
+        prefix_only_node.content = ">".to_string();
+        assert!(
+            behavior.validate(&prefix_only_node).is_ok(),
+            "Quote blocks with just '>' should be allowed per Issue #484"
+        );
+
+        // Issue #484: Quote with prefix and space
+        let mut prefix_space_node = valid_node.clone();
+        prefix_space_node.content = "> ".to_string();
+        assert!(
+            behavior.validate(&prefix_space_node).is_ok(),
+            "Quote blocks with just '> ' should be allowed per Issue #484"
+        );
+    }
+
+    #[test]
+    fn test_ordered_list_behavior_validation() {
+        let behavior = OrderedListNodeBehavior;
+
+        // Valid ordered list with content
+        let valid_node = Node::new(
+            "ordered-list".to_string(),
+            "1. Hello world".to_string(),
+            None,
+            json!({}),
+        );
+        assert!(behavior.validate(&valid_node).is_ok());
+
+        // Issue #484: Blank ordered lists are now allowed (consistent with headers, quotes, etc.)
+        let mut blank_node = valid_node.clone();
+        blank_node.content = "".to_string();
+        assert!(
+            behavior.validate(&blank_node).is_ok(),
+            "Blank ordered list nodes should be allowed per Issue #484"
+        );
+
+        // Issue #484: Ordered list with just prefix
+        let mut prefix_only_node = valid_node.clone();
+        prefix_only_node.content = "1. ".to_string();
+        assert!(
+            behavior.validate(&prefix_only_node).is_ok(),
+            "Ordered lists with just '1. ' should be allowed per Issue #484"
+        );
+
+        // Issue #484: Whitespace-only ordered lists are allowed
+        let mut whitespace_node = valid_node.clone();
+        whitespace_node.content = "   ".to_string();
+        assert!(
+            behavior.validate(&whitespace_node).is_ok(),
+            "Whitespace-only ordered list nodes should be allowed per Issue #484"
+        );
     }
 
     #[test]
