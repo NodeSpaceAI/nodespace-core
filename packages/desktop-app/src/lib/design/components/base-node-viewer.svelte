@@ -817,7 +817,7 @@
     };
   }
 
-  async function loadChildrenForParent(nodeId: string) {
+  async function loadChildrenForParent(nodeId: string, forceRefresh = false) {
     try {
       // Set loading flag to prevent watchers from triggering during initial load
       isLoadingInitialNodes = true;
@@ -841,15 +841,30 @@
         }
       }
 
-      // Then load children from database
-      const allNodes = await sharedNodeStore.loadChildrenForParent(nodeId);
+      // Cache-first loading strategy: Check cache before hitting database (unless force refresh)
+      let allNodes: Node[];
 
-      // Check if we have any nodes at all
+      if (!forceRefresh) {
+        const cached = sharedNodeStore.getNodesForParent(nodeId);
+        if (cached && cached.length > 0) {
+          // Cache hit - use immediately (no database call!)
+          allNodes = cached;
+        } else {
+          // Cache miss - fetch from database
+          allNodes = await sharedNodeStore.loadChildrenForParent(nodeId);
+        }
+      } else {
+        // Force refresh - bypass cache and fetch from database
+        allNodes = await sharedNodeStore.loadChildrenForParent(nodeId);
+      }
+
+      // Check if we have any nodes at all (reuse allNodes - no redundant cache check needed)
       if (allNodes.length === 0) {
-        // No persisted children - check if there's already a viewer-local placeholder
-        const existingChildren = sharedNodeStore.getNodesForParent(nodeId);
+        // No persisted children - create initial placeholder if needed
+        // Note: We already checked cache/DB above, so if allNodes is empty, no persisted children exist
 
-        if (existingChildren.length === 0) {
+        // Create initial placeholder only if we don't have a viewer placeholder already
+        if (!viewerPlaceholder) {
           // No children at all - create initial placeholder
           // Issue #479 Phase 1: Placeholder is completely viewer-local (NOT added to SharedNodeStore)
           // It's rendered via nodesToRender derived state and promoted to real node when user adds content
@@ -878,19 +893,6 @@
           // DON'T call initializeNodes() - keep placeholder completely viewer-local!
           // It will be rendered by nodesToRender derived state (line 1475-1487)
           // and promoted to real node when user adds content (line 1746-1772)
-        } else {
-          // Reuse existing placeholder(s) from previous viewer instance
-          viewerPlaceholder = null;
-
-          // Track initial content of existing children
-          existingChildren.forEach((node) => lastSavedContent.set(node.id, node.content));
-
-          // Re-initialize with existing children
-          nodeManager.initializeNodes(existingChildren, {
-            expanded: true,
-            autoFocus: false,
-            inheritHeaderLevel: 0
-          });
         }
       } else {
         // Real children exist - clear any viewer placeholder
