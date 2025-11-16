@@ -63,6 +63,10 @@
     <!-- Falls back to BaseNodeViewer if no custom viewer registered -->
     {@const ViewerComponent = (viewerComponents.get(nodeType) ??
       BaseNodeViewer) as typeof BaseNodeViewer}
+    {@const isCustomViewer = viewerComponents.has(nodeType)}
+    <!-- Disable title updates for fallback BaseNodeViewer when loading date nodes -->
+    <!-- Date titles are managed by DateNodeViewer, not BaseNodeViewer -->
+    {@const shouldDisableTitleUpdates = !isCustomViewer && nodeType === 'date'}
 
     <!-- KEY FIX: Use {#key} to force separate component instances per pane+nodeId -->
     <!-- This ensures each pane gets its own BaseNodeViewer instance with isolated state -->
@@ -70,6 +74,7 @@
       <ViewerComponent
         nodeId={content.nodeId}
         tabId={activeTabId}
+        disableTitleUpdates={shouldDisableTitleUpdates}
         onTitleChange={(title: string) => updateTabTitle(activeTabId, title)}
         onNodeIdChange={(newNodeId: string) =>
           updateTabContent(activeTabId, { nodeId: newNodeId, nodeType: content.nodeType })}

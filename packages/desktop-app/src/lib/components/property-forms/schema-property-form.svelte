@@ -41,7 +41,6 @@
   // State
   let schema = $state<SchemaDefinition | null>(null);
   let isOpen = $state(false); // Collapsed by default
-  let isLoadingSchema = $state(false);
   let schemaError = $state<string | null>(null);
 
   // Reactive node data - updates when store changes via subscription
@@ -88,7 +87,6 @@
     async function loadSchema() {
       if (!nodeType) return;
 
-      isLoadingSchema = true;
       schemaError = null;
 
       try {
@@ -98,8 +96,6 @@
         console.error('[SchemaPropertyForm] Failed to load schema:', error);
         schemaError = error instanceof Error ? error.message : 'Failed to load schema';
         schema = null;
-      } finally {
-        isLoadingSchema = false;
       }
     }
 
@@ -299,11 +295,7 @@
   }
 </script>
 
-{#if isLoadingSchema}
-  <div class="property-form-loading">
-    <span class="text-sm text-muted-foreground">Loading schema...</span>
-  </div>
-{:else if schemaError}
+{#if schemaError}
   <div class="property-form-error">
     <span class="text-sm text-destructive">Error: {schemaError}</span>
   </div>
@@ -550,7 +542,6 @@
 {/if}
 
 <style>
-  .property-form-loading,
   .property-form-error {
     padding: 1rem;
     text-align: center;

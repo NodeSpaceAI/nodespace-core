@@ -410,4 +410,161 @@ describe('TabPersistenceService', () => {
       expect(loaded?.tabs[0].title).toBe('Test "with" \'quotes\' & <html>');
     });
   });
+
+  describe('date node title migration', () => {
+    it('recomputes date titles on load', () => {
+      const today = new Date().toISOString().split('T')[0];
+      const stateWithDateNode: TabState = {
+        tabs: [
+          {
+            id: 'tab-1',
+            title: 'Untitled', // Stale title
+            type: 'node',
+            content: { nodeId: today, nodeType: 'date' },
+            closeable: true,
+            paneId: 'pane-1'
+          }
+        ],
+        panes: [{ id: 'pane-1', width: 100, tabIds: ['tab-1'] }],
+        activePaneId: 'pane-1',
+        activeTabIds: { 'pane-1': 'tab-1' }
+      };
+
+      TabPersistenceService.save(stateWithDateNode);
+      vi.advanceTimersByTime(500);
+
+      const loaded = TabPersistenceService.load();
+      expect(loaded?.tabs[0].title).toBe('Today'); // Should be recomputed
+    });
+
+    it('preserves titles for non-date nodes', () => {
+      const stateWithTextNode: TabState = {
+        tabs: [
+          {
+            id: 'tab-1',
+            title: 'My Custom Title',
+            type: 'node',
+            content: { nodeId: 'text-node-123', nodeType: 'text' },
+            closeable: true,
+            paneId: 'pane-1'
+          }
+        ],
+        panes: [{ id: 'pane-1', width: 100, tabIds: ['tab-1'] }],
+        activePaneId: 'pane-1',
+        activeTabIds: { 'pane-1': 'tab-1' }
+      };
+
+      TabPersistenceService.save(stateWithTextNode);
+      vi.advanceTimersByTime(500);
+
+      const loaded = TabPersistenceService.load();
+      expect(loaded?.tabs[0].title).toBe('My Custom Title'); // Should NOT change
+    });
+
+    it('handles invalid date strings gracefully', () => {
+      const stateWithInvalidDate: TabState = {
+        tabs: [
+          {
+            id: 'tab-1',
+            title: 'Invalid Date',
+            type: 'node',
+            content: { nodeId: 'not-a-date', nodeType: 'date' },
+            closeable: true,
+            paneId: 'pane-1'
+          }
+        ],
+        panes: [{ id: 'pane-1', width: 100, tabIds: ['tab-1'] }],
+        activePaneId: 'pane-1',
+        activeTabIds: { 'pane-1': 'tab-1' }
+      };
+
+      TabPersistenceService.save(stateWithInvalidDate);
+      vi.advanceTimersByTime(500);
+
+      const loaded = TabPersistenceService.load();
+      expect(loaded?.tabs[0].title).toBe('Invalid Date'); // Should preserve original
+    });
+
+    it('recomputes tomorrow date title correctly', () => {
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrowStr = tomorrow.toISOString().split('T')[0];
+
+      const stateWithTomorrow: TabState = {
+        tabs: [
+          {
+            id: 'tab-1',
+            title: 'Some Old Title',
+            type: 'node',
+            content: { nodeId: tomorrowStr, nodeType: 'date' },
+            closeable: true,
+            paneId: 'pane-1'
+          }
+        ],
+        panes: [{ id: 'pane-1', width: 100, tabIds: ['tab-1'] }],
+        activePaneId: 'pane-1',
+        activeTabIds: { 'pane-1': 'tab-1' }
+      };
+
+      TabPersistenceService.save(stateWithTomorrow);
+      vi.advanceTimersByTime(500);
+
+      const loaded = TabPersistenceService.load();
+      expect(loaded?.tabs[0].title).toBe('Tomorrow'); // Should be recomputed
+    });
+
+    it('recomputes yesterday date title correctly', () => {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+      const stateWithYesterday: TabState = {
+        tabs: [
+          {
+            id: 'tab-1',
+            title: 'Some Old Title',
+            type: 'node',
+            content: { nodeId: yesterdayStr, nodeType: 'date' },
+            closeable: true,
+            paneId: 'pane-1'
+          }
+        ],
+        panes: [{ id: 'pane-1', width: 100, tabIds: ['tab-1'] }],
+        activePaneId: 'pane-1',
+        activeTabIds: { 'pane-1': 'tab-1' }
+      };
+
+      TabPersistenceService.save(stateWithYesterday);
+      vi.advanceTimersByTime(500);
+
+      const loaded = TabPersistenceService.load();
+      expect(loaded?.tabs[0].title).toBe('Yesterday'); // Should be recomputed
+    });
+
+    it('handles date nodes without nodeId gracefully', () => {
+      // Test edge case where content.nodeId is missing (should preserve original title)
+      // Using type assertion since this is testing malformed data that shouldn't normally occur
+      const stateWithMissingNodeId: TabState = {
+        tabs: [
+          {
+            id: 'tab-1',
+            title: 'Original Title',
+            type: 'node',
+            content: { nodeType: 'date' } as { nodeId: string; nodeType: string }, // Malformed: missing nodeId
+            closeable: true,
+            paneId: 'pane-1'
+          }
+        ],
+        panes: [{ id: 'pane-1', width: 100, tabIds: ['tab-1'] }],
+        activePaneId: 'pane-1',
+        activeTabIds: { 'pane-1': 'tab-1' }
+      };
+
+      TabPersistenceService.save(stateWithMissingNodeId);
+      vi.advanceTimersByTime(500);
+
+      const loaded = TabPersistenceService.load();
+      expect(loaded?.tabs[0].title).toBe('Original Title'); // Should preserve original
+    });
+  });
 });

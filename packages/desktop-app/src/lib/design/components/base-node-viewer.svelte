@@ -41,13 +41,27 @@
      * @default 'default'
      */
     tabId = 'default',
-    onTitleChange
+    onTitleChange,
+    /**
+     * Disable automatic title updates from node content.
+     *
+     * When true, this component will NOT call onTitleChange based on node content.
+     * The parent component is responsible for managing the title completely.
+     *
+     * Use Cases:
+     * - DateNodeViewer: Computes title from date ("Today", "Tomorrow", "Yesterday")
+     * - Custom viewers with dynamic titles unrelated to node content
+     *
+     * @default false - BaseNodeViewer manages title from node.content
+     */
+    disableTitleUpdates = false
   }: {
     header?: Snippet;
     nodeId?: string | null;
     tabId?: string;
     onTitleChange?: (_title: string) => void;
     onNodeIdChange?: (_nodeId: string) => void; // In type for interface, not used by BaseNodeViewer
+    disableTitleUpdates?: boolean;
   } = $props();
 
   // Get nodeManager from shared context
@@ -99,8 +113,18 @@
     // Removed setViewParentId - now pass nodeId directly to visibleNodes()
 
     if (nodeId) {
+      // Capture disableTitleUpdates at effect creation time (not in async callback)
+      // This prevents stale closure issues when component is destroyed before callback fires
+      const shouldDisableTitleUpdates = disableTitleUpdates;
+
       // Load children asynchronously - this will load the parent node first
       loadChildrenForParent(nodeId).then(() => {
+        // CRITICAL: Prevent state updates after component destruction
+        // This prevents memory leaks and state corruption from stale async callbacks
+        if (isDestroyed) {
+          return;
+        }
+
         // After loading completes, initialize header content and update tab title
         // This ensures the node is loaded before we try to read its content
         const node = sharedNodeStore.getNode(nodeId);
@@ -110,7 +134,10 @@
         currentViewedNode = node || null;
 
         // Update tab title after node is loaded
-        updateTabTitle(headerContent);
+        // Skip if parent component manages the title (e.g., DateNodeViewer)
+        if (!shouldDisableTitleUpdates) {
+          updateTabTitle(headerContent);
+        }
       });
     } else {
       // Clear when no nodeId

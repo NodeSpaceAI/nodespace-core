@@ -56,7 +56,8 @@
   // Derive the tab title from current date
   const tabTitle = $derived(getDateTabTitle(currentDate));
 
-  // Update parent with tab title whenever it changes
+  // Notify parent when title changes
+  // Title is recomputed on page load by TabPersistence.migrate()
   $effect(() => {
     onTitleChange?.(tabTitle);
   });
@@ -106,7 +107,7 @@
 <svelte:window on:keydown={handleKeydown} />
 
 <div class="date-node-viewer">
-  <BaseNodeViewer nodeId={currentDateId}>
+  <BaseNodeViewer nodeId={currentDateId} disableTitleUpdates={true}>
     {#snippet header()}
       <!-- Date Navigation Header - inherits base styling from BaseNodeViewer -->
       <div class="date-nav-container">

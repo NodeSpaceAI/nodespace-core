@@ -126,3 +126,4 @@ results.json
 *.temp
 *.bak
 *.backup
+history.txt

@@ -269,7 +269,8 @@ async fn main() -> anyhow::Result<()> {
     // IMPORTANT: Uses HTTP client mode, NOT embedded RocksDB
     println!("📡 Connecting to SurrealDB HTTP server on port 8000...");
     let store =
-        match HttpStore::new_http("127.0.0.1:8000", "nodespace", "nodes", "root", "root").await {
+        match HttpStore::new_http("127.0.0.1:8000", "nodespace", "nodespace", "root", "root").await
+        {
             Ok(s) => {
                 println!("✅ Connected to SurrealDB");
                 Arc::new(s)
