@@ -1,11 +1,19 @@
 /**
- * HttpAdapter SurrealDB Integration Tests
+ * HttpAdapter Dev-Proxy Integration Tests
  *
- * Tests the HttpAdapter implementation using SurrealDB HTTP API.
+ * Tests the HttpAdapter implementation using the dev-proxy REST API.
  * Verifies all CRUD operations, query functionality, version control,
- * and SurrealQL query generation work correctly with a live SurrealDB server.
+ * and business logic integration work correctly.
  *
- * Part of Issue #490: Simplify Browser Dev Mode with SurrealDB
+ * Part of Issue #505: Fix HttpAdapter SurrealDB integration tests
+ * (Updated from Issue #490 after PR #501 introduced dev-proxy architecture)
+ *
+ * ## Architecture (Post PR #501)
+ *
+ * Frontend → HTTP (port 3001) → dev-proxy → NodeService → SurrealStore → SurrealDB (port 8000)
+ *
+ * These tests verify the HttpAdapter correctly communicates with the dev-proxy REST API,
+ * which provides all Rust business logic (NodeService, SchemaService, behaviors, etc.).
  *
  * ## Test Coverage
  *
@@ -14,13 +22,18 @@
  * - Mention autocomplete
  * - Optimistic concurrency control (version conflicts)
  * - Schema operations (getSchema, addField, removeField, etc.)
- * - SurrealQL escaping and injection prevention
  * - Field name mapping (snake_case ↔ camelCase)
  *
  * ## Prerequisites
  *
- * Tests require SurrealDB server running on localhost:8000.
- * Start server with: `bun run dev:db`
+ * Tests require dev-proxy server running on localhost:3001.
+ * The dev-proxy automatically connects to SurrealDB on port 8000.
+ *
+ * Start servers with:
+ * 1. `bun run dev:db` (starts SurrealDB on port 8000)
+ * 2. `cargo build --bin dev-proxy && cargo run --bin dev-proxy` (starts dev-proxy on port 3001)
+ *
+ * Or use the combined command: `bun run dev:browser` (starts both)
  *
  * ## Test Execution Requirements
  *
@@ -36,7 +49,7 @@
  * ## Skip Conditions
  *
  * Tests are automatically skipped if:
- * - SurrealDB server is not reachable
+ * - Dev-proxy server is not reachable on port 3001
  * - TEST_USE_DATABASE environment variable is not set
  */
 
@@ -45,12 +58,12 @@ import { HttpAdapter } from '$lib/services/backend-adapter';
 import { TestNodeBuilder } from '../utils/test-node-builder';
 
 /**
- * Check if SurrealDB server is available
- * @returns True if server is reachable on localhost:8000
+ * Check if dev-proxy server is available
+ * @returns True if server is reachable on localhost:3001
  */
-async function isSurrealDBAvailable(): Promise<boolean> {
+async function isDevProxyAvailable(): Promise<boolean> {
   try {
-    const response = await globalThis.fetch('http://localhost:8000/health', {
+    const response = await globalThis.fetch('http://localhost:3001/health', {
       method: 'GET',
       signal: AbortSignal.timeout(1000) // 1 second timeout
     });
@@ -112,12 +125,12 @@ async function cleanDatabase(): Promise<void> {
   }
 }
 
-describe.skipIf(!(await isSurrealDBAvailable()))('HttpAdapter with SurrealDB', () => {
+describe.skipIf(!(await isDevProxyAvailable()))('HttpAdapter with Dev-Proxy', () => {
   let adapter: HttpAdapter;
 
   beforeAll(async () => {
-    adapter = new HttpAdapter('http://localhost:8000');
-    console.log('[Test] Using SurrealDB HTTP adapter on port 8000');
+    adapter = new HttpAdapter('http://localhost:3001');
+    console.log('[Test] Using dev-proxy HTTP adapter on port 3001');
 
     // Initialize namespace, database, and table
     await initializeDatabase();
@@ -763,23 +776,12 @@ Special: !@#$%^&*()`;
   });
 
   describe('Error Handling', () => {
-    it('should throw error for invalid SurrealQL syntax', async () => {
-      // Access private method for testing
-      const invalidQuery = 'INVALID SQL SYNTAX HERE';
-
-      await expect(
-        (adapter as unknown as { surrealQuery: (sql: string) => Promise<unknown> }).surrealQuery(
-          invalidQuery
-        )
-      ).rejects.toThrow();
-    });
-
     it('should throw error on update with non-existent node', async () => {
       await expect(
         adapter.updateNode('non-existent-node', 1, {
           content: 'Update'
         })
-      ).rejects.toThrow(/Version conflict/);
+      ).rejects.toThrow(/not found|404/i);
     });
 
     it('should handle malformed node IDs gracefully', async () => {
