@@ -1,7 +1,30 @@
 # NodeSpace
 
-> **AI-Native Knowledge Management System**  
+> **AI-Native Knowledge Management System**
 > A desktop application combining hierarchical note organization with intelligent AI assistance for seamless knowledge work.
+
+## ⚠️ IMPORTANT: Pre-Release Development Status
+
+**NodeSpace is in active pre-release development with NO users and NO production deployment.**
+
+### Development Philosophy - NO BACKWARD COMPATIBILITY
+
+- ❌ **NO backward compatibility** - We make breaking changes freely
+- ❌ **NO migration strategies** - Database can be reset/wiped anytime
+- ❌ **NO gradual rollouts** - Changes are all-or-nothing
+- ❌ **NO version support** - Only the latest code matters
+- ❌ **NO transition periods** - Old patterns are deleted immediately when replaced
+
+### For AI Agents & Developers
+
+When implementing features or fixing bugs:
+- ✅ **Make breaking changes without hesitation** - We have no users to impact
+- ✅ **If you break something, fix it immediately** - Own your changes end-to-end
+- ✅ **Delete old code immediately** - No dual-mode support, no TODOs for later removal
+- ✅ **Update tests to match new behavior** - Don't test deprecated patterns
+- ✅ **Implement final architecture directly** - Skip intermediate compatibility steps
+
+**This is greenfield development. Act accordingly.**
 
 ## Overview
 

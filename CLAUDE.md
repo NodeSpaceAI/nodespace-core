@@ -1,5 +1,39 @@
 # NodeSpace Development Agent Guide
 
+## 🚨 CRITICAL: Pre-Release Development - NO BACKWARD COMPATIBILITY 🚨
+
+**NodeSpace has ZERO users, NO production deployment, and NO releases.**
+
+### Absolute Rules for All Agents
+
+- ❌ **NO backward compatibility code** - Delete old patterns immediately when replaced
+- ❌ **NO migration strategies** - We can reset the database anytime
+- ❌ **NO gradual rollouts** - Implement new architecture directly, delete old code
+- ❌ **NO transition periods** - No dual-mode support, no feature flags for compatibility
+- ❌ **NO version support** - Don't maintain multiple versions of any API/method
+- ❌ **NO "soak periods"** - No waiting weeks between changes
+- ❌ **NO phased migrations** - Unless coordinating across multiple active worktrees
+
+### What This Means for Implementation
+
+**When fixing bugs or implementing features:**
+- ✅ Make breaking changes without hesitation - we have no users to impact
+- ✅ If you break something, fix it immediately in the same work session
+- ✅ Delete deprecated code immediately - no "TODO: remove after migration"
+- ✅ Update tests to match new behavior - don't test old patterns
+- ✅ Implement final architecture directly - skip intermediate steps
+- ✅ Reset database if needed - no data preservation required
+- ✅ Own your changes end-to-end - don't leave broken code for others
+
+**If you find yourself writing:**
+- "for backward compatibility..."
+- "during the transition period..."
+- "to support both old and new..."
+- "gradual rollout strategy..."
+- "soak period before removing..."
+
+**STOP. You're overthinking it. This is greenfield development.**
+
 ## Project Overview
 
 NodeSpace is an AI-native knowledge management system built with Rust backend, Svelte frontend, and Tauri desktop framework. This guide helps agents understand the project structure and find their next tasks.
