@@ -7,7 +7,7 @@
     "preinstall": "node ../../enforce-bun.js",
     "postinstall": "bun run scripts/check-dev-deps.ts || true",
     "dev:check": "bun run scripts/check-dev-deps.ts",
-    "dev:browser:db": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info memory",
+    "dev:browser:db": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info rocksdb:~/.nodespace/database/nodespace-dev",
     "dev:browser:db:persist": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info file://.nodespace/dev.db",
     "dev:browser:proxy": "cd src-tauri && cargo run --bin dev-proxy",
     "dev:browser:init": "bun run scripts/init-schemas-via-proxy.ts",

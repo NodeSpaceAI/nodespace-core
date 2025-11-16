@@ -1,0 +1,56 @@
+#V2
+INFO FOR DB;
+-- Show database info
+INFO FOR DB;
+-- Show schemas (should have 7 schema nodes)
+SELECT * FROM node WHERE type = 'schema';
+-- Verify only node and task tables exist
+SELECT count() AS total_nodes FROM node GROUP ALL;
+SELECT count() AS total_tasks FROM task GROUP ALL;
+-- Check what's in the node table
+SELECT * FROM node WHERE id = type::thing('node', '2025-11-16') LIMIT 1;
+-- Check for has_child edges
+SELECT * FROM has_child LIMIT 5;
+-- Check if date schema node exists and its structure
+SELECT * FROM node WHERE id = type::thing('node', 'date') LIMIT 1;
+-- Check all schema nodes and their structure
+SELECT * FROM node WHERE type = 'schema';
+-- Check if there's a 'schema' type table
+SELECT * FROM schema LIMIT 3;
+-- Check if date node has a data link
+SELECT id, type, content, data FROM node WHERE id = type::thing('node', 'date');
+-- Test the actual query that get_children runs
+-- Test the fixed query
+-- Test simple graph traversal without ORDER BY
+SELECT ->has_child->node.* FROM type::thing('node', 'task') FETCH data;
+-- Test root node query
+-- Valid graph traversal for children
+SELECT VALUE ->has_child FROM type::thing('node', 'task');
+-- Check root nodes without EXISTS
+SELECT * FROM node WHERE type = 'schema' LIMIT 2;
+-- Test 1: Create test nodes
+CREATE node:test_parent SET     content = "Test Parent",    node_type = "text",    created_at = time::now(),    updated_at = time::now(),    data = {};
+CREATE node:test_child1 SET     content = "Test Child 1",    node_type = "text",     created_at = time::now(),    updated_at = time::now(),    data = {};
+CREATE node:test_child2 SET    content = "Test Child 2",    node_type = "text",    created_at = time::now(),     updated_at = time::now(),    data = {};
+-- Test 2: Create edges
+RELATE node:test_parent->has_child->node:test_child1;
+RELATE node:test_parent->has_child->node:test_child2;
+-- Test 3: Try graph traversal patterns
+-- Pattern A: Using ->has_child->
+SELECT ->has_child->node FROM node:test_parent;
+-- Pattern B: Get full child records
+SELECT ->has_child->node.* FROM node:test_parent;
+-- Pattern C: Get children with FETCH
+SELECT VALUE ->has_child->node FROM node:test_parent FETCH data;
+-- Test 4: Root nodes (nodes with no incoming has_child edges)
+-- Pattern A: Using count()
+SELECT * FROM node WHERE count(<-has_child) = 0 LIMIT 5;
+-- Pattern B: Subquery
+SELECT * FROM node WHERE id NOT IN (SELECT VALUE ->node FROM has_child) LIMIT 5;
+-- Cleanup
+DELETE node:test_parent;
+DELETE node:test_child1;
+DELETE node:test_child2;
+SELECT * FROM task LIMIT 5;
+INFO FOR DB;
+SELECT * FROM node LIMIT 3;

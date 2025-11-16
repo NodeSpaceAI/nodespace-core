@@ -1,0 +1,5 @@
+#V2
+SELECT * FROM schema LIMIT 5;
+SELECT * FROM schema WHERE id CONTAINS 'date';
+SELECT * FROM schema;
+SELECT * FROM schema:date;

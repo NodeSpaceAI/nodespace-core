@@ -576,29 +576,14 @@ where
                         1 // Default to version 1 if no schema found
                     };
 
-                // Add version to node properties
-                let mut updated_props = node.properties.clone();
-                if let Some(props_obj) = updated_props.as_object_mut() {
+                // Add version to node properties IN-MEMORY ONLY
+                // Don't persist to database - this prevents overwriting freshly created spoke records
+                // Issue #511: After node type conversion, the spoke record has status+_schema_version
+                // Backfill would MERGE just _schema_version, but the spoke already has it
+                // Persisting backfill is unnecessary and risks race conditions
+                if let Some(props_obj) = node.properties.as_object_mut() {
                     props_obj.insert("_schema_version".to_string(), serde_json::json!(version));
                 }
-
-                // Persist the backfilled version to database using SurrealStore
-                let update = NodeUpdate {
-                    properties: Some(updated_props.clone()),
-                    ..Default::default()
-                };
-                self.store
-                    .update_node(&node.id, update)
-                    .await
-                    .map_err(|e| {
-                        NodeServiceError::query_failed(format!(
-                            "Failed to backfill schema version: {}",
-                            e
-                        ))
-                    })?;
-
-                // Update the in-memory node with new properties
-                node.properties = updated_props;
             }
         }
         Ok(())
@@ -1844,11 +1829,12 @@ where
             return Ok(migrated_nodes);
         }
 
-        // Handle container_node_id filter using dedicated method
+        // Handle container_node_id filter using parent-child edges (get_children)
+        // container_node_id is now represented as parent-child relationships via has_child edges
         if let Some(ref container_id) = filter.container_node_id {
             let nodes = self
                 .store
-                .get_nodes_by_container(container_id)
+                .get_children(Some(container_id))
                 .await
                 .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 

@@ -473,12 +473,14 @@ pub async fn get_children(
 /// - Single database query fetches all nodes with the same container_node_id
 /// - In-memory hierarchy reconstruction using parent_id and before_sibling_id
 ///
+/// Phase 5 (Issue #511): Uses graph edges instead of container_node_id field
+///
 /// # Arguments
 /// * `service` - Node service instance from Tauri state
-/// * `container_node_id` - ID of the origin node (e.g., date page ID)
+/// * `container_node_id` - ID of the parent node (e.g., date page ID)
 ///
 /// # Returns
-/// * `Ok(Vec<Node>)` - All nodes belonging to this container
+/// * `Ok(Vec<Node>)` - All children of this parent
 /// * `Err(CommandError)` - Error with details if operation fails
 ///
 /// # Example Frontend Usage
@@ -493,8 +495,9 @@ pub async fn get_nodes_by_container_id(
     service: State<'_, NodeService>,
     container_node_id: String,
 ) -> Result<Vec<Node>, CommandError> {
+    // Phase 5 (Issue #511): Redirect to get_children (graph-native)
     service
-        .get_nodes_by_container_id(&container_node_id)
+        .get_children(&container_node_id)
         .await
         .map_err(Into::into)
 }
