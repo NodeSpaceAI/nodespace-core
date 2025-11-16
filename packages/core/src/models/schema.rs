@@ -110,6 +110,21 @@ pub struct SchemaField {
     /// Type of items in array fields
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item_type: Option<String>,
+
+    /// Nested fields for object types (RECURSIVE!)
+    ///
+    /// When field_type = "object", this defines the structure of the nested object.
+    /// Example: address field with street, city, zip nested fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<SchemaField>>,
+
+    /// For array of objects, define the object structure
+    ///
+    /// When field_type = "array" and item_type = "object", this defines the
+    /// structure of objects in the array.
+    /// Example: contacts array where each item has name, email, phone fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_fields: Option<Vec<SchemaField>>,
 }
 
 /// Complete schema definition for an entity type
@@ -224,6 +239,8 @@ mod tests {
                     default: Some(json!("OPEN")),
                     description: Some("Task status".to_string()),
                     item_type: None,
+                    fields: None,
+                    item_fields: None,
                 },
                 SchemaField {
                     name: "priority".to_string(),
@@ -237,6 +254,8 @@ mod tests {
                     default: Some(json!(0)),
                     description: Some("Task priority".to_string()),
                     item_type: None,
+                    fields: None,
+                    item_fields: None,
                 },
             ],
         }
@@ -306,5 +325,146 @@ mod tests {
         assert_eq!(schema.version, 2);
         assert_eq!(schema.fields.len(), 1);
         assert_eq!(schema.fields[0].protection, ProtectionLevel::Core);
+    }
+
+    #[test]
+    fn test_nested_field_serialization() {
+        let nested_schema = SchemaDefinition {
+            is_core: false,
+            version: 1,
+            description: "Person with nested address".to_string(),
+            fields: vec![SchemaField {
+                name: "address".to_string(),
+                field_type: "object".to_string(),
+                protection: ProtectionLevel::User,
+                core_values: None,
+                user_values: None,
+                indexed: false,
+                required: Some(false),
+                extensible: None,
+                default: None,
+                description: Some("Address information".to_string()),
+                item_type: None,
+                fields: Some(vec![
+                    SchemaField {
+                        name: "street".to_string(),
+                        field_type: "string".to_string(),
+                        protection: ProtectionLevel::User,
+                        core_values: None,
+                        user_values: None,
+                        indexed: false,
+                        required: Some(false),
+                        extensible: None,
+                        default: None,
+                        description: Some("Street address".to_string()),
+                        item_type: None,
+                        fields: None,
+                        item_fields: None,
+                    },
+                    SchemaField {
+                        name: "city".to_string(),
+                        field_type: "string".to_string(),
+                        protection: ProtectionLevel::User,
+                        core_values: None,
+                        user_values: None,
+                        indexed: true,
+                        required: Some(false),
+                        extensible: None,
+                        default: None,
+                        description: Some("City".to_string()),
+                        item_type: None,
+                        fields: None,
+                        item_fields: None,
+                    },
+                ]),
+                item_fields: None,
+            }],
+        };
+
+        let json = serde_json::to_value(&nested_schema).unwrap();
+        assert_eq!(json["fields"][0]["name"], "address");
+        assert_eq!(json["fields"][0]["type"], "object");
+        assert_eq!(json["fields"][0]["fields"][0]["name"], "street");
+        assert_eq!(json["fields"][0]["fields"][1]["name"], "city");
+        assert_eq!(json["fields"][0]["fields"][1]["indexed"], true);
+    }
+
+    #[test]
+    fn test_nested_field_deserialization() {
+        let json = json!({
+            "is_core": false,
+            "version": 1,
+            "description": "Person with nested address",
+            "fields": [
+                {
+                    "name": "address",
+                    "type": "object",
+                    "protection": "user",
+                    "indexed": false,
+                    "fields": [
+                        {
+                            "name": "city",
+                            "type": "string",
+                            "protection": "user",
+                            "indexed": true
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let schema: SchemaDefinition = serde_json::from_value(json).unwrap();
+        assert_eq!(schema.fields.len(), 1);
+        assert_eq!(schema.fields[0].name, "address");
+
+        let nested_fields = schema.fields[0].fields.as_ref().unwrap();
+        assert_eq!(nested_fields.len(), 1);
+        assert_eq!(nested_fields[0].name, "city");
+        assert!(nested_fields[0].indexed);
+    }
+
+    #[test]
+    fn test_array_of_objects_serialization() {
+        let schema = SchemaDefinition {
+            is_core: false,
+            version: 1,
+            description: "Person with contacts array".to_string(),
+            fields: vec![SchemaField {
+                name: "contacts".to_string(),
+                field_type: "array".to_string(),
+                protection: ProtectionLevel::User,
+                core_values: None,
+                user_values: None,
+                indexed: false,
+                required: Some(false),
+                extensible: None,
+                default: None,
+                description: Some("Contact list".to_string()),
+                item_type: Some("object".to_string()),
+                fields: None,
+                item_fields: Some(vec![SchemaField {
+                    name: "email".to_string(),
+                    field_type: "string".to_string(),
+                    protection: ProtectionLevel::User,
+                    core_values: None,
+                    user_values: None,
+                    indexed: true,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("Email address".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                }]),
+            }],
+        };
+
+        let json = serde_json::to_value(&schema).unwrap();
+        assert_eq!(json["fields"][0]["name"], "contacts");
+        assert_eq!(json["fields"][0]["type"], "array");
+        assert_eq!(json["fields"][0]["item_type"], "object");
+        assert_eq!(json["fields"][0]["item_fields"][0]["name"], "email");
+        assert_eq!(json["fields"][0]["item_fields"][0]["indexed"], true);
     }
 }

@@ -282,7 +282,7 @@ where
     C: surrealdb::Connection,
 {
     /// SurrealDB store for all persistence operations
-    store: Arc<SurrealStore<C>>,
+    pub(crate) store: Arc<SurrealStore<C>>,
 
     /// Behavior registry for validation
     behaviors: Arc<NodeBehaviorRegistry>,

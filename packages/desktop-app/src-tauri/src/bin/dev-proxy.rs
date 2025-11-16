@@ -693,6 +693,8 @@ async fn add_schema_field(
         default: request.default,
         description: request.description,
         item_type: request.item_type,
+        fields: None,      // Nested fields not supported via this API yet
+        item_fields: None, // Array of objects not supported via this API yet
     };
 
     // Add field to schema

@@ -437,6 +437,14 @@ impl<C> SurrealStore<C>
 where
     C: surrealdb::Connection,
 {
+    /// Get the underlying database connection
+    ///
+    /// This is used by services (like SchemaService) that need direct database access
+    /// for operations like DEFINE TABLE or DEFINE FIELD.
+    pub fn db(&self) -> &Arc<Surreal<C>> {
+        &self.db
+    }
+
     /// Initialize database schema (universal node table + core type tables)
     ///
     /// Creates SCHEMALESS tables for flexible property handling while maintaining

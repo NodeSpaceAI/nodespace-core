@@ -229,6 +229,9 @@ where
         // Update schema node
         self.update_schema(schema_id, schema).await?;
 
+        // Sync schema changes to database
+        self.sync_schema_to_database(schema_id).await?;
+
         Ok(())
     }
 
@@ -294,6 +297,9 @@ where
 
         // Update schema node
         self.update_schema(schema_id, schema).await?;
+
+        // Sync schema changes to database
+        self.sync_schema_to_database(schema_id).await?;
 
         Ok(())
     }
@@ -387,6 +393,9 @@ where
         // Update schema node
         self.update_schema(schema_id, schema).await?;
 
+        // Sync schema changes to database
+        self.sync_schema_to_database(schema_id).await?;
+
         Ok(())
     }
 
@@ -458,6 +467,10 @@ where
 
                 // Update schema node
                 self.update_schema(schema_id, schema).await?;
+
+                // Sync schema changes to database
+                self.sync_schema_to_database(schema_id).await?;
+
                 return Ok(());
             }
         }
@@ -605,6 +618,317 @@ where
 
         Ok(())
     }
+
+    /// Synchronize schema definition to database schema
+    ///
+    /// Creates or updates database table and field definitions based on schema.
+    /// Uses SCHEMAFULL mode for core types, SCHEMALESS for user types.
+    ///
+    /// # Arguments
+    ///
+    /// * `type_name` - The schema type name (e.g., "person", "task")
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if schema sync succeeds
+    ///
+    /// # Errors
+    ///
+    /// - Any errors from database operations
+    /// - Any errors from `get_schema`
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::SchemaService;
+    /// # async fn example(service: SchemaService) -> Result<(), Box<dyn std::error::Error>> {
+    /// // After modifying a schema, sync it to the database
+    /// service.sync_schema_to_database("person").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn sync_schema_to_database(&self, type_name: &str) -> Result<(), NodeServiceError> {
+        let schema = self.get_schema(type_name).await?;
+
+        // Validate type_name to prevent SQL injection
+        if !type_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return Err(NodeServiceError::invalid_update(format!(
+                "Invalid type name '{}': must contain only alphanumeric characters and underscores",
+                type_name
+            )));
+        }
+
+        // Determine table mode: SCHEMAFULL for core types, SCHEMALESS for user types
+        let table_mode = if schema.is_core {
+            "SCHEMAFULL"
+        } else {
+            "SCHEMALESS"
+        };
+
+        // Get database connection
+        let db = self.node_service.store.db();
+
+        // Create/update table
+        let define_table_query =
+            format!("DEFINE TABLE IF NOT EXISTS {} {};", type_name, table_mode);
+
+        db.query(&define_table_query).await.map_err(|e| {
+            NodeServiceError::DatabaseError(crate::db::DatabaseError::OperationError(format!(
+                "Failed to define table '{}': {}",
+                type_name, e
+            )))
+        })?;
+
+        tracing::info!("Synced table '{}' with mode {}", type_name, table_mode);
+
+        // Define all fields recursively
+        for field in &schema.fields {
+            self.define_field(type_name, field, None).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Define a field in the database (recursive for nested fields)
+    ///
+    /// Creates DEFINE FIELD statements for the field and recursively handles
+    /// nested fields (object types) and array of objects.
+    ///
+    /// # Arguments
+    ///
+    /// * `table` - The table name
+    /// * `field` - The field definition
+    /// * `parent_path` - Optional parent path for nested fields (e.g., "address")
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if field definition succeeds
+    ///
+    /// # Errors
+    ///
+    /// - Any errors from database operations
+    /// - Any errors from `map_field_type`
+    fn define_field<'a>(
+        &'a self,
+        table: &'a str,
+        field: &'a SchemaField,
+        parent_path: Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), NodeServiceError>> + 'a>>
+    {
+        Box::pin(async move {
+            // Build full field path (e.g., "address.city")
+            let field_path = if let Some(parent) = parent_path {
+                format!("{}.{}", parent, field.name)
+            } else {
+                field.name.clone()
+            };
+
+            // Validate field name to prevent SQL injection
+            if !field
+                .name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == ':')
+            {
+                return Err(NodeServiceError::invalid_update(format!(
+                "Invalid field name '{}': must contain only alphanumeric characters, underscores, and colons",
+                field.name
+            )));
+            }
+
+            // Map schema field type to SurrealDB type
+            let db_type = self.map_field_type(&field.field_type, field)?;
+
+            // Get database connection
+            let db = self.node_service.store.db();
+
+            // Define field in database
+            let define_field_query = format!(
+                "DEFINE FIELD IF NOT EXISTS {} ON {} TYPE {};",
+                field_path, table, db_type
+            );
+
+            db.query(&define_field_query).await.map_err(|e| {
+                NodeServiceError::DatabaseError(crate::db::DatabaseError::OperationError(format!(
+                    "Failed to define field '{}' on table '{}': {}",
+                    field_path, table, e
+                )))
+            })?;
+
+            tracing::info!(
+                "Defined field '{}' on table '{}' as type '{}'",
+                field_path,
+                table,
+                db_type
+            );
+
+            // Create index if requested
+            if field.indexed {
+                self.create_field_index(table, field, parent_path).await?;
+            }
+
+            // Recursively define nested fields (for object types)
+            if let Some(ref nested_fields) = field.fields {
+                for nested_field in nested_fields {
+                    self.define_field(table, nested_field, Some(&field_path))
+                        .await?;
+                }
+            }
+
+            // Recursively define item fields (for array of objects)
+            if let Some(ref item_fields) = field.item_fields {
+                for item_field in item_fields {
+                    // For array items, we need special path handling
+                    // SurrealDB uses notation like: contacts[*].email
+                    let array_item_path = format!("{}[*]", field_path);
+                    self.define_field(table, item_field, Some(&array_item_path))
+                        .await?;
+                }
+            }
+
+            Ok(())
+        })
+    }
+
+    /// Map schema field type to SurrealDB type
+    ///
+    /// Converts schema type strings to SurrealDB type syntax.
+    ///
+    /// # Arguments
+    ///
+    /// * `schema_type` - The schema field type (e.g., "string", "number", "enum")
+    /// * `field` - The field definition (for enum validation)
+    ///
+    /// # Returns
+    ///
+    /// SurrealDB type string (e.g., "string", "number", "bool", "datetime")
+    ///
+    /// # Errors
+    ///
+    /// - Unknown field types
+    fn map_field_type(
+        &self,
+        schema_type: &str,
+        field: &SchemaField,
+    ) -> Result<String, NodeServiceError> {
+        let db_type = match schema_type {
+            "string" | "text" => "string".to_string(),
+            "number" => "number".to_string(),
+            "boolean" => "bool".to_string(),
+            "date" => "datetime".to_string(),
+            "enum" => {
+                // Build ASSERT clause with all valid enum values
+                let all_values = {
+                    let mut values = Vec::new();
+                    if let Some(ref core_vals) = field.core_values {
+                        values.extend(core_vals.clone());
+                    }
+                    if let Some(ref user_vals) = field.user_values {
+                        values.extend(user_vals.clone());
+                    }
+                    values
+                };
+
+                if all_values.is_empty() {
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "Enum field '{}' has no values defined",
+                        field.name
+                    )));
+                }
+
+                let values_list = all_values
+                    .iter()
+                    .map(|v| format!("'{}'", v))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                format!("string ASSERT $value IN [{}]", values_list)
+            }
+            "array" => {
+                if let Some(ref item_type) = field.item_type {
+                    if item_type == "object" {
+                        "array<object>".to_string()
+                    } else {
+                        format!("array<{}>", item_type)
+                    }
+                } else {
+                    "array".to_string()
+                }
+            }
+            "object" => "object".to_string(),
+            "record" => "record".to_string(),
+            _ => {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "Unknown field type '{}'",
+                    schema_type
+                )))
+            }
+        };
+
+        Ok(db_type)
+    }
+
+    /// Create index for a field
+    ///
+    /// Creates a database index for faster queries on the field.
+    ///
+    /// # Arguments
+    ///
+    /// * `table` - The table name
+    /// * `field` - The field definition
+    /// * `parent_path` - Optional parent path for nested fields
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if index creation succeeds
+    ///
+    /// # Errors
+    ///
+    /// - Any errors from database operations
+    async fn create_field_index(
+        &self,
+        table: &str,
+        field: &SchemaField,
+        parent_path: Option<&str>,
+    ) -> Result<(), NodeServiceError> {
+        // Build full field path
+        let field_path = if let Some(parent) = parent_path {
+            format!("{}.{}", parent, field.name)
+        } else {
+            field.name.clone()
+        };
+
+        // Build index name: idx_{table}_{field_path_with_underscores}
+        let index_name = format!(
+            "idx_{}_{}",
+            table,
+            field_path.replace('.', "_").replace("[*]", "_arr")
+        );
+
+        // Get database connection
+        let db = self.node_service.store.db();
+
+        // Create index
+        let define_index_query = format!(
+            "DEFINE INDEX IF NOT EXISTS {} ON {} FIELDS {};",
+            index_name, table, field_path
+        );
+
+        db.query(&define_index_query).await.map_err(|e| {
+            NodeServiceError::DatabaseError(crate::db::DatabaseError::OperationError(format!(
+                "Failed to create index '{}' on table '{}': {}",
+                index_name, table, e
+            )))
+        })?;
+
+        tracing::info!(
+            "Created index '{}' on table '{}' for field '{}'",
+            index_name,
+            table,
+            field_path
+        );
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -644,6 +968,8 @@ mod tests {
                     default: Some(json!("OPEN")),
                     description: Some("Widget status".to_string()),
                     item_type: None,
+                    fields: None,
+                    item_fields: None,
                 },
                 SchemaField {
                     name: "priority".to_string(),
@@ -657,6 +983,8 @@ mod tests {
                     default: Some(json!(0)),
                     description: Some("Widget priority".to_string()),
                     item_type: None,
+                    fields: None,
+                    item_fields: None,
                 },
             ],
         };
@@ -720,6 +1048,8 @@ mod tests {
             default: None,
             description: Some("Due date".to_string()),
             item_type: None,
+            fields: None,
+            item_fields: None,
         };
 
         service.add_field(&schema_id, new_field).await.unwrap();
@@ -747,6 +1077,8 @@ mod tests {
             default: None,
             description: Some("Estimated hours".to_string()),
             item_type: None,
+            fields: None,
+            item_fields: None,
         };
 
         let result = service.add_field(&schema_id, invalid_field).await;
@@ -775,6 +1107,8 @@ mod tests {
             default: Some(json!(8)),
             description: Some("Estimated hours".to_string()),
             item_type: None,
+            fields: None,
+            item_fields: None,
         };
 
         service.add_field(&schema_id, field).await.unwrap();
@@ -801,6 +1135,8 @@ mod tests {
             default: None,
             description: Some("Department code".to_string()),
             item_type: None,
+            fields: None,
+            item_fields: None,
         };
 
         service.add_field(&schema_id, field).await.unwrap();
@@ -827,6 +1163,8 @@ mod tests {
             default: None,
             description: Some("JIRA issue ID".to_string()),
             item_type: None,
+            fields: None,
+            item_fields: None,
         };
 
         service.add_field(&schema_id, field).await.unwrap();
@@ -853,6 +1191,8 @@ mod tests {
             default: None,
             description: None,
             item_type: None,
+            fields: None,
+            item_fields: None,
         };
 
         let result = service.add_field(&schema_id, invalid_core_field).await;
@@ -878,6 +1218,8 @@ mod tests {
             default: None,
             description: None,
             item_type: None,
+            fields: None,
+            item_fields: None,
         };
 
         let result = service.add_field(&schema_id, core_field).await;
@@ -1128,5 +1470,733 @@ mod tests {
             result.is_ok(),
             "Flat properties format should work for backward compatibility"
         );
+    }
+
+    #[tokio::test]
+    async fn test_sync_schema_to_database_basic() {
+        let (service, _temp) = setup_test_service().await;
+        let schema_id = create_test_schema(&service).await;
+
+        // Sync schema to database
+        service.sync_schema_to_database(&schema_id).await.unwrap();
+
+        // Verify table was created by attempting to query it
+        let db = service.node_service.store.db();
+        let result = db.query(format!("INFO FOR TABLE {}", schema_id)).await;
+
+        assert!(result.is_ok(), "Table should be created");
+    }
+
+    #[tokio::test]
+    async fn test_sync_schema_with_nested_fields() {
+        let (service, _temp) = setup_test_service().await;
+
+        // Create schema with nested fields
+        let schema = SchemaDefinition {
+            is_core: false,
+            version: 1,
+            description: "Person with nested address".to_string(),
+            fields: vec![SchemaField {
+                name: "address".to_string(),
+                field_type: "object".to_string(),
+                protection: ProtectionLevel::User,
+                core_values: None,
+                user_values: None,
+                indexed: false,
+                required: Some(false),
+                extensible: None,
+                default: None,
+                description: Some("Address information".to_string()),
+                item_type: None,
+                fields: Some(vec![
+                    SchemaField {
+                        name: "street".to_string(),
+                        field_type: "string".to_string(),
+                        protection: ProtectionLevel::User,
+                        core_values: None,
+                        user_values: None,
+                        indexed: false,
+                        required: Some(false),
+                        extensible: None,
+                        default: None,
+                        description: Some("Street address".to_string()),
+                        item_type: None,
+                        fields: None,
+                        item_fields: None,
+                    },
+                    SchemaField {
+                        name: "city".to_string(),
+                        field_type: "string".to_string(),
+                        protection: ProtectionLevel::User,
+                        core_values: None,
+                        user_values: None,
+                        indexed: true,
+                        required: Some(false),
+                        extensible: None,
+                        default: None,
+                        description: Some("City".to_string()),
+                        item_type: None,
+                        fields: None,
+                        item_fields: None,
+                    },
+                ]),
+                item_fields: None,
+            }],
+        };
+
+        let schema_node = Node {
+            id: "person".to_string(),
+            node_type: "schema".to_string(),
+            content: "Person".to_string(),
+            parent_id: None,
+            container_node_id: None,
+            before_sibling_id: None,
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties: serde_json::to_value(&schema).unwrap(),
+            embedding_vector: None,
+            mentions: Vec::new(),
+            mentioned_by: Vec::new(),
+        };
+
+        service.node_service.create_node(schema_node).await.unwrap();
+
+        // Sync schema to database
+        service.sync_schema_to_database("person").await.unwrap();
+
+        // Verify table was created
+        let db = service.node_service.store.db();
+        let result = db.query("INFO FOR TABLE person").await;
+
+        assert!(result.is_ok(), "Table should be created with nested fields");
+    }
+
+    #[tokio::test]
+    async fn test_sync_schema_with_indexed_nested_field() {
+        let (service, _temp) = setup_test_service().await;
+
+        // Create schema with indexed nested field
+        let schema = SchemaDefinition {
+            is_core: false,
+            version: 1,
+            description: "Person with indexed city".to_string(),
+            fields: vec![SchemaField {
+                name: "address".to_string(),
+                field_type: "object".to_string(),
+                protection: ProtectionLevel::User,
+                core_values: None,
+                user_values: None,
+                indexed: false,
+                required: Some(false),
+                extensible: None,
+                default: None,
+                description: Some("Address information".to_string()),
+                item_type: None,
+                fields: Some(vec![SchemaField {
+                    name: "city".to_string(),
+                    field_type: "string".to_string(),
+                    protection: ProtectionLevel::User,
+                    core_values: None,
+                    user_values: None,
+                    indexed: true, // This should create an index
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("City".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                }]),
+                item_fields: None,
+            }],
+        };
+
+        let schema_node = Node {
+            id: "test_person".to_string(),
+            node_type: "schema".to_string(),
+            content: "Test Person".to_string(),
+            parent_id: None,
+            container_node_id: None,
+            before_sibling_id: None,
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties: serde_json::to_value(&schema).unwrap(),
+            embedding_vector: None,
+            mentions: Vec::new(),
+            mentioned_by: Vec::new(),
+        };
+
+        service.node_service.create_node(schema_node).await.unwrap();
+
+        // Sync schema to database
+        service
+            .sync_schema_to_database("test_person")
+            .await
+            .unwrap();
+
+        // Verify index was created
+        let db = service.node_service.store.db();
+        let result = db.query("INFO FOR TABLE test_person").await;
+
+        assert!(
+            result.is_ok(),
+            "Table should be created with index on nested field"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sync_schema_with_array_of_objects() {
+        let (service, _temp) = setup_test_service().await;
+
+        // Create schema with array of objects
+        let schema = SchemaDefinition {
+            is_core: false,
+            version: 1,
+            description: "Person with contacts array".to_string(),
+            fields: vec![SchemaField {
+                name: "contacts".to_string(),
+                field_type: "array".to_string(),
+                protection: ProtectionLevel::User,
+                core_values: None,
+                user_values: None,
+                indexed: false,
+                required: Some(false),
+                extensible: None,
+                default: None,
+                description: Some("Contact list".to_string()),
+                item_type: Some("object".to_string()),
+                fields: None,
+                item_fields: Some(vec![SchemaField {
+                    name: "email".to_string(),
+                    field_type: "string".to_string(),
+                    protection: ProtectionLevel::User,
+                    core_values: None,
+                    user_values: None,
+                    indexed: true,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("Email address".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                }]),
+            }],
+        };
+
+        let schema_node = Node {
+            id: "contact_person".to_string(),
+            node_type: "schema".to_string(),
+            content: "Contact Person".to_string(),
+            parent_id: None,
+            container_node_id: None,
+            before_sibling_id: None,
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties: serde_json::to_value(&schema).unwrap(),
+            embedding_vector: None,
+            mentions: Vec::new(),
+            mentioned_by: Vec::new(),
+        };
+
+        service.node_service.create_node(schema_node).await.unwrap();
+
+        // Sync schema to database
+        service
+            .sync_schema_to_database("contact_person")
+            .await
+            .unwrap();
+
+        // Verify table was created
+        let db = service.node_service.store.db();
+        let result = db.query("INFO FOR TABLE contact_person").await;
+
+        assert!(
+            result.is_ok(),
+            "Table should be created with array of objects"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_map_field_type_string() {
+        let (service, _temp) = setup_test_service().await;
+
+        let field = SchemaField {
+            name: "test".to_string(),
+            field_type: "string".to_string(),
+            protection: ProtectionLevel::User,
+            core_values: None,
+            user_values: None,
+            indexed: false,
+            required: None,
+            extensible: None,
+            default: None,
+            description: None,
+            item_type: None,
+            fields: None,
+            item_fields: None,
+        };
+
+        let db_type = service.map_field_type("string", &field).unwrap();
+        assert_eq!(db_type, "string");
+    }
+
+    #[tokio::test]
+    async fn test_map_field_type_enum() {
+        let (service, _temp) = setup_test_service().await;
+
+        let field = SchemaField {
+            name: "status".to_string(),
+            field_type: "enum".to_string(),
+            protection: ProtectionLevel::Core,
+            core_values: Some(vec!["OPEN".to_string(), "DONE".to_string()]),
+            user_values: Some(vec!["BLOCKED".to_string()]),
+            indexed: false,
+            required: None,
+            extensible: None,
+            default: None,
+            description: None,
+            item_type: None,
+            fields: None,
+            item_fields: None,
+        };
+
+        let db_type = service.map_field_type("enum", &field).unwrap();
+        assert!(db_type.contains("ASSERT"));
+        assert!(db_type.contains("OPEN"));
+        assert!(db_type.contains("DONE"));
+        assert!(db_type.contains("BLOCKED"));
+    }
+
+    #[tokio::test]
+    async fn test_map_field_type_array_of_objects() {
+        let (service, _temp) = setup_test_service().await;
+
+        let field = SchemaField {
+            name: "items".to_string(),
+            field_type: "array".to_string(),
+            protection: ProtectionLevel::User,
+            core_values: None,
+            user_values: None,
+            indexed: false,
+            required: None,
+            extensible: None,
+            default: None,
+            description: None,
+            item_type: Some("object".to_string()),
+            fields: None,
+            item_fields: None,
+        };
+
+        let db_type = service.map_field_type("array", &field).unwrap();
+        assert_eq!(db_type, "array<object>");
+    }
+
+    #[tokio::test]
+    async fn test_sync_schema_core_type_uses_schemafull() {
+        let (service, _temp) = setup_test_service().await;
+
+        // Create a core schema
+        let schema = SchemaDefinition {
+            is_core: true, // Core type
+            version: 1,
+            description: "Core type test".to_string(),
+            fields: vec![SchemaField {
+                name: "name".to_string(),
+                field_type: "string".to_string(),
+                protection: ProtectionLevel::Core,
+                core_values: None,
+                user_values: None,
+                indexed: false,
+                required: Some(true),
+                extensible: None,
+                default: None,
+                description: Some("Name".to_string()),
+                item_type: None,
+                fields: None,
+                item_fields: None,
+            }],
+        };
+
+        let schema_node = Node {
+            id: "core_type".to_string(),
+            node_type: "schema".to_string(),
+            content: "Core Type".to_string(),
+            parent_id: None,
+            container_node_id: None,
+            before_sibling_id: None,
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties: serde_json::to_value(&schema).unwrap(),
+            embedding_vector: None,
+            mentions: Vec::new(),
+            mentioned_by: Vec::new(),
+        };
+
+        service.node_service.create_node(schema_node).await.unwrap();
+
+        // Sync schema - should use SCHEMAFULL
+        service.sync_schema_to_database("core_type").await.unwrap();
+
+        // Table should exist
+        let db = service.node_service.store.db();
+        let result = db.query("INFO FOR TABLE core_type").await;
+
+        assert!(result.is_ok(), "Core type table should use SCHEMAFULL mode");
+    }
+
+    #[tokio::test]
+    async fn test_sync_schema_user_type_uses_schemaless() {
+        let (service, _temp) = setup_test_service().await;
+        let schema_id = create_test_schema(&service).await;
+
+        // test_widget schema has is_core = false
+        service.sync_schema_to_database(&schema_id).await.unwrap();
+
+        // Table should exist in SCHEMALESS mode
+        let db = service.node_service.store.db();
+        let result = db.query(format!("INFO FOR TABLE {}", schema_id)).await;
+
+        assert!(result.is_ok(), "User type table should use SCHEMALESS mode");
+    }
+
+    #[tokio::test]
+    async fn test_query_nested_field_simple() {
+        let (service, _temp) = setup_test_service().await;
+
+        // Create person schema with nested address field
+        let schema = SchemaDefinition {
+            is_core: false,
+            version: 1,
+            description: "Person with address".to_string(),
+            fields: vec![
+                SchemaField {
+                    name: "name".to_string(),
+                    field_type: "string".to_string(),
+                    protection: ProtectionLevel::User,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(true),
+                    extensible: None,
+                    default: None,
+                    description: Some("Person name".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "address".to_string(),
+                    field_type: "object".to_string(),
+                    protection: ProtectionLevel::User,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("Address".to_string()),
+                    item_type: None,
+                    fields: Some(vec![SchemaField {
+                        name: "city".to_string(),
+                        field_type: "string".to_string(),
+                        protection: ProtectionLevel::User,
+                        core_values: None,
+                        user_values: None,
+                        indexed: true, // Index for queries
+                        required: Some(false),
+                        extensible: None,
+                        default: None,
+                        description: Some("City".to_string()),
+                        item_type: None,
+                        fields: None,
+                        item_fields: None,
+                    }]),
+                    item_fields: None,
+                },
+            ],
+        };
+
+        let schema_node = Node {
+            id: "person_query_test".to_string(),
+            node_type: "schema".to_string(),
+            content: "Person".to_string(),
+            parent_id: None,
+            container_node_id: None,
+            before_sibling_id: None,
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties: serde_json::to_value(&schema).unwrap(),
+            embedding_vector: None,
+            mentions: Vec::new(),
+            mentioned_by: Vec::new(),
+        };
+
+        service.node_service.create_node(schema_node).await.unwrap();
+
+        // Sync schema to database
+        service
+            .sync_schema_to_database("person_query_test")
+            .await
+            .unwrap();
+
+        // Insert test data directly
+        let db = service.node_service.store.db();
+        db.query(
+            r#"CREATE person_query_test:alice SET name = "Alice", address = { city: "NYC" }"#,
+        )
+        .await
+        .unwrap();
+        db.query(
+            r#"CREATE person_query_test:bob SET name = "Bob", address = { city: "SF" }"#,
+        )
+        .await
+        .unwrap();
+
+        // Query by nested field
+        let mut result = db
+            .query("SELECT * FROM person_query_test WHERE address.city = 'NYC'")
+            .await
+            .unwrap();
+
+        let records: Vec<serde_json::Value> = result.take(0).unwrap();
+        assert_eq!(records.len(), 1, "Should find one person in NYC");
+        assert_eq!(records[0]["name"], "Alice");
+    }
+
+    #[tokio::test]
+    async fn test_query_nested_field_with_index() {
+        let (service, _temp) = setup_test_service().await;
+
+        // Create schema with indexed nested field
+        let schema = SchemaDefinition {
+            is_core: false,
+            version: 1,
+            description: "Product with details".to_string(),
+            fields: vec![SchemaField {
+                name: "details".to_string(),
+                field_type: "object".to_string(),
+                protection: ProtectionLevel::User,
+                core_values: None,
+                user_values: None,
+                indexed: false,
+                required: Some(false),
+                extensible: None,
+                default: None,
+                description: None,
+                item_type: None,
+                fields: Some(vec![
+                    SchemaField {
+                        name: "category".to_string(),
+                        field_type: "string".to_string(),
+                        protection: ProtectionLevel::User,
+                        core_values: None,
+                        user_values: None,
+                        indexed: true, // Indexed for fast queries
+                        required: Some(false),
+                        extensible: None,
+                        default: None,
+                        description: None,
+                        item_type: None,
+                        fields: None,
+                        item_fields: None,
+                    },
+                    SchemaField {
+                        name: "price".to_string(),
+                        field_type: "number".to_string(),
+                        protection: ProtectionLevel::User,
+                        core_values: None,
+                        user_values: None,
+                        indexed: false,
+                        required: Some(false),
+                        extensible: None,
+                        default: None,
+                        description: None,
+                        item_type: None,
+                        fields: None,
+                        item_fields: None,
+                    },
+                ]),
+                item_fields: None,
+            }],
+        };
+
+        let schema_node = Node {
+            id: "product_test".to_string(),
+            node_type: "schema".to_string(),
+            content: "Product".to_string(),
+            parent_id: None,
+            container_node_id: None,
+            before_sibling_id: None,
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties: serde_json::to_value(&schema).unwrap(),
+            embedding_vector: None,
+            mentions: Vec::new(),
+            mentioned_by: Vec::new(),
+        };
+
+        service.node_service.create_node(schema_node).await.unwrap();
+        service
+            .sync_schema_to_database("product_test")
+            .await
+            .unwrap();
+
+        // Insert test data
+        let db = service.node_service.store.db();
+        db.query(
+            r#"CREATE product_test:1 SET details = { category: "electronics", price: 999 }"#,
+        )
+        .await
+        .unwrap();
+        db.query(r#"CREATE product_test:2 SET details = { category: "books", price: 29 }"#)
+            .await
+            .unwrap();
+        db.query(
+            r#"CREATE product_test:3 SET details = { category: "electronics", price: 499 }"#,
+        )
+        .await
+        .unwrap();
+
+        // Query using indexed nested field
+        let mut result = db
+            .query("SELECT * FROM product_test WHERE details.category = 'electronics'")
+            .await
+            .unwrap();
+
+        let records: Vec<serde_json::Value> = result.take(0).unwrap();
+        assert_eq!(records.len(), 2, "Should find two electronics products");
+    }
+
+    #[tokio::test]
+    async fn test_query_deeply_nested_fields() {
+        let (service, _temp) = setup_test_service().await;
+
+        // Create schema with deeply nested structure (address.coordinates.lat)
+        let schema = SchemaDefinition {
+            is_core: false,
+            version: 1,
+            description: "Location with nested coordinates".to_string(),
+            fields: vec![SchemaField {
+                name: "address".to_string(),
+                field_type: "object".to_string(),
+                protection: ProtectionLevel::User,
+                core_values: None,
+                user_values: None,
+                indexed: false,
+                required: Some(false),
+                extensible: None,
+                default: None,
+                description: None,
+                item_type: None,
+                fields: Some(vec![
+                    SchemaField {
+                        name: "city".to_string(),
+                        field_type: "string".to_string(),
+                        protection: ProtectionLevel::User,
+                        core_values: None,
+                        user_values: None,
+                        indexed: false,
+                        required: Some(false),
+                        extensible: None,
+                        default: None,
+                        description: None,
+                        item_type: None,
+                        fields: None,
+                        item_fields: None,
+                    },
+                    SchemaField {
+                        name: "coordinates".to_string(),
+                        field_type: "object".to_string(),
+                        protection: ProtectionLevel::User,
+                        core_values: None,
+                        user_values: None,
+                        indexed: false,
+                        required: Some(false),
+                        extensible: None,
+                        default: None,
+                        description: None,
+                        item_type: None,
+                        fields: Some(vec![
+                            SchemaField {
+                                name: "lat".to_string(),
+                                field_type: "number".to_string(),
+                                protection: ProtectionLevel::User,
+                                core_values: None,
+                                user_values: None,
+                                indexed: true, // Index deep nested field
+                                required: Some(false),
+                                extensible: None,
+                                default: None,
+                                description: None,
+                                item_type: None,
+                                fields: None,
+                                item_fields: None,
+                            },
+                            SchemaField {
+                                name: "lng".to_string(),
+                                field_type: "number".to_string(),
+                                protection: ProtectionLevel::User,
+                                core_values: None,
+                                user_values: None,
+                                indexed: false,
+                                required: Some(false),
+                                extensible: None,
+                                default: None,
+                                description: None,
+                                item_type: None,
+                                fields: None,
+                                item_fields: None,
+                            },
+                        ]),
+                        item_fields: None,
+                    },
+                ]),
+                item_fields: None,
+            }],
+        };
+
+        let schema_node = Node {
+            id: "location_test".to_string(),
+            node_type: "schema".to_string(),
+            content: "Location".to_string(),
+            parent_id: None,
+            container_node_id: None,
+            before_sibling_id: None,
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties: serde_json::to_value(&schema).unwrap(),
+            embedding_vector: None,
+            mentions: Vec::new(),
+            mentioned_by: Vec::new(),
+        };
+
+        service.node_service.create_node(schema_node).await.unwrap();
+        service
+            .sync_schema_to_database("location_test")
+            .await
+            .unwrap();
+
+        // Insert test data with deeply nested structure
+        let db = service.node_service.store.db();
+        db.query(r#"CREATE location_test:nyc SET address = { city: "NYC", coordinates: { lat: 40.7, lng: -74.0 } }"#).await.unwrap();
+        db.query(r#"CREATE location_test:sf SET address = { city: "SF", coordinates: { lat: 37.8, lng: -122.4 } }"#).await.unwrap();
+
+        // Query by deeply nested field (address.coordinates.lat)
+        let mut result = db
+            .query("SELECT * FROM location_test WHERE address.coordinates.lat > 38")
+            .await
+            .unwrap();
+
+        let records: Vec<serde_json::Value> = result.take(0).unwrap();
+        assert_eq!(records.len(), 1, "Should find one location with lat > 38");
+        assert_eq!(records[0]["address"]["city"], "NYC");
     }
 }

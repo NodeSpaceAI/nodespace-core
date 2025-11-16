@@ -138,6 +138,8 @@ pub async fn handle_add_schema_field(
         default: params.default,
         description: params.description,
         item_type: params.item_type,
+        fields: None,
+        item_fields: None,
     };
 
     // Add field via SchemaService
@@ -379,6 +381,8 @@ mod tests {
                 default: Some(json!("OPEN")),
                 description: Some("Task status".to_string()),
                 item_type: None,
+                fields: None,
+                item_fields: None,
             }],
         };
 

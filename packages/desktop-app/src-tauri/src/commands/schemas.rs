@@ -179,6 +179,8 @@ pub async fn add_schema_field(
         default: field.default,
         description: field.description,
         item_type: field.item_type,
+        fields: None,      // Nested fields not supported via this API yet
+        item_fields: None, // Array of objects not supported via this API yet
     };
 
     // Add field to schema
