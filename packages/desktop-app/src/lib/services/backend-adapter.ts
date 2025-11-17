@@ -184,6 +184,13 @@ export interface BackendAdapter {
   getChildren(parentId: string): Promise<Node[]>;
 
   /**
+   * Set parent relationship for a node (establishes has_child graph edge)
+   * @param nodeId - Child node ID
+   * @param parentId - New parent ID (null to make node a root)
+   */
+  setParent(nodeId: string, parentId: string | null): Promise<void>;
+
+  /**
    * Query nodes by parent and/or container (Phase 2)
    * @since Phase 2
    * @param params - Query parameters
@@ -509,6 +516,15 @@ export class TauriAdapter implements BackendAdapter {
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, parentId, 'getChildren');
+    }
+  }
+
+  async setParent(nodeId: string, parentId: string | null): Promise<void> {
+    try {
+      await invoke('set_parent', { nodeId, parentId });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, nodeId, 'setParent');
     }
   }
 
@@ -1096,34 +1112,38 @@ export class HttpAdapter implements BackendAdapter {
     }
   }
 
-  /**
-   * Build query URL with proper parameter encoding
-   * @param params - Query parameters
-   * @returns Formatted URL string
-   * @private
-   */
-  private buildQueryUrl(params: QueryNodesParams): string {
-    const url = new URL(`${this.baseUrl}/api/nodes/query`);
-
-    // Handle parentId parameter
-    if (params.parentId !== undefined) {
-      // Backend expects "null" string for SQL NULL queries (root nodes)
-      // See query_endpoints.rs:127-137 for backend parsing logic
-      url.searchParams.set('parent_id', params.parentId === null ? 'null' : params.parentId);
+  async setParent(nodeId: string, parentId: string | null): Promise<void> {
+    try {
+      const response = await globalThis.fetch(
+        `${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/parent`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ parentId })
+        }
+      );
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, nodeId, 'setParent');
     }
-
-    // Handle containerId parameter
-    if (params.containerId !== undefined) {
-      url.searchParams.set('container_id', params.containerId);
-    }
-
-    return url.toString();
   }
 
   async queryNodes(params: QueryNodesParams): Promise<Node[]> {
     try {
-      const url = this.buildQueryUrl(params);
-      const response = await globalThis.fetch(url);
+      // dev-proxy expects POST /api/query with JSON body (NodeFilter)
+      // NOT GET /api/nodes/query with query params
+      const response = await globalThis.fetch(`${this.baseUrl}/api/query`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(params)
+      });
       return await this.handleResponse<Node[]>(response);
     } catch (error) {
       const err = toError(error);

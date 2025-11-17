@@ -807,8 +807,12 @@ where
         // Record ID format: node:uuid (constructed by type::thing)
         // For types without dedicated tables (text, date, etc.), properties are stored here
         // For types with dedicated tables (task, schema), properties go in the type-specific table
-        let mut props_with_schema = node.properties.as_object().cloned().unwrap_or_default();
-        props_with_schema.insert("_schema_version".to_string(), serde_json::json!(1i64));
+        //
+        // NOTE: _schema_version is managed by NodeService, not SurrealStore.
+        // NodeService adds _schema_version only for node types with schema fields (task, person, etc.).
+        // Types with empty schemas (text, date, header, etc.) don't need versioning.
+        // Don't add _schema_version here - it causes properties pollution.
+        let props_with_schema = node.properties.as_object().cloned().unwrap_or_default();
 
         let query = "
             CREATE type::thing($table, $id) CONTENT {
@@ -976,8 +980,12 @@ where
         // embedding_vector is already Vec<f32>, no conversion needed
         let embedding_f32 = update.embedding_vector.flatten();
 
-        // Merge properties with _schema_version if properties are being updated
+        // Merge properties if they're being updated
         // For types without dedicated tables (text, date, etc.), store properties directly in universal table
+        //
+        // NOTE: _schema_version is managed by NodeService, not SurrealStore.
+        // NodeService adds _schema_version only for node types with schema fields.
+        // Don't add/preserve _schema_version here - it causes properties pollution.
         let properties_update = if let Some(ref updated_props) = update.properties {
             let mut merged_props = current.properties.as_object().cloned().unwrap_or_default();
             if let Some(new_props) = updated_props.as_object() {
@@ -985,10 +993,7 @@ where
                     merged_props.insert(key.clone(), value.clone());
                 }
             }
-            // Ensure _schema_version is preserved
-            if !merged_props.contains_key("_schema_version") {
-                merged_props.insert("_schema_version".to_string(), serde_json::json!(1i64));
-            }
+            // Properties are merged as-is - no automatic _schema_version insertion
             Some(serde_json::Value::Object(merged_props))
         } else {
             None
@@ -1123,6 +1128,9 @@ where
             .await?
             .ok_or_else(|| anyhow::anyhow!("Node not found: {}", id))?;
 
+        // Calculate new version for explicit binding
+        let new_version = expected_version + 1;
+
         // Atomic update with version check using record ID
         // SurrealDB's UPDATE returns the updated records
         let query = "
@@ -1130,8 +1138,9 @@ where
                 content = $content,
                 type = $node_type,
                 before_sibling_id = $before_sibling_id,
+                properties = $properties,
                 modified_at = time::now(),
-                version = version + 1,
+                version = $new_version,
                 embedding_vector = $embedding_vector
             WHERE version = $expected_version
             RETURN AFTER;
@@ -1139,6 +1148,7 @@ where
 
         let updated_content = update.content.unwrap_or(current.content);
         let updated_node_type = update.node_type.unwrap_or(current.node_type.clone());
+        let updated_properties = update.properties.unwrap_or(current.properties);
 
         // embedding_vector is already Vec<f32>, no conversion needed
         let embedding_f32 = update.embedding_vector.flatten();
@@ -1148,9 +1158,11 @@ where
             .query(query)
             .bind(("id", id.to_string()))
             .bind(("expected_version", expected_version))
+            .bind(("new_version", new_version))
             .bind(("content", updated_content))
             .bind(("node_type", updated_node_type))
             .bind(("before_sibling_id", update.before_sibling_id.flatten()))
+            .bind(("properties", updated_properties))
             .bind(("embedding_vector", embedding_f32))
             .await
             .context("Failed to update node with version check")?;
@@ -1565,10 +1577,12 @@ where
         search_query: &str,
         limit: Option<i64>,
     ) -> Result<Vec<Node>> {
+        // Use string::lowercase() for case-insensitive search
+        // SurrealDB CONTAINS is case-sensitive by default
         let sql = if limit.is_some() {
-            "SELECT * FROM node WHERE content CONTAINS $search_query LIMIT $limit;"
+            "SELECT * FROM node WHERE string::lowercase(content) CONTAINS string::lowercase($search_query) LIMIT $limit;"
         } else {
-            "SELECT * FROM node WHERE content CONTAINS $search_query;"
+            "SELECT * FROM node WHERE string::lowercase(content) CONTAINS string::lowercase($search_query);"
         };
 
         let mut query_builder = self
@@ -2447,7 +2461,9 @@ mod tests {
         // Create nodes
         let node1 = Node::new("text".to_string(), "Base content".to_string(), json!({}));
         let mut created1 = store.create_node(node1).await?;
-        store.update_embedding(&created1.id, &similar_vector).await?;
+        store
+            .update_embedding(&created1.id, &similar_vector)
+            .await?;
         created1.embedding_vector = Some(similar_vector.clone());
 
         let node2 = Node::new(
@@ -2528,7 +2544,9 @@ mod tests {
         }
 
         // Search with limit of 3
-        let results = store.search_by_embedding(&base_vector, 3, Some(0.5)).await?;
+        let results = store
+            .search_by_embedding(&base_vector, 3, Some(0.5))
+            .await?;
 
         assert!(
             results.len() <= 3,
@@ -2571,7 +2589,9 @@ mod tests {
 
         // Measure search time (after data is created)
         let start = std::time::Instant::now();
-        let results = store.search_by_embedding(&base_vector, 20, Some(0.5)).await?;
+        let results = store
+            .search_by_embedding(&base_vector, 20, Some(0.5))
+            .await?;
         let elapsed = start.elapsed();
 
         tracing::info!(
@@ -2714,7 +2734,9 @@ mod tests {
 
         // Measure search time
         let start = std::time::Instant::now();
-        let results = store.search_by_embedding(&base_vector, 20, Some(0.5)).await?;
+        let results = store
+            .search_by_embedding(&base_vector, 20, Some(0.5))
+            .await?;
         let elapsed = start.elapsed();
 
         tracing::info!(

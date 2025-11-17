@@ -113,6 +113,20 @@ export class MockBackendAdapter implements BackendAdapter {
   }
 
   /**
+   * Set parent relationship (mock - does nothing)
+   * NOTE: Mock adapter doesn't track hierarchy
+   */
+  async setParent(nodeId: string, _parentId: string | null): Promise<void> {
+    // Mock implementation - verify node exists
+    const node = this.nodes.get(nodeId);
+    if (!node) {
+      throw new Error(`Node ${nodeId} not found`);
+    }
+    // In real implementation, this would create has_child edge
+    // Mock just validates the operation would succeed
+  }
+
+  /**
    * Get child nodes of a parent node
    * NOTE: Since we removed parentId, this now returns empty array
    * Mock adapter doesn't track hierarchy

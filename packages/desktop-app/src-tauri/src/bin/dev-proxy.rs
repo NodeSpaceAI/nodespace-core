@@ -337,6 +337,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/nodes/:id", get(get_node))
         .route("/api/nodes/:id", patch(update_node))
         .route("/api/nodes/:id", delete(delete_node))
+        // Hierarchy endpoints
+        .route("/api/nodes/:id/parent", post(set_parent))
         // Query endpoints
         .route("/api/nodes/:id/children", get(get_children))
         .route("/api/query", post(query_nodes))
@@ -543,13 +545,10 @@ async fn delete_node(
             }
             Ok(None) => {
                 // Node doesn't exist - already deleted or never existed
-                return Err((
-                    StatusCode::NOT_FOUND,
-                    Json(ApiError::new(
-                        "RESOURCE_NOT_FOUND",
-                        format!("Node {} not found", id),
-                    )),
-                ));
+                // Idempotent DELETE: return success (204) instead of 404
+                // This follows RESTful best practices - DELETE should succeed
+                // even if the resource is already gone
+                return Ok(StatusCode::NO_CONTENT);
             }
             Err(e) => {
                 // Database error
@@ -557,6 +556,28 @@ async fn delete_node(
             }
         }
     }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Set parent request
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetParentRequest {
+    /// New parent ID (null to make node a root)
+    pub parent_id: Option<String>,
+}
+
+async fn set_parent(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    Json(request): Json<SetParentRequest>,
+) -> ApiStatusResult {
+    state
+        .node_service
+        .move_node(&node_id, request.parent_id.as_deref())
+        .await
+        .map_err(map_node_service_error)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -633,14 +654,11 @@ async fn mention_autocomplete(
     Json(request): Json<MentionAutocompleteRequest>,
 ) -> ApiResult<Vec<Node>> {
     // Use NodeService to search nodes by content
-    // Lowercase query for case-insensitive search (SurrealDB CONTAINS is case-sensitive by default)
-    let query_lower = request.query.to_lowercase();
-
-    // Search using the store's search method directly
+    // Case-insensitive search is handled by SurrealStore using string::lowercase()
     let nodes = state
         .node_service
         .store()
-        .search_nodes_by_content(&query_lower, request.limit)
+        .search_nodes_by_content(&request.query, request.limit)
         .await
         .map_err(|e| {
             (

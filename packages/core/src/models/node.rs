@@ -144,7 +144,7 @@ pub struct Node {
 
     /// Optional vector embedding for semantic search
     /// Stored as f32 array for JSON API compatibility (SurrealDB stores as array<float>)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Note: Serializes as explicit null when None (required for frontend null checks)
     pub embedding_vector: Option<Vec<f32>>,
 
     /// Outgoing mentions - IDs of nodes that THIS node references

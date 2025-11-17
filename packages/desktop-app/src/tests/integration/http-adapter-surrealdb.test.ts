@@ -315,6 +315,9 @@ describe.skipIf(!(await isDevProxyAvailable()))('HttpAdapter with Dev-Proxy', ()
       await adapter.createNode(parentData);
       await adapter.createNode(childData);
 
+      // Establish parent-child relationship via graph edge
+      await adapter.setParent('test-child', 'test-parent');
+
       // Get children
       const children = await adapter.getChildren('test-parent');
 
@@ -368,8 +371,11 @@ describe.skipIf(!(await isDevProxyAvailable()))('HttpAdapter with Dev-Proxy', ()
       await adapter.createNode(parent2Data);
       await adapter.createNode(childData);
 
+      // Establish initial parent relationship
+      await adapter.setParent('test-moveable-child', 'test-parent-1');
+
       // Move child to parent 2
-      await adapter.updateNode('test-moveable-child', 1, {});
+      await adapter.setParent('test-moveable-child', 'test-parent-2');
 
       // Verify new parent
       const child = await adapter.getNode('test-moveable-child');
@@ -398,8 +404,12 @@ describe.skipIf(!(await isDevProxyAvailable()))('HttpAdapter with Dev-Proxy', ()
       await adapter.createNode(child1Data);
       await adapter.createNode(child2Data);
 
-      // Query by parent
-      const results = await adapter.queryNodes({});
+      // Establish parent relationships
+      await adapter.setParent('test-query-child-1', 'test-query-parent');
+      await adapter.setParent('test-query-child-2', 'test-query-parent');
+
+      // Query by parent (use getChildren instead of queryNodes - NodeFilter doesn't support parent_id)
+      const results = await adapter.getChildren('test-query-parent');
 
       expect(results).toHaveLength(2);
       expect(results.map((n) => n.id).sort()).toEqual(['test-query-child-1', 'test-query-child-2']);
@@ -413,7 +423,9 @@ describe.skipIf(!(await isDevProxyAvailable()))('HttpAdapter with Dev-Proxy', ()
       await adapter.createNode(root1Data);
       await adapter.createNode(root2Data);
 
-      // Query root nodes
+      // Query all nodes (root nodes are those without parents)
+      // Note: queryNodes({}) returns ALL nodes, not just roots
+      // Backend doesn't support filtering by parent_id in NodeFilter
       const results = await adapter.queryNodes({});
 
       expect(results.length).toBeGreaterThanOrEqual(2);
@@ -432,20 +444,18 @@ describe.skipIf(!(await isDevProxyAvailable()))('HttpAdapter with Dev-Proxy', ()
       await adapter.createNode(node1Data);
       await adapter.createNode(node2Data);
 
-      // Query by container
-      const results = await adapter.queryNodes({
-        containerId: 'test-container'
-      });
+      // Establish container relationships (nodes inside container)
+      await adapter.setParent('test-contained-1', 'test-container');
+      await adapter.setParent('test-contained-2', 'test-container');
+
+      // Query by container (use getNodesByContainerId - queryNodes doesn't support containerId filter)
+      const results = await adapter.getNodesByContainerId('test-container');
 
       expect(results).toHaveLength(2);
       expect(results.map((n) => n.id).sort()).toEqual(['test-contained-1', 'test-contained-2']);
     });
 
     it('should query nodes by both parentId and containerId', async () => {
-      const parentData = TestNodeBuilder.text('Combined parent')
-        .withId('test-combined-parent')
-        .build();
-
       const containerData = TestNodeBuilder.text('Combined container')
         .withId('test-combined-container')
         .build();
@@ -454,15 +464,16 @@ describe.skipIf(!(await isDevProxyAvailable()))('HttpAdapter with Dev-Proxy', ()
 
       const noMatchData = TestNodeBuilder.text('No match').withId('test-no-match').build();
 
-      await adapter.createNode(parentData);
       await adapter.createNode(containerData);
       await adapter.createNode(matchData);
       await adapter.createNode(noMatchData);
 
-      // Query with both filters
-      const results = await adapter.queryNodes({
-        containerId: 'test-combined-container'
-      });
+      // Establish container relationship
+      await adapter.setParent('test-match-both', 'test-combined-container');
+      // test-no-match has no parent
+
+      // Query by container (getNodesByContainerId uses getChildren internally)
+      const results = await adapter.getNodesByContainerId('test-combined-container');
 
       expect(results).toHaveLength(1);
       expect(results[0].id).toBe('test-match-both');
@@ -478,6 +489,10 @@ describe.skipIf(!(await isDevProxyAvailable()))('HttpAdapter with Dev-Proxy', ()
       await adapter.createNode(containerData);
       await adapter.createNode(node1Data);
       await adapter.createNode(node2Data);
+
+      // Establish container relationships
+      await adapter.setParent('test-get-node-1', 'test-get-container');
+      await adapter.setParent('test-get-node-2', 'test-get-container');
 
       const results = await adapter.getNodesByContainerId('test-get-container');
 
