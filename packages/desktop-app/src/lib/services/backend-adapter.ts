@@ -338,6 +338,13 @@ export interface BackendAdapter {
   // === Schema Management Operations ===
 
   /**
+   * Get all schema definitions
+   * @returns Array of all schema definitions (both core and custom)
+   * @throws {NodeOperationError} If retrieval fails
+   */
+  getAllSchemas(): Promise<Array<SchemaDefinition & { id: string }>>;
+
+  /**
    * Get a schema definition by schema ID
    * @param schemaId - Schema ID (e.g., "task", "person")
    * @returns Complete schema definition with fields and metadata
@@ -702,6 +709,55 @@ export class TauriAdapter implements BackendAdapter {
   }
 
   // === Schema Management Operations ===
+
+  async getAllSchemas(): Promise<Array<SchemaDefinition & { id: string }>> {
+    try {
+      // Call Tauri command to get all schemas
+      const schemas = await invoke<Array<{
+        id: string;
+        is_core: boolean;
+        version: number;
+        description: string;
+        fields: Array<{
+          name: string;
+          type: string;
+          protection: string;
+          core_values?: string[];
+          user_values?: string[];
+          indexed: boolean;
+          required?: boolean;
+          extensible?: boolean;
+          default?: unknown;
+          description?: string;
+          item_type?: string;
+        }>;
+      }>>('get_all_schemas');
+
+      // Convert from snake_case (Rust) to camelCase (TypeScript)
+      return schemas.map((schema) => ({
+        id: schema.id,
+        isCore: schema.is_core,
+        version: schema.version,
+        description: schema.description,
+        fields: schema.fields.map((field) => ({
+          name: field.name,
+          type: field.type,
+          protection: field.protection as 'core' | 'user' | 'system',
+          coreValues: field.core_values,
+          userValues: field.user_values,
+          indexed: field.indexed,
+          required: field.required,
+          extensible: field.extensible,
+          default: field.default,
+          description: field.description,
+          itemType: field.item_type
+        }))
+      }));
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, 'all', 'getAllSchemas');
+    }
+  }
 
   async getSchema(schemaId: string): Promise<SchemaDefinition> {
     try {
@@ -1496,6 +1552,56 @@ export class HttpAdapter implements BackendAdapter {
   // NOTE: Schema operations use retryOnTransientError wrapper to handle SQLite write lock contention.
   // This is consistent with the established pattern for mutation operations (see node and embedding endpoints).
   // Read operations also use retry for consistency, though they're less likely to encounter lock errors.
+
+  async getAllSchemas(): Promise<Array<SchemaDefinition & { id: string }>> {
+    return await this.retryOnTransientError(async () => {
+      const response = await globalThis.fetch(`${this.baseUrl}/api/schemas`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      const schemas = await this.handleResponse<Array<{
+        id: string;
+        is_core: boolean;
+        version: number;
+        description: string;
+        fields: Array<{
+          name: string;
+          type: string;
+          protection: string;
+          core_values?: string[];
+          user_values?: string[];
+          indexed: boolean;
+          required?: boolean;
+          extensible?: boolean;
+          default?: unknown;
+          description?: string;
+          item_type?: string;
+        }>;
+      }>>(response);
+
+      // Convert from snake_case (HTTP response) to camelCase (TypeScript)
+      return schemas.map((schema) => ({
+        id: schema.id,
+        isCore: schema.is_core,
+        version: schema.version,
+        description: schema.description,
+        fields: schema.fields.map((field) => ({
+          name: field.name,
+          type: field.type,
+          protection: field.protection as 'core' | 'user' | 'system',
+          coreValues: field.core_values,
+          userValues: field.user_values,
+          indexed: field.indexed,
+          required: field.required,
+          extensible: field.extensible,
+          default: field.default,
+          description: field.description,
+          itemType: field.item_type
+        }))
+      }));
+    });
+  }
 
   async getSchema(schemaId: string): Promise<SchemaDefinition> {
     return await this.retryOnTransientError(async () => {

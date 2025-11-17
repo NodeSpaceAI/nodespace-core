@@ -127,6 +127,57 @@ where
         Ok(schema)
     }
 
+    /// Get all schema definitions
+    ///
+    /// Retrieves all schema nodes (node_type = "schema") and returns them as a vector
+    /// of tuples containing the schema ID and schema definition.
+    ///
+    /// # Returns
+    ///
+    /// A vector of tuples where each tuple contains:
+    /// - Schema ID (e.g., "task", "person")
+    /// - Parsed SchemaDefinition from the node's properties
+    ///
+    /// # Errors
+    ///
+    /// - `SerializationError`: If any schema properties cannot be parsed
+    /// - Any errors from the underlying node service query
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::SchemaService;
+    /// # async fn example(service: SchemaService) -> Result<(), Box<dyn std::error::Error>> {
+    /// let schemas = service.get_all_schemas().await?;
+    /// for (id, schema) in schemas {
+    ///     println!("Schema {}: {} fields", id, schema.fields.len());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_all_schemas(
+        &self,
+    ) -> Result<Vec<(String, SchemaDefinition)>, NodeServiceError> {
+        // Query all nodes with node_type = "schema"
+        let query = crate::models::NodeQuery {
+            node_type: Some("schema".to_string()),
+            ..Default::default()
+        };
+
+        let nodes = self.node_service.query_nodes_simple(query).await?;
+
+        // Parse each node's properties as SchemaDefinition
+        let mut schemas = Vec::new();
+        for node in nodes {
+            let schema: SchemaDefinition = serde_json::from_value(node.properties)
+                .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
+
+            schemas.push((node.id, schema));
+        }
+
+        Ok(schemas)
+    }
+
     /// Add a new field to a schema
     ///
     /// Only user-protected fields can be added. Attempting to add core or system

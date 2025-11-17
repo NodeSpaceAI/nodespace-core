@@ -171,6 +171,7 @@ pub fn run() {
             commands::nodes::get_incoming_mentions,
             commands::nodes::get_mentioning_containers,
             commands::nodes::delete_node_mention,
+            commands::schemas::get_all_schemas,
             commands::schemas::get_schema_definition,
             commands::schemas::add_schema_field,
             commands::schemas::remove_schema_field,

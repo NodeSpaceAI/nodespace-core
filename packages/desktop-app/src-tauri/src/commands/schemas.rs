@@ -87,6 +87,53 @@ pub struct AddSchemaFieldInput {
     pub extensible: Option<bool>,
 }
 
+/// Get all schema definitions
+///
+/// Retrieves all schema definitions (both core and custom) for plugin auto-registration.
+///
+/// # Arguments
+/// * `service` - SchemaService instance from Tauri state
+///
+/// # Returns
+/// * `Ok(Vec<(String, SchemaDefinition)>)` - Array of tuples containing schema ID and definition
+/// * `Err(CommandError)` - Error if retrieval fails
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// const schemas = await invoke('get_all_schemas');
+/// schemas.forEach(({ id, definition }) => {
+///   console.log(`Schema ${id} has ${definition.fields.length} fields`);
+/// });
+/// ```
+#[tauri::command]
+pub async fn get_all_schemas(
+    service: State<'_, SchemaService>,
+) -> Result<Vec<serde_json::Value>, CommandError> {
+    // Get all schemas from the service
+    let schemas = service
+        .get_all_schemas()
+        .await
+        .map_err(CommandError::from)?;
+
+    // Convert to frontend-friendly format with id field
+    let result: Vec<serde_json::Value> = schemas
+        .into_iter()
+        .map(|(id, definition)| {
+            let mut schema_json =
+                serde_json::to_value(&definition).unwrap_or_else(|_| serde_json::json!({}));
+
+            // Add id field to the schema object
+            if let Some(obj) = schema_json.as_object_mut() {
+                obj.insert("id".to_string(), serde_json::Value::String(id));
+            }
+
+            schema_json
+        })
+        .collect();
+
+    Ok(result)
+}
+
 /// Get schema definition by schema ID
 ///
 /// Retrieves the complete schema definition including all fields,

@@ -169,6 +169,39 @@ export class SchemaService {
   }
 
   /**
+   * Get all schema definitions
+   *
+   * Retrieves all registered schemas (both core and custom) for plugin auto-registration.
+   *
+   * @returns Array of all schema definitions with their IDs
+   * @throws {SchemaOperationError} If retrieval fails
+   *
+   * @example
+   * ```typescript
+   * const schemas = await service.getAllSchemas();
+   * schemas.forEach(({ id, isCore }) => {
+   *   console.log(`Schema ${id} is ${isCore ? 'core' : 'custom'}`);
+   * });
+   * ```
+   */
+  async getAllSchemas(): Promise<Array<SchemaDefinition & { id: string }>> {
+    try {
+      // Adapter handles Tauri vs HTTP automatically and performs case conversion
+      const schemas = await this.adapter.getAllSchemas();
+
+      // Cache all schemas
+      for (const schema of schemas) {
+        this.schemaCache.set(schema.id, schema);
+      }
+
+      return schemas;
+    } catch (error) {
+      const message = formatSchemaError(error, 'get all', 'schemas');
+      throw new SchemaOperationError(message, 'all', 'getAllSchemas', error);
+    }
+  }
+
+  /**
    * Get a schema definition by schema ID
    *
    * @param schemaId - Schema ID (e.g., "task", "person")

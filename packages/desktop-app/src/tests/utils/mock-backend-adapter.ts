@@ -235,6 +235,10 @@ export class MockBackendAdapter implements BackendAdapter {
 
   // === Schema Management Operations (Not Needed for Sibling Chain Tests) ===
 
+  async getAllSchemas(): Promise<Array<SchemaDefinition & { id: string }>> {
+    throw new Error('getAllSchemas not implemented in MockBackendAdapter');
+  }
+
   async getSchema(_schemaId: string): Promise<SchemaDefinition> {
     throw new Error('getSchema not implemented in MockBackendAdapter');
   }
