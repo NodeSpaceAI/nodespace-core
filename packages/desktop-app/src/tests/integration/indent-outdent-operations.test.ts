@@ -29,6 +29,36 @@ import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
 import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
+import type { Node } from '$lib/types';
+
+/**
+ * Helper to populate hierarchy cache after initializing nodes
+ *
+ * After graph-native migration, hierarchy is stored as edges in backend.
+ * Tests need to populate the frontend cache to enable hierarchy queries.
+ *
+ * NOTE: updateChildrenCache automatically maintains parentsCache coherence.
+ * No need to manually update parentsCache - it's handled internally.
+ *
+ * @param nodes - Nodes to register in cache
+ * @param parentChildMap - Optional map of parentId -> childIds to establish parent-child relationships
+ */
+function populateHierarchyCacheForNodes(
+  nodes: Node[],
+  parentChildMap?: Map<string | null, string[]>
+) {
+  if (parentChildMap) {
+    // Use provided parent-child relationships
+    // updateChildrenCache automatically updates parentsCache for bidirectional lookup
+    for (const [parentId, childIds] of parentChildMap.entries()) {
+      sharedNodeStore.updateChildrenCache(parentId, childIds);
+    }
+  } else {
+    // Default: All nodes are root-level
+    const rootNodeIds = nodes.map(n => n.id);
+    sharedNodeStore.updateChildrenCache(null, rootNodeIds);
+  }
+}
 
 describe('Indent/Outdent Operations', () => {
   let dbPath: string | null;
@@ -93,6 +123,7 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([node1, node2]);
+    populateHierarchyCacheForNodes([node1, node2]);
 
     // Act: Indent node-2
     const result = service.indentNode('node-2');
@@ -129,6 +160,7 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([node]);
+    populateHierarchyCacheForNodes([node]);
 
     // Act: Try to indent first node
     const result = service.indentNode('node-1');
@@ -168,6 +200,13 @@ describe('Indent/Outdent Operations', () => {
       embeddingVector: null,
       mentions: []
     });
+
+    // Establish hierarchy: node1 and node2 at root, child-1 is child of node-2
+    // CRITICAL: Populate cache BEFORE initializeNodes (which queries cache for depth calculation)
+    const hierarchyMap = new Map<string | null, string[]>();
+    hierarchyMap.set(null, ['node-1', 'node-2']); // Root nodes
+    hierarchyMap.set('node-2', ['child-1']); // child-1 is child of node-2
+    populateHierarchyCacheForNodes([node1, node2, child], hierarchyMap);
 
     service.initializeNodes([node1, node2, child], { expanded: true });
 
@@ -209,6 +248,11 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([parent, child], { expanded: true });
+    // Establish hierarchy: parent at root, child is child of parent
+    const hierarchyMap = new Map<string | null, string[]>();
+    hierarchyMap.set(null, ['parent']); // parent is root
+    hierarchyMap.set('parent', ['child']); // child is child of parent
+    populateHierarchyCacheForNodes([parent, child], hierarchyMap);
 
     // Act: Outdent child
     const result = service.outdentNode('child');
@@ -242,6 +286,7 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([node]);
+    populateHierarchyCacheForNodes([node]);
 
     // Act: Try to outdent root
     const result = service.outdentNode('root');
@@ -293,6 +338,11 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([parent, child1, child2, child3], { expanded: true });
+    // Establish hierarchy: parent at root, child-1/2/3 are children of parent
+    const hierarchyMap = new Map<string | null, string[]>();
+    hierarchyMap.set(null, ['parent']); // parent at root
+    hierarchyMap.set('parent', ['child-1', 'child-2', 'child-3']); // children of parent
+    populateHierarchyCacheForNodes([parent, child1, child2, child3], hierarchyMap);
 
     // Act: Outdent child-2 (should take child-3 with it as sibling below transfers to child)
     service.outdentNode('child-2');
@@ -323,6 +373,13 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
+    // Establish hierarchy: parent at root, child is child of parent
+    // CRITICAL: Populate cache BEFORE initializeNodes (which queries cache for depth calculation)
+    const hierarchyMap = new Map<string | null, string[]>();
+    hierarchyMap.set(null, ['parent']); // parent is root
+    hierarchyMap.set('parent', ['child']); // child is child of parent
+    populateHierarchyCacheForNodes([parent, child], hierarchyMap);
+
     service.initializeNodes([parent, child], { expanded: true });
 
     // Act: Outdent child
@@ -341,7 +398,7 @@ describe('Indent/Outdent Operations', () => {
   });
 
   it('should update sibling chain when indenting', async () => {
-    // Setup: Create three siblings
+    // Setup: Create three siblings at root level
     const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
@@ -371,6 +428,11 @@ describe('Indent/Outdent Operations', () => {
       embeddingVector: null,
       mentions: []
     });
+
+    // Establish hierarchy: All three nodes at root level
+    const hierarchyMap = new Map<string | null, string[]>();
+    hierarchyMap.set(null, ['node-1', 'node-2', 'node-3']); // All at root
+    populateHierarchyCacheForNodes([node1, node2, node3], hierarchyMap);
 
     service.initializeNodes([node1, node2, node3]);
 
@@ -423,6 +485,13 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
+    // Establish hierarchy: node1 and node2 at root, child-of-2 is child of node-2
+    // CRITICAL: Populate cache BEFORE initializeNodes (which queries cache for depth calculation)
+    const hierarchyMap = new Map<string | null, string[]>();
+    hierarchyMap.set(null, ['node-1', 'node-2']); // Root nodes
+    hierarchyMap.set('node-2', ['child-of-2']); // child-of-2 is child of node-2
+    populateHierarchyCacheForNodes([node1, node2, child], hierarchyMap);
+
     service.initializeNodes([node1, node2, child], { expanded: true });
 
     // Act: Indent node-2 (which has children)
@@ -454,7 +523,7 @@ describe('Indent/Outdent Operations', () => {
       id: 'existing-child',
       nodeType: 'text',
       content: 'Existing Child',
-      beforeSiblingId: null,
+      beforeSiblingId: null, // First child under node-1
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -464,11 +533,17 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
-      beforeSiblingId: 'node-1',
+      beforeSiblingId: 'node-1', // After node-1 at root level
       properties: {},
       embeddingVector: null,
       mentions: []
     });
+
+    // Establish hierarchy: node1 and node2 at root, existing-child is child of node-1
+    const hierarchyMap = new Map<string | null, string[]>();
+    hierarchyMap.set(null, ['node-1', 'node-2']); // Root nodes
+    hierarchyMap.set('node-1', ['existing-child']); // existing-child is child of node-1
+    populateHierarchyCacheForNodes([node1, existingChild, node2], hierarchyMap);
 
     service.initializeNodes([node1, existingChild, node2], { expanded: true });
 
@@ -522,6 +597,7 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([node1, node2, node3]);
+    populateHierarchyCacheForNodes([node1, node2, node3]);
 
     // Act: Indent multiple different nodes (not the same node twice)
     // This simulates indenting node-2, then moving cursor to node-3 and indenting it
@@ -572,6 +648,12 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([node1, node2, node3], { expanded: true });
+    // Establish hierarchy: node1 at root, node2 child of node1, node3 child of node2
+    const hierarchyMap = new Map<string | null, string[]>();
+    hierarchyMap.set(null, ['node-1']); // node-1 at root
+    hierarchyMap.set('node-1', ['node-2']); // node-2 child of node-1
+    hierarchyMap.set('node-2', ['node-3']); // node-3 child of node-2
+    populateHierarchyCacheForNodes([node1, node2, node3], hierarchyMap);
 
     // Act: Outdent multiple times
     service.outdentNode('node-3'); // node-3 moves to level 1
@@ -618,6 +700,11 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([parent, child1, child2], { expanded: true });
+    // Establish hierarchy: parent at root, child1 and child2 are children of parent
+    const hierarchyMap = new Map<string | null, string[]>();
+    hierarchyMap.set(null, ['parent']); // parent at root
+    hierarchyMap.set('parent', ['child-1', 'child-2']); // child1 and child2 are children of parent
+    populateHierarchyCacheForNodes([parent, child1, child2], hierarchyMap);
 
     // Act: Outdent first child
     service.outdentNode('child-1');
@@ -648,6 +735,8 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
+    // CRITICAL: Populate cache BEFORE initializeNodes (which queries cache for depth calculation)
+    populateHierarchyCacheForNodes([node1, node2]);
     service.initializeNodes([node1, node2]);
 
     const initialCount = hierarchyChangeCount;
@@ -690,6 +779,7 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([codeBlock, textNode]);
+    populateHierarchyCacheForNodes([codeBlock, textNode]);
 
     // Act: Try to indent text node into code-block
     const result = service.indentNode('text-1');
@@ -729,6 +819,7 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([textNode1, textNode2]);
+    populateHierarchyCacheForNodes([textNode1, textNode2]);
 
     // Act: Indent text-2 into text-1
     const result = service.indentNode('text-2');
@@ -763,6 +854,7 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([headerNode, textNode]);
+    populateHierarchyCacheForNodes([headerNode, textNode]);
 
     // Act: Indent text into header
     const result = service.indentNode('text-1');
@@ -797,6 +889,7 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([taskNode, textNode]);
+    populateHierarchyCacheForNodes([taskNode, textNode]);
 
     // Act: Indent text into task
     const result = service.indentNode('text-1');
@@ -845,6 +938,12 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([dateContainer, parent, child], { expanded: true });
+    // Establish hierarchy: dateContainer at root, parent child of dateContainer, child child of parent
+    const hierarchyMap = new Map<string | null, string[]>();
+    hierarchyMap.set(null, ['2025-11-07']); // dateContainer at root
+    hierarchyMap.set('2025-11-07', ['parent']); // parent is child of dateContainer
+    hierarchyMap.set('parent', ['child']); // child is child of parent
+    populateHierarchyCacheForNodes([dateContainer, parent, child], hierarchyMap);
 
     // Act: Outdent child (should move from parent → date container)
     const result = service.outdentNode('child');

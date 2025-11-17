@@ -74,7 +74,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
    * - All siblings reachable from first child
    * - No orphaned nodes
    */
-  function validateSiblingChain(): {
+  function validateSiblingChain(parentId: string | null = null): {
     valid: boolean;
     errors: string[];
     firstChildren: string[];
@@ -85,8 +85,8 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
     const firstChildren: string[] = [];
     const reachable = new Set<string>();
 
-    // Get all siblings (all nodes in the service)
-    const siblings = Array.from(service.nodes.values()).map((n) => n.id);
+    // Get siblings for this specific parent (not all nodes)
+    const siblings = sharedNodeStore.getNodesForParent(parentId).map((n) => n.id);
 
     if (siblings.length === 0) {
       return { valid: true, errors: [], firstChildren: [], reachable, total: 0 };
@@ -107,9 +107,9 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
 
     // Should have exactly one first child
     if (firstChildren.length === 0) {
-      errors.push(`No first child found`);
+      errors.push(`No first child found for parent ${parentId || 'root'}`);
     } else if (firstChildren.length > 1) {
-      errors.push(`Multiple first children: ${firstChildren.join(', ')}`);
+      errors.push(`Multiple first children for parent ${parentId || 'root'}: ${firstChildren.join(', ')}`);
     }
 
     // If we have a valid first child, follow the chain
@@ -166,6 +166,9 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
 
     service.initializeNodes([node1]);
 
+    // Populate hierarchy cache (node-1 is a root-level node)
+    sharedNodeStore.updateChildrenCache(null, ['node-1']);
+
     // Act: Create multiple nodes
     const node2Id = service.createNode('node-1', 'Second', 'text');
     const node3Id = service.createNode(node2Id, 'Third', 'text');
@@ -174,7 +177,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
     expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Chain integrity
-    const validation = validateSiblingChain();
+    const validation = validateSiblingChain(null);
     expect(validation.valid).toBe(true);
     expect(validation.errors).toHaveLength(0);
     expect(validation.reachable.size).toBe(4);
@@ -223,13 +226,16 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
 
     service.initializeNodes([node1, node2, node3]);
 
+    // Populate hierarchy cache (all nodes are root-level siblings)
+    sharedNodeStore.updateChildrenCache(null, ['node-1', 'node-2', 'node-3']);
+
     // Act: Delete middle node
     service.deleteNode('node-2');
 
     expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Chain repaired
-    const validation = validateSiblingChain();
+    const validation = validateSiblingChain(null);
     expect(validation.valid).toBe(true);
     expect(validation.errors).toHaveLength(0);
     expect(validation.reachable.size).toBe(2);
@@ -279,18 +285,25 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
 
     service.initializeNodes([node1, node2, node3]);
 
+    // Populate hierarchy cache (all nodes are root-level siblings)
+    sharedNodeStore.updateChildrenCache(null, ['node-1', 'node-2', 'node-3']);
+    // Also populate children cache for node-1 (initially empty, will receive node-2)
+    sharedNodeStore.updateChildrenCache('node-1', []);
+
     // Act: Indent node-2
     service.indentNode('node-2');
 
     expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Root chain repaired
-    const rootValidation = validateSiblingChain();
+    const rootValidation = validateSiblingChain(null);
     expect(rootValidation.valid).toBe(true);
     expect(rootValidation.reachable.size).toBe(2); // node-1 and node-3
 
-    // Note: In the new architecture, hierarchical relationships are managed via graph queries
-    // We can't easily validate child chains in the mock, so we skip that validation
+    // Verify: node-1's children chain valid
+    const node1ChildValidation = validateSiblingChain('node-1');
+    expect(node1ChildValidation.valid).toBe(true);
+    expect(node1ChildValidation.reachable.size).toBe(1); // node-2
 
     // Verify: node-3 now points to node-1 (bypassing indented node-2) (in-memory)
     const node3Updated = service.findNode('node-3');
@@ -334,20 +347,27 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
 
     service.initializeNodes([parent, child1, child2], { expanded: true });
 
+    // Populate hierarchy cache
+    sharedNodeStore.updateChildrenCache(null, ['parent']); // parent is root
+    sharedNodeStore.updateChildrenCache('parent', ['child-1', 'child-2']); // children of parent
+    // Also populate children cache for child-1 (initially empty, will receive child-2 after outdent)
+    sharedNodeStore.updateChildrenCache('child-1', []);
+
     // Act: Outdent child-1
     service.outdentNode('child-1');
 
     expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Root chain valid
-    const rootValidation = validateSiblingChain();
+    const rootValidation = validateSiblingChain(null);
     expect(rootValidation.valid).toBe(true);
+
+    // Verify: child-1's children chain valid
+    const child1ChildValidation = validateSiblingChain('child-1');
+    expect(child1ChildValidation.valid).toBe(true);
 
     // Verify: child-2 transferred to child-1 (as outdent transfers siblings below) (in-memory)
     const _child2Updated = service.findNode('child-2');
-
-    // Note: In the new architecture, hierarchical relationships are managed via graph queries
-    // We can't easily validate child chains in the mock, so we skip that validation
   });
 
   it('should maintain chain when combining nodes', async () => {
@@ -387,13 +407,16 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
 
     service.initializeNodes([node1, node2, node3]);
 
+    // Populate hierarchy cache (all nodes are root-level siblings)
+    sharedNodeStore.updateChildrenCache(null, ['node-1', 'node-2', 'node-3']);
+
     // Act: Combine node-2 into node-1
     await service.combineNodes('node-2', 'node-1');
 
     expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
     // Verify: Chain repaired
-    const validation = validateSiblingChain();
+    const validation = validateSiblingChain(null);
     expect(validation.valid).toBe(true);
     expect(validation.reachable.size).toBe(2); // node-1 and node-3
 
@@ -440,7 +463,7 @@ describe('Sibling Chain Logic (Unit Tests)', () => {
     service.initializeNodes([node1, node2, node3]);
 
     // Verify: No circular references
-    const validation = validateSiblingChain();
+    const validation = validateSiblingChain(null);
     expect(validation.valid).toBe(true);
     expect(validation.errors).not.toContain(expect.stringContaining('Circular reference'));
 

@@ -159,4 +159,6 @@ After completing the review, **AUTOMATICALLY POST TO GITHUB PR**:
 
 **DO NOT MERGE THE PR.** The reviewer agent's job ends with providing the review report and posting it to GitHub. Do not run `gh pr merge`, `git merge`, or any other merge commands. The user will decide whether and when to merge based on the review findings.
 
+**DO NOT CREATE LOCAL FILES.** Do not create markdown files, review documents, or any other files in the repository. All review output goes to GitHub PR comments only. The PR and its comments are the source of truth.
+
 **DO automatically post to GitHub.** Always post review comments to PRs to enable the iterative review workflow with `/address-review`.

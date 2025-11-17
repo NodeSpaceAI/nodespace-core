@@ -63,6 +63,11 @@ describe('Split-Pane Content Isolation', () => {
     sharedNodeStore.setNode(childA1, { type: 'database', reason: 'test-setup' });
     sharedNodeStore.setNode(childB1, { type: 'database', reason: 'test-setup' });
 
+    // CRITICAL: Populate hierarchy cache for graph-native architecture
+    // updateChildrenCache automatically updates parentsCache
+    sharedNodeStore.updateChildrenCache('parent-a', ['child-a1']);
+    sharedNodeStore.updateChildrenCache('parent-b', ['child-b1']);
+
     // Create service (simulating nodeManager)
     const mockEvents = { emit: () => {}, on: () => () => {}, hierarchyChanged: () => {} };
     const service = createReactiveNodeService(mockEvents as never);
@@ -105,6 +110,10 @@ describe('Split-Pane Content Isolation', () => {
 
     sharedNodeStore.setNode(parent, { type: 'database', reason: 'test-setup' });
     sharedNodeStore.setNode(child1, { type: 'database', reason: 'test-setup' });
+
+    // CRITICAL: Populate hierarchy cache for graph-native architecture
+    // updateChildrenCache automatically updates parentsCache
+    sharedNodeStore.updateChildrenCache('shared-parent', ['child-1']);
 
     const mockEvents = { emit: () => {}, on: () => () => {}, hierarchyChanged: () => {} };
     const service = createReactiveNodeService(mockEvents as never);

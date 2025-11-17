@@ -140,6 +140,9 @@ describe('BaseNodeViewer cache optimization', () => {
     // Pre-populate cache
     store.setNode(parent, { type: 'database', reason: 'loaded-from-db' });
 
+    // Initialize empty hierarchy cache for parent
+    store.updateChildrenCache('parent-id', []);
+
     // Initial cache check
     let cached = store.getNodesForParent('parent-id');
     expect(cached.length).toBe(0);
@@ -147,6 +150,9 @@ describe('BaseNodeViewer cache optimization', () => {
     // Simulate external update (e.g., from MCP server)
     const newChild = createMockNode('new-child', 'text', 'parent-id');
     store.setNode(newChild, { type: 'mcp-server', serverId: 'test-server' });
+
+    // Update hierarchy cache to include new child
+    store.updateChildrenCache('parent-id', ['new-child']);
 
     // Verify cache was updated and includes the new node
     cached = store.getNodesForParent('parent-id');
@@ -173,12 +179,18 @@ describe('BaseNodeViewer cache optimization', () => {
     store.setNode(parent, { type: 'database', reason: 'loaded-from-db' });
     store.setNode(child1, { type: 'database', reason: 'loaded-from-db' });
 
+    // Initialize hierarchy cache with first child
+    store.updateChildrenCache('parent-id', ['child-1']);
+
     let cached = store.getNodesForParent('parent-id');
     expect(cached.length).toBe(1);
 
     // Add another child (simulates real-time update)
     const child2 = createMockNode('child-2', 'text', 'parent-id');
     store.setNode(child2, { type: 'viewer', viewerId: 'test-viewer' });
+
+    // Update hierarchy cache to include both children
+    store.updateChildrenCache('parent-id', ['child-1', 'child-2']);
 
     // Cache should reflect the update
     cached = store.getNodesForParent('parent-id');

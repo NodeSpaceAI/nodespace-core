@@ -13,6 +13,7 @@ import {
 } from '../../lib/services/reactive-node-service.svelte.js';
 import type { NodeManagerEvents } from '../../lib/services/reactive-node-service.svelte.js';
 import { createTestNode } from '../helpers';
+import { sharedNodeStore } from '../../lib/services/shared-node-store';
 
 describe('NodeManager Performance Tests', () => {
   let nodeManager: NodeManager;
@@ -31,6 +32,7 @@ describe('NodeManager Performance Tests', () => {
   // Generate large dataset for performance testing
   const generateLargeNodeDataset = (nodeCount: number) => {
     const nodes = [];
+    const hierarchyMap = new Map<string, string[]>(); // parentId -> childIds
 
     // Build parent-child relationships
     for (let i = 0; i < nodeCount; i++) {
@@ -44,13 +46,27 @@ describe('NodeManager Performance Tests', () => {
           createdAt: new Date().toISOString()
         })
       );
+
+      // Track parent-child relationships for hierarchy cache
+      if (parentId !== null) {
+        if (!hierarchyMap.has(parentId)) {
+          hierarchyMap.set(parentId, []);
+        }
+        hierarchyMap.get(parentId)!.push(nodeId);
+      }
     }
 
-    return nodes;
+    return { nodes, hierarchyMap };
   };
 
   test('initializes 1000 nodes efficiently (< 100ms)', () => {
-    const largeDataset = generateLargeNodeDataset(1000);
+    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(1000);
+
+    // Populate hierarchy cache BEFORE initializeNodes for graph-native architecture
+    // This simulates what the backend adapter would do when loading from database
+    for (const [parentId, childIds] of hierarchyMap) {
+      sharedNodeStore.updateChildrenCache(parentId, childIds);
+    }
 
     const startTime = performance.now();
     nodeManager.initializeNodes(largeDataset);
@@ -65,7 +81,10 @@ describe('NodeManager Performance Tests', () => {
   });
 
   test('node lookup performance with 1000+ nodes (< 1ms)', () => {
-    const largeDataset = generateLargeNodeDataset(1500);
+    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(1500);
+    for (const [parentId, childIds] of hierarchyMap) {
+      sharedNodeStore.updateChildrenCache(parentId, childIds);
+    }
     nodeManager.initializeNodes(largeDataset);
 
     const startTime = performance.now();
@@ -83,7 +102,10 @@ describe('NodeManager Performance Tests', () => {
   });
 
   test('combineNodes performance with large document (< 100ms)', () => {
-    const largeDataset = generateLargeNodeDataset(2000);
+    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(2000);
+    for (const [parentId, childIds] of hierarchyMap) {
+      sharedNodeStore.updateChildrenCache(parentId, childIds);
+    }
     nodeManager.initializeNodes(largeDataset);
 
     const startTime = performance.now();
@@ -118,7 +140,10 @@ describe('NodeManager Performance Tests', () => {
     //
     // Real-world performance: ~440ms measured in tests with proper caching
     // This ensures operations complete in sub-second timeframes for user interactions
-    const largeDataset = generateLargeNodeDataset(1000);
+    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(1000);
+    for (const [parentId, childIds] of hierarchyMap) {
+      sharedNodeStore.updateChildrenCache(parentId, childIds);
+    }
     nodeManager.initializeNodes(largeDataset);
 
     const startTime = performance.now();
@@ -202,7 +227,10 @@ describe('NodeManager Performance Tests', () => {
 
     // Perform many operations
     for (let cycle = 0; cycle < 10; cycle++) {
-      const dataset = generateLargeNodeDataset(500);
+      const { nodes: dataset, hierarchyMap } = generateLargeNodeDataset(500);
+      for (const [parentId, childIds] of hierarchyMap) {
+        sharedNodeStore.updateChildrenCache(parentId, childIds);
+      }
       nodeManager.initializeNodes(dataset);
 
       // Perform various operations
@@ -221,7 +249,10 @@ describe('NodeManager Performance Tests', () => {
   });
 
   test('concurrent operations performance', () => {
-    const largeDataset = generateLargeNodeDataset(1000);
+    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(1000);
+    for (const [parentId, childIds] of hierarchyMap) {
+      sharedNodeStore.updateChildrenCache(parentId, childIds);
+    }
     nodeManager.initializeNodes(largeDataset);
 
     const startTime = performance.now();
