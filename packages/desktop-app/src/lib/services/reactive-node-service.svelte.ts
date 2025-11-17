@@ -30,6 +30,7 @@ import { createDefaultUIState } from '$lib/types';
 import type { UpdateSource } from '$lib/types/update-protocol';
 import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
 import { backendAdapter } from './backend-adapter';
+import { schemaService } from './schema-service';
 
 export interface NodeManagerEvents {
   focusRequested: (nodeId: string, position?: number) => void;
@@ -627,14 +628,40 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // CRITICAL: Include content with nodeType update to ensure backend persistence works
     // Some backends may not support updating nodeType alone
-    const updatePayload = { nodeType, content: node.content };
+    const updatePayload: Partial<Node> = { nodeType, content: node.content };
+
+    // Issue #427: Apply schema defaults when converting node types
+    // Extract defaults from the new node type's schema and merge with existing properties
+    // Using synchronous extractDefaults() which uses the schema cache for immediate results
+    try {
+      const schemaDefaults = schemaService.extractDefaults(nodeType);
+
+      // Only update properties if there are defaults to apply
+      if (Object.keys(schemaDefaults).length > 0) {
+        // Deep merge defaults with existing properties (don't overwrite user data)
+        // For each namespace (e.g., 'task'), merge the nested objects
+        const mergedProperties = { ...node.properties };
+
+        for (const [namespace, defaultFields] of Object.entries(schemaDefaults)) {
+          if (typeof defaultFields === 'object' && defaultFields !== null) {
+            mergedProperties[namespace] = {
+              ...(defaultFields as Record<string, unknown>),
+              ...(node.properties[namespace] as Record<string, unknown> | undefined)
+            };
+          }
+        }
+
+        updatePayload.properties = mergedProperties;
+      }
+    } catch (error) {
+      // If schema extraction fails, just proceed without defaults (graceful degradation)
+      console.warn(`[updateNodeType] Failed to extract schema defaults for ${nodeType}:`, error);
+    }
+
     // Skip conflict detection for nodeType changes - they are always intentional conversions
     sharedNodeStore.updateNode(nodeId, updatePayload, viewerSource, {
       skipConflictDetection: true
     });
-
-    // Focus is managed by BaseNodeViewer during conversions
-    // Do not override cursor position here
 
     emitNodeUpdated(nodeId, 'nodeType', nodeType);
     scheduleContentProcessing(nodeId, node.content);

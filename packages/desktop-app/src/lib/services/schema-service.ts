@@ -482,6 +482,112 @@ export class SchemaService {
 
     return field.protection === 'user';
   }
+
+  /**
+   * Extract default values from a schema definition (synchronous, cache-based).
+   *
+   * Creates a properties object with default values for all fields in the schema
+   * that have defaults defined. Only fields with non-undefined default values are
+   * included in the result.
+   *
+   * This method uses the schema cache and returns immediately without async operations.
+   * If the schema is not in cache, it returns an empty object (graceful degradation).
+   * For guaranteed results, call `getSchema()` first to ensure the schema is cached.
+   *
+   * @param schemaId - Schema ID to extract defaults from
+   * @returns Object with structure { [schemaId]: { fieldName: defaultValue } }
+   *          Returns empty object if schema not in cache or has no defaults
+   *
+   * @example
+   * ```typescript
+   * // Ensure schema is loaded (call once at startup or when needed)
+   * await schemaService.getSchema('task');
+   *
+   * // Now extract defaults synchronously
+   * const defaults = schemaService.extractDefaults('task');
+   * // Returns: { task: { status: 'todo', priority: 'medium' } }
+   *
+   * // Merge with existing properties
+   * const merged = { ...node.properties, ...defaults };
+   * ```
+   */
+  extractDefaults(schemaId: string): Record<string, unknown> {
+    // Try to get schema from cache
+    const schema = this.schemaCache.get(schemaId);
+
+    // Graceful degradation: if not in cache, return empty object
+    if (!schema) {
+      return {};
+    }
+
+    // Build properties object with namespace (schemaId)
+    const defaults: Record<string, unknown> = {};
+    const fieldsWithDefaults: Record<string, unknown> = {};
+
+    // Iterate through fields and collect those with defaults
+    for (const field of schema.fields) {
+      if (field.default !== undefined && field.default !== null) {
+        fieldsWithDefaults[field.name] = field.default;
+      }
+    }
+
+    // Only create the namespace if there are defaults
+    if (Object.keys(fieldsWithDefaults).length > 0) {
+      defaults[schemaId] = fieldsWithDefaults;
+    }
+
+    return defaults;
+  }
+
+  /**
+   * Extract default values from a schema definition (async version).
+   *
+   * Creates a properties object with default values for all fields in the schema
+   * that have defaults defined. Only fields with non-undefined default values are
+   * included in the result.
+   *
+   * This is the async version that fetches the schema if not cached. For performance-critical
+   * code paths that need immediate results, use `extractDefaults()` (synchronous) instead
+   * and ensure schemas are pre-loaded.
+   *
+   * @param schemaId - Schema ID to extract defaults from
+   * @returns Object with structure { [schemaId]: { fieldName: defaultValue } }
+   *          Returns empty object if schema has no fields with defaults
+   * @throws {SchemaOperationError} If schema not found
+   *
+   * @example
+   * ```typescript
+   * // Task schema with defaults:
+   * // { task: { status: { default: 'todo' }, priority: { default: 'medium' } } }
+   *
+   * const defaults = await service.extractDefaultsAsync('task');
+   * // Returns: { task: { status: 'todo', priority: 'medium' } }
+   *
+   * // Merge with existing properties
+   * const merged = { ...node.properties, ...defaults };
+   * ```
+   */
+  async extractDefaultsAsync(schemaId: string): Promise<Record<string, unknown>> {
+    const schema = await this.getSchema(schemaId);
+
+    // Build properties object with namespace (schemaId)
+    const defaults: Record<string, unknown> = {};
+    const fieldsWithDefaults: Record<string, unknown> = {};
+
+    // Iterate through fields and collect those with defaults
+    for (const field of schema.fields) {
+      if (field.default !== undefined && field.default !== null) {
+        fieldsWithDefaults[field.name] = field.default;
+      }
+    }
+
+    // Only create the namespace if there are defaults
+    if (Object.keys(fieldsWithDefaults).length > 0) {
+      defaults[schemaId] = fieldsWithDefaults;
+    }
+
+    return defaults;
+  }
 }
 
 /**
