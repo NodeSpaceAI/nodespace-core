@@ -208,13 +208,13 @@ pub async fn handle_create_node(
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
     // Create node via NodeOperations (enforces all business rules)
+    // Note: container_node_id is auto-derived from parent chain by backend
     let node_id = operations
         .create_node(CreateNodeParams {
             id: None, // MCP generates IDs server-side
             node_type: mcp_params.node_type.clone(),
             content: mcp_params.content,
             parent_id: mcp_params.parent_id,
-            container_node_id: mcp_params.container_node_id,
             before_sibling_id: mcp_params.before_sibling_id,
             properties: mcp_params.properties,
         })
@@ -451,7 +451,6 @@ async fn ensure_parent_exists(
                 node_type: "date".to_string(),
                 content: parent_id.to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -668,29 +667,21 @@ pub async fn handle_insert_child_at_index(
         Some(children_info[params.index - 1].node_id.clone())
     };
 
-    // 5. Determine container_node_id using graph traversal
-    // In graph-native architecture, traverse up to find the container
-    let container_node_id = operations
-        .get_container_id(&params.parent_id)
-        .await
-        .ok()
-        .or_else(|| Some(params.parent_id.clone())); // Default to parent as container
-
-    // 6. Create node using pointer-based operation
+    // 5. Create node using pointer-based operation
+    // Note: container/root is auto-derived from parent chain by backend
     let node_id = operations
         .create_node(CreateNodeParams {
             id: None, // MCP generates IDs server-side
             node_type: params.node_type.clone(),
             content: params.content,
             parent_id: Some(params.parent_id.clone()),
-            container_node_id,
             before_sibling_id: before_sibling_id.clone(),
             properties: params.properties,
         })
         .await
         .map_err(|e| MCPError::node_creation_failed(format!("Failed to create node: {}", e)))?;
 
-    // 7. Fix sibling chain after insertion
+    // 6. Fix sibling chain after insertion
     // When inserting at a specific position, we need to update the node that was previously
     // at that position to now point to the newly inserted node
     if params.index < children_info.len() {

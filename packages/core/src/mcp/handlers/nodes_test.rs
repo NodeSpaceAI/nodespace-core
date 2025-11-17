@@ -170,7 +170,6 @@ mod occ_tests {
                 node_type: "text".to_string(),
                 content: "Test content".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -192,7 +191,6 @@ mod occ_tests {
                 node_type: "text".to_string(),
                 content: "Original".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -236,7 +234,6 @@ mod occ_tests {
                 node_type: "text".to_string(),
                 content: "Original".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -280,7 +277,6 @@ mod occ_tests {
                 node_type: "text".to_string(),
                 content: "Original".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -331,7 +327,6 @@ mod occ_tests {
                 node_type: "text".to_string(),
                 content: "To be deleted".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -387,7 +382,6 @@ mod occ_tests {
                 node_type: "text".to_string(),
                 content: "Start".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -429,7 +423,6 @@ mod occ_tests {
                 node_type: "text".to_string(),
                 content: "Test".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({"status": "draft"}),
             })
@@ -465,7 +458,6 @@ mod occ_tests {
                 node_type: "text".to_string(),
                 content: "Test".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -613,7 +605,6 @@ mod integration_tests {
                 node_type: "date".to_string(),
                 content: "2025-10-24".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -627,7 +618,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "A".to_string(),
                 parent_id: Some(date.clone()),
-                container_node_id: Some(date.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -640,7 +630,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "B".to_string(),
                 parent_id: Some(date.clone()),
-                container_node_id: Some(date.clone()),
                 before_sibling_id: Some(node_a.clone()),
                 properties: json!({}),
             })
@@ -653,7 +642,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "C".to_string(),
                 parent_id: Some(date.clone()),
-                container_node_id: Some(date.clone()),
                 before_sibling_id: Some(node_b.clone()),
                 properties: json!({}),
             })
@@ -709,7 +697,6 @@ mod integration_tests {
                 node_type: "date".to_string(),
                 content: "2025-10-25".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -723,7 +710,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "Parent".to_string(),
                 parent_id: Some(date.clone()),
-                container_node_id: Some(date.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -737,7 +723,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "Child".to_string(),
                 parent_id: Some(parent.clone()),
-                container_node_id: Some(date.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -751,7 +736,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "Grandchild".to_string(),
                 parent_id: Some(child.clone()),
-                container_node_id: Some(date.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -798,7 +782,6 @@ mod integration_tests {
                 node_type: "date".to_string(),
                 content: "2025-10-26".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -812,7 +795,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "A".to_string(),
                 parent_id: Some(date.clone()),
-                container_node_id: Some(date.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -825,7 +807,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "B".to_string(),
                 parent_id: Some(date.clone()),
-                container_node_id: Some(date.clone()),
                 before_sibling_id: Some(_node_a.clone()),
                 properties: json!({}),
             })
@@ -860,7 +841,6 @@ mod integration_tests {
                 node_type: "date".to_string(),
                 content: "2025-10-27".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -943,7 +923,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "Test".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -999,7 +978,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "Node 1".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -1012,7 +990,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "Node 2".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -1025,7 +1002,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "Node 3".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -1057,7 +1033,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "Node 1".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -1126,7 +1101,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "# Task List".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -1139,7 +1113,6 @@ mod integration_tests {
                 node_type: "task".to_string(),
                 content: "- [ ] Task 1".to_string(),
                 parent_id: Some(container.clone()),
-                container_node_id: Some(container.clone()),
                 before_sibling_id: None,
                 properties: json!({"task": {"status": "OPEN"}}),
             })
@@ -1152,7 +1125,6 @@ mod integration_tests {
                 node_type: "task".to_string(),
                 content: "- [ ] Task 2".to_string(),
                 parent_id: Some(container.clone()),
-                container_node_id: Some(container),
                 before_sibling_id: Some(node1.clone()),
                 properties: json!({"task": {"status": "OPEN"}}),
             })
@@ -1193,7 +1165,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "Node 1".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -1276,7 +1247,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "Test".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({"priority": "low"}),
             })
@@ -1327,7 +1297,6 @@ mod integration_tests {
                     node_type: "text".to_string(),
                     content: format!("Node {}", i),
                     parent_id: None,
-                    container_node_id: None,
                     before_sibling_id: None,
                     properties: json!({}),
                 })
@@ -1389,7 +1358,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "# Benchmark Container".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -1405,7 +1373,6 @@ mod integration_tests {
                     node_type: "task".to_string(),
                     content: format!("- [ ] Task {}", i),
                     parent_id: Some(container.clone()),
-                    container_node_id: Some(container.clone()),
                     before_sibling_id: None,
                     properties: json!({}),
                 })
@@ -1498,7 +1465,6 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "Performance test".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })

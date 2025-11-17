@@ -68,11 +68,11 @@ describe.sequential('Parent-Child Edge Creation (Issue #528)', () => {
       const textNode = TestNodeBuilder.text('Hello World').build();
 
       // Add transient parent reference (what base-node-viewer.svelte does)
+      // Note: container/root is auto-derived from parent chain by backend (Issue #533)
       const textNodeWithParent = {
         ...textNode,
-        _parentId: dateId,
-        _containerId: dateId
-      } as typeof textNode & { _parentId: string; _containerId: string };
+        _parentId: dateId
+      } as typeof textNode & { _parentId: string };
 
       const textNodeId = await backend.createNode(textNodeWithParent);
       await waitForDatabaseWrites();
@@ -164,9 +164,8 @@ describe.sequential('Parent-Child Edge Creation (Issue #528)', () => {
       const textNode = TestNodeBuilder.text('Persistent text').build();
       const textNodeWithParent = {
         ...textNode,
-        _parentId: dateId,
-        _containerId: dateId
-      } as typeof textNode & { _parentId: string; _containerId: string };
+        _parentId: dateId
+      } as typeof textNode & { _parentId: string };
 
       const textNodeId = await backend.createNode(textNodeWithParent);
       await waitForDatabaseWrites();
@@ -188,25 +187,24 @@ describe.sequential('Parent-Child Edge Creation (Issue #528)', () => {
   );
 
   it.skipIf(!shouldUseDatabase())(
-    'should handle container_node_id different from parent_id',
+    'should auto-derive root from parent chain',
     async () => {
-      // This tests the case where a node has a different container than parent
-      // (e.g., a task inside a project that's shown in a date view)
+      // This tests that container/root is automatically derived from the parent chain
+      // No need to specify both parent and container - backend traverses edges to find root
 
-      // Create a date node (container)
+      // Create a date node (root/container)
       const dateId = '2025-11-17';
       const dateNode = TestNodeBuilder.date(dateId).build();
       await backend.createNode(dateNode);
 
-      // Create a task node with date as container
+      // Create a task node with date as parent - root auto-derived from parent chain
       const taskNode = TestNodeBuilder.task('Important task').build();
-      const taskNodeWithContainer = {
+      const taskNodeWithParent = {
         ...taskNode,
-        _parentId: dateId, // Parent for hierarchy
-        _containerId: dateId // Container for layout/grouping
-      } as typeof taskNode & { _parentId: string; _containerId: string };
+        _parentId: dateId // Root/container auto-derived from parent chain (Issue #533)
+      } as typeof taskNode & { _parentId: string };
 
-      const taskNodeId = await backend.createNode(taskNodeWithContainer);
+      const taskNodeId = await backend.createNode(taskNodeWithParent);
       await waitForDatabaseWrites();
 
       // Verify task was created
@@ -214,7 +212,7 @@ describe.sequential('Parent-Child Edge Creation (Issue #528)', () => {
       expect(retrievedTask).toBeTruthy();
       expect(retrievedTask?.nodeType).toBe('task');
 
-      // Note: Parent-child edge creation verified via backend integration tests
+      // Note: Parent-child edge creation and root derivation verified via backend integration tests
     }
   );
 

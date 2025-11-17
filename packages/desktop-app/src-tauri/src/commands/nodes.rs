@@ -14,7 +14,7 @@ pub struct CreateNodeInput {
     pub node_type: String,
     pub content: String,
     pub parent_id: Option<String>,
-    pub container_node_id: Option<String>,
+    // container_node_id removed - backend auto-derives root from parent chain (Issue #533)
     pub before_sibling_id: Option<String>,
     pub properties: serde_json::Value,
     #[serde(default)]
@@ -138,7 +138,7 @@ pub async fn create_node(
             node_type: node.node_type,
             content: node.content,
             parent_id: node.parent_id,
-            container_node_id: node.container_node_id,
+            // container_node_id removed - backend auto-derives root from parent chain (Issue #533)
             before_sibling_id: node.before_sibling_id,
             properties: node.properties,
         })
@@ -217,9 +217,9 @@ pub async fn create_container_node(
             id: None, // Let NodeOperations generate ID for containers
             node_type: input.node_type,
             content: input.content,
-            parent_id: None,         // parent_id = None for containers
-            container_node_id: None, // container_node_id = None for containers
-            before_sibling_id: None, // before_sibling_id = None for containers
+            parent_id: None, // parent_id = None for root nodes
+            // container_node_id removed - backend auto-derives root from parent chain (Issue #533)
+            before_sibling_id: None, // before_sibling_id = None for root nodes
             properties: input.properties,
         })
         .await?;

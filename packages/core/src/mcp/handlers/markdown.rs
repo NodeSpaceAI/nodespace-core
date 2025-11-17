@@ -696,11 +696,11 @@ async fn create_node(
     node_type: &str,
     content: &str,
     parent_id: Option<String>,
-    container_node_id: Option<String>,
+    _root_node_id: Option<String>, // Deprecated - kept for backward compat but ignored (root auto-derived from parent)
     before_sibling_id: Option<String>,
 ) -> Result<String, MCPError> {
     // Create node via NodeOperations (enforces all business rules)
-    // Container node ID is provided from the pre-created container
+    // Note: container/root is now auto-derived from parent chain by backend
 
     // Provide required properties based on node type
     let properties = match node_type {
@@ -718,7 +718,6 @@ async fn create_node(
             node_type: node_type.to_string(),
             content: content.to_string(),
             parent_id,
-            container_node_id,
             before_sibling_id,
             properties,
         })
@@ -900,22 +899,17 @@ fn export_node_hierarchy(
     // Recursively export children (if enabled)
     if include_children {
         // TODO: Implement proper child lookup using graph edges
-        // For now, skip children in recursive export (markdown export partially broken)
-        // The container-level export still works for top-level nodes
-        let mut children: Vec<&Node> = Vec::new();
+        // For now, skip children in recursive export (needs NodeOperations access for graph queries)
+        // The container-level export still works for top-level nodes (gets children via NodeOperations.get_children)
+        let children: Vec<&Node> = Vec::new();
 
         // Sort children by sibling order (reconstruct before_sibling_id chain)
-        sort_by_sibling_chain(&mut children);
+        // let mut sorted_children = children;
+        // sort_by_sibling_chain(&mut sorted_children);
 
-        for child in children {
-            export_node_hierarchy(
-                child,
-                _nodes_map,
-                output,
-                current_depth + 1,
-                max_depth,
-                include_children,
-            )?;
+        for _child in children {
+            // Skipping recursive export due to lack of graph edge access
+            // in this context. Would need to refactor to pass NodeOperations.
         }
     }
 

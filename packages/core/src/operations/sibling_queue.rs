@@ -198,7 +198,6 @@ mod tests {
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -212,7 +211,6 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "Node A".to_string(),
                 parent_id: Some(parent_id.clone()),
-                container_node_id: Some(parent_id.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -225,7 +223,6 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "Node B".to_string(),
                 parent_id: Some(parent_id.clone()),
-                container_node_id: Some(parent_id.clone()),
                 before_sibling_id: Some(node_a.clone()),
                 properties: json!({}),
             })
@@ -263,7 +260,6 @@ mod tests {
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -277,7 +273,6 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "Original content".to_string(),
                 parent_id: Some(parent_id.clone()),
-                container_node_id: Some(parent_id.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -318,7 +313,6 @@ mod tests {
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -332,7 +326,6 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "Test".to_string(),
                 parent_id: Some(parent_id.clone()),
-                container_node_id: Some(parent_id.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -366,7 +359,6 @@ mod tests {
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -380,7 +372,6 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "Test".to_string(),
                 parent_id: Some(parent_id.clone()),
-                container_node_id: Some(parent_id.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -466,7 +457,6 @@ mod tests {
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
                 parent_id: None,
-                container_node_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -480,7 +470,6 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "A".to_string(),
                 parent_id: Some(parent_id.clone()),
-                container_node_id: Some(parent_id.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -493,7 +482,6 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "B".to_string(),
                 parent_id: Some(parent_id.clone()),
-                container_node_id: Some(parent_id.clone()),
                 before_sibling_id: Some(node_a.clone()),
                 properties: json!({}),
             })
@@ -506,7 +494,6 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "C".to_string(),
                 parent_id: Some(parent_id.clone()),
-                container_node_id: Some(parent_id.clone()),
                 before_sibling_id: Some(node_b.clone()),
                 properties: json!({}),
             })

@@ -265,12 +265,12 @@ struct CreateNodeRequest {
     pub id: Option<String>,
     pub node_type: String,
     pub content: String,
-    // CRITICAL FIX (Issue #528): Re-add parent_id and container_node_id to HTTP API
-    // While Node type no longer has these fields (they're stored as graph edges),
-    // the CREATE operation needs this info to establish the parent-child relationship
+    // CRITICAL FIX (Issue #528): Re-added parent_id to HTTP API for edge creation
+    // While Node type no longer has this field (stored as graph edges),
+    // the CREATE operation needs this info to establish parent-child relationships
     // The operations layer (NodeOperations::create_node) handles edge creation
+    // Note (Issue #533): container_node_id removed - backend auto-derives root from parent chain
     pub parent_id: Option<String>,
-    pub container_node_id: Option<String>,
     pub before_sibling_id: Option<String>,
     pub properties: serde_json::Value,
     // TODO: Implement embedding_vector and mentions support in operations layer
@@ -448,7 +448,6 @@ async fn create_node(
         node_type: req.node_type,
         content: req.content,
         parent_id: req.parent_id,
-        container_node_id: req.container_node_id,
         before_sibling_id: req.before_sibling_id,
         properties: req.properties,
     };

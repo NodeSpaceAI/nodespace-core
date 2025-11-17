@@ -789,11 +789,12 @@
     placeholder: Node,
     parentNodeId: string,
     overrides: { content?: string; nodeType?: string }
-  ): Node & { _parentId?: string; _containerId?: string } {
-    // CRITICAL FIX (Issue #528): Include transient _parentId and _containerId fields
-    // These fields are NOT part of the Node model (which stores hierarchy as graph edges)
-    // but are needed by the backend HTTP API to create the parent-child edge relationship
-    // The backend will extract these fields and call operations.create_node() with them
+  ): Node & { _parentId?: string } {
+    // CRITICAL FIX (Issue #528): Include transient _parentId field
+    // This field is NOT part of the Node model (which stores hierarchy as graph edges)
+    // but is needed by the backend HTTP API to create the parent-child edge relationship
+    // The backend will extract this field and call operations.create_node() with it
+    // Note (Issue #533): _containerId removed - backend auto-derives root from parent chain
     return {
       id: placeholder.id,
       nodeType: overrides.nodeType ?? placeholder.nodeType,
@@ -804,9 +805,8 @@
       modifiedAt: new Date().toISOString(),
       properties: placeholder.properties,
       mentions: placeholder.mentions || [],
-      // Transient fields for backend edge creation (not persisted in Node model)
-      _parentId: parentNodeId,
-      _containerId: parentNodeId // For date containers, parent === container
+      // Transient field for backend edge creation (not persisted in Node model)
+      _parentId: parentNodeId // Root/container auto-derived from parent chain by backend
     };
   }
 

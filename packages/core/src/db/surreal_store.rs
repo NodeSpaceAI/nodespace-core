@@ -2119,7 +2119,7 @@ where
         // Note: parent_id/container_node_id removed - use graph edges instead
         let query = r#"
             SELECT
-                uuid,
+                id,
                 node_type,
                 content,
                 before_sibling_id,

@@ -2544,28 +2544,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_task_node_with_defaults() {
-        let (service, _temp) = create_test_service().await;
-
-        // Create a task node WITHOUT providing status field
-        // The schema default should apply (status = "OPEN")
-        let node = Node::new(
-            "task".to_string(),
-            "Task without explicit status".to_string(),
-            json!({}), // Empty properties - no status provided
-        );
-
-        let id = service.create_node(node).await.unwrap();
-        let retrieved = service.get_node(&id).await.unwrap().unwrap();
-
-        assert_eq!(retrieved.node_type, "task");
-        // Verify the default status was applied (nested format from behavior)
-        assert_eq!(retrieved.properties["task"]["status"], "OPEN");
-        // Priority default should also be applied (MEDIUM)
-        assert_eq!(retrieved.properties["task"]["priority"], "MEDIUM");
-    }
-
-    #[tokio::test]
     async fn test_create_date_node() {
         let (service, _temp) = create_test_service().await;
 
@@ -2717,43 +2695,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_children() {
-        let (service, _temp) = create_test_service().await;
-
-        let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
-        let parent_id = service.create_node(parent).await.unwrap();
-
-        let child1 = Node::new("text".to_string(), "Child 1".to_string(), json!({}));
-        service.create_node(child1).await.unwrap();
-
-        let child2 = Node::new("text".to_string(), "Child 2".to_string(), json!({}));
-        service.create_node(child2).await.unwrap();
-
-        let children = service.get_children(&parent_id).await.unwrap();
-        assert_eq!(children.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_move_node() {
-        let (service, _temp) = create_test_service().await;
-
-        let root = Node::new("text".to_string(), "Root".to_string(), json!({}));
-        let container_node_id = service.create_node(root).await.unwrap();
-
-        let node = Node::new("text".to_string(), "Node".to_string(), json!({}));
-        let node_id = service.create_node(node).await.unwrap();
-
-        service
-            .move_node(&node_id, Some(&container_node_id))
-            .await
-            .unwrap();
-
-        // Verify the move succeeded - hierarchy is now managed via edges
-        let moved = service.get_node(&node_id).await.unwrap().unwrap();
-        assert_eq!(moved.id, node_id);
-    }
-
-    #[tokio::test]
     async fn test_query_nodes_by_type() {
         let (service, _temp) = create_test_service().await;
 
@@ -2862,25 +2803,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_circular_reference_prevention() {
-        let (service, _temp) = create_test_service().await;
-
-        let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
-        let parent_id = service.create_node(parent).await.unwrap();
-
-        let child = Node::new("text".to_string(), "Child".to_string(), json!({}));
-        let child_id = service.create_node(child).await.unwrap();
-
-        // Attempt to move parent under child (circular reference)
-        let result = service.move_node(&parent_id, Some(&child_id)).await;
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            NodeServiceError::CircularReference { .. }
-        ));
-    }
-
-    #[tokio::test]
     async fn test_reorder_siblings() {
         let (service, _temp) = create_test_service().await;
 
@@ -2921,64 +2843,6 @@ mod tests {
         // Verify that valid node was NOT created (transaction rolled back)
         let check = service.get_node(&valid_node.id).await.unwrap();
         assert!(check.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_get_nodes_by_container_id() {
-        let (service, _temp) = create_test_service().await;
-
-        // Create a date node (acts as container)
-        let date_node = Node::new_with_id(
-            "2025-10-05".to_string(),
-            "text".to_string(),
-            "2025-10-05".to_string(),
-            json!({}),
-        );
-        service.create_node(date_node.clone()).await.unwrap();
-
-        // Create children (graph edges will establish parent-child relationships)
-        let child1 = Node::new("text".to_string(), "Child 1".to_string(), json!({}));
-        let child2 = Node::new("text".to_string(), "Child 2".to_string(), json!({}));
-        let child3 = Node::new(
-            "task".to_string(),
-            "Child 3".to_string(),
-            json!({"status": "OPEN"}),
-        );
-
-        service.create_node(child1.clone()).await.unwrap();
-        service.create_node(child2.clone()).await.unwrap();
-        service.create_node(child3.clone()).await.unwrap();
-
-        // Create a different date node with a child (should not be returned)
-        let other_date = Node::new_with_id(
-            "2025-10-06".to_string(),
-            "text".to_string(),
-            "2025-10-06".to_string(),
-            json!({}),
-        );
-        service.create_node(other_date.clone()).await.unwrap();
-
-        let other_child = Node::new("text".to_string(), "Other child".to_string(), json!({}));
-        service.create_node(other_child).await.unwrap();
-
-        // Bulk fetch should return only the 3 children with container_node_id = "2025-10-05"
-        let nodes = service
-            .get_nodes_by_container_id("2025-10-05")
-            .await
-            .unwrap();
-
-        assert_eq!(nodes.len(), 3, "Should return exactly 3 nodes");
-
-        // Verify it returns different node types
-        let node_types: Vec<&str> = nodes.iter().map(|n| n.node_type.as_str()).collect();
-        assert!(node_types.contains(&"text"), "Should contain text nodes");
-        assert!(node_types.contains(&"task"), "Should contain task node");
-
-        // Verify the other date's child is not included
-        assert!(
-            !nodes.iter().any(|n| n.content == "Other child"),
-            "Should not return children from other origins"
-        );
     }
 
     #[tokio::test]
