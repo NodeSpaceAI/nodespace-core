@@ -90,9 +90,11 @@ async function initializeDatabase(): Promise<void> {
       body: `
         DEFINE NAMESPACE nodespace;
         USE NS nodespace;
-        DEFINE DATABASE nodes;
-        USE DB nodes;
-        DEFINE TABLE nodes SCHEMALESS;
+        DEFINE DATABASE nodespace;
+        USE DB nodespace;
+        DEFINE TABLE node SCHEMALESS;
+        DEFINE TABLE mentions SCHEMALESS TYPE RELATION;
+        DEFINE TABLE has_child SCHEMALESS TYPE RELATION;
       `
     });
 
@@ -116,7 +118,7 @@ async function cleanDatabase(): Promise<void> {
         Accept: 'application/json',
         Authorization: 'Basic ' + globalThis.btoa('root:root')
       },
-      body: 'USE NS nodespace; USE DB nodes; DELETE nodes;'
+      body: 'USE NS nodespace; USE DB nodespace; DELETE node; DELETE mentions; DELETE has_child;'
     });
 
     if (!response.ok) {

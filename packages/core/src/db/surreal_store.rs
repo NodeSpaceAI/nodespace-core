@@ -157,13 +157,9 @@ struct SurrealNode {
 
 impl From<SurrealNode> for Node {
     fn from(sn: SurrealNode) -> Self {
-        // Convert f32 vector back to binary blob (Vec<u8>) for Node struct
-        let embedding_vector = sn.embedding_vector.map(|floats| {
-            floats
-                .iter()
-                .flat_map(|f| f.to_le_bytes())
-                .collect::<Vec<u8>>()
-        });
+        // Keep f32 vector as-is (no conversion to bytes)
+        // SurrealDB stores array<float> natively, and JSON API expects f32 arrays
+        let embedding_vector = sn.embedding_vector;
 
         // Extract UUID from Thing record ID (e.g., node:⟨uuid⟩ -> uuid)
         let id = match &sn.id.id {
@@ -802,45 +798,10 @@ impl<C> SurrealStore<C>
 where
     C: surrealdb::Connection,
 {
-    /// Convert binary blob embedding to f32 array for SurrealDB vector functions
-    ///
-    /// Embeddings are stored as Vec<u8> (bytes), but SurrealDB vector functions
-    /// require Vec<f32>. This performs the conversion.
-    ///
-    /// # Arguments
-    /// * `blob` - Binary embedding data (384 dimensions * 4 bytes = 1536 bytes)
-    ///
-    /// # Returns
-    /// Vec<f32> with 384 elements
-    ///
-    /// # Errors
-    /// Returns error if blob length is not divisible by 4 (invalid f32 encoding)
-    fn blob_to_f32_array(blob: &[u8]) -> Result<Vec<f32>> {
-        if !blob.len().is_multiple_of(4) {
-            return Err(anyhow::anyhow!(
-                "Invalid embedding blob: length {} not divisible by 4",
-                blob.len()
-            ));
-        }
-
-        let float_count = blob.len() / 4;
-        let mut floats = Vec::with_capacity(float_count);
-
-        for chunk in blob.chunks_exact(4) {
-            let bytes: [u8; 4] = chunk.try_into().unwrap();
-            floats.push(f32::from_le_bytes(bytes));
-        }
-
-        Ok(floats)
-    }
-
     pub async fn create_node(&self, node: Node) -> Result<Node> {
         // Convert embedding blob to f32 array if present
-        let embedding_f32 = node
-            .embedding_vector
-            .as_ref()
-            .map(|blob| Self::blob_to_f32_array(blob))
-            .transpose()?;
+        // embedding_vector is already Vec<f32>, no conversion needed
+        let embedding_f32 = node.embedding_vector.clone();
 
         // Insert into universal node table (graph-native architecture)
         // Record ID format: node:uuid (constructed by type::thing)
@@ -1012,13 +973,8 @@ where
         let updated_content = update.content.unwrap_or(current.content);
         let updated_node_type = update.node_type.unwrap_or(current.node_type.clone());
 
-        // Convert embedding blob to f32 if provided
-        let embedding_f32 = update
-            .embedding_vector
-            .flatten()
-            .as_ref()
-            .map(|blob| Self::blob_to_f32_array(blob))
-            .transpose()?;
+        // embedding_vector is already Vec<f32>, no conversion needed
+        let embedding_f32 = update.embedding_vector.flatten();
 
         // Merge properties with _schema_version if properties are being updated
         // For types without dedicated tables (text, date, etc.), store properties directly in universal table
@@ -1184,13 +1140,8 @@ where
         let updated_content = update.content.unwrap_or(current.content);
         let updated_node_type = update.node_type.unwrap_or(current.node_type.clone());
 
-        // Convert embedding blob to f32 if provided
-        let embedding_f32 = update
-            .embedding_vector
-            .flatten()
-            .as_ref()
-            .map(|blob| Self::blob_to_f32_array(blob))
-            .transpose()?;
+        // embedding_vector is already Vec<f32>, no conversion needed
+        let embedding_f32 = update.embedding_vector.flatten();
 
         let mut response = self
             .db
@@ -2028,15 +1979,13 @@ where
         Ok(surreal_nodes.into_iter().map(Into::into).collect())
     }
 
-    pub async fn update_embedding(&self, node_id: &str, embedding: &[u8]) -> Result<()> {
-        // Convert binary blob to f32 array for SurrealDB vector functions
-        let embedding_f32 = Self::blob_to_f32_array(embedding)?;
-
+    pub async fn update_embedding(&self, node_id: &str, embedding: &[f32]) -> Result<()> {
+        // embedding is already f32 array, no conversion needed
         // Update using record ID
         self.db
             .query("UPDATE type::thing('node', $id) SET embedding_vector = $embedding, embedding_stale = false;")
             .bind(("id", node_id.to_string()))
-            .bind(("embedding", embedding_f32))
+            .bind(("embedding", embedding.to_vec()))
             .await
             .context("Failed to update embedding")?;
 
@@ -2139,12 +2088,12 @@ where
     /// Vector of (Node, similarity_score) tuples, sorted by similarity descending
     pub async fn search_by_embedding(
         &self,
-        embedding: &[u8],
+        embedding: &[f32],
         limit: i64,
         threshold: Option<f64>,
     ) -> Result<Vec<(Node, f64)>> {
-        // Convert binary blob to f32 array for SurrealDB
-        let query_vector = Self::blob_to_f32_array(embedding)?;
+        // embedding is already f32 array, no conversion needed
+        let query_vector = embedding.to_vec();
 
         // Default threshold: 0.5 (moderate similarity)
         let min_similarity = threshold.unwrap_or(0.5);
@@ -2341,13 +2290,8 @@ where
             let updated_node_type = update.node_type.clone().unwrap_or(current.node_type);
 
             // Convert embedding blob to f32 if provided
-            let embedding_f32 = update
-                .embedding_vector
-                .clone()
-                .flatten()
-                .as_ref()
-                .map(|blob| Self::blob_to_f32_array(blob))
-                .transpose()?;
+            // embedding_vector is already Vec<f32>, no conversion needed
+            let embedding_f32 = update.embedding_vector.clone().flatten();
 
             query_builder = query_builder
                 .bind((format!("id_{}", idx), id.clone()))
@@ -2476,42 +2420,15 @@ mod tests {
 
     // Vector Similarity Search Tests
 
-    #[test]
-    fn test_blob_to_f32_conversion() {
-        // Valid embedding: 3 floats (12 bytes)
-        let floats = [1.0f32, 2.5f32, -0.5f32];
-        let blob: Vec<u8> = floats.iter().flat_map(|f| f.to_le_bytes()).collect();
-
-        let result = EmbeddedStore::blob_to_f32_array(&blob).unwrap();
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0], 1.0);
-        assert_eq!(result[1], 2.5);
-        assert_eq!(result[2], -0.5);
-    }
-
-    #[test]
-    fn test_blob_to_f32_invalid_length() {
-        // Invalid blob: 13 bytes (not divisible by 4)
-        let invalid_blob = vec![0u8; 13];
-
-        let result = EmbeddedStore::blob_to_f32_array(&invalid_blob);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("not divisible by 4"));
-    }
-
     #[tokio::test]
     async fn test_search_empty_database() -> Result<()> {
         let (store, _temp_dir) = create_test_store().await?;
 
         // Create a dummy embedding (384 floats)
         let query_vector = vec![0.5f32; 384];
-        let query_blob: Vec<u8> = query_vector.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         // Search empty database
-        let results = store.search_by_embedding(&query_blob, 10, None).await?;
+        let results = store.search_by_embedding(&query_vector, 10, None).await?;
 
         assert_eq!(results.len(), 0, "Empty database should return no results");
 
@@ -2527,21 +2444,11 @@ mod tests {
         let similar_vector = vec![0.99f32; 384]; // Very similar
         let dissimilar_vector = vec![-1.0f32; 384]; // Opposite direction
 
-        let base_blob: Vec<u8> = base_vector.iter().flat_map(|f| f.to_le_bytes()).collect();
-        let similar_blob: Vec<u8> = similar_vector
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
-        let dissimilar_blob: Vec<u8> = dissimilar_vector
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
-
         // Create nodes
         let node1 = Node::new("text".to_string(), "Base content".to_string(), json!({}));
         let mut created1 = store.create_node(node1).await?;
-        store.update_embedding(&created1.id, &similar_blob).await?;
-        created1.embedding_vector = Some(similar_blob.clone());
+        store.update_embedding(&created1.id, &similar_vector).await?;
+        created1.embedding_vector = Some(similar_vector.clone());
 
         let node2 = Node::new(
             "text".to_string(),
@@ -2550,12 +2457,12 @@ mod tests {
         );
         let mut created2 = store.create_node(node2).await?;
         store
-            .update_embedding(&created2.id, &dissimilar_blob)
+            .update_embedding(&created2.id, &dissimilar_vector)
             .await?;
-        created2.embedding_vector = Some(dissimilar_blob);
+        created2.embedding_vector = Some(dissimilar_vector);
 
         // Search with base embedding
-        let results = store.search_by_embedding(&base_blob, 10, None).await?;
+        let results = store.search_by_embedding(&base_vector, 10, None).await?;
 
         // Should return nodes sorted by similarity (highest first)
         assert!(!results.is_empty(), "Should find at least one similar node");
@@ -2577,22 +2484,17 @@ mod tests {
 
         // Create query vector
         let query_vector = vec![1.0f32; 384];
-        let query_blob: Vec<u8> = query_vector.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         // Create node with similar embedding
         let similar_vector = vec![0.99f32; 384];
-        let similar_blob: Vec<u8> = similar_vector
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
 
         let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
         let created = store.create_node(node).await?;
-        store.update_embedding(&created.id, &similar_blob).await?;
+        store.update_embedding(&created.id, &similar_vector).await?;
 
         // Search with high threshold (0.99) - should find the node
         let results_high_threshold = store
-            .search_by_embedding(&query_blob, 10, Some(0.9))
+            .search_by_embedding(&query_vector, 10, Some(0.9))
             .await?;
         assert!(
             !results_high_threshold.is_empty(),
@@ -2601,7 +2503,7 @@ mod tests {
 
         // Search with very high threshold (0.999) - might not find it
         let results_very_high = store
-            .search_by_embedding(&query_blob, 10, Some(0.999))
+            .search_by_embedding(&query_vector, 10, Some(0.999))
             .await?;
         // This test is lenient because exact similarity depends on normalization
         assert!(
@@ -2618,16 +2520,15 @@ mod tests {
 
         // Create 5 nodes with embeddings
         let base_vector = vec![1.0f32; 384];
-        let blob: Vec<u8> = base_vector.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         for i in 0..5 {
             let node = Node::new("text".to_string(), format!("Content {}", i), json!({}));
             let created = store.create_node(node).await?;
-            store.update_embedding(&created.id, &blob).await?;
+            store.update_embedding(&created.id, &base_vector).await?;
         }
 
         // Search with limit of 3
-        let results = store.search_by_embedding(&blob, 3, Some(0.5)).await?;
+        let results = store.search_by_embedding(&base_vector, 3, Some(0.5)).await?;
 
         assert!(
             results.len() <= 3,
@@ -2650,7 +2551,6 @@ mod tests {
 
         // Create 1,000 nodes with embeddings
         let base_vector = vec![1.0f32; 384];
-        let blob: Vec<u8> = base_vector.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         tracing::info!("Creating 1,000 nodes for performance test...");
         for i in 0..1000 {
@@ -2660,7 +2560,7 @@ mod tests {
                 json!({}),
             );
             let created = store.create_node(node).await?;
-            store.update_embedding(&created.id, &blob).await?;
+            store.update_embedding(&created.id, &base_vector).await?;
 
             if i % 100 == 0 {
                 tracing::info!("Created {} nodes", i);
@@ -2671,7 +2571,7 @@ mod tests {
 
         // Measure search time (after data is created)
         let start = std::time::Instant::now();
-        let results = store.search_by_embedding(&blob, 20, Some(0.5)).await?;
+        let results = store.search_by_embedding(&base_vector, 20, Some(0.5)).await?;
         let elapsed = start.elapsed();
 
         tracing::info!(
@@ -2714,28 +2614,24 @@ mod tests {
         let emb2 = nlp.generate_embedding(similar_text_2)?;
         let emb3 = nlp.generate_embedding(dissimilar_text)?;
 
-        let blob1 = EmbeddingService::to_blob(&emb1);
-        let blob2 = EmbeddingService::to_blob(&emb2);
-        let blob3 = EmbeddingService::to_blob(&emb3);
-
         // Create nodes
         let node1 = Node::new("text".to_string(), similar_text_1.to_string(), json!({}));
         let mut created1 = store.create_node(node1).await?;
-        store.update_embedding(&created1.id, &blob1).await?;
-        created1.embedding_vector = Some(blob1.clone());
+        store.update_embedding(&created1.id, &emb1).await?;
+        created1.embedding_vector = Some(emb1.clone());
 
         let node2 = Node::new("text".to_string(), similar_text_2.to_string(), json!({}));
         let mut created2 = store.create_node(node2).await?;
-        store.update_embedding(&created2.id, &blob2).await?;
-        created2.embedding_vector = Some(blob2.clone());
+        store.update_embedding(&created2.id, &emb2).await?;
+        created2.embedding_vector = Some(emb2.clone());
 
         let node3 = Node::new("text".to_string(), dissimilar_text.to_string(), json!({}));
         let mut created3 = store.create_node(node3).await?;
-        store.update_embedding(&created3.id, &blob3).await?;
-        created3.embedding_vector = Some(blob3);
+        store.update_embedding(&created3.id, &emb3).await?;
+        created3.embedding_vector = Some(emb3);
 
         // Search with first embedding (machine learning topic)
-        let results = store.search_by_embedding(&blob1, 10, Some(0.3)).await?;
+        let results = store.search_by_embedding(&emb1, 10, Some(0.3)).await?;
 
         // Verify results
         assert!(!results.is_empty(), "Should find at least one similar node");
@@ -2798,7 +2694,6 @@ mod tests {
 
         // Create 10,000 nodes with embeddings
         let base_vector = vec![1.0f32; 384];
-        let blob: Vec<u8> = base_vector.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         tracing::info!("Creating 10,000 nodes for performance test...");
         for i in 0..10000 {
@@ -2808,7 +2703,7 @@ mod tests {
                 json!({}),
             );
             let created = store.create_node(node).await?;
-            store.update_embedding(&created.id, &blob).await?;
+            store.update_embedding(&created.id, &base_vector).await?;
 
             if i % 1000 == 0 {
                 tracing::info!("Created {} nodes", i);
@@ -2819,7 +2714,7 @@ mod tests {
 
         // Measure search time
         let start = std::time::Instant::now();
-        let results = store.search_by_embedding(&blob, 20, Some(0.5)).await?;
+        let results = store.search_by_embedding(&base_vector, 20, Some(0.5)).await?;
         let elapsed = start.elapsed();
 
         tracing::info!(

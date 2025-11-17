@@ -142,9 +142,10 @@ pub struct Node {
     /// All entity-specific fields (Pure JSON schema)
     pub properties: serde_json::Value,
 
-    /// Optional vector embedding for semantic search (F32 blob)
+    /// Optional vector embedding for semantic search
+    /// Stored as f32 array for JSON API compatibility (SurrealDB stores as array<float>)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub embedding_vector: Option<Vec<u8>>,
+    pub embedding_vector: Option<Vec<f32>>,
 
     /// Outgoing mentions - IDs of nodes that THIS node references
     /// Example: If this node's content includes "@node-123", then mentions = ["node-123"]
@@ -337,7 +338,7 @@ impl Node {
     }
 
     /// Set the embedding vector
-    pub fn set_embedding(&mut self, embedding: Vec<u8>) {
+    pub fn set_embedding(&mut self, embedding: Vec<f32>) {
         self.embedding_vector = Some(embedding);
         self.modified_at = Utc::now();
     }
@@ -438,13 +439,13 @@ pub struct NodeUpdate {
     /// Uses double-Option pattern:
     /// - `None`: Don't change embedding_vector
     /// - `Some(None)`: Set embedding_vector to NULL (remove embedding)
-    /// - `Some(Some(vec))`: Set embedding_vector to the specified bytes
+    /// - `Some(Some(vec))`: Set embedding_vector to the specified f32 array
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_optional_field"
     )]
-    pub embedding_vector: Option<Option<Vec<u8>>>,
+    pub embedding_vector: Option<Option<Vec<f32>>>,
 }
 
 impl NodeUpdate {
@@ -1058,7 +1059,7 @@ mod tests {
         let original_modified = node.modified_at;
 
         // Set embedding vector
-        let embedding = vec![1u8, 2u8, 3u8, 4u8];
+        let embedding = vec![0.1f32, 0.2f32, 0.3f32, 0.4f32];
         node.set_embedding(embedding.clone());
 
         assert_eq!(node.embedding_vector, Some(embedding));

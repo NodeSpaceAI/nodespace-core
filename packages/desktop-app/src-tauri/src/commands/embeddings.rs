@@ -192,17 +192,14 @@ pub async fn search_containers(
             )
         })?;
 
-    // Convert to binary blob
-    let query_blob = nodespace_nlp_engine::EmbeddingService::to_blob(&query_embedding);
-
-    // Search with default/custom parameters
+    // Search with default/custom parameters (embedding already Vec<f32>, no blob conversion needed)
     let limit = params.limit.unwrap_or(20) as i64;
     let threshold = params.threshold.map(|t| t as f64);
 
     // Execute search
     let store = node_service.store();
     let results = store
-        .search_by_embedding(&query_blob, limit, threshold)
+        .search_by_embedding(&query_embedding, limit, threshold)
         .await
         .map_err(|e| {
             command_error_with_details(

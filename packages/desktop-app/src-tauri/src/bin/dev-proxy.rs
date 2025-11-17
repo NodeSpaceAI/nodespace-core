@@ -422,14 +422,8 @@ async fn create_node(
     // Hierarchy is now managed via graph edges
     tracing::debug!("create_node request: node_type={:?}", req.node_type);
 
-    // Convert f32 array to Vec<u8> blob for embedding_vector
-    let embedding_blob = req.embedding_vector.map(|floats| {
-        floats
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect::<Vec<u8>>()
-    });
-
+    // Keep embedding_vector as f32 array (no conversion needed)
+    // Node model now stores Vec<f32> for JSON API compatibility
     let now = Utc::now();
     let node = Node {
         id: req.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
@@ -440,7 +434,7 @@ async fn create_node(
         created_at: now,
         modified_at: now,
         properties: req.properties,
-        embedding_vector: embedding_blob,
+        embedding_vector: req.embedding_vector,
         mentions: req.mentions,
         mentioned_by: vec![], // New nodes have no backlinks initially
     };
@@ -477,14 +471,26 @@ async fn update_node(
     Path(id): Path<String>,
     Json(request): Json<UpdateNodeRequest>,
 ) -> ApiResult<Node> {
-    // NodeService.update_node handles OCC internally
-    // The version in the request is currently not used by NodeService
-    // TODO: Pass version to NodeService.update_node() for proper OCC (future enhancement)
-    state
+    // Use optimistic concurrency control via version check
+    let rows_affected = state
         .node_service
-        .update_node(&id, request.update)
+        .update_with_version_check(&id, request.version, request.update)
         .await
         .map_err(map_node_service_error)?;
+
+    // Check if update succeeded (version matched)
+    if rows_affected == 0 {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ApiError::new(
+                "VERSION_CONFLICT",
+                format!(
+                    "Version conflict: node {} has been modified by another client",
+                    id
+                ),
+            )),
+        ));
+    }
 
     // Retrieve and return the updated node
     // This includes all business logic (populate_mentions, backfill_schema_version, etc.)
@@ -509,16 +515,48 @@ async fn update_node(
 async fn delete_node(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(_request): Json<DeleteNodeRequest>,
+    Json(request): Json<DeleteNodeRequest>,
 ) -> ApiStatusResult {
-    // NodeService.delete_node handles OCC internally
-    // The version in the request is currently not used by NodeService
-    // TODO: Pass version to NodeService.delete_node() for proper OCC (future enhancement)
-    state
+    // Use optimistic concurrency control via version check
+    let rows_affected = state
         .node_service
-        .delete_node(&id)
+        .delete_with_version_check(&id, request.version)
         .await
         .map_err(map_node_service_error)?;
+
+    // Check if delete succeeded (version matched and node existed)
+    if rows_affected == 0 {
+        // Check if node exists to distinguish between version conflict and not found
+        match state.node_service.get_node(&id).await {
+            Ok(Some(_)) => {
+                // Node exists but version didn't match - conflict
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(ApiError::new(
+                        "VERSION_CONFLICT",
+                        format!(
+                            "Version conflict: node {} has been modified by another client",
+                            id
+                        ),
+                    )),
+                ));
+            }
+            Ok(None) => {
+                // Node doesn't exist - already deleted or never existed
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError::new(
+                        "RESOURCE_NOT_FOUND",
+                        format!("Node {} not found", id),
+                    )),
+                ));
+            }
+            Err(e) => {
+                // Database error
+                return Err(map_node_service_error(e));
+            }
+        }
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -87,18 +87,15 @@ impl NodeEmbeddingService {
             NodeServiceError::SerializationError(format!("Embedding generation failed: {}", e))
         })?;
 
-        // Convert to binary blob for storage
-        let blob = EmbeddingService::to_blob(&embedding);
-
-        // Store in SurrealDB (this also clears the stale flag)
+        // Store embedding directly as Vec<f32> (no blob conversion needed)
         self.store
-            .update_embedding(&node.id, &blob)
+            .update_embedding(&node.id, &embedding)
             .await
             .map_err(|e| {
                 NodeServiceError::SerializationError(format!("Failed to store embedding: {}", e))
             })?;
 
-        tracing::debug!("Embedded node: {} ({} bytes)", node.id, blob.len());
+        tracing::debug!("Embedded node: {} ({} floats)", node.id, embedding.len());
         Ok(())
     }
 
@@ -155,15 +152,13 @@ impl NodeEmbeddingService {
             ))
         })?;
 
-        // Store each embedding
+        // Store each embedding (no blob conversion needed)
         let mut success_count = 0;
         for (node, embedding) in stale_nodes.iter().zip(embeddings.iter()) {
-            let blob = EmbeddingService::to_blob(embedding);
-
-            match self.store.update_embedding(&node.id, &blob).await {
+            match self.store.update_embedding(&node.id, embedding).await {
                 Ok(_) => {
                     success_count += 1;
-                    tracing::debug!("Embedded node: {} ({} bytes)", node.id, blob.len());
+                    tracing::debug!("Embedded node: {} ({} floats)", node.id, embedding.len());
                 }
                 Err(e) => {
                     tracing::error!("Failed to store embedding for node {}: {}", node.id, e);
