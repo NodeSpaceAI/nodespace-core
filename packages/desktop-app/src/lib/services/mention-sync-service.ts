@@ -77,8 +77,15 @@ export class MentionSyncService {
       const nodeEvent = event as NodeUpdatedEvent;
 
       // Only sync when content changes (title might have changed)
-      if (nodeEvent.updateType === 'content') {
-        await this.syncLinkTextForNode(nodeEvent.nodeId);
+      if (nodeEvent.updateType === 'content' && nodeEvent.newValue) {
+        const updatedNode = nodeEvent.newValue as Node;
+
+        // Skip sync if node has no content (blank nodes don't have titles to sync)
+        if (!updatedNode.content || updatedNode.content.trim() === '') {
+          return;
+        }
+
+        await this.syncLinkTextForNodeWithData(nodeEvent.nodeId, updatedNode);
       }
     });
 
@@ -95,19 +102,43 @@ export class MentionSyncService {
 
   /**
    * Sync link text for all nodes mentioning the changed node
+   * Fetches the node from the database (legacy method, prefer syncLinkTextForNodeWithData)
    */
   public async syncLinkTextForNode(nodeId: string): Promise<LinkUpdateResult[]> {
-    const startTime = performance.now();
-    this.metrics.totalSyncs++;
-
     try {
-      // Get the updated node to extract its new title
       const updatedNode = await this.databaseService.getNode(nodeId);
       if (!updatedNode) {
         console.warn(`MentionSyncService: Node ${nodeId} not found`);
         return [];
       }
 
+      // Skip sync if node has no content (blank nodes don't have titles to sync)
+      if (!updatedNode.content || updatedNode.content.trim() === '') {
+        return [];
+      }
+
+      return this.syncLinkTextForNodeWithData(nodeId, updatedNode);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (!errorMessage.includes('Phase 2/3')) {
+        console.error('MentionSyncService: Error syncing link text', { error, nodeId });
+      }
+      return [];
+    }
+  }
+
+  /**
+   * Sync link text for all nodes mentioning the changed node
+   * Uses provided node data (from event or cache) - preferred method to avoid fetching
+   */
+  private async syncLinkTextForNodeWithData(
+    nodeId: string,
+    updatedNode: Node
+  ): Promise<LinkUpdateResult[]> {
+    const startTime = performance.now();
+    this.metrics.totalSyncs++;
+
+    try {
       const newTitle = this.extractTitle(updatedNode.content);
 
       // Query all nodes that mention this node

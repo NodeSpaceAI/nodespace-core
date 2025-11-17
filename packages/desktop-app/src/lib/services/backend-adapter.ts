@@ -481,13 +481,14 @@ export class TauriAdapter implements BackendAdapter {
         updateType = 'nodeType';
       }
 
-      // Emit node:updated event
+      // Emit node:updated event with the updated node data
       eventBus.emit<NodeUpdatedEvent>({
         type: 'node:updated',
         namespace: 'lifecycle',
         source: 'TauriAdapter',
         nodeId: id,
-        updateType: updateType
+        updateType: updateType,
+        newValue: updatedNode
       });
 
       // Emit hierarchy:changed event for structural changes
@@ -1153,13 +1154,14 @@ export class HttpAdapter implements BackendAdapter {
         updateType = 'nodeType';
       }
 
-      // Emit node:updated event
+      // Emit node:updated event with the updated node data
       eventBus.emit<NodeUpdatedEvent>({
         type: 'node:updated',
         namespace: 'lifecycle',
         source: 'HttpAdapter',
         nodeId: id,
-        updateType: updateType
+        updateType: updateType,
+        newValue: updatedNode
       });
 
       // Emit hierarchy:changed event for structural changes
