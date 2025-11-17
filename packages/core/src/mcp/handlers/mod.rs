@@ -4,6 +4,7 @@
 
 pub mod initialize;
 pub mod markdown;
+pub mod natural_language_schema;
 pub mod nodes;
 pub mod schema;
 pub mod search;

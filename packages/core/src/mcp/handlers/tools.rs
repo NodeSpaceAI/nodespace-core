@@ -4,7 +4,7 @@
 //! This module centralizes tool discovery and execution according to the
 //! MCP 2024-11-05 specification.
 
-use crate::mcp::handlers::{markdown, nodes, schema, search};
+use crate::mcp::handlers::{markdown, natural_language_schema, nodes, schema, search};
 use crate::mcp::types::MCPError;
 use crate::operations::NodeOperations;
 use crate::services::{NodeEmbeddingService, SchemaService};
@@ -150,6 +150,13 @@ pub async fn handle_tools_call(
         }
         "get_schema_definition" => {
             schema::handle_get_schema_definition(schema_service, arguments).await
+        }
+        "create_entity_schema_from_description" => {
+            natural_language_schema::handle_create_entity_schema_from_description(
+                node_operations,
+                arguments,
+            )
+            .await
         }
 
         _ => {
@@ -694,6 +701,39 @@ fn get_tool_schemas() -> Value {
                     }
                 },
                 "required": ["schema_id"]
+            }
+        },
+        {
+            "name": "create_entity_schema_from_description",
+            "description": "Create a custom entity schema from a natural language description. Intelligently infers field types (string, number, date, enum, boolean, array) and automatically enforces namespace prefixes for user-defined properties. Ideal for rapid prototyping and user-driven schema creation.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "entity_name": {
+                        "type": "string",
+                        "description": "Name of the entity (e.g., 'Invoice', 'Customer', 'Project')"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Natural language description of the entity fields. Example: 'invoice number (required), amount in USD, status (draft/sent/paid), due date, and optional notes'"
+                    },
+                    "additional_constraints": {
+                        "type": "object",
+                        "description": "Optional constraints to override or refine inferred types",
+                        "properties": {
+                            "required_fields": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "List of field names that are required"
+                            },
+                            "enum_values": {
+                                "type": "object",
+                                "description": "Map of field names to their enum values. Example: {\"status\": [\"DRAFT\", \"SENT\", \"PAID\"]}"
+                            }
+                        }
+                    }
+                },
+                "required": ["entity_name", "description"]
             }
         }
     ])
