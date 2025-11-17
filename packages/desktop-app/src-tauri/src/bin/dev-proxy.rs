@@ -248,8 +248,8 @@ struct CreateNodeRequest {
     pub id: Option<String>,
     pub node_type: String,
     pub content: String,
-    pub parent_id: Option<String>,
-    pub container_node_id: Option<String>,
+    // Note: parent_id and container_node_id removed in Issue #514
+    // Hierarchy is now managed via graph edges
     pub before_sibling_id: Option<String>,
     pub properties: serde_json::Value,
     pub embedding_vector: Option<Vec<u8>>,
@@ -400,19 +400,15 @@ async fn create_node(
 ) -> ApiResult<String> {
     // Convert CreateNodeRequest to Node by adding timestamps and version
     // The frontend sends a partial node without these fields
-    tracing::debug!(
-        "create_node request: parent_id={:?}, container_node_id={:?}",
-        req.parent_id,
-        req.container_node_id
-    );
+    // Note: parent_id and container_node_id have been removed in Issue #514
+    // Hierarchy is now managed via graph edges
+    tracing::debug!("create_node request: node_type={:?}", req.node_type);
 
     let now = Utc::now();
     let node = Node {
         id: req.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
         node_type: req.node_type,
         content: req.content,
-        parent_id: req.parent_id,
-        container_node_id: req.container_node_id,
         before_sibling_id: req.before_sibling_id,
         version: 1, // New nodes always start at version 1
         created_at: now,

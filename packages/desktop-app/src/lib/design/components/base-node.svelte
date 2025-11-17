@@ -412,11 +412,26 @@
   }
 
   /**
-   * Helper function to check if a node is a container node
-   * Container nodes have containerNodeId === null (they ARE containers, not contained)
+   * Helper function to check if a node is a root node (has no parents)
+   * In graph-native architecture, root nodes are identified by having no parent relationships
+   *
+   * NOTE: Currently uses a workaround since getParentsForNode returns [] for all nodes
+   * TODO: Update to use sharedNodeStore.getParentsForNode() when parent API is implemented
    */
-  function isContainerNode(node: { containerNodeId: string | null; id: string }): boolean {
-    return node.containerNodeId === null;
+  function isRootNode(_nodeId: string): boolean {
+    // Workaround: Since getParentsForNode currently returns [] for all nodes,
+    // we treat all nodes as potential root nodes for now
+    // This is safe because we filter to persisted nodes below
+    const sharedNodeStore = (
+      services?.nodeManager as { sharedNodeStore?: { getParentsForNode: (_id: string) => unknown[] } }
+    )?.sharedNodeStore;
+
+    if (!sharedNodeStore?.getParentsForNode) {
+      return true; // Default to true if API not available
+    }
+
+    const parents = sharedNodeStore.getParentsForNode(_nodeId);
+    return parents.length === 0;
   }
 
   /**
@@ -438,7 +453,7 @@
       // Find the last root node to get the correct order
       // IMPORTANT: Only use persisted nodes to avoid FOREIGN KEY constraint errors
       const allNodes = Array.from(nodeManager.nodes.values());
-      const rootNodes = allNodes.filter(isContainerNode);
+      const rootNodes = allNodes.filter((node) => isRootNode(node.id));
 
       // Filter to only persisted root nodes (those that exist in the database)
       // Check if SharedNodeStore has persistedNodeIds tracking
@@ -457,8 +472,6 @@
         id: newNodeId,
         content: title,
         nodeType: 'text',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: beforeSiblingId,
         properties: {},
         embeddingVector: null

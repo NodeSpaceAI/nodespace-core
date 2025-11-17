@@ -53,7 +53,7 @@ export function createTestNode(
   idOrOptions?: string | Partial<Node>,
   content?: string,
   nodeType?: string,
-  parentId?: string | null,
+  _parentId?: string | null, // Legacy parameter - ignored (hierarchy via backend)
   additionalProps?: Partial<Node>
 ): Node {
   // Handle object-based call (preferred)
@@ -66,8 +66,6 @@ export function createTestNode(
       id,
       nodeType: options.nodeType || 'text',
       content: options.content ?? 'Test content',
-      parentId: options.parentId ?? null,
-      containerNodeId: options.containerNodeId ?? options.parentId ?? null,
       beforeSiblingId: options.beforeSiblingId ?? null,
       createdAt: options.createdAt || now,
       modifiedAt: options.modifiedAt || now,
@@ -87,8 +85,6 @@ export function createTestNode(
     id,
     nodeType: nodeType || 'text',
     content: content ?? 'Test content',
-    parentId: parentId ?? null,
-    containerNodeId: parentId ?? null,
     beforeSiblingId: null,
     createdAt: now,
     modifiedAt: now,
@@ -147,62 +143,60 @@ export function createDocumentNode(content: string): Node {
 }
 
 /**
- * Create a child node with specified parent
+ * Create a child node with specified parent (legacy - hierarchy via backend)
  *
- * @param parentId - Parent node ID
+ * @param _parentId - Parent node ID (ignored - use backend hierarchy queries)
  * @param content - Child node content
  * @param overrides - Additional properties to override
- * @returns Child node with proper parentId and containerNodeId
+ * @returns Node (hierarchy relationships managed via backend)
  *
  * @example
  * ```typescript
  * const parent = createTestNode({ id: 'parent-1' });
  * const child = createNodeWithParent('parent-1', 'Child content');
+ * // Note: Actual parent-child relationship must be established via backend
  * ```
  */
 export function createNodeWithParent(
-  parentId: string,
+  _parentId: string,
   content: string,
   overrides: Partial<Node> = {}
 ): Node {
   return createTestNode({
-    parentId,
-    containerNodeId: parentId,
     content,
     ...overrides
   });
 }
 
 /**
- * Create a node hierarchy (tree structure)
+ * Create a node hierarchy (tree structure) - nodes only
  *
- * Useful for testing hierarchy operations, rendering, and traversal.
+ * Creates flat array of nodes. Hierarchy relationships must be established
+ * via backend graph queries after node creation.
  *
  * @param depth - Maximum depth of the tree (1 = root only)
  * @param breadth - Number of children per node
- * @returns Array of nodes forming a tree structure
+ * @returns Array of nodes (hierarchy via backend)
  *
  * @example
  * ```typescript
  * // Create tree: 1 root with 3 children, each with 2 children (depth=3, breadth=2)
  * const nodes = createTestNodeTree(3, 2);
- * // Returns: 1 + 3 + 6 = 10 nodes
+ * // Returns: 1 + 3 + 6 = 10 nodes (hierarchy via backend)
  * ```
  */
 export function createTestNodeTree(depth: number, breadth: number): Node[] {
   const nodes: Node[] = [];
   let idCounter = 0;
 
-  const createLevel = (parentId: string | null, currentDepth: number) => {
+  const createLevel = (_parentId: string | null, currentDepth: number) => {
     if (currentDepth > depth) return;
 
     for (let i = 0; i < breadth; i++) {
       const id = `node-${++idCounter}`;
       const node = createTestNode({
         id,
-        content: `Node ${id} (depth ${currentDepth})`,
-        parentId,
-        containerNodeId: parentId ?? null
+        content: `Node ${id} (depth ${currentDepth})`
       });
       nodes.push(node);
 

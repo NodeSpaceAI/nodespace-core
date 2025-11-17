@@ -21,8 +21,6 @@ describe('Split-Pane Content Isolation', () => {
       version: 1,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       properties: {}
     };
@@ -34,8 +32,6 @@ describe('Split-Pane Content Isolation', () => {
       version: 1,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       properties: {}
     };
@@ -47,8 +43,6 @@ describe('Split-Pane Content Isolation', () => {
       version: 1,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
-      parentId: 'parent-a',
-      containerNodeId: 'parent-a',
       beforeSiblingId: null,
       properties: {}
     };
@@ -60,8 +54,6 @@ describe('Split-Pane Content Isolation', () => {
       version: 1,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
-      parentId: 'parent-b',
-      containerNodeId: 'parent-b',
       beforeSiblingId: null,
       properties: {}
     };
@@ -96,8 +88,6 @@ describe('Split-Pane Content Isolation', () => {
       version: 1,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       properties: {}
     };
@@ -109,8 +99,6 @@ describe('Split-Pane Content Isolation', () => {
       version: 1,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
-      parentId: 'shared-parent',
-      containerNodeId: 'shared-parent',
       beforeSiblingId: null,
       properties: {}
     };
@@ -141,8 +129,6 @@ describe('Split-Pane Content Isolation', () => {
       version: 1,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       properties: {}
     };

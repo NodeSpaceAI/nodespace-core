@@ -37,7 +37,7 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # HTTP server for MCP
-axum = "0.7"
+axum = { version = "0.7", features = ["macros"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tower = "0.5"
 tokio-stream = { version = "0.1", features = ["sync"] }

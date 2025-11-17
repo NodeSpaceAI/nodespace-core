@@ -385,13 +385,11 @@ function createMockReactiveNodeService() {
   });
 }
 
-function createMockNode(id: string, content: string, parentId: string | null = null): Node {
+function createMockNode(id: string, content: string, _parentId: string | null = null): Node {
   return {
     id,
     nodeType: 'text',
     content,
-    parentId,
-    containerNodeId: null,
     beforeSiblingId: null,
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),

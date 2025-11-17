@@ -16,8 +16,6 @@ describe('QuoteBlockNode Type Guard', () => {
       id: 'test-1',
       nodeType: 'quote-block',
       content: 'To be or not to be',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
@@ -33,8 +31,6 @@ describe('QuoteBlockNode Type Guard', () => {
       id: 'test-2',
       nodeType: 'text',
       content: 'Regular text',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
@@ -55,15 +51,14 @@ describe('QuoteBlockNodeHelpers', () => {
 
       expect(quote.nodeType).toBe('quote-block');
       expect(quote.content).toBe('The only thing we have to fear is fear itself');
-      expect(quote.parentId).toBeNull();
       expect(quote.properties).toEqual({});
     });
 
-    it('creates a quote block with parent ID', () => {
-      const quote = QuoteBlockNodeHelpers.createQuoteBlock('A quote', 'parent-123');
+    it('creates a quote block with content (parent relationship via backend)', () => {
+      const quote = QuoteBlockNodeHelpers.createQuoteBlock('A quote');
 
-      expect(quote.parentId).toBe('parent-123');
       expect(quote.content).toBe('A quote');
+      // Note: Parent relationships managed via backend graph queries
     });
 
     it('generates unique IDs', () => {
@@ -88,8 +83,6 @@ describe('QuoteBlockNodeHelpers', () => {
         id: 'test-3',
         nodeType: 'quote-block',
         content: 'First line\nSecond line\nThird line',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -105,8 +98,6 @@ describe('QuoteBlockNodeHelpers', () => {
         id: 'test-4',
         nodeType: 'quote-block',
         content: 'A single line quote',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -124,8 +115,6 @@ describe('QuoteBlockNodeHelpers', () => {
         id: 'test-5',
         nodeType: 'quote-block',
         content: 'First line\nSecond line\nThird line',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -141,8 +130,6 @@ describe('QuoteBlockNodeHelpers', () => {
         id: 'test-6',
         nodeType: 'quote-block',
         content: 'Single line',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -158,8 +145,6 @@ describe('QuoteBlockNodeHelpers', () => {
         id: 'test-7',
         nodeType: 'quote-block',
         content: '',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -177,8 +162,6 @@ describe('QuoteBlockNodeHelpers', () => {
         id: 'test-8',
         nodeType: 'quote-block',
         content: 'Line 1\nLine 2\nLine 3',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -194,8 +177,6 @@ describe('QuoteBlockNodeHelpers', () => {
         id: 'test-9',
         nodeType: 'quote-block',
         content: 'Single line',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -211,8 +192,6 @@ describe('QuoteBlockNodeHelpers', () => {
         id: 'test-10',
         nodeType: 'quote-block',
         content: '',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -231,8 +210,6 @@ describe('Integration', () => {
       id: 'test-11',
       nodeType: 'quote-block',
       content: 'Be yourself; everyone else is already taken.\n— Oscar Wilde',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
@@ -274,8 +251,6 @@ describe('Integration', () => {
         id: `test-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
         nodeType: 'quote-block',
         content,
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -293,8 +268,6 @@ describe('Integration', () => {
       id: 'test-12',
       nodeType: 'quote-block',
       content: 'A quote',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),

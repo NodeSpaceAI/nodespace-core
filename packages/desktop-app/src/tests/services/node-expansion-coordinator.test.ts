@@ -269,13 +269,11 @@ function createMockReactiveNodeService() {
 /**
  * Create a mock Node for testing
  */
-function createMockNode(id: string, content: string, parentId: string | null = null): Node {
+function createMockNode(id: string, content: string): Node {
   return {
     id,
     nodeType: 'text',
     content,
-    parentId,
-    containerNodeId: null,
     beforeSiblingId: null,
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),

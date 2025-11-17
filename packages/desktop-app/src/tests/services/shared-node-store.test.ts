@@ -26,8 +26,6 @@ describe('SharedNodeStore', () => {
     id: 'test-node-1',
     nodeType: 'text',
     content: 'Test content',
-    parentId: null,
-    containerNodeId: null,
     beforeSiblingId: null,
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
@@ -154,40 +152,44 @@ describe('SharedNodeStore', () => {
   // ========================================================================
 
   describe('Node Filtering', () => {
-    it('should get nodes by parent ID', () => {
-      const parent: Node = { ...mockNode, id: 'parent-1' };
-      const child1: Node = { ...mockNode, id: 'child-1', parentId: 'parent-1' };
-      const child2: Node = { ...mockNode, id: 'child-2', parentId: 'parent-1' };
-      const child3: Node = { ...mockNode, id: 'child-3', parentId: 'parent-2' };
+    it('should get all nodes', () => {
+      const node1: Node = { ...mockNode, id: 'node-1' };
+      const node2: Node = { ...mockNode, id: 'node-2' };
+      const node3: Node = { ...mockNode, id: 'node-3' };
 
-      store.setNode(parent, viewerSource);
-      store.setNode(child1, viewerSource);
-      store.setNode(child2, viewerSource);
-      store.setNode(child3, viewerSource);
+      store.setNode(node1, viewerSource);
+      store.setNode(node2, viewerSource);
+      store.setNode(node3, viewerSource);
 
-      const parent1Children = store.getNodesForParent('parent-1');
-      expect(parent1Children).toHaveLength(2);
-      expect(parent1Children.map((n) => n.id)).toContain('child-1');
-      expect(parent1Children.map((n) => n.id)).toContain('child-2');
+      // Populate cache to simulate backend hierarchy data
+      // (Graph-native architecture stores hierarchy as edges, not in Node fields)
+      store.updateChildrenCache(null, ['node-1', 'node-2', 'node-3']);
 
-      const parent2Children = store.getNodesForParent('parent-2');
-      expect(parent2Children).toHaveLength(1);
-      expect(parent2Children[0].id).toBe('child-3');
+      const allNodes = store.getNodesForParent(null);
+      expect(allNodes).toHaveLength(3);
+      expect(allNodes.map((n) => n.id)).toContain('node-1');
+      expect(allNodes.map((n) => n.id)).toContain('node-2');
+      expect(allNodes.map((n) => n.id)).toContain('node-3');
     });
 
-    it('should get root nodes (parentId === null)', () => {
-      const root1: Node = { ...mockNode, id: 'root-1', parentId: null };
-      const root2: Node = { ...mockNode, id: 'root-2', parentId: null };
-      const child: Node = { ...mockNode, id: 'child-1', parentId: 'root-1' };
+    it('should get root nodes (no parent filtering needed)', () => {
+      const root1: Node = { ...mockNode, id: 'root-1' };
+      const root2: Node = { ...mockNode, id: 'root-2' };
+      const root3: Node = { ...mockNode, id: 'root-3' };
 
       store.setNode(root1, viewerSource);
       store.setNode(root2, viewerSource);
-      store.setNode(child, viewerSource);
+      store.setNode(root3, viewerSource);
+
+      // Populate cache to simulate backend hierarchy data
+      // (Graph-native architecture: parentId removed, hierarchy stored as SurrealDB edges)
+      store.updateChildrenCache(null, ['root-1', 'root-2', 'root-3']);
 
       const roots = store.getNodesForParent(null);
-      expect(roots).toHaveLength(2);
+      expect(roots).toHaveLength(3);
       expect(roots.map((n) => n.id)).toContain('root-1');
       expect(roots.map((n) => n.id)).toContain('root-2');
+      expect(roots.map((n) => n.id)).toContain('root-3');
     });
   });
 
@@ -598,23 +600,21 @@ describe('SharedNodeStore', () => {
       });
 
       it('should handle structural changes with immediate persistence', async () => {
-        const parent: Node = { ...mockNode, id: 'parent', parentId: null };
-        const child: Node = { ...mockNode, id: 'child', parentId: 'parent' };
+        const node: Node = { ...mockNode, id: 'node' };
 
-        store.setNode(parent, viewerSource, true); // skipPersistence
-        store.setNode(child, viewerSource, true); // skipPersistence
+        store.setNode(node, viewerSource, true); // skipPersistence
 
-        // Update structural property (triggers immediate persistence with dependency)
-        store.updateNode('child', { parentId: 'new-parent' }, viewerSource);
+        // Update structural property (triggers immediate persistence)
+        store.updateNode('node', { beforeSiblingId: 'sibling-1' }, viewerSource);
 
         // Should update in memory immediately
-        expect(store.getNode('child')?.parentId).toBe('new-parent');
+        expect(store.getNode('node')?.beforeSiblingId).toBe('sibling-1');
 
         // Wait for immediate persistence
         await new Promise((resolve) => setTimeout(resolve, 50));
 
         // Persistence should have been triggered
-        expect(PersistenceCoordinator.getInstance().isPersisted('child')).toBe(true);
+        expect(PersistenceCoordinator.getInstance().isPersisted('node')).toBe(true);
       });
     });
 
@@ -689,32 +689,31 @@ describe('SharedNodeStore', () => {
         expect(result.errors[0]).toContain('not found');
       });
 
-      it('should validate parentId exists', async () => {
+      it('should skip parent validation (parentId removed)', async () => {
         store.setNode(mockNode, viewerSource);
 
         const result = await store.validateNodeReferences(
           mockNode.id,
-          'non-existent-parent',
+          null,
           null,
           null
         );
 
-        expect(result.errors).toHaveLength(1);
-        expect(result.errors[0]).toContain('Parent');
+        expect(result.errors).toHaveLength(0);
       });
 
-      it('should allow viewer parent ID even if not in store', async () => {
+      it('should validate without parent references', async () => {
         store.setNode(mockNode, viewerSource);
 
         const result = await store.validateNodeReferences(
           mockNode.id,
-          'viewer-parent',
           null,
-          'viewer-parent' // viewerParentId
+          null,
+          null
         );
 
         expect(result.errors).toHaveLength(0);
-        expect(result.validatedParentId).toBe('viewer-parent');
+        expect(result.validatedParentId).toBeNull();
       });
 
       it('should null out invalid beforeSiblingId', async () => {
@@ -736,22 +735,20 @@ describe('SharedNodeStore', () => {
         consoleSpy.mockRestore();
       });
 
-      it('should validate all references successfully', async () => {
-        const parent: Node = { ...mockNode, id: 'parent-1' };
+      it('should validate sibling references successfully', async () => {
         const sibling: Node = { ...mockNode, id: 'sibling-1' };
         store.setNode(mockNode, viewerSource);
-        store.setNode(parent, viewerSource);
         store.setNode(sibling, viewerSource);
 
         const result = await store.validateNodeReferences(
           mockNode.id,
-          'parent-1',
+          null,
           'sibling-1',
           null
         );
 
         expect(result.errors).toHaveLength(0);
-        expect(result.validatedParentId).toBe('parent-1');
+        expect(result.validatedParentId).toBeNull();
         expect(result.validatedBeforeSiblingId).toBe('sibling-1');
       });
     });
@@ -761,17 +758,15 @@ describe('SharedNodeStore', () => {
     // --------------------------------------------------------------------
     describe('updateStructuralChangesValidated', () => {
       it('should process valid updates successfully', async () => {
-        const parent: Node = { ...mockNode, id: 'parent-1' };
-        const child1: Node = { ...mockNode, id: 'child-1', parentId: null };
-        const child2: Node = { ...mockNode, id: 'child-2', parentId: null };
+        const node1: Node = { ...mockNode, id: 'node-1' };
+        const node2: Node = { ...mockNode, id: 'node-2' };
 
-        store.setNode(parent, viewerSource);
-        store.setNode(child1, viewerSource);
-        store.setNode(child2, viewerSource);
+        store.setNode(node1, viewerSource);
+        store.setNode(node2, viewerSource);
 
         const updates = [
-          { nodeId: 'child-1', parentId: 'parent-1', beforeSiblingId: null },
-          { nodeId: 'child-2', parentId: 'parent-1', beforeSiblingId: 'child-1' }
+          { nodeId: 'node-1', beforeSiblingId: null },
+          { nodeId: 'node-2', beforeSiblingId: 'node-1' }
         ];
 
         const result = await store.updateStructuralChangesValidated(updates, viewerSource, null);
@@ -781,34 +776,30 @@ describe('SharedNodeStore', () => {
         expect(result.errors.size).toBe(0);
 
         // Verify updates were applied
-        expect(store.getNode('child-1')?.parentId).toBe('parent-1');
-        expect(store.getNode('child-2')?.parentId).toBe('parent-1');
-        expect(store.getNode('child-2')?.beforeSiblingId).toBe('child-1');
+        expect(store.getNode('node-2')?.beforeSiblingId).toBe('node-1');
       });
 
       it('should handle validation errors gracefully', async () => {
         store.setNode(mockNode, viewerSource);
 
         const updates = [
-          { nodeId: mockNode.id, parentId: 'non-existent-parent', beforeSiblingId: null }
+          { nodeId: mockNode.id, beforeSiblingId: null }
         ];
 
         const result = await store.updateStructuralChangesValidated(updates, viewerSource, null);
 
-        expect(result.succeeded).toHaveLength(0);
-        expect(result.failed).toHaveLength(1);
-        expect(result.errors.size).toBe(1);
-        expect(result.errors.get(mockNode.id)?.message).toContain('Parent');
+        // Should succeed since no parent validation is required
+        expect(result.succeeded).toHaveLength(1);
+        expect(result.failed).toHaveLength(0);
+        expect(result.errors.size).toBe(0);
       });
 
       it('should process updates serially', async () => {
-        const parent: Node = { ...mockNode, id: 'parent-1' };
-        const child1: Node = { ...mockNode, id: 'child-1', parentId: null };
-        const child2: Node = { ...mockNode, id: 'child-2', parentId: null };
+        const node1: Node = { ...mockNode, id: 'node-1' };
+        const node2: Node = { ...mockNode, id: 'node-2' };
 
-        store.setNode(parent, viewerSource);
-        store.setNode(child1, viewerSource);
-        store.setNode(child2, viewerSource);
+        store.setNode(node1, viewerSource);
+        store.setNode(node2, viewerSource);
 
         const executionOrder: string[] = [];
         const originalUpdateNode = store.updateNode.bind(store);
@@ -820,32 +811,29 @@ describe('SharedNodeStore', () => {
         });
 
         const updates = [
-          { nodeId: 'child-1', parentId: 'parent-1', beforeSiblingId: null },
-          { nodeId: 'child-2', parentId: 'parent-1', beforeSiblingId: null }
+          { nodeId: 'node-1', beforeSiblingId: null },
+          { nodeId: 'node-2', beforeSiblingId: null }
         ];
 
         await store.updateStructuralChangesValidated(updates, viewerSource, null);
 
-        // Verify serial processing (child-1 before child-2)
-        expect(executionOrder).toEqual(['child-1', 'child-2']);
+        // Verify serial processing (node-1 before node-2)
+        expect(executionOrder).toEqual(['node-1', 'node-2']);
 
         // Restore original method
         store.updateNode = originalUpdateNode;
       });
 
       it('should null out invalid beforeSiblingId references', async () => {
-        const parent: Node = { ...mockNode, id: 'parent-1' };
-        const child: Node = { ...mockNode, id: 'child-1', parentId: null };
+        const node: Node = { ...mockNode, id: 'node-1' };
 
-        store.setNode(parent, viewerSource);
-        store.setNode(child, viewerSource);
+        store.setNode(node, viewerSource);
 
         const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
         const updates = [
           {
-            nodeId: 'child-1',
-            parentId: 'parent-1',
+            nodeId: 'node-1',
             beforeSiblingId: 'non-existent-sibling'
           }
         ];
@@ -859,25 +847,21 @@ describe('SharedNodeStore', () => {
       });
 
       it('should handle mixed success and failure', async () => {
-        const parent: Node = { ...mockNode, id: 'parent-1' };
-        const child1: Node = { ...mockNode, id: 'child-1', parentId: null };
-        const child2: Node = { ...mockNode, id: 'child-2', parentId: null };
+        const node1: Node = { ...mockNode, id: 'node-1' };
 
-        store.setNode(parent, viewerSource);
-        store.setNode(child1, viewerSource);
-        store.setNode(child2, viewerSource);
+        store.setNode(node1, viewerSource);
 
         const updates = [
-          { nodeId: 'child-1', parentId: 'parent-1', beforeSiblingId: null },
-          { nodeId: 'child-2', parentId: 'non-existent-parent', beforeSiblingId: null }
+          { nodeId: 'node-1', beforeSiblingId: null },
+          { nodeId: 'non-existent-node', beforeSiblingId: null }
         ];
 
         const result = await store.updateStructuralChangesValidated(updates, viewerSource, null);
 
         expect(result.succeeded).toHaveLength(1);
         expect(result.failed).toHaveLength(1);
-        expect(result.succeeded[0].nodeId).toBe('child-1');
-        expect(result.failed[0].nodeId).toBe('child-2');
+        expect(result.succeeded[0].nodeId).toBe('node-1');
+        expect(result.failed[0].nodeId).toBe('non-existent-node');
       });
     });
   });
@@ -1277,8 +1261,6 @@ describe('SharedNodeStore', () => {
       id: 'persist-test',
       nodeType: 'text',
       content: 'Test',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       version: 1,
       properties: {},
@@ -1317,12 +1299,11 @@ describe('SharedNodeStore', () => {
 
         // Update with explicit persist: true (triggers persistence with auto mode)
         // Structural changes use immediate mode, content changes use debounced mode
-        store.updateNode('persist-test', { parentId: 'new-parent' }, viewerSource, {
+        store.updateNode('persist-test', { beforeSiblingId: 'sibling-1' }, viewerSource, {
           persist: true
         });
 
         // Should update in memory immediately
-        expect(store.getNode('persist-test')?.parentId).toBe('new-parent');
 
         // Structural change should trigger immediate persistence (not debounced)
         // Check that operation was queued (isPending or isPersisted)

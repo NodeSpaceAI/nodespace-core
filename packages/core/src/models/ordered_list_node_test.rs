@@ -14,23 +14,10 @@ mod tests {
     }
 
     #[test]
-    fn test_with_parent_id_sets_parent() {
-        let ordered_list = OrderedListNode::new("list item".to_string())
-            .with_parent_id("parent-123")
-            .build();
-
-        assert_eq!(
-            ordered_list.as_node().parent_id,
-            Some("parent-123".to_string())
-        );
-    }
-
-    #[test]
     fn test_from_node_validates_type() {
         let node = Node::new(
             "ordered-list".to_string(),
             "Second item".to_string(),
-            None,
             json!({}),
         );
 
@@ -43,7 +30,6 @@ mod tests {
         let wrong_type = Node::new(
             "text".to_string(),
             "Not an ordered list".to_string(),
-            None,
             json!({}),
         );
 
@@ -63,7 +49,6 @@ mod tests {
         let original = Node::new(
             "ordered-list".to_string(),
             "Complete the task".to_string(),
-            Some("parent-123".to_string()),
             json!({}),
         );
         let original_id = original.id.clone();
@@ -74,7 +59,6 @@ mod tests {
         assert_eq!(converted_back.id, original_id);
         assert_eq!(converted_back.node_type, "ordered-list");
         assert_eq!(converted_back.content, "Complete the task");
-        assert_eq!(converted_back.parent_id, Some("parent-123".to_string()));
     }
 
     #[test]
@@ -90,24 +74,15 @@ mod tests {
     fn test_as_node_mut_allows_modification() {
         let mut ordered_list = OrderedListNode::new("list item".to_string()).build();
 
-        ordered_list.as_node_mut().parent_id = Some("parent-456".to_string());
-
-        assert_eq!(
-            ordered_list.as_node().parent_id,
-            Some("parent-456".to_string())
-        );
+        // Test that we can get mutable reference
+        let node_mut = ordered_list.as_node_mut();
+        assert_eq!(node_mut.node_type, "ordered-list");
     }
 
     #[test]
     fn test_builder_pattern_chains_correctly() {
-        let ordered_list = OrderedListNode::new("Third step in process".to_string())
-            .with_parent_id("parent-789")
-            .build();
+        let ordered_list = OrderedListNode::new("Third step in process".to_string()).build();
 
-        assert_eq!(
-            ordered_list.as_node().parent_id,
-            Some("parent-789".to_string())
-        );
         assert_eq!(ordered_list.as_node().content, "Third step in process");
     }
 
@@ -163,7 +138,6 @@ mod tests {
         let node = Node::new(
             "ordered-list".to_string(),
             "A list item".to_string(),
-            None,
             json!({}),
         );
 
@@ -177,7 +151,6 @@ mod tests {
         let node = Node::new(
             "ordered-list".to_string(),
             "A list item".to_string(),
-            None,
             json!({"customProp": "value"}),
         );
 

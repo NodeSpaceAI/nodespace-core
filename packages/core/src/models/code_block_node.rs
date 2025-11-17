@@ -64,7 +64,6 @@ impl CodeBlockNode {
         CodeBlockNodeBuilder {
             content,
             language: "plaintext".to_string(),
-            parent_id: None,
         }
     }
 
@@ -180,7 +179,7 @@ impl CodeBlockNode {
     /// use nodespace_core::models::CodeBlockNode;
     ///
     /// let mut code_block = CodeBlockNode::new("code".to_string()).build();
-    /// code_block.as_node_mut().parent_id = Some("parent-123".to_string());
+    /// code_block.as_node_mut().content = "updated code".to_string();
     /// ```
     pub fn as_node_mut(&mut self) -> &mut Node {
         &mut self.node
@@ -213,7 +212,6 @@ impl CodeBlockNode {
 pub struct CodeBlockNodeBuilder {
     content: String,
     language: String,
-    parent_id: Option<String>,
 }
 
 impl CodeBlockNodeBuilder {
@@ -230,22 +228,6 @@ impl CodeBlockNodeBuilder {
     /// ```
     pub fn with_language(mut self, language: impl Into<String>) -> Self {
         self.language = language.into();
-        self
-    }
-
-    /// Set the parent node ID
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use nodespace_core::models::CodeBlockNode;
-    ///
-    /// let code_block = CodeBlockNode::new("code".to_string())
-    ///     .with_parent_id("parent-123")
-    ///     .build();
-    /// ```
-    pub fn with_parent_id(mut self, parent_id: impl Into<String>) -> Self {
-        self.parent_id = Some(parent_id.into());
         self
     }
 
@@ -267,12 +249,7 @@ impl CodeBlockNodeBuilder {
             "language": self.language,
         });
 
-        let node = Node::new(
-            "code-block".to_string(),
-            self.content,
-            self.parent_id,
-            properties,
-        );
+        let node = Node::new("code-block".to_string(), self.content, properties);
 
         CodeBlockNode { node }
     }

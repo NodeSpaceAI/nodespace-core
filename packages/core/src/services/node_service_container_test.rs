@@ -62,11 +62,10 @@ mod disabled_embedding_tests {
     async fn test_container_node_created_as_stale() {
         let (service, store, _temp) = create_test_services().await;
 
-        // Create a container node (no container_node_id = root level)
+        // Create a container node (root level - no parent edges)
         let container_node = Node::new(
             "text".to_string(),
             "Container content".to_string(),
-            None,
             json!({}),
         );
         let container_id = container_node.id.clone();
@@ -87,19 +86,12 @@ mod disabled_embedding_tests {
         let (service, store, _temp) = create_test_services().await;
 
         // Create a container node first
-        let container_node =
-            Node::new("text".to_string(), "Container".to_string(), None, json!({}));
-        let container_id = container_node.id.clone();
+        let container_node = Node::new("text".to_string(), "Container".to_string(), json!({}));
+        let _container_id = container_node.id.clone();
         service.create_node(container_node).await.unwrap();
 
-        // Create a child node inside the container
-        let mut child_node = Node::new(
-            "text".to_string(),
-            "Child content".to_string(),
-            None,
-            json!({}),
-        );
-        child_node.container_node_id = Some(container_id.clone());
+        // Create a child node inside the container (using parent relationship via edges)
+        let child_node = Node::new("text".to_string(), "Child content".to_string(), json!({}));
         let child_id = child_node.id.clone();
 
         service.create_node(child_node).await.unwrap();
@@ -121,7 +113,6 @@ mod disabled_embedding_tests {
         let container_node = Node::new(
             "text".to_string(),
             "Original content".to_string(),
-            None,
             json!({}),
         );
         let container_id = container_node.id.clone();
@@ -149,20 +140,13 @@ mod disabled_embedding_tests {
         let (service, store, _temp) = create_test_services().await;
 
         // Create container
-        let container_node =
-            Node::new("text".to_string(), "Container".to_string(), None, json!({}));
+        let container_node = Node::new("text".to_string(), "Container".to_string(), json!({}));
         let container_id = container_node.id.clone();
         service.create_node(container_node).await.unwrap();
         mark_not_stale(&store, &container_id).unwrap();
 
-        // Create child inside container
-        let mut child_node = Node::new(
-            "text".to_string(),
-            "Child content".to_string(),
-            None,
-            json!({}),
-        );
-        child_node.container_node_id = Some(container_id.clone());
+        // Create child inside container (using parent relationship via edges)
+        let child_node = Node::new("text".to_string(), "Child content".to_string(), json!({}));
         let child_id = child_node.id.clone();
         service.create_node(child_node).await.unwrap();
 
@@ -187,34 +171,18 @@ mod disabled_embedding_tests {
         let (service, store, _temp) = create_test_services().await;
 
         // Create two container nodes
-        let container1 = Node::new(
-            "text".to_string(),
-            "Container 1".to_string(),
-            None,
-            json!({}),
-        );
+        let container1 = Node::new("text".to_string(), "Container 1".to_string(), json!({}));
         let container1_id = container1.id.clone();
         service.create_node(container1).await.unwrap();
         mark_not_stale(&store, &container1_id).unwrap();
 
-        let container2 = Node::new(
-            "text".to_string(),
-            "Container 2".to_string(),
-            None,
-            json!({}),
-        );
+        let container2 = Node::new("text".to_string(), "Container 2".to_string(), json!({}));
         let container2_id = container2.id.clone();
         service.create_node(container2).await.unwrap();
         mark_not_stale(&store, &container2_id).unwrap();
 
-        // Create a child node in container1
-        let mut child_node = Node::new(
-            "text".to_string(),
-            "Child content".to_string(),
-            None,
-            json!({}),
-        );
-        child_node.container_node_id = Some(container1_id.clone());
+        // Create a child node in container1 (using parent relationship via edges)
+        let child_node = Node::new("text".to_string(), "Child content".to_string(), json!({}));
         let child_id = child_node.id.clone();
         service.create_node(child_node).await.unwrap();
 
@@ -222,10 +190,11 @@ mod disabled_embedding_tests {
         assert!(!is_node_stale(&store, &container1_id).unwrap());
         assert!(!is_node_stale(&store, &container2_id).unwrap());
 
-        // Move child from container1 to container2
-        let mut update = NodeUpdate::new();
-        update.container_node_id = Some(Some(container2_id.clone()));
-        service.update_node(&child_id, update).await.unwrap();
+        // Move child from container1 to container2 (using move_node API)
+        service
+            .move_node(&child_id, Some(&container2_id))
+            .await
+            .unwrap();
 
         // Verify BOTH old and new containers are marked as stale
         let container1_stale = is_node_stale(&store, &container1_id).unwrap();
@@ -247,20 +216,13 @@ mod disabled_embedding_tests {
         let (service, store, _temp) = create_test_services().await;
 
         // Create container
-        let container_node =
-            Node::new("text".to_string(), "Container".to_string(), None, json!({}));
+        let container_node = Node::new("text".to_string(), "Container".to_string(), json!({}));
         let container_id = container_node.id.clone();
         service.create_node(container_node).await.unwrap();
         mark_not_stale(&store, &container_id).unwrap();
 
-        // Create child inside container
-        let mut child_node = Node::new(
-            "text".to_string(),
-            "Child content".to_string(),
-            None,
-            json!({}),
-        );
-        child_node.container_node_id = Some(container_id.clone());
+        // Create child inside container (using parent relationship)
+        let child_node = Node::new("text".to_string(), "Child content".to_string(), json!({}));
         let child_id = child_node.id.clone();
         service.create_node(child_node).await.unwrap();
 
@@ -289,7 +251,6 @@ mod disabled_embedding_tests {
         let task_container = Node::new(
             "task".to_string(),
             "Task as container".to_string(),
-            None,
             json!({"status": "OPEN"}),
         );
         let task_id = task_container.id.clone();
@@ -302,13 +263,12 @@ mod disabled_embedding_tests {
             "ANY node type at root level (container_node_id IS NULL) should be marked as stale"
         );
 
-        // Create a "text" node inside another container
-        let container = Node::new("text".to_string(), "Container".to_string(), None, json!({}));
-        let container_id = container.id.clone();
+        // Create a "text" node inside another container (using parent relationship)
+        let container = Node::new("text".to_string(), "Container".to_string(), json!({}));
+        let _container_id = container.id.clone();
         service.create_node(container).await.unwrap();
 
-        let mut child = Node::new("text".to_string(), "Child".to_string(), None, json!({}));
-        child.container_node_id = Some(container_id);
+        let child = Node::new("text".to_string(), "Child".to_string(), json!({}));
         let child_id = child.id.clone();
         service.create_node(child).await.unwrap();
 
@@ -326,20 +286,17 @@ mod disabled_embedding_tests {
         let (service, store, _temp) = create_test_services().await;
 
         // Create container
-        let container_node =
-            Node::new("text".to_string(), "Container".to_string(), None, json!({}));
+        let container_node = Node::new("text".to_string(), "Container".to_string(), json!({}));
         let container_id = container_node.id.clone();
         service.create_node(container_node).await.unwrap();
         mark_not_stale(&store, &container_id).unwrap();
 
-        // Create multiple children
-        let mut child1 = Node::new("text".to_string(), "Child 1".to_string(), None, json!({}));
-        child1.container_node_id = Some(container_id.clone());
+        // Create multiple children (using parent relationship)
+        let child1 = Node::new("text".to_string(), "Child 1".to_string(), json!({}));
         let child1_id = child1.id.clone();
         service.create_node(child1).await.unwrap();
 
-        let mut child2 = Node::new("text".to_string(), "Child 2".to_string(), None, json!({}));
-        child2.container_node_id = Some(container_id.clone());
+        let child2 = Node::new("text".to_string(), "Child 2".to_string(), json!({}));
         let child2_id = child2.id.clone();
         service.create_node(child2).await.unwrap();
 

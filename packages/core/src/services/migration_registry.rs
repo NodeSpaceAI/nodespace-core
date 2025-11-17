@@ -39,9 +39,7 @@
 //! );
 //!
 //! // Apply migrations to upgrade a node
-//! let mut old_node = Node::new("task".to_string(), "Test".to_string(), None, json!({
-//!     "_schema_version": 1
-//! }));
+//! let mut old_node = Node::new("task".to_string(), "Test".to_string(), json!({"_schema_version": 1}));
 //!
 //! let upgraded = registry.apply_migrations(&old_node, 2)?;
 //! assert_eq!(upgraded.properties["_schema_version"], 2);
@@ -167,7 +165,7 @@ impl MigrationRegistry {
     /// # use nodespace_core::models::Node;
     /// # use serde_json::json;
     /// # let mut registry = MigrationRegistry::new();
-    /// # let node = Node::new("task".to_string(), "Test".to_string(), None, json!({"_schema_version": 1}));
+    /// # let node = Node::new("task".to_string(), "Test".to_string(), json!({"_schema_version": 1}));
     /// // Automatically chains v1→v2→v3
     /// let upgraded = registry.apply_migrations(&node, 3)?;
     /// assert_eq!(upgraded.properties["_schema_version"], 3);
@@ -296,7 +294,6 @@ mod tests {
         Node::new(
             "task".to_string(),
             "Test task".to_string(),
-            None,
             json!({
                 "_schema_version": version,
                 "status": "OPEN"
@@ -441,7 +438,6 @@ mod tests {
         let node = Node::new(
             "task".to_string(),
             "Test".to_string(),
-            None,
             json!({"status": "OPEN"}), // No _schema_version
         );
 
@@ -469,7 +465,6 @@ mod tests {
         let node = Node::new(
             "task".to_string(),
             "Test task".to_string(),
-            None,
             json!({
                 "_schema_version": 1,
                 "status": "OPEN",

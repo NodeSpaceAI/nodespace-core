@@ -992,12 +992,7 @@ mod tests {
         let behavior = TextNodeBehavior;
 
         // Valid text node
-        let valid_node = Node::new(
-            "text".to_string(),
-            "Hello world".to_string(),
-            None,
-            json!({}),
-        );
+        let valid_node = Node::new("text".to_string(), "Hello world".to_string(), json!({}));
         assert!(behavior.validate(&valid_node).is_ok());
 
         // Issue #479: Blank text nodes are now allowed (frontend manages persistence)
@@ -1014,7 +1009,7 @@ mod tests {
     #[test]
     fn test_text_node_unicode_whitespace_validation() {
         let behavior = TextNodeBehavior;
-        let base_node = Node::new("text".to_string(), "Valid".to_string(), None, json!({}));
+        let base_node = Node::new("text".to_string(), "Valid".to_string(), json!({}));
 
         // Issue #479: All whitespace (including Unicode) is now allowed
         // Backend no longer validates content - frontend manages blank node persistence
@@ -1111,7 +1106,6 @@ mod tests {
         let valid_node = Node::new(
             "header".to_string(),
             "## Hello World".to_string(),
-            None,
             json!({"headerLevel": 2}),
         );
         assert!(behavior.validate(&valid_node).is_ok());
@@ -1141,7 +1135,6 @@ mod tests {
         let valid_node = Node::new(
             "code-block".to_string(),
             "```javascript\nconst x = 1;".to_string(),
-            None,
             json!({"language": "javascript"}),
         );
         assert!(behavior.validate(&valid_node).is_ok());
@@ -1171,7 +1164,6 @@ mod tests {
         let valid_node = Node::new(
             "quote-block".to_string(),
             "> Hello world".to_string(),
-            None,
             json!({}),
         );
         assert!(behavior.validate(&valid_node).is_ok());
@@ -1209,7 +1201,6 @@ mod tests {
         let valid_node = Node::new(
             "ordered-list".to_string(),
             "1. Hello world".to_string(),
-            None,
             json!({}),
         );
         assert!(behavior.validate(&valid_node).is_ok());
@@ -1247,7 +1238,6 @@ mod tests {
         let valid_node_old_format = Node::new(
             "task".to_string(),
             "Implement feature".to_string(),
-            None,
             json!({"status": "IN_PROGRESS"}),
         );
         assert!(behavior.validate(&valid_node_old_format).is_ok());
@@ -1256,7 +1246,6 @@ mod tests {
         let valid_node_new_format = Node::new(
             "task".to_string(),
             "Implement feature".to_string(),
-            None,
             json!({"task": {"status": "IN_PROGRESS"}}),
         );
         assert!(behavior.validate(&valid_node_new_format).is_ok());
@@ -1265,7 +1254,6 @@ mod tests {
         let complete_node = Node::new(
             "task".to_string(),
             "Complete task".to_string(),
-            None,
             json!({
                 "task": {
                     "status": "DONE",
@@ -1289,7 +1277,6 @@ mod tests {
         let bad_status_type = Node::new(
             "task".to_string(),
             "Task".to_string(),
-            None,
             json!({"task": {"status": 123}}), // number instead of string
         );
         assert!(behavior.validate(&bad_status_type).is_err());
@@ -1298,7 +1285,6 @@ mod tests {
         let bad_priority_node = Node::new(
             "task".to_string(),
             "Task".to_string(),
-            None,
             json!({"task": {"priority": 123}}), // number instead of string enum
         );
         assert!(behavior.validate(&bad_priority_node).is_err());
@@ -1336,7 +1322,6 @@ mod tests {
         let mut task_node = Node::new(
             "task".to_string(),
             "Important task".to_string(),
-            None,
             json!({
                 "task": {
                     "status": "IN_PROGRESS",
@@ -1383,7 +1368,6 @@ mod tests {
             "2025-01-03".to_string(),
             "date".to_string(),
             "2025-01-03".to_string(),
-            None,
             json!({}),
         );
         assert!(behavior.validate(&valid_node).is_ok());
@@ -1469,25 +1453,19 @@ mod tests {
         let registry = NodeBehaviorRegistry::new();
 
         // Valid text node
-        let text_node = Node::new("text".to_string(), "Hello".to_string(), None, json!({}));
+        let text_node = Node::new("text".to_string(), "Hello".to_string(), json!({}));
         assert!(registry.validate_node(&text_node).is_ok());
 
         // Valid task node
         let task_node = Node::new(
             "task".to_string(),
             "Do something".to_string(),
-            None,
             json!({"status": "OPEN"}),
         );
         assert!(registry.validate_node(&task_node).is_ok());
 
         // Unknown node type
-        let unknown_node = Node::new(
-            "unknown".to_string(),
-            "Content".to_string(),
-            None,
-            json!({}),
-        );
+        let unknown_node = Node::new("unknown".to_string(), "Content".to_string(), json!({}));
         let result = registry.validate_node(&unknown_node);
         assert!(result.is_err());
         assert!(matches!(
@@ -1511,12 +1489,7 @@ mod tests {
                 let behavior = registry_clone.get("text");
                 assert!(behavior.is_some());
 
-                let node = Node::new(
-                    "text".to_string(),
-                    "Thread test".to_string(),
-                    None,
-                    json!({}),
-                );
+                let node = Node::new("text".to_string(), "Thread test".to_string(), json!({}));
                 assert!(registry_clone.validate_node(&node).is_ok());
             });
             handles.push(handle);
@@ -1557,7 +1530,7 @@ mod tests {
         assert!(behavior.can_have_children());
         assert!(behavior.supports_markdown());
 
-        let node = Node::new("text".to_string(), "Test".to_string(), None, json!({}));
+        let node = Node::new("text".to_string(), "Test".to_string(), json!({}));
         assert!(behavior.validate(&node).is_ok());
     }
 }

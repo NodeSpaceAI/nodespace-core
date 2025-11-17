@@ -21,6 +21,7 @@
 import { eventBus } from './event-bus';
 import type { ReactiveNodeService as NodeManager } from './reactive-node-service.svelte';
 import type { Node } from '$lib/types';
+import { sharedNodeStore } from './shared-node-store';
 
 // ============================================================================
 // Core Types
@@ -106,9 +107,13 @@ export class HierarchyService {
 
     // Walk up parent chain, caching depths along the way
     const pathNodes: string[] = [nodeId];
-    while (currentNode && currentNode.parentId) {
+    let currentNodeId: string | null = nodeId;
+
+    while (currentNodeId) {
+      const parentId = this.getParentId(currentNodeId);
+      if (!parentId) break;
+
       depth++;
-      const parentId = currentNode.parentId;
       pathNodes.push(parentId);
 
       // Check if parent depth is cached
@@ -117,7 +122,7 @@ export class HierarchyService {
         break;
       }
 
-      currentNode = this.nodeManager.findNode(parentId);
+      currentNodeId = parentId;
     }
 
     // Cache all depths in the path for future lookups
@@ -148,14 +153,9 @@ export class HierarchyService {
 
     this.performanceMetrics.cacheMisses++;
 
-    const node = this.nodeManager.findNode(nodeId);
-    if (!node) {
-      return [];
-    }
-
-    // Get children from all nodes with this parent_id
-    const allNodes = Array.from(this.nodeManager.nodes.values());
-    const children = allNodes.filter((n) => n.parentId === nodeId).map((n) => n.id);
+    // Get children from backend query
+    const childNodes = sharedNodeStore.getNodesForParent(nodeId);
+    const children = childNodes.map((n) => n.id);
 
     // Cache the result
     this.cache.childrenCache.set(nodeId, children);
@@ -196,17 +196,14 @@ export class HierarchyService {
     const nodeIds: string[] = [];
     const depths: number[] = [];
 
-    let currentId: string | undefined = nodeId;
+    let currentId: string | null = nodeId;
 
     // Walk up to root, building path
     while (currentId) {
-      const currentNode = this.nodeManager.findNode(currentId);
-      if (!currentNode) break;
-
       nodeIds.unshift(currentId);
       depths.unshift(this.getNodeDepth(currentId));
 
-      currentId = currentNode.parentId || undefined;
+      currentId = this.getParentId(currentId);
     }
 
     return {
@@ -224,12 +221,7 @@ export class HierarchyService {
   public getSiblings(nodeId: string): string[] {
     const startTime = performance.now();
 
-    const node = this.nodeManager.findNode(nodeId);
-    if (!node) {
-      return [];
-    }
-
-    const parentId = node.parentId;
+    const parentId = this.getParentId(nodeId);
     const cacheKey = parentId || '__root__';
 
     // Check cache first - now with timestamp validation
@@ -392,11 +384,12 @@ export class HierarchyService {
 
     const structuredNodes = Array.from(bulkData.nodes.entries()).map(([nodeId, node]) => {
       const children = this.getChildren(nodeId);
+      const parentId = this.getParentId(nodeId);
 
       return {
         id: nodeId,
         node: node,
-        parentId: node.parentId || null,
+        parentId: parentId,
         beforeSiblingId: node.beforeSiblingId || null, // For client-side ordering
         depth: this.getNodeDepth(nodeId),
         children_count: children.length
@@ -428,11 +421,9 @@ export class HierarchyService {
     this.cache.childrenCache.delete(nodeId);
 
     // Invalidate sibling caches that might include this node
-    const node = this.nodeManager.findNode(nodeId);
-    if (node) {
-      const parentKey = node.parentId || '__root__';
-      this.cache.siblingOrderCache.delete(parentKey);
-    }
+    const parentId = this.getParentId(nodeId);
+    const parentKey = parentId || '__root__';
+    this.cache.siblingOrderCache.delete(parentKey);
 
     // Invalidate descendant depth caches
     const descendants = this.getDescendantsFromMap(nodeId);
@@ -491,9 +482,9 @@ export class HierarchyService {
         this.invalidateNodeCache(nodeEvent.nodeId);
 
         // Also invalidate parent and children caches
-        const node = this.nodeManager.findNode(nodeEvent.nodeId);
-        if (node?.parentId) {
-          this.invalidateNodeCache(node.parentId);
+        const parentId = this.getParentId(nodeEvent.nodeId);
+        if (parentId) {
+          this.invalidateNodeCache(parentId);
         }
       }
     });
@@ -512,10 +503,11 @@ export class HierarchyService {
     eventBus.subscribe('node:created', (event) => {
       const nodeEvent = event as import('./event-types').NodeCreatedEvent;
 
-      // Invalidate parent's children cache
-      if (nodeEvent.parentId) {
-        this.cache.childrenCache.delete(nodeEvent.parentId);
-        this.cache.siblingOrderCache.delete(nodeEvent.parentId);
+      // Invalidate parent's children cache using backend query
+      const parentId = this.getParentId(nodeEvent.nodeId);
+      if (parentId) {
+        this.cache.childrenCache.delete(parentId);
+        this.cache.siblingOrderCache.delete(parentId);
       } else {
         this.cache.siblingOrderCache.delete('__root__');
       }
@@ -527,10 +519,12 @@ export class HierarchyService {
       // Remove from all caches
       this.invalidateNodeCache(nodeEvent.nodeId);
 
-      // Invalidate parent's caches
-      if (nodeEvent.parentId) {
-        this.cache.childrenCache.delete(nodeEvent.parentId);
-        this.cache.siblingOrderCache.delete(nodeEvent.parentId);
+      // Invalidate parent's caches using backend query
+      // NOTE: Must query before node is fully deleted from backend
+      const parentId = this.getParentId(nodeEvent.nodeId);
+      if (parentId) {
+        this.cache.childrenCache.delete(parentId);
+        this.cache.siblingOrderCache.delete(parentId);
       } else {
         this.cache.siblingOrderCache.delete('__root__');
       }
@@ -542,20 +536,24 @@ export class HierarchyService {
   // ========================================================================
 
   /**
+   * Get parent ID from backend query
+   * Returns null if node has no parent (root node)
+   */
+  private getParentId(nodeId: string): string | null {
+    const parents = sharedNodeStore.getParentsForNode(nodeId);
+    return parents.length > 0 ? parents[0].id : null;
+  }
+
+  /**
    * Get descendants from node map without cache
    * Used during cache invalidation to avoid recursion
    */
   private getDescendantsFromMap(nodeId: string): string[] {
     const descendants: string[] = [];
-    const node = this.nodeManager.findNode(nodeId);
 
-    if (!node) {
-      return descendants;
-    }
-
-    // Get children manually from all nodes
-    const allNodes = Array.from(this.nodeManager.nodes.values());
-    const children = allNodes.filter((n) => n.parentId === nodeId).map((n) => n.id);
+    // Get children from backend query (not from cache to avoid recursion)
+    const childNodes = sharedNodeStore.getNodesForParent(nodeId);
+    const children = childNodes.map((n) => n.id);
 
     if (children.length === 0) {
       return descendants;
@@ -567,8 +565,9 @@ export class HierarchyService {
       const currentId = toProcess.shift()!;
       descendants.push(currentId);
 
-      // Get children of current node
-      const currentChildren = allNodes.filter((n) => n.parentId === currentId).map((n) => n.id);
+      // Get children of current node from backend
+      const currentChildNodes = sharedNodeStore.getNodesForParent(currentId);
+      const currentChildren = currentChildNodes.map((n) => n.id);
 
       if (currentChildren.length > 0) {
         toProcess.push(...currentChildren);

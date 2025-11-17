@@ -713,8 +713,9 @@ where
         table: &'a str,
         field: &'a SchemaField,
         parent_path: Option<&'a str>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), NodeServiceError>> + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), NodeServiceError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             // Build full field path (e.g., "address.city")
             let field_path = if let Some(parent) = parent_path {
@@ -993,8 +994,6 @@ mod tests {
             id: "test_widget".to_string(),
             node_type: "schema".to_string(),
             content: "Test Widget".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: chrono::Utc::now(),
@@ -1334,7 +1333,6 @@ mod tests {
         let node = Node::new(
             "test_widget".to_string(),
             "My widget".to_string(),
-            None,
             json!({"test_widget": {"status": "OPEN", "priority": 5}}),
         );
 
@@ -1350,7 +1348,6 @@ mod tests {
         let node = Node::new(
             "test_widget".to_string(),
             "My widget".to_string(),
-            None,
             json!({"test_widget": {"status": "INVALID_STATUS"}}),
         );
 
@@ -1377,7 +1374,6 @@ mod tests {
         let node = Node::new(
             "test_widget".to_string(),
             "My widget".to_string(),
-            None,
             json!({"test_widget": {"status": "BLOCKED"}}),
         );
 
@@ -1396,7 +1392,6 @@ mod tests {
         let node = Node::new(
             "unknown_type".to_string(),
             "Content".to_string(),
-            None,
             json!({"some_field": "value"}),
         );
 
@@ -1413,7 +1408,6 @@ mod tests {
         let node = Node::new(
             "test_widget".to_string(),
             "My widget".to_string(),
-            None,
             json!({"test_widget": {"priority": 5}}), // Missing required "status" field
         );
 
@@ -1434,7 +1428,6 @@ mod tests {
         let node = Node::new(
             "test_widget".to_string(),
             "My widget".to_string(),
-            None,
             json!({"test_widget": {"status": 123}}), // status must be string, not number
         );
 
@@ -1461,7 +1454,6 @@ mod tests {
         let node = Node::new(
             "test_widget".to_string(),
             "My widget".to_string(),
-            None,
             json!({"status": "DONE"}), // Flat format, not nested under "test_widget"
         );
 
@@ -1548,8 +1540,6 @@ mod tests {
             id: "person".to_string(),
             node_type: "schema".to_string(),
             content: "Person".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: chrono::Utc::now(),
@@ -1616,8 +1606,6 @@ mod tests {
             id: "test_person".to_string(),
             node_type: "schema".to_string(),
             content: "Test Person".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: chrono::Utc::now(),
@@ -1690,8 +1678,6 @@ mod tests {
             id: "contact_person".to_string(),
             node_type: "schema".to_string(),
             content: "Contact Person".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: chrono::Utc::now(),
@@ -1825,8 +1811,6 @@ mod tests {
             id: "core_type".to_string(),
             node_type: "schema".to_string(),
             content: "Core Type".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: chrono::Utc::now(),
@@ -1925,8 +1909,6 @@ mod tests {
             id: "person_query_test".to_string(),
             node_type: "schema".to_string(),
             content: "Person".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: chrono::Utc::now(),
@@ -1947,16 +1929,12 @@ mod tests {
 
         // Insert test data directly
         let db = service.node_service.store.db();
-        db.query(
-            r#"CREATE person_query_test:alice SET name = "Alice", address = { city: "NYC" }"#,
-        )
-        .await
-        .unwrap();
-        db.query(
-            r#"CREATE person_query_test:bob SET name = "Bob", address = { city: "SF" }"#,
-        )
-        .await
-        .unwrap();
+        db.query(r#"CREATE person_query_test:alice SET name = "Alice", address = { city: "NYC" }"#)
+            .await
+            .unwrap();
+        db.query(r#"CREATE person_query_test:bob SET name = "Bob", address = { city: "SF" }"#)
+            .await
+            .unwrap();
 
         // Query by nested field
         let mut result = db
@@ -2030,8 +2008,6 @@ mod tests {
             id: "product_test".to_string(),
             node_type: "schema".to_string(),
             content: "Product".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: chrono::Utc::now(),
@@ -2050,19 +2026,15 @@ mod tests {
 
         // Insert test data
         let db = service.node_service.store.db();
-        db.query(
-            r#"CREATE product_test:1 SET details = { category: "electronics", price: 999 }"#,
-        )
-        .await
-        .unwrap();
+        db.query(r#"CREATE product_test:1 SET details = { category: "electronics", price: 999 }"#)
+            .await
+            .unwrap();
         db.query(r#"CREATE product_test:2 SET details = { category: "books", price: 29 }"#)
             .await
             .unwrap();
-        db.query(
-            r#"CREATE product_test:3 SET details = { category: "electronics", price: 499 }"#,
-        )
-        .await
-        .unwrap();
+        db.query(r#"CREATE product_test:3 SET details = { category: "electronics", price: 499 }"#)
+            .await
+            .unwrap();
 
         // Query using indexed nested field
         let mut result = db
@@ -2166,8 +2138,6 @@ mod tests {
             id: "location_test".to_string(),
             node_type: "schema".to_string(),
             content: "Location".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: chrono::Utc::now(),

@@ -15,7 +15,6 @@ async fn test_schema_property_hydration() -> Result<(), Box<dyn std::error::Erro
         "date".to_string(),
         "schema".to_string(),
         "Date".to_string(),
-        None,
         json!({
             "is_core": true,
             "version": 1,

@@ -74,14 +74,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // CRITICAL: Initialize UI state for new nodes (e.g., promoted placeholders)
     // If UI state doesn't exist, compute depth and create default state
     if (!_uiState[node.id]) {
-      // Compute depth recursively
+      // Compute depth using backend hierarchy queries
       const computeDepth = (nodeId: string, visited = new Set<string>()): number => {
         if (visited.has(nodeId)) return 0; // Prevent infinite recursion
         visited.add(nodeId);
 
-        const n = sharedNodeStore.getNode(nodeId);
-        if (!n || !n.parentId) return 0;
-        return 1 + computeDepth(n.parentId, visited);
+        const parents = sharedNodeStore.getParentsForNode(nodeId);
+        if (parents.length === 0) return 0;
+        return 1 + computeDepth(parents[0].id, visited);
       };
 
       const depth = computeDepth(node.id);
@@ -354,7 +354,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     originalNodeContent?: string,
     focusNewNode?: boolean,
     paneId: string = DEFAULT_PANE_ID,
-    isInitialPlaceholder: boolean = false
+    isInitialPlaceholder: boolean = false,
+    parentId?: string | null // Accept parent ID as parameter (not stored in node)
   ): string {
     const afterNode = findNode(afterNodeId);
     if (!afterNode) {
@@ -366,15 +367,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Focus management now handled by FocusManager (single source of truth)
     // No need to clear autoFocus flags - derived from focusManager.editingNodeId
     const afterUIState = _uiState[afterNodeId] || createDefaultUIState(afterNodeId);
-    let newDepth: number;
-    let newParentId: string | null;
+    const newDepth = afterUIState.depth;
 
-    if (insertAtBeginning) {
-      newDepth = afterUIState.depth;
-      newParentId = afterNode.parentId;
+    // Determine parent from parameter or use backend query
+    let newParentId: string | null;
+    if (parentId !== undefined) {
+      newParentId = parentId;
     } else {
-      newDepth = afterUIState.depth;
-      newParentId = afterNode.parentId;
+      const parents = sharedNodeStore.getParentsForNode(afterNodeId);
+      newParentId = parents.length > 0 ? parents[0].id : null;
     }
 
     let initialContent = content;
@@ -407,44 +408,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       beforeSiblingId = afterNodeId;
     }
 
-    /**
-     * Determine containerNodeId - tracks which root document this node belongs to
-     *
-     * Rules:
-     * - containerNodeId = null only for root nodes themselves
-     * - All other nodes should have containerNodeId pointing to their root document
-     *
-     * Logic:
-     * - If node has explicit parent → inherit containerNodeId from parent (or use parent's ID if parent has none)
-     * - If afterNode is a root (containerNodeId = null) → use afterNode's ID as container
-     * - Otherwise → inherit afterNode's containerNodeId
-     *
-     * This ensures proper FOREIGN KEY relationships and allows database queries
-     * to efficiently find all nodes belonging to a specific root document.
-     */
-    let rootId: string | null;
-    if (newParentId) {
-      // Node has explicit parent - inherit containerNodeId from parent
-      const parent = sharedNodeStore.getNode(newParentId);
-      rootId = parent?.containerNodeId || newParentId;
-    } else {
-      // No explicit parent - check if afterNode is a root node or belongs to a root
-      if (afterNode.containerNodeId === null) {
-        // afterNode IS a root document, so new node belongs to that root
-        rootId = afterNodeId;
-      } else {
-        // afterNode belongs to a root, inherit that root
-        rootId = afterNode.containerNodeId;
-      }
-    }
-
     // Create Node with unified type system
+    // NOTE: parentId and containerNodeId removed - hierarchy managed by backend
     const newNode: Node = {
       id: nodeId,
       nodeType: nodeType,
       content: initialContent,
-      parentId: newParentId,
-      containerNodeId: rootId,
       beforeSiblingId: beforeSiblingId,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
@@ -473,6 +442,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const skipPersistence = isInitialPlaceholder;
     sharedNodeStore.setNode(newNode, viewerSource, skipPersistence);
     _uiState[nodeId] = newUIState;
+
+    // CRITICAL: Update children cache when creating a new node
+    // This keeps the cache synchronized with the actual hierarchy
+    sharedNodeStore.addChildToCache(newParentId, nodeId);
 
     // Set focus using FocusManager (single source of truth)
     // This replaces manual autoFocus flag manipulation
@@ -505,27 +478,23 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           await sharedNodeStore.waitForNodeSaves([nodeId]);
 
           // Now safe to transfer children - newNode exists in database
-          // IMPORTANT: Update both parentId AND containerNodeId
-          // Rule: containerNodeId = parentId for direct children of root nodes
+          // NOTE: parentId removed - hierarchy managed by backend via parent_of edges
           for (const child of children) {
-            sharedNodeStore.updateNode(
-              child.id,
-              { parentId: nodeId, containerNodeId: newNode.containerNodeId || nodeId },
-              viewerSource
-            );
+            // Backend will handle parent relationship through parent_of edges
+            sharedNodeStore.updateNode(child.id, {}, viewerSource);
           }
         });
       }
     }
 
     // Handle hierarchy positioning
+    // NOTE: Now using backend queries instead of afterNode.parentId
+    const afterNodeParents = sharedNodeStore.getParentsForNode(afterNodeId);
+    const afterNodeIsRoot = afterNodeParents.length === 0;
+
     if (insertAtBeginning) {
-      if (afterNode.parentId) {
-        // const siblings = Object.values(_nodes)
-        //   .filter(n => n.parentId === afterNode.parentId)
-        //   .map(n => n.id);
-        // const afterNodeIndex = siblings.indexOf(afterNodeId);
-        // Update sibling pointers (simplified for now)
+      if (!afterNodeIsRoot) {
+        // Update sibling pointers (backend handles parent relationships)
       } else {
         const afterNodeIndex = _rootNodeIds.indexOf(afterNodeId);
         _rootNodeIds = [
@@ -535,8 +504,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         ];
       }
     } else {
-      if (afterNode.parentId) {
-        // Insert after sibling
+      if (!afterNodeIsRoot) {
+        // Insert after sibling (backend handles parent relationships)
       } else {
         const afterNodeIndex = _rootNodeIds.indexOf(afterNodeId);
         _rootNodeIds = [
@@ -825,7 +794,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // This prevents "database is locked" errors and FOREIGN KEY violations
     // PersistenceCoordinator will ensure these operations complete before deletion
     const deletionDependencies = [previousNodeId]; // Content update must persist first
-    const siblings = sharedNodeStore.getNodesForParent(currentNode.parentId);
+    const currentNodeParents = sharedNodeStore.getParentsForNode(currentNodeId);
+    const currentParentId = currentNodeParents.length > 0 ? currentNodeParents[0].id : null;
+    const siblings = sharedNodeStore.getNodesForParent(currentParentId);
     const nextSibling = siblings.find((n) => n.beforeSiblingId === currentNodeId);
     if (nextSibling) {
       deletionDependencies.push(nextSibling.id); // Sibling chain repair must complete
@@ -849,7 +820,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
 
     // Invalidate sorted children cache for both old parent and new parent
-    invalidateSortedChildrenCache(currentNode.parentId);
+    invalidateSortedChildrenCache(currentParentId);
     invalidateSortedChildrenCache(currentNodeId);
 
     // Set focus on the previous node using FocusManager
@@ -910,7 +881,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (!node) return null;
 
     // Find the next sibling (the node that points to this one via beforeSiblingId)
-    const siblings = sharedNodeStore.getNodesForParent(node.parentId);
+    // NOTE: Now using backend query instead of node.parentId
+    const parents = sharedNodeStore.getParentsForNode(nodeId);
+    const parentId = parents.length > 0 ? parents[0].id : null;
+    const siblings = sharedNodeStore.getNodesForParent(parentId);
     const nextSibling = siblings.find((n) => n.beforeSiblingId === nodeId);
 
     if (nextSibling) {
@@ -931,10 +905,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (!node) return false;
 
     // Get SORTED siblings according to beforeSiblingId chain
+    // NOTE: Now using backend query instead of node.parentId
+    const parents = sharedNodeStore.getParentsForNode(nodeId);
+    const currentParentId = parents.length > 0 ? parents[0].id : null;
+
     let siblings: string[];
-    if (node.parentId) {
-      const unsortedSiblings = sharedNodeStore.getNodesForParent(node.parentId).map((n) => n.id);
-      siblings = sortChildrenByBeforeSiblingId(unsortedSiblings, node.parentId);
+    if (currentParentId) {
+      const unsortedSiblings = sharedNodeStore.getNodesForParent(currentParentId).map((n) => n.id);
+      siblings = sortChildrenByBeforeSiblingId(unsortedSiblings, currentParentId);
     } else {
       siblings = sortChildrenByBeforeSiblingId(_rootNodeIds, null);
     }
@@ -1004,33 +982,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
 
     // Step 3: Update the main node with persistence dependencies
-    // Set containerNodeId to the root container when indenting
-    // This is required for FOREIGN KEY validation and proper nesting
-    let containerNodeId: string | null = null;
-    if (targetParentId) {
-      // Walk up to find the root container
-      let current = sharedNodeStore.getNode(targetParentId);
-      while (current) {
-        if (!current.parentId) {
-          // Reached root level - this node is the container
-          containerNodeId = current.id;
-          break;
-        }
-        if (current.containerNodeId) {
-          // This node has an explicit container - use it
-          containerNodeId = current.containerNodeId;
-          break;
-        }
-        // Move up the chain
-        current = current.parentId ? sharedNodeStore.getNode(current.parentId) : undefined;
-      }
-    }
-
+    // NOTE: parentId and containerNodeId removed - hierarchy managed by backend via parent_of edges
     sharedNodeStore.updateNode(
       nodeId,
       {
-        parentId: targetParentId,
-        containerNodeId: containerNodeId,
         beforeSiblingId: beforeSiblingId
       },
       viewerSource,
@@ -1049,7 +1004,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // If node was a root node, remove from _rootNodeIds array
     // CRITICAL: Must reassign (not mutate) for Svelte 5 reactivity
-    if (!node.parentId) {
+    // NOTE: Now using backend query instead of node.parentId
+    if (!currentParentId) {
       const rootIndex = _rootNodeIds.indexOf(nodeId);
       if (rootIndex >= 0) {
         _rootNodeIds = _rootNodeIds.filter((id) => id !== nodeId);
@@ -1057,8 +1013,13 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
 
     // Invalidate sorted children cache for both old and new parents
-    invalidateSortedChildrenCache(node.parentId); // Old parent
+    invalidateSortedChildrenCache(currentParentId); // Old parent
     invalidateSortedChildrenCache(targetParentId); // New parent
+
+    // CRITICAL: Update children cache when moving node to new parent
+    // Remove from old parent, add to new parent
+    sharedNodeStore.removeChildFromCache(currentParentId, nodeId);
+    sharedNodeStore.addChildToCache(targetParentId, nodeId);
 
     // Ensure the target parent is expanded to show the newly indented child
     // This prevents the parent from appearing collapsed after indent
@@ -1089,12 +1050,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
   function outdentNode(nodeId: string): boolean {
     const node = sharedNodeStore.getNode(nodeId);
-    if (!node || !node.parentId) return false;
+    if (!node) return false;
 
-    const parent = sharedNodeStore.getNode(node.parentId);
-    if (!parent) return false;
+    // NOTE: Now using backend query instead of node.parentId
+    const parents = sharedNodeStore.getParentsForNode(nodeId);
+    if (parents.length === 0) return false;
 
-    const oldParentId = node.parentId;
+    const parent = parents[0];
+    const oldParentId = parent.id;
 
     // Find siblings that come after this node (they will become children)
     const siblings = sharedNodeStore.getNodesForParent(oldParentId).map((n) => n.id);
@@ -1107,7 +1070,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const updatedSiblingFromRemoval = removeFromSiblingChain(nodeId);
 
     // Step 2: Calculate new position in parent hierarchy
-    const newParentId = parent.parentId || null;
+    // NOTE: Now using backend query instead of parent.parentId
+    const parentParents = sharedNodeStore.getParentsForNode(parent.id);
+    const newParentId = parentParents.length > 0 ? parentParents[0].id : null;
     const uiState = _uiState[nodeId];
     const newDepth = newParentId ? (_uiState[newParentId]?.depth || 0) + 1 : 0;
 
@@ -1116,8 +1081,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     let positionBeforeSibling: string | null = oldParentId;
 
     // Check if old parent has a valid position in the new parent's context
-    const oldParentNode = sharedNodeStore.getNode(oldParentId);
-    if (oldParentNode && oldParentNode.parentId === newParentId) {
+    const oldParentParents = sharedNodeStore.getParentsForNode(oldParentId);
+    const oldParentCurrentParentId = oldParentParents.length > 0 ? oldParentParents[0].id : null;
+    if (oldParentCurrentParentId === newParentId) {
       // Old parent is a valid sibling in the new context
       positionBeforeSibling = oldParentId;
     } else {
@@ -1156,10 +1122,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
 
     // Step 4: Execute main node update
+    // NOTE: parentId removed - hierarchy managed by backend via parent_of edges
     sharedNodeStore.updateNode(
       nodeId,
       {
-        parentId: newParentId,
         beforeSiblingId: positionBeforeSibling
       },
       viewerSource,
@@ -1226,10 +1192,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           ];
 
           // Update the sibling
+          // NOTE: parentId removed - hierarchy managed by backend via parent_of edges
           sharedNodeStore.updateNode(
             siblingId,
             {
-              parentId: nodeId,
               beforeSiblingId
             },
             viewerSource,
@@ -1268,8 +1234,17 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     invalidateSortedChildrenCache(newParentId); // New parent
     invalidateSortedChildrenCache(nodeId); // Outdented node (now has new children)
 
-    // If siblings were transferred as children, expand the outdented node to show them
+    // CRITICAL: Update children cache when outdenting
+    // Remove from old parent, add to new parent
+    sharedNodeStore.removeChildFromCache(oldParentId, nodeId);
+    sharedNodeStore.addChildToCache(newParentId, nodeId);
+
+    // Also update cache for siblings that became children of the outdented node
     if (siblingsBelow.length > 0) {
+      for (const siblingId of siblingsBelow) {
+        sharedNodeStore.removeChildFromCache(oldParentId, siblingId);
+        sharedNodeStore.addChildToCache(nodeId, siblingId);
+      }
       setExpanded(nodeId, true);
     }
 
@@ -1299,13 +1274,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (children.length === 0) return;
 
     // Find the nearest ancestor node at the SAME depth as the deleted node
-    const deletedNode = sharedNodeStore.getNode(nodeId);
+    const _deletedNode = sharedNodeStore.getNode(nodeId);
     const deletedNodeDepth = _uiState[nodeId]?.depth ?? 0;
 
-    // CRITICAL: If deleted node is at root level (parentId=null), promote children to root level too
+    // CRITICAL: If deleted node is at root level, promote children to root level too
     // Don't make them children of the previous sibling - maintain the flat root structure
+    // NOTE: Now using backend query instead of deletedNode.parentId
+    const deletedNodeParents = sharedNodeStore.getParentsForNode(nodeId);
     let newParentForChildren: string | null;
-    if (deletedNode?.parentId === null) {
+    if (deletedNodeParents.length === 0) {
       newParentForChildren = null; // Promote to root level
     } else {
       // For nested nodes, find a parent at the same depth
@@ -1322,8 +1299,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           newParentForChildren = searchNode;
           break;
         }
-        const searchNodeData = sharedNodeStore.getNode(searchNode);
-        searchNode = searchNodeData?.parentId ?? null;
+        const searchNodeParents = sharedNodeStore.getParentsForNode(searchNode);
+        searchNode = searchNodeParents.length > 0 ? searchNodeParents[0].id : null;
       }
     }
 
@@ -1349,21 +1326,18 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Note: We could optimize this with a batch update API, but typical nodes have <10 children
     // and PersistenceCoordinator already handles batching at a lower level
     for (const child of children) {
-      // Determine the new parent node to check its containerNodeId
-      const newParent = newParentForChildren ? sharedNodeStore.getNode(newParentForChildren) : null;
-
-      const updates: Partial<Node> = {
-        parentId: newParentForChildren,
-        // CRITICAL: Update containerNodeId to prevent FOREIGN KEY violations when old container is deleted
-        // Container should match the new parent's container (for nested nodes) or null (for root-level)
-        containerNodeId: newParent?.containerNodeId ?? null
-      };
+      const updates: Partial<Node> = {};
 
       if (child.id === firstChildId) {
         updates.beforeSiblingId = lastSiblingId;
       }
 
+      // NOTE: parentId and containerNodeId removed - hierarchy managed by backend via parent_of edges
       sharedNodeStore.updateNode(child.id, updates, viewerSource);
+
+      // CRITICAL: Update children cache when promoting children to new parent
+      sharedNodeStore.removeChildFromCache(nodeId, child.id);
+      sharedNodeStore.addChildToCache(newParentForChildren, child.id);
 
       // CRITICAL: If promoting to root level, add to _rootNodeIds
       // Must reassign (not mutate) for Svelte 5 reactivity
@@ -1384,44 +1358,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       };
 
       updateDescendantDepths(child.id);
-
-      // CRITICAL: Recursively fix containerNodeId for all descendants
-      // When promoting a child, all of its descendants still have containerNodeId pointing to the old deleted node
-      // This would cause FOREIGN KEY violations when the old container is deleted
-      const newContainerId = newParent?.containerNodeId ?? null;
-      fixDescendantContainerIds(child.id, nodeId, newContainerId);
     }
   }
 
-  /**
-   * Recursively updates containerNodeId for all descendants that reference an old container
-   * This prevents FOREIGN KEY violations when deleting a node that was a container for nested descendants
-   *
-   * @param rootId - The root node whose descendants to update
-   * @param oldContainerId - The old container ID to replace
-   * @param newContainerId - The new container ID to use
-   */
-  function fixDescendantContainerIds(
-    rootId: string,
-    oldContainerId: string,
-    newContainerId: string | null
-  ): void {
-    const descendants = sharedNodeStore.getNodesForParent(rootId);
-
-    for (const descendant of descendants) {
-      // Only update if this descendant currently references the old container
-      if (descendant.containerNodeId === oldContainerId) {
-        sharedNodeStore.updateNode(
-          descendant.id,
-          { containerNodeId: newContainerId },
-          viewerSource
-        );
-      }
-
-      // Recurse to fix deeper descendants
-      fixDescendantContainerIds(descendant.id, oldContainerId, newContainerId);
-    }
-  }
 
   /**
    * Deletes a node from storage with sibling chain repair.
@@ -1445,10 +1384,17 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
+    // Determine parent BEFORE deleting the node
+    const parents = sharedNodeStore.getParentsForNode(nodeId);
+    const parentId = parents.length > 0 ? parents[0].id : null;
+
     cleanupDebouncedOperations(nodeId);
 
     // Remove node from sibling chain BEFORE deletion to prevent orphans
     removeFromSiblingChain(nodeId);
+
+    // CRITICAL: Update children cache to remove this node from its parent
+    sharedNodeStore.removeChildFromCache(parentId, nodeId);
 
     sharedNodeStore.deleteNode(nodeId, viewerSource);
     delete _uiState[nodeId];
@@ -1459,9 +1405,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       _rootNodeIds = _rootNodeIds.filter((id) => id !== nodeId);
     }
 
-    // Invalidate sorted children cache for parent
-    invalidateSortedChildrenCache(node.parentId);
-    // Also invalidate cache for the deleted node itself (in case it's still referenced)
+    // Invalidate sorted children cache for this node and its children
     invalidateSortedChildrenCache(nodeId);
 
     events.nodeDeleted(nodeId);
@@ -1472,8 +1416,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       type: 'node:deleted',
       namespace: 'lifecycle',
       source: serviceName,
-      nodeId,
-      parentId: node.parentId || undefined
+      nodeId
     });
 
     eventBus.emit<import('./event-types').HierarchyChangedEvent>({
@@ -1520,16 +1463,16 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       // Initialize UIState if it doesn't exist (e.g., when indenting creates new parent-child relationship)
       let uiState = _uiState[nodeId];
       if (!uiState) {
-        // Compute depth by walking parent chain
+        // Compute depth by walking parent chain using backend queries
         let depth = 0;
-        let currentNode = node;
+        let currentNodeId = nodeId;
         const visited = new Set<string>();
-        while (currentNode.parentId && !visited.has(currentNode.id)) {
-          visited.add(currentNode.id);
-          const parent = sharedNodeStore.getNode(currentNode.parentId);
-          if (!parent) break;
+        while (!visited.has(currentNodeId)) {
+          visited.add(currentNodeId);
+          const parents = sharedNodeStore.getParentsForNode(currentNodeId);
+          if (parents.length === 0) break;
           depth++;
-          currentNode = parent;
+          currentNodeId = parents[0].id;
         }
 
         uiState = createDefaultUIState(nodeId, { depth, expanded });
@@ -1847,14 +1790,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         isInitialPlaceholder: options?.isInitialPlaceholder ?? false
       };
 
-      // Compute depth for a node based on parent chain
+      // Compute depth for a node based on parent chain using backend queries
       const computeDepth = (nodeId: string, visited = new Set<string>()): number => {
         if (visited.has(nodeId)) return 0; // Prevent infinite recursion
         visited.add(nodeId);
 
-        const node = sharedNodeStore.getNode(nodeId);
-        if (!node || !node.parentId) return 0;
-        return 1 + computeDepth(node.parentId, visited);
+        const parents = sharedNodeStore.getParentsForNode(nodeId);
+        if (parents.length === 0) return 0;
+        return 1 + computeDepth(parents[0].id, visited);
       };
 
       // First pass: Add all nodes to SharedNodeStore
@@ -1889,8 +1832,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       }
 
       // Second pass: Compute depths and identify roots
-      const childIds = new Set(nodes.filter((n) => n.parentId).map((n) => n.id));
-      _rootNodeIds = nodes.filter((n) => !n.parentId || !childIds.has(n.id)).map((n) => n.id);
+      // NOTE: Now using backend queries to determine which nodes are children
+      const childIds = new Set<string>();
+      for (const node of nodes) {
+        const parents = sharedNodeStore.getParentsForNode(node.id);
+        if (parents.length > 0) {
+          childIds.add(node.id);
+        }
+      }
+      _rootNodeIds = nodes.filter((n) => !childIds.has(n.id)).map((n) => n.id);
 
       for (const node of nodes) {
         const depth = computeDepth(node.id);

@@ -53,42 +53,40 @@ describe('Node Ordering Integration Tests', () => {
     nodeService = createReactiveNodeService(mockEvents);
   });
 
-  // Helper to get sorted children by traversing beforeSiblingId linked list
-  function getSortedChildren(parentId: string | null): string[] {
+  // Helper to get sorted nodes by traversing beforeSiblingId linked list
+  function getSortedChildren(_parentId: string | null): string[] {
     const nodes = nodeService.nodes;
-    const childIds = Array.from(nodes.values())
-      .filter((n) => n.parentId === parentId)
-      .map((n) => n.id);
+    const nodeIds = Array.from(nodes.values()).map((n) => n.id);
 
-    if (childIds.length === 0) return [];
+    if (nodeIds.length === 0) return [];
 
-    // Find first child (no beforeSiblingId or beforeSiblingId not in sibling set)
-    const firstChild = childIds.find((id) => {
+    // Find first node (no beforeSiblingId or beforeSiblingId not in node set)
+    const firstNode = nodeIds.find((id) => {
       const node = nodes.get(id);
-      return !node?.beforeSiblingId || !childIds.includes(node.beforeSiblingId);
+      return !node?.beforeSiblingId || !nodeIds.includes(node.beforeSiblingId);
     });
 
-    if (!firstChild) return childIds; // Fallback
+    if (!firstNode) return nodeIds; // Fallback
 
     // Traverse linked list
     const sorted: string[] = [];
     const visited = new Set<string>();
-    let currentId: string | undefined = firstChild;
+    let currentId: string | undefined = firstNode;
 
-    while (currentId && visited.size < childIds.length) {
+    while (currentId && visited.size < nodeIds.length) {
       if (visited.has(currentId)) break; // Circular ref
       visited.add(currentId);
       sorted.push(currentId);
 
       // Find next (node whose beforeSiblingId points to current)
       const nextNode = Array.from(nodes.values()).find(
-        (n) => n.beforeSiblingId === currentId && childIds.includes(n.id)
+        (n) => n.beforeSiblingId === currentId && nodeIds.includes(n.id)
       );
       currentId = nextNode?.id;
     }
 
     // Append any orphaned nodes
-    for (const id of childIds) {
+    for (const id of nodeIds) {
       if (!visited.has(id)) sorted.push(id);
     }
 

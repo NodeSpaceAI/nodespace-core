@@ -591,7 +591,6 @@ pub async fn mention_autocomplete(
     // Build NodeQuery with mention-specific defaults
     let node_query = NodeQuery {
         content_contains: if query.is_empty() { None } else { Some(query) },
-        include_containers_and_tasks: Some(true),
         limit,
         ..Default::default()
     };

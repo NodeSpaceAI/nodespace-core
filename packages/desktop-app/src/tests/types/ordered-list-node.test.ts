@@ -16,8 +16,6 @@ describe('OrderedListNode Type Guard', () => {
       id: 'test-1',
       nodeType: 'ordered-list',
       content: 'First item',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
@@ -33,8 +31,6 @@ describe('OrderedListNode Type Guard', () => {
       id: 'test-2',
       nodeType: 'text',
       content: 'Regular text',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
@@ -53,15 +49,14 @@ describe('OrderedListNodeHelpers', () => {
 
       expect(item.nodeType).toBe('ordered-list');
       expect(item.content).toBe('First step in the process');
-      expect(item.parentId).toBeNull();
       expect(item.properties).toEqual({});
     });
 
-    it('creates an ordered list item with parent ID', () => {
-      const item = OrderedListNodeHelpers.createOrderedListItem('A list item', 'parent-123');
+    it('creates an ordered list item with content (parent relationship via backend)', () => {
+      const item = OrderedListNodeHelpers.createOrderedListItem('A list item');
 
-      expect(item.parentId).toBe('parent-123');
       expect(item.content).toBe('A list item');
+      // Note: Parent relationships managed via backend graph queries
     });
 
     it('generates unique IDs', () => {
@@ -86,8 +81,6 @@ describe('OrderedListNodeHelpers', () => {
         id: 'test-3',
         nodeType: 'ordered-list',
         content: 'First line\nSecond line\nThird line',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -103,8 +96,6 @@ describe('OrderedListNodeHelpers', () => {
         id: 'test-4',
         nodeType: 'ordered-list',
         content: 'A single line item',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -122,8 +113,6 @@ describe('OrderedListNodeHelpers', () => {
         id: 'test-5',
         nodeType: 'ordered-list',
         content: 'First line\nSecond line\nThird line',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -139,8 +128,6 @@ describe('OrderedListNodeHelpers', () => {
         id: 'test-6',
         nodeType: 'ordered-list',
         content: 'Single line',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -156,8 +143,6 @@ describe('OrderedListNodeHelpers', () => {
         id: 'test-7',
         nodeType: 'ordered-list',
         content: '',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -175,8 +160,6 @@ describe('OrderedListNodeHelpers', () => {
         id: 'test-8',
         nodeType: 'ordered-list',
         content: 'Line 1\nLine 2\nLine 3',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -192,8 +175,6 @@ describe('OrderedListNodeHelpers', () => {
         id: 'test-9',
         nodeType: 'ordered-list',
         content: 'Single line',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -209,8 +190,6 @@ describe('OrderedListNodeHelpers', () => {
         id: 'test-10',
         nodeType: 'ordered-list',
         content: '',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -248,8 +227,6 @@ describe('OrderedListNodeHelpers', () => {
         id: 'test-11',
         nodeType: 'ordered-list',
         content: '1. First item',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -265,8 +242,6 @@ describe('OrderedListNodeHelpers', () => {
         id: 'test-12',
         nodeType: 'ordered-list',
         content: 'No prefix here',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
@@ -304,8 +279,6 @@ describe('Integration', () => {
       id: 'test-13',
       nodeType: 'ordered-list',
       content: '1. First step: gather requirements\nSub-point a\nSub-point b',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
@@ -353,8 +326,6 @@ describe('Integration', () => {
           id: `test-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
           nodeType: 'ordered-list',
           content,
-          parentId: null,
-          containerNodeId: null,
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
@@ -375,8 +346,6 @@ describe('Integration', () => {
       id: 'test-14',
       nodeType: 'ordered-list',
       content: '1. An item',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),

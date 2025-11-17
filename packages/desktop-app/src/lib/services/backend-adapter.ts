@@ -409,20 +409,8 @@ export class TauriAdapter implements BackendAdapter {
         namespace: 'lifecycle',
         source: 'TauriAdapter',
         nodeId: nodeId,
-        parentId: node.parentId ?? undefined,
         nodeType: node.nodeType
       });
-
-      // Emit hierarchy:changed event if node has parent (structural change)
-      if (node.parentId !== null) {
-        eventBus.emit<HierarchyChangedEvent>({
-          type: 'hierarchy:changed',
-          namespace: 'lifecycle',
-          source: 'TauriAdapter',
-          affectedNodes: [nodeId, node.parentId],
-          changeType: 'create'
-        });
-      }
 
       return nodeId;
     } catch (error) {
@@ -451,14 +439,11 @@ export class TauriAdapter implements BackendAdapter {
 
       if ('content' in update) {
         updateType = 'content';
-      } else if ('beforeSiblingId' in update || 'parentId' in update) {
+      } else if ('beforeSiblingId' in update) {
         updateType = 'hierarchy';
         // Track affected nodes for hierarchy changes (only if not null)
         if (update.beforeSiblingId !== undefined && update.beforeSiblingId !== null) {
           affectedNodes.push(update.beforeSiblingId);
-        }
-        if (update.parentId !== undefined && update.parentId !== null) {
-          affectedNodes.push(update.parentId);
         }
       } else if ('nodeType' in update) {
         updateType = 'nodeType';
@@ -509,20 +494,8 @@ export class TauriAdapter implements BackendAdapter {
           type: 'node:deleted',
           namespace: 'lifecycle',
           source: 'TauriAdapter',
-          nodeId: id,
-          parentId: nodeBeforeDeletion.parentId ?? undefined
+          nodeId: id
         });
-
-        // Emit hierarchy:changed event if node had parent (structural change)
-        if (nodeBeforeDeletion.parentId) {
-          eventBus.emit<HierarchyChangedEvent>({
-            type: 'hierarchy:changed',
-            namespace: 'lifecycle',
-            source: 'TauriAdapter',
-            affectedNodes: [id, nodeBeforeDeletion.parentId],
-            changeType: 'delete'
-          });
-        }
       }
     } catch (error) {
       const err = toError(error);
@@ -986,20 +959,8 @@ export class HttpAdapter implements BackendAdapter {
         namespace: 'lifecycle',
         source: 'HttpAdapter',
         nodeId: nodeId,
-        parentId: node.parentId ?? undefined,
         nodeType: node.nodeType
       });
-
-      // Emit hierarchy:changed event if node has parent (structural change)
-      if (node.parentId !== null) {
-        eventBus.emit<HierarchyChangedEvent>({
-          type: 'hierarchy:changed',
-          namespace: 'lifecycle',
-          source: 'HttpAdapter',
-          affectedNodes: [nodeId, node.parentId],
-          changeType: 'create'
-        });
-      }
 
       return nodeId;
     } catch (error) {
@@ -1045,14 +1006,11 @@ export class HttpAdapter implements BackendAdapter {
 
       if ('content' in update) {
         updateType = 'content';
-      } else if ('beforeSiblingId' in update || 'parentId' in update) {
+      } else if ('beforeSiblingId' in update) {
         updateType = 'hierarchy';
         // Track affected nodes for hierarchy changes (only if not null)
         if (update.beforeSiblingId !== undefined && update.beforeSiblingId !== null) {
           affectedNodes.push(update.beforeSiblingId);
-        }
-        if (update.parentId !== undefined && update.parentId !== null) {
-          affectedNodes.push(update.parentId);
         }
       } else if ('nodeType' in update) {
         updateType = 'nodeType';
@@ -1117,20 +1075,8 @@ export class HttpAdapter implements BackendAdapter {
           type: 'node:deleted',
           namespace: 'lifecycle',
           source: 'HttpAdapter',
-          nodeId: id,
-          parentId: nodeBeforeDeletion.parentId ?? undefined
+          nodeId: id
         });
-
-        // Emit hierarchy:changed event if node had parent (structural change)
-        if (nodeBeforeDeletion.parentId) {
-          eventBus.emit<HierarchyChangedEvent>({
-            type: 'hierarchy:changed',
-            namespace: 'lifecycle',
-            source: 'HttpAdapter',
-            affectedNodes: [id, nodeBeforeDeletion.parentId],
-            changeType: 'delete'
-          });
-        }
       }
     } catch (error) {
       const err = toError(error);

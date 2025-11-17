@@ -7,10 +7,10 @@ mod tests {
 
     #[test]
     fn test_from_node_validates_type() {
-        let node = Node::new("task".to_string(), "Test".to_string(), None, json!({}));
+        let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         assert!(TaskNode::from_node(node).is_ok());
 
-        let wrong_type = Node::new("text".to_string(), "Test".to_string(), None, json!({}));
+        let wrong_type = Node::new("text".to_string(), "Test".to_string(), json!({}));
         let result = TaskNode::from_node(wrong_type);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Expected 'task'"));
@@ -21,7 +21,6 @@ mod tests {
         let node = Node::new(
             "task".to_string(),
             "Test".to_string(),
-            None,
             json!({"status": "in_progress"}),
         );
         let task = TaskNode::from_node(node).unwrap();
@@ -30,7 +29,7 @@ mod tests {
 
     #[test]
     fn test_status_getter_default() {
-        let node = Node::new("task".to_string(), "Test".to_string(), None, json!({}));
+        let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let task = TaskNode::from_node(node).unwrap();
         assert_eq!(task.status(), TaskStatus::Pending);
     }
@@ -40,7 +39,6 @@ mod tests {
         let node = Node::new(
             "task".to_string(),
             "Test".to_string(),
-            None,
             json!({"status": "invalid_status"}),
         );
         let task = TaskNode::from_node(node).unwrap();
@@ -50,7 +48,7 @@ mod tests {
 
     #[test]
     fn test_status_setter() {
-        let node = Node::new("task".to_string(), "Test".to_string(), None, json!({}));
+        let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let mut task = TaskNode::from_node(node).unwrap();
 
         task.set_status(TaskStatus::Completed);
@@ -64,7 +62,6 @@ mod tests {
         let node = Node::new(
             "task".to_string(),
             "Test".to_string(),
-            None,
             json!({"priority": 3}),
         );
         let task = TaskNode::from_node(node).unwrap();
@@ -73,14 +70,14 @@ mod tests {
 
     #[test]
     fn test_priority_getter_default() {
-        let node = Node::new("task".to_string(), "Test".to_string(), None, json!({}));
+        let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let task = TaskNode::from_node(node).unwrap();
         assert_eq!(task.priority(), 2);
     }
 
     #[test]
     fn test_priority_setter() {
-        let node = Node::new("task".to_string(), "Test".to_string(), None, json!({}));
+        let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let mut task = TaskNode::from_node(node).unwrap();
 
         task.set_priority(4);
@@ -94,7 +91,6 @@ mod tests {
         let node = Node::new(
             "task".to_string(),
             "Test".to_string(),
-            None,
             json!({"due_date": "2025-01-15"}),
         );
         let task = TaskNode::from_node(node).unwrap();
@@ -103,14 +99,14 @@ mod tests {
 
     #[test]
     fn test_due_date_getter_none() {
-        let node = Node::new("task".to_string(), "Test".to_string(), None, json!({}));
+        let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let task = TaskNode::from_node(node).unwrap();
         assert_eq!(task.due_date(), None);
     }
 
     #[test]
     fn test_due_date_setter() {
-        let node = Node::new("task".to_string(), "Test".to_string(), None, json!({}));
+        let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let mut task = TaskNode::from_node(node).unwrap();
 
         task.set_due_date(Some("2025-02-01".to_string()));
@@ -124,7 +120,6 @@ mod tests {
         let node = Node::new(
             "task".to_string(),
             "Test".to_string(),
-            None,
             json!({"due_date": "2025-01-15"}),
         );
         let mut task = TaskNode::from_node(node).unwrap();
@@ -140,7 +135,6 @@ mod tests {
         let node = Node::new(
             "task".to_string(),
             "Test".to_string(),
-            None,
             json!({"assignee_id": "user-123"}),
         );
         let task = TaskNode::from_node(node).unwrap();
@@ -149,14 +143,14 @@ mod tests {
 
     #[test]
     fn test_assignee_id_getter_none() {
-        let node = Node::new("task".to_string(), "Test".to_string(), None, json!({}));
+        let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let task = TaskNode::from_node(node).unwrap();
         assert_eq!(task.assignee_id(), None);
     }
 
     #[test]
     fn test_assignee_id_setter() {
-        let node = Node::new("task".to_string(), "Test".to_string(), None, json!({}));
+        let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let mut task = TaskNode::from_node(node).unwrap();
 
         task.set_assignee_id(Some("user-456".to_string()));
@@ -170,7 +164,6 @@ mod tests {
         let node = Node::new(
             "task".to_string(),
             "Test".to_string(),
-            None,
             json!({"assignee_id": "user-123"}),
         );
         let mut task = TaskNode::from_node(node).unwrap();
@@ -186,7 +179,6 @@ mod tests {
         let original = Node::new(
             "task".to_string(),
             "Test task".to_string(),
-            Some("parent-123".to_string()),
             json!({"status": "pending", "priority": 2}),
         );
         let original_id = original.id.clone();
@@ -197,7 +189,6 @@ mod tests {
         assert_eq!(converted_back.id, original_id);
         assert_eq!(converted_back.node_type, "task");
         assert_eq!(converted_back.content, "Test task");
-        assert_eq!(converted_back.parent_id, Some("parent-123".to_string()));
         assert_eq!(converted_back.properties["status"], "pending");
         assert_eq!(converted_back.properties["priority"], 2);
     }
@@ -207,7 +198,6 @@ mod tests {
         let node = Node::new(
             "task".to_string(),
             "Test".to_string(),
-            None,
             json!({"status": "completed"}),
         );
         let task = TaskNode::from_node(node).unwrap();
@@ -219,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_as_node_mut() {
-        let node = Node::new("task".to_string(), "Test".to_string(), None, json!({}));
+        let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let mut task = TaskNode::from_node(node).unwrap();
 
         task.as_node_mut().content = "Updated content".to_string();
@@ -262,14 +252,12 @@ mod tests {
             .with_priority(1)
             .with_due_date("2025-12-31".to_string())
             .with_assignee_id("user-789".to_string())
-            .with_parent_id("project-001".to_string())
             .build();
 
         assert_eq!(task.status(), TaskStatus::InProgress);
         assert_eq!(task.priority(), 1);
         assert_eq!(task.due_date(), Some("2025-12-31".to_string()));
         assert_eq!(task.assignee_id(), Some("user-789".to_string()));
-        assert_eq!(task.as_node().parent_id, Some("project-001".to_string()));
     }
 
     #[test]
@@ -326,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_multiple_property_updates() {
-        let node = Node::new("task".to_string(), "Test".to_string(), None, json!({}));
+        let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let mut task = TaskNode::from_node(node).unwrap();
 
         // Update multiple properties

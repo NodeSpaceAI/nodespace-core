@@ -10,7 +10,7 @@ use crate::mcp::types::{MCPError, MCPNotification, MCPRequest, MCPResponse};
 use crate::operations::NodeOperations;
 use crate::services::{NodeEmbeddingService, SchemaService};
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -279,14 +279,15 @@ async fn run_http_server(
 ///
 /// Supports protocol version negotiation (2024-11-05, 2025-03-26, 2025-06-18).
 async fn handle_streamable_http_request(
-    headers: HeaderMap,
     State((services, callback, state)): State<(
         Arc<McpServices>,
         Option<ResponseCallback>,
         Arc<ServerState>,
     )>,
-    body: String,
+    headers: HeaderMap,
+    body_bytes: Bytes,
 ) -> Result<Response, StatusCode> {
+    let body = String::from_utf8(body_bytes.to_vec()).map_err(|_| StatusCode::BAD_REQUEST)?;
     info!("📥 Streamable HTTP request received");
 
     // Parse the JSON-RPC message

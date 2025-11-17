@@ -197,8 +197,6 @@ impl From<SurrealNode> for Node {
             id,
             node_type: sn.node_type,
             content: sn.content,
-            parent_id: None,         // Removed - use graph edges instead
-            container_node_id: None, // Removed - use graph edges instead
             before_sibling_id: sn.before_sibling_id,
             version: sn.version,
             created_at: DateTime::parse_from_rfc3339(&sn.created_at)
@@ -547,8 +545,6 @@ where
             id: "task".to_string(),
             node_type: "schema".to_string(),
             content: "Task".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: now,
@@ -626,8 +622,6 @@ where
             id: "date".to_string(),
             node_type: "schema".to_string(),
             content: "Date".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: now,
@@ -649,8 +643,6 @@ where
             id: "text".to_string(),
             node_type: "schema".to_string(),
             content: "Text".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: now,
@@ -672,8 +664,6 @@ where
             id: "header".to_string(),
             node_type: "schema".to_string(),
             content: "Header".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: now,
@@ -695,8 +685,6 @@ where
             id: "code-block".to_string(),
             node_type: "schema".to_string(),
             content: "Code Block".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: now,
@@ -718,8 +706,6 @@ where
             id: "quote-block".to_string(),
             node_type: "schema".to_string(),
             content: "Quote Block".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: now,
@@ -741,8 +727,6 @@ where
             id: "ordered-list".to_string(),
             node_type: "schema".to_string(),
             content: "Ordered List".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: now,
@@ -916,32 +900,8 @@ where
                 .context("Failed to set data link")?;
         }
 
-        // Create has_child graph edge if parent_id is set
-        // This establishes the parent-child relationship in the graph
-        if let Some(parent_id) = &node.parent_id {
-            // Validate that this relationship won't create a cycle
-            // CRITICAL: Prevents infinite loops in tree traversal
-            self.validate_no_cycle(parent_id, &node.id).await?;
-
-            tracing::debug!("Creating has_child edge: {} -> {}", parent_id, node.id);
-            // Create Thing record IDs (not strings) for RELATE statement
-            use surrealdb::sql::Thing;
-            let parent_thing = Thing::from(("node".to_string(), parent_id.to_string()));
-            let child_thing = Thing::from(("node".to_string(), node.id.clone()));
-
-            self.db
-                .query("RELATE $parent_thing->has_child->$child_thing;")
-                .bind(("parent_thing", parent_thing))
-                .bind(("child_thing", child_thing))
-                .await
-                .context("Failed to create parent-child edge")?;
-            tracing::debug!("Successfully created has_child edge");
-        } else {
-            tracing::debug!(
-                "No parent_id set for node {}, skipping edge creation",
-                node.id
-            );
-        }
+        // Note: Parent-child relationships are now established separately via move_node()
+        // This allows cleaner separation of node creation from hierarchy management
 
         // Return the created node directly
         Ok(node)
@@ -1324,10 +1284,7 @@ where
             conditions.push("type = $node_type".to_string());
         }
 
-        if let Some(true) = query.include_containers_and_tasks {
-            // Include tasks OR root nodes (no incoming has_child edges)
-            conditions.push("(type = 'task' OR !EXISTS(<-has_child<-node))".to_string());
-        }
+        // Note: include_containers_and_tasks field removed - use graph edges and separate queries instead
 
         // Build SQL query
         let where_clause = if !conditions.is_empty() {
@@ -1365,7 +1322,7 @@ where
     pub async fn get_children(&self, parent_id: Option<&str>) -> Result<Vec<Node>> {
         // Use graph edges for hierarchy traversal
         // Note: We don't use FETCH data because it causes deserialization issues (same as get_node)
-        let (surreal_nodes, parent_id_value) = if let Some(parent_id) = parent_id {
+        let surreal_nodes = if let Some(parent_id) = parent_id {
             // Create Thing record ID for parent node
             use surrealdb::sql::Thing;
             let parent_thing = Thing::from(("node".to_string(), parent_id.to_string()));
@@ -1382,7 +1339,7 @@ where
                 .take(0)
                 .context("Failed to extract children from response")?;
 
-            (nodes, Some(parent_id.to_string()))
+            nodes
         } else {
             // Root nodes: nodes that have NO incoming has_child edges
             let mut response = self
@@ -1395,21 +1352,11 @@ where
                 .take(0)
                 .context("Failed to extract root nodes from response")?;
 
-            (nodes, None)
+            nodes
         };
 
         // Convert to nodes
         let mut nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
-
-        // Populate parent_id and container_node_id for frontend compatibility
-        // TODO(Issue #514): Remove these fields and use graph edges directly
-        // In graph architecture, hierarchy is derived from edges, not stored in fields
-        if let Some(pid) = parent_id_value {
-            for node in &mut nodes {
-                node.parent_id = Some(pid.clone());
-                node.container_node_id = Some(pid.clone());
-            }
-        }
 
         // Batch fetch properties for nodes that have them
         // Performance: 100 nodes with properties = 2-3 queries (vs 101 with N+1 pattern)
@@ -1453,6 +1400,55 @@ where
         // Sort by before_sibling_id in-memory (topological sort of linked list)
         // TODO: Implement proper linked list ordering
         Ok(nodes)
+    }
+
+    /// Get the parent of a node (via incoming has_child edge)
+    ///
+    /// Returns the node's parent if it has one, or None if it's a root node.
+    ///
+    /// # Arguments
+    ///
+    /// * `child_id` - The child node ID
+    ///
+    /// # Returns
+    ///
+    /// `Some(parent_node)` if the node has a parent, `None` if it's a root node
+    pub async fn get_parent(&self, child_id: &str) -> Result<Option<Node>> {
+        use surrealdb::sql::Thing;
+        let child_thing = Thing::from(("node".to_string(), child_id.to_string()));
+
+        // Query for parent via incoming has_child edge
+        // SELECT * FROM node WHERE id IN (SELECT VALUE in FROM has_child WHERE out = $child_thing)
+        let mut response = self
+            .db
+            .query("SELECT * FROM node WHERE id IN (SELECT VALUE in FROM has_child WHERE out = $child_thing) LIMIT 1;")
+            .bind(("child_thing", child_thing))
+            .await
+            .context("Failed to get parent")?;
+
+        let nodes: Vec<SurrealNode> = response
+            .take(0)
+            .context("Failed to extract parent from response")?;
+
+        if nodes.is_empty() {
+            return Ok(None);
+        }
+
+        // Convert to node and fetch properties if needed
+        let mut node: Node = nodes.into_iter().next().unwrap().into();
+
+        // Fetch properties if this node type has them
+        if TYPES_WITH_PROPERTIES.contains(&node.node_type.as_str()) {
+            if let Ok(props_map) =
+                batch_fetch_properties(&self.db, &node.node_type, &[node.id.clone()]).await
+            {
+                if let Some(props) = props_map.get(&node.id) {
+                    node.properties = props.clone();
+                }
+            }
+        }
+
+        Ok(Some(node))
     }
 
     /// Get entire node tree recursively in a SINGLE query
@@ -1944,7 +1940,6 @@ where
                 schema_id,
                 "schema".to_string(),
                 node_type.to_string(),
-                None,
                 schema.clone(),
             );
             self.create_node(node).await?;
@@ -2099,13 +2094,12 @@ where
         // SurrealDB query using vector::similarity::cosine
         // We need to explicitly select fields to avoid deserialization issues with the computed similarity field
         // Use SurrealQL's OR operator to provide defaults for NONE values (SurrealDB's COALESCE equivalent)
+        // Note: parent_id/container_node_id removed - use graph edges instead
         let query = r#"
             SELECT
                 uuid,
                 node_type,
                 content,
-                parent_id,
-                container_node_id,
                 before_sibling_id,
                 version,
                 created_at,
@@ -2349,12 +2343,7 @@ mod tests {
     async fn test_create_and_get_node() -> Result<()> {
         let (store, _temp_dir) = create_test_store().await?;
 
-        let node = Node::new(
-            "text".to_string(),
-            "Test content".to_string(),
-            None,
-            json!({}),
-        );
+        let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
 
         let created = store.create_node(node.clone()).await?;
         assert_eq!(created.id, node.id);
@@ -2374,7 +2363,6 @@ mod tests {
         let node = Node::new(
             "text".to_string(),
             "Original content".to_string(),
-            None,
             json!({}),
         );
 
@@ -2395,12 +2383,7 @@ mod tests {
     async fn test_delete_node() -> Result<()> {
         let (store, _temp_dir) = create_test_store().await?;
 
-        let node = Node::new(
-            "text".to_string(),
-            "Test content".to_string(),
-            None,
-            json!({}),
-        );
+        let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
 
         let created = store.create_node(node.clone()).await?;
 
@@ -2497,12 +2480,7 @@ mod tests {
             .collect();
 
         // Create nodes
-        let node1 = Node::new(
-            "text".to_string(),
-            "Base content".to_string(),
-            None,
-            json!({}),
-        );
+        let node1 = Node::new("text".to_string(), "Base content".to_string(), json!({}));
         let mut created1 = store.create_node(node1).await?;
         store.update_embedding(&created1.id, &similar_blob).await?;
         created1.embedding_vector = Some(similar_blob.clone());
@@ -2510,7 +2488,6 @@ mod tests {
         let node2 = Node::new(
             "text".to_string(),
             "Dissimilar content".to_string(),
-            None,
             json!({}),
         );
         let mut created2 = store.create_node(node2).await?;
@@ -2551,12 +2528,7 @@ mod tests {
             .flat_map(|f| f.to_le_bytes())
             .collect();
 
-        let node = Node::new(
-            "text".to_string(),
-            "Test content".to_string(),
-            None,
-            json!({}),
-        );
+        let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
         let created = store.create_node(node).await?;
         store.update_embedding(&created.id, &similar_blob).await?;
 
@@ -2591,12 +2563,7 @@ mod tests {
         let blob: Vec<u8> = base_vector.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         for i in 0..5 {
-            let node = Node::new(
-                "text".to_string(),
-                format!("Content {}", i),
-                None,
-                json!({}),
-            );
+            let node = Node::new("text".to_string(), format!("Content {}", i), json!({}));
             let created = store.create_node(node).await?;
             store.update_embedding(&created.id, &blob).await?;
         }
@@ -2632,7 +2599,6 @@ mod tests {
             let node = Node::new(
                 "text".to_string(),
                 format!("Performance test content {}", i),
-                None,
                 json!({}),
             );
             let created = store.create_node(node).await?;
@@ -2695,32 +2661,17 @@ mod tests {
         let blob3 = EmbeddingService::to_blob(&emb3);
 
         // Create nodes
-        let node1 = Node::new(
-            "text".to_string(),
-            similar_text_1.to_string(),
-            None,
-            json!({}),
-        );
+        let node1 = Node::new("text".to_string(), similar_text_1.to_string(), json!({}));
         let mut created1 = store.create_node(node1).await?;
         store.update_embedding(&created1.id, &blob1).await?;
         created1.embedding_vector = Some(blob1.clone());
 
-        let node2 = Node::new(
-            "text".to_string(),
-            similar_text_2.to_string(),
-            None,
-            json!({}),
-        );
+        let node2 = Node::new("text".to_string(), similar_text_2.to_string(), json!({}));
         let mut created2 = store.create_node(node2).await?;
         store.update_embedding(&created2.id, &blob2).await?;
         created2.embedding_vector = Some(blob2.clone());
 
-        let node3 = Node::new(
-            "text".to_string(),
-            dissimilar_text.to_string(),
-            None,
-            json!({}),
-        );
+        let node3 = Node::new("text".to_string(), dissimilar_text.to_string(), json!({}));
         let mut created3 = store.create_node(node3).await?;
         store.update_embedding(&created3.id, &blob3).await?;
         created3.embedding_vector = Some(blob3);
@@ -2796,7 +2747,6 @@ mod tests {
             let node = Node::new(
                 "text".to_string(),
                 format!("Performance test content {}", i),
-                None,
                 json!({}),
             );
             let created = store.create_node(node).await?;

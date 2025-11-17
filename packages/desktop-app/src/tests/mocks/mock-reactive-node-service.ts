@@ -11,7 +11,6 @@ export interface Node {
   content: string;
   nodeType: string;
   depth: number;
-  parentId?: string;
   children: string[];
   expanded: boolean;
   autoFocus: boolean;
@@ -95,18 +94,15 @@ export function createMockReactiveNodeService(events: NodeManagerEvents) {
 
     const nodeId = uuidv4();
 
-    // Determine depth and parent based on insertion strategy
+    // Determine depth based on insertion strategy
     let newDepth: number;
-    let newParentId: string | undefined;
 
     if (insertAtBeginning) {
-      // Node goes above afterNode with same parent and depth
+      // Node goes above afterNode with same depth
       newDepth = afterNode.depth;
-      newParentId = afterNode.parentId;
     } else {
       // Node goes after afterNode - always create as sibling
       newDepth = afterNode.depth;
-      newParentId = afterNode.parentId;
     }
 
     const newNode: Node = {
@@ -114,7 +110,6 @@ export function createMockReactiveNodeService(events: NodeManagerEvents) {
       content,
       nodeType,
       depth: newDepth,
-      parentId: newParentId,
       children: [],
       expanded: true,
       autoFocus: true,
@@ -232,8 +227,7 @@ export function createMockReactiveNodeService(events: NodeManagerEvents) {
           content: unifiedNode.content,
           nodeType: unifiedNode.nodeType,
           depth: 0, // Will be calculated based on hierarchy
-          parentId: unifiedNode.parentId || undefined,
-          children: [], // Will be computed from parent_id relationships
+          children: [], // Will be computed from beforeSiblingId relationships
           expanded: defaultOptions.expanded,
           autoFocus: defaultOptions.autoFocus,
           inheritHeaderLevel: defaultOptions.inheritHeaderLevel,
@@ -244,18 +238,15 @@ export function createMockReactiveNodeService(events: NodeManagerEvents) {
         _nodes[unifiedNode.id] = node;
       }
 
-      // Compute children arrays from parent_id relationships
+      // Compute children arrays from beforeSiblingId relationships (simplified mock)
+      // In the real implementation, this would use HierarchyService
       for (const node of Object.values(_nodes)) {
         node.children = [];
       }
-      for (const node of Object.values(_nodes)) {
-        if (node.parentId && _nodes[node.parentId]) {
-          _nodes[node.parentId].children.push(node.id);
-        }
-      }
 
-      // Set root nodes (nodes without parents)
-      _rootNodeIds = nodes.filter((n) => !n.parentId).map((n) => n.id);
+      // For mock purposes, treat all nodes as root nodes
+      // Real implementation would build hierarchy from beforeSiblingId chains
+      _rootNodeIds = nodes.map((n) => n.id);
 
       // Calculate depths based on parent hierarchy
       const calculateDepth = (nodeId: string, depth: number = 0): void => {

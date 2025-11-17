@@ -15,8 +15,6 @@ describe('ConflictResolver', () => {
     nodeType: 'text',
     content: 'Original content',
     properties: { status: 'draft', priority: 'low' },
-    parentId: null,
-    containerNodeId: null,
     beforeSiblingId: null,
     createdAt: '2024-01-01T00:00:00Z',
     modifiedAt: '2024-01-01T00:00:00Z',
@@ -32,7 +30,6 @@ describe('ConflictResolver', () => {
         properties: { status: 'published' }
       });
       const yourChanges: Partial<Node> = {
-        parentId: 'new-parent',
         beforeSiblingId: 'new-sibling'
       };
 
@@ -40,7 +37,6 @@ describe('ConflictResolver', () => {
 
       expect(result.autoMerged).toBe(true);
       expect(result.strategy).toBe('auto-merged');
-      expect(result.mergedNode?.parentId).toBe('new-parent');
       expect(result.mergedNode?.beforeSiblingId).toBe('new-sibling');
       expect(result.mergedNode?.content).toBe('Modified content');
       expect(result.mergedNode?.properties).toEqual({ status: 'published' });
@@ -49,7 +45,6 @@ describe('ConflictResolver', () => {
     it('should deep merge properties during non-overlapping auto-merge', () => {
       const currentNode = createNode({
         version: 2,
-        parentId: 'updated-parent', // Structural change only
         properties: { status: 'published', priority: 'high' }
       });
       const yourChanges: Partial<Node> = {
@@ -59,7 +54,6 @@ describe('ConflictResolver', () => {
       const result = ConflictResolver.tryAutoMerge(yourChanges, currentNode, 1);
 
       expect(result.autoMerged).toBe(true);
-      expect(result.mergedNode?.parentId).toBe('updated-parent');
       expect(result.mergedNode?.beforeSiblingId).toBe('new-sibling');
       expect(result.mergedNode?.properties).toEqual({ status: 'published', priority: 'high' });
     });
@@ -156,7 +150,6 @@ describe('ConflictResolver', () => {
         content: 'Latest content'
       });
       const yourChanges: Partial<Node> = {
-        parentId: 'new-parent'
       };
 
       const result = ConflictResolver.tryAutoMerge(yourChanges, currentNode, 1);
@@ -174,7 +167,6 @@ describe('ConflictResolver', () => {
       const yourChanges: Partial<Node> = {
         content: 'Your content',
         properties: { status: 'draft' },
-        parentId: 'new-parent'
       };
 
       const result = ConflictResolver.tryAutoMerge(yourChanges, currentNode, 1);
@@ -203,7 +195,6 @@ describe('ConflictResolver', () => {
     it('should not consider structural changes as overlapping', () => {
       const currentNode = createNode({
         version: 2,
-        parentId: 'parent-1'
       });
       const yourChanges: Partial<Node> = {
         beforeSiblingId: 'sibling-1'
@@ -374,13 +365,11 @@ describe('ConflictResolver', () => {
     it('should handle empty yourChanges with structural defaults', () => {
       const currentNode = createNode({ version: 2 });
       const yourChanges: Partial<Node> = {
-        parentId: null // Structural field
       };
 
       const result = ConflictResolver.tryAutoMerge(yourChanges, currentNode, 1);
 
       expect(result.autoMerged).toBe(true);
-      expect(result.mergedNode?.parentId).toBe(null);
     });
   });
 

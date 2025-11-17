@@ -716,8 +716,6 @@ export class NodeReferenceService {
         id: nodeId,
         nodeType: nodeType,
         content: content,
-        parentId: null, // Root node
-        containerNodeId: nodeId,
         beforeSiblingId: null,
         version: 1,
         mentions: [],
@@ -942,7 +940,6 @@ export class NodeReferenceService {
       matchPositions,
       hierarchy,
       metadata: {
-        parentId: node.parentId,
         hasChildren: false // Would need to calculate
       }
     };
@@ -1037,15 +1034,10 @@ export class NodeReferenceService {
   }
 
   private findRootId(nodeId: string): string {
-    let currentId = nodeId;
-    let node = this.nodeManager.findNode(currentId);
-
-    while (node && node.parentId) {
-      currentId = node.parentId;
-      node = this.nodeManager.findNode(currentId);
-    }
-
-    return currentId;
+    // Note: This method is now a no-op since the graph-native model
+    // doesn't use hierarchical parent/child relationships.
+    // Kept for API compatibility but simply returns the node itself.
+    return nodeId;
   }
 
   /**

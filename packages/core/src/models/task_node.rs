@@ -148,7 +148,6 @@ impl TaskNode {
             priority: None,
             due_date: None,
             assignee_id: None,
-            parent_id: None,
         }
     }
 
@@ -267,7 +266,6 @@ pub struct TaskNodeBuilder {
     priority: Option<i32>,
     due_date: Option<String>,
     assignee_id: Option<String>,
-    parent_id: Option<String>,
 }
 
 impl TaskNodeBuilder {
@@ -295,12 +293,6 @@ impl TaskNodeBuilder {
         self
     }
 
-    /// Set the parent node ID
-    pub fn with_parent_id(mut self, parent_id: String) -> Self {
-        self.parent_id = Some(parent_id);
-        self
-    }
-
     /// Build the TaskNode
     pub fn build(self) -> TaskNode {
         let mut properties = serde_json::Map::new();
@@ -322,12 +314,7 @@ impl TaskNodeBuilder {
             properties.insert("assignee_id".to_string(), json!(assignee_id));
         }
 
-        let node = Node::new(
-            "task".to_string(),
-            self.content,
-            self.parent_id,
-            json!(properties),
-        );
+        let node = Node::new("task".to_string(), self.content, json!(properties));
 
         TaskNode { node }
     }

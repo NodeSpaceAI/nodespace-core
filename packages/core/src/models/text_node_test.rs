@@ -7,10 +7,10 @@ mod tests {
 
     #[test]
     fn test_from_node_validates_type() {
-        let node = Node::new("text".to_string(), "Content".to_string(), None, json!({}));
+        let node = Node::new("text".to_string(), "Content".to_string(), json!({}));
         assert!(TextNode::from_node(node).is_ok());
 
-        let wrong_type = Node::new("task".to_string(), "Content".to_string(), None, json!({}));
+        let wrong_type = Node::new("task".to_string(), "Content".to_string(), json!({}));
         let result = TextNode::from_node(wrong_type);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Expected 'text'"));
@@ -18,24 +18,14 @@ mod tests {
 
     #[test]
     fn test_from_node_with_content() {
-        let node = Node::new(
-            "text".to_string(),
-            "My note content".to_string(),
-            None,
-            json!({}),
-        );
+        let node = Node::new("text".to_string(), "My note content".to_string(), json!({}));
         let text = TextNode::from_node(node).unwrap();
         assert_eq!(text.as_node().content, "My note content");
     }
 
     #[test]
     fn test_into_node_preserves_data() {
-        let original = Node::new(
-            "text".to_string(),
-            "Test content".to_string(),
-            Some("parent-123".to_string()),
-            json!({}),
-        );
+        let original = Node::new("text".to_string(), "Test content".to_string(), json!({}));
         let original_id = original.id.clone();
 
         let text = TextNode::from_node(original).unwrap();
@@ -44,12 +34,11 @@ mod tests {
         assert_eq!(converted_back.id, original_id);
         assert_eq!(converted_back.node_type, "text");
         assert_eq!(converted_back.content, "Test content");
-        assert_eq!(converted_back.parent_id, Some("parent-123".to_string()));
     }
 
     #[test]
     fn test_as_node_reference() {
-        let node = Node::new("text".to_string(), "Content".to_string(), None, json!({}));
+        let node = Node::new("text".to_string(), "Content".to_string(), json!({}));
         let text = TextNode::from_node(node).unwrap();
 
         let node_ref = text.as_node();
@@ -59,7 +48,7 @@ mod tests {
 
     #[test]
     fn test_as_node_mut() {
-        let node = Node::new("text".to_string(), "Original".to_string(), None, json!({}));
+        let node = Node::new("text".to_string(), "Original".to_string(), json!({}));
         let mut text = TextNode::from_node(node).unwrap();
 
         text.as_node_mut().content = "Updated".to_string();
@@ -73,17 +62,13 @@ mod tests {
 
         assert_eq!(text.as_node().content, "Simple note");
         assert_eq!(text.as_node().node_type, "text");
-        assert!(text.as_node().parent_id.is_none());
     }
 
     #[test]
     fn test_builder_with_parent() {
-        let text = TextNode::builder("Child note".to_string())
-            .with_parent_id("parent-456".to_string())
-            .build();
+        let text = TextNode::builder("Child note".to_string()).build();
 
         assert_eq!(text.as_node().content, "Child note");
-        assert_eq!(text.as_node().parent_id, Some("parent-456".to_string()));
     }
 
     #[test]
@@ -107,7 +92,7 @@ mod tests {
 
     #[test]
     fn test_text_node_with_empty_content() {
-        let node = Node::new("text".to_string(), String::new(), None, json!({}));
+        let node = Node::new("text".to_string(), String::new(), json!({}));
         let text = TextNode::from_node(node).unwrap();
 
         assert_eq!(text.as_node().content, "");
@@ -131,18 +116,11 @@ mod tests {
 
     #[test]
     fn test_text_node_preserves_metadata() {
-        let node = Node::new(
-            "text".to_string(),
-            "Content".to_string(),
-            Some("parent-789".to_string()),
-            json!({}),
-        );
+        let node = Node::new("text".to_string(), "Content".to_string(), json!({}));
 
         let text = TextNode::from_node(node).unwrap();
         let node_back = text.into_node();
 
-        // Should preserve parent_id
-        assert_eq!(node_back.parent_id, Some("parent-789".to_string()));
         // Should preserve timestamps
         assert!(node_back.created_at <= chrono::Utc::now());
         assert!(node_back.modified_at <= chrono::Utc::now());

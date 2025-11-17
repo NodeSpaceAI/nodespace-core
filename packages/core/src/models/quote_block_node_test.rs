@@ -14,23 +14,10 @@ mod tests {
     }
 
     #[test]
-    fn test_with_parent_id_sets_parent() {
-        let quote_block = QuoteBlockNode::new("quote".to_string())
-            .with_parent_id("parent-123")
-            .build();
-
-        assert_eq!(
-            quote_block.as_node().parent_id,
-            Some("parent-123".to_string())
-        );
-    }
-
-    #[test]
     fn test_from_node_validates_type() {
         let node = Node::new(
             "quote-block".to_string(),
             "All that glitters is not gold".to_string(),
-            None,
             json!({}),
         );
 
@@ -43,7 +30,6 @@ mod tests {
         let wrong_type = Node::new(
             "text".to_string(),
             "Not a quote block".to_string(),
-            None,
             json!({}),
         );
 
@@ -61,7 +47,6 @@ mod tests {
         let original = Node::new(
             "quote-block".to_string(),
             "The only thing we have to fear is fear itself".to_string(),
-            Some("parent-123".to_string()),
             json!({}),
         );
         let original_id = original.id.clone();
@@ -75,7 +60,6 @@ mod tests {
             converted_back.content,
             "The only thing we have to fear is fear itself"
         );
-        assert_eq!(converted_back.parent_id, Some("parent-123".to_string()));
     }
 
     #[test]
@@ -91,24 +75,15 @@ mod tests {
     fn test_as_node_mut_allows_modification() {
         let mut quote_block = QuoteBlockNode::new("quote".to_string()).build();
 
-        quote_block.as_node_mut().parent_id = Some("parent-456".to_string());
-
-        assert_eq!(
-            quote_block.as_node().parent_id,
-            Some("parent-456".to_string())
-        );
+        // Test that we can get mutable reference
+        let node_mut = quote_block.as_node_mut();
+        assert_eq!(node_mut.node_type, "quote-block");
     }
 
     #[test]
     fn test_builder_pattern_chains_correctly() {
-        let quote_block = QuoteBlockNode::new("A journey of a thousand miles".to_string())
-            .with_parent_id("parent-789")
-            .build();
+        let quote_block = QuoteBlockNode::new("A journey of a thousand miles".to_string()).build();
 
-        assert_eq!(
-            quote_block.as_node().parent_id,
-            Some("parent-789".to_string())
-        );
         assert_eq!(
             quote_block.as_node().content,
             "A journey of a thousand miles"
@@ -161,12 +136,7 @@ than to be loved for what you are not."#;
 
     #[test]
     fn test_from_node_with_empty_properties() {
-        let node = Node::new(
-            "quote-block".to_string(),
-            "A quote".to_string(),
-            None,
-            json!({}),
-        );
+        let node = Node::new("quote-block".to_string(), "A quote".to_string(), json!({}));
 
         let quote_block = QuoteBlockNode::from_node(node).unwrap();
         assert_eq!(quote_block.as_node().content, "A quote");
@@ -178,7 +148,6 @@ than to be loved for what you are not."#;
         let node = Node::new(
             "quote-block".to_string(),
             "A quote".to_string(),
-            None,
             json!({"customProp": "value"}),
         );
 

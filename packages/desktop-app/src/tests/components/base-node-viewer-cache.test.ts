@@ -19,13 +19,12 @@ describe('BaseNodeViewer cache optimization', () => {
   let store: SharedNodeStore;
 
   // Helper to create mock nodes
-  function createMockNode(id: string, nodeType: string, parentId: string | null = null): Node {
+  // Note: parentId parameter kept for test convenience but not used in Node object (removed in Issue #514)
+  function createMockNode(id: string, nodeType: string, _parentId: string | null = null): Node {
     return {
       id,
       nodeType,
       content: `Content for ${id}`,
-      parentId,
-      containerNodeId: parentId,
       beforeSiblingId: null,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
@@ -67,6 +66,9 @@ describe('BaseNodeViewer cache optimization', () => {
     for (const child of children) {
       store.setNode(child, { type: 'database', reason: 'loaded-from-db' });
     }
+
+    // Explicitly populate the parent-child cache (Issue #514: cache-based hierarchy)
+    store.updateChildrenCache('parent-id', children.map(c => c.id));
 
     // Spy on loadChildrenForParent (database call)
     const loadSpy = vi.spyOn(store, 'loadChildrenForParent');

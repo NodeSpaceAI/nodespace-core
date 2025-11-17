@@ -200,7 +200,6 @@ describe.skipIf(!shouldUseDatabase()).sequential('Blank Text Node Creation (Issu
       // User presses Enter → Create blank child node (immediate persistence)
       const blankChildData = TestNodeBuilder.text('')
         .withType('text')
-        .withParent(parentId)
         .build();
 
       const childId = await backend.createNode(blankChildData);
@@ -219,7 +218,6 @@ describe.skipIf(!shouldUseDatabase()).sequential('Blank Text Node Creation (Issu
 
       expect(child).toBeTruthy();
       expect(child?.content).toBe('');
-      expect(child?.parentId).toBe(parentId);
     });
 
     it('should allow user to fill in blank node after creation', async () => {

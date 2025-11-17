@@ -56,10 +56,11 @@ export class MockBackendAdapter implements BackendAdapter {
   /**
    * Create a node in memory
    */
-  async createNode(node: Omit<Node, 'createdAt' | 'modifiedAt'>): Promise<string> {
+  async createNode(node: Omit<Node, 'createdAt' | 'modifiedAt' | 'version'>): Promise<string> {
     const now = new Date().toISOString();
     const fullNode: Node = {
       ...node,
+      version: 1,
       createdAt: now,
       modifiedAt: now
     };
@@ -112,32 +113,31 @@ export class MockBackendAdapter implements BackendAdapter {
   }
 
   /**
-   * Get children of a parent node
+   * Get child nodes of a parent node
+   * NOTE: Since we removed parentId, this now returns empty array
+   * Mock adapter doesn't track hierarchy
    */
-  async getChildren(parentId: string): Promise<Node[]> {
-    return Array.from(this.nodes.values()).filter((node) => node.parentId === parentId);
+  async getChildren(_parentId: string): Promise<Node[]> {
+    // No longer supported - return empty array
+    return [];
   }
 
   /**
-   * Query nodes by parent and/or container
+   * Query nodes by container
+   * NOTE: Container concept simplified in mock adapter - returns all nodes
    */
-  async queryNodes(params: QueryNodesParams): Promise<Node[]> {
-    return Array.from(this.nodes.values()).filter((node) => {
-      if (params.parentId !== undefined && node.parentId !== params.parentId) {
-        return false;
-      }
-      if (params.containerId !== undefined && node.containerNodeId !== params.containerId) {
-        return false;
-      }
-      return true;
-    });
+  async queryNodes(_params: QueryNodesParams): Promise<Node[]> {
+    // Simplified: return all nodes since we don't have container concept in mock
+    return Array.from(this.nodes.values());
   }
 
   /**
    * Get nodes by container ID
+   * NOTE: Container concept not supported in mock adapter
    */
-  async getNodesByContainerId(containerId: string): Promise<Node[]> {
-    return Array.from(this.nodes.values()).filter((node) => node.containerNodeId === containerId);
+  async getNodesByContainerId(_containerId: string): Promise<Node[]> {
+    // No longer supported - return empty array
+    return [];
   }
 
   /**
@@ -152,8 +152,8 @@ export class MockBackendAdapter implements BackendAdapter {
       // Match query in content
       if (!node.content.toLowerCase().includes(lowerQuery)) return false;
 
-      // Include tasks OR containers (containerNodeId === null, but not schemas)
-      return node.nodeType === 'task' || node.containerNodeId === null;
+      // Include tasks or text nodes (simplified since we don't have container concept)
+      return node.nodeType === 'task' || node.nodeType === 'text';
     });
 
     return limit ? results.slice(0, limit) : results;

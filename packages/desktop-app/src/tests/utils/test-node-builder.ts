@@ -13,7 +13,7 @@
  *   .withId('test-1')
  *   .withType('text')
  *   .withContent('Hello World')
- *   .withParent('parent-1')
+ *   
  *   .build();
  * ```
  */
@@ -25,8 +25,6 @@ export class TestNodeBuilder {
   private node: Partial<Node> = {
     nodeType: 'text',
     content: '',
-    parentId: null,
-    containerNodeId: null,
     beforeSiblingId: null,
     version: 1,
     properties: {},
@@ -82,22 +80,6 @@ export class TestNodeBuilder {
    */
   withContent(content: string): this {
     this.node.content = content;
-    return this;
-  }
-
-  /**
-   * Set parent ID
-   */
-  withParent(parentId: string | null): this {
-    this.node.parentId = parentId;
-    return this;
-  }
-
-  /**
-   * Set container node ID
-   */
-  withContainer(containerNodeId: string | null): this {
-    this.node.containerNodeId = containerNodeId;
     return this;
   }
 
@@ -174,14 +156,12 @@ export class TestNodeBuilder {
   }
 
   /**
-   * Build a container node (root node with containerNodeId = null)
+   * Build a container node (root node)
    */
   static container(content: string): TestNodeBuilder {
     return new TestNodeBuilder()
       .withType('text')
       .withContent(content)
-      .withParent(null)
-      .withContainer(null)
       .withBeforeSibling(null);
   }
 
@@ -210,8 +190,6 @@ export class TestNodeBuilder {
       id: this.node.id,
       nodeType: this.node.nodeType,
       content: this.node.content,
-      parentId: this.node.parentId ?? null,
-      containerNodeId: this.node.containerNodeId ?? null,
       beforeSiblingId: this.node.beforeSiblingId ?? null,
       version: this.node.version ?? 1,
       properties: this.node.properties ?? {},

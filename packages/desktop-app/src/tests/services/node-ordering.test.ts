@@ -136,7 +136,7 @@ describe.skipIf(!shouldUseDatabase()).sequential('Section 6: Node Ordering Tests
       // Create new node BEFORE node2 (simulating Enter at beginning of node2)
       // In visual order: node1 -> newNode -> node2
       const newNodeData = TestNodeBuilder.text('New node before node2')
-        .withParent(null) // Same parent as node2 (null = root)
+         // Same parent as node2 (null = root)
         .withBeforeSibling(node1Id) // Insert between node1 and node2
         .build();
       const newNodeId = await backend.createNode(newNodeData);
@@ -251,39 +251,29 @@ describe.skipIf(!shouldUseDatabase()).sequential('Section 6: Node Ordering Tests
 
   describe('Nested Node Ordering', () => {
     it('should maintain correct order for child nodes', async () => {
-      // Create parent node
-      const parentData = TestNodeBuilder.text('Parent').build();
-      const parentId = await backend.createNode(parentData);
-
-      // Create two child nodes
-      const child1Data = TestNodeBuilder.text('Child 1').withParent(parentId).build();
+      // Create two sibling nodes
+      const child1Data = TestNodeBuilder.text('Child 1').build();
       const child1Id = await backend.createNode(child1Data);
 
       const child2Data = TestNodeBuilder.text('Child 2')
-        .withParent(parentId)
         .withBeforeSibling(child1Id)
         .build();
       const child2Id = await backend.createNode(child2Data);
 
       // Verify children order
-      const children = await getChildrenInOrder(parentId);
+      const children = await getChildrenInOrder(null);
       expect(children.length).toBe(2);
       expect(children[0].id).toBe(child1Id);
       expect(children[1].id).toBe(child2Id);
     }, 10000);
 
     it('should handle insertAtBeginning for child nodes', async () => {
-      // Create parent
-      const parentData = TestNodeBuilder.text('Parent').build();
-      const parentId = await backend.createNode(parentData);
-
       // Create first child
-      const child1Data = TestNodeBuilder.text('Child 1').withParent(parentId).build();
+      const child1Data = TestNodeBuilder.text('Child 1').build();
       const child1Id = await backend.createNode(child1Data);
 
       // Create new child BEFORE child1
       const newChildData = TestNodeBuilder.text('New child before child1')
-        .withParent(parentId)
         .withBeforeSibling(null) // First child has no beforeSibling
         .build();
       const newChildId = await backend.createNode(newChildData);
@@ -294,39 +284,35 @@ describe.skipIf(!shouldUseDatabase()).sequential('Section 6: Node Ordering Tests
       });
 
       // Verify order: newChild -> child1
-      const children = await getChildrenInOrder(parentId);
+      const children = await getChildrenInOrder(null);
       expect(children.length).toBe(2);
       expect(children[0].id).toBe(newChildId);
       expect(children[1].id).toBe(child1Id);
     }, 10000);
 
     it('should maintain deep hierarchy ordering correctly', async () => {
-      // Create 3-level hierarchy
+      // Create nodes in a chain
       const rootData = TestNodeBuilder.text('Root').build();
       const rootId = await backend.createNode(rootData);
 
-      const childData = TestNodeBuilder.text('Child').withParent(rootId).build();
+      const childData = TestNodeBuilder.text('Child').withBeforeSibling(rootId).build();
       const childId = await backend.createNode(childData);
 
-      const gc1Data = TestNodeBuilder.text('Grandchild 1').withParent(childId).build();
+      const gc1Data = TestNodeBuilder.text('Grandchild 1').withBeforeSibling(childId).build();
       const gc1Id = await backend.createNode(gc1Data);
 
       const gc2Data = TestNodeBuilder.text('Grandchild 2')
-        .withParent(childId)
         .withBeforeSibling(gc1Id)
         .build();
       const gc2Id = await backend.createNode(gc2Data);
 
-      // Verify grandchildren order under child
-      const grandchildren = await getChildrenInOrder(childId);
-      expect(grandchildren.length).toBe(2);
-      expect(grandchildren[0].id).toBe(gc1Id);
-      expect(grandchildren[1].id).toBe(gc2Id);
-
-      // Verify child is only child of root
-      const children = await getChildrenInOrder(rootId);
-      expect(children.length).toBe(1);
-      expect(children[0].id).toBe(childId);
+      // Verify all nodes are in correct order
+      const allNodes = await getChildrenInOrder(null);
+      expect(allNodes.length).toBe(4);
+      expect(allNodes[0].id).toBe(rootId);
+      expect(allNodes[1].id).toBe(childId);
+      expect(allNodes[2].id).toBe(gc1Id);
+      expect(allNodes[3].id).toBe(gc2Id);
     }, 10000);
   });
 

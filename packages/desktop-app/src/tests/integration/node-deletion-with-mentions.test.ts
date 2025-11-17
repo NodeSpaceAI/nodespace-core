@@ -83,8 +83,6 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         id: 'source-node',
         nodeType: 'text',
         content: 'Text with @target-node mention',
-        parentId: null,
-        containerNodeId: 'source-node',
         beforeSiblingId: null,
         mentions: ['target-node'],
         createdAt: new Date().toISOString(),
@@ -97,8 +95,6 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         id: 'target-node',
         nodeType: 'text',
         content: 'Target node',
-        parentId: null,
-        containerNodeId: 'target-node',
         beforeSiblingId: null,
         mentions: [],
         createdAt: new Date().toISOString(),
@@ -121,7 +117,6 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         source: 'test',
         timestamp: Date.now(),
         nodeId: 'target-node',
-        parentId: undefined
       };
 
       eventBus.emit(deleteEvent);
@@ -158,7 +153,6 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         source: 'test',
         timestamp: Date.now(),
         nodeId,
-        parentId: undefined
       };
 
       eventBus.emit(deleteEvent);
@@ -176,8 +170,6 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         id: 'target',
         nodeType: 'text',
         content: 'Target',
-        parentId: null,
-        containerNodeId: 'target',
         beforeSiblingId: null,
         mentions: [],
         createdAt: new Date().toISOString(),
@@ -190,8 +182,6 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         id: 'mention-1',
         nodeType: 'text',
         content: 'Mentions @target',
-        parentId: null,
-        containerNodeId: 'mention-1',
         beforeSiblingId: null,
         mentions: ['target'],
         createdAt: new Date().toISOString(),
@@ -204,8 +194,6 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         id: 'mention-2',
         nodeType: 'text',
         content: 'Also mentions @target',
-        parentId: null,
-        containerNodeId: 'mention-2',
         beforeSiblingId: null,
         mentions: ['target'],
         createdAt: new Date().toISOString(),
@@ -228,7 +216,6 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         source: 'test',
         timestamp: Date.now(),
         nodeId: 'target',
-        parentId: undefined
       };
 
       eventBus.emit(deleteEvent);
@@ -250,8 +237,6 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         id: 'simple-node',
         nodeType: 'text',
         content: 'Simple text without mentions',
-        parentId: null,
-        containerNodeId: 'simple-node',
         beforeSiblingId: null,
         mentions: [],
         createdAt: new Date().toISOString(),
@@ -269,7 +254,6 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         source: 'test',
         timestamp: Date.now(),
         nodeId: 'simple-node',
-        parentId: undefined
       };
 
       // Should not throw any errors
@@ -300,7 +284,6 @@ describe('Node Deletion with Mentions (Issue #190)', () => {
         source: 'test',
         timestamp: Date.now(),
         nodeId: 'some-node',
-        parentId: undefined
       };
 
       eventBus.emit(deleteEvent);

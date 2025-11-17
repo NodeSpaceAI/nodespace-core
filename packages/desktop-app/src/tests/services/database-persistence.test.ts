@@ -40,27 +40,23 @@ import type { BackendAdapter } from '$lib/services/backend-adapter';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
 
 /**
- * Helper: Create parent node with children
+ * Helper: Create sibling chain of nodes
  *
- * Reduces duplication when creating parent-child hierarchies in tests.
+ * Creates a chain of nodes linked by beforeSiblingId.
+ * Note: No longer creates parent-child hierarchy since parentId is removed.
  */
 async function createNodeHierarchy(
   backend: BackendAdapter,
-  parent: string,
+  _parent: string,
   children: string[]
 ): Promise<{
-  parentId: string;
   childIds: string[];
 }> {
-  const parentData = TestNodeBuilder.text(parent).build();
-  const parentId = await backend.createNode(parentData);
-
   const childIds: string[] = [];
   let previousChildId: string | null = null;
 
   for (const childName of children) {
     const childData = TestNodeBuilder.text(childName)
-      .withParent(parentId)
       .withBeforeSibling(previousChildId)
       .build();
     const childId = await backend.createNode(childData);
@@ -68,7 +64,7 @@ async function createNodeHierarchy(
     previousChildId = childId;
   }
 
-  return { parentId, childIds };
+  return { childIds };
 }
 
 describe.skipIf(!shouldUseDatabase()).sequential('Section 7: Database Persistence Tests', () => {
@@ -290,8 +286,8 @@ describe.skipIf(!shouldUseDatabase()).sequential('Section 7: Database Persistenc
       // Specific assertions will be added once strategy is finalized.
       // Related: Issue #220 - Define CASCADE deletion strategy
 
-      // Create parent with two children
-      const { parentId, childIds } = await createNodeHierarchy(backend, 'Parent', [
+      // Create sibling chain (no longer parent-child hierarchy)
+      const { childIds } = await createNodeHierarchy(backend, 'Parent', [
         'Child 1',
         'Child 2'
       ]);
@@ -299,15 +295,15 @@ describe.skipIf(!shouldUseDatabase()).sequential('Section 7: Database Persistenc
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
-      // Delete parent
-      await backend.deleteNode(parentId, 1);
+      // Delete first node in chain
+      await backend.deleteNode(childIds[0], 1);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
-      // Verify parent deleted
-      const fetchedParent = await backend.getNode(parentId);
-      expect(fetchedParent).toBeNull();
+      // Verify first node deleted
+      const fetchedFirst = await backend.getNode(childIds[0]);
+      expect(fetchedFirst).toBeNull();
 
       // Check children status (behavior depends on backend strategy)
       const fetchedChild1 = await backend.getNode(childIds[0]);
@@ -320,8 +316,6 @@ describe.skipIf(!shouldUseDatabase()).sequential('Section 7: Database Persistenc
       } else if (fetchedChild1 !== null && fetchedChild2 !== null) {
         // PROMOTE strategy
         console.log('[Test] Backend uses PROMOTE strategy (children promoted to root)');
-        expect(fetchedChild1?.parentId).toBeNull();
-        expect(fetchedChild2?.parentId).toBeNull();
       } else {
         // Inconsistent state - test should fail
         throw new Error('Inconsistent cascade behavior: partial child deletion detected');

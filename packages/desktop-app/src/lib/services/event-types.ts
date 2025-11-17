@@ -136,7 +136,6 @@ export interface NodeCreatedEvent extends BaseEvent {
   type: 'node:created';
   namespace: 'lifecycle';
   nodeId: string;
-  parentId?: string;
   nodeType: string;
   metadata?: Record<string, unknown>;
 }
@@ -155,7 +154,6 @@ export interface NodeDeletedEvent extends BaseEvent {
   type: 'node:deleted';
   namespace: 'lifecycle';
   nodeId: string;
-  parentId?: string;
   childrenTransferred?: string[];
   metadata?: Record<string, unknown>;
 }

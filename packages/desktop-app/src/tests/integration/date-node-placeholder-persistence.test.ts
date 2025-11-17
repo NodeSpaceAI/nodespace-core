@@ -56,8 +56,6 @@ describe.sequential('Date Node Placeholder Persistence', () => {
     async () => {
       // Create a text node with date node parent that doesn't exist
       const textNode = TestNodeBuilder.text('Hello from today')
-        .withParent('2025-10-13')
-        .withContainer('2025-10-13')
         .build();
 
       // Should succeed - backend should auto-create date node
@@ -72,14 +70,12 @@ describe.sequential('Date Node Placeholder Persistence', () => {
       expect(retrievedText).toBeTruthy();
       expect(retrievedText?.nodeType).toBe('text');
       expect(retrievedText?.content).toBe('Hello from today');
-      expect(retrievedText?.parentId).toBe('2025-10-13');
 
       // Verify date node was auto-created by backend
       const retrievedDate = await backend.getNode('2025-10-13');
       expect(retrievedDate).toBeTruthy();
       expect(retrievedDate?.nodeType).toBe('date');
       expect(retrievedDate?.id).toBe('2025-10-13');
-      expect(retrievedDate?.parentId).toBeNull();
       expect(retrievedDate?.content).toBe(''); // Date nodes have empty content
     }
   );
@@ -88,14 +84,12 @@ describe.sequential('Date Node Placeholder Persistence', () => {
     'should not persist placeholder nodes (empty text nodes) immediately',
     async () => {
       // Simulate what happens when user opens an empty date view
-      const dateId = '2025-10-13';
+      const _dateId = '2025-10-13';
 
       // Create placeholder (empty text node) as viewer source
       const placeholderId = globalThis.crypto.randomUUID();
       const placeholder = TestNodeBuilder.text('')
         .withId(placeholderId)
-        .withParent(dateId)
-        .withContainer(dateId)
         .build();
 
       // Add to store with viewer source (simulates BaseNodeViewer behavior)
@@ -132,10 +126,8 @@ describe.sequential('Date Node Placeholder Persistence', () => {
     'should persist node with content when date parent auto-created',
     async () => {
       // Simulates the full flow: create text node under non-existent date
-      const dateId = '2025-10-13';
+      const _dateId = '2025-10-13';
       const textNode = TestNodeBuilder.text('Hello from today')
-        .withParent(dateId)
-        .withContainer(dateId)
         .build();
 
       // Create via backend (simulates what happens after debouncer fires)
@@ -148,7 +140,7 @@ describe.sequential('Date Node Placeholder Persistence', () => {
       expect(retrievedText?.content).toBe('Hello from today');
 
       // Verify date node was auto-created
-      const retrievedDate = await backend.getNode(dateId);
+      const retrievedDate = await backend.getNode(_dateId);
       expect(retrievedDate?.nodeType).toBe('date');
     }
   );

@@ -85,14 +85,10 @@ impl TextNode {
     /// use nodespace_core::models::TextNode;
     ///
     /// let text = TextNode::builder("My note".to_string())
-    ///     .with_parent_id("parent-123".to_string())
     ///     .build();
     /// ```
     pub fn builder(content: String) -> TextNodeBuilder {
-        TextNodeBuilder {
-            content,
-            parent_id: None,
-        }
+        TextNodeBuilder { content }
     }
 
     /// Get a reference to the underlying Node
@@ -114,19 +110,12 @@ impl TextNode {
 /// Builder for creating new TextNode instances
 pub struct TextNodeBuilder {
     content: String,
-    parent_id: Option<String>,
 }
 
 impl TextNodeBuilder {
-    /// Set the parent node ID
-    pub fn with_parent_id(mut self, parent_id: String) -> Self {
-        self.parent_id = Some(parent_id);
-        self
-    }
-
     /// Build the TextNode
     pub fn build(self) -> TextNode {
-        let node = Node::new("text".to_string(), self.content, self.parent_id, json!({}));
+        let node = Node::new("text".to_string(), self.content, json!({}));
 
         TextNode { node }
     }

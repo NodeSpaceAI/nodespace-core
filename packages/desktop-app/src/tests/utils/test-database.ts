@@ -141,8 +141,6 @@ export async function initializeTestDatabase(
             id: sentinelId,
             nodeType: 'text',
             content: '__SENTINEL__',
-            parentId: null,
-            containerNodeId: null,
             beforeSiblingId: null,
             properties: {},
             embeddingVector: null,
@@ -262,7 +260,7 @@ export interface CleanDatabaseResult {
 /**
  * Clean database by deleting all nodes
  *
- * This function queries all root nodes and deletes them recursively,
+ * This function queries all nodes and deletes them,
  * effectively clearing the database for the next test.
  *
  * @param backend - Backend adapter to use for operations
@@ -277,32 +275,32 @@ export interface CleanDatabaseResult {
  */
 export async function cleanDatabase(backend: BackendAdapter): Promise<CleanDatabaseResult> {
   try {
-    // Query all root nodes (parentId = null)
-    const rootNodes = await backend.queryNodes({ parentId: null });
+    // Query all nodes
+    const allNodes = await backend.queryNodes({});
 
-    // Delete each root node (cascade delete will handle children)
+    // Delete each node individually
     // Handle errors individually so one failure doesn't stop cleanup
     let successCount = 0;
 
-    for (const node of rootNodes) {
+    for (const node of allNodes) {
       try {
         await backend.deleteNode(node.id, node.version);
         successCount++;
       } catch {
-        // Ignore deletion errors - node might already be deleted by cascade
+        // Ignore deletion errors - node might already be deleted
       }
     }
 
     if (successCount > 0) {
       console.log(
-        `[Test] Cleaned database: deleted ${successCount}/${rootNodes.length} root nodes`
+        `[Test] Cleaned database: deleted ${successCount}/${allNodes.length} nodes`
       );
     }
 
     return {
-      success: successCount === rootNodes.length,
+      success: successCount === allNodes.length,
       deletedCount: successCount,
-      totalCount: rootNodes.length
+      totalCount: allNodes.length
     };
   } catch (error) {
     console.warn(`[Test] Warning: Failed to clean database: ${error}`);

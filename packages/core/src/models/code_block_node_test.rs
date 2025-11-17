@@ -24,23 +24,10 @@ mod tests {
     }
 
     #[test]
-    fn test_with_parent_id_sets_parent() {
-        let code_block = CodeBlockNode::new("code".to_string())
-            .with_parent_id("parent-123")
-            .build();
-
-        assert_eq!(
-            code_block.as_node().parent_id,
-            Some("parent-123".to_string())
-        );
-    }
-
-    #[test]
     fn test_from_node_validates_type() {
         let node = Node::new(
             "code-block".to_string(),
             "const x = 1;".to_string(),
-            None,
             json!({"language": "javascript"}),
         );
 
@@ -53,7 +40,6 @@ mod tests {
         let wrong_type = Node::new(
             "text".to_string(),
             "Not a code block".to_string(),
-            None,
             json!({}),
         );
 
@@ -71,7 +57,6 @@ mod tests {
         let node = Node::new(
             "code-block".to_string(),
             "SELECT * FROM users;".to_string(),
-            None,
             json!({"language": "sql"}),
         );
 
@@ -84,7 +69,6 @@ mod tests {
         let node = Node::new(
             "code-block".to_string(),
             "some code".to_string(),
-            None,
             json!({}), // No language property
         );
 
@@ -97,7 +81,6 @@ mod tests {
         let node = Node::new(
             "code-block".to_string(),
             "some code".to_string(),
-            None,
             json!({"language": 123}), // Wrong type (number instead of string)
         );
 
@@ -110,7 +93,6 @@ mod tests {
         let node = Node::new(
             "code-block".to_string(),
             "fn main() {}".to_string(),
-            None,
             json!({}),
         );
 
@@ -126,7 +108,6 @@ mod tests {
         let node = Node::new(
             "code-block".to_string(),
             "code".to_string(),
-            None,
             json!({"language": "javascript"}),
         );
 
@@ -142,7 +123,6 @@ mod tests {
         let original = Node::new(
             "code-block".to_string(),
             "const x = 1;".to_string(),
-            Some("parent-123".to_string()),
             json!({"language": "javascript"}),
         );
         let original_id = original.id.clone();
@@ -153,7 +133,6 @@ mod tests {
         assert_eq!(converted_back.id, original_id);
         assert_eq!(converted_back.node_type, "code-block");
         assert_eq!(converted_back.content, "const x = 1;");
-        assert_eq!(converted_back.parent_id, Some("parent-123".to_string()));
         assert_eq!(converted_back.properties["language"], "javascript");
     }
 
@@ -170,26 +149,18 @@ mod tests {
     fn test_as_node_mut_allows_modification() {
         let mut code_block = CodeBlockNode::new("code".to_string()).build();
 
-        code_block.as_node_mut().parent_id = Some("parent-456".to_string());
-
-        assert_eq!(
-            code_block.as_node().parent_id,
-            Some("parent-456".to_string())
-        );
+        // Test that we can get mutable reference
+        let node_mut = code_block.as_node_mut();
+        assert_eq!(node_mut.node_type, "code-block");
     }
 
     #[test]
     fn test_builder_pattern_chains_correctly() {
         let code_block = CodeBlockNode::new("#!/bin/bash\necho 'test'".to_string())
             .with_language("bash")
-            .with_parent_id("parent-789")
             .build();
 
         assert_eq!(code_block.language(), "bash");
-        assert_eq!(
-            code_block.as_node().parent_id,
-            Some("parent-789".to_string())
-        );
         assert_eq!(code_block.as_node().content, "#!/bin/bash\necho 'test'");
     }
 

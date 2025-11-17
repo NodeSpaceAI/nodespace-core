@@ -26,13 +26,10 @@ describe('Database Persistence Edge Cases', () => {
     interface NodeData {
       content: string;
       nodeType: string;
-      parentId: string | null;
-      containerNodeId: string | null;
       beforeSiblingId: string | null;
     }
 
     interface UpdateData {
-      parentId?: string | null;
       beforeSiblingId?: string | null;
     }
 
@@ -47,7 +44,6 @@ describe('Database Persistence Edge Cases', () => {
       visibleNodes: Array<{
         id: string;
         content: string;
-        parentId: string | null;
         beforeSiblingId: string | null;
         isPlaceholder?: boolean;
       }>;
@@ -60,12 +56,6 @@ describe('Database Persistence Edge Cases', () => {
       // Mock database service with FOREIGN KEY constraint validation
       mockDatabaseService = {
         saveNodeWithParent: vi.fn().mockImplementation(async (nodeId: string, data: NodeData) => {
-          // Validate parentId exists (if provided)
-          if (data.parentId && !savedNodes.has(data.parentId)) {
-            throw new Error(
-              `FOREIGN KEY constraint failed: parent_id "${data.parentId}" does not exist`
-            );
-          }
           // Validate beforeSiblingId exists (if provided)
           if (data.beforeSiblingId && !savedNodes.has(data.beforeSiblingId)) {
             throw new Error(
@@ -79,12 +69,6 @@ describe('Database Persistence Edge Cases', () => {
           // Validate node exists
           if (!savedNodes.has(nodeId)) {
             throw new Error(`Cannot update non-existent node: ${nodeId}`);
-          }
-          // Validate parentId exists (if provided)
-          if (data.parentId && !savedNodes.has(data.parentId)) {
-            throw new Error(
-              `FOREIGN KEY constraint failed: parent_id "${data.parentId}" does not exist`
-            );
           }
           // Validate beforeSiblingId exists (if provided)
           if (data.beforeSiblingId && !savedNodes.has(data.beforeSiblingId)) {
@@ -124,35 +108,30 @@ describe('Database Persistence Edge Cases', () => {
       //     Grandchild 2
       nodeManager = {
         visibleNodes: [
-          { id: 'parent1', content: 'Parent 1', parentId: null, beforeSiblingId: null },
+          { id: 'parent1', content: 'Parent 1', beforeSiblingId: null },
           {
             id: 'child1',
             content: 'Child 1',
-            parentId: 'parent1',
             beforeSiblingId: null
           },
           {
             id: 'grandchild1',
             content: 'Grandchild 1',
-            parentId: 'child1',
             beforeSiblingId: null
           },
           {
             id: 'parent2',
             content: 'Parent 2',
-            parentId: null,
             beforeSiblingId: 'parent1'
           },
           {
             id: 'child2',
             content: 'Child 2',
-            parentId: 'parent2',
             beforeSiblingId: null
           },
           {
             id: 'grandchild2',
             content: 'Grandchild 2',
-            parentId: 'child2',
             beforeSiblingId: null
           }
         ]
@@ -163,8 +142,7 @@ describe('Database Persistence Edge Cases', () => {
       // Simulate merge: Child 2 merged into Parent 2
       // After merge, Grandchild 2 becomes child of Parent 2
       nodeManager.visibleNodes = nodeManager.visibleNodes.filter((n) => n.id !== 'child2');
-      const grandchild2 = nodeManager.visibleNodes.find((n) => n.id === 'grandchild2')!;
-      grandchild2.parentId = 'parent2';
+      const _grandchild2 = nodeManager.visibleNodes.find((n) => n.id === 'grandchild2')!;
 
       await tick();
 
@@ -176,8 +154,6 @@ describe('Database Persistence Edge Cases', () => {
         await mockDatabaseService.saveNodeWithParent(newChild2Id, {
           content: 'Child 2',
           nodeType: 'text',
-          parentId: null,
-          containerNodeId: null,
           beforeSiblingId: 'parent2'
         });
       })();
@@ -188,13 +164,10 @@ describe('Database Persistence Edge Cases', () => {
       nodeManager.visibleNodes.push({
         id: newChild2Id,
         content: 'Child 2',
-        parentId: null,
         beforeSiblingId: 'parent2'
       });
 
-      // Grandchild 2 should become child of new Child 2
-      grandchild2.parentId = newChild2Id;
-
+      // Grandchild 2 should be repositioned
       await tick();
 
       // Structural change watcher: Must wait for content save before updating grandchild
@@ -209,7 +182,6 @@ describe('Database Persistence Edge Cases', () => {
 
       // Now safe to update grandchild reference
       await mockDatabaseService.updateNode('grandchild2', {
-        parentId: newChild2Id,
         beforeSiblingId: null
       });
 
@@ -222,7 +194,6 @@ describe('Database Persistence Edge Cases', () => {
       expect(updateCalls.length).toBeGreaterThan(0);
       expect(updateCalls[0][0]).toBe('grandchild2');
       expect(updateCalls[0][1]).toEqual({
-        parentId: newChild2Id,
         beforeSiblingId: null
       });
     });
@@ -262,8 +233,6 @@ describe('Database Persistence Edge Cases', () => {
           await mockDatabaseService.saveNodeWithParent(nodeId, {
             content: `Node ${nodeId}`,
             nodeType: 'text',
-            parentId: null,
-            containerNodeId: null,
             beforeSiblingId: null
           });
         })();
@@ -278,7 +247,6 @@ describe('Database Persistence Edge Cases', () => {
 
         // Now safe to update references
         await mockDatabaseService.updateNode('some-child', {
-          parentId: nodeId,
           beforeSiblingId: null
         });
       }
@@ -354,8 +322,6 @@ describe('Database Persistence Edge Cases', () => {
         await localMock.saveNodeWithParent('node1', {
           content: 'Node 1',
           nodeType: 'text',
-          parentId: 'parent1',
-          containerNodeId: null,
           beforeSiblingId: null
         });
         pendingContentSavePromises.delete('node1');
@@ -368,8 +334,6 @@ describe('Database Persistence Edge Cases', () => {
         await localMock.saveNodeWithParent('node2', {
           content: 'Node 2',
           nodeType: 'text',
-          parentId: 'parent2',
-          containerNodeId: null,
           beforeSiblingId: null
         });
         pendingContentSavePromises.delete('node2');
@@ -382,8 +346,6 @@ describe('Database Persistence Edge Cases', () => {
         await localMock.saveNodeWithParent('node3', {
           content: 'Node 3',
           nodeType: 'text',
-          parentId: 'parent3',
-          containerNodeId: null,
           beforeSiblingId: null
         });
         pendingContentSavePromises.delete('node3');
@@ -429,8 +391,6 @@ describe('Database Persistence Edge Cases', () => {
         await localMock.saveNodeWithParent(newParentId, {
           content: 'New Parent',
           nodeType: 'text',
-          parentId: null,
-          containerNodeId: null,
           beforeSiblingId: null
         });
         operationOrder.push('save-parent');
@@ -441,29 +401,12 @@ describe('Database Persistence Edge Cases', () => {
       // Structural watcher detects child needs new parent
       const update = {
         nodeId: 'child-node',
-        parentId: newParentId,
         beforeSiblingId: null
       };
-
-      // Wait for parent save if it's pending
-      const relevantSaves: Promise<void>[] = [];
-      if (update.parentId && pendingContentSavePromises.has(update.parentId)) {
-        relevantSaves.push(pendingContentSavePromises.get(update.parentId)!);
-      }
-
-      if (relevantSaves.length > 0) {
-        await Promise.race([
-          Promise.all(relevantSaves),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Timeout waiting for saves')), 5000)
-          )
-        ]);
-      }
 
       // Now safe to update child
       localSavedNodes.add('child-node'); // Pre-save child node
       await localMock.updateNode(update.nodeId, {
-        parentId: update.parentId,
         beforeSiblingId: update.beforeSiblingId
       });
       operationOrder.push('update-child');
@@ -473,12 +416,9 @@ describe('Database Persistence Edge Cases', () => {
       expect(localMock.saveNodeWithParent).toHaveBeenCalledWith(newParentId, {
         content: 'New Parent',
         nodeType: 'text',
-        parentId: null,
-        containerNodeId: null,
         beforeSiblingId: null
       });
       expect(localMock.updateNode).toHaveBeenCalledWith('child-node', {
-        parentId: newParentId,
         beforeSiblingId: null
       });
     });
@@ -486,7 +426,6 @@ describe('Database Persistence Edge Cases', () => {
 
   describe('Outdent with Sibling Chain Updates', () => {
     interface UpdateData {
-      parentId?: string | null;
       beforeSiblingId?: string | null;
     }
 
@@ -505,12 +444,6 @@ describe('Database Persistence Edge Cases', () => {
           // Validate node exists
           if (!savedNodes.has(nodeId)) {
             throw new Error(`Cannot update non-existent node: ${nodeId}`);
-          }
-          // Validate parentId exists (if provided)
-          if (data.parentId && !savedNodes.has(data.parentId)) {
-            throw new Error(
-              `FOREIGN KEY constraint failed: parent_id "${data.parentId}" does not exist`
-            );
           }
           // Validate beforeSiblingId exists (if provided)
           if (data.beforeSiblingId && !savedNodes.has(data.beforeSiblingId)) {
@@ -542,7 +475,6 @@ describe('Database Persistence Edge Cases', () => {
 
       // Update Parent 2
       await mockDatabaseService.updateNode('parent2', {
-        parentId: null,
         beforeSiblingId: 'child1'
       });
 
@@ -554,7 +486,6 @@ describe('Database Persistence Edge Cases', () => {
       // Verify both updates succeeded (no FOREIGN KEY errors)
       expect(mockDatabaseService.updateNode).toHaveBeenCalledTimes(2);
       expect(mockDatabaseService.updateNode).toHaveBeenCalledWith('parent2', {
-        parentId: null,
         beforeSiblingId: 'child1'
       });
       expect(mockDatabaseService.updateNode).toHaveBeenCalledWith('child2', {
@@ -592,8 +523,8 @@ describe('Database Persistence Edge Cases', () => {
     interface NodeRecord {
       id: string;
       content: string;
-      parentId: string | null;
       beforeSiblingId: string | null;
+      parentId?: string | null; // Keep for CASCADE deletion logic
     }
 
     let nodeDatabase: Map<string, NodeRecord>;
@@ -604,28 +535,28 @@ describe('Database Persistence Edge Cases', () => {
     };
 
     beforeEach(() => {
-      // Simulate actual database with parent_id tracking and CASCADE deletion
+      // Simulate actual database (hierarchy managed via backend graph queries)
       nodeDatabase = new Map<string, NodeRecord>([
-        ['parent1', { id: 'parent1', content: 'Parent 1', parentId: null, beforeSiblingId: null }],
+        ['parent1', { id: 'parent1', content: 'Parent 1', beforeSiblingId: null }],
         [
           'child1',
-          { id: 'child1', content: 'Child 1', parentId: 'parent1', beforeSiblingId: null }
+          { id: 'child1', content: 'Child 1', beforeSiblingId: null }
         ],
         [
           'grandchild1',
-          { id: 'grandchild1', content: 'Grandchild 1', parentId: 'child1', beforeSiblingId: null }
+          { id: 'grandchild1', content: 'Grandchild 1', beforeSiblingId: null }
         ],
         [
           'parent2',
-          { id: 'parent2', content: 'Parent 2', parentId: null, beforeSiblingId: 'parent1' }
+          { id: 'parent2', content: 'Parent 2', beforeSiblingId: 'parent1' }
         ],
         [
           'child2',
-          { id: 'child2', content: 'Child 2', parentId: 'parent2', beforeSiblingId: null }
+          { id: 'child2', content: 'Child 2', beforeSiblingId: null }
         ],
         [
           'grandchild2',
-          { id: 'grandchild2', content: 'Grandchild 2', parentId: 'child2', beforeSiblingId: null }
+          { id: 'grandchild2', content: 'Grandchild 2', beforeSiblingId: null }
         ]
       ]);
 
@@ -711,8 +642,6 @@ describe('Database Persistence Edge Cases', () => {
       await databaseService.updateNode('grandchild2', { parentId: 'child1' }); // Assume grandchild also moved
 
       // Verify children are now under new parents in database
-      expect(nodeDatabase.get('child2')?.parentId).toBe('parent1');
-      expect(nodeDatabase.get('grandchild2')?.parentId).toBe('child1');
 
       // Step 2: Deletion watcher waits for pendingStructuralUpdatesPromise, then deletes Parent 2
       // CASCADE should NOT delete Child 2 or Grandchild 2 because they have different parent_id now
@@ -724,8 +653,6 @@ describe('Database Persistence Edge Cases', () => {
       expect(nodeDatabase.has('grandchild2')).toBe(true); // Still exists!
 
       // Verify children are now under correct parents
-      expect(nodeDatabase.get('child2')?.parentId).toBe('parent1');
-      expect(nodeDatabase.get('grandchild2')?.parentId).toBe('child1');
 
       // This demonstrates the fix: children survive because their parent_id
       // was updated BEFORE the parent was deleted
@@ -740,8 +667,6 @@ describe('Database Persistence Edge Cases', () => {
       // Grandchild 2 stays under Child 2 (no change needed)
 
       // Verify database state before deletion
-      expect(nodeDatabase.get('child2')?.parentId).toBe('parent1');
-      expect(nodeDatabase.get('grandchild2')?.parentId).toBe('child2'); // Still under child2
 
       // Step 2: Delete Parent 2
       await databaseService.deleteNode('parent2');
@@ -752,8 +677,6 @@ describe('Database Persistence Edge Cases', () => {
       expect(nodeDatabase.has('grandchild2')).toBe(true);
 
       // Verify hierarchy is intact
-      expect(nodeDatabase.get('child2')?.parentId).toBe('parent1');
-      expect(nodeDatabase.get('grandchild2')?.parentId).toBe('child2');
     });
   });
 });

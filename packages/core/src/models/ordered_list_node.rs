@@ -58,10 +58,7 @@ impl OrderedListNode {
     /// ```
     #[allow(clippy::new_ret_no_self)]
     pub fn new(content: String) -> OrderedListNodeBuilder {
-        OrderedListNodeBuilder {
-            content,
-            parent_id: None,
-        }
+        OrderedListNodeBuilder { content }
     }
 
     /// Create an OrderedListNode from an existing universal Node
@@ -121,7 +118,7 @@ impl OrderedListNode {
     /// use nodespace_core::models::OrderedListNode;
     ///
     /// let mut ordered_list = OrderedListNode::new("list item".to_string()).build();
-    /// ordered_list.as_node_mut().parent_id = Some("parent-123".to_string());
+    /// ordered_list.as_node_mut().content = "updated item".to_string();
     /// ```
     pub fn as_node_mut(&mut self) -> &mut Node {
         &mut self.node
@@ -152,26 +149,9 @@ impl OrderedListNode {
 /// Provides a fluent API for configuring ordered list properties before creation.
 pub struct OrderedListNodeBuilder {
     content: String,
-    parent_id: Option<String>,
 }
 
 impl OrderedListNodeBuilder {
-    /// Set the parent node ID
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use nodespace_core::models::OrderedListNode;
-    ///
-    /// let ordered_list = OrderedListNode::new("list item".to_string())
-    ///     .with_parent_id("parent-123")
-    ///     .build();
-    /// ```
-    pub fn with_parent_id(mut self, parent_id: impl Into<String>) -> Self {
-        self.parent_id = Some(parent_id.into());
-        self
-    }
-
     /// Build the OrderedListNode
     ///
     /// Creates the underlying universal Node with ordered list properties.
@@ -186,15 +166,10 @@ impl OrderedListNodeBuilder {
     /// ```
     pub fn build(self) -> OrderedListNode {
         // OrderedList nodes have no custom properties (empty object is correct)
-        // All node metadata (content, parent_id, etc.) is stored in the universal Node
+        // All node metadata (content, etc.) is stored in the universal Node
         let properties = json!({});
 
-        let node = Node::new(
-            "ordered-list".to_string(),
-            self.content,
-            self.parent_id,
-            properties,
-        );
+        let node = Node::new("ordered-list".to_string(), self.content, properties);
 
         OrderedListNode { node }
     }

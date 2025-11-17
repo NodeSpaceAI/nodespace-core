@@ -74,13 +74,11 @@ export const QuoteBlockNodeHelpers = {
    * );
    * ```
    */
-  createQuoteBlock(content: string, parentId: string | null = null): QuoteBlockNode {
+  createQuoteBlock(content: string): QuoteBlockNode {
     return {
       id: `quote-block-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
       nodeType: 'quote-block',
       content,
-      parentId,
-      containerNodeId: null,
       beforeSiblingId: null,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),

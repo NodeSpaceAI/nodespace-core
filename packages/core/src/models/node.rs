@@ -20,7 +20,6 @@
 //! let text_node = Node::new(
 //!     "text".to_string(),
 //!     "My first note".to_string(),
-//!     None,
 //!     json!({}),
 //! );
 //!
@@ -28,7 +27,6 @@
 //! let task_node = Node::new(
 //!     "task".to_string(),
 //!     "Implement Pure JSON schema".to_string(),
-//!     Some("2025-01-03".to_string()),
 //!     json!({
 //!         "status": "IN_PROGRESS",
 //!         "priority": "high",
@@ -76,8 +74,6 @@ pub enum ValidationError {
 /// - `id`: Unique identifier (UUID for most nodes, `YYYY-MM-DD` for date nodes)
 /// - `node_type`: Type identifier (e.g., "text", "task", "person", "date", "schema")
 /// - `content`: Primary content/text of the node
-/// - `parent_id`: Optional reference to parent node (creation context)
-/// - `container_node_id`: Optional reference to container node (NULL means this node IS a container)
 /// - `before_sibling_id`: Optional reference for sibling ordering
 /// - `created_at`: Timestamp when node was created
 /// - `modified_at`: Timestamp when node was last modified
@@ -98,7 +94,6 @@ pub enum ValidationError {
 /// let task = Node::new(
 ///     "task".to_string(),
 ///     "Write documentation".to_string(),
-///     Some("2025-01-03".to_string()),
 ///     json!({
 ///         "status": "todo",
 ///         "assignee": "person-uuid-123",
@@ -112,7 +107,6 @@ pub enum ValidationError {
 ///     "2025-01-03".to_string(),
 ///     "date".to_string(),
 ///     "2025-01-03".to_string(),
-///     None,
 ///     json!({
 ///         "timezone": "UTC",
 ///         "is_holiday": false
@@ -130,12 +124,6 @@ pub struct Node {
 
     /// Primary content/text of the node
     pub content: String,
-
-    /// Parent node ID (creation context, not ownership)
-    pub parent_id: Option<String>,
-
-    /// Container node ID (NULL means this node IS a container/root)
-    pub container_node_id: Option<String>,
 
     /// Sibling ordering reference (single-pointer linked list)
     pub before_sibling_id: Option<String>,
@@ -181,17 +169,7 @@ impl Node {
     ///
     /// * `node_type` - Type identifier (e.g., "text", "task")
     /// * `content` - Primary content/text
-    /// * `parent_id` - Optional parent node reference (creation context)
     /// * `properties` - JSON object with entity-specific fields
-    ///
-    /// # Note on `container_node_id`
-    ///
-    /// This constructor sets `container_node_id = parent_id`, which is correct for:
-    /// - Root nodes: `parent_id = None` → `container_node_id = None` (node IS root)
-    /// - Direct children of root: `parent_id = Some(root)` → `container_node_id = Some(root)`
-    ///
-    /// For nested hierarchies (child of child), you should use `new_with_root()`
-    /// to explicitly specify the root document ID.
     ///
     /// # Examples
     ///
@@ -202,86 +180,17 @@ impl Node {
     /// let root = Node::new(
     ///     "text".to_string(),
     ///     "Hello World".to_string(),
-    ///     None,
     ///     json!({}),
     /// );
     ///
-    /// // Create a direct child of root
+    /// // Create a child node
     /// let child = Node::new(
     ///     "text".to_string(),
     ///     "Child content".to_string(),
-    ///     Some(root.id.clone()),
     ///     json!({}),
     /// );
     /// ```
-    pub fn new(
-        node_type: String,
-        content: String,
-        parent_id: Option<String>,
-        properties: serde_json::Value,
-    ) -> Self {
-        let now = Utc::now();
-        let id = Uuid::new_v4().to_string();
-
-        // IMPORTANT: container_node_id defaults to parent_id for simple hierarchies.
-        // This is correct for root nodes and direct children of root.
-        // For nested hierarchies, use new_with_root() instead.
-        let container_node_id = parent_id.clone();
-
-        Self {
-            id,
-            node_type,
-            content,
-            parent_id,
-            container_node_id,
-            before_sibling_id: None,
-            version: 1,
-            created_at: now,
-            modified_at: now,
-            properties,
-            embedding_vector: None,
-            mentions: Vec::new(),
-            mentioned_by: Vec::new(),
-        }
-    }
-
-    /// Create a new Node with auto-generated UUID and explicit container_node_id
-    ///
-    /// Use this constructor for nested hierarchies where the root document
-    /// is different from the immediate parent.
-    ///
-    /// # Arguments
-    ///
-    /// * `node_type` - Type identifier (e.g., "text", "task")
-    /// * `content` - Primary content/text
-    /// * `parent_id` - Optional parent node reference (creation context)
-    /// * `container_node_id` - Optional root document reference (NULL = this node IS root)
-    /// * `properties` - JSON object with entity-specific fields
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use nodespace_core::models::Node;
-    /// # use serde_json::json;
-    /// // Create nested hierarchy: root -> child -> grandchild
-    /// let container_node_id = "root-uuid".to_string();
-    /// let child_id = "child-uuid".to_string();
-    ///
-    /// let grandchild = Node::new_with_root(
-    ///     "text".to_string(),
-    ///     "Grandchild content".to_string(),
-    ///     Some(child_id),           // Parent is the child
-    ///     Some(container_node_id.clone()),    // Root is the root document
-    ///     json!({}),
-    /// );
-    /// ```
-    pub fn new_with_root(
-        node_type: String,
-        content: String,
-        parent_id: Option<String>,
-        container_node_id: Option<String>,
-        properties: serde_json::Value,
-    ) -> Self {
+    pub fn new(node_type: String, content: String, properties: serde_json::Value) -> Self {
         let now = Utc::now();
         let id = Uuid::new_v4().to_string();
 
@@ -289,8 +198,6 @@ impl Node {
             id,
             node_type,
             content,
-            parent_id,
-            container_node_id,
             before_sibling_id: None,
             version: 1,
             created_at: now,
@@ -309,13 +216,7 @@ impl Node {
     /// * `id` - Explicit ID (e.g., "2025-01-03" for date nodes)
     /// * `node_type` - Type identifier
     /// * `content` - Primary content/text
-    /// * `parent_id` - Optional parent node reference
     /// * `properties` - JSON object with entity-specific fields
-    ///
-    /// # Note on `container_node_id`
-    ///
-    /// Like `new()`, this sets `container_node_id = parent_id`. For explicit container_node_id
-    /// control, construct the Node directly using struct initialization.
     ///
     /// # Examples
     ///
@@ -326,7 +227,6 @@ impl Node {
     ///     "2025-01-03".to_string(),
     ///     "date".to_string(),
     ///     "2025-01-03".to_string(),
-    ///     None,
     ///     json!({ "timezone": "UTC" }),
     /// );
     /// ```
@@ -334,18 +234,14 @@ impl Node {
         id: String,
         node_type: String,
         content: String,
-        parent_id: Option<String>,
         properties: serde_json::Value,
     ) -> Self {
         let now = Utc::now();
-        let container_node_id = parent_id.clone();
 
         Self {
             id,
             node_type,
             content,
-            parent_id,
-            container_node_id,
             before_sibling_id: None,
             version: 1,
             created_at: now,
@@ -406,22 +302,6 @@ impl Node {
         }
 
         // Validate no circular references (self-referencing)
-        if let Some(parent_id) = &self.parent_id {
-            if parent_id == &self.id {
-                return Err(ValidationError::InvalidParent(
-                    "Node cannot be its own parent".to_string(),
-                ));
-            }
-        }
-
-        if let Some(container_node_id) = &self.container_node_id {
-            if container_node_id == &self.id {
-                return Err(ValidationError::InvalidRoot(
-                    "Node cannot be its own root".to_string(),
-                ));
-            }
-        }
-
         if let Some(sibling_id) = &self.before_sibling_id {
             if sibling_id == &self.id {
                 return Err(ValidationError::InvalidParent(
@@ -431,28 +311,6 @@ impl Node {
         }
 
         Ok(())
-    }
-
-    /// Check if this node is a root node (no parent or container_node_id is None)
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use nodespace_core::models::Node;
-    /// # use serde_json::json;
-    /// let root = Node::new("text".to_string(), "Root".to_string(), None, json!({}));
-    /// assert!(root.is_root());
-    ///
-    /// let child = Node::new(
-    ///     "text".to_string(),
-    ///     "Child".to_string(),
-    ///     Some("parent-id".to_string()),
-    ///     json!({})
-    /// );
-    /// assert!(!child.is_root());
-    /// ```
-    pub fn is_root(&self) -> bool {
-        self.container_node_id.is_none()
     }
 
     /// Update the node's content
@@ -511,7 +369,7 @@ where
 ///
 /// # Double-Option Pattern for Nullable Fields
 ///
-/// Fields like `parent_id`, `container_node_id`, `before_sibling_id`, and `embedding_vector`
+/// Fields like `before_sibling_id` and `embedding_vector`
 /// use a double-`Option` pattern to distinguish between three states:
 ///
 /// - `None`: Don't change this field (omit from update)
@@ -526,23 +384,23 @@ where
 /// ```rust
 /// # use nodespace_core::models::NodeUpdate;
 /// # use serde_json::json;
-/// // Update only content (don't touch parent_id)
+/// // Update only content
 /// let update = NodeUpdate {
 ///     content: Some("Updated content".to_string()),
 ///     ..Default::default()
 /// };
 ///
-/// // Update content and clear parent_id (set to NULL)
+/// // Update content and clear before_sibling_id (set to NULL)
 /// let update = NodeUpdate {
-///     content: Some("Orphaned content".to_string()),
-///     parent_id: Some(None),  // Set parent_id to NULL
+///     content: Some("Updated content".to_string()),
+///     before_sibling_id: Some(None),  // Set before_sibling_id to NULL
 ///     ..Default::default()
 /// };
 ///
-/// // Update content and set new parent_id
+/// // Update content and set new sibling ordering
 /// let update = NodeUpdate {
 ///     content: Some("New content".to_string()),
-///     parent_id: Some(Some("new-parent-id".to_string())),  // Set to specific value
+///     before_sibling_id: Some(Some("sibling-id".to_string())),  // Set to specific value
 ///     properties: Some(json!({"status": "DONE"})),
 ///     ..Default::default()
 /// };
@@ -557,32 +415,6 @@ pub struct NodeUpdate {
     /// Update primary content
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-
-    /// Update parent reference
-    ///
-    /// Uses double-Option pattern:
-    /// - `None`: Don't change parent_id
-    /// - `Some(None)`: Set parent_id to NULL (remove parent)
-    /// - `Some(Some(id))`: Set parent_id to the specified ID
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_optional_field"
-    )]
-    pub parent_id: Option<Option<String>>,
-
-    /// Update root reference
-    ///
-    /// Uses double-Option pattern:
-    /// - `None`: Don't change container_node_id
-    /// - `Some(None)`: Set container_node_id to NULL (this node becomes root)
-    /// - `Some(Some(id))`: Set container_node_id to the specified ID
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_optional_field"
-    )]
-    pub container_node_id: Option<Option<String>>,
 
     /// Update sibling ordering
     ///
@@ -643,8 +475,6 @@ impl NodeUpdate {
     pub fn is_empty(&self) -> bool {
         self.node_type.is_none()
             && self.content.is_none()
-            && self.parent_id.is_none()
-            && self.container_node_id.is_none()
             && self.before_sibling_id.is_none()
             && self.properties.is_none()
             && self.embedding_vector.is_none()
@@ -884,32 +714,6 @@ pub struct NodeQuery {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_type: Option<String>,
 
-    /// Filter to only include referenceable nodes for @mention autocomplete.
-    ///
-    /// When `true`, applies SQL filter: `(node_type = 'task' OR container_node_id IS NULL)`
-    ///
-    /// This includes:
-    /// - **Task nodes**: `WHERE node_type = 'task'` (tasks are always referenceable)
-    /// - **Container/root nodes**: `WHERE container_node_id IS NULL` (top-level documents)
-    ///
-    /// This excludes:
-    /// - Text child nodes (e.g., paragraphs within a document)
-    /// - Other non-task children that shouldn't appear in @mention suggestions
-    ///
-    /// # Use Case
-    /// Primarily used by @mention autocomplete to show only nodes that make sense
-    /// to reference (containers and tasks), not individual content fragments.
-    ///
-    /// # Default
-    /// When `None`, defaults to `false` (no filtering applied).
-    ///
-    /// # Note on Interaction with `node_type`
-    /// When combined with `node_type: Some("task")`, the filter becomes redundant
-    /// since tasks are always included. However, this is harmless and maintains consistent
-    /// query behavior across all parameter combinations.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub include_containers_and_tasks: Option<bool>,
-
     /// Limit number of results
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
@@ -996,10 +800,6 @@ pub enum OrderBy {
 /// let filter = NodeFilter::new()
 ///     .with_node_type("task".to_string());
 ///
-/// // Filter by parent
-/// let filter = NodeFilter::new()
-///     .with_parent_id("2025-01-03".to_string());
-///
 /// // Complex filter: tasks created in last 7 days with high priority
 /// let week_ago = Utc::now() - Duration::days(7);
 /// let filter = NodeFilter::new()
@@ -1020,21 +820,9 @@ pub struct NodeFilter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_type: Option<String>,
 
-    /// Filter by parent ID
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_id: Option<String>,
-
-    /// Filter by root ID
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container_node_id: Option<String>,
-
     /// Filter by specific IDs
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ids: Option<Vec<String>>,
-
-    /// Filter for root nodes only
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub is_root: Option<bool>,
 
     /// Filter by content search (substring match)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1085,27 +873,9 @@ impl NodeFilter {
         self
     }
 
-    /// Filter by parent ID
-    pub fn with_parent_id(mut self, parent_id: String) -> Self {
-        self.parent_id = Some(parent_id);
-        self
-    }
-
-    /// Filter by root ID
-    pub fn with_container_node_id(mut self, container_node_id: String) -> Self {
-        self.container_node_id = Some(container_node_id);
-        self
-    }
-
     /// Filter by specific IDs
     pub fn with_ids(mut self, ids: Vec<String>) -> Self {
         self.ids = Some(ids);
-        self
-    }
-
-    /// Filter for root nodes only
-    pub fn with_is_root(mut self, is_root: bool) -> Self {
-        self.is_root = Some(is_root);
         self
     }
 
@@ -1181,18 +951,11 @@ mod tests {
 
     #[test]
     fn test_node_creation() {
-        let node = Node::new(
-            "text".to_string(),
-            "Test content".to_string(),
-            None,
-            json!({}),
-        );
+        let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
 
         assert!(!node.id.is_empty());
         assert_eq!(node.node_type, "text");
         assert_eq!(node.content, "Test content");
-        assert!(node.parent_id.is_none());
-        assert!(node.is_root());
     }
 
     #[test]
@@ -1201,23 +964,16 @@ mod tests {
             "2025-01-03".to_string(),
             "date".to_string(),
             "2025-01-03".to_string(),
-            None,
             json!({"timezone": "UTC"}),
         );
 
         assert_eq!(node.id, "2025-01-03");
         assert_eq!(node.node_type, "date");
-        assert!(node.is_root());
     }
 
     #[test]
     fn test_node_validation() {
-        let node = Node::new(
-            "text".to_string(),
-            "Valid content".to_string(),
-            None,
-            json!({}),
-        );
+        let node = Node::new("text".to_string(), "Valid content".to_string(), json!({}));
 
         assert!(node.validate().is_ok());
     }
@@ -1225,12 +981,7 @@ mod tests {
     #[test]
     fn test_node_validation_accepts_blank_content() {
         // Issue #484: Blank content is now allowed (supports ephemeral node elimination from #479)
-        let mut node = Node::new(
-            "text".to_string(),
-            "Valid content".to_string(),
-            None,
-            json!({}),
-        );
+        let mut node = Node::new("text".to_string(), "Valid content".to_string(), json!({}));
         node.content = String::new();
 
         // Should validate successfully - blank nodes are valid
@@ -1239,12 +990,7 @@ mod tests {
 
     #[test]
     fn test_node_validation_invalid_properties() {
-        let mut node = Node::new(
-            "text".to_string(),
-            "Valid content".to_string(),
-            None,
-            json!({}),
-        );
+        let mut node = Node::new("text".to_string(), "Valid content".to_string(), json!({}));
         node.properties = json!("not an object");
 
         assert!(matches!(
@@ -1254,32 +1000,8 @@ mod tests {
     }
 
     #[test]
-    fn test_node_validation_circular_parent() {
-        let mut node = Node::new("text".to_string(), "Test".to_string(), None, json!({}));
-        // Set parent_id to self (circular reference)
-        node.parent_id = Some(node.id.clone());
-
-        assert!(matches!(
-            node.validate(),
-            Err(ValidationError::InvalidParent(_))
-        ));
-    }
-
-    #[test]
-    fn test_node_validation_circular_root() {
-        let mut node = Node::new("text".to_string(), "Test".to_string(), None, json!({}));
-        // Set container_node_id to self (circular reference)
-        node.container_node_id = Some(node.id.clone());
-
-        assert!(matches!(
-            node.validate(),
-            Err(ValidationError::InvalidRoot(_))
-        ));
-    }
-
-    #[test]
     fn test_node_validation_circular_sibling() {
-        let mut node = Node::new("text".to_string(), "Test".to_string(), None, json!({}));
+        let mut node = Node::new("text".to_string(), "Test".to_string(), json!({}));
         // Set before_sibling_id to self (circular reference)
         node.before_sibling_id = Some(node.id.clone());
 
@@ -1290,40 +1012,8 @@ mod tests {
     }
 
     #[test]
-    fn test_node_is_root() {
-        let root = Node::new("text".to_string(), "Root".to_string(), None, json!({}));
-        assert!(root.is_root());
-
-        let child = Node::new(
-            "text".to_string(),
-            "Child".to_string(),
-            Some("parent-id".to_string()),
-            json!({}),
-        );
-        assert!(!child.is_root());
-    }
-
-    #[test]
-    fn test_node_new_with_root() {
-        let container_node_id = "root-123".to_string();
-        let parent_id = "parent-456".to_string();
-
-        let node = Node::new_with_root(
-            "text".to_string(),
-            "Grandchild".to_string(),
-            Some(parent_id.clone()),
-            Some(container_node_id.clone()),
-            json!({}),
-        );
-
-        assert_eq!(node.parent_id, Some(parent_id));
-        assert_eq!(node.container_node_id, Some(container_node_id));
-        assert!(!node.is_root());
-    }
-
-    #[test]
     fn test_node_content_update() {
-        let mut node = Node::new("text".to_string(), "Original".to_string(), None, json!({}));
+        let mut node = Node::new("text".to_string(), "Original".to_string(), json!({}));
         let original_modified = node.modified_at;
 
         node.set_content("Updated".to_string());
@@ -1338,7 +1028,6 @@ mod tests {
         let mut node = Node::new(
             "task".to_string(),
             "Task".to_string(),
-            None,
             json!({"status": "todo"}),
         );
 
@@ -1352,7 +1041,6 @@ mod tests {
         let mut node = Node::new(
             "task".to_string(),
             "Task".to_string(),
-            None,
             json!({"status": "todo", "priority": "low"}),
         );
 
@@ -1364,12 +1052,7 @@ mod tests {
 
     #[test]
     fn test_node_set_embedding() {
-        let mut node = Node::new(
-            "text".to_string(),
-            "Test content".to_string(),
-            None,
-            json!({}),
-        );
+        let mut node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
 
         assert!(node.embedding_vector.is_none());
         let original_modified = node.modified_at;
@@ -1412,11 +1095,9 @@ mod tests {
     fn test_node_filter_builder() {
         let filter = NodeFilter::new()
             .with_node_type("task".to_string())
-            .with_parent_id("2025-01-03".to_string())
             .with_limit(10);
 
         assert_eq!(filter.node_type, Some("task".to_string()));
-        assert_eq!(filter.parent_id, Some("2025-01-03".to_string()));
         assert_eq!(filter.limit, Some(10));
     }
 
@@ -1562,7 +1243,6 @@ mod tests {
         let node = Node::new(
             "text".to_string(),
             "Test".to_string(),
-            None,
             json!({"key": "value"}),
         );
 
@@ -1580,7 +1260,6 @@ mod tests {
         let task = Node::new(
             "task".to_string(),
             "Implement feature".to_string(),
-            Some("2025-01-03".to_string()),
             json!({
                 "status": "IN_PROGRESS",
                 "assignee": "person-123",
@@ -1592,6 +1271,5 @@ mod tests {
         assert_eq!(task.node_type, "task");
         assert_eq!(task.properties["status"], "IN_PROGRESS");
         assert_eq!(task.properties["priority"], "HIGH");
-        assert!(!task.is_root());
     }
 }

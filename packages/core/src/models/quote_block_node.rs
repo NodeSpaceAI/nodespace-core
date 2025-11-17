@@ -58,10 +58,7 @@ impl QuoteBlockNode {
     /// ```
     #[allow(clippy::new_ret_no_self)]
     pub fn new(content: String) -> QuoteBlockNodeBuilder {
-        QuoteBlockNodeBuilder {
-            content,
-            parent_id: None,
-        }
+        QuoteBlockNodeBuilder { content }
     }
 
     /// Create a QuoteBlockNode from an existing universal Node
@@ -121,7 +118,7 @@ impl QuoteBlockNode {
     /// use nodespace_core::models::QuoteBlockNode;
     ///
     /// let mut quote_block = QuoteBlockNode::new("quote".to_string()).build();
-    /// quote_block.as_node_mut().parent_id = Some("parent-123".to_string());
+    /// quote_block.as_node_mut().content = "updated quote".to_string();
     /// ```
     pub fn as_node_mut(&mut self) -> &mut Node {
         &mut self.node
@@ -152,26 +149,9 @@ impl QuoteBlockNode {
 /// Provides a fluent API for configuring quote block properties before creation.
 pub struct QuoteBlockNodeBuilder {
     content: String,
-    parent_id: Option<String>,
 }
 
 impl QuoteBlockNodeBuilder {
-    /// Set the parent node ID
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use nodespace_core::models::QuoteBlockNode;
-    ///
-    /// let quote_block = QuoteBlockNode::new("quote".to_string())
-    ///     .with_parent_id("parent-123")
-    ///     .build();
-    /// ```
-    pub fn with_parent_id(mut self, parent_id: impl Into<String>) -> Self {
-        self.parent_id = Some(parent_id.into());
-        self
-    }
-
     /// Build the QuoteBlockNode
     ///
     /// Creates the underlying universal Node with quote block properties.
@@ -186,15 +166,10 @@ impl QuoteBlockNodeBuilder {
     /// ```
     pub fn build(self) -> QuoteBlockNode {
         // QuoteBlock nodes have no custom properties (empty object is correct)
-        // All node metadata (content, parent_id, etc.) is stored in the universal Node
+        // All node metadata (content, etc.) is stored in the universal Node
         let properties = json!({});
 
-        let node = Node::new(
-            "quote-block".to_string(),
-            self.content,
-            self.parent_id,
-            properties,
-        );
+        let node = Node::new("quote-block".to_string(), self.content, properties);
 
         QuoteBlockNode { node }
     }

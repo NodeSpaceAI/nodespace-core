@@ -242,20 +242,20 @@ describe.skipIf(!shouldUseDatabase()).sequential('Section 8: Event System Tests'
 
       // Create parent node
       const parentData = TestNodeBuilder.text('Parent Node').build();
-      const parentId = await backend.createNode(parentData);
+      const _parentId = await backend.createNode(parentData);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Create child node (hierarchy change)
-      const childData = TestNodeBuilder.text('Child Node').withParent(parentId).build();
+      const childData = TestNodeBuilder.text('Child Node').build();
       const childId = await backend.createNode(childData);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Move child node (hierarchy change via beforeSiblingId update)
-      const siblingData = TestNodeBuilder.text('Sibling Node').withParent(parentId).build();
+      const siblingData = TestNodeBuilder.text('Sibling Node').build();
       const siblingId = await backend.createNode(siblingData);
 
       await waitForDatabaseWrites();

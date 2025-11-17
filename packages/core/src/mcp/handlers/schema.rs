@@ -390,8 +390,6 @@ mod tests {
             id: "test_schema".to_string(),
             node_type: "schema".to_string(),
             content: "Test Schema".to_string(),
-            parent_id: None,
-            container_node_id: None,
             before_sibling_id: None,
             version: 1,
             created_at: chrono::Utc::now(),

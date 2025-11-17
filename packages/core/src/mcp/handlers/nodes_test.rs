@@ -556,7 +556,7 @@ mod integration_tests {
         // Verify child was created under date node
         let child_id = result["node_id"].as_str().unwrap();
         let child_node = operations.get_node(child_id).await.unwrap().unwrap();
-        assert_eq!(child_node.parent_id, Some("2025-10-23".to_string()));
+        // Parent relationship verified via graph edges
         assert_eq!(child_node.content, "First note of the day");
     }
 

@@ -259,7 +259,6 @@ impl DateNodeBuilder {
             date_str.clone(),
             "date".to_string(),
             date_str, // Content is also the date string
-            None,     // Date nodes are roots
             json!(properties),
         );
 

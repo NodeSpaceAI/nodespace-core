@@ -88,10 +88,8 @@ describe('Sibling Chain Integrity', () => {
     const firstChildren: string[] = [];
     const reachable = new Set<string>();
 
-    // Get all siblings for this parent
-    const siblings = Array.from(service.nodes.values())
-      .filter((n) => n.parentId === parentId)
-      .map((n) => n.id);
+    // Get all siblings for this parent (now all nodes since parentId removed)
+    const siblings = Array.from(service.nodes.values()).map((n) => n.id);
 
     if (siblings.length === 0) {
       return { valid: true, errors: [], firstChildren: [], reachable, total: 0 };
@@ -162,8 +160,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
@@ -202,8 +198,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
@@ -214,8 +208,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
@@ -226,8 +218,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: 'node-2',
       properties: {},
       embeddingVector: null,
@@ -259,7 +249,6 @@ describe('Sibling Chain Integrity', () => {
     if (shouldUseDatabase()) {
       const node3Persisted = await adapter.getNode('node-3');
       expect(node3Persisted?.beforeSiblingId).toBe('node-1');
-      expect(node3Persisted?.parentId).toBe(null);
 
       // Verify: node-2 was actually deleted from database
       const node2Persisted = await adapter.getNode('node-2');
@@ -273,8 +262,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
@@ -285,8 +272,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
@@ -297,8 +282,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: 'node-2',
       properties: {},
       embeddingVector: null,
@@ -333,12 +316,10 @@ describe('Sibling Chain Integrity', () => {
     // Verify database persistence only in database mode
     if (shouldUseDatabase()) {
       const node2Persisted = await adapter.getNode('node-2');
-      expect(node2Persisted?.parentId).toBe('node-1'); // node-2 is now child of node-1
       expect(node2Persisted?.beforeSiblingId).toBeNull(); // Last child of node-1
 
       const node3Persisted = await adapter.getNode('node-3');
       expect(node3Persisted?.beforeSiblingId).toBe('node-1'); // node-3 bypasses indented node-2
-      expect(node3Persisted?.parentId).toBeNull(); // node-3 still at root level
     }
   });
 
@@ -348,8 +329,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
@@ -360,8 +339,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'child-1',
       nodeType: 'text',
       content: 'Child 1',
-      parentId: 'parent',
-      containerNodeId: 'parent',
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
@@ -372,8 +349,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'child-2',
       nodeType: 'text',
       content: 'Child 2',
-      parentId: 'parent',
-      containerNodeId: 'parent',
       beforeSiblingId: 'child-1',
       properties: {},
       embeddingVector: null,
@@ -395,10 +370,6 @@ describe('Sibling Chain Integrity', () => {
     const rootValidation = validateSiblingChain(null);
     expect(rootValidation.valid).toBe(true);
 
-    // Verify: child-2 transferred to child-1 (as outdent transfers siblings below) (in-memory)
-    const child2Updated = service.findNode('child-2');
-    expect(child2Updated?.parentId).toBe('child-1');
-
     // Verify: child-1's children chain valid
     const child1ChildValidation = validateSiblingChain('child-1');
     expect(child1ChildValidation.valid).toBe(true);
@@ -406,11 +377,9 @@ describe('Sibling Chain Integrity', () => {
     // Verify database persistence only in database mode
     if (shouldUseDatabase()) {
       const child1Persisted = await adapter.getNode('child-1');
-      expect(child1Persisted?.parentId).toBeNull(); // child-1 outdented to root
       expect(child1Persisted?.beforeSiblingId).toBe('parent'); // Positioned after parent
 
       const child2Persisted = await adapter.getNode('child-2');
-      expect(child2Persisted?.parentId).toBe('child-1'); // child-2 transferred to child-1
       expect(child2Persisted?.beforeSiblingId).toBeNull(); // First/only child of child-1
     }
   });
@@ -421,8 +390,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
@@ -433,8 +400,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
@@ -445,8 +410,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: 'node-2',
       properties: {},
       embeddingVector: null,
@@ -480,8 +443,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
@@ -492,8 +453,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
@@ -504,8 +463,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: 'node-2',
       properties: {},
       embeddingVector: null,
@@ -547,8 +504,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'Node 1',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
@@ -559,8 +514,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Node 2',
-      parentId: null,
-      containerNodeId: null,
       beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
@@ -603,15 +556,13 @@ describe('Sibling Chain Integrity', () => {
 
     // Verify: Visual order makes sense
     const visible = service.visibleNodes(null);
-    const rootNodes = visible.filter((n) => n.parentId === null);
-    expect(rootNodes.length).toBeGreaterThan(0);
+    expect(visible.length).toBeGreaterThan(0);
 
     // Verify: All nodes either have valid beforeSiblingId or are first
-    for (const node of rootNodes) {
+    for (const node of visible) {
       if (node.beforeSiblingId !== null) {
         const beforeNode = service.findNode(node.beforeSiblingId);
         expect(beforeNode).toBeDefined();
-        expect(beforeNode?.parentId).toBe(null); // Same parent level
       }
     }
   });

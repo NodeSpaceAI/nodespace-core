@@ -35,8 +35,6 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           id: 'container-1',
           nodeType: 'text',
           content: 'Container Document about meetings',
-          parentId: null,
-          containerNodeId: null,
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
@@ -47,8 +45,6 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           id: 'task-1',
           nodeType: 'task',
           content: 'Schedule meeting',
-          parentId: 'container-1',
-          containerNodeId: 'container-1',
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
@@ -84,8 +80,6 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           id: 'container-1',
           nodeType: 'text',
           content: 'Project planning',
-          parentId: null,
-          containerNodeId: null,
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
@@ -96,8 +90,6 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           id: 'task-1',
           nodeType: 'task',
           content: 'Plan project timeline',
-          parentId: 'container-1',
-          containerNodeId: 'container-1',
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
@@ -113,7 +105,6 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
 
       // Verify only containers and tasks are in results
       expect(results).toHaveLength(2);
-      expect(results.every((n) => n.nodeType === 'task' || n.containerNodeId === null)).toBe(true);
     });
 
     it('should return early for queries below minQueryLength', async () => {
@@ -130,8 +121,6 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           id: 'task-1',
           nodeType: 'task',
           content: 'Complete report',
-          parentId: null,
-          containerNodeId: null,
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
@@ -160,8 +149,6 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           id: 'container-1',
           nodeType: 'text',
           content: 'Cached document',
-          parentId: null,
-          containerNodeId: null,
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
@@ -212,8 +199,6 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           id: 'root-container',
           nodeType: 'text',
           content: 'Root document',
-          parentId: null,
-          containerNodeId: null, // Container indicator
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
@@ -226,7 +211,6 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
 
       const results = await service.searchNodes('root');
       expect(results).toHaveLength(1);
-      expect(results[0].containerNodeId).toBeNull();
     });
 
     it('should handle task nodes regardless of hierarchy', async () => {
@@ -235,8 +219,6 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           id: 'task-root',
           nodeType: 'task',
           content: 'Top-level task',
-          parentId: null,
-          containerNodeId: null,
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),
@@ -247,8 +229,6 @@ describe('NodeReferenceService - @mention autocomplete filtering', () => {
           id: 'task-child',
           nodeType: 'task',
           content: 'Nested task',
-          parentId: 'task-root',
-          containerNodeId: 'task-root',
           beforeSiblingId: null,
           createdAt: new Date().toISOString(),
           modifiedAt: new Date().toISOString(),

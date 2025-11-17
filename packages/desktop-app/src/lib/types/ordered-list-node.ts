@@ -74,13 +74,11 @@ export const OrderedListNodeHelpers = {
    * );
    * ```
    */
-  createOrderedListItem(content: string, parentId: string | null = null): OrderedListNode {
+  createOrderedListItem(content: string): OrderedListNode {
     return {
       id: `ordered-list-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
       nodeType: 'ordered-list',
       content,
-      parentId,
-      containerNodeId: null,
       beforeSiblingId: null,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),

@@ -327,7 +327,6 @@
     failedNodeIds: Set<string>,
     failedUpdates: Array<{
       nodeId: string;
-      parentId: string | null;
       beforeSiblingId: string | null;
     }>
   ) {
@@ -428,8 +427,6 @@
               id: node.id,
               nodeType: node.nodeType,
               content: node.content,
-              parentId: node.parentId || nodeId,
-              containerNodeId: node.containerNodeId || nodeId!,
               beforeSiblingId: node.beforeSiblingId,
               createdAt: node.createdAt || new Date().toISOString(),
               modifiedAt: new Date().toISOString(),
@@ -562,14 +559,14 @@
   // 3. This watcher (line ~490): Tracks successfully persisted structural changes (source of truth)
   let previousStructure = new Map<
     string,
-    { parentId: string | null; beforeSiblingId: string | null }
+    { beforeSiblingId: string | null }
   >();
 
   // Track what structure was actually persisted to database (#479)
   // This allows detecting when in-memory state differs from persisted state
   let persistedStructure = new Map<
     string,
-    { parentId: string | null; beforeSiblingId: string | null }
+    { beforeSiblingId: string | null }
   >();
 
   // Reverse index: Map from beforeSiblingId -> Set of node IDs that reference it
@@ -613,7 +610,7 @@
    */
   function trackStructureChange(
     nodeId: string,
-    newStructure: { parentId: string | null; beforeSiblingId: string | null }
+    newStructure: { beforeSiblingId: string | null }
   ): void {
     const oldStructure = previousStructure.get(nodeId);
     previousStructure.set(nodeId, newStructure);
@@ -636,7 +633,6 @@
     // Collect all structural changes first
     const updates: Array<{
       nodeId: string;
-      parentId: string | null;
       beforeSiblingId: string | null;
     }> = [];
 
@@ -646,7 +642,6 @@
       // All structural changes must be persisted regardless of placeholder status
 
       const currentStructure = {
-        parentId: node.parentId,
         beforeSiblingId: node.beforeSiblingId
       };
 
@@ -657,25 +652,21 @@
       // This catches cases where Tab indent happened after node was created but before structural watcher ran
       const needsPersistenceCorrection =
         persisted &&
-        (persisted.parentId !== currentStructure.parentId ||
-          persisted.beforeSiblingId !== currentStructure.beforeSiblingId);
+        persisted.beforeSiblingId !== currentStructure.beforeSiblingId;
 
       if (needsPersistenceCorrection) {
         // Current in-memory structure differs from persisted - fix database
         updates.push({
           nodeId: node.id,
-          parentId: node.parentId,
           beforeSiblingId: node.beforeSiblingId
         });
       } else if (
         prevStructure &&
-        (prevStructure.parentId !== currentStructure.parentId ||
-          prevStructure.beforeSiblingId !== currentStructure.beforeSiblingId)
+        prevStructure.beforeSiblingId !== currentStructure.beforeSiblingId
       ) {
         // Normal structural change detected - queue for persistence
         updates.push({
           nodeId: node.id,
-          parentId: node.parentId,
           beforeSiblingId: node.beforeSiblingId
         });
       } else {
@@ -704,7 +695,6 @@
         // Wait for any pending content saves to complete
         const nodeIdsToWaitFor: string[] = [];
         for (const update of updates) {
-          if (update.parentId) nodeIdsToWaitFor.push(update.parentId);
           if (update.beforeSiblingId) nodeIdsToWaitFor.push(update.beforeSiblingId);
         }
 
@@ -714,7 +704,6 @@
         const validUpdates = updates.filter(
           (update) =>
             !failedNodeIds.has(update.nodeId) &&
-            (!update.parentId || !failedNodeIds.has(update.parentId)) &&
             (!update.beforeSiblingId || !failedNodeIds.has(update.beforeSiblingId))
         );
 
@@ -728,7 +717,6 @@
         // Update tracking for succeeded updates
         for (const update of result.succeeded) {
           const structure = {
-            parentId: update.parentId,
             beforeSiblingId: update.beforeSiblingId
           };
           trackStructureChange(update.nodeId, structure);
@@ -757,7 +745,6 @@
               if (node) {
                 nodeManager.nodes.set(update.nodeId, {
                   ...node,
-                  parentId: lastGoodState.parentId,
                   beforeSiblingId: lastGoodState.beforeSiblingId
                 });
               }
@@ -793,21 +780,19 @@
    * Extracts core Node properties without UI state (depth, children, expanded)
    *
    * @param placeholder - The viewer-local placeholder node
-   * @param nodeId - The parent node ID
+   * @param parentNodeId - The parent node ID
    * @param overrides - Content and/or nodeType to override from placeholder
    * @returns Promoted node with core properties only
    */
   function promotePlaceholderToNode(
     placeholder: Node,
-    nodeId: string,
+    parentNodeId: string,
     overrides: { content?: string; nodeType?: string }
   ): Node {
     return {
       id: placeholder.id,
       nodeType: overrides.nodeType ?? placeholder.nodeType,
       content: overrides.content ?? placeholder.content,
-      parentId: nodeId,
-      containerNodeId: placeholder.containerNodeId,
       beforeSiblingId: placeholder.beforeSiblingId,
       version: placeholder.version,
       createdAt: placeholder.createdAt,
@@ -870,18 +855,10 @@
           // It's rendered via nodesToRender derived state and promoted to real node when user adds content
           const placeholderId = globalThis.crypto.randomUUID();
 
-          // Get viewer's node to inherit correct container
-          const viewerNode = sharedNodeStore.getNode(nodeId);
-
-          // Inherit container: use parent's containerNodeId if available, otherwise parent IS the container
-          const inheritedContainer = viewerNode?.containerNodeId ?? nodeId;
-
           viewerPlaceholder = {
             id: placeholderId,
             nodeType: 'text',
             content: '',
-            parentId: nodeId,
-            containerNodeId: inheritedContainer,
             beforeSiblingId: null,
             createdAt: new Date().toISOString(),
             modifiedAt: new Date().toISOString(),
@@ -1526,8 +1503,6 @@
         id: placeholderId,
         nodeType: 'text',
         content: '',
-        parentId: nodeId, // Issue #479: Set to viewer's container so if persisted, it's properly parented
-        containerNodeId: null,
         beforeSiblingId: null,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),

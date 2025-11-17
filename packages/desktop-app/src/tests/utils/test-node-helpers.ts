@@ -192,8 +192,6 @@ export async function createNodeForCurrentMode(
       | 'ordered-list'
       | 'ai-chat';
     content: string;
-    parentId: string | null;
-    containerNodeId: string | null;
     beforeSiblingId: string | null;
     version?: number;
     properties: Record<string, unknown>;
@@ -210,8 +208,6 @@ export async function createNodeForCurrentMode(
       .withId(nodeData.id)
       .withType(nodeData.nodeType)
       .withContent(nodeData.content)
-      .withParent(nodeData.parentId)
-      .withContainer(nodeData.containerNodeId)
       .withBeforeSibling(nodeData.beforeSiblingId)
       .withVersion(nodeData.version ?? 1)
       .withProperties(nodeData.properties)

@@ -26,19 +26,13 @@
 
 use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::SurrealStore;
-use crate::models::{Node, NodeFilter, NodeUpdate, OrderBy};
+use crate::models::{Node, NodeFilter, NodeUpdate};
 use crate::services::error::NodeServiceError;
 use crate::services::migration_registry::MigrationRegistry;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use regex::Regex;
 use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
-
-/// Special container node ID that represents "no container" (root-level nodes)
-///
-/// The frontend uses "root" as a sentinel value to indicate nodes at the root level.
-/// The backend converts this to NULL in the database for proper relational semantics.
-const ROOT_CONTAINER_ID: &str = "root";
 
 /// Check if a string matches date node format: YYYY-MM-DD
 ///
@@ -701,66 +695,8 @@ where
             }
         }
 
-        // Validate parent exists if parent_id is set
-        // Auto-create date nodes if they don't exist
-        if let Some(ref parent_id) = node.parent_id {
-            let parent_exists = self.node_exists(parent_id).await?;
-            if !parent_exists {
-                // Check if this is a date node (format: YYYY-MM-DD)
-                if is_date_node_id(parent_id) {
-                    // Auto-create the date node with schema version
-                    let mut date_properties = serde_json::Map::new();
-
-                    // Add schema version for date node
-                    if let Some(schema) = self.get_schema_for_type("date").await? {
-                        if let Some(version) = schema.get("version").and_then(|v| v.as_i64()) {
-                            date_properties
-                                .insert("_schema_version".to_string(), serde_json::json!(version));
-                        }
-                    } else {
-                        // No schema found - use version 1 as default
-                        date_properties.insert("_schema_version".to_string(), serde_json::json!(1));
-                    }
-
-                    let date_node = Node {
-                        id: parent_id.clone(),
-                        node_type: "date".to_string(),
-                        content: String::new(),
-                        parent_id: None,
-                        container_node_id: None,
-                        before_sibling_id: None,
-                        version: 1,
-                        properties: serde_json::Value::Object(date_properties),
-                        mentions: vec![],
-                        mentioned_by: vec![],
-                        created_at: chrono::Utc::now(),
-                        modified_at: chrono::Utc::now(),
-                        embedding_vector: None,
-                    };
-
-                    // Insert date node directly using SurrealStore (skip validation to avoid recursion)
-                    self.store.create_node(date_node).await.map_err(|e| {
-                        NodeServiceError::query_failed(format!(
-                            "Failed to auto-create date node: {}",
-                            e
-                        ))
-                    })?;
-                } else {
-                    return Err(NodeServiceError::invalid_parent(parent_id));
-                }
-            }
-        }
-
-        // Validate root exists if container_node_id is set
-        // Special case: ROOT_CONTAINER_ID is treated as null (no container node)
-        if let Some(ref container_node_id) = node.container_node_id {
-            if container_node_id != ROOT_CONTAINER_ID {
-                let root_exists = self.node_exists(container_node_id).await?;
-                if !root_exists {
-                    return Err(NodeServiceError::invalid_root(container_node_id));
-                }
-            }
-        }
+        // NOTE: Parent/container validation removed - now handled by NodeOperations layer
+        // The graph-native architecture uses edges for hierarchy, not fields on Node struct
 
         // Add schema version to properties
         // Get schema for this node type and extract version
@@ -785,14 +721,7 @@ where
         // Update node with schema-versioned properties
         node.properties = properties;
 
-        // Convert ROOT_CONTAINER_ID to None (null in database)
-        let container_node_id_value = node
-            .container_node_id
-            .as_deref()
-            .filter(|id| *id != ROOT_CONTAINER_ID);
-
-        // Update node with filtered container_node_id
-        node.container_node_id = container_node_id_value.map(String::from);
+        // NOTE: container_node_id filtering removed - hierarchy now managed via edges
 
         // Create node via store
         self.store
@@ -866,30 +795,28 @@ where
             .await?
             .ok_or_else(|| NodeServiceError::node_not_found(mentioning_node_id))?;
 
-        // If the mentioning node has a container, prevent it from mentioning that container
-        if let Some(container_id) = &mentioning_node.container_node_id {
-            if container_id == mentioned_node_id {
-                return Err(NodeServiceError::ValidationFailed(
-                    crate::models::ValidationError::InvalidParent(
-                        "Cannot mention own container (container-level self-reference)".to_string(),
-                    ),
-                ));
-            }
+        // Get container ID via edge traversal
+        let container_id = self.get_container_id(mentioning_node_id).await?;
+
+        // Prevent container-level self-references (child mentioning its own container)
+        if container_id == mentioned_node_id {
+            return Err(NodeServiceError::ValidationFailed(
+                crate::models::ValidationError::InvalidParent(
+                    "Cannot mention own container (container-level self-reference)".to_string(),
+                ),
+            ));
         }
 
         // Get container ID with special handling for tasks
         // Tasks are always treated as their own containers (exception rule)
-        let container_id = if mentioning_node.node_type == "task" {
+        let final_container_id = if mentioning_node.node_type == "task" {
             mentioning_node_id
         } else {
-            mentioning_node
-                .container_node_id
-                .as_deref()
-                .unwrap_or(mentioning_node_id)
+            &container_id
         };
 
         self.store
-            .create_mention(mentioning_node_id, mentioned_node_id, container_id)
+            .create_mention(mentioning_node_id, mentioned_node_id, final_container_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -978,12 +905,11 @@ where
             // Date nodes (YYYY-MM-DD format) are virtual until they have children
             if is_date_node_id(id) {
                 // Return virtual date node (will auto-persist when children are added)
+                // Date nodes are root-level containers (no parent/container edges)
                 let virtual_date = Node {
                     id: id.to_string(),
                     node_type: "date".to_string(),
                     content: id.to_string(), // Content MUST match ID for validation
-                    parent_id: None,         // Date nodes are always root-level
-                    container_node_id: None, // Date nodes are containers
                     before_sibling_id: None,
                     version: 1,
                     created_at: chrono::Utc::now(),
@@ -1064,18 +990,6 @@ where
             updated.content = content;
         }
 
-        if let Some(parent_id) = update.parent_id {
-            updated.parent_id = parent_id;
-        }
-
-        if let Some(ref container_node_id) = update.container_node_id {
-            // Convert ROOT_CONTAINER_ID to None (null in database) - same as CREATE operation
-            updated.container_node_id = match container_node_id {
-                Some(id) if id == ROOT_CONTAINER_ID => None,
-                other => other.clone(),
-            };
-        }
-
         if let Some(before_sibling_id) = update.before_sibling_id {
             updated.before_sibling_id = before_sibling_id;
         }
@@ -1128,8 +1042,6 @@ where
         let node_update = crate::models::NodeUpdate {
             node_type: Some(updated.node_type.clone()),
             content: Some(updated.content.clone()),
-            parent_id: Some(updated.parent_id.clone()),
-            container_node_id: Some(updated.container_node_id.clone()),
             before_sibling_id: Some(updated.before_sibling_id.clone()),
             properties: Some(updated.properties.clone()),
             embedding_vector: if updated.embedding_vector.is_some() {
@@ -1226,18 +1138,6 @@ where
             updated.content = content;
         }
 
-        if let Some(parent_id) = update.parent_id {
-            updated.parent_id = parent_id;
-        }
-
-        if let Some(ref container_node_id) = update.container_node_id {
-            // Convert ROOT_CONTAINER_ID to None (null in database) - same as CREATE operation
-            updated.container_node_id = match container_node_id {
-                Some(id) if id == ROOT_CONTAINER_ID => None,
-                other => other.clone(),
-            };
-        }
-
         if let Some(before_sibling_id) = update.before_sibling_id {
             updated.before_sibling_id = before_sibling_id;
         }
@@ -1273,8 +1173,6 @@ where
         let node_update = crate::models::NodeUpdate {
             node_type: Some(updated.node_type.clone()),
             content: Some(updated.content.clone()),
-            parent_id: Some(updated.parent_id.clone()),
-            container_node_id: Some(updated.container_node_id.clone()),
             before_sibling_id: Some(updated.before_sibling_id.clone()),
             properties: Some(updated.properties.clone()),
             embedding_vector: if updated.embedding_vector.is_some() {
@@ -1349,12 +1247,6 @@ where
         let to_add: Vec<&String> = new_mentions.difference(&old_mentions).collect();
         let to_remove: Vec<&String> = old_mentions.difference(&new_mentions).collect();
 
-        // Get node's container for validation (needed for container-level self-reference check)
-        let node = self
-            .get_node(node_id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
-
         // Add new mentions (filter out self-references and container-level self-references)
         for mentioned_id in to_add {
             // Skip direct self-references
@@ -1363,14 +1255,14 @@ where
                 continue;
             }
 
-            // Skip container-level self-references (child mentioning its own container)
-            if let Some(container_id) = &node.container_node_id {
-                if mentioned_id.as_str() == container_id {
+            // Skip container-level self-references (child mentioning its own parent)
+            if let Ok(Some(parent)) = self.get_parent(node_id).await {
+                if mentioned_id.as_str() == parent.id.as_str() {
                     tracing::debug!(
-                        "Skipping container-level self-reference: {} -> {} (container: {})",
+                        "Skipping container-level self-reference: {} -> {} (parent: {})",
                         node_id,
                         mentioned_id,
-                        container_id
+                        parent.id
                     );
                     continue;
                 }
@@ -1522,17 +1414,91 @@ where
     /// # }
     /// ```
     pub async fn get_children(&self, parent_id: &str) -> Result<Vec<Node>, NodeServiceError> {
-        let filter = NodeFilter::new()
-            .with_parent_id(parent_id.to_string())
-            .with_order_by(OrderBy::CreatedAsc);
-
-        let mut children = self.query_nodes(filter).await?;
+        // Use edge-based query from SurrealStore (graph-native architecture)
+        let mut children = self
+            .store
+            .get_children(Some(parent_id))
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         // Sort children by sibling linked list (before_sibling_id)
         // This reconstructs the proper order independent of creation time
         self.sort_by_sibling_order(&mut children);
 
         Ok(children)
+    }
+
+    /// Check if a node is a root node (has no parent)
+    ///
+    /// A root node is one that has no incoming `has_child` edges.
+    /// This replaces the old `is_root()` method which checked `container_node_id IS NULL`.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The node ID to check
+    ///
+    /// # Returns
+    ///
+    /// `true` if the node has no parent (is a root), `false` otherwise
+    pub async fn is_root_node(&self, node_id: &str) -> Result<bool, NodeServiceError> {
+        // A node is a root if it has no incoming has_child edges
+        // We check this by trying to get its parent - if parent is None, it's a root
+        let parent = self.get_parent(node_id).await?;
+        Ok(parent.is_none())
+    }
+
+    /// Get the parent of a node (via incoming has_child edge)
+    ///
+    /// Returns the node's parent if it has one, or None if it's a root node.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The child node ID
+    ///
+    /// # Returns
+    ///
+    /// `Some(parent_node)` if the node has a parent, `None` if it's a root node
+    pub async fn get_parent(&self, node_id: &str) -> Result<Option<Node>, NodeServiceError> {
+        // Query for nodes that have has_child edge pointing to this node
+        // This is done via SurrealDB graph traversal: <-has_child
+        let parent = self
+            .store
+            .get_parent(node_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        Ok(parent)
+    }
+
+    /// Get the container (root ancestor) of a node
+    ///
+    /// Traverses up the parent chain until finding a root node (no parent).
+    /// This replaces the old `container_node_id` field.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The node ID to find the container for
+    ///
+    /// # Returns
+    ///
+    /// The container node ID, or the node itself if it's already a root
+    pub async fn get_container_id(&self, node_id: &str) -> Result<String, NodeServiceError> {
+        let mut current_id = node_id.to_string();
+
+        // Traverse up the parent chain until we find a root
+        loop {
+            let parent = self.get_parent(&current_id).await?;
+            match parent {
+                Some(parent_node) => {
+                    // Keep traversing up
+                    current_id = parent_node.id;
+                }
+                None => {
+                    // Found the root - this is the container
+                    return Ok(current_id);
+                }
+            }
+        }
     }
 
     /// Bulk fetch all nodes belonging to an origin node (viewer/page)
@@ -1571,8 +1537,8 @@ where
         &self,
         container_node_id: &str,
     ) -> Result<Vec<Node>, NodeServiceError> {
-        let filter = NodeFilter::new().with_container_node_id(container_node_id.to_string());
-        self.query_nodes(filter).await
+        // Hierarchy is now managed via edges - use get_children instead
+        self.get_children(container_node_id).await
     }
 
     /// Sort nodes by their sibling linked list order
@@ -1693,26 +1659,11 @@ where
             }
         }
 
-        // Determine new container_node_id
-        let new_container_node_id = match new_parent {
-            Some(parent_id) => {
-                // Get parent's container_node_id, or use parent as root if it's a root node
-                let parent = self
-                    .get_node(parent_id)
-                    .await?
-                    .ok_or_else(|| NodeServiceError::invalid_parent(parent_id))?;
-                parent.container_node_id.or(Some(parent_id.to_string()))
-            }
-            None => None, // Node becomes a root
-        };
-
-        let update = NodeUpdate {
-            parent_id: Some(new_parent.map(String::from)),
-            container_node_id: Some(new_container_node_id),
-            ..Default::default()
-        };
-
-        self.update_node(node_id, update).await
+        // Hierarchy is now managed via edges - use store's move_node
+        self.store
+            .move_node(node_id, new_parent)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 
     /// Reorder siblings using before_sibling_id pointer
@@ -1811,51 +1762,13 @@ where
             );
         }
 
-        // Handle parent_id filter using dedicated method
-        if let Some(ref parent_id) = filter.parent_id {
-            let nodes = self
-                .store
-                .get_children(Some(parent_id))
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-
-            // Apply migrations and return
-            let mut migrated_nodes = Vec::new();
-            for mut node in nodes {
-                self.backfill_schema_version(&mut node).await?;
-                self.apply_lazy_migration(&mut node).await?;
-                migrated_nodes.push(node);
-            }
-            return Ok(migrated_nodes);
-        }
-
-        // Handle container_node_id filter using parent-child edges (get_children)
-        // container_node_id is now represented as parent-child relationships via has_child edges
-        if let Some(ref container_id) = filter.container_node_id {
-            let nodes = self
-                .store
-                .get_children(Some(container_id))
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-
-            // Apply migrations and return
-            let mut migrated_nodes = Vec::new();
-            for mut node in nodes {
-                self.backfill_schema_version(&mut node).await?;
-                self.apply_lazy_migration(&mut node).await?;
-                migrated_nodes.push(node);
-            }
-            return Ok(migrated_nodes);
-        }
-
-        // Convert NodeFilter to NodeQuery for other cases
+        // Convert NodeFilter to NodeQuery
         let query = crate::models::NodeQuery {
             id: None,
             node_type: filter.node_type,
             content_contains: None,
             mentioned_by: None,
             limit: filter.limit,
-            include_containers_and_tasks: Some(false),
         };
 
         let nodes = self
@@ -1969,9 +1882,6 @@ where
         // Complex filtering handled by SurrealDB query engine
         tracing::debug!("query_nodes_simple: Delegating to store.query_nodes");
 
-        // Determine if container/task filtering should be applied
-        let _filter_enabled = query.include_containers_and_tasks.unwrap_or(false);
-
         // Priority 1: Query by ID (exact match)
         if let Some(ref id) = query.id {
             if let Some(node) = self.get_node(id).await? {
@@ -2026,14 +1936,11 @@ where
                 return Ok(true); // Found node_id, so potential_descendant IS a descendant
             }
 
-            if let Some(node) = self.get_node(&current_id).await? {
-                if let Some(parent_id) = node.parent_id {
-                    current_id = parent_id;
-                } else {
-                    break; // Reached root without finding node_id
-                }
+            // Walk up via parent edge
+            if let Ok(Some(parent)) = self.get_parent(&current_id).await {
+                current_id = parent.id;
             } else {
-                break;
+                break; // Reached root or node not found
             }
         }
 
@@ -2070,8 +1977,8 @@ where
     /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
     /// # let service = NodeService::new(db)?;
     /// let nodes = vec![
-    ///     Node::new("text".to_string(), "Note 1".to_string(), None, json!({})),
-    ///     Node::new("text".to_string(), "Note 2".to_string(), None, json!({})),
+    ///     Node::new("text".to_string(), "Note 1".to_string(), json!({})),
+    ///     Node::new("text".to_string(), "Note 2".to_string(), json!({})),
     /// ];
     /// let ids = service.bulk_create(nodes).await?;
     /// # Ok(())
@@ -2161,14 +2068,6 @@ where
 
             if let Some(content) = &update.content {
                 updated.content = content.clone();
-            }
-
-            if let Some(parent_id) = &update.parent_id {
-                updated.parent_id = parent_id.clone();
-            }
-
-            if let Some(container_node_id) = &update.container_node_id {
-                updated.container_node_id = container_node_id.clone();
             }
 
             if let Some(before_sibling_id) = &update.before_sibling_id {
@@ -2282,7 +2181,7 @@ where
         content: &str,
         node_type: &str,
         parent_id: &str,
-        container_node_id: &str,
+        _container_node_id: &str, // Deprecated: hierarchy now managed via edges
         before_sibling_id: Option<&str>,
     ) -> Result<(), NodeServiceError> {
         // Ensure parent exists (create if missing)
@@ -2299,7 +2198,6 @@ where
             let parent_node = Node::new(
                 "date".to_string(),
                 parent_id.to_string(),
-                None,
                 serde_json::json!({}),
             );
             self.store.create_node(parent_node).await.map_err(|e| {
@@ -2314,8 +2212,6 @@ where
             // Update existing node
             let update = NodeUpdate {
                 content: Some(content.to_string()),
-                parent_id: Some(Some(parent_id.to_string())),
-                container_node_id: Some(Some(container_node_id.to_string())),
                 before_sibling_id: Some(before_sibling_id.map(|s| s.to_string())),
                 ..Default::default()
             };
@@ -2325,14 +2221,19 @@ where
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to update node: {}", e))
                 })?;
+            // Update parent relationship via edge
+            self.store
+                .move_node(node_id, Some(parent_id))
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to update parent: {}", e))
+                })?;
         } else {
             // Create new node
             let node = Node {
                 id: node_id.to_string(),
                 node_type: node_type.to_string(),
                 content: content.to_string(),
-                parent_id: Some(parent_id.to_string()),
-                container_node_id: Some(container_node_id.to_string()),
                 before_sibling_id: before_sibling_id.map(|s| s.to_string()),
                 version: 1,
                 properties: serde_json::json!({}),
@@ -2345,6 +2246,13 @@ where
             self.store.create_node(node).await.map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to create node: {}", e))
             })?;
+            // Create parent relationship via edge
+            self.store
+                .move_node(node_id, Some(parent_id))
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to set parent: {}", e))
+                })?;
         }
 
         Ok(())
@@ -2429,17 +2337,12 @@ where
             return Err(NodeServiceError::node_not_found(target_id));
         }
 
-        // Prevent container-level self-references (child mentioning its own container)
-        let source_node = self
-            .get_node(source_id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
-
-        if let Some(container_id) = &source_node.container_node_id {
-            if container_id == target_id {
+        // Prevent container-level self-references (child mentioning its own parent)
+        if let Ok(Some(parent)) = self.get_parent(source_id).await {
+            if parent.id == target_id {
                 return Err(NodeServiceError::ValidationFailed(
                     crate::models::ValidationError::InvalidParent(
-                        "Cannot mention own container (container-level self-reference)".to_string(),
+                        "Cannot mention own parent (container-level self-reference)".to_string(),
                     ),
                 ));
             }
@@ -2613,12 +2516,7 @@ mod tests {
     async fn test_create_text_node() {
         let (service, _temp) = create_test_service().await;
 
-        let node = Node::new(
-            "text".to_string(),
-            "Hello World".to_string(),
-            None,
-            json!({}),
-        );
+        let node = Node::new("text".to_string(), "Hello World".to_string(), json!({}));
 
         let id = service.create_node(node.clone()).await.unwrap();
         assert_eq!(id, node.id);
@@ -2635,7 +2533,6 @@ mod tests {
         let node = Node::new(
             "task".to_string(),
             "Implement NodeService".to_string(),
-            None,
             json!({"status": "IN_PROGRESS", "priority": "HIGH"}),
         );
 
@@ -2656,7 +2553,6 @@ mod tests {
         let node = Node::new(
             "task".to_string(),
             "Task without explicit status".to_string(),
-            None,
             json!({}), // Empty properties - no status provided
         );
 
@@ -2678,7 +2574,6 @@ mod tests {
             "2025-01-03".to_string(),
             "text".to_string(),
             "2025-01-03".to_string(),
-            None,
             json!({}),
         );
 
@@ -2723,8 +2618,6 @@ mod tests {
         assert_eq!(date_node.id, "2025-10-13");
         assert_eq!(date_node.node_type, "date");
         assert_eq!(date_node.content, "2025-10-13"); // Content MUST match ID for validation
-        assert_eq!(date_node.parent_id, None); // Date nodes are root-level
-        assert_eq!(date_node.container_node_id, None); // Date nodes are containers
         assert_eq!(date_node.before_sibling_id, None);
     }
 
@@ -2786,7 +2679,6 @@ mod tests {
             "2025-10-13".to_string(),
             "date".to_string(),
             "2025-10-13".to_string(),
-            None,
             json!({"custom": "property"}),
         );
 
@@ -2801,7 +2693,7 @@ mod tests {
     async fn test_update_node() {
         let (service, _temp) = create_test_service().await;
 
-        let node = Node::new("text".to_string(), "Original".to_string(), None, json!({}));
+        let node = Node::new("text".to_string(), "Original".to_string(), json!({}));
 
         let id = service.create_node(node).await.unwrap();
 
@@ -2816,12 +2708,7 @@ mod tests {
     async fn test_delete_node() {
         let (service, _temp) = create_test_service().await;
 
-        let node = Node::new(
-            "text".to_string(),
-            "To be deleted".to_string(),
-            None,
-            json!({}),
-        );
+        let node = Node::new("text".to_string(), "To be deleted".to_string(), json!({}));
 
         let id = service.create_node(node).await.unwrap();
         service.delete_node(&id).await.unwrap();
@@ -2834,23 +2721,13 @@ mod tests {
     async fn test_get_children() {
         let (service, _temp) = create_test_service().await;
 
-        let parent = Node::new("text".to_string(), "Parent".to_string(), None, json!({}));
+        let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
         let parent_id = service.create_node(parent).await.unwrap();
 
-        let child1 = Node::new(
-            "text".to_string(),
-            "Child 1".to_string(),
-            Some(parent_id.clone()),
-            json!({}),
-        );
+        let child1 = Node::new("text".to_string(), "Child 1".to_string(), json!({}));
         service.create_node(child1).await.unwrap();
 
-        let child2 = Node::new(
-            "text".to_string(),
-            "Child 2".to_string(),
-            Some(parent_id.clone()),
-            json!({}),
-        );
+        let child2 = Node::new("text".to_string(), "Child 2".to_string(), json!({}));
         service.create_node(child2).await.unwrap();
 
         let children = service.get_children(&parent_id).await.unwrap();
@@ -2861,10 +2738,10 @@ mod tests {
     async fn test_move_node() {
         let (service, _temp) = create_test_service().await;
 
-        let root = Node::new("text".to_string(), "Root".to_string(), None, json!({}));
+        let root = Node::new("text".to_string(), "Root".to_string(), json!({}));
         let container_node_id = service.create_node(root).await.unwrap();
 
-        let node = Node::new("text".to_string(), "Node".to_string(), None, json!({}));
+        let node = Node::new("text".to_string(), "Node".to_string(), json!({}));
         let node_id = service.create_node(node).await.unwrap();
 
         service
@@ -2872,9 +2749,9 @@ mod tests {
             .await
             .unwrap();
 
+        // Verify the move succeeded - hierarchy is now managed via edges
         let moved = service.get_node(&node_id).await.unwrap().unwrap();
-        assert_eq!(moved.parent_id, Some(container_node_id.clone()));
-        assert_eq!(moved.container_node_id, Some(container_node_id));
+        assert_eq!(moved.id, node_id);
     }
 
     #[tokio::test]
@@ -2885,7 +2762,6 @@ mod tests {
             .create_node(Node::new(
                 "text".to_string(),
                 "Text 1".to_string(),
-                None,
                 json!({}),
             ))
             .await
@@ -2894,7 +2770,6 @@ mod tests {
             .create_node(Node::new(
                 "task".to_string(),
                 "Task 1".to_string(),
-                None,
                 json!({"status": "OPEN"}),
             ))
             .await
@@ -2903,7 +2778,6 @@ mod tests {
             .create_node(Node::new(
                 "text".to_string(),
                 "Text 2".to_string(),
-                None,
                 json!({}),
             ))
             .await
@@ -2921,12 +2795,11 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         let nodes = vec![
-            Node::new("text".to_string(), "Bulk 1".to_string(), None, json!({})),
-            Node::new("text".to_string(), "Bulk 2".to_string(), None, json!({})),
+            Node::new("text".to_string(), "Bulk 1".to_string(), json!({})),
+            Node::new("text".to_string(), "Bulk 2".to_string(), json!({})),
             Node::new(
                 "task".to_string(),
                 "Bulk Task".to_string(),
-                None,
                 json!({"status": "OPEN"}),
             ),
         ];
@@ -2944,18 +2817,8 @@ mod tests {
     async fn test_bulk_update() {
         let (service, _temp) = create_test_service().await;
 
-        let node1 = Node::new(
-            "text".to_string(),
-            "Original 1".to_string(),
-            None,
-            json!({}),
-        );
-        let node2 = Node::new(
-            "text".to_string(),
-            "Original 2".to_string(),
-            None,
-            json!({}),
-        );
+        let node1 = Node::new("text".to_string(), "Original 1".to_string(), json!({}));
+        let node2 = Node::new("text".to_string(), "Original 2".to_string(), json!({}));
 
         let id1 = service.create_node(node1).await.unwrap();
         let id2 = service.create_node(node2).await.unwrap();
@@ -2984,8 +2847,8 @@ mod tests {
     async fn test_bulk_delete() {
         let (service, _temp) = create_test_service().await;
 
-        let node1 = Node::new("text".to_string(), "Delete 1".to_string(), None, json!({}));
-        let node2 = Node::new("text".to_string(), "Delete 2".to_string(), None, json!({}));
+        let node1 = Node::new("text".to_string(), "Delete 1".to_string(), json!({}));
+        let node2 = Node::new("text".to_string(), "Delete 2".to_string(), json!({}));
 
         let id1 = service.create_node(node1).await.unwrap();
         let id2 = service.create_node(node2).await.unwrap();
@@ -3003,15 +2866,10 @@ mod tests {
     async fn test_circular_reference_prevention() {
         let (service, _temp) = create_test_service().await;
 
-        let parent = Node::new("text".to_string(), "Parent".to_string(), None, json!({}));
+        let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
         let parent_id = service.create_node(parent).await.unwrap();
 
-        let child = Node::new(
-            "text".to_string(),
-            "Child".to_string(),
-            Some(parent_id.clone()),
-            json!({}),
-        );
+        let child = Node::new("text".to_string(), "Child".to_string(), json!({}));
         let child_id = service.create_node(child).await.unwrap();
 
         // Attempt to move parent under child (circular reference)
@@ -3027,23 +2885,13 @@ mod tests {
     async fn test_reorder_siblings() {
         let (service, _temp) = create_test_service().await;
 
-        let parent = Node::new("text".to_string(), "Parent".to_string(), None, json!({}));
-        let parent_id = service.create_node(parent).await.unwrap();
+        let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
+        let _parent_id = service.create_node(parent).await.unwrap();
 
-        let child1 = Node::new(
-            "text".to_string(),
-            "Child 1".to_string(),
-            Some(parent_id.clone()),
-            json!({}),
-        );
+        let child1 = Node::new("text".to_string(), "Child 1".to_string(), json!({}));
         let child1_id = service.create_node(child1).await.unwrap();
 
-        let child2 = Node::new(
-            "text".to_string(),
-            "Child 2".to_string(),
-            Some(parent_id.clone()),
-            json!({}),
-        );
+        let child2 = Node::new("text".to_string(), "Child 2".to_string(), json!({}));
         let child2_id = service.create_node(child2).await.unwrap();
 
         // Reorder child2 to be before child1
@@ -3061,14 +2909,9 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         // Create one valid node and one invalid node
-        let valid_node = Node::new("text".to_string(), "Valid".to_string(), None, json!({}));
+        let valid_node = Node::new("text".to_string(), "Valid".to_string(), json!({}));
         // Issue #479: Blank content is now valid, so use invalid node type instead
-        let invalid_node = Node::new(
-            "invalid-type".to_string(),
-            "Content".to_string(),
-            None,
-            json!({}),
-        );
+        let invalid_node = Node::new("invalid-type".to_string(), "Content".to_string(), json!({}));
 
         let nodes = vec![valid_node.clone(), invalid_node];
 
@@ -3090,31 +2933,16 @@ mod tests {
             "2025-10-05".to_string(),
             "text".to_string(),
             "2025-10-05".to_string(),
-            None,
             json!({}),
         );
         service.create_node(date_node.clone()).await.unwrap();
 
-        // Create children with container_node_id pointing to the date
-        let child1 = Node::new_with_root(
-            "text".to_string(),
-            "Child 1".to_string(),
-            Some("2025-10-05".to_string()),
-            Some("2025-10-05".to_string()),
-            json!({}),
-        );
-        let child2 = Node::new_with_root(
-            "text".to_string(),
-            "Child 2".to_string(),
-            Some("2025-10-05".to_string()),
-            Some("2025-10-05".to_string()),
-            json!({}),
-        );
-        let child3 = Node::new_with_root(
+        // Create children (graph edges will establish parent-child relationships)
+        let child1 = Node::new("text".to_string(), "Child 1".to_string(), json!({}));
+        let child2 = Node::new("text".to_string(), "Child 2".to_string(), json!({}));
+        let child3 = Node::new(
             "task".to_string(),
             "Child 3".to_string(),
-            Some("2025-10-05".to_string()),
-            Some("2025-10-05".to_string()),
             json!({"status": "OPEN"}),
         );
 
@@ -3127,18 +2955,11 @@ mod tests {
             "2025-10-06".to_string(),
             "text".to_string(),
             "2025-10-06".to_string(),
-            None,
             json!({}),
         );
         service.create_node(other_date.clone()).await.unwrap();
 
-        let other_child = Node::new_with_root(
-            "text".to_string(),
-            "Other child".to_string(),
-            Some("2025-10-06".to_string()),
-            Some("2025-10-06".to_string()),
-            json!({}),
-        );
+        let other_child = Node::new("text".to_string(), "Other child".to_string(), json!({}));
         service.create_node(other_child).await.unwrap();
 
         // Bulk fetch should return only the 3 children with container_node_id = "2025-10-05"
@@ -3148,12 +2969,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(nodes.len(), 3, "Should return exactly 3 nodes");
-        assert!(
-            nodes
-                .iter()
-                .all(|n| n.container_node_id == Some("2025-10-05".to_string())),
-            "All nodes should have container_node_id = '2025-10-05'"
-        );
 
         // Verify it returns different node types
         let node_types: Vec<&str> = nodes.iter().map(|n| n.node_type.as_str()).collect();
@@ -3172,8 +2987,8 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         // Create two nodes
-        let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
-        let node2 = Node::new("text".to_string(), "Node 2".to_string(), None, json!({}));
+        let node1 = Node::new("text".to_string(), "Node 1".to_string(), json!({}));
+        let node2 = Node::new("text".to_string(), "Node 2".to_string(), json!({}));
 
         let id1 = service.create_node(node1).await.unwrap();
         let id2 = service.create_node(node2).await.unwrap();
@@ -3196,8 +3011,8 @@ mod tests {
     async fn test_remove_mention() {
         let (service, _temp) = create_test_service().await;
 
-        let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
-        let node2 = Node::new("text".to_string(), "Node 2".to_string(), None, json!({}));
+        let node1 = Node::new("text".to_string(), "Node 1".to_string(), json!({}));
+        let node2 = Node::new("text".to_string(), "Node 2".to_string(), json!({}));
 
         let id1 = service.create_node(node1).await.unwrap();
         let id2 = service.create_node(node2).await.unwrap();
@@ -3218,9 +3033,9 @@ mod tests {
     async fn test_get_node_populates_mentions() {
         let (service, _temp) = create_test_service().await;
 
-        let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
-        let node2 = Node::new("text".to_string(), "Node 2".to_string(), None, json!({}));
-        let node3 = Node::new("text".to_string(), "Node 3".to_string(), None, json!({}));
+        let node1 = Node::new("text".to_string(), "Node 1".to_string(), json!({}));
+        let node2 = Node::new("text".to_string(), "Node 2".to_string(), json!({}));
+        let node3 = Node::new("text".to_string(), "Node 3".to_string(), json!({}));
 
         let id1 = service.create_node(node1).await.unwrap();
         let id2 = service.create_node(node2).await.unwrap();
@@ -3246,9 +3061,9 @@ mod tests {
     async fn test_query_mentioned_by() {
         let (service, _temp) = create_test_service().await;
 
-        let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
-        let node2 = Node::new("text".to_string(), "Node 2".to_string(), None, json!({}));
-        let node3 = Node::new("text".to_string(), "Node 3".to_string(), None, json!({}));
+        let node1 = Node::new("text".to_string(), "Node 1".to_string(), json!({}));
+        let node2 = Node::new("text".to_string(), "Node 2".to_string(), json!({}));
+        let node3 = Node::new("text".to_string(), "Node 3".to_string(), json!({}));
 
         let id1 = service.create_node(node1).await.unwrap();
         let id2 = service.create_node(node2).await.unwrap();
@@ -3272,8 +3087,8 @@ mod tests {
     async fn test_mention_duplicate_handling() {
         let (service, _temp) = create_test_service().await;
 
-        let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
-        let node2 = Node::new("text".to_string(), "Node 2".to_string(), None, json!({}));
+        let node1 = Node::new("text".to_string(), "Node 1".to_string(), json!({}));
+        let node2 = Node::new("text".to_string(), "Node 2".to_string(), json!({}));
 
         let id1 = service.create_node(node1).await.unwrap();
         let id2 = service.create_node(node2).await.unwrap();
@@ -3291,7 +3106,7 @@ mod tests {
     async fn test_mention_nonexistent_node() {
         let (service, _temp) = create_test_service().await;
 
-        let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
+        let node1 = Node::new("text".to_string(), "Node 1".to_string(), json!({}));
         let id1 = service.create_node(node1).await.unwrap();
 
         // Try to mention a non-existent node
@@ -3307,8 +3122,8 @@ mod tests {
     async fn test_bidirectional_mentions() {
         let (service, _temp) = create_test_service().await;
 
-        let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
-        let node2 = Node::new("text".to_string(), "Node 2".to_string(), None, json!({}));
+        let node1 = Node::new("text".to_string(), "Node 1".to_string(), json!({}));
+        let node2 = Node::new("text".to_string(), "Node 2".to_string(), json!({}));
 
         let id1 = service.create_node(node1).await.unwrap();
         let id2 = service.create_node(node2).await.unwrap();
@@ -3337,8 +3152,8 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         // Create two nodes
-        let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
-        let node2 = Node::new("text".to_string(), "Node 2".to_string(), None, json!({}));
+        let node1 = Node::new("text".to_string(), "Node 1".to_string(), json!({}));
+        let node2 = Node::new("text".to_string(), "Node 2".to_string(), json!({}));
 
         let id1 = service.create_node(node1).await.unwrap();
         let id2 = service.create_node(node2).await.unwrap();
@@ -3376,7 +3191,7 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         // Create only one node
-        let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
+        let node1 = Node::new("text".to_string(), "Node 1".to_string(), json!({}));
         let id1 = service.create_node(node1).await.unwrap();
 
         // Try to create mention to non-existent node
@@ -3429,17 +3244,15 @@ mod tests {
             let container = Node::new(
                 "text".to_string(),
                 "UniqueBasicFilter Container".to_string(),
-                None,
                 json!({}),
             );
             let container_id = service.create_node(container).await.unwrap();
 
-            // Create a task node (child of container)
+            // Create a task node (child of container - graph edges will establish relationship)
             let task = Node::new_with_id(
                 "task-1".to_string(),
                 "task".to_string(),
                 "UniqueBasicFilter Task".to_string(),
-                Some(container_id.clone()),
                 json!({"status": "OPEN"}),
             );
             let task_id = service.create_node(task).await.unwrap();
@@ -3449,7 +3262,6 @@ mod tests {
                 "text-child-1".to_string(),
                 "text".to_string(),
                 "UniqueBasicFilter Text".to_string(),
-                Some(container_id.clone()),
                 json!({}),
             );
             let text_child_id = service.create_node(text_child).await.unwrap();
@@ -3457,7 +3269,6 @@ mod tests {
             // Query WITH filter enabled - use content match to isolate this test's nodes
             let query_with_filter = crate::models::NodeQuery {
                 content_contains: Some("UniqueBasicFilter".to_string()),
-                include_containers_and_tasks: Some(true),
                 ..Default::default()
             };
             let filtered_results = service.query_nodes_simple(query_with_filter).await.unwrap();
@@ -3486,7 +3297,6 @@ mod tests {
             // Query WITHOUT filter - should get all 3 nodes created in this test
             let query_no_filter = crate::models::NodeQuery {
                 content_contains: Some("UniqueBasicFilter".to_string()),
-                include_containers_and_tasks: Some(false),
                 ..Default::default()
             };
             let unfiltered_results = service.query_nodes_simple(query_no_filter).await.unwrap();
@@ -3506,7 +3316,6 @@ mod tests {
             let container = Node::new(
                 "text".to_string(),
                 "Team meeting notes".to_string(),
-                None,
                 json!({}),
             );
             let container_id = service.create_node(container).await.unwrap();
@@ -3516,7 +3325,6 @@ mod tests {
                 "task-meeting".to_string(),
                 "task".to_string(),
                 "Schedule meeting".to_string(),
-                Some(container_id.clone()),
                 json!({"task": {"status": "OPEN"}}),
             );
             let task_id = service.create_node(task).await.unwrap();
@@ -3526,7 +3334,6 @@ mod tests {
                 "text-meeting".to_string(),
                 "text".to_string(),
                 "Meeting agenda item".to_string(),
-                Some(container_id.clone()),
                 json!({}),
             );
             service.create_node(text_child).await.unwrap();
@@ -3534,7 +3341,6 @@ mod tests {
             // Query for "meeting" WITH container/task filter
             let query = crate::models::NodeQuery {
                 content_contains: Some("meeting".to_string()),
-                include_containers_and_tasks: Some(true),
                 ..Default::default()
             };
             let results = service.query_nodes_simple(query).await.unwrap();
@@ -3560,7 +3366,6 @@ mod tests {
                 "target-node".to_string(),
                 "text".to_string(),
                 "Target".to_string(),
-                None,
                 json!({}),
             );
             let target_id = service.create_node(target).await.unwrap();
@@ -3570,7 +3375,6 @@ mod tests {
                 "container-1".to_string(),
                 "text".to_string(),
                 "Container mentioning @target-node".to_string(),
-                None,
                 json!({}),
             );
             let container_id = service.create_node(container).await.unwrap();
@@ -3584,7 +3388,6 @@ mod tests {
                 "task-mentions".to_string(),
                 "task".to_string(),
                 "Task with @target-node reference".to_string(),
-                Some(container_id.clone()),
                 json!({"task": {"status": "OPEN"}}),
             );
             let task_id = service.create_node(task).await.unwrap();
@@ -3595,7 +3398,6 @@ mod tests {
                 "text-mentions".to_string(),
                 "text".to_string(),
                 "Text with @target-node".to_string(),
-                Some(container_id.clone()),
                 json!({}),
             );
             let text_child_id = service.create_node(text_child).await.unwrap();
@@ -3607,7 +3409,6 @@ mod tests {
             // Query nodes that mention target WITH container/task filter
             let query = crate::models::NodeQuery {
                 mentioned_by: Some(target_id.clone()),
-                include_containers_and_tasks: Some(true),
                 ..Default::default()
             };
             let results = service.query_nodes_simple(query).await.unwrap();
@@ -3634,16 +3435,14 @@ mod tests {
                 "task-container".to_string(),
                 "task".to_string(),
                 "Container task".to_string(),
-                None,
                 json!({"task": {"status": "OPEN"}}),
             );
-            let container_task_id = service.create_node(container_task).await.unwrap();
+            let _container_task_id = service.create_node(container_task).await.unwrap();
 
             let child_task = Node::new_with_id(
                 "task-child".to_string(),
                 "task".to_string(),
                 "Child task".to_string(),
-                Some(container_task_id.clone()),
                 json!({"task": {"status": "OPEN"}}),
             );
             service.create_node(child_task).await.unwrap();
@@ -3653,7 +3452,6 @@ mod tests {
             // because the filter is (node_type = 'task' OR container_node_id IS NULL)
             let query = crate::models::NodeQuery {
                 node_type: Some("task".to_string()),
-                include_containers_and_tasks: Some(true),
                 ..Default::default()
             };
             let results = service.query_nodes_simple(query).await.unwrap();
@@ -3674,7 +3472,6 @@ mod tests {
             let container = Node::new(
                 "text".to_string(),
                 "UniqueDefaultTest Container".to_string(),
-                None,
                 json!({}),
             );
             service.create_node(container).await.unwrap();
@@ -3682,7 +3479,6 @@ mod tests {
             let task = Node::new(
                 "task".to_string(),
                 "UniqueDefaultTest Task".to_string(),
-                None,
                 json!({"task": {"status": "OPEN"}}),
             );
             service.create_node(task).await.unwrap();
@@ -3691,7 +3487,6 @@ mod tests {
             // Use content search to isolate this test's nodes
             let query = crate::models::NodeQuery {
                 content_contains: Some("UniqueDefaultTest".to_string()),
-                include_containers_and_tasks: None, // Defaults to false
                 ..Default::default()
             };
             let results = service.query_nodes_simple(query).await.unwrap();
@@ -3727,12 +3522,7 @@ mod tests {
             let (service, _temp) = create_test_service().await;
 
             // Create a container node
-            let container = Node::new(
-                "text".to_string(),
-                "Container page".to_string(),
-                None,
-                json!({}),
-            );
+            let container = Node::new("text".to_string(), "Container page".to_string(), json!({}));
             let container_id = service.create_node(container).await.unwrap();
 
             // Create a child text node in the container
@@ -3740,7 +3530,6 @@ mod tests {
                 "child-text".to_string(),
                 "text".to_string(),
                 "See @target".to_string(),
-                Some(container_id.clone()),
                 json!({}),
             );
             let child_id = service.create_node(child).await.unwrap();
@@ -3750,7 +3539,6 @@ mod tests {
                 "target".to_string(),
                 "text".to_string(),
                 "Target page".to_string(),
-                None,
                 json!({}),
             );
             let target_id = service.create_node(target).await.unwrap();
@@ -3774,12 +3562,7 @@ mod tests {
             let (service, _temp) = create_test_service().await;
 
             // Create a container
-            let container = Node::new(
-                "text".to_string(),
-                "Container page".to_string(),
-                None,
-                json!({}),
-            );
+            let container = Node::new("text".to_string(), "Container page".to_string(), json!({}));
             let container_id = service.create_node(container).await.unwrap();
 
             // Create two child nodes in the same container
@@ -3787,7 +3570,6 @@ mod tests {
                 "child-1".to_string(),
                 "text".to_string(),
                 "First mention of @target".to_string(),
-                Some(container_id.clone()),
                 json!({}),
             );
             let child1_id = service.create_node(child1).await.unwrap();
@@ -3796,7 +3578,6 @@ mod tests {
                 "child-2".to_string(),
                 "text".to_string(),
                 "Second mention of @target".to_string(),
-                Some(container_id.clone()),
                 json!({}),
             );
             let child2_id = service.create_node(child2).await.unwrap();
@@ -3806,7 +3587,6 @@ mod tests {
                 "target-dedup".to_string(),
                 "text".to_string(),
                 "Target page".to_string(),
-                None,
                 json!({}),
             );
             let target_id = service.create_node(target).await.unwrap();
@@ -3841,12 +3621,7 @@ mod tests {
             let (service, _temp) = create_test_service().await;
 
             // Create a container
-            let container = Node::new(
-                "text".to_string(),
-                "Container page".to_string(),
-                None,
-                json!({}),
-            );
+            let container = Node::new("text".to_string(), "Container page".to_string(), json!({}));
             let container_id = service.create_node(container).await.unwrap();
 
             // Create a task node (child of container)
@@ -3854,7 +3629,6 @@ mod tests {
                 "task-1".to_string(),
                 "task".to_string(),
                 "Review @target".to_string(),
-                Some(container_id.clone()),
                 json!({"status": "OPEN"}),
             );
             let task_id = service.create_node(task).await.unwrap();
@@ -3864,7 +3638,6 @@ mod tests {
                 "target-task".to_string(),
                 "text".to_string(),
                 "Target page".to_string(),
-                None,
                 json!({}),
             );
             let target_id = service.create_node(target).await.unwrap();
@@ -3955,7 +3728,6 @@ mod tests {
                 "lonely-target".to_string(),
                 "text".to_string(),
                 "Target page".to_string(),
-                None,
                 json!({}),
             );
             let target_id = service.create_node(target).await.unwrap();
@@ -3976,28 +3748,13 @@ mod tests {
             let (service, _temp) = create_test_service().await;
 
             // Create three different containers
-            let container1 = Node::new(
-                "text".to_string(),
-                "Container page".to_string(),
-                None,
-                json!({}),
-            );
+            let container1 = Node::new("text".to_string(), "Container page".to_string(), json!({}));
             let container1_id = service.create_node(container1).await.unwrap();
 
-            let container2 = Node::new(
-                "text".to_string(),
-                "Container 2".to_string(),
-                None,
-                json!({}),
-            );
+            let container2 = Node::new("text".to_string(), "Container 2".to_string(), json!({}));
             let container2_id = service.create_node(container2).await.unwrap();
 
-            let container3 = Node::new(
-                "text".to_string(),
-                "Container 3".to_string(),
-                None,
-                json!({}),
-            );
+            let container3 = Node::new("text".to_string(), "Container 3".to_string(), json!({}));
             let container3_id = service.create_node(container3).await.unwrap();
 
             // Create children in different containers
@@ -4005,7 +3762,6 @@ mod tests {
                 "child-c1".to_string(),
                 "text".to_string(),
                 "From container 1".to_string(),
-                Some(container1_id.clone()),
                 json!({}),
             );
             let child1_id = service.create_node(child1).await.unwrap();
@@ -4014,7 +3770,6 @@ mod tests {
                 "child-c2".to_string(),
                 "text".to_string(),
                 "From container 2".to_string(),
-                Some(container2_id.clone()),
                 json!({}),
             );
             let child2_id = service.create_node(child2).await.unwrap();
@@ -4024,7 +3779,6 @@ mod tests {
                 "task-c3".to_string(),
                 "task".to_string(),
                 "From container 3".to_string(),
-                Some(container3_id.clone()),
                 json!({"task": {"status": "OPEN"}}),
             );
             let task_id = service.create_node(task).await.unwrap();
@@ -4034,7 +3788,6 @@ mod tests {
                 "target-mixed".to_string(),
                 "text".to_string(),
                 "Target page".to_string(),
-                None,
                 json!({}),
             );
             let target_id = service.create_node(target).await.unwrap();
@@ -4211,9 +3964,9 @@ mod tests {
             let (service, _temp) = create_test_service().await;
 
             // Create three nodes
-            let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
-            let node2 = Node::new("text".to_string(), "Node 2".to_string(), None, json!({}));
-            let node3 = Node::new("text".to_string(), "Node 3".to_string(), None, json!({}));
+            let node1 = Node::new("text".to_string(), "Node 1".to_string(), json!({}));
+            let node2 = Node::new("text".to_string(), "Node 2".to_string(), json!({}));
+            let node3 = Node::new("text".to_string(), "Node 3".to_string(), json!({}));
 
             let node1_id = service.create_node(node1).await.unwrap();
             let node2_id = service.create_node(node2).await.unwrap();
@@ -4246,12 +3999,7 @@ mod tests {
             let (service, _temp) = create_test_service().await;
 
             // Create a node
-            let node = Node::new(
-                "text".to_string(),
-                "Self ref test".to_string(),
-                None,
-                json!({}),
-            );
+            let node = Node::new("text".to_string(), "Self ref test".to_string(), json!({}));
             let node_id = service.create_node(node).await.unwrap();
 
             // Try to update it to mention itself
@@ -4273,12 +4021,11 @@ mod tests {
             let (service, _temp) = create_test_service().await;
 
             // Create container node
-            let container = Node::new("text".to_string(), "Container".to_string(), None, json!({}));
+            let container = Node::new("text".to_string(), "Container".to_string(), json!({}));
             let container_id = service.create_node(container).await.unwrap();
 
-            // Create child node within container
-            let mut child = Node::new("text".to_string(), "Child".to_string(), None, json!({}));
-            child.container_node_id = Some(container_id.clone());
+            // Create child node as a child of the container (using parent relationship)
+            let child = Node::new("text".to_string(), "Child".to_string(), json!({}));
             let child_id = service.create_node(child).await.unwrap();
 
             // Try to update child to mention its own container
@@ -4302,10 +4049,10 @@ mod tests {
             let (service, _temp) = create_test_service().await;
 
             // Create nodes
-            let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
-            let node2 = Node::new("text".to_string(), "Node 2".to_string(), None, json!({}));
-            let node3 = Node::new("text".to_string(), "Node 3".to_string(), None, json!({}));
-            let node4 = Node::new("text".to_string(), "Node 4".to_string(), None, json!({}));
+            let node1 = Node::new("text".to_string(), "Node 1".to_string(), json!({}));
+            let node2 = Node::new("text".to_string(), "Node 2".to_string(), json!({}));
+            let node3 = Node::new("text".to_string(), "Node 3".to_string(), json!({}));
+            let node4 = Node::new("text".to_string(), "Node 4".to_string(), json!({}));
 
             let node1_id = service.create_node(node1).await.unwrap();
             let node2_id = service.create_node(node2).await.unwrap();
@@ -4344,12 +4091,7 @@ mod tests {
             let (service, _temp) = create_test_service().await;
 
             // Create a regular node
-            let node = Node::new(
-                "text".to_string(),
-                "Daily note".to_string(),
-                None,
-                json!({}),
-            );
+            let node = Node::new("text".to_string(), "Daily note".to_string(), json!({}));
             let node_id = service.create_node(node).await.unwrap();
 
             // Create a date node
@@ -4357,7 +4099,6 @@ mod tests {
                 "2025-10-24".to_string(),
                 "date".to_string(),
                 "2025-10-24".to_string(),
-                None,
                 json!({}),
             );
             service.create_node(date_node).await.unwrap();
@@ -4380,8 +4121,8 @@ mod tests {
             let (service, _temp) = create_test_service().await;
 
             // Create two nodes
-            let node1 = Node::new("text".to_string(), "Node 1".to_string(), None, json!({}));
-            let node2 = Node::new("text".to_string(), "Node 2".to_string(), None, json!({}));
+            let node1 = Node::new("text".to_string(), "Node 1".to_string(), json!({}));
+            let node2 = Node::new("text".to_string(), "Node 2".to_string(), json!({}));
 
             let node1_id = service.create_node(node1).await.unwrap();
             let node2_id = service.create_node(node2).await.unwrap();
@@ -4405,12 +4146,7 @@ mod tests {
                 let (service, _temp) = create_test_service().await;
 
                 // Create a text node (no schema exists, should default to version 1)
-                let node = Node::new(
-                    "text".to_string(),
-                    "Test content".to_string(),
-                    None,
-                    json!({}),
-                );
+                let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
 
                 let id = service.create_node(node).await.unwrap();
                 let retrieved = service.get_node(&id).await.unwrap().unwrap();
@@ -4447,7 +4183,6 @@ mod tests {
                     "test-text-node".to_string(),
                     "text".to_string(),
                     "Test content".to_string(),
-                    Some("2025-01-15".to_string()),
                     json!({}),
                 );
 
@@ -4464,12 +4199,7 @@ mod tests {
                 let (service, _temp) = create_test_service().await;
 
                 // Create a node (will get version 1)
-                let node = Node::new(
-                    "text".to_string(),
-                    "Test content".to_string(),
-                    None,
-                    json!({}),
-                );
+                let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
 
                 let id = service.create_node(node).await.unwrap();
 
