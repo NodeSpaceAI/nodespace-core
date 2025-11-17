@@ -48,9 +48,11 @@
  *
  * ## Skip Conditions
  *
- * Tests are automatically skipped if:
- * - Dev-proxy server is not reachable on port 3001
- * - TEST_USE_DATABASE environment variable is not set
+ * Tests are automatically skipped if dev-proxy server is not reachable on port 3001.
+ *
+ * Note: These tests use the database (not in-memory mode), so they require:
+ * 1. SurrealDB running on port 8000 (via `bun run dev:db`)
+ * 2. dev-proxy running on port 3001 (via `cargo run --bin dev-proxy`)
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
@@ -781,7 +783,7 @@ Special: !@#$%^&*()`;
         adapter.updateNode('non-existent-node', 1, {
           content: 'Update'
         })
-      ).rejects.toThrow(/not found|404/i);
+      ).rejects.toThrow(/HTTP 404.*not found/i);
     });
 
     it('should handle malformed node IDs gracefully', async () => {
