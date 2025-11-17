@@ -123,8 +123,7 @@
       // Initialize MentionSyncService for automatic link text synchronization
       // This service listens for node:updated and node:deleted events
       // and automatically updates markdown link display text
-      // eslint-disable-next-line no-unused-vars
-      const mentionSyncService = new MentionSyncService(tauriNodeService);
+      new MentionSyncService(tauriNodeService);
 
       // Create service bundle and update reactive state
       // (context was already set at component init with the container reference)

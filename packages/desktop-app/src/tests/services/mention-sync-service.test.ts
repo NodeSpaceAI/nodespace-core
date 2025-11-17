@@ -130,7 +130,7 @@ describe('MentionSyncService', () => {
       expect(results[0].nodeId).toBe('note-456');
       expect(results[0].linksUpdated).toBe(1);
       expect(results[0].newContent).toContain('[Shopping list](nodespace://task-123)');
-      expect(mockDatabaseService.updateNode).toHaveBeenCalledWith('note-456', {
+      expect(mockDatabaseService.updateNode).toHaveBeenCalledWith('note-456', 1, {
         content: expect.stringContaining('[Shopping list](nodespace://task-123)')
       });
     });
