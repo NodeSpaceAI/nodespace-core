@@ -191,6 +191,24 @@ export interface BackendAdapter {
   setParent(nodeId: string, parentId: string | null): Promise<void>;
 
   /**
+   * Atomically move a node to a new parent with new sibling position
+   *
+   * Performs a single database transaction that:
+   * - Deletes the old parent-child edge
+   * - Updates the node's before_sibling_id field
+   * - Creates the new parent-child edge (if new parent specified)
+   *
+   * @param nodeId - Node to move
+   * @param newParentId - New parent ID (null for root)
+   * @param newBeforeSiblingId - New position in sibling chain
+   */
+  moveNode(
+    nodeId: string,
+    newParentId: string | null,
+    newBeforeSiblingId: string | null
+  ): Promise<void>;
+
+  /**
    * Query nodes by parent and/or container (Phase 2)
    * @since Phase 2
    * @param params - Query parameters
@@ -532,6 +550,23 @@ export class TauriAdapter implements BackendAdapter {
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, nodeId, 'setParent');
+    }
+  }
+
+  async moveNode(
+    nodeId: string,
+    newParentId: string | null,
+    newBeforeSiblingId: string | null
+  ): Promise<void> {
+    try {
+      await invoke('move_node', {
+        nodeId,
+        newParentId,
+        newBeforeSiblingId
+      });
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, nodeId, 'moveNode');
     }
   }
 
@@ -1216,6 +1251,31 @@ export class HttpAdapter implements BackendAdapter {
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, nodeId, 'setParent');
+    }
+  }
+
+  async moveNode(
+    nodeId: string,
+    newParentId: string | null,
+    newBeforeSiblingId: string | null
+  ): Promise<void> {
+    try {
+      const response = await globalThis.fetch(
+        `${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/move`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ newParentId, newBeforeSiblingId })
+        }
+      );
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+    } catch (error) {
+      const err = toError(error);
+      throw new NodeOperationError(err.message, nodeId, 'moveNode');
     }
   }
 

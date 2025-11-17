@@ -280,7 +280,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       const uiState = _uiState[nodeId];
       if (node) {
         // Get children from SharedNodeStore
-        const childIds = sharedNodeStore.getNodesForParent(nodeId).map((n) => n.id);
+        let childIds = sharedNodeStore.getNodesForParent(nodeId).map((n) => n.id);
 
         // Sort children according to beforeSiblingId linked list
         const children = sortChildrenByBeforeSiblingId(childIds, nodeId);
@@ -973,7 +973,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Step 1: Remove node from current sibling chain BEFORE changing parent
     // This operation updates the next sibling (if any) to maintain chain integrity
-    const updatedSiblingId = removeFromSiblingChain(nodeId);
+    removeFromSiblingChain(nodeId);
 
     // The node becomes a child of the target parent
     // It should be appended to the end of the target parent's children
@@ -989,44 +989,35 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const uiState = _uiState[nodeId];
     const targetParentUIState = _uiState[targetParentId];
 
-    // Step 2: Build dependency list for persistence sequencing
-    const persistenceDependencies: string[] = [];
-
-    // Defensive validation: Ensure parent exists before adding dependency
+    // Defensive validation: Ensure parent exists
     if (!targetParentId) {
       console.error('[indentNode] Invalid state: targetParentId is null/undefined');
       return false; // Early return to prevent corruption
     }
 
-    // Ensure the target parent is persisted before making this node its child
-    persistenceDependencies.push(targetParentId);
-
-    // If positioning after an existing child, ensure that child is persisted
-    if (beforeSiblingId) {
-      persistenceDependencies.push(beforeSiblingId);
-    }
-
-    // If we updated a sibling during removal, ensure it's persisted first
-    // This prevents FOREIGN KEY violations when the updated sibling references this node
-    if (updatedSiblingId) {
-      persistenceDependencies.push(updatedSiblingId);
-    }
-
-    // Step 3: Update the main node with persistence dependencies
-    // NOTE: parentId and containerNodeId removed - hierarchy managed by backend via parent_of edges
-    sharedNodeStore.updateNode(
-      nodeId,
-      {
-        beforeSiblingId: beforeSiblingId
-      },
-      viewerSource,
-      {
-        persistenceDependencies,
-        // Skip conflict detection for sequential viewer operations
-        // These are coordinated structural changes, not concurrent edits
-        skipConflictDetection: true
+    // ATOMIC OPERATION: Move node to new parent with new sibling position
+    // Performs a single database transaction that:
+    // - Deletes the old parent-child edge
+    // - Updates the node's before_sibling_id field
+    // - Creates the new parent-child edge
+    // This eliminates the race condition that caused duplicate keys in the render cache
+    try {
+      await backendAdapter.moveNode(nodeId, targetParentId, beforeSiblingId);
+    } catch (error) {
+      // Silently ignore:
+      // - 404 errors (node not persisted yet)
+      // - Connection errors (test mode with no HTTP server)
+      const isIgnorableError =
+        error instanceof Error &&
+        (error.message.includes('404') ||
+          error.message.includes('Not Found') ||
+          error.message.includes('ECONNREFUSED') ||
+          error.message.includes('fetch failed') ||
+          error.message.includes('Failed to execute "fetch()"'));
+      if (!isIgnorableError) {
+        console.error('[indentNode] Failed to atomically move node in database:', error);
       }
-    );
+    }
 
     _uiState[nodeId] = { ...uiState, depth: (targetParentUIState?.depth || 0) + 1 };
 
@@ -1047,35 +1038,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     invalidateSortedChildrenCache(currentParentId); // Old parent
     invalidateSortedChildrenCache(targetParentId); // New parent
 
-    // CRITICAL: Update children cache when moving node to new parent
-    // Remove from old parent, add to new parent
+    // Update children cache to reflect the move
+    // These local state updates happen after the atomic database operation
     sharedNodeStore.removeChildFromCache(currentParentId, nodeId);
     sharedNodeStore.addChildToCache(targetParentId, nodeId);
-
-    // CRITICAL: Update parent edge in database (has_child relation)
-    // This must be called to maintain graph integrity
-    // The backend's move_node will create/delete has_child edges
-    //
-    // NOTE: This call may fail if the node hasn't been persisted yet (404).
-    // That's okay - the in-memory state is correct and the parent will be set
-    // when the node is eventually persisted via the graph query system.
-    try {
-      await backendAdapter.setParent(nodeId, targetParentId);
-    } catch (error) {
-      // Silently ignore:
-      // - 404 errors (node not persisted yet)
-      // - Connection errors (test mode with no HTTP server)
-      const isIgnorableError =
-        error instanceof Error &&
-        (error.message.includes('404') ||
-          error.message.includes('Not Found') ||
-          error.message.includes('ECONNREFUSED') ||
-          error.message.includes('fetch failed') ||
-          error.message.includes('Failed to execute "fetch()"'));
-      if (!isIgnorableError) {
-        console.error('[indentNode] Failed to update parent edge in database:', error);
-      }
-    }
 
     // Ensure the target parent is expanded to show the newly indented child
     // This prevents the parent from appearing collapsed after indent

@@ -1660,7 +1660,7 @@ where
 
         // Hierarchy is now managed via edges - use store's move_node
         self.store
-            .move_node(node_id, new_parent)
+            .move_node(node_id, new_parent, None)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
@@ -2222,7 +2222,7 @@ where
                 })?;
             // Update parent relationship via edge
             self.store
-                .move_node(node_id, Some(parent_id))
+                .move_node(node_id, Some(parent_id), None)
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to update parent: {}", e))
@@ -2247,7 +2247,7 @@ where
             })?;
             // Create parent relationship via edge
             self.store
-                .move_node(node_id, Some(parent_id))
+                .move_node(node_id, Some(parent_id), None)
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to set parent: {}", e))

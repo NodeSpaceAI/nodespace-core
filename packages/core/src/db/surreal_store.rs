@@ -2179,39 +2179,9 @@ where
         Ok(())
     }
 
-    pub async fn move_node(&self, id: &str, new_parent_id: Option<&str>) -> Result<()> {
-        use surrealdb::sql::Thing;
-
-        // Validate that moving won't create a cycle
-        if let Some(parent_id) = new_parent_id {
-            self.validate_no_cycle(parent_id, id).await?;
-        }
-
-        // Delete existing parent edge
-        let child_thing = Thing::from(("node".to_string(), id.to_string()));
-        self.db
-            .query("DELETE has_child WHERE out = $child_thing;")
-            .bind(("child_thing", child_thing.clone()))
-            .await
-            .context("Failed to delete existing parent edge")?;
-
-        // Create new parent edge if parent is specified
-        if let Some(parent_id) = new_parent_id {
-            let parent_thing = Thing::from(("node".to_string(), parent_id.to_string()));
-            self.db
-                .query("RELATE $parent_thing->has_child->$child_thing;")
-                .bind(("parent_thing", parent_thing))
-                .bind(("child_thing", child_thing))
-                .await
-                .context("Failed to create new parent edge")?;
-        }
-
-        Ok(())
-    }
-
     /// Move a node to a new parent atomically
     ///
-    /// This is the atomic version of move_node. It guarantees that either:
+    /// Guarantees that either:
     /// - The old edge is deleted AND the new edge is created
     /// - OR nothing changes (transaction rolls back on failure)
     ///
@@ -2231,14 +2201,14 @@ where
     /// # use nodespace_core::db::SurrealStore;
     /// # async fn example(store: &SurrealStore) -> anyhow::Result<()> {
     /// // Move node to new parent
-    /// store.move_node_atomic("child-uuid", Some("new-parent-uuid"), None).await?;
+    /// store.move_node("child-uuid", Some("new-parent-uuid"), None).await?;
     ///
     /// // Make node a root node
-    /// store.move_node_atomic("child-uuid", None, None).await?;
+    /// store.move_node("child-uuid", None, None).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn move_node_atomic(
+    pub async fn move_node(
         &self,
         node_id: &str,
         new_parent_id: Option<&str>,
@@ -3492,9 +3462,7 @@ mod tests {
         assert_eq!(children1.len(), 1);
 
         // Move child to parent2 atomically
-        store
-            .move_node_atomic(&child.id, Some(&parent2.id), None)
-            .await?;
+        store.move_node(&child.id, Some(&parent2.id), None).await?;
 
         // Verify child is now under parent2
         let children1_after = store.get_children(Some(&parent1.id)).await?;
@@ -3524,7 +3492,7 @@ mod tests {
             .await?;
 
         // Move child to root
-        store.move_node_atomic(&child.id, None, None).await?;
+        store.move_node(&child.id, None, None).await?;
 
         // Verify child is a root node
         let parent_children = store.get_children(Some(&parent.id)).await?;
@@ -3553,9 +3521,7 @@ mod tests {
             .await?;
 
         // Try to move parent under child (would create cycle)
-        let result = store
-            .move_node_atomic(&parent.id, Some(&child.id), None)
-            .await;
+        let result = store.move_node(&parent.id, Some(&child.id), None).await;
 
         assert!(
             result.is_err(),

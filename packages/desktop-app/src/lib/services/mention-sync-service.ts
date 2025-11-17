@@ -134,7 +134,11 @@ export class MentionSyncService {
 
       return results;
     } catch (error) {
-      console.error('MentionSyncService: Error syncing link text', { error, nodeId });
+      // Suppress expected Phase 2/3 implementation errors - these are not critical issues
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (!errorMessage.includes('Phase 2/3')) {
+        console.error('MentionSyncService: Error syncing link text', { error, nodeId });
+      }
       return [];
     }
   }
@@ -220,7 +224,11 @@ export class MentionSyncService {
 
       return results;
     } catch (error) {
-      console.error('MentionSyncService: Error marking links as broken', { error, deletedNodeId });
+      // Suppress expected Phase 2/3 implementation errors - these are not critical issues
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (!errorMessage.includes('Phase 2/3')) {
+        console.error('MentionSyncService: Error marking links as broken', { error, deletedNodeId });
+      }
       return [];
     }
   }
