@@ -10,6 +10,7 @@
   import { onMount, onDestroy, getContext } from 'svelte';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
   import { formatTabTitle } from '$lib/utils/text-formatting';
+  import { registerChildWithParent } from '$lib/utils/node-hierarchy';
   import { pluginRegistry } from '$lib/components/viewers/index';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import BacklinksPanel from '$lib/design/components/backlinks-panel.svelte';
@@ -788,7 +789,11 @@
     placeholder: Node,
     parentNodeId: string,
     overrides: { content?: string; nodeType?: string }
-  ): Node {
+  ): Node & { _parentId?: string; _containerId?: string } {
+    // CRITICAL FIX (Issue #528): Include transient _parentId and _containerId fields
+    // These fields are NOT part of the Node model (which stores hierarchy as graph edges)
+    // but are needed by the backend HTTP API to create the parent-child edge relationship
+    // The backend will extract these fields and call operations.create_node() with them
     return {
       id: placeholder.id,
       nodeType: overrides.nodeType ?? placeholder.nodeType,
@@ -798,7 +803,10 @@
       createdAt: placeholder.createdAt,
       modifiedAt: new Date().toISOString(),
       properties: placeholder.properties,
-      mentions: placeholder.mentions || []
+      mentions: placeholder.mentions || [],
+      // Transient fields for backend edge creation (not persisted in Node model)
+      _parentId: parentNodeId,
+      _containerId: parentNodeId // For date containers, parent === container
     };
   }
 
@@ -1758,6 +1766,13 @@
                     // Subsequent typing will trigger updateNodeContent() which handles persistence
                     sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, true);
 
+                    // CRITICAL FIX (Issue #528): Update children cache to establish parent-child relationship
+                    // After graph migration (PR #523), parent relationships are stored in:
+                    // 1. Backend: SurrealDB has_child edges
+                    // 2. Frontend: SharedNodeStore children/parents cache
+                    // Without this, the promoted node is orphaned and disappears from the UI
+                    registerChildWithParent(nodeId, promotedNode.id);
+
                     // Clear viewer placeholder - now using real node from store
                     viewerPlaceholder = null;
 
@@ -1832,6 +1847,10 @@
 
                     // Add to store and trigger persistence
                     sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
+
+                    // CRITICAL FIX (Issue #528): Update children cache to establish parent-child relationship
+                    registerChildWithParent(nodeId, promotedNode.id);
+
                     viewerPlaceholder = null;
                   } else {
                     console.log('[BaseNodeViewer] Updating node type for real node');
@@ -1925,6 +1944,10 @@
 
                     // Add to store and trigger persistence
                     sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
+
+                    // CRITICAL FIX (Issue #528): Update children cache to establish parent-child relationship
+                    registerChildWithParent(nodeId, promotedNode.id);
+
                     viewerPlaceholder = null;
                   } else {
                     console.log('[BaseNodeViewer] Updating node type for real node');

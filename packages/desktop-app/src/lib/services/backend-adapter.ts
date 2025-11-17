@@ -963,16 +963,36 @@ export class HttpAdapter implements BackendAdapter {
     }
   }
 
-  async createNode(node: Omit<Node, 'createdAt' | 'modifiedAt' | 'version'>): Promise<string> {
+  async createNode(node: Omit<Node, 'createdAt' | 'modifiedAt' | 'version'> & { _parentId?: string; _containerId?: string }): Promise<string> {
     try {
       // Wrap the HTTP write operation with retry logic
       const nodeId = await this.retryOnTransientError(async () => {
+        // CRITICAL FIX (Issue #528): Extract transient hierarchy fields and send to backend
+        // The _parentId and _containerId fields are added by promotePlaceholderToNode()
+        // and need to be passed to the backend so it can create parent-child edges
+        const requestBody: Record<string, unknown> = {
+          id: node.id,
+          nodeType: node.nodeType,
+          content: node.content,
+          beforeSiblingId: node.beforeSiblingId,
+          properties: node.properties,
+          mentions: node.mentions
+        };
+
+        // Add hierarchy fields if present (for promoted placeholders)
+        if ((node as { _parentId?: string })._parentId) {
+          requestBody.parentId = (node as { _parentId?: string })._parentId;
+        }
+        if ((node as { _containerId?: string })._containerId) {
+          requestBody.containerNodeId = (node as { _containerId?: string })._containerId;
+        }
+
         const response = await globalThis.fetch(`${this.baseUrl}/api/nodes`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify(node)
+          body: JSON.stringify(requestBody)
         });
 
         return await this.handleResponse<string>(response);

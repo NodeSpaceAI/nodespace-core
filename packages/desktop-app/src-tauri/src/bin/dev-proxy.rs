@@ -24,29 +24,30 @@ use axum::{
     routing::{delete, get, patch, post},
     Router,
 };
-use chrono::Utc;
 use nodespace_core::{
     db::HttpStore,
     models::{
         schema::{ProtectionLevel, SchemaDefinition, SchemaField},
         Node, NodeFilter, NodeUpdate,
     },
+    operations::NodeOperations,
     services::{NodeService, NodeServiceError, SchemaService},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
-use uuid::Uuid;
 
 // Type alias for HTTP client types
 type HttpNodeService = NodeService<surrealdb::engine::remote::http::Client>;
 type HttpSchemaService = SchemaService<surrealdb::engine::remote::http::Client>;
+type HttpNodeOperations = NodeOperations<surrealdb::engine::remote::http::Client>;
 
 /// Application state shared across handlers
 #[derive(Clone)]
 struct AppState {
     node_service: Arc<HttpNodeService>,
     schema_service: Arc<HttpSchemaService>,
+    operations: Arc<HttpNodeOperations>,
 }
 
 /// Structured error response matching Tauri's CommandError format
@@ -264,12 +265,18 @@ struct CreateNodeRequest {
     pub id: Option<String>,
     pub node_type: String,
     pub content: String,
-    // Note: parent_id and container_node_id removed in Issue #514
-    // Hierarchy is now managed via graph edges
+    // CRITICAL FIX (Issue #528): Re-add parent_id and container_node_id to HTTP API
+    // While Node type no longer has these fields (they're stored as graph edges),
+    // the CREATE operation needs this info to establish the parent-child relationship
+    // The operations layer (NodeOperations::create_node) handles edge creation
+    pub parent_id: Option<String>,
+    pub container_node_id: Option<String>,
     pub before_sibling_id: Option<String>,
     pub properties: serde_json::Value,
-    // Frontend sends f32 array via JSON, convert to Vec<u8> blob for Node model
+    // TODO: Implement embedding_vector and mentions support in operations layer
+    #[allow(dead_code)]
     pub embedding_vector: Option<Vec<f32>>,
+    #[allow(dead_code)]
     pub mentions: Vec<String>,
 }
 
@@ -321,9 +328,15 @@ async fn main() -> anyhow::Result<()> {
     let schema_service = Arc::new(SchemaService::new(node_service.clone()));
     println!("✅ SchemaService initialized");
 
+    // Initialize NodeOperations (orchestrates business rules and edge creation)
+    println!("🔧 Initializing NodeOperations...");
+    let operations = Arc::new(NodeOperations::new(node_service.clone()));
+    println!("✅ NodeOperations initialized");
+
     let state = AppState {
         node_service,
         schema_service,
+        operations,
     };
 
     // Build HTTP router
@@ -418,34 +431,34 @@ async fn create_node(
     State(state): State<AppState>,
     Json(req): Json<CreateNodeRequest>,
 ) -> ApiResult<String> {
-    // Convert CreateNodeRequest to Node by adding timestamps and version
-    // The frontend sends a partial node without these fields
-    // Note: parent_id and container_node_id have been removed in Issue #514
-    // Hierarchy is now managed via graph edges
-    tracing::debug!("create_node request: node_type={:?}", req.node_type);
+    // CRITICAL FIX (Issue #528): Use operations layer to handle edge creation
+    // The operations layer (NodeOperations::create_node) creates parent-child edges
+    // when parent_id is provided, using NodeService::move_node() to create the
+    // has_child graph edge in SurrealDB.
+    tracing::debug!(
+        "create_node request: node_type={:?}, parent_id={:?}",
+        req.node_type,
+        req.parent_id
+    );
 
-    // Keep embedding_vector as f32 array (no conversion needed)
-    // Node model now stores Vec<f32> for JSON API compatibility
-    let now = Utc::now();
-    let node = Node {
-        id: req.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
+    use nodespace_core::operations::CreateNodeParams;
+
+    let params = CreateNodeParams {
+        id: req.id,
         node_type: req.node_type,
         content: req.content,
+        parent_id: req.parent_id,
+        container_node_id: req.container_node_id,
         before_sibling_id: req.before_sibling_id,
-        version: 1, // New nodes always start at version 1
-        created_at: now,
-        modified_at: now,
         properties: req.properties,
-        embedding_vector: req.embedding_vector,
-        mentions: req.mentions,
-        mentioned_by: vec![], // New nodes have no backlinks initially
     };
 
-    let id = state
-        .node_service
-        .create_node(node)
-        .await
-        .map_err(map_node_service_error)?;
+    let id = state.operations.create_node(params).await.map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError::new("CREATE_FAILED", e.to_string())),
+        )
+    })?;
 
     Ok(Json(id))
 }
