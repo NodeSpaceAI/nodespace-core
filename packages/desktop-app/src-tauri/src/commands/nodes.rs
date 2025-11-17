@@ -1,11 +1,10 @@
 //! Node CRUD operation commands for Text, Task, and Date nodes
 
 use nodespace_core::operations::{CreateNodeParams, NodeOperationError, NodeOperations};
+use nodespace_core::services::SchemaService;
 use nodespace_core::{Node, NodeQuery, NodeService, NodeServiceError, NodeUpdate};
 use serde::{Deserialize, Serialize};
 use tauri::State;
-
-use crate::constants::ALLOWED_NODE_TYPES;
 
 /// Input for creating a node - timestamps generated server-side
 #[derive(Debug, Deserialize)]
@@ -58,38 +57,50 @@ impl From<NodeOperationError> for CommandError {
     }
 }
 
-/// Validate that node type is supported
+/// Validate that node type has a schema
+///
+/// Checks if a schema exists for the given node type. This enables
+/// custom entity types while ensuring type safety.
 ///
 /// # Arguments
 /// * `node_type` - Node type string to validate
+/// * `schema_service` - SchemaService instance for schema lookups
 ///
 /// # Returns
-/// * `Ok(())` if node type is valid
-/// * `Err(CommandError)` if node type is not supported
-fn validate_node_type(node_type: &str) -> Result<(), CommandError> {
-    if !ALLOWED_NODE_TYPES.contains(&node_type) {
-        return Err(CommandError {
+/// * `Ok(())` if schema exists for this node type
+/// * `Err(CommandError)` if no schema found
+async fn validate_node_type(
+    node_type: &str,
+    schema_service: &SchemaService,
+) -> Result<(), CommandError> {
+    // Check if schema exists for this type
+    match schema_service.get_schema(node_type).await {
+        Ok(_) => Ok(()),
+        Err(NodeServiceError::NodeNotFound { .. }) => Err(CommandError {
             message: format!(
-                "Only text, task, and date nodes are supported. Got: {}",
+                "No schema found for node type: {}. Create a schema first.",
                 node_type
             ),
-            code: "INVALID_NODE_TYPE".to_string(),
+            code: "SCHEMA_NOT_FOUND".to_string(),
             details: Some(format!(
-                "Allowed types: {:?}, received: '{}'",
-                ALLOWED_NODE_TYPES, node_type
+                "Node type '{}' does not have a schema definition. \
+                 Use the schema API to create a schema before creating nodes of this type.",
+                node_type
             )),
-        });
+        }),
+        Err(e) => Err(CommandError::from(e)),
     }
-    Ok(())
 }
 
-/// Create a new node (Text, Task, or Date only)
+/// Create a new node of any type with a registered schema
 ///
 /// Uses NodeOperations business logic layer to enforce data integrity rules.
+/// Node type must have a corresponding schema defined in the system.
 ///
 /// # Arguments
 /// * `operations` - NodeOperations instance from Tauri state
-/// * `node` - Node data to create (must have node_type: text|task|date)
+/// * `schema_service` - SchemaService instance for validating node type
+/// * `node` - Node data to create (node_type must have a schema)
 ///
 /// # Returns
 /// * `Ok(String)` - ID of the created node
@@ -97,7 +108,7 @@ fn validate_node_type(node_type: &str) -> Result<(), CommandError> {
 ///
 /// # Errors
 /// Returns error if:
-/// - Node type is not one of: text, task, date
+/// - Node type schema doesn't exist (create schema first)
 /// - Business rule validation fails (container requirements, sibling chains, etc.)
 /// - Database operation fails
 ///
@@ -114,9 +125,10 @@ fn validate_node_type(node_type: &str) -> Result<(), CommandError> {
 #[tauri::command]
 pub async fn create_node(
     operations: State<'_, NodeOperations>,
+    schema_service: State<'_, SchemaService>,
     node: CreateNodeInput,
 ) -> Result<String, CommandError> {
-    validate_node_type(&node.node_type)?;
+    validate_node_type(&node.node_type, &schema_service).await?;
 
     // Use NodeOperations to create node with business rule enforcement
     // Pass frontend-generated ID so frontend can track node before persistence completes
@@ -146,10 +158,24 @@ pub struct CreateContainerNodeInput {
     pub mentioned_by: Option<String>,
 }
 
+/// Input for saving a node with automatic parent creation
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveNodeWithParentInput {
+    pub node_id: String,
+    pub content: String,
+    pub node_type: String,
+    pub parent_id: String,
+    pub container_node_id: String,
+    #[serde(default)]
+    pub before_sibling_id: Option<String>,
+}
+
 /// Create a new container node (root node with container_node_id = NULL)
 ///
 /// Uses NodeOperations to create container with business rule enforcement.
 /// Container nodes are root-level nodes that can contain other nodes.
+/// Node type must have a corresponding schema defined in the system.
 /// NodeOperations ensures they have:
 /// - parent_id = None
 /// - container_node_id = None (they ARE containers)
@@ -158,6 +184,7 @@ pub struct CreateContainerNodeInput {
 /// # Arguments
 /// * `operations` - NodeOperations instance from Tauri state
 /// * `service` - NodeService for mention relationship creation
+/// * `schema_service` - SchemaService instance for validating node type
 /// * `input` - Container node data
 ///
 /// # Returns
@@ -179,9 +206,10 @@ pub struct CreateContainerNodeInput {
 pub async fn create_container_node(
     operations: State<'_, NodeOperations>,
     service: State<'_, NodeService>,
+    schema_service: State<'_, SchemaService>,
     input: CreateContainerNodeInput,
 ) -> Result<String, CommandError> {
-    validate_node_type(&input.node_type)?;
+    validate_node_type(&input.node_type, &schema_service).await?;
 
     // Create container node with NodeOperations (enforces container rules)
     let node_id = operations
@@ -608,10 +636,8 @@ pub async fn mention_autocomplete(
 ///
 /// # Arguments
 /// * `service` - Node service instance from Tauri state
-/// * `node_id` - ID of the node to save
-/// * `content` - Node content
-/// * `node_type` - Type of the node (text, task, date)
-/// * `parent_id` - ID of the parent node (will be created if doesn't exist)
+/// * `schema_service` - SchemaService instance for node type validation
+/// * `input` - SaveNodeWithParentInput containing node data
 ///
 /// # Returns
 /// * `Ok(())` - Save successful
@@ -619,7 +645,7 @@ pub async fn mention_autocomplete(
 ///
 /// # Errors
 /// Returns error if:
-/// - Node type is not one of: text, task, date
+/// - Node type schema doesn't exist
 /// - Database operation fails
 ///
 /// # Example Frontend Usage
@@ -629,7 +655,7 @@ pub async fn mention_autocomplete(
 ///   content: 'Updated content',
 ///   nodeType: 'text',
 ///   parentId: '2025-10-05',
-///   originNodeId: '2025-10-05',
+///   containerNodeId: '2025-10-05',
 ///   beforeSiblingId: null
 /// });
 /// ```
@@ -653,24 +679,20 @@ pub async fn mention_autocomplete(
 #[tauri::command]
 pub async fn save_node_with_parent(
     service: State<'_, NodeService>,
-    node_id: String,
-    content: String,
-    node_type: String,
-    parent_id: String,
-    container_node_id: String,
-    before_sibling_id: Option<String>,
+    schema_service: State<'_, SchemaService>,
+    input: SaveNodeWithParentInput,
 ) -> Result<(), CommandError> {
-    validate_node_type(&node_type)?;
+    validate_node_type(&input.node_type, &schema_service).await?;
 
     // Use single-transaction upsert method (bypasses NodeOperations for transactional reasons)
     service
         .upsert_node_with_parent(
-            &node_id,
-            &content,
-            &node_type,
-            &parent_id,
-            &container_node_id,
-            before_sibling_id.as_deref(),
+            &input.node_id,
+            &input.content,
+            &input.node_type,
+            &input.parent_id,
+            &input.container_node_id,
+            input.before_sibling_id.as_deref(),
         )
         .await
         .map_err(Into::into)
@@ -806,44 +828,9 @@ pub async fn delete_node_mention(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_node_type_validation_valid_types() {
-        assert!(validate_node_type("text").is_ok());
-        assert!(validate_node_type("task").is_ok());
-        assert!(validate_node_type("date").is_ok());
-    }
-
-    #[test]
-    fn test_node_type_validation_invalid_types() {
-        // Person and project nodes not in E2E scope
-        let result = validate_node_type("person");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.code, "INVALID_NODE_TYPE");
-        assert!(err.message.contains("Only text, task, and date"));
-
-        let result = validate_node_type("project");
-        assert!(result.is_err());
-
-        let result = validate_node_type("");
-        assert!(result.is_err());
-
-        let result = validate_node_type("unknown");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_node_type_validation_error_details() {
-        let result = validate_node_type("invalid");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-
-        // Check that details field contains useful debugging info
-        assert!(err.details.is_some());
-        let details = err.details.unwrap();
-        assert!(details.contains("Allowed types:"));
-        assert!(details.contains("invalid"));
-    }
+    // Note: Integration tests for schema-based validation are in the integration test suite
+    // since they require database setup and SchemaService instances.
+    // Unit tests here focus on command error serialization.
 
     #[test]
     fn test_command_error_serialization() {
