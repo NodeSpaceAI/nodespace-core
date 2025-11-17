@@ -147,8 +147,12 @@ struct SurrealNode {
     /// `SELECT * FROM node FETCH data.* OMIT data.id;`
     #[serde(skip_deserializing)]
     data: Option<Value>, // Placeholder - properties fetched separately
-    variants: Value,      // Type history map {task: "task:uuid", text: null}
-    _schema_version: i64, // Universal schema version
+    variants: Value, // Type history map {task: "task:uuid", text: null}
+    /// Properties field stores user-defined properties for types without dedicated tables
+    /// For types with dedicated tables (task, schema), this contains _schema_version only
+    /// and actual properties are fetched from the type-specific table
+    #[serde(default)]
+    properties: Value,
 }
 
 impl From<SurrealNode> for Node {
@@ -170,9 +174,9 @@ impl From<SurrealNode> for Node {
             _ => sn.id.id.to_string(),
         };
 
-        // Extract properties from data field if it's an object (populated by FETCH data)
-        // When FETCH data: data = {id: "task:uuid", ...properties}
-        // Extract all fields except 'id' as properties
+        // Extract properties:
+        // 1. If data field is populated (types with dedicated tables like task/schema), use it
+        // 2. Otherwise use properties field (types without dedicated tables like text/date)
         let properties = if let Some(Value::Object(ref obj)) = sn.data {
             tracing::debug!(
                 "FETCH data populated for node {}: data has {} fields",
@@ -183,12 +187,19 @@ impl From<SurrealNode> for Node {
             let mut props = obj.clone();
             props.remove("id");
             Value::Object(props)
-        } else {
+        } else if !sn.properties.is_null() {
             tracing::debug!(
-                "FETCH data NOT populated for node {} (type: {}): data = {:?}",
+                "Using properties field for node {} (type: {}): {} fields",
                 id,
                 sn.node_type,
-                sn.data
+                sn.properties.as_object().map(|o| o.len()).unwrap_or(0)
+            );
+            sn.properties
+        } else {
+            tracing::debug!(
+                "No properties found for node {} (type: {})",
+                id,
+                sn.node_type
             );
             serde_json::json!({})
         };
@@ -833,6 +844,11 @@ where
 
         // Insert into universal node table (graph-native architecture)
         // Record ID format: node:uuid (constructed by type::thing)
+        // For types without dedicated tables (text, date, etc.), properties are stored here
+        // For types with dedicated tables (task, schema), properties go in the type-specific table
+        let mut props_with_schema = node.properties.as_object().cloned().unwrap_or_default();
+        props_with_schema.insert("_schema_version".to_string(), serde_json::json!(1i64));
+
         let query = "
             CREATE type::thing($table, $id) CONTENT {
                 type: $node_type,
@@ -847,7 +863,7 @@ where
                 mentioned_by: $mentioned_by,
                 data: $data,
                 variants: $variants,
-                _schema_version: $_schema_version
+                properties: $properties
             };
         ";
 
@@ -870,7 +886,7 @@ where
             .bind(("mentioned_by", Vec::<String>::new()))
             .bind(("data", None::<String>)) // Will be set below if type has properties
             .bind(("variants", variants_value))
-            .bind(("_schema_version", 1i64))
+            .bind(("properties", serde_json::Value::Object(props_with_schema)))
             .await
             .context("Failed to create node in universal table")?;
 
@@ -993,17 +1009,6 @@ where
             .await?
             .ok_or_else(|| anyhow::anyhow!("Node not found: {}", id))?;
 
-        // Update using record ID (O(1) primary key access)
-        let query = "
-            UPDATE type::thing('node', $id) SET
-                content = $content,
-                type = $node_type,
-                before_sibling_id = $before_sibling_id,
-                modified_at = time::now(),
-                version = version + 1,
-                embedding_vector = $embedding_vector;
-        ";
-
         let updated_content = update.content.unwrap_or(current.content);
         let updated_node_type = update.node_type.unwrap_or(current.node_type.clone());
 
@@ -1015,17 +1020,70 @@ where
             .map(|blob| Self::blob_to_f32_array(blob))
             .transpose()?;
 
-        self.db
+        // Merge properties with _schema_version if properties are being updated
+        // For types without dedicated tables (text, date, etc.), store properties directly in universal table
+        let properties_update = if let Some(ref updated_props) = update.properties {
+            let mut merged_props = current.properties.as_object().cloned().unwrap_or_default();
+            if let Some(new_props) = updated_props.as_object() {
+                for (key, value) in new_props {
+                    merged_props.insert(key.clone(), value.clone());
+                }
+            }
+            // Ensure _schema_version is preserved
+            if !merged_props.contains_key("_schema_version") {
+                merged_props.insert("_schema_version".to_string(), serde_json::json!(1i64));
+            }
+            Some(serde_json::Value::Object(merged_props))
+        } else {
+            None
+        };
+
+        // Build update query - include properties if they're being updated
+        let (query, bind_properties) = if properties_update.is_some() {
+            (
+                "
+                UPDATE type::thing('node', $id) SET
+                    content = $content,
+                    type = $node_type,
+                    before_sibling_id = $before_sibling_id,
+                    modified_at = time::now(),
+                    version = version + 1,
+                    embedding_vector = $embedding_vector,
+                    properties = $properties;
+            ",
+                true,
+            )
+        } else {
+            (
+                "
+                UPDATE type::thing('node', $id) SET
+                    content = $content,
+                    type = $node_type,
+                    before_sibling_id = $before_sibling_id,
+                    modified_at = time::now(),
+                    version = version + 1,
+                    embedding_vector = $embedding_vector;
+            ",
+                false,
+            )
+        };
+
+        let mut query_builder = self
+            .db
             .query(query)
             .bind(("id", id.to_string()))
             .bind(("content", updated_content))
             .bind(("node_type", updated_node_type.clone()))
             .bind(("before_sibling_id", update.before_sibling_id.flatten()))
-            .bind(("embedding_vector", embedding_f32))
-            .await
-            .context("Failed to update node")?;
+            .bind(("embedding_vector", embedding_f32));
 
-        // If properties were provided and node type has type-specific table, update it
+        if bind_properties {
+            query_builder = query_builder.bind(("properties", properties_update.unwrap()));
+        }
+
+        query_builder.await.context("Failed to update node")?;
+
+        // If properties were provided and node type has type-specific table, update it there too
         if let Some(updated_props) = update.properties {
             if TYPES_WITH_PROPERTIES.contains(&updated_node_type.as_str()) {
                 // UPSERT with MERGE to preserve existing spoke data on type reconversions
@@ -2151,7 +2209,7 @@ where
             #[serde(default)]
             variants: Value,
             #[serde(default)]
-            _schema_version: i64,
+            properties: Value,
             similarity: f64,
         }
 
@@ -2177,7 +2235,7 @@ where
                     mentioned_by: nws.mentioned_by,
                     data: nws.data,
                     variants: nws.variants,
-                    _schema_version: nws._schema_version,
+                    properties: nws.properties,
                 };
                 (surreal_node.into(), nws.similarity)
             })
