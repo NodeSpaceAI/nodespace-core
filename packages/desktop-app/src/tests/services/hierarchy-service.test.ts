@@ -50,12 +50,14 @@ interface TestHierarchyNode {
 function flattenTestHierarchy(nodes: TestHierarchyNode[]) {
   const flatNodes: ReturnType<typeof createTestNode>[] = [];
 
-  function processNode(node: TestHierarchyNode, _parentId: string | null = null): void {
+  function processNode(node: TestHierarchyNode, parentId: string | null = null): void {
+    // Create node with containerNodeId set to establish parent-child relationship
     flatNodes.push(
       createTestNode({
         id: node.id,
         content: node.content,
         nodeType: node.type,
+        containerNodeId: parentId,
       })
     );
 

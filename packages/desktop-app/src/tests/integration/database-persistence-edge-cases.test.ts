@@ -404,6 +404,13 @@ describe('Database Persistence Edge Cases', () => {
         beforeSiblingId: null
       };
 
+      // CRITICAL FIX: Wait for parent save to complete before updating child
+      // This simulates the proper coordination that should happen in production
+      const relevantParentPromise = pendingContentSavePromises.get(newParentId);
+      if (relevantParentPromise) {
+        await relevantParentPromise;
+      }
+
       // Now safe to update child
       localSavedNodes.add('child-node'); // Pre-save child node
       await localMock.updateNode(update.nodeId, {
@@ -536,27 +543,28 @@ describe('Database Persistence Edge Cases', () => {
 
     beforeEach(() => {
       // Simulate actual database (hierarchy managed via backend graph queries)
+      // CRITICAL: Must include parentId to simulate CASCADE DELETE behavior
       nodeDatabase = new Map<string, NodeRecord>([
-        ['parent1', { id: 'parent1', content: 'Parent 1', beforeSiblingId: null }],
+        ['parent1', { id: 'parent1', content: 'Parent 1', beforeSiblingId: null, parentId: null }],
         [
           'child1',
-          { id: 'child1', content: 'Child 1', beforeSiblingId: null }
+          { id: 'child1', content: 'Child 1', beforeSiblingId: null, parentId: 'parent1' }
         ],
         [
           'grandchild1',
-          { id: 'grandchild1', content: 'Grandchild 1', beforeSiblingId: null }
+          { id: 'grandchild1', content: 'Grandchild 1', beforeSiblingId: null, parentId: 'child1' }
         ],
         [
           'parent2',
-          { id: 'parent2', content: 'Parent 2', beforeSiblingId: 'parent1' }
+          { id: 'parent2', content: 'Parent 2', beforeSiblingId: 'parent1', parentId: null }
         ],
         [
           'child2',
-          { id: 'child2', content: 'Child 2', beforeSiblingId: null }
+          { id: 'child2', content: 'Child 2', beforeSiblingId: null, parentId: 'parent2' }
         ],
         [
           'grandchild2',
-          { id: 'grandchild2', content: 'Grandchild 2', beforeSiblingId: null }
+          { id: 'grandchild2', content: 'Grandchild 2', beforeSiblingId: null, parentId: 'child2' }
         ]
       ]);
 

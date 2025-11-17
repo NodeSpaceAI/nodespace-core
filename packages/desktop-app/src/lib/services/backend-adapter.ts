@@ -874,12 +874,21 @@ export class HttpAdapter implements BackendAdapter {
 
   private async handleResponse<T>(response: globalThis.Response): Promise<T> {
     if (!response.ok) {
-      // Try to parse error as HttpError format
+      // Try to parse error as ApiError format (from dev-proxy)
+      // ApiError structure: { message: string, code: string, details?: string }
       try {
         const errorData = await response.json();
-        throw new Error(errorData.message || `HTTP ${response.status}: ${response.statusText}`);
-      } catch {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        // Use message field from ApiError response
+        const errorMessage = errorData.message || `HTTP ${response.status}: ${response.statusText}`;
+        throw new Error(errorMessage);
+      } catch (parseError) {
+        // If JSON parsing fails, fall back to generic HTTP error
+        // Note: Don't catch the Error we just threw above - only catch JSON parse errors
+        if (parseError instanceof SyntaxError) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        // Re-throw our constructed error with the message from errorData
+        throw parseError;
       }
     }
 

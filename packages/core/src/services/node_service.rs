@@ -571,7 +571,8 @@ where
                     if let Some(fields) = schema.get("fields").and_then(|f| f.as_array()) {
                         if !fields.is_empty() {
                             // Schema has fields - backfill version for migration tracking
-                            let version = schema.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
+                            let version =
+                                schema.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
 
                             // Add version to node properties IN-MEMORY ONLY
                             // Don't persist to database - this prevents overwriting freshly created spoke records
@@ -579,7 +580,10 @@ where
                             // Backfill would MERGE just _schema_version, but the spoke already has it
                             // Persisting backfill is unnecessary and risks race conditions
                             if let Some(props_obj) = node.properties.as_object_mut() {
-                                props_obj.insert("_schema_version".to_string(), serde_json::json!(version));
+                                props_obj.insert(
+                                    "_schema_version".to_string(),
+                                    serde_json::json!(version),
+                                );
                             }
                         }
                     }
@@ -700,7 +704,8 @@ where
                     // Schema has fields - add version for migration tracking
                     if let Some(version) = schema.get("version").and_then(|v| v.as_i64()) {
                         if let Some(props_obj) = properties.as_object_mut() {
-                            props_obj.insert("_schema_version".to_string(), serde_json::json!(version));
+                            props_obj
+                                .insert("_schema_version".to_string(), serde_json::json!(version));
                         }
                     }
                 }

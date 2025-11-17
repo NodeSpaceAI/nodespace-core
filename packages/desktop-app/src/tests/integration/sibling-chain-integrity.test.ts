@@ -88,8 +88,8 @@ describe('Sibling Chain Integrity', () => {
     const firstChildren: string[] = [];
     const reachable = new Set<string>();
 
-    // Get all siblings for this parent (now all nodes since parentId removed)
-    const siblings = Array.from(service.nodes.values()).map((n) => n.id);
+    // Get all siblings for this parent using graph query (not parentId field)
+    const siblings = sharedNodeStore.getNodesForParent(parentId).map((n) => n.id);
 
     if (siblings.length === 0) {
       return { valid: true, errors: [], firstChildren: [], reachable, total: 0 };
@@ -291,7 +291,7 @@ describe('Sibling Chain Integrity', () => {
     service.initializeNodes([node1, node2, node3]);
 
     // Act: Indent node-2
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
 
     await waitForDatabaseWrites();
     // Only check for errors in database mode (in-memory mode expects DatabaseInitializationError)
@@ -355,10 +355,28 @@ describe('Sibling Chain Integrity', () => {
       mentions: []
     });
 
-    service.initializeNodes([parent, child1, child2], { expanded: true });
+    // Setup parent-child relationships (graph edges)
+    // In the new architecture, parent relationships are stored as has_child edges
+    // We need to explicitly set them up for tests
+    // Only do this in database mode - in-memory mode doesn't have a backend
+    if (shouldUseDatabase()) {
+      await adapter.setParent('child-1', 'parent');
+      await adapter.setParent('child-2', 'parent');
+    }
+
+    // Initialize nodes with explicit parent mapping for both database and in-memory modes
+    // This ensures the parent-child cache is populated correctly
+    service.initializeNodes([parent, child1, child2], {
+      expanded: true,
+      parentMapping: {
+        parent: null, // Root node
+        'child-1': 'parent', // Child of parent
+        'child-2': 'parent' // Child of parent
+      }
+    });
 
     // Act: Outdent child-1
-    service.outdentNode('child-1');
+    await service.outdentNode('child-1');
 
     await waitForDatabaseWrites();
     // Only check for errors in database mode (in-memory mode expects DatabaseInitializationError)
@@ -368,6 +386,22 @@ describe('Sibling Chain Integrity', () => {
 
     // Verify: Root chain valid
     const rootValidation = validateSiblingChain(null);
+    if (!rootValidation.valid) {
+      console.error('[TEST DEBUG] Root chain invalid:', {
+        errors: rootValidation.errors,
+        firstChildren: rootValidation.firstChildren,
+        reachable: Array.from(rootValidation.reachable),
+        total: rootValidation.total,
+        allNodes: Array.from(service.nodes.values()).map((n) => ({
+          id: n.id,
+          beforeSiblingId: n.beforeSiblingId
+        })),
+        rootChildren: sharedNodeStore.getNodesForParent(null).map((n) => ({
+          id: n.id,
+          beforeSiblingId: n.beforeSiblingId
+        }))
+      });
+    }
     expect(rootValidation.valid).toBe(true);
 
     // Verify: child-1's children chain valid
@@ -527,13 +561,13 @@ describe('Sibling Chain Integrity', () => {
     const node3Id = service.createNode('node-2', 'Node 3', 'text'); // Create
     await waitForDatabaseWrites();
 
-    service.indentNode('node-2'); // Indent node-2 under node-1
+    await service.indentNode('node-2'); // Indent node-2 under node-1
     await waitForDatabaseWrites();
 
     const node4Id = service.createNode('node-1', 'Node 4', 'text'); // Create after node-1
     await waitForDatabaseWrites();
 
-    service.outdentNode('node-2'); // Outdent node-2 back to root
+    await service.outdentNode('node-2'); // Outdent node-2 back to root
     await waitForDatabaseWrites();
 
     await service.combineNodes(node3Id, 'node-2'); // Combine node-3 into node-2

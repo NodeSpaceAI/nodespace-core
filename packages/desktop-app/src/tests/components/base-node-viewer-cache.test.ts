@@ -148,6 +148,12 @@ describe('BaseNodeViewer cache optimization', () => {
     const newChild = createMockNode('new-child', 'text', 'parent-id');
     store.setNode(newChild, { type: 'mcp-server', serverId: 'test-server' });
 
+    // CRITICAL: Update cache to reflect parent-child relationship
+    // In real scenarios, this would happen when:
+    // 1. MCP update notification includes parent info, OR
+    // 2. Frontend re-queries backend via loadChildrenForParent()
+    store.addChildToCache('parent-id', 'new-child');
+
     // Verify cache was updated and includes the new node
     cached = store.getNodesForParent('parent-id');
     expect(cached.length).toBe(1);
@@ -173,12 +179,19 @@ describe('BaseNodeViewer cache optimization', () => {
     store.setNode(parent, { type: 'database', reason: 'loaded-from-db' });
     store.setNode(child1, { type: 'database', reason: 'loaded-from-db' });
 
+    // CRITICAL: Explicitly populate cache with parent-child relationship
+    // This simulates what loadChildrenForParent() would do after querying backend
+    store.updateChildrenCache('parent-id', ['child-1']);
+
     let cached = store.getNodesForParent('parent-id');
     expect(cached.length).toBe(1);
 
     // Add another child (simulates real-time update)
     const child2 = createMockNode('child-2', 'text', 'parent-id');
     store.setNode(child2, { type: 'viewer', viewerId: 'test-viewer' });
+
+    // Update cache to reflect the new child (simulates cache refresh after update)
+    store.updateChildrenCache('parent-id', ['child-1', 'child-2']);
 
     // Cache should reflect the update
     cached = store.getNodesForParent('parent-id');

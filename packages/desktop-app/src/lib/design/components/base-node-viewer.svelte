@@ -1145,7 +1145,7 @@
       const cursorPosition = saveCursorPosition(nodeId);
 
       // Use NodeManager to handle indentation
-      const success = nodeManager.indentNode(nodeId);
+      const success = await nodeManager.indentNode(nodeId);
 
       if (success) {
         // NodeManager.indentNode() already persists via updateNode()
@@ -1242,7 +1242,7 @@
       const cursorPosition = saveCursorPosition(nodeId);
 
       // Use NodeManager to handle outdentation
-      const success = nodeManager.outdentNode(nodeId);
+      const success = await nodeManager.outdentNode(nodeId);
 
       if (success) {
         // NodeManager.outdentNode() already persists via updateNode()

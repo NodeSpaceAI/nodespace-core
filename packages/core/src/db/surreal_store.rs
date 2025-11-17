@@ -1657,8 +1657,9 @@ where
             .await
             .context("Failed to check for cycles")?;
 
+        // The query has 2 statements (LET, SELECT), we want the SELECT result at index 1
         let results: Vec<SurrealNode> = response
-            .take(0)
+            .take(1)
             .context("Failed to parse cycle check results")?;
 
         if !results.is_empty() {

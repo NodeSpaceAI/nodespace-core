@@ -95,7 +95,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([node1, node2]);
 
     // Act: Indent node-2
-    const result = service.indentNode('node-2');
+    const result = await service.indentNode('node-2');
 
     // Verify: Indent succeeded
     expect(result).toBe(true);
@@ -131,7 +131,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([node]);
 
     // Act: Try to indent first node
-    const result = service.indentNode('node-1');
+    const result = await service.indentNode('node-1');
 
     // Verify: Indent failed
     expect(result).toBe(false);
@@ -169,10 +169,18 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    service.initializeNodes([node1, node2, child], { expanded: true });
+    // CRITICAL: Set up parent-child relationship for child-1 under node-2
+    service.initializeNodes([node1, node2, child], {
+      expanded: true,
+      parentMapping: {
+        'node-1': null, // Root node
+        'node-2': null, // Root node (sibling of node-1)
+        'child-1': 'node-2' // Child of node-2
+      }
+    });
 
     // Act: Indent node-2 (with child)
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -208,10 +216,17 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    service.initializeNodes([parent, child], { expanded: true });
+    // CRITICAL: Set up parent-child relationship
+    service.initializeNodes([parent, child], {
+      expanded: true,
+      parentMapping: {
+        parent: null, // Root node
+        child: 'parent' // Child of parent
+      }
+    });
 
     // Act: Outdent child
-    const result = service.outdentNode('child');
+    const result = await service.outdentNode('child');
 
     // Verify: Outdent succeeded
     expect(result).toBe(true);
@@ -244,7 +259,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([node]);
 
     // Act: Try to outdent root
-    const result = service.outdentNode('root');
+    const result = await service.outdentNode('root');
 
     // Verify: Outdent failed
     expect(result).toBe(false);
@@ -295,7 +310,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([parent, child1, child2, child3], { expanded: true });
 
     // Act: Outdent child-2 (should take child-3 with it as sibling below transfers to child)
-    service.outdentNode('child-2');
+    await service.outdentNode('child-2');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -323,10 +338,17 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    service.initializeNodes([parent, child], { expanded: true });
+    // CRITICAL: Set up parent-child relationship
+    service.initializeNodes([parent, child], {
+      expanded: true,
+      parentMapping: {
+        parent: null, // Root node
+        child: 'parent' // Child of parent
+      }
+    });
 
     // Act: Outdent child
-    service.outdentNode('child');
+    await service.outdentNode('child');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -375,7 +397,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([node1, node2, node3]);
 
     // Act: Indent node-2
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -423,10 +445,18 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    service.initializeNodes([node1, node2, child], { expanded: true });
+    // CRITICAL: Set up parent-child relationship
+    service.initializeNodes([node1, node2, child], {
+      expanded: true,
+      parentMapping: {
+        'node-1': null, // Root node
+        'node-2': null, // Root node (sibling of node-1)
+        'child-of-2': 'node-2' // Child of node-2
+      }
+    });
 
     // Act: Indent node-2 (which has children)
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -470,10 +500,18 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    service.initializeNodes([node1, existingChild, node2], { expanded: true });
+    // CRITICAL: Set up parent-child relationship
+    service.initializeNodes([node1, existingChild, node2], {
+      expanded: true,
+      parentMapping: {
+        'node-1': null, // Root node
+        'existing-child': 'node-1', // Child of node-1
+        'node-2': null // Root node (sibling of node-1)
+      }
+    });
 
     // Act: Indent node-2 (should append after existing child)
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -525,8 +563,8 @@ describe('Indent/Outdent Operations', () => {
 
     // Act: Indent multiple different nodes (not the same node twice)
     // This simulates indenting node-2, then moving cursor to node-3 and indenting it
-    service.indentNode('node-2'); // node-2 becomes child of node-1
-    service.indentNode('node-3'); // node-3 becomes child of node-1 (sibling of node-2, not nested deeper)
+    await service.indentNode('node-2'); // node-2 becomes child of node-1
+    await service.indentNode('node-3'); // node-3 becomes child of node-1 (sibling of node-2, not nested deeper)
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -574,8 +612,8 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([node1, node2, node3], { expanded: true });
 
     // Act: Outdent multiple times
-    service.outdentNode('node-3'); // node-3 moves to level 1
-    service.outdentNode('node-3'); // node-3 moves to level 0
+    await service.outdentNode('node-3'); // node-3 moves to level 1
+    await service.outdentNode('node-3'); // node-3 moves to level 0
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -620,7 +658,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([parent, child1, child2], { expanded: true });
 
     // Act: Outdent first child
-    service.outdentNode('child-1');
+    await service.outdentNode('child-1');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -653,10 +691,10 @@ describe('Indent/Outdent Operations', () => {
     const initialCount = hierarchyChangeCount;
 
     // Act: Indent and outdent
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
     const afterIndent = hierarchyChangeCount;
 
-    service.outdentNode('node-2');
+    await service.outdentNode('node-2');
     const afterOutdent = hierarchyChangeCount;
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
@@ -692,7 +730,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([codeBlock, textNode]);
 
     // Act: Try to indent text node into code-block
-    const result = service.indentNode('text-1');
+    const result = await service.indentNode('text-1');
 
     // Verify: Indent was prevented
     expect(result).toBe(false);
@@ -731,7 +769,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([textNode1, textNode2]);
 
     // Act: Indent text-2 into text-1
-    const result = service.indentNode('text-2');
+    const result = await service.indentNode('text-2');
 
     // Verify: Indent succeeded
     expect(result).toBe(true);
@@ -765,7 +803,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([headerNode, textNode]);
 
     // Act: Indent text into header
-    const result = service.indentNode('text-1');
+    const result = await service.indentNode('text-1');
 
     // Verify: Indent succeeded
     expect(result).toBe(true);
@@ -799,7 +837,7 @@ describe('Indent/Outdent Operations', () => {
     service.initializeNodes([taskNode, textNode]);
 
     // Act: Indent text into task
-    const result = service.indentNode('text-1');
+    const result = await service.indentNode('text-1');
 
     // Verify: Indent succeeded
     expect(result).toBe(true);
@@ -844,10 +882,18 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    service.initializeNodes([dateContainer, parent, child], { expanded: true });
+    // CRITICAL: Set up parent-child relationships
+    service.initializeNodes([dateContainer, parent, child], {
+      expanded: true,
+      parentMapping: {
+        '2025-11-07': null, // Root date container
+        parent: '2025-11-07', // Child of date container
+        child: 'parent' // Child of parent
+      }
+    });
 
     // Act: Outdent child (should move from parent → date container)
-    const result = service.outdentNode('child');
+    const result = await service.outdentNode('child');
 
     // Verify: Outdent succeeded
     expect(result).toBe(true);

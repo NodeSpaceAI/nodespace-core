@@ -54,9 +54,17 @@ describe('Node Ordering Integration Tests', () => {
   });
 
   // Helper to get sorted nodes by traversing beforeSiblingId linked list
-  function getSortedChildren(_parentId: string | null): string[] {
+  function getSortedChildren(parentId: string | null): string[] {
     const nodes = nodeService.nodes;
-    const nodeIds = Array.from(nodes.values()).map((n) => n.id);
+
+    // CRITICAL: Filter nodes to only those with matching containerNodeId
+    // This ensures we only return children of the specified parent
+    const childNodes = Array.from(nodes.values()).filter((n) => {
+      const nodeParentId = n.containerNodeId || null;
+      return nodeParentId === parentId;
+    });
+
+    const nodeIds = childNodes.map((n) => n.id);
 
     if (nodeIds.length === 0) return [];
 
