@@ -45,6 +45,7 @@
 
   // Service imports
   import NodeReferenceService from '$lib/services/node-reference-service';
+  import { MentionSyncService } from '$lib/services/mention-sync-service';
   import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
   import { HierarchyService } from '$lib/services/hierarchy-service';
   import { tauriNodeService } from '$lib/services/tauri-node-service';
@@ -118,6 +119,11 @@
         tauriNodeService,
         contentProcessor
       );
+
+      // Initialize MentionSyncService for automatic link text synchronization
+      // This service listens for node:updated and node:deleted events
+      // and automatically updates markdown link display text
+      new MentionSyncService(tauriNodeService);
 
       // Create service bundle and update reactive state
       // (context was already set at component init with the container reference)
