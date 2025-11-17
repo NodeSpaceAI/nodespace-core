@@ -124,6 +124,101 @@
 }
 
 /* ============================================================================
+   Broken Link Styles (Deleted Nodes)
+   ============================================================================ */
+
+/* Base broken link style */
+.ns-noderef--deleted,
+.ns-noderef[href*="deleted=true"],
+a[href*="nodespace://"][href*="deleted=true"] {
+  /* Visual indicators for broken links */
+  background: hsl(var(--destructive) / 0.08);
+  border-color: hsl(var(--destructive) / 0.25);
+  color: hsl(var(--muted-foreground));
+  text-decoration: line-through;
+  opacity: 0.7;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Hover state for broken links - slightly lighten but keep disabled feel */
+.ns-noderef--deleted:hover,
+.ns-noderef[href*="deleted=true"]:hover,
+a[href*="nodespace://"][href*="deleted=true"]:hover {
+  background: hsl(var(--destructive) / 0.12);
+  border-color: hsl(var(--destructive) / 0.3);
+  transform: none; /* No lift on hover */
+  box-shadow: none;
+}
+
+/* Icon for deleted nodes */
+.ns-noderef--deleted .ns-noderef__icon::before,
+.ns-noderef[href*="deleted=true"] .ns-noderef__icon::before {
+  content: '⚠️';
+  margin-right: var(--space-xs);
+}
+
+/* Tooltip for deleted nodes - shown on hover */
+.ns-noderef--deleted::after,
+.ns-noderef[href*="deleted=true"]::after,
+a[href*="nodespace://"][href*="deleted=true"]::after {
+  content: attr(title);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: var(--space-sm) var(--space-md);
+  background: hsl(var(--popover));
+  border: 1px solid hsl(var(--border));
+  border-radius: calc(var(--radius) * 0.5);
+  font-size: 0.75rem;
+  color: hsl(var(--popover-foreground));
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+  z-index: 100;
+  box-shadow: 0 2px 8px hsl(var(--border) / 0.2);
+}
+
+.ns-noderef--deleted:hover::after,
+.ns-noderef[href*="deleted=true"]:hover::after,
+a[href*="nodespace://"][href*="deleted=true"]:hover::after {
+  opacity: 1;
+  transition-delay: 500ms;
+}
+
+/* Dark theme adjustments for broken links */
+.dark .ns-noderef--deleted,
+.dark .ns-noderef[href*="deleted=true"],
+.dark a[href*="nodespace://"][href*="deleted=true"] {
+  background: hsl(var(--destructive) / 0.1);
+  border-color: hsl(var(--destructive) / 0.3);
+}
+
+/* Accessibility: Screen reader announcement for deleted nodes */
+.ns-noderef--deleted .ns-noderef__sr-only::before,
+.ns-noderef[href*="deleted=true"] .ns-noderef__sr-only::before {
+  content: 'Deleted node: ';
+}
+
+/* Print styles for broken links */
+@media print {
+  .ns-noderef--deleted,
+  .ns-noderef[href*="deleted=true"],
+  a[href*="nodespace://"][href*="deleted=true"] {
+    text-decoration: line-through;
+    color: #999 !important;
+  }
+
+  .ns-noderef--deleted::after,
+  .ns-noderef[href*="deleted=true"]::after {
+    content: ' [DELETED]';
+    font-weight: bold;
+  }
+}
+
+/* ============================================================================
    Task Node Decorations
    ============================================================================ */
 
