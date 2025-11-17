@@ -175,6 +175,11 @@ export class ConflictResolver {
     // This is heuristic-based since we don't have full history
     const changedFields = new Set(Object.keys(yourChanges));
 
+    // Empty changes don't overlap (safe to auto-merge)
+    if (changedFields.size === 0) {
+      return false; // Safe: no changes means no overlap
+    }
+
     // Content changes are most likely to overlap
     if (changedFields.has('content')) {
       return true;
