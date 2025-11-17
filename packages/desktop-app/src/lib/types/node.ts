@@ -35,11 +35,11 @@ export interface Node {
   beforeSiblingId: string | null;
 
   /**
-   * Parent container node ID (graph edge relationship)
+   * Parent node ID (graph edge relationship)
    * Managed via graph edges in backend, cached in frontend for performance
    * null = root-level node (no parent)
    */
-  containerNodeId?: string | null;
+  parentId?: string | null;
 
   /** Creation timestamp (ISO 8601) - backend sets this */
   createdAt: string;

@@ -57,10 +57,10 @@ describe('Node Ordering Integration Tests', () => {
   function getSortedChildren(parentId: string | null): string[] {
     const nodes = nodeService.nodes;
 
-    // CRITICAL: Filter nodes to only those with matching containerNodeId
+    // CRITICAL: Filter nodes to only those with matching parentId
     // This ensures we only return children of the specified parent
     const childNodes = Array.from(nodes.values()).filter((n) => {
-      const nodeParentId = n.containerNodeId || null;
+      const nodeParentId = n.parentId || null;
       return nodeParentId === parentId;
     });
 

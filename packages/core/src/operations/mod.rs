@@ -235,51 +235,6 @@ where
     // Private Helper Methods
     // =========================================================================
 
-    /// Check if a node type is a container (date, topic, project)
-    ///
-    /// Container types define their own scope and cannot have parent/container/sibling.
-    ///
-    /// # Arguments
-    ///
-    /// * `node_type` - The node type to check
-    ///
-    /// # Returns
-    ///
-    /// true if the node type is a container, false otherwise
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use nodespace_core::operations::NodeOperations;
-    /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::SurrealStore;
-    /// # use std::path::PathBuf;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
-    /// # let node_service = NodeService::new(db)?;
-    /// # let operations = NodeOperations::new(node_service);
-    /// // These are internal examples for documentation
-    /// // assert!(operations.can_be_container_type("date"));
-    /// // assert!(operations.can_be_container_type("text"));
-    /// // assert!(!operations.can_be_container_type("task"));
-    /// # Ok(())
-    /// # }
-    /// ```
-    fn can_be_container_type(node_type: &str) -> bool {
-        // Check if a node type is ALLOWED to be a container.
-        // This does NOT mean the node IS a container - that depends on hierarchy fields
-        // (a node IS a container if parent_id=None AND container_node_id=None).
-        //
-        // Container-capable types:
-        // - date: Auto-created date containers (virtual)
-        // - text: Simple text containers (e.g., document titles)
-        // - header: Header containers (e.g., "# Project Name")
-        // - schema: Schema definitions (root nodes, infrastructure)
-        // Multi-line types (code-block, quote-block, ordered-list) cannot be containers
-        matches!(node_type, "date" | "text" | "header" | "schema")
-    }
-
     /// Ensure date container exists, auto-creating it if necessary
     ///
     /// Date nodes (YYYY-MM-DD format) are special containers that auto-exist.
@@ -298,10 +253,19 @@ where
             return Ok(()); // Not a date, nothing to do
         }
 
-        // Check if date container already exists
-        let exists = self.node_service.get_node(node_id).await?.is_some();
+        // Check if date container already exists IN THE DATABASE
+        // IMPORTANT: Call store.get_node() directly to bypass virtual date node logic
+        // in node_service.get_node(). The virtual date nodes are only for read operations,
+        // we need to check actual database state for auto-creation.
+        let exists = self
+            .node_service
+            .store
+            .get_node(node_id)
+            .await
+            .map_err(|e| NodeOperationError::DatabaseError(e.to_string()))?
+            .is_some();
         if exists {
-            return Ok(()); // Already exists
+            return Ok(()); // Already exists in database
         }
 
         // Auto-create the date container
@@ -550,34 +514,12 @@ where
         self.validate_parent_hierarchy(params.parent_id.as_deref())
             .await?;
 
-        // Business Rule 1: Determine if this node IS a container (root) based on hierarchy
-        // A node is a container/root if it has NO parent
-        // (not just because its type CAN be a container)
-        let is_container_node = params.parent_id.is_none();
-
-        let (final_parent_id, _final_container_id, final_sibling_id) = if is_container_node {
-            // This node IS a container - validate that its type allows being a container
-            if !Self::can_be_container_type(&params.node_type) {
-                return Err(NodeOperationError::invalid_container_type(
-                    params.content.clone(),
-                    params.node_type.clone(),
-                ));
-            }
-
-            // Container nodes MUST have before_sibling_id as None as well
-            if params.before_sibling_id.is_some() {
-                return Err(NodeOperationError::container_cannot_have_sibling(
-                    params.content.clone(),
-                    params.node_type.clone(),
-                ));
-            }
-
-            (None, None, None)
-        } else {
-            // Non-container nodes: apply business rules
-
-            // Business Rule 2: Auto-derive container/root from parent chain
-            // The backend traverses parent edges to find the root node
+        // Business Rule 1: Auto-derive container/root from parent chain
+        // If node has a parent, traverse parent edges to find the root node
+        // If node has NO parent, it IS the root (container_id = None)
+        let (final_parent_id, _final_container_id, final_sibling_id) = if params.parent_id.is_some()
+        {
+            // Node has a parent - derive container from parent chain
             let resolved_container = self
                 .resolve_container(
                     &params.content, // Passed for error context only (node ID not yet assigned)
@@ -586,7 +528,7 @@ where
                 )
                 .await?;
 
-            // Business Rule 3: Calculate sibling position
+            // Business Rule 2: Calculate sibling position
             let calculated_sibling = self
                 .calculate_sibling_position(params.parent_id.as_deref(), params.before_sibling_id)
                 .await?;
@@ -596,6 +538,14 @@ where
                 Some(resolved_container),
                 calculated_sibling,
             )
+        } else {
+            // Node has NO parent - it's a root-level node
+            // Root nodes can still have siblings (other root-level nodes)
+            let calculated_sibling = self
+                .calculate_sibling_position(None, params.before_sibling_id)
+                .await?;
+
+            (None, None, calculated_sibling)
         };
 
         // Create the node using NodeService
@@ -1488,38 +1438,6 @@ mod tests {
         // Both instances should work independently
         // (Full functionality tests will be added in Phase 4)
         // No assertion needed - just verifying clone compiles and works
-    }
-
-    // =========================================================================
-    // Phase 2: Container Type Detection Tests
-    // =========================================================================
-
-    #[test]
-    fn test_can_be_container_type_date() {
-        assert!(NodeOperations::<surrealdb::engine::local::Db>::can_be_container_type("date"));
-    }
-
-    #[test]
-    fn test_can_be_container_type_text() {
-        assert!(NodeOperations::<surrealdb::engine::local::Db>::can_be_container_type("text"));
-    }
-
-    #[test]
-    fn test_can_be_container_type_header() {
-        assert!(NodeOperations::<surrealdb::engine::local::Db>::can_be_container_type("header"));
-    }
-
-    #[test]
-    fn test_can_be_container_type_task_is_not_container() {
-        assert!(!NodeOperations::<surrealdb::engine::local::Db>::can_be_container_type("task"));
-    }
-
-    #[test]
-    fn test_can_be_container_type_unknown_is_not_container() {
-        assert!(!NodeOperations::<surrealdb::engine::local::Db>::can_be_container_type("unknown"));
-        assert!(
-            !NodeOperations::<surrealdb::engine::local::Db>::can_be_container_type("custom-type")
-        );
     }
 
     // =========================================================================

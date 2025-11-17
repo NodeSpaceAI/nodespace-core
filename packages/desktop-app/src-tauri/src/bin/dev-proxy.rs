@@ -376,6 +376,7 @@ async fn main() -> anyhow::Result<()> {
             get(get_mentioning_containers),
         )
         // Schema endpoints
+        .route("/api/schemas", get(get_all_schemas))
         .route("/api/schemas/:id", get(get_schema))
         .route("/api/schemas/:id/fields", post(add_schema_field))
         .route("/api/schemas/:id/fields/:name", delete(remove_schema_field))
@@ -722,6 +723,56 @@ async fn get_mentioning_containers(
         .map_err(map_node_service_error)?;
 
     Ok(Json(container_ids))
+}
+
+/// Get all schema definitions
+///
+/// Retrieves all schema definitions stored in the database. This endpoint
+/// is used by the frontend SchemaPluginLoader to auto-register custom entity
+/// plugins on application startup.
+///
+/// # HTTP Endpoint
+/// ```text
+/// GET /api/schemas
+/// ```
+///
+/// # Response (200 OK)
+/// ```json
+/// [
+///   {
+///     "id": "task",
+///     "content": "Task",
+///     "version": 1,
+///     "fields": [...]
+///   },
+///   {
+///     "id": "date",
+///     "content": "Date",
+///     "version": 1,
+///     "fields": [...]
+///   }
+/// ]
+/// ```
+///
+/// # Errors
+/// - `500 INTERNAL SERVER ERROR`: Database error
+///
+/// # Implementation Note
+/// Returns schemas as SchemaDefinition objects (not tuples). The frontend
+/// expects an array of schema objects with `id` and other properties.
+async fn get_all_schemas(State(state): State<AppState>) -> ApiResult<Vec<SchemaDefinition>> {
+    let schemas = state
+        .schema_service
+        .get_all_schemas()
+        .await
+        .map_err(map_schema_error)?;
+
+    // Convert Vec<(String, SchemaDefinition)> to Vec<SchemaDefinition>
+    // The tuple format is internal to SchemaService; the HTTP API returns objects
+    let schema_list: Vec<SchemaDefinition> =
+        schemas.into_iter().map(|(_id, schema)| schema).collect();
+
+    Ok(Json(schema_list))
 }
 
 /// Get schema definition by schema ID

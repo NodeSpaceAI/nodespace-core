@@ -1077,33 +1077,31 @@
     // Create new node using NodeManager - placeholder if empty, real if has content
     let newNodeId: string;
 
-    if (!newContent || newContent.trim() === '') {
-      // Create placeholder node for empty content (Enter key without splitting)
-      newNodeId = nodeManager.createPlaceholderNode(
-        afterNodeId,
-        nodeType,
-        inheritHeaderLevel,
-        insertAtBeginning || false,
-        originalContent,
-        !focusOriginalNode, // Focus new node when creating splits, original node when creating above
-        paneId
-      );
-    } else {
-      // Create real node when splitting existing content
-      // Add formatting syntax to the new content based on node type and header level
-      const formattedNewContent = addFormattingSyntax(newContent);
+    // CRITICAL FIX: Pass viewer's nodeId as parentId to ensure new nodes inherit correct parent
+    // When pressing Enter in a date viewer, the new node should have parentId = date node,
+    // not derive it from afterNodeId's parent (which might be wrong)
+    // The nodeId prop is the viewer's context (e.g., "2025-11-17" for date viewers)
+    const explicitParentId = nodeId || null;
 
-      newNodeId = nodeManager.createNode(
-        afterNodeId,
-        formattedNewContent,
-        nodeType,
-        inheritHeaderLevel,
-        insertAtBeginning || false,
-        originalContent,
-        !focusOriginalNode, // Focus new node when creating splits, original node when creating above
-        paneId
-      );
-    }
+    // Add formatting syntax to the new content based on node type and header level
+    // (applies to both empty and non-empty content for header inheritance)
+    const formattedNewContent = addFormattingSyntax(newContent || '');
+
+    // IMPORTANT: Enter key ALWAYS creates real persisted nodes (even if blank)
+    // Only the first viewer-local placeholder uses the placeholder->promotion cycle
+    // All subsequent nodes created via Enter are persisted immediately
+    newNodeId = nodeManager.createNode(
+      afterNodeId,
+      formattedNewContent,
+      nodeType,
+      inheritHeaderLevel,
+      insertAtBeginning || false,
+      originalContent,
+      !focusOriginalNode, // Focus new node when creating splits, original node when creating above
+      paneId,
+      false, // isInitialPlaceholder (Enter key never creates initial placeholders)
+      explicitParentId // Pass viewer's nodeId as parent (e.g., date node for date viewers)
+    );
 
     // Validate that node creation succeeded
     if (!newNodeId || !nodeManager.nodes.has(newNodeId)) {

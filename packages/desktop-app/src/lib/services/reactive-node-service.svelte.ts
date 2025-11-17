@@ -417,7 +417,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       content: initialContent,
       beforeSiblingId: beforeSiblingId,
       createdAt: new Date().toISOString(),
-      containerNodeId: newParentId,
+      parentId: newParentId,
       modifiedAt: new Date().toISOString(),
       version: 1,
       properties: {},
@@ -575,7 +575,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     originalNodeContent?: string,
     focusNewNode?: boolean,
     paneId: string = DEFAULT_PANE_ID,
-    isInitialPlaceholder: boolean = false
+    isInitialPlaceholder: boolean = false,
+    parentId?: string | null // Accept parent ID as parameter
   ): string {
     return createNode(
       afterNodeId,
@@ -586,7 +587,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       originalNodeContent,
       focusNewNode,
       paneId,
-      isInitialPlaceholder
+      isInitialPlaceholder,
+      parentId // Forward parent ID to createNode
     );
   }
 
@@ -1953,7 +1955,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       // This works for both test scenarios and production (backend sets containerNodeId)
       const nodesByParent = new Map<string | null, string[]>();
       for (const node of nodes) {
-        const parentKey = defaults.parentMapping?.[node.id] ?? node.containerNodeId ?? null;
+        const parentKey = defaults.parentMapping?.[node.id] ?? node.parentId ?? null;
         if (!nodesByParent.has(parentKey)) {
           nodesByParent.set(parentKey, []);
         }

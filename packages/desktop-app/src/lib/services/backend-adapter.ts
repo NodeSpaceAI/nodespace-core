@@ -1036,9 +1036,12 @@ export class HttpAdapter implements BackendAdapter {
           mentions: node.mentions
         };
 
-        // Add parent field if present (for promoted placeholders)
+        // Add parent field if present (for promoted placeholders or new nodes with parent)
+        // Check for _parentId (promoted placeholders) OR parentId (new nodes with explicit parent)
         if ((node as { _parentId?: string })._parentId) {
           requestBody.parentId = (node as { _parentId?: string })._parentId;
+        } else if ((node as { parentId?: string | null }).parentId) {
+          requestBody.parentId = (node as { parentId?: string | null }).parentId;
         }
 
         const response = await globalThis.fetch(`${this.baseUrl}/api/nodes`, {
