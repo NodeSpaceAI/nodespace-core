@@ -29,36 +29,6 @@ import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
 import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
-import type { Node } from '$lib/types';
-
-/**
- * Helper to populate hierarchy cache after initializing nodes
- *
- * After graph-native migration, hierarchy is stored as edges in backend.
- * Tests need to populate the frontend cache to enable hierarchy queries.
- *
- * NOTE: updateChildrenCache automatically maintains parentsCache coherence.
- * No need to manually update parentsCache - it's handled internally.
- *
- * @param nodes - Nodes to register in cache
- * @param parentChildMap - Optional map of parentId -> childIds to establish parent-child relationships
- */
-function populateHierarchyCacheForNodes(
-  nodes: Node[],
-  parentChildMap?: Map<string | null, string[]>
-) {
-  if (parentChildMap) {
-    // Use provided parent-child relationships
-    // updateChildrenCache automatically updates parentsCache for bidirectional lookup
-    for (const [parentId, childIds] of parentChildMap.entries()) {
-      sharedNodeStore.updateChildrenCache(parentId, childIds);
-    }
-  } else {
-    // Default: All nodes are root-level
-    const rootNodeIds = nodes.map(n => n.id);
-    sharedNodeStore.updateChildrenCache(null, rootNodeIds);
-  }
-}
 
 describe('Indent/Outdent Operations', () => {
   let dbPath: string | null;
@@ -123,10 +93,9 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([node1, node2]);
-    populateHierarchyCacheForNodes([node1, node2]);
 
     // Act: Indent node-2
-    const result = service.indentNode('node-2');
+    const result = await service.indentNode('node-2');
 
     // Verify: Indent succeeded
     expect(result).toBe(true);
@@ -160,10 +129,9 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([node]);
-    populateHierarchyCacheForNodes([node]);
 
     // Act: Try to indent first node
-    const result = service.indentNode('node-1');
+    const result = await service.indentNode('node-1');
 
     // Verify: Indent failed
     expect(result).toBe(false);
@@ -201,17 +169,18 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    // Establish hierarchy: node1 and node2 at root, child-1 is child of node-2
-    // CRITICAL: Populate cache BEFORE initializeNodes (which queries cache for depth calculation)
-    const hierarchyMap = new Map<string | null, string[]>();
-    hierarchyMap.set(null, ['node-1', 'node-2']); // Root nodes
-    hierarchyMap.set('node-2', ['child-1']); // child-1 is child of node-2
-    populateHierarchyCacheForNodes([node1, node2, child], hierarchyMap);
-
-    service.initializeNodes([node1, node2, child], { expanded: true });
+    // CRITICAL: Set up parent-child relationship for child-1 under node-2
+    service.initializeNodes([node1, node2, child], {
+      expanded: true,
+      parentMapping: {
+        'node-1': null, // Root node
+        'node-2': null, // Root node (sibling of node-1)
+        'child-1': 'node-2' // Child of node-2
+      }
+    });
 
     // Act: Indent node-2 (with child)
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -247,15 +216,17 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    service.initializeNodes([parent, child], { expanded: true });
-    // Establish hierarchy: parent at root, child is child of parent
-    const hierarchyMap = new Map<string | null, string[]>();
-    hierarchyMap.set(null, ['parent']); // parent is root
-    hierarchyMap.set('parent', ['child']); // child is child of parent
-    populateHierarchyCacheForNodes([parent, child], hierarchyMap);
+    // CRITICAL: Set up parent-child relationship
+    service.initializeNodes([parent, child], {
+      expanded: true,
+      parentMapping: {
+        parent: null, // Root node
+        child: 'parent' // Child of parent
+      }
+    });
 
     // Act: Outdent child
-    const result = service.outdentNode('child');
+    const result = await service.outdentNode('child');
 
     // Verify: Outdent succeeded
     expect(result).toBe(true);
@@ -286,10 +257,9 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([node]);
-    populateHierarchyCacheForNodes([node]);
 
     // Act: Try to outdent root
-    const result = service.outdentNode('root');
+    const result = await service.outdentNode('root');
 
     // Verify: Outdent failed
     expect(result).toBe(false);
@@ -338,14 +308,9 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([parent, child1, child2, child3], { expanded: true });
-    // Establish hierarchy: parent at root, child-1/2/3 are children of parent
-    const hierarchyMap = new Map<string | null, string[]>();
-    hierarchyMap.set(null, ['parent']); // parent at root
-    hierarchyMap.set('parent', ['child-1', 'child-2', 'child-3']); // children of parent
-    populateHierarchyCacheForNodes([parent, child1, child2, child3], hierarchyMap);
 
     // Act: Outdent child-2 (should take child-3 with it as sibling below transfers to child)
-    service.outdentNode('child-2');
+    await service.outdentNode('child-2');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -373,17 +338,17 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    // Establish hierarchy: parent at root, child is child of parent
-    // CRITICAL: Populate cache BEFORE initializeNodes (which queries cache for depth calculation)
-    const hierarchyMap = new Map<string | null, string[]>();
-    hierarchyMap.set(null, ['parent']); // parent is root
-    hierarchyMap.set('parent', ['child']); // child is child of parent
-    populateHierarchyCacheForNodes([parent, child], hierarchyMap);
-
-    service.initializeNodes([parent, child], { expanded: true });
+    // CRITICAL: Set up parent-child relationship
+    service.initializeNodes([parent, child], {
+      expanded: true,
+      parentMapping: {
+        parent: null, // Root node
+        child: 'parent' // Child of parent
+      }
+    });
 
     // Act: Outdent child
-    service.outdentNode('child');
+    await service.outdentNode('child');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -398,7 +363,7 @@ describe('Indent/Outdent Operations', () => {
   });
 
   it('should update sibling chain when indenting', async () => {
-    // Setup: Create three siblings at root level
+    // Setup: Create three siblings
     const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
@@ -429,15 +394,10 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    // Establish hierarchy: All three nodes at root level
-    const hierarchyMap = new Map<string | null, string[]>();
-    hierarchyMap.set(null, ['node-1', 'node-2', 'node-3']); // All at root
-    populateHierarchyCacheForNodes([node1, node2, node3], hierarchyMap);
-
     service.initializeNodes([node1, node2, node3]);
 
     // Act: Indent node-2
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -485,17 +445,18 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    // Establish hierarchy: node1 and node2 at root, child-of-2 is child of node-2
-    // CRITICAL: Populate cache BEFORE initializeNodes (which queries cache for depth calculation)
-    const hierarchyMap = new Map<string | null, string[]>();
-    hierarchyMap.set(null, ['node-1', 'node-2']); // Root nodes
-    hierarchyMap.set('node-2', ['child-of-2']); // child-of-2 is child of node-2
-    populateHierarchyCacheForNodes([node1, node2, child], hierarchyMap);
-
-    service.initializeNodes([node1, node2, child], { expanded: true });
+    // CRITICAL: Set up parent-child relationship
+    service.initializeNodes([node1, node2, child], {
+      expanded: true,
+      parentMapping: {
+        'node-1': null, // Root node
+        'node-2': null, // Root node (sibling of node-1)
+        'child-of-2': 'node-2' // Child of node-2
+      }
+    });
 
     // Act: Indent node-2 (which has children)
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -523,7 +484,7 @@ describe('Indent/Outdent Operations', () => {
       id: 'existing-child',
       nodeType: 'text',
       content: 'Existing Child',
-      beforeSiblingId: null, // First child under node-1
+      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -533,22 +494,24 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
-      beforeSiblingId: 'node-1', // After node-1 at root level
+      beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
       mentions: []
     });
 
-    // Establish hierarchy: node1 and node2 at root, existing-child is child of node-1
-    const hierarchyMap = new Map<string | null, string[]>();
-    hierarchyMap.set(null, ['node-1', 'node-2']); // Root nodes
-    hierarchyMap.set('node-1', ['existing-child']); // existing-child is child of node-1
-    populateHierarchyCacheForNodes([node1, existingChild, node2], hierarchyMap);
-
-    service.initializeNodes([node1, existingChild, node2], { expanded: true });
+    // CRITICAL: Set up parent-child relationship
+    service.initializeNodes([node1, existingChild, node2], {
+      expanded: true,
+      parentMapping: {
+        'node-1': null, // Root node
+        'existing-child': 'node-1', // Child of node-1
+        'node-2': null // Root node (sibling of node-1)
+      }
+    });
 
     // Act: Indent node-2 (should append after existing child)
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -597,12 +560,11 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([node1, node2, node3]);
-    populateHierarchyCacheForNodes([node1, node2, node3]);
 
     // Act: Indent multiple different nodes (not the same node twice)
     // This simulates indenting node-2, then moving cursor to node-3 and indenting it
-    service.indentNode('node-2'); // node-2 becomes child of node-1
-    service.indentNode('node-3'); // node-3 becomes child of node-1 (sibling of node-2, not nested deeper)
+    await service.indentNode('node-2'); // node-2 becomes child of node-1
+    await service.indentNode('node-3'); // node-3 becomes child of node-1 (sibling of node-2, not nested deeper)
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -648,16 +610,10 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([node1, node2, node3], { expanded: true });
-    // Establish hierarchy: node1 at root, node2 child of node1, node3 child of node2
-    const hierarchyMap = new Map<string | null, string[]>();
-    hierarchyMap.set(null, ['node-1']); // node-1 at root
-    hierarchyMap.set('node-1', ['node-2']); // node-2 child of node-1
-    hierarchyMap.set('node-2', ['node-3']); // node-3 child of node-2
-    populateHierarchyCacheForNodes([node1, node2, node3], hierarchyMap);
 
     // Act: Outdent multiple times
-    service.outdentNode('node-3'); // node-3 moves to level 1
-    service.outdentNode('node-3'); // node-3 moves to level 0
+    await service.outdentNode('node-3'); // node-3 moves to level 1
+    await service.outdentNode('node-3'); // node-3 moves to level 0
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -700,14 +656,9 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([parent, child1, child2], { expanded: true });
-    // Establish hierarchy: parent at root, child1 and child2 are children of parent
-    const hierarchyMap = new Map<string | null, string[]>();
-    hierarchyMap.set(null, ['parent']); // parent at root
-    hierarchyMap.set('parent', ['child-1', 'child-2']); // child1 and child2 are children of parent
-    populateHierarchyCacheForNodes([parent, child1, child2], hierarchyMap);
 
     // Act: Outdent first child
-    service.outdentNode('child-1');
+    await service.outdentNode('child-1');
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
@@ -735,17 +686,15 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    // CRITICAL: Populate cache BEFORE initializeNodes (which queries cache for depth calculation)
-    populateHierarchyCacheForNodes([node1, node2]);
     service.initializeNodes([node1, node2]);
 
     const initialCount = hierarchyChangeCount;
 
     // Act: Indent and outdent
-    service.indentNode('node-2');
+    await service.indentNode('node-2');
     const afterIndent = hierarchyChangeCount;
 
-    service.outdentNode('node-2');
+    await service.outdentNode('node-2');
     const afterOutdent = hierarchyChangeCount;
 
     // CRITICAL: Wait for async database writes to complete before checking persistence
@@ -779,10 +728,9 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([codeBlock, textNode]);
-    populateHierarchyCacheForNodes([codeBlock, textNode]);
 
     // Act: Try to indent text node into code-block
-    const result = service.indentNode('text-1');
+    const result = await service.indentNode('text-1');
 
     // Verify: Indent was prevented
     expect(result).toBe(false);
@@ -819,10 +767,9 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([textNode1, textNode2]);
-    populateHierarchyCacheForNodes([textNode1, textNode2]);
 
     // Act: Indent text-2 into text-1
-    const result = service.indentNode('text-2');
+    const result = await service.indentNode('text-2');
 
     // Verify: Indent succeeded
     expect(result).toBe(true);
@@ -854,10 +801,9 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([headerNode, textNode]);
-    populateHierarchyCacheForNodes([headerNode, textNode]);
 
     // Act: Indent text into header
-    const result = service.indentNode('text-1');
+    const result = await service.indentNode('text-1');
 
     // Verify: Indent succeeded
     expect(result).toBe(true);
@@ -889,10 +835,9 @@ describe('Indent/Outdent Operations', () => {
     });
 
     service.initializeNodes([taskNode, textNode]);
-    populateHierarchyCacheForNodes([taskNode, textNode]);
 
     // Act: Indent text into task
-    const result = service.indentNode('text-1');
+    const result = await service.indentNode('text-1');
 
     // Verify: Indent succeeded
     expect(result).toBe(true);
@@ -937,16 +882,18 @@ describe('Indent/Outdent Operations', () => {
       mentions: []
     });
 
-    service.initializeNodes([dateContainer, parent, child], { expanded: true });
-    // Establish hierarchy: dateContainer at root, parent child of dateContainer, child child of parent
-    const hierarchyMap = new Map<string | null, string[]>();
-    hierarchyMap.set(null, ['2025-11-07']); // dateContainer at root
-    hierarchyMap.set('2025-11-07', ['parent']); // parent is child of dateContainer
-    hierarchyMap.set('parent', ['child']); // child is child of parent
-    populateHierarchyCacheForNodes([dateContainer, parent, child], hierarchyMap);
+    // CRITICAL: Set up parent-child relationships
+    service.initializeNodes([dateContainer, parent, child], {
+      expanded: true,
+      parentMapping: {
+        '2025-11-07': null, // Root date container
+        parent: '2025-11-07', // Child of date container
+        child: 'parent' // Child of parent
+      }
+    });
 
     // Act: Outdent child (should move from parent → date container)
-    const result = service.outdentNode('child');
+    const result = await service.outdentNode('child');
 
     // Verify: Outdent succeeded
     expect(result).toBe(true);

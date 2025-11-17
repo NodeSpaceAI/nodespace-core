@@ -404,9 +404,12 @@ describe('Database Persistence Edge Cases', () => {
         beforeSiblingId: null
       };
 
-      // Structural watcher must wait for parent save before updating child
-      // This is the key coordination mechanism being tested
-      await parentSavePromise;
+      // CRITICAL FIX: Wait for parent save to complete before updating child
+      // This simulates the proper coordination that should happen in production
+      const relevantParentPromise = pendingContentSavePromises.get(newParentId);
+      if (relevantParentPromise) {
+        await relevantParentPromise;
+      }
 
       // Now safe to update child
       localSavedNodes.add('child-node'); // Pre-save child node
@@ -540,7 +543,7 @@ describe('Database Persistence Edge Cases', () => {
 
     beforeEach(() => {
       // Simulate actual database (hierarchy managed via backend graph queries)
-      // In this test, we need parentId to simulate CASCADE DELETE behavior
+      // CRITICAL: Must include parentId to simulate CASCADE DELETE behavior
       nodeDatabase = new Map<string, NodeRecord>([
         ['parent1', { id: 'parent1', content: 'Parent 1', beforeSiblingId: null, parentId: null }],
         [

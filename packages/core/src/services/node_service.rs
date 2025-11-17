@@ -551,6 +551,9 @@ where
 
     /// Backfill _schema_version for a node if it doesn't have one (Phase 1 lazy migration)
     ///
+    /// Only backfills version for node types with schema fields (task, person, etc.).
+    /// Node types with empty schemas (text, date, header, etc.) don't need versioning.
+    ///
     /// # Arguments
     ///
     /// * `node` - Mutable reference to the node to backfill
@@ -562,22 +565,30 @@ where
     async fn backfill_schema_version(&self, node: &mut Node) -> Result<(), NodeServiceError> {
         if let Some(props_obj) = node.properties.as_object() {
             if !props_obj.contains_key("_schema_version") {
-                // Node doesn't have schema version - backfill it
-                let version =
-                    if let Some(schema) = self.get_schema_for_type(&node.node_type).await? {
-                        schema.get("version").and_then(|v| v.as_i64()).unwrap_or(1)
-                    } else {
-                        1 // Default to version 1 if no schema found
-                    };
+                // Check if node type has a schema with fields
+                if let Some(schema) = self.get_schema_for_type(&node.node_type).await? {
+                    // Only backfill if schema has fields (not empty schema)
+                    if let Some(fields) = schema.get("fields").and_then(|f| f.as_array()) {
+                        if !fields.is_empty() {
+                            // Schema has fields - backfill version for migration tracking
+                            let version =
+                                schema.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
 
-                // Add version to node properties IN-MEMORY ONLY
-                // Don't persist to database - this prevents overwriting freshly created spoke records
-                // Issue #511: After node type conversion, the spoke record has status+_schema_version
-                // Backfill would MERGE just _schema_version, but the spoke already has it
-                // Persisting backfill is unnecessary and risks race conditions
-                if let Some(props_obj) = node.properties.as_object_mut() {
-                    props_obj.insert("_schema_version".to_string(), serde_json::json!(version));
+                            // Add version to node properties IN-MEMORY ONLY
+                            // Don't persist to database - this prevents overwriting freshly created spoke records
+                            // Issue #511: After node type conversion, the spoke record has status+_schema_version
+                            // Backfill would MERGE just _schema_version, but the spoke already has it
+                            // Persisting backfill is unnecessary and risks race conditions
+                            if let Some(props_obj) = node.properties.as_object_mut() {
+                                props_obj.insert(
+                                    "_schema_version".to_string(),
+                                    serde_json::json!(version),
+                                );
+                            }
+                        }
+                    }
                 }
+                // If no schema or empty schema, don't add version - it's not needed
             }
         }
         Ok(())
@@ -656,6 +667,11 @@ where
         // Step 1.5: Apply schema defaults and validate
         // Apply default values for missing fields before validation
         // Skip for schema nodes to avoid circular dependency
+        //
+        // NOTE: We ONLY apply schema defaults, NOT behavior defaults.
+        // Behavior defaults (markdown_enabled, auto_save, etc.) are UI preferences
+        // that should be handled client-side, not stored in database properties.
+        // The properties field is for user data and schema-defined fields only.
         if node.node_type != "schema" {
             // Fetch schema once and reuse it for both operations
             if let Some(schema_json) = self.get_schema_for_type(&node.node_type).await? {
@@ -663,62 +679,45 @@ where
                 if let Ok(schema) =
                     serde_json::from_value::<crate::models::SchemaDefinition>(schema_json.clone())
                 {
-                    // Apply defaults
+                    // Apply defaults from schema fields only
                     self.apply_schema_defaults_with_schema(&mut node, &schema)?;
 
                     // Validate with the same schema
                     self.validate_node_with_schema(&node, &schema)?;
                 }
-            } else {
-                // No schema found - apply behavior defaults as fallback
-                // This ensures built-in node types get their default properties
-                // even when schemas haven't been initialized yet
-                if let Some(behavior) = self.behaviors.get(&node.node_type) {
-                    let defaults = behavior.default_metadata();
-                    if !defaults.is_null() && defaults.is_object() {
-                        // Ensure properties is an object
-                        if !node.properties.is_object() {
-                            node.properties = serde_json::json!({});
-                        }
-
-                        // Merge defaults into node properties (don't override existing values)
-                        let defaults_obj = defaults.as_object().unwrap();
-                        let props_obj = node.properties.as_object_mut().unwrap();
-
-                        for (key, value) in defaults_obj {
-                            if !props_obj.contains_key(key) {
-                                props_obj.insert(key.clone(), value.clone());
-                            }
-                        }
-                    }
-                }
             }
+            // If no schema exists, that's fine - just don't add any defaults
+            // Properties should contain only what the user explicitly provided
         }
 
         // NOTE: Parent/container validation removed - now handled by NodeOperations layer
         // The graph-native architecture uses edges for hierarchy, not fields on Node struct
 
-        // Add schema version to properties
-        // Get schema for this node type and extract version
+        // Add schema version to properties ONLY if schema has fields
+        // For empty schemas (text, date, header, etc.), don't pollute properties with version
+        // Schema versioning is only needed for types with schema-defined fields (task, person, etc.)
         let mut properties = node.properties.clone();
         if let Some(schema) = self.get_schema_for_type(&node.node_type).await? {
-            if let Some(version) = schema.get("version").and_then(|v| v.as_i64()) {
-                // Add _schema_version to properties
-                if let Some(props_obj) = properties.as_object_mut() {
-                    props_obj.insert("_schema_version".to_string(), serde_json::json!(version));
+            // Check if schema has any fields
+            if let Some(fields) = schema.get("fields").and_then(|f| f.as_array()) {
+                if !fields.is_empty() {
+                    // Schema has fields - add version for migration tracking
+                    if let Some(version) = schema.get("version").and_then(|v| v.as_i64()) {
+                        if let Some(props_obj) = properties.as_object_mut() {
+                            props_obj
+                                .insert("_schema_version".to_string(), serde_json::json!(version));
+                        }
+                    }
                 }
             }
-        } else {
-            // No schema found - use version 1 as default
-            if let Some(props_obj) = properties.as_object_mut() {
-                props_obj.insert("_schema_version".to_string(), serde_json::json!(1));
-            }
         }
+        // Note: No else clause - if no schema or empty schema, don't add version
+        // The backfill_schema_version function will add it on read if needed
 
         let _properties_json = serde_json::to_string(&properties)
             .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
 
-        // Update node with schema-versioned properties
+        // Update node with properties (only versioned if schema has fields)
         node.properties = properties;
 
         // NOTE: container_node_id filtering removed - hierarchy now managed via edges

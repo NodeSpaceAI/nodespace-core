@@ -34,7 +34,7 @@ import type { NodeSpaceEvent } from '$lib/services/event-types';
  * @param idOrOptions - Node ID (string) or options object (Partial<Node>)
  * @param content - Node content (when using positional parameters)
  * @param nodeType - Optional node type (when using positional parameters)
- * @param parentId - Optional parent ID (when using positional parameters)
+ * @param parentId - Parent node ID to set containerNodeId (when using positional parameters)
  * @param additionalProps - Additional properties to override (when using positional parameters)
  * @returns Complete Node object
  *
@@ -53,7 +53,7 @@ export function createTestNode(
   idOrOptions?: string | Partial<Node>,
   content?: string,
   nodeType?: string,
-  _parentId?: string | null, // Legacy parameter - ignored (hierarchy via backend)
+  parentId?: string | null, // Parent node ID - sets containerNodeId for hierarchy
   additionalProps?: Partial<Node>
 ): Node {
   // Handle object-based call (preferred)
@@ -67,6 +67,7 @@ export function createTestNode(
       nodeType: options.nodeType || 'text',
       content: options.content ?? 'Test content',
       beforeSiblingId: options.beforeSiblingId ?? null,
+      containerNodeId: options.containerNodeId ?? null,
       createdAt: options.createdAt || now,
       modifiedAt: options.modifiedAt || now,
       version: options.version ?? 1,
@@ -86,6 +87,7 @@ export function createTestNode(
     nodeType: nodeType || 'text',
     content: content ?? 'Test content',
     beforeSiblingId: null,
+    containerNodeId: parentId ?? null, // Use parentId parameter for hierarchy
     createdAt: now,
     modifiedAt: now,
     version: 1,

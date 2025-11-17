@@ -1,15 +1,19 @@
 /**
- * HttpAdapter SurrealDB Integration Tests
+ * HttpAdapter Dev-Proxy Integration Tests
  *
- * **SKIPPED**: These tests are temporarily disabled pending HTTP API updates for graph-native architecture.
- * See Issue #505 for implementation of HTTP endpoints using the operations layer.
- *
- * Tests the HttpAdapter implementation using SurrealDB HTTP API.
+ * Tests the HttpAdapter implementation using the dev-proxy REST API.
  * Verifies all CRUD operations, query functionality, version control,
- * and SurrealQL query generation work correctly with a live SurrealDB server.
+ * and business logic integration work correctly.
  *
- * Part of Issue #490: Simplify Browser Dev Mode with SurrealDB
- * Related: Issue #524 (Graph-native hierarchy test updates), Issue #505 (HTTP API implementation)
+ * Part of Issue #505: Fix HttpAdapter SurrealDB integration tests
+ * (Updated from Issue #490 after PR #501 introduced dev-proxy architecture)
+ *
+ * ## Architecture (Post PR #501)
+ *
+ * Frontend → HTTP (port 3001) → dev-proxy → NodeService → SurrealStore → SurrealDB (port 8000)
+ *
+ * These tests verify the HttpAdapter correctly communicates with the dev-proxy REST API,
+ * which provides all Rust business logic (NodeService, SchemaService, behaviors, etc.).
  *
  * ## Test Coverage
  *
@@ -18,13 +22,18 @@
  * - Mention autocomplete
  * - Optimistic concurrency control (version conflicts)
  * - Schema operations (getSchema, addField, removeField, etc.)
- * - SurrealQL escaping and injection prevention
  * - Field name mapping (snake_case ↔ camelCase)
  *
  * ## Prerequisites
  *
- * Tests require SurrealDB server running on localhost:8000.
- * Start server with: `bun run dev:db`
+ * Tests require dev-proxy server running on localhost:3001.
+ * The dev-proxy automatically connects to SurrealDB on port 8000.
+ *
+ * Start servers with:
+ * 1. `bun run dev:db` (starts SurrealDB on port 8000)
+ * 2. `cargo build --bin dev-proxy && cargo run --bin dev-proxy` (starts dev-proxy on port 3001)
+ *
+ * Or use the combined command: `bun run dev:browser` (starts both)
  *
  * ## Test Execution Requirements
  *
@@ -39,9 +48,11 @@
  *
  * ## Skip Conditions
  *
- * Tests are automatically skipped if:
- * - SurrealDB server is not reachable
- * - TEST_USE_DATABASE environment variable is not set
+ * Tests are automatically skipped if dev-proxy server is not reachable on port 3001.
+ *
+ * Note: These tests use the database (not in-memory mode), so they require:
+ * 1. SurrealDB running on port 8000 (via `bun run dev:db`)
+ * 2. dev-proxy running on port 3001 (via `cargo run --bin dev-proxy`)
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
@@ -49,14 +60,12 @@ import { HttpAdapter } from '$lib/services/backend-adapter';
 import { TestNodeBuilder } from '../utils/test-node-builder';
 
 /**
- * Check if SurrealDB server is available
- * @returns True if server is reachable on localhost:8000
- * Note: Currently unused as tests are skipped pending issue #505
+ * Check if dev-proxy server is available
+ * @returns True if server is reachable on localhost:3001
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-async function isSurrealDBAvailable(): Promise<boolean> {
+async function isDevProxyAvailable(): Promise<boolean> {
   try {
-    const response = await globalThis.fetch('http://localhost:8000/health', {
+    const response = await globalThis.fetch('http://localhost:3001/health', {
       method: 'GET',
       signal: AbortSignal.timeout(1000) // 1 second timeout
     });
@@ -81,9 +90,11 @@ async function initializeDatabase(): Promise<void> {
       body: `
         DEFINE NAMESPACE nodespace;
         USE NS nodespace;
-        DEFINE DATABASE nodes;
-        USE DB nodes;
-        DEFINE TABLE nodes SCHEMALESS;
+        DEFINE DATABASE nodespace;
+        USE DB nodespace;
+        DEFINE TABLE node SCHEMALESS;
+        DEFINE TABLE mentions SCHEMALESS TYPE RELATION;
+        DEFINE TABLE has_child SCHEMALESS TYPE RELATION;
       `
     });
 
@@ -107,7 +118,7 @@ async function cleanDatabase(): Promise<void> {
         Accept: 'application/json',
         Authorization: 'Basic ' + globalThis.btoa('root:root')
       },
-      body: 'USE NS nodespace; USE DB nodes; DELETE nodes;'
+      body: 'USE NS nodespace; USE DB nodespace; DELETE node; DELETE mentions; DELETE has_child;'
     });
 
     if (!response.ok) {
@@ -118,14 +129,12 @@ async function cleanDatabase(): Promise<void> {
   }
 }
 
-// TODO (Issue #505): Update HTTP API for graph-native architecture
-// These tests will be re-enabled once backend routes use operations layer
-describe.skip('HttpAdapter with SurrealDB', () => {
+describe.skipIf(!(await isDevProxyAvailable()))('HttpAdapter with Dev-Proxy', () => {
   let adapter: HttpAdapter;
 
   beforeAll(async () => {
-    adapter = new HttpAdapter('http://localhost:8000');
-    console.log('[Test] Using SurrealDB HTTP adapter on port 8000');
+    adapter = new HttpAdapter('http://localhost:3001');
+    console.log('[Test] Using dev-proxy HTTP adapter on port 3001');
 
     // Initialize namespace, database, and table
     await initializeDatabase();
@@ -306,6 +315,9 @@ describe.skip('HttpAdapter with SurrealDB', () => {
       await adapter.createNode(parentData);
       await adapter.createNode(childData);
 
+      // Establish parent-child relationship via graph edge
+      await adapter.setParent('test-child', 'test-parent');
+
       // Get children
       const children = await adapter.getChildren('test-parent');
 
@@ -359,8 +371,11 @@ describe.skip('HttpAdapter with SurrealDB', () => {
       await adapter.createNode(parent2Data);
       await adapter.createNode(childData);
 
+      // Establish initial parent relationship
+      await adapter.setParent('test-moveable-child', 'test-parent-1');
+
       // Move child to parent 2
-      await adapter.updateNode('test-moveable-child', 1, {});
+      await adapter.setParent('test-moveable-child', 'test-parent-2');
 
       // Verify new parent
       const child = await adapter.getNode('test-moveable-child');
@@ -389,8 +404,12 @@ describe.skip('HttpAdapter with SurrealDB', () => {
       await adapter.createNode(child1Data);
       await adapter.createNode(child2Data);
 
-      // Query by parent
-      const results = await adapter.queryNodes({});
+      // Establish parent relationships
+      await adapter.setParent('test-query-child-1', 'test-query-parent');
+      await adapter.setParent('test-query-child-2', 'test-query-parent');
+
+      // Query by parent (use getChildren instead of queryNodes - NodeFilter doesn't support parent_id)
+      const results = await adapter.getChildren('test-query-parent');
 
       expect(results).toHaveLength(2);
       expect(results.map((n) => n.id).sort()).toEqual(['test-query-child-1', 'test-query-child-2']);
@@ -404,7 +423,9 @@ describe.skip('HttpAdapter with SurrealDB', () => {
       await adapter.createNode(root1Data);
       await adapter.createNode(root2Data);
 
-      // Query root nodes
+      // Query all nodes (root nodes are those without parents)
+      // Note: queryNodes({}) returns ALL nodes, not just roots
+      // Backend doesn't support filtering by parent_id in NodeFilter
       const results = await adapter.queryNodes({});
 
       expect(results.length).toBeGreaterThanOrEqual(2);
@@ -423,20 +444,18 @@ describe.skip('HttpAdapter with SurrealDB', () => {
       await adapter.createNode(node1Data);
       await adapter.createNode(node2Data);
 
-      // Query by container
-      const results = await adapter.queryNodes({
-        containerId: 'test-container'
-      });
+      // Establish container relationships (nodes inside container)
+      await adapter.setParent('test-contained-1', 'test-container');
+      await adapter.setParent('test-contained-2', 'test-container');
+
+      // Query by container (use getNodesByContainerId - queryNodes doesn't support containerId filter)
+      const results = await adapter.getNodesByContainerId('test-container');
 
       expect(results).toHaveLength(2);
       expect(results.map((n) => n.id).sort()).toEqual(['test-contained-1', 'test-contained-2']);
     });
 
     it('should query nodes by both parentId and containerId', async () => {
-      const parentData = TestNodeBuilder.text('Combined parent')
-        .withId('test-combined-parent')
-        .build();
-
       const containerData = TestNodeBuilder.text('Combined container')
         .withId('test-combined-container')
         .build();
@@ -445,15 +464,16 @@ describe.skip('HttpAdapter with SurrealDB', () => {
 
       const noMatchData = TestNodeBuilder.text('No match').withId('test-no-match').build();
 
-      await adapter.createNode(parentData);
       await adapter.createNode(containerData);
       await adapter.createNode(matchData);
       await adapter.createNode(noMatchData);
 
-      // Query with both filters
-      const results = await adapter.queryNodes({
-        containerId: 'test-combined-container'
-      });
+      // Establish container relationship
+      await adapter.setParent('test-match-both', 'test-combined-container');
+      // test-no-match has no parent
+
+      // Query by container (getNodesByContainerId uses getChildren internally)
+      const results = await adapter.getNodesByContainerId('test-combined-container');
 
       expect(results).toHaveLength(1);
       expect(results[0].id).toBe('test-match-both');
@@ -469,6 +489,10 @@ describe.skip('HttpAdapter with SurrealDB', () => {
       await adapter.createNode(containerData);
       await adapter.createNode(node1Data);
       await adapter.createNode(node2Data);
+
+      // Establish container relationships
+      await adapter.setParent('test-get-node-1', 'test-get-container');
+      await adapter.setParent('test-get-node-2', 'test-get-container');
 
       const results = await adapter.getNodesByContainerId('test-get-container');
 
@@ -771,23 +795,12 @@ Special: !@#$%^&*()`;
   });
 
   describe('Error Handling', () => {
-    it('should throw error for invalid SurrealQL syntax', async () => {
-      // Access private method for testing
-      const invalidQuery = 'INVALID SQL SYNTAX HERE';
-
-      await expect(
-        (adapter as unknown as { surrealQuery: (sql: string) => Promise<unknown> }).surrealQuery(
-          invalidQuery
-        )
-      ).rejects.toThrow();
-    });
-
     it('should throw error on update with non-existent node', async () => {
       await expect(
         adapter.updateNode('non-existent-node', 1, {
           content: 'Update'
         })
-      ).rejects.toThrow(/Version conflict/);
+      ).rejects.toThrow(/HTTP 404.*not found/i);
     });
 
     it('should handle malformed node IDs gracefully', async () => {

@@ -104,13 +104,21 @@ type ApiSchemaResult = Result<Json<SchemaFieldResult>, (StatusCode, Json<ApiErro
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateNodeRequest {
-    /// Expected version for optimistic concurrency control
-    /// Note: Currently not used - NodeService handles OCC internally
+    /// Expected version for optimistic concurrency control (currently unused - TODO)
     #[allow(dead_code)]
     pub version: i64,
     /// Fields to update
     #[serde(flatten)]
     pub update: NodeUpdate,
+}
+
+/// Delete node request with OCC version
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteNodeRequest {
+    /// Expected version for optimistic concurrency control (currently unused - TODO)
+    #[allow(dead_code)]
+    pub version: i64,
 }
 
 /// Mention creation/deletion request
@@ -119,6 +127,14 @@ struct UpdateNodeRequest {
 struct MentionRequest {
     pub source_id: String,
     pub target_id: String,
+}
+
+/// Mention autocomplete request
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MentionAutocompleteRequest {
+    pub query: String,
+    pub limit: Option<i64>,
 }
 
 /// Add schema field request
@@ -252,7 +268,8 @@ struct CreateNodeRequest {
     // Hierarchy is now managed via graph edges
     pub before_sibling_id: Option<String>,
     pub properties: serde_json::Value,
-    pub embedding_vector: Option<Vec<u8>>,
+    // Frontend sends f32 array via JSON, convert to Vec<u8> blob for Node model
+    pub embedding_vector: Option<Vec<f32>>,
     pub mentions: Vec<String>,
 }
 
@@ -320,6 +337,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/nodes/:id", get(get_node))
         .route("/api/nodes/:id", patch(update_node))
         .route("/api/nodes/:id", delete(delete_node))
+        // Hierarchy endpoints
+        .route("/api/nodes/:id/parent", post(set_parent))
         // Query endpoints
         .route("/api/nodes/:id/children", get(get_children))
         .route("/api/query", post(query_nodes))
@@ -330,6 +349,7 @@ async fn main() -> anyhow::Result<()> {
         // Mention endpoints
         .route("/api/mentions", post(create_mention))
         .route("/api/mentions", delete(delete_mention))
+        .route("/api/mentions/autocomplete", post(mention_autocomplete))
         .route(
             "/api/nodes/:id/mentions/outgoing",
             get(get_outgoing_mentions),
@@ -404,6 +424,8 @@ async fn create_node(
     // Hierarchy is now managed via graph edges
     tracing::debug!("create_node request: node_type={:?}", req.node_type);
 
+    // Keep embedding_vector as f32 array (no conversion needed)
+    // Node model now stores Vec<f32> for JSON API compatibility
     let now = Utc::now();
     let node = Node {
         id: req.id.unwrap_or_else(|| Uuid::new_v4().to_string()),
@@ -450,22 +472,110 @@ async fn update_node(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(request): Json<UpdateNodeRequest>,
-) -> ApiStatusResult {
-    // NodeService.update_node doesn't take version - it handles OCC internally
-    // The version in the request is ignored for now
-    state
+) -> ApiResult<Node> {
+    // Use optimistic concurrency control via version check
+    let rows_affected = state
         .node_service
-        .update_node(&id, request.update)
+        .update_with_version_check(&id, request.version, request.update)
         .await
         .map_err(map_node_service_error)?;
 
-    Ok(StatusCode::NO_CONTENT) // 204 No Content (success)
+    // Check if update succeeded (version matched)
+    if rows_affected == 0 {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ApiError::new(
+                "VERSION_CONFLICT",
+                format!(
+                    "Version conflict: node {} has been modified by another client",
+                    id
+                ),
+            )),
+        ));
+    }
+
+    // Retrieve and return the updated node
+    // This includes all business logic (populate_mentions, backfill_schema_version, etc.)
+    let updated_node = state
+        .node_service
+        .get_node(&id)
+        .await
+        .map_err(map_node_service_error)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError::new(
+                    "RESOURCE_NOT_FOUND",
+                    format!("Node {} not found after update", id),
+                )),
+            )
+        })?;
+
+    Ok(Json(updated_node))
 }
 
-async fn delete_node(State(state): State<AppState>, Path(id): Path<String>) -> ApiStatusResult {
+async fn delete_node(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<DeleteNodeRequest>,
+) -> ApiStatusResult {
+    // Use optimistic concurrency control via version check
+    let rows_affected = state
+        .node_service
+        .delete_with_version_check(&id, request.version)
+        .await
+        .map_err(map_node_service_error)?;
+
+    // Check if delete succeeded (version matched and node existed)
+    if rows_affected == 0 {
+        // Check if node exists to distinguish between version conflict and not found
+        match state.node_service.get_node(&id).await {
+            Ok(Some(_)) => {
+                // Node exists but version didn't match - conflict
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(ApiError::new(
+                        "VERSION_CONFLICT",
+                        format!(
+                            "Version conflict: node {} has been modified by another client",
+                            id
+                        ),
+                    )),
+                ));
+            }
+            Ok(None) => {
+                // Node doesn't exist - already deleted or never existed
+                // Idempotent DELETE: return success (204) instead of 404
+                // This follows RESTful best practices - DELETE should succeed
+                // even if the resource is already gone
+                return Ok(StatusCode::NO_CONTENT);
+            }
+            Err(e) => {
+                // Database error
+                return Err(map_node_service_error(e));
+            }
+        }
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Set parent request
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetParentRequest {
+    /// New parent ID (null to make node a root)
+    pub parent_id: Option<String>,
+}
+
+async fn set_parent(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    Json(request): Json<SetParentRequest>,
+) -> ApiStatusResult {
     state
         .node_service
-        .delete_node(&id)
+        .move_node(&node_id, request.parent_id.as_deref())
         .await
         .map_err(map_node_service_error)?;
 
@@ -537,6 +647,30 @@ async fn delete_mention(
         .map_err(map_node_service_error)?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn mention_autocomplete(
+    State(state): State<AppState>,
+    Json(request): Json<MentionAutocompleteRequest>,
+) -> ApiResult<Vec<Node>> {
+    // Use NodeService to search nodes by content
+    // Case-insensitive search is handled by SurrealStore using string::lowercase()
+    let nodes = state
+        .node_service
+        .store()
+        .search_nodes_by_content(&request.query, request.limit)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new(
+                    "SEARCH_ERROR",
+                    format!("Search failed: {}", e),
+                )),
+            )
+        })?;
+
+    Ok(Json(nodes))
 }
 
 async fn get_outgoing_mentions(

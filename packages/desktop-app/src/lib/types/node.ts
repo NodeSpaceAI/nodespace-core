@@ -34,6 +34,13 @@ export interface Node {
   /** Sibling ordering reference (single-pointer linked list) */
   beforeSiblingId: string | null;
 
+  /**
+   * Parent container node ID (graph edge relationship)
+   * Managed via graph edges in backend, cached in frontend for performance
+   * null = root-level node (no parent)
+   */
+  containerNodeId?: string | null;
+
   /** Creation timestamp (ISO 8601) - backend sets this */
   createdAt: string;
 

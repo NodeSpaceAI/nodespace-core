@@ -56,6 +56,28 @@ export class ConflictResolver {
     // Calculate what fields changed
     const changedFields = Object.keys(yourChanges);
 
+    // Check version gap first - if too large, require manual resolution regardless of changes
+    const versionGap = currentNode.version - expectedVersion;
+    if (versionGap > 1) {
+      return {
+        autoMerged: false,
+        strategy: 'user-choice-required',
+        explanation: `Cannot auto-merge: Version gap too large (expected v${expectedVersion}, current v${currentNode.version}). ${versionGap} updates occurred.`
+      };
+    }
+
+    // Handle empty changes (e.g., structural-only updates with no field changes)
+    // This can happen when coordinating saves/updates with defaults
+    // Only safe to auto-merge if version gap is small (checked above)
+    if (changedFields.length === 0) {
+      return {
+        autoMerged: true,
+        mergedNode: { ...currentNode, version: currentNode.version },
+        strategy: 'auto-merged',
+        explanation: 'Auto-merged: No conflicting changes (empty update with structural defaults)'
+      };
+    }
+
     // Strategy 1: Non-overlapping changes (safest auto-merge)
     // Example: You changed properties, they changed content
     if (!this.hasOverlappingChanges(yourChanges, currentNode, expectedVersion)) {
@@ -134,31 +156,28 @@ export class ConflictResolver {
    * This is a conservative check - if we can't determine what changed,
    * we assume overlap (safe default).
    *
+   * Note: Version gap check is handled in tryAutoMerge before calling this method.
+   *
    * @param yourChanges - Fields you're trying to change
-   * @param currentNode - Current node state
-   * @param expectedVersion - Version you expected
+   * @param currentNode - Current node state (unused here, kept for API compatibility)
+   * @param expectedVersion - Version you expected (unused here, kept for API compatibility)
    * @returns True if changes likely overlap
    */
   private static hasOverlappingChanges(
     yourChanges: Partial<Node>,
-    currentNode: Node,
-    expectedVersion: number
+    _currentNode: Node,
+    _expectedVersion: number
   ): boolean {
-    // If version difference > 1, multiple updates happened
-    // Too risky to auto-merge without knowing full history
-    const versionGap = currentNode.version - expectedVersion;
-    if (versionGap > 1) {
-      return true; // Assume overlap for safety
-    }
+    // Version gap is checked in tryAutoMerge before calling this method
+    // This method only checks field-level overlap
 
-    // For single version gap, check if same fields would be modified
+    // Check if same fields would be modified
     // This is heuristic-based since we don't have full history
     const changedFields = new Set(Object.keys(yourChanges));
 
-    // Empty changes with version gap = 1 don't overlap (safe to auto-merge)
-    // IMPORTANT: Only skip conflict if version gap is exactly 1
-    if (changedFields.size === 0 && versionGap === 1) {
-      return false; // Safe: no changes and only one version behind
+    // Empty changes don't overlap (safe to auto-merge)
+    if (changedFields.size === 0) {
+      return false; // Safe: no changes means no overlap
     }
 
     // Content changes are most likely to overlap

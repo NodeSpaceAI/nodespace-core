@@ -32,13 +32,10 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
 import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
-import { HierarchyService } from '$lib/services/hierarchy-service';
 import { createTestNode } from '../helpers';
 
 describe('Node Ordering Integration Tests', () => {
   let nodeService: ReturnType<typeof createReactiveNodeService>;
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  let hierarchyService: HierarchyService;
 
   const mockEvents = {
     focusRequested: () => {},
@@ -54,30 +51,54 @@ describe('Node Ordering Integration Tests', () => {
     // gracefully handle database errors (they're caught and ignored in test mode)
     PersistenceCoordinator.getInstance().enableTestMode();
     nodeService = createReactiveNodeService(mockEvents);
-    hierarchyService = new HierarchyService(nodeService);
   });
 
   // Helper to get sorted nodes by traversing beforeSiblingId linked list
-  // Returns only DIRECT children, not all descendants
   function getSortedChildren(parentId: string | null): string[] {
-    // Get children from shared node store (handles null -> '__root__' conversion)
-    const childNodes = sharedNodeStore.getNodesForParent(parentId);
-    const childIds = childNodes.map(n => n.id);
+    const nodes = nodeService.nodes;
 
-    if (childIds.length > 0) {
-      // Sort the children by beforeSiblingId to get correct visual order
-      return nodeService.visibleNodes(parentId)
-        .filter(n => childIds.includes(n.id))
-        .map(n => n.id);
+    // CRITICAL: Filter nodes to only those with matching containerNodeId
+    // This ensures we only return children of the specified parent
+    const childNodes = Array.from(nodes.values()).filter((n) => {
+      const nodeParentId = n.containerNodeId || null;
+      return nodeParentId === parentId;
+    });
+
+    const nodeIds = childNodes.map((n) => n.id);
+
+    if (nodeIds.length === 0) return [];
+
+    // Find first node (no beforeSiblingId or beforeSiblingId not in node set)
+    const firstNode = nodeIds.find((id) => {
+      const node = nodes.get(id);
+      return !node?.beforeSiblingId || !nodeIds.includes(node.beforeSiblingId);
+    });
+
+    if (!firstNode) return nodeIds; // Fallback
+
+    // Traverse linked list
+    const sorted: string[] = [];
+    const visited = new Set<string>();
+    let currentId: string | undefined = firstNode;
+
+    while (currentId && visited.size < nodeIds.length) {
+      if (visited.has(currentId)) break; // Circular ref
+      visited.add(currentId);
+      sorted.push(currentId);
+
+      // Find next (node whose beforeSiblingId points to current)
+      const nextNode = Array.from(nodes.values()).find(
+        (n) => n.beforeSiblingId === currentId && nodeIds.includes(n.id)
+      );
+      currentId = nextNode?.id;
     }
 
-    // Fallback: for when cache is empty, get direct children from visibleNodes
-    // and filter to only the target depth
-    const visible = nodeService.visibleNodes(parentId);
-    const targetDepth = parentId === null ? 0 : (nodeService.getUIState(parentId)?.depth ?? 0) + 1;
-    return visible
-      .filter(n => (nodeService.getUIState(n.id)?.depth ?? 0) === targetDepth)
-      .map(n => n.id);
+    // Append any orphaned nodes
+    for (const id of nodeIds) {
+      if (!visited.has(id)) sorted.push(id);
+    }
+
+    return sorted;
   }
 
   describe('insertAtBeginning=true Visual Order', () => {
@@ -93,9 +114,6 @@ describe('Node Ordering Integration Tests', () => {
         expanded: true,
         autoFocus: false
       });
-
-      // Populate hierarchy cache (both nodes are root-level)
-      sharedNodeStore.updateChildrenCache(null, ['node1', 'node2']);
 
       // Create node above node2 (insertAtBeginning=true)
       const newNodeId = nodeService.createNode('node2', '', 'text', undefined, true);
@@ -120,9 +138,6 @@ describe('Node Ordering Integration Tests', () => {
         autoFocus: false
       });
 
-      // Populate hierarchy cache (single root-level node)
-      sharedNodeStore.updateChildrenCache(null, ['root']);
-
       // Create multiple nodes before the previous new node (simulating realistic Enter key presses)
       // Real UX: Press Enter at |root → cursor moves to new node → press Enter again at new node
       const node1 = nodeService.createNode('root', 'Node 1', 'text', undefined, true);
@@ -141,9 +156,6 @@ describe('Node Ordering Integration Tests', () => {
         expanded: true,
         autoFocus: false
       });
-
-      // Populate hierarchy cache (single root-level node)
-      sharedNodeStore.updateChildrenCache(null, ['header']);
 
       // Create empty node above header (simulating Enter at |# My Header)
       const newNodeId = nodeService.createNode('header', '', 'text', 1, true);
@@ -164,9 +176,6 @@ describe('Node Ordering Integration Tests', () => {
           autoFocus: false
         }
       );
-
-      // Populate hierarchy cache (both nodes are root-level)
-      sharedNodeStore.updateChildrenCache(null, ['node1', 'node2']);
 
       // Create node after node1 (normal split, insertAtBeginning=false)
       const newNodeId = nodeService.createNode('node1', 'New content', 'text', undefined, false);
@@ -196,10 +205,6 @@ describe('Node Ordering Integration Tests', () => {
         autoFocus: false
       });
 
-      // Populate hierarchy cache
-      sharedNodeStore.updateChildrenCache(null, ['parent']); // parent is root
-      sharedNodeStore.updateChildrenCache('parent', ['child1', 'child2']); // children of parent
-
       // Get children of parent node via linked list
       const children = getSortedChildren('parent');
 
@@ -215,10 +220,6 @@ describe('Node Ordering Integration Tests', () => {
         expanded: true,
         autoFocus: false
       });
-
-      // Populate hierarchy cache
-      sharedNodeStore.updateChildrenCache(null, ['parent']); // parent is root
-      sharedNodeStore.updateChildrenCache('parent', ['child1']); // child1 is child of parent
 
       // Create new child node at the beginning (before child1)
       const newChildId = nodeService.createNode('child1', '', 'text', undefined, true);
@@ -244,11 +245,6 @@ describe('Node Ordering Integration Tests', () => {
         autoFocus: false
       });
 
-      // Populate hierarchy cache for 3-level hierarchy
-      sharedNodeStore.updateChildrenCache(null, ['root']); // root at top level
-      sharedNodeStore.updateChildrenCache('root', ['child']); // child is child of root
-      sharedNodeStore.updateChildrenCache('child', ['gc1', 'gc2']); // grandchildren
-
       // Verify children are in correct order at each level
       const rootChildren = getSortedChildren(null);
       const childChildren = getSortedChildren('child');
@@ -267,9 +263,6 @@ describe('Node Ordering Integration Tests', () => {
         expanded: true,
         autoFocus: false
       });
-
-      // Populate hierarchy cache (single root-level node)
-      sharedNodeStore.updateChildrenCache(null, ['node1']);
 
       // Normal split (after)
       const node2 = nodeService.createNode('node1', 'Node 2', 'text', undefined, false);
@@ -300,9 +293,6 @@ describe('Node Ordering Integration Tests', () => {
         autoFocus: false
       });
 
-      // Populate hierarchy cache (all nodes are root-level)
-      sharedNodeStore.updateChildrenCache(null, ['node1', 'node2', 'orphan']);
-
       const rootOrder = getSortedChildren(null);
 
       // Orphaned node should still appear (appended to end)
@@ -324,8 +314,6 @@ describe('Node Ordering Integration Tests', () => {
           expanded: true,
           autoFocus: false
         });
-        // Populate hierarchy cache (both nodes are root-level)
-        sharedNodeStore.updateChildrenCache(null, ['node1', 'node2']);
         const rootOrder = getSortedChildren(null);
         // Should still return nodes, just may not be in perfect order
         expect(rootOrder.length).toBeGreaterThan(0);
