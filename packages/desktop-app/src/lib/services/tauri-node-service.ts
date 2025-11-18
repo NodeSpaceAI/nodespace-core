@@ -270,12 +270,14 @@ export class TauriNodeService {
       }
 
       // Fall back to generic query for other query types (still uses universalInvoke)
-      // TODO: Migrate remaining queries to adapter pattern
+      // TODO: Migrate remaining queries to adapter pattern (Phase 2/3)
       const nodes = await universalInvoke<Node[]>('query_nodes_simple', { query });
       return nodes;
     } catch (error) {
       const err = toError(error);
-      console.error('[TauriNodeService] Failed to query nodes:', query, err);
+      // Suppress errors silently - these are expected in HTTP mode (e.g., queryNodes with mentionedBy)
+      // Callers (like MentionSyncService) handle errors gracefully without user-facing impact
+      // Don't log here - let specific services decide whether to log/suppress based on context
       throw new NodeOperationError(err.message, JSON.stringify(query), 'queryNodes');
     }
   }

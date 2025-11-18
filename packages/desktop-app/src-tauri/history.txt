@@ -3,3 +3,7 @@ SELECT * FROM schema LIMIT 5;
 SELECT * FROM schema WHERE id CONTAINS 'date';
 SELECT * FROM schema;
 SELECT * FROM schema:date;
+SELECT * FROM has_child;
+SELECT id, content, before_sibling_id FROM node WHERE type = 'text' ORDER BY content;
+SELECT * FROM has_child;
+SELECT id, content, before_sibling_id FROM node WHERE type = 'text' ORDER BY content;

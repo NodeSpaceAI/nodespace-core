@@ -371,11 +371,16 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const afterUIState = _uiState[afterNodeId] || createDefaultUIState(afterNodeId);
     const newDepth = afterUIState.depth;
 
-    // Determine parent from parameter or use backend query
+    // Determine parent from parameter or use afterNode's parentId directly
+    // CRITICAL FIX: Don't rely on broken parentsCache - use the node's own parentId field
     let newParentId: string | null;
     if (parentId !== undefined) {
       newParentId = parentId;
+    } else if (afterNode.parentId !== undefined) {
+      // Use afterNode's parentId directly - this is the authoritative source
+      newParentId = afterNode.parentId ?? null;
     } else {
+      // Fallback: try cache (for compatibility, though it may be null)
       const parents = sharedNodeStore.getParentsForNode(afterNodeId);
       newParentId = parents.length > 0 ? parents[0].id : null;
     }
@@ -1043,6 +1048,19 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     sharedNodeStore.removeChildFromCache(currentParentId, nodeId);
     sharedNodeStore.addChildToCache(targetParentId, nodeId);
 
+    // CRITICAL FIX: Update the node's parentId and beforeSiblingId using the store update method
+    // This ensures reactive state is updated so subsequent operations use the correct parent ID
+    // Use skipPersistence to avoid writing to database (relationships are stored in has_child edges)
+    sharedNodeStore.updateNode(
+      nodeId,
+      {
+        parentId: targetParentId,
+        beforeSiblingId: beforeSiblingId
+      },
+      { type: 'database', reason: 'indent-node' },
+      { isComputedField: true } // Skip persistence - these are derived from has_child relations
+    );
+
     // Ensure the target parent is expanded to show the newly indented child
     // This prevents the parent from appearing collapsed after indent
     setExpanded(targetParentId, true);
@@ -1092,9 +1110,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const updatedSiblingFromRemoval = removeFromSiblingChain(nodeId);
 
     // Step 2: Calculate new position in parent hierarchy
-    // NOTE: Now using backend query instead of parent.parentId
-    const parentParents = sharedNodeStore.getParentsForNode(parent.id);
-    const newParentId = parentParents.length > 0 ? parentParents[0].id : null;
+    // Try to get parent's parent from the node's parentId field first (more reliable)
+    // Fall back to backend query if not available
+    const parentParentsQuery = sharedNodeStore.getParentsForNode(parent.id);
+    const newParentId = parent.parentId ?? (
+      parentParentsQuery.length > 0
+        ? parentParentsQuery[0].id
+        : null
+    );
     const uiState = _uiState[nodeId];
     const newDepth = newParentId ? (_uiState[newParentId]?.depth || 0) + 1 : 0;
 
@@ -1143,26 +1166,21 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       mainNodeDeps.push(updatedSiblingFromRemoval);
     }
 
-    // Step 4: Execute main node update
-    // NOTE: parentId removed - hierarchy managed by backend via parent_of edges
+    // Step 4: Update in-memory state for immediate UI reactivity
+    // This is the correct pattern: update in-memory first, then backend persists
     console.log('[outdentNode] Updating node:', {
       nodeId,
       newBeforeSiblingId: positionBeforeSibling,
       newParentId,
       oldParentId
     });
-    sharedNodeStore.updateNode(
-      nodeId,
-      {
-        beforeSiblingId: positionBeforeSibling
-      },
-      viewerSource,
-      {
-        persistenceDependencies: mainNodeDeps,
-        // Skip conflict detection for sequential viewer operations
-        skipConflictDetection: true
-      }
-    );
+
+    // Update the node's properties in memory for immediate UI reactivity
+    const nodeToUpdate = sharedNodeStore.getNode(nodeId);
+    if (nodeToUpdate) {
+      nodeToUpdate.parentId = newParentId;
+      nodeToUpdate.beforeSiblingId = positionBeforeSibling;
+    }
 
     _uiState[nodeId] = { ...uiState, depth: newDepth };
 
@@ -1199,39 +1217,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         lastSiblingId = sortedChildren[sortedChildren.length - 1];
       }
 
-      // Transfer each sibling, updating their before_sibling_id chain
-      // Each sibling must wait for the previous one to complete
+      // Transfer each sibling: update depths and prepare for backend persistence
+      // The actual parent/sibling updates happen in the backend call below
       for (let i = 0; i < siblingsBelow.length; i++) {
         const siblingId = siblingsBelow[i];
         const sibling = sharedNodeStore.getNode(siblingId);
         if (sibling) {
-          // Remove from current sibling chain BEFORE updating beforeSiblingId
-          const removedSiblingId = removeFromSiblingChain(siblingId);
-
-          // First transferred sibling points to last existing child (or null)
-          // Subsequent siblings point to the previous transferred sibling
-          const beforeSiblingId = i === 0 ? lastSiblingId : siblingsBelow[i - 1];
-
-          // Build dependency chain
-          const deps: string[] = [
-            nodeId, // Wait for main node (the new parent)
-            ...(removedSiblingId ? [removedSiblingId] : []), // Wait for sibling chain removal
-            ...(beforeSiblingId ? [beforeSiblingId] : []) // Wait for beforeSibling
-          ];
-
-          // Update the sibling
-          // NOTE: parentId removed - hierarchy managed by backend via parent_of edges
-          sharedNodeStore.updateNode(
-            siblingId,
-            {
-              beforeSiblingId
-            },
-            viewerSource,
-            {
-              persistenceDependencies: deps,
-              skipConflictDetection: true // Sequential structural updates
-            }
-          );
+          // Remove from current sibling chain BEFORE changing parent
+          removeFromSiblingChain(siblingId);
 
           // Update depth for transferred sibling
           const siblingUIState = _uiState[siblingId];
@@ -1240,8 +1233,40 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           }
           // Recalculate depths for descendants of transferred sibling
           updateDescendantDepths(siblingId);
+
+          // Update cache for this sibling
+          sharedNodeStore.removeChildFromCache(oldParentId, siblingId);
+          sharedNodeStore.addChildToCache(nodeId, siblingId);
+
+          // Calculate before_sibling_id for this transferred sibling
+          // First one points to last existing child, subsequent ones point to previous sibling
+          const siblingBeforeSiblingId = i === 0 ? lastSiblingId : siblingsBelow[i - 1];
+
+          // CRITICAL: Update parent edge AND sibling position in database
+          // Use moveNode() to preserve before_sibling_id
+          try {
+            await backendAdapter.moveNode(siblingId, nodeId, siblingBeforeSiblingId);
+          } catch (error) {
+            // Silently ignore:
+            // - 404 errors (node not persisted yet)
+            // - Connection errors (test mode with no HTTP server)
+            const isIgnorableError =
+              error instanceof Error &&
+              (error.message.includes('404') ||
+                error.message.includes('Not Found') ||
+                error.message.includes('ECONNREFUSED') ||
+                error.message.includes('fetch failed') ||
+                error.message.includes('Failed to execute "fetch()"'));
+            if (!isIgnorableError) {
+              console.error(
+                `[outdentNode] Failed to move sibling ${siblingId} in database:`,
+                error
+              );
+            }
+          }
         }
       }
+      setExpanded(nodeId, true);
     }
 
     // Recalculate depths for all descendants
@@ -1267,15 +1292,18 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     sharedNodeStore.removeChildFromCache(oldParentId, nodeId);
     sharedNodeStore.addChildToCache(newParentId, nodeId);
 
-    // CRITICAL: Update parent edge in database (has_child relation)
-    // This must be called to maintain graph integrity
-    // The backend's move_node will create/delete has_child edges
+    // CRITICAL: Update parent edge AND sibling position in database
+    // Use moveNode() instead of setParent() to preserve before_sibling_id
+    // The backend's move_node will:
+    // 1. Delete old has_child edge
+    // 2. Create new has_child edge
+    // 3. Update before_sibling_id field (preserves sibling ordering!)
     //
     // NOTE: This call may fail if the node hasn't been persisted yet (404).
     // That's okay - the in-memory state is correct and the parent will be set
     // when the node is eventually persisted via the graph query system.
     try {
-      await backendAdapter.setParent(nodeId, newParentId);
+      await backendAdapter.moveNode(nodeId, newParentId, positionBeforeSibling);
     } catch (error) {
       // Silently ignore:
       // - 404 errors (node not persisted yet)
@@ -1288,39 +1316,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           error.message.includes('fetch failed') ||
           error.message.includes('Failed to execute "fetch()"'));
       if (!isIgnorableError) {
-        console.error('[outdentNode] Failed to update parent edge in database:', error);
+        console.error('[outdentNode] Failed to move node in database:', error);
       }
-    }
-
-    // Also update cache for siblings that became children of the outdented node
-    if (siblingsBelow.length > 0) {
-      for (const siblingId of siblingsBelow) {
-        sharedNodeStore.removeChildFromCache(oldParentId, siblingId);
-        sharedNodeStore.addChildToCache(nodeId, siblingId);
-
-        // CRITICAL: Update parent edge in database for each transferred sibling
-        try {
-          await backendAdapter.setParent(siblingId, nodeId);
-        } catch (error) {
-          // Silently ignore:
-          // - 404 errors (node not persisted yet)
-          // - Connection errors (test mode with no HTTP server)
-          const isIgnorableError =
-            error instanceof Error &&
-            (error.message.includes('404') ||
-              error.message.includes('Not Found') ||
-              error.message.includes('ECONNREFUSED') ||
-              error.message.includes('fetch failed') ||
-              error.message.includes('Failed to execute "fetch()"'));
-          if (!isIgnorableError) {
-            console.error(
-              `[outdentNode] Failed to update parent edge for sibling ${siblingId}:`,
-              error
-            );
-          }
-        }
-      }
-      setExpanded(nodeId, true);
     }
 
     events.hierarchyChanged();

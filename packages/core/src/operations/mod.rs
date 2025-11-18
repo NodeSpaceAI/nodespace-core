@@ -584,7 +584,7 @@ where
             id: node_id,
             node_type: params.node_type,
             content: params.content,
-            before_sibling_id: final_sibling_id,
+            before_sibling_id: final_sibling_id.clone(),
             version: 1,
             properties: params.properties,
             mentions: vec![],
@@ -596,16 +596,18 @@ where
 
         let created_id = self.node_service.create_node(node).await?;
 
-        // Create parent edge if parent_id was specified
+        // Create parent edge atomically if parent_id was specified
         // This establishes the has_child graph edge: parent->has_child->child
         if let Some(parent_id) = final_parent_id {
+            // Use create_parent_edge which preserves before_sibling_id atomically
             self.node_service
-                .move_node(&created_id, Some(parent_id.as_str()))
+                .create_parent_edge(&created_id, &parent_id, final_sibling_id.as_deref())
                 .await?;
             tracing::debug!(
-                "Created parent edge: {} -> has_child -> {}",
+                "Created parent edge: {} -> has_child -> {} (before_sibling: {:?})",
                 parent_id,
-                created_id
+                created_id,
+                final_sibling_id
             );
         }
 

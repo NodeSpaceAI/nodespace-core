@@ -1665,6 +1665,30 @@ where
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 
+    /// Create parent-child edge atomically with before_sibling_id
+    ///
+    /// Used during node creation to establish parent relationship while preserving
+    /// sibling ordering. This is separate from move_node() which is for moving existing nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `child_id` - ID of the child node (must already exist)
+    /// * `parent_id` - ID of the parent node
+    /// * `before_sibling_id` - Optional sibling to insert before (None = end of list)
+    pub async fn create_parent_edge(
+        &self,
+        child_id: &str,
+        parent_id: &str,
+        before_sibling_id: Option<&str>,
+    ) -> Result<(), NodeServiceError> {
+        // Use store's move_node which creates the has_child edge atomically
+        // with before_sibling_id in a single transaction
+        self.store
+            .move_node(child_id, Some(parent_id), before_sibling_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+    }
+
     /// Reorder siblings using before_sibling_id pointer
     ///
     /// Sets the before_sibling_id to position a node in its sibling list.

@@ -165,11 +165,22 @@ export class MentionSyncService {
 
       return results;
     } catch (error) {
-      // Suppress expected Phase 2/3 implementation errors - these are not critical issues
       const errorMessage = error instanceof Error ? error.message : String(error);
-      if (!errorMessage.includes('Phase 2/3')) {
-        console.error('MentionSyncService: Error syncing link text', { error, nodeId });
+
+      // Only suppress KNOWN expected errors for Phase 2 features
+      const isExpectedPhase2Error =
+        errorMessage.includes('getIncomingMentions') ||
+        errorMessage.includes('mentionedBy filter not implemented') ||
+        errorMessage.includes('incoming-mentions');
+
+      if (isExpectedPhase2Error) {
+        // Phase 2 feature not available in HTTP dev-proxy mode - expected
+        console.debug('[MentionSyncService] Skipping link sync - Phase 2 feature not available:', errorMessage);
+        return [];
       }
+
+      // Log unexpected errors as warnings for debugging
+      console.warn('[MentionSyncService] Unexpected error during link text sync:', error);
       return [];
     }
   }

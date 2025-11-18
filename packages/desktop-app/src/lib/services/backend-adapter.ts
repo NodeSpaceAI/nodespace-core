@@ -560,6 +560,8 @@ export class TauriAdapter implements BackendAdapter {
     newBeforeSiblingId: string | null
   ): Promise<void> {
     try {
+      // Call the Tauri move_node command which handles the atomic operation
+      // (parent change + sibling position update in a single database transaction)
       await invoke('move_node', {
         nodeId,
         newParentId,
@@ -1262,23 +1264,75 @@ export class HttpAdapter implements BackendAdapter {
     newBeforeSiblingId: string | null
   ): Promise<void> {
     try {
-      const response = await globalThis.fetch(
-        `${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/move`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ newParentId, newBeforeSiblingId })
+      // First, set the parent using the /api/nodes/:id/parent endpoint
+      // Use retry logic with exponential backoff to handle race condition where node
+      // hasn't been fully committed to database yet (common after node creation)
+      await this.setParentWithRetry(nodeId, newParentId);
+
+      // Then, if there's a sibling position change, update beforeSiblingId
+      // The beforeSiblingId is used to maintain sibling order within a parent
+      if (newBeforeSiblingId !== undefined && newBeforeSiblingId !== null) {
+        // Use updateNode to set the beforeSiblingId
+        // Note: We need to fetch the node first to get the current version for optimistic concurrency control
+        const node = await this.getNode(nodeId);
+        if (node) {
+          await this.updateNode(nodeId, node.version, { beforeSiblingId: newBeforeSiblingId });
         }
-      );
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, nodeId, 'moveNode');
     }
+  }
+
+  private async setParentWithRetry(
+    nodeId: string,
+    parentId: string | null,
+    maxRetries: number = 3,
+    delayMs: number = 50
+  ): Promise<void> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const response = await globalThis.fetch(
+          `${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/parent`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ parentId })
+          }
+        );
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        // Success - return early
+        return;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        // If it's the last attempt, don't retry
+        if (attempt === maxRetries - 1) {
+          break;
+        }
+
+        // Only retry on 404 "Not Found" errors (race condition indicator)
+        // Other errors should fail immediately
+        if (!lastError.message.includes('404')) {
+          throw lastError;
+        }
+
+        // Wait with exponential backoff before retrying
+        const delay = delayMs * Math.pow(2, attempt);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    // If we got here, all retries failed
+    const err = toError(lastError);
+    throw new NodeOperationError(err.message, nodeId, 'setParent');
   }
 
   async queryNodes(params: QueryNodesParams): Promise<Node[]> {

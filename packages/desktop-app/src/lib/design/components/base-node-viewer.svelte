@@ -1077,11 +1077,12 @@
     // Create new node using NodeManager - placeholder if empty, real if has content
     let newNodeId: string;
 
-    // CRITICAL FIX: Pass viewer's nodeId as parentId to ensure new nodes inherit correct parent
-    // When pressing Enter in a date viewer, the new node should have parentId = date node,
-    // not derive it from afterNodeId's parent (which might be wrong)
-    // The nodeId prop is the viewer's context (e.g., "2025-11-17" for date viewers)
-    const explicitParentId = nodeId || null;
+    // CRITICAL FIX: Use afterNode's parentId as the explicit parent
+    // The viewer's nodeId represents the viewer's display context (e.g., date node)
+    // but the actual parent is stored in the node's parentId field
+    // After indent, the node object's parentId is updated to reflect the new parent
+    const afterNode = nodeManager.findNode(afterNodeId);
+    const explicitParentId = afterNode?.parentId ?? nodeId ?? null;
 
     // Add formatting syntax to the new content based on node type and header level
     // (applies to both empty and non-empty content for header inheritance)
