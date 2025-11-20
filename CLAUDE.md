@@ -46,7 +46,7 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 >
 > 1. **Check git status**: `git status` - commit any pending changes first
 > 2. **Pull latest changes**: `git fetch origin && git pull origin main` - ensure you're working from the latest codebase
-> 3. **Run test baseline**: `bun run test:all` - record passing/failing counts and specific failing test names
+> 3. **Run test baseline**: `bun run test` - record passing/failing counts and specific failing test names
 > 4. **Document baseline**: Add comment to issue with baseline test status
 > 5. **Determine branching strategy**: Check parent issue for specified approach (single branch vs. individual branches)
 > 6. **Create/switch to branch**: Based on strategy - either `git checkout -b feature/issue-<number>-brief-description` OR switch to existing parent issue branch
@@ -379,7 +379,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    - All quality gates and review requirements apply universally to AI agents and human reviewers
 
 **TodoWrite Tool Users - UPDATED:**
-- Your **FIRST todo item** must be: "Complete startup sequence: git status, pull latest, run test baseline (bun run test:all), document baseline in issue, branch strategy, create branch, assign issue (bun run gh:assign N '@me'), update status (bun run gh:status N 'In Progress'), select subagent"
+- Your **FIRST todo item** must be: "Complete startup sequence: git status, pull latest, run test baseline (bun run test), document baseline in issue, branch strategy, create branch, assign issue (bun run gh:assign N '@me'), update status (bun run gh:status N 'In Progress'), select subagent"
 - Your **LAST todo items** must include: "Run test:all to verify no new failures", "Run quality:fix and commit changes", and "Create PR"
 - All GitHub operations now use **bun commands** (no Claude Code approval prompts)
 - Do NOT break the startup sequence into separate todo items
@@ -553,7 +553,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 **Startup Sequence (MANDATORY - Steps 1-11 from above):**
 - [ ] Checked git status and committed any pending changes
 - [ ] **Pulled latest changes** (`git fetch origin && git pull origin main`)
-- [ ] **Recorded test baseline** (`bun run test:all` - noted passing/failing counts)
+- [ ] **Recorded test baseline** (`bun run test` - noted passing/failing counts)
 - [ ] **Documented baseline in issue** (commented with test status and specific failures)
 - [ ] Determined branching strategy from parent issue (single branch vs. individual branches)
 - [ ] Created/switched to appropriate branch based on strategy
