@@ -10,6 +10,9 @@ pub mod constants;
 // MCP Tauri integration (wraps core MCP with event emissions)
 pub mod mcp_integration;
 
+// Background services
+pub mod services;
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -24,6 +27,46 @@ fn toggle_sidebar() -> String {
 // Include test module
 #[cfg(test)]
 mod tests;
+
+/// Initialize LIVE SELECT service for real-time database synchronization
+///
+/// Spawns background tasks that subscribe to SurrealDB LIVE SELECT queries
+/// for node and edge tables. When database records change, Tauri events are
+/// emitted to the frontend to trigger UI updates, achieving real-time sync
+/// without polling or manual cache management.
+pub fn initialize_live_query_service(
+    app: tauri::AppHandle,
+    store: std::sync::Arc<nodespace_core::SurrealStore>,
+) -> anyhow::Result<()> {
+    use crate::services::LiveQueryService;
+    use futures::FutureExt;
+
+    tracing::info!("🔧 Initializing LIVE SELECT service...");
+
+    // Spawn live query service background tasks
+    tauri::async_runtime::spawn(async move {
+        let result = std::panic::AssertUnwindSafe(async {
+            let live_query = LiveQueryService::new(store, app);
+            live_query.run().await
+        })
+        .catch_unwind()
+        .await;
+
+        match result {
+            Ok(Ok(_)) => {
+                tracing::info!("✅ LIVE SELECT service exited normally");
+            }
+            Ok(Err(e)) => {
+                tracing::error!("❌ LIVE SELECT error: {}", e);
+            }
+            Err(panic_info) => {
+                tracing::error!("💥 LIVE SELECT service panicked: {:?}", panic_info);
+            }
+        }
+    });
+
+    Ok(())
+}
 
 /// Initialize MCP server with shared services from Tauri state
 ///

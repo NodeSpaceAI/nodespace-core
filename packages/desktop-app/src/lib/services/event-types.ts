@@ -302,6 +302,119 @@ export interface NodeReferencePropagationEvent extends BaseEvent {
 // Event Union Type
 // ============================================================================
 
+// ============================================================================
+// Real-time Synchronization Events (Polling/LIVE SELECT)
+// ============================================================================
+
+/**
+ * Node data from database real-time sync
+ */
+export interface NodeEventData {
+  id: string;
+  content: string;
+  nodeType: string;
+  version: number;
+  modifiedAt: string;
+}
+
+/**
+ * Edge data from database real-time sync
+ */
+export interface EdgeEventData {
+  id: string;
+  in: string; // parent_id
+  out: string; // child_id
+  order: number;
+}
+
+/**
+ * Emitted when a node is created in the database via another client
+ * (MCP server or other Tauri instance)
+ */
+export interface RealtimeNodeCreatedEvent extends BaseEvent {
+  type: 'node:created';
+  namespace: 'sync';
+  nodeId: string;
+  nodeData: NodeEventData;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Emitted when a node is updated in the database via another client
+ */
+export interface RealtimeNodeUpdatedEvent extends BaseEvent {
+  type: 'node:updated';
+  namespace: 'sync';
+  nodeId: string;
+  nodeData: NodeEventData;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Emitted when a node is deleted in the database via another client
+ */
+export interface RealtimeNodeDeletedEvent extends BaseEvent {
+  type: 'node:deleted';
+  namespace: 'sync';
+  nodeId: string;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Emitted when an edge is created in the database via another client
+ */
+export interface RealtimeEdgeCreatedEvent extends BaseEvent {
+  type: 'edge:created';
+  namespace: 'sync';
+  edgeId: string;
+  edgeData: EdgeEventData;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Emitted when an edge is updated in the database via another client
+ */
+export interface RealtimeEdgeUpdatedEvent extends BaseEvent {
+  type: 'edge:updated';
+  namespace: 'sync';
+  edgeId: string;
+  edgeData: EdgeEventData;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Emitted when an edge is deleted in the database via another client
+ */
+export interface RealtimeEdgeDeletedEvent extends BaseEvent {
+  type: 'edge:deleted';
+  namespace: 'sync';
+  edgeId: string;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Emitted when the synchronization service encounters an error
+ */
+export interface RealtimeSyncErrorEvent extends BaseEvent {
+  type: 'error:sync-failed';
+  namespace: 'error';
+  message: string;
+  errorType: 'subscription-failed' | 'stream-interrupted' | 'parse-error' | 'unknown';
+  retryable: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Emitted when the synchronization service connects/disconnects
+ */
+export interface RealtimeSyncStatusEvent extends BaseEvent {
+  type: 'sync:status-changed';
+  namespace: 'sync';
+  status: 'connected' | 'disconnected' | 'reconnecting';
+  reason?: string;
+  metadata?: Record<string, unknown>;
+}
+
 // Error Events
 export interface PersistenceFailedEvent extends BaseEvent {
   type: 'error:persistence-failed';
@@ -342,6 +455,15 @@ export type NodeSpaceEvent =
   | NodePersistenceEvent
   | NodeEmbeddingEvent
   | NodeReferencePropagationEvent
+  // Real-time Synchronization Events
+  | RealtimeNodeCreatedEvent
+  | RealtimeNodeUpdatedEvent
+  | RealtimeNodeDeletedEvent
+  | RealtimeEdgeCreatedEvent
+  | RealtimeEdgeUpdatedEvent
+  | RealtimeEdgeDeletedEvent
+  | RealtimeSyncErrorEvent
+  | RealtimeSyncStatusEvent
   // Phase 2+ Events
   | BacklinkDetectedEvent
   | AISuggestionEvent
@@ -451,6 +573,15 @@ export const EventTypes = {
   // Focus and Navigation
   FOCUS_REQUESTED: 'focus:requested',
   NAVIGATION_CHANGED: 'navigation:changed',
+
+  // Real-time Synchronization (Polling/LIVE SELECT)
+  REALTIME_NODE_CREATED: 'node:created',
+  REALTIME_NODE_UPDATED: 'node:updated',
+  REALTIME_NODE_DELETED: 'node:deleted',
+  REALTIME_EDGE_CREATED: 'edge:created',
+  REALTIME_EDGE_UPDATED: 'edge:updated',
+  REALTIME_EDGE_DELETED: 'edge:deleted',
+  SYNC_STATUS_CHANGED: 'sync:status-changed',
 
   // Performance and Debug
   PERFORMANCE_METRIC: 'performance:metric',

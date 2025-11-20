@@ -4,6 +4,7 @@
   import AppShell from '$lib/components/layout/app-shell.svelte';
   import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
   import { initializeSchemaPluginSystem } from '$lib/plugins/schema-plugin-loader';
+  import { initializeTauriSyncListeners } from '$lib/services/tauri-sync-listener';
 
   // Initialize schema plugin auto-registration system on mount
   onMount(async () => {
@@ -21,6 +22,17 @@
       console.log(
         `[App Layout] Custom entity system ready (${result.registeredCount} entities loaded)`
       );
+    }
+  });
+
+  // Initialize Tauri LIVE SELECT event listeners for real-time synchronization
+  onMount(async () => {
+    try {
+      await initializeTauriSyncListeners();
+    } catch (error) {
+      console.warn('[App Layout] Tauri sync listeners failed to initialize:', error);
+      // Don't block app startup if sync listeners fail
+      // App will continue to work, just without real-time updates
     }
   });
 

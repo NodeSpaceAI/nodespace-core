@@ -75,7 +75,7 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     let processor_arc = Arc::new(processor);
 
     // Manage all services
-    app.manage(store);
+    app.manage(store.clone());
     app.manage(node_service_arc.as_ref().clone());
     app.manage(node_operations);
     app.manage(schema_service);
@@ -90,6 +90,13 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     if let Err(e) = crate::initialize_mcp_server(app.clone()) {
         tracing::error!("❌ Failed to initialize MCP server: {}", e);
         // Don't fail database init if MCP fails - MCP is optional
+    }
+
+    // Initialize LIVE SELECT service for real-time synchronization
+    // This spawns background tasks that subscribe to database changes
+    if let Err(e) = crate::initialize_live_query_service(app.clone(), store.clone()) {
+        tracing::error!("❌ Failed to initialize LIVE SELECT service: {}", e);
+        // Don't fail database init if LIVE SELECT fails - it's optional for now
     }
 
     Ok(())

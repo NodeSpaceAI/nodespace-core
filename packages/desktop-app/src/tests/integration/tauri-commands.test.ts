@@ -9,26 +9,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Mock Tauri API for testing
+const mockInvoke = vi.fn();
+
 const mockTauri = {
-  invoke: vi.fn()
+  invoke: mockInvoke,
+  event: {
+    listen: vi.fn(),
+    emit: vi.fn()
+  }
 };
 
-// Extend global interface for Tauri
-declare global {
-  var __TAURI__: typeof mockTauri;
-  interface Window {
-    __TAURI__: typeof mockTauri;
-  }
+// Set up global mock (bypassing type conflicts with as any for test isolation)
+if (typeof global !== 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (global as any).__TAURI__ = mockTauri;
 }
-
-// Create proper type for global object
-interface GlobalWithTauri {
-  __TAURI__: typeof mockTauri;
-  window?: { __TAURI__?: typeof mockTauri };
-}
-
-// Simulate what the frontend would call
-(global as GlobalWithTauri).__TAURI__ = mockTauri;
 
 describe('Tauri Command Integration', () => {
   beforeEach(() => {
@@ -38,42 +33,42 @@ describe('Tauri Command Integration', () => {
   describe('greet command', () => {
     it('should call greet command with correct parameters', async () => {
       // Simulate successful command execution
-      mockTauri.invoke.mockResolvedValue("Hello, NodeSpace! You've been greeted from Rust!");
+      mockInvoke.mockResolvedValue("Hello, NodeSpace! You've been greeted from Rust!");
 
       // This is what the frontend would do
-      const result = await mockTauri.invoke('greet', { name: 'NodeSpace' });
+      const result = await mockInvoke('greet', { name: 'NodeSpace' });
 
-      expect(mockTauri.invoke).toHaveBeenCalledWith('greet', { name: 'NodeSpace' });
+      expect(mockInvoke).toHaveBeenCalledWith('greet', { name: 'NodeSpace' });
       expect(result).toBe("Hello, NodeSpace! You've been greeted from Rust!");
     });
 
     it('should handle empty name parameter', async () => {
-      mockTauri.invoke.mockResolvedValue("Hello, ! You've been greeted from Rust!");
+      mockInvoke.mockResolvedValue("Hello, ! You've been greeted from Rust!");
 
-      const result = await mockTauri.invoke('greet', { name: '' });
+      const result = await mockInvoke('greet', { name: '' });
 
-      expect(mockTauri.invoke).toHaveBeenCalledWith('greet', { name: '' });
+      expect(mockInvoke).toHaveBeenCalledWith('greet', { name: '' });
       expect(result).toBe("Hello, ! You've been greeted from Rust!");
     });
 
     it('should handle special characters in name', async () => {
       const specialName = 'Test User & Co.';
-      mockTauri.invoke.mockResolvedValue(`Hello, ${specialName}! You've been greeted from Rust!`);
+      mockInvoke.mockResolvedValue(`Hello, ${specialName}! You've been greeted from Rust!`);
 
-      const result = await mockTauri.invoke('greet', { name: specialName });
+      const result = await mockInvoke('greet', { name: specialName });
 
-      expect(mockTauri.invoke).toHaveBeenCalledWith('greet', { name: specialName });
+      expect(mockInvoke).toHaveBeenCalledWith('greet', { name: specialName });
       expect(result).toContain(specialName);
     });
   });
 
   describe('toggle_sidebar command', () => {
     it('should call toggle_sidebar command', async () => {
-      mockTauri.invoke.mockResolvedValue('Sidebar toggled!');
+      mockInvoke.mockResolvedValue('Sidebar toggled!');
 
-      const result = await mockTauri.invoke('toggle_sidebar');
+      const result = await mockInvoke('toggle_sidebar');
 
-      expect(mockTauri.invoke).toHaveBeenCalledWith('toggle_sidebar');
+      expect(mockInvoke).toHaveBeenCalledWith('toggle_sidebar');
       expect(result).toBe('Sidebar toggled!');
     });
   });
@@ -81,34 +76,34 @@ describe('Tauri Command Integration', () => {
   describe('Error Handling', () => {
     it('should handle command execution errors', async () => {
       const error = new Error('Command failed');
-      mockTauri.invoke.mockRejectedValue(error);
+      mockInvoke.mockRejectedValue(error);
 
-      await expect(mockTauri.invoke('greet', { name: 'test' })).rejects.toThrow('Command failed');
+      await expect(mockInvoke('greet', { name: 'test' })).rejects.toThrow('Command failed');
     });
 
     it('should handle unknown commands', async () => {
-      mockTauri.invoke.mockRejectedValue(new Error('Unknown command'));
+      mockInvoke.mockRejectedValue(new Error('Unknown command'));
 
-      await expect(mockTauri.invoke('unknown_command')).rejects.toThrow('Unknown command');
+      await expect(mockInvoke('unknown_command')).rejects.toThrow('Unknown command');
     });
   });
 
   describe('Parameter Validation', () => {
     it('should handle missing parameters gracefully', async () => {
       // Some commands might handle missing parameters
-      mockTauri.invoke.mockResolvedValue("Hello, undefined! You've been greeted from Rust!");
+      mockInvoke.mockResolvedValue("Hello, undefined! You've been greeted from Rust!");
 
-      await mockTauri.invoke('greet', {});
+      await mockInvoke('greet', {});
 
-      expect(mockTauri.invoke).toHaveBeenCalledWith('greet', {});
+      expect(mockInvoke).toHaveBeenCalledWith('greet', {});
     });
 
     it('should handle null parameters', async () => {
-      mockTauri.invoke.mockResolvedValue("Hello, null! You've been greeted from Rust!");
+      mockInvoke.mockResolvedValue("Hello, null! You've been greeted from Rust!");
 
-      await mockTauri.invoke('greet', { name: null });
+      await mockInvoke('greet', { name: null });
 
-      expect(mockTauri.invoke).toHaveBeenCalledWith('greet', { name: null });
+      expect(mockInvoke).toHaveBeenCalledWith('greet', { name: null });
     });
   });
 
@@ -153,15 +148,19 @@ describe('Tauri Command Integration', () => {
 
 // Helper function for frontend integration (would be in actual app code)
 export async function callGreetCommand(name: string): Promise<string> {
-  if (typeof window !== 'undefined' && window.__TAURI__) {
-    return await window.__TAURI__.invoke('greet', { name });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (typeof window !== 'undefined' && (window as any).__TAURI__?.invoke) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return await (window as any).__TAURI__.invoke('greet', { name });
   }
   throw new Error('Tauri not available');
 }
 
 export async function callToggleSidebarCommand(): Promise<string> {
-  if (typeof window !== 'undefined' && window.__TAURI__) {
-    return await window.__TAURI__.invoke('toggle_sidebar');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (typeof window !== 'undefined' && (window as any).__TAURI__?.invoke) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return await (window as any).__TAURI__.invoke('toggle_sidebar');
   }
   throw new Error('Tauri not available');
 }
@@ -170,11 +169,12 @@ export async function callToggleSidebarCommand(): Promise<string> {
 describe('Frontend Helper Functions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (global as GlobalWithTauri).window = { __TAURI__: mockTauri };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as any).window = { __TAURI__: mockTauri };
   });
 
   it('should call greet through helper function', async () => {
-    mockTauri.invoke.mockResolvedValue("Hello, Test! You've been greeted from Rust!");
+    mockInvoke.mockResolvedValue("Hello, Test! You've been greeted from Rust!");
 
     const result = await callGreetCommand('Test');
 
@@ -182,7 +182,7 @@ describe('Frontend Helper Functions', () => {
   });
 
   it('should call toggle sidebar through helper function', async () => {
-    mockTauri.invoke.mockResolvedValue('Sidebar toggled!');
+    mockInvoke.mockResolvedValue('Sidebar toggled!');
 
     const result = await callToggleSidebarCommand();
 
@@ -190,7 +190,8 @@ describe('Frontend Helper Functions', () => {
   });
 
   it('should throw error when Tauri not available', async () => {
-    (global as GlobalWithTauri).window = {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as any).window = {};
 
     await expect(callGreetCommand('Test')).rejects.toThrow('Tauri not available');
     await expect(callToggleSidebarCommand()).rejects.toThrow('Tauri not available');
