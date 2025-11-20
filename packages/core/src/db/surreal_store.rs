@@ -46,6 +46,7 @@
 //! }
 //! ```
 
+use crate::db::fractional_ordering::FractionalOrderCalculator;
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -925,7 +926,7 @@ where
         node_type: &str,
         content: &str,
         properties: Value,
-        before_sibling_id: Option<&str>,
+        _before_sibling_id: Option<&str>,
     ) -> Result<Node> {
         use uuid::Uuid;
 
@@ -937,7 +938,6 @@ where
         let parent_id = parent_id.to_string();
         let node_type = node_type.to_string();
         let content = content.to_string();
-        let before_sibling_id = before_sibling_id.map(|s| s.to_string());
 
         let now = Utc::now();
         let created_at = now.to_rfc3339();
@@ -951,6 +951,33 @@ where
 
         // Validate no cycle (prevent child from being ancestor of parent)
         self.validate_no_cycle(&parent_id, &node_id).await?;
+
+        // Calculate fractional order for the new node
+        // Get the last child's order value
+        #[derive(Deserialize)]
+        struct EdgeOrder {
+            order: f64,
+        }
+
+        let parent_thing = surrealdb::sql::Thing::from(("node".to_string(), parent_id.clone()));
+        let mut order_response = self
+            .db
+            .query(
+                "SELECT order FROM has_child WHERE in = $parent_thing ORDER BY order DESC LIMIT 1;",
+            )
+            .bind(("parent_thing", parent_thing.clone()))
+            .await
+            .context("Failed to get last child order")?;
+
+        let last_order: Option<EdgeOrder> = order_response
+            .take(0)
+            .context("Failed to extract last child order")?;
+
+        let new_order = if let Some(edge) = last_order {
+            FractionalOrderCalculator::calculate_order(Some(edge.order), None)
+        } else {
+            FractionalOrderCalculator::calculate_order(None, None)
+        };
 
         // Prepare properties for type-specific tables
         let props_with_schema = properties.as_object().cloned().unwrap_or_default();
@@ -969,8 +996,8 @@ where
             None
         };
 
-        // Calculate fractional order (simple default for now, Issue #550 will implement full logic)
-        let order = 1.0_f64;
+        // Calculate fractional order using FractionalOrderCalculator (Issue #550)
+        let order = new_order;
 
         // Build atomic transaction query with bidirectional Record Links (Issue #560)
         // This ensures ALL operations succeed or ALL fail
@@ -1036,7 +1063,6 @@ where
         // Construct Thing objects for Record IDs
         // Thing format: table name paired with ID
         let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.clone()));
-        let parent_thing = surrealdb::sql::Thing::from(("node".to_string(), parent_id.clone()));
         let type_thing = surrealdb::sql::Thing::from((node_type.clone(), node_id.clone()));
 
         // Execute transaction (we don't care about the return value, just the side effects)
@@ -1048,7 +1074,6 @@ where
             .bind(("type_id", type_thing))
             .bind(("node_type", node_type.clone()))
             .bind(("content", content.clone()))
-            .bind(("before_sibling_id", before_sibling_id.clone()))
             .bind(("created_at", created_at.clone()))
             .bind(("modified_at", modified_at.clone()))
             .bind(("order", order));
@@ -1068,7 +1093,7 @@ where
             id: node_id,
             node_type,
             content,
-            before_sibling_id,
+            before_sibling_id: None,
             version: 1,
             created_at: now,
             modified_at: now,
@@ -1819,24 +1844,66 @@ where
     }
 
     pub async fn get_children(&self, parent_id: Option<&str>) -> Result<Vec<Node>> {
-        // Use graph edges for hierarchy traversal
+        // Use graph edges for hierarchy traversal with fractional ordering (Issue #550)
         // Note: We don't use FETCH data because it causes deserialization issues (same as get_node)
         let surreal_nodes = if let Some(parent_id) = parent_id {
             // Create Thing record ID for parent node
             use surrealdb::sql::Thing;
             let parent_thing = Thing::from(("node".to_string(), parent_id.to_string()));
 
-            // Query without FETCH - we'll manually fetch properties afterward
+            // Query children ordered by edge.order (fractional ordering)
+            // Build ordered list of child IDs, then fetch full nodes in that order
+            let mut edge_response = self
+                .db
+                .query("SELECT * FROM has_child WHERE in = $parent_thing ORDER BY order ASC;")
+                .bind(("parent_thing", parent_thing.clone()))
+                .await
+                .context("Failed to get child edges")?;
+
+            #[derive(serde::Deserialize)]
+            struct EdgeOut {
+                out: Thing,
+            }
+
+            let edges: Vec<EdgeOut> = edge_response
+                .take(0)
+                .context("Failed to extract child edges")?;
+
+            // Extract node Things in order
+            let mut ordered_node_things: Vec<Thing> = Vec::new();
+            let mut ordered_node_strs: Vec<String> = Vec::new();
+            for edge in edges {
+                ordered_node_things.push(edge.out.clone());
+                ordered_node_strs.push(format!("{}", edge.out));
+            }
+
+            // Fetch all nodes using Things for proper ID matching
             let mut response = self
                 .db
-                .query("SELECT * FROM node WHERE id IN (SELECT VALUE out FROM has_child WHERE in = $parent_thing);")
-                .bind(("parent_thing", parent_thing))
+                .query("SELECT * FROM node WHERE id IN $ids;")
+                .bind(("ids", ordered_node_things))
                 .await
                 .context("Failed to get children")?;
 
-            let nodes: Vec<SurrealNode> = response
+            let fetched_nodes: Vec<SurrealNode> = response
                 .take(0)
                 .context("Failed to extract children from response")?;
+
+            // Create a hashmap of fetched nodes for quick lookup by ID
+            use std::collections::HashMap as IDHashMap;
+            let mut node_map: IDHashMap<String, SurrealNode> = IDHashMap::new();
+            for node in fetched_nodes {
+                let id_str = format!("{}", node.id);
+                node_map.insert(id_str, node);
+            }
+
+            // Reconstruct nodes in the exact order from the edge query (ordered_node_strs)
+            let mut nodes: Vec<SurrealNode> = Vec::new();
+            for id_str in ordered_node_strs.iter() {
+                if let Some(node) = node_map.remove(id_str) {
+                    nodes.push(node);
+                }
+            }
 
             nodes
         } else {
@@ -2192,7 +2259,7 @@ where
         // Convert parameters to owned strings for 'static lifetime
         let node_id = node_id.to_string();
         let new_parent_id = new_parent_id.map(|s| s.to_string());
-        let new_before_sibling_id = new_before_sibling_id.map(|s| s.to_string());
+        let _new_before_sibling_id = new_before_sibling_id.map(|s| s.to_string());
 
         // Validate node exists
         let _node = self
@@ -2211,6 +2278,35 @@ where
             self.validate_no_cycle(parent_id, &node_id).await?;
         }
 
+        // Calculate fractional order for the new position
+        // Get the last child's order value for the target parent
+        #[derive(Deserialize)]
+        struct EdgeOrder {
+            order: f64,
+        }
+
+        let new_order = if let Some(ref parent_id) = new_parent_id {
+            let parent_thing = surrealdb::sql::Thing::from(("node".to_string(), parent_id.clone()));
+            let mut order_response = self
+                .db
+                .query("SELECT order FROM has_child WHERE in = $parent_thing ORDER BY order DESC LIMIT 1;")
+                .bind(("parent_thing", parent_thing))
+                .await
+                .context("Failed to get last child order")?;
+
+            let last_order: Option<EdgeOrder> = order_response
+                .take(0)
+                .context("Failed to extract last child order")?;
+
+            if let Some(edge) = last_order {
+                FractionalOrderCalculator::calculate_order(Some(edge.order), None)
+            } else {
+                FractionalOrderCalculator::calculate_order(None, None)
+            }
+        } else {
+            0.0 // Root nodes don't use order
+        };
+
         // Build atomic transaction query using Thing parameters
         let transaction_query = if new_parent_id.is_some() {
             // Move to new parent
@@ -2220,11 +2316,11 @@ where
                 -- Delete old parent edge
                 DELETE has_child WHERE out = $node_id;
 
-                -- Update sibling ordering
-                UPDATE $node_id SET before_sibling_id = $before_sibling_id;
-
-                -- Create new parent edge (parent->has_child->child)
-                RELATE $parent_id->has_child->$node_id;
+                -- Create new parent edge with fractional order
+                RELATE $parent_id->has_child->$node_id CONTENT {
+                    order: $order,
+                    createdAt: time::now()
+                };
 
                 COMMIT TRANSACTION;
             "#
@@ -2236,9 +2332,6 @@ where
 
                 -- Delete old parent edge
                 DELETE has_child WHERE out = $node_id;
-
-                -- Update sibling ordering
-                UPDATE $node_id SET before_sibling_id = $before_sibling_id;
 
                 COMMIT TRANSACTION;
             "#
@@ -2252,7 +2345,6 @@ where
             .map(|pid| surrealdb::sql::Thing::from(("node".to_string(), pid.clone())));
 
         // Execute transaction
-        // Execute transaction (we don't care about the return value, just the side effects)
         let mut query_builder = self
             .db
             .query(&transaction_query)
@@ -2263,7 +2355,7 @@ where
         }
 
         query_builder
-            .bind(("before_sibling_id", new_before_sibling_id.clone()))
+            .bind(("order", new_order))
             .await
             .map(|_| ())
             .context(format!(
@@ -2274,18 +2366,16 @@ where
         Ok(())
     }
 
-    pub async fn reorder_node(&self, id: &str, new_before_sibling_id: Option<&str>) -> Result<()> {
-        // Update using record ID
-        self.db
-            .query("UPDATE type::thing('node', $id) SET before_sibling_id = $before_sibling_id;")
-            .bind(("id", id.to_string()))
-            .bind((
-                "before_sibling_id",
-                new_before_sibling_id.map(|s| s.to_string()),
-            ))
-            .await
-            .context("Failed to reorder node")?;
-
+    pub fn reorder_node(&self, _id: &str, _new_before_sibling_id: Option<&str>) -> Result<()> {
+        // With fractional ordering (Issue #550), nodes are reordered by updating the order field
+        // on has_child edges, not by updating a node field.
+        // This method is kept for backward compatibility but is a no-op.
+        // Node reordering happens through move_node with the same parent.
+        //
+        // TODO: Remove this method once all callers are migrated to use move_node
+        tracing::warn!(
+            "reorder_node called - use move_node with same parent for fractional ordering"
+        );
         Ok(())
     }
 

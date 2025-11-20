@@ -794,9 +794,15 @@ where
             let db = self.node_service.store.db();
 
             // Define field in database
+            // Fields with colons in the name need backtick quoting
+            let quoted_field = if field_path.contains(':') {
+                format!("`{}`", field_path)
+            } else {
+                field_path.clone()
+            };
             let define_field_query = format!(
                 "DEFINE FIELD IF NOT EXISTS {} ON {} TYPE {};",
-                field_path, table, db_type
+                quoted_field, table, db_type
             );
 
             db.query(&define_field_query).await.map_err(|e| {
@@ -953,16 +959,26 @@ where
         let index_name = format!(
             "idx_{}_{}",
             table,
-            field_path.replace('.', "_").replace("[*]", "_arr")
+            field_path
+                .replace('.', "_")
+                .replace("[*]", "_arr")
+                .replace(':', "_")
         );
 
         // Get database connection
         let db = self.node_service.store.db();
 
+        // Quote field paths that contain colons
+        let quoted_field = if field_path.contains(':') {
+            format!("`{}`", field_path)
+        } else {
+            field_path.clone()
+        };
+
         // Create index
         let define_index_query = format!(
             "DEFINE INDEX IF NOT EXISTS {} ON {} FIELDS {};",
-            index_name, table, field_path
+            index_name, table, quoted_field
         );
 
         db.query(&define_index_query).await.map_err(|e| {

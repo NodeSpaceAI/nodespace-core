@@ -20,9 +20,11 @@
 //! For architecture details, see `/docs/architecture/data/surrealdb-schema-design.md`
 
 mod error;
+pub mod fractional_ordering;
 mod index_manager;
 mod surreal_store;
 
 pub use error::DatabaseError;
+pub use fractional_ordering::FractionalOrderCalculator;
 pub use index_manager::IndexManager;
 pub use surreal_store::{EmbeddedStore, HttpStore, SurrealStore};

@@ -1414,15 +1414,12 @@ where
     /// ```
     pub async fn get_children(&self, parent_id: &str) -> Result<Vec<Node>, NodeServiceError> {
         // Use edge-based query from SurrealStore (graph-native architecture)
-        let mut children = self
+        // Children are already sorted by fractional order on edges
+        let children = self
             .store
             .get_children(Some(parent_id))
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-
-        // Sort children by sibling linked list (before_sibling_id)
-        // This reconstructs the proper order independent of creation time
-        self.sort_by_sibling_order(&mut children);
 
         Ok(children)
     }
@@ -1538,63 +1535,6 @@ where
     ) -> Result<Vec<Node>, NodeServiceError> {
         // Hierarchy is now managed via edges - use get_children instead
         self.get_children(container_node_id).await
-    }
-
-    /// Sort nodes by their sibling linked list order
-    ///
-    /// Nodes use before_sibling_id to form a linked list:
-    /// - before_sibling_id = None means it's the first node
-    /// - before_sibling_id = Some(id) means it comes after node with that id
-    ///
-    /// This function reconstructs the proper order by following the chain.
-    fn sort_by_sibling_order(&self, nodes: &mut Vec<Node>) {
-        if nodes.is_empty() {
-            return;
-        }
-
-        // Build a map of id -> node for quick lookup
-        let mut node_map: std::collections::HashMap<String, Node> =
-            nodes.drain(..).map(|n| (n.id.clone(), n)).collect();
-
-        // Find the first node (before_sibling_id is None)
-        let first_node = node_map
-            .values()
-            .find(|n| n.before_sibling_id.is_none())
-            .cloned();
-
-        if let Some(first) = first_node {
-            let mut ordered = vec![first.clone()];
-            node_map.remove(&first.id);
-
-            // Follow the chain: find nodes that have before_sibling_id = current node's id
-            while !node_map.is_empty() {
-                let current_id = ordered.last().unwrap().id.clone();
-
-                // Find the next node in the chain
-                let next = node_map
-                    .values()
-                    .find(|n| n.before_sibling_id.as_ref() == Some(&current_id))
-                    .cloned();
-
-                if let Some(next_node) = next {
-                    let next_id = next_node.id.clone();
-                    ordered.push(next_node);
-                    node_map.remove(&next_id);
-                } else {
-                    // Chain broken or multiple chains - append remaining nodes by creation time
-                    let mut remaining: Vec<Node> = node_map.values().cloned().collect();
-                    remaining.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-                    ordered.extend(remaining);
-                    break;
-                }
-            }
-
-            *nodes = ordered;
-        } else {
-            // No node with before_sibling_id = None found
-            // Fall back to creation time ordering
-            nodes.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        }
     }
 
     /// Move a node to a new parent

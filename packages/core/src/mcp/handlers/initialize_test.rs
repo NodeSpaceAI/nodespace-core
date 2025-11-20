@@ -120,8 +120,8 @@ fn test_all_expected_tools_present() {
         );
     }
 
-    // Verify we have exactly 21 tools (16 original + 5 schema management)
-    assert_eq!(tools.len(), 21, "Expected exactly 21 tools");
+    // Verify we have exactly 22 tools (16 original + 5 schema management + 1 positional insertion)
+    assert_eq!(tools.len(), 22, "Expected exactly 22 tools");
 }
 
 #[test]

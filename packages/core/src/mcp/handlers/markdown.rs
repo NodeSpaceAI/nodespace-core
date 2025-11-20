@@ -445,10 +445,6 @@ async fn parse_markdown(
     operations: &Arc<NodeOperations>,
     context: &mut ParserContext,
 ) -> Result<(), MCPError> {
-    // Track previous sibling for before_sibling_id chain
-    let mut last_sibling_at_parent: std::collections::HashMap<Option<String>, String> =
-        std::collections::HashMap::new();
-
     // Track indentation-based hierarchy (node_id, indent_level)
     let mut indent_stack: Vec<(String, usize)> = Vec::new();
 
@@ -643,17 +639,14 @@ async fn parse_markdown(
                 .or_else(|| context.current_parent_id())
         };
 
-        // Get before_sibling_id from the chain
-        let before_sibling_id = last_sibling_at_parent.get(&parent_id).cloned();
-
-        // Create the node
+        // Create the node (always append to end with fractional ordering)
         let node_id = create_node(
             operations,
             node_type,
             &content,
             parent_id.clone(),
             context.container_node_id.clone(),
-            before_sibling_id,
+            None, // Fractional ordering handles positioning on edges
         )
         .await?;
 
@@ -677,9 +670,6 @@ async fn parse_markdown(
         if heading_level.is_none() && (indent_level > 0 || is_bullet) {
             indent_stack.push((node_id.clone(), indent_level));
         }
-
-        // Track this node as the last sibling at this parent level
-        last_sibling_at_parent.insert(parent_id, node_id.clone());
 
         // Track node in context
         context.track_node(node_id, node_type.to_string());
