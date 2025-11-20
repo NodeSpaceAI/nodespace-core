@@ -44,6 +44,8 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 >
 > **BEFORE ANY IMPLEMENTATION WORK - COMPLETE THIS EXACT SEQUENCE:**
 >
+> **⚠️ EXCEPTION: If continuing from a WIP commit, skip to "Continuing from WIP" section below**
+>
 > 1. **Check git status**: `git status` - commit any pending changes first
 > 2. **Pull latest changes**: `git fetch origin && git pull origin main` - ensure you're working from the latest codebase
 > 3. **Run test baseline**: `bun run test` - record passing/failing counts and specific failing test names
@@ -55,6 +57,28 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 > 9. **Select subagent**: Choose appropriate specialized agent based on task complexity and type
 > 10. **Read issue requirements**: Understand all acceptance criteria
 > 11. **Plan implementation**: Self-contained approach with appropriate subagent
+>
+> ## 📋 CONTINUING FROM WIP COMMIT
+>
+> **If you're picking up work from a previous WIP commit, use this simplified sequence:**
+>
+> 1. **Check git status**: `git status` - verify you're on the correct branch
+> 2. **Pull latest changes**: `git fetch origin && git pull origin <branch-name>` - get latest WIP commits
+> 3. **Review WIP commit message**: Read the handoff commit to understand current state and next steps
+> 4. **Check issue comment**: Look for the baseline test status documented when work started
+> 5. **Resume implementation**: Continue from "Remaining Work" section in WIP commit message
+>
+> **DO NOT:**
+> - ❌ Re-run baseline tests (already done when work started)
+> - ❌ Re-assign the issue (already assigned)
+> - ❌ Re-update status to "In Progress" (already set)
+> - ❌ Create a new branch (already exists)
+>
+> **Focus on:**
+> - ✅ Understanding what was completed (from WIP commit)
+> - ✅ Understanding what remains (from "Remaining Work" section)
+> - ✅ Continuing the implementation approach
+> - ✅ Maintaining consistency with established patterns
 > 
 > **🔴 CRITICAL PROCESS VIOLATIONS**
 > 
@@ -379,11 +403,21 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    - All quality gates and review requirements apply universally to AI agents and human reviewers
 
 **TodoWrite Tool Users - UPDATED:**
+
+**For NEW tasks (starting fresh):**
 - Your **FIRST todo item** must be: "Complete startup sequence: git status, pull latest, run test baseline (bun run test), document baseline in issue, branch strategy, create branch, assign issue (bun run gh:assign N '@me'), update status (bun run gh:status N 'In Progress'), select subagent"
 - Your **LAST todo items** must include: "Run test:all to verify no new failures", "Run quality:fix and commit changes", and "Create PR"
-- All GitHub operations now use **bun commands** (no Claude Code approval prompts)
 - Do NOT break the startup sequence into separate todo items
 - Only after completing the startup sequence should you add implementation todos
+
+**For CONTINUING from WIP commit:**
+- Your **FIRST todo item** must be: "WIP continuation sequence: git status, pull latest from branch, review WIP commit message, check issue for baseline, resume from 'Remaining Work'"
+- Do NOT re-run baseline tests or re-assign the issue
+- Focus todos on remaining work from the WIP commit message
+- Your **LAST todo items** still include: "Run test:all to verify no new failures", "Run quality:fix and commit changes", and "Create PR"
+
+**General:**
+- All GitHub operations now use **bun commands** (no Claude Code approval prompts)
 
 **Before Starting Any Task:**
 1. **COMPLETE THE MANDATORY STARTUP SEQUENCE** (steps 1-11 above, including test baseline)
@@ -550,7 +584,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 **EVERY AGENT MUST COMPLETE THIS CHECKLIST FOR EACH TASK:**
 
-**Startup Sequence (MANDATORY - Steps 1-11 from above):**
+**Startup Sequence - NEW TASK (MANDATORY - Steps 1-11 from above):**
 - [ ] Checked git status and committed any pending changes
 - [ ] **Pulled latest changes** (`git fetch origin && git pull origin main`)
 - [ ] **Recorded test baseline** (`bun run test` - noted passing/failing counts)
@@ -563,6 +597,14 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - [ ] Read issue requirements and acceptance criteria
 - [ ] Read development process documentation (start with [overview](docs/architecture/development/overview.md))
 - [ ] Planned self-contained implementation with mock dependencies
+
+**Startup Sequence - CONTINUING FROM WIP (Simplified):**
+- [ ] Checked git status - verified on correct branch
+- [ ] **Pulled latest from branch** (`git fetch origin && git pull origin <branch-name>`)
+- [ ] **Read WIP commit message** - understand completed work and remaining tasks
+- [ ] **Check issue for baseline** - reference the test baseline documented when work started
+- [ ] Resume implementation from "Remaining Work" section
+- [ ] **DO NOT re-run baseline, re-assign issue, or re-update status**
 
 **During Implementation:**
 - [ ] Following self-contained approach (feature works independently)
