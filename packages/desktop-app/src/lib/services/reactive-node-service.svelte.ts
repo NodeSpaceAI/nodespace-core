@@ -31,6 +31,7 @@ import type { UpdateSource } from '$lib/types/update-protocol';
 import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
 import { backendAdapter } from './backend-adapter';
 import { schemaService } from './schema-service';
+import { createLogger } from '$lib/utils/logger';
 
 export interface NodeManagerEvents {
   focusRequested: (nodeId: string, position?: number) => void;
@@ -68,6 +69,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
   const serviceName = 'ReactiveNodeService';
   const contentProcessor = ContentProcessor.getInstance();
+  const logger = createLogger('ReactiveNodeService');
 
   // Subscribe to SharedNodeStore changes for reactive updates
   // Wildcard subscription - updates _updateTrigger when any node changes
@@ -1168,7 +1170,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Step 4: Update in-memory state for immediate UI reactivity
     // This is the correct pattern: update in-memory first, then backend persists
-    console.log('[outdentNode] Updating node:', {
+    logger.debug('[outdentNode] Updating node:', {
       nodeId,
       newBeforeSiblingId: positionBeforeSibling,
       newParentId,

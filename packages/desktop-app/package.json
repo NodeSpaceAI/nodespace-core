@@ -22,6 +22,7 @@
     "test:browser": "bunx vitest run --config vitest.browser.config.ts",
     "test:browser:watch": "bunx vitest --config vitest.browser.config.ts",
     "test:coverage": "bunx vitest run --coverage",
+    "test:perf": "TEST_FULL_PERFORMANCE=1 bunx vitest run src/tests/performance/",
     "test:db": "TEST_USE_DATABASE=true bunx vitest run",
     "test:db:watch": "TEST_USE_DATABASE=true bunx vitest",
     "test:all": "bun run test && bun run rust:test",

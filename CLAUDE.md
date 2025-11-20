@@ -324,9 +324,10 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 **4a. Testing (Required)**
    ```bash
    # Fast unit tests with Happy-DOM (use during development)
-   bun run test                    # Run all unit tests once
+   bun run test                    # Run all unit tests once (FAST MODE - optimized)
    bun run test:unit               # Same as above (explicit)
    bun run test:watch              # Watch mode (recommended for TDD)
+   bun run test:perf               # Full performance validation (large datasets)
 
    # Test specific files
    bun run test src/tests/integration/my-test.test.ts
@@ -336,8 +337,8 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    bun run test:browser            # Run browser tests (for focus, events, etc.)
    bun run test:browser:watch      # Watch mode for browser tests
 
-   # Run all tests (unit + browser)
-   bun run test:all                # Runs both unit and browser tests
+   # Run all tests (unit + browser + rust)
+   bun run test:all                # Runs both unit and browser tests + Rust tests
 
    # Database integration tests (use before merging)
    bun run test:db                 # Full integration with SQLite
@@ -366,9 +367,17 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
       - Location: `src/tests/browser/**/*.test.ts`
       - **Note**: Requires Playwright browsers installed (`bunx playwright install chromium`)
 
+   3. **Performance Tests** - Two modes for different workflows
+      - **Fast Mode (default in `bun run test`)**: Reduced datasets (100-500 nodes) for quick feedback
+      - **Full Mode (`bun run test:perf`)**: Large datasets (1000-2000 nodes) for comprehensive validation
+      - Use: `bun run test:perf` when optimizing performance or before major releases
+      - Location: `src/tests/performance/**/*.test.ts`
+      - **Automatic Scaling**: Tests use `TEST_FULL_PERFORMANCE=1` to switch between modes
+
    **When to use which mode:**
    - **Happy-DOM (default)**: 99% of tests - logic, services, utilities (fast, TDD-friendly)
    - **Browser Mode**: Only when you need real focus/blur events or browser-specific DOM APIs
+   - **Performance Tests**: Run fast mode daily, full mode before merging performance-critical changes
    - **Database Mode**: Full integration validation before merging critical changes
    - Some tests conditionally skip in in-memory mode (require full database persistence)
    - See [Testing Guide](docs/architecture/development/testing-guide.md) for details

@@ -1,6 +1,14 @@
 /**
  * Performance validation tests for NodeManager
- * Tests handling of 1000+ node documents efficiently
+ * Tests handling of large node documents efficiently
+ *
+ * PERFORMANCE TEST MODES:
+ * - Fast mode (default): Smaller datasets (100-500 nodes) for quick feedback during development
+ * - Full mode (TEST_FULL_PERFORMANCE=1): Large datasets (1000-2000 nodes) for comprehensive validation
+ *
+ * Usage:
+ *   bun run test                              # Fast mode (default)
+ *   TEST_FULL_PERFORMANCE=1 bun run test:perf # Full performance validation
  */
 
 // CRITICAL: Import setup BEFORE anything else to ensure Svelte mocks are applied
@@ -14,6 +22,28 @@ import {
 import type { NodeManagerEvents } from '../../lib/services/reactive-node-service.svelte.js';
 import { createTestNode } from '../helpers';
 import { sharedNodeStore } from '../../lib/services/shared-node-store';
+
+// Performance test scaling based on environment variable
+const FULL_PERFORMANCE = process.env.TEST_FULL_PERFORMANCE === '1';
+
+// Dataset sizes: Fast mode for development, Full mode for comprehensive validation
+const PERF_SCALE = {
+  init: FULL_PERFORMANCE ? 1000 : 100, // Node initialization test
+  lookup: FULL_PERFORMANCE ? 1500 : 150, // Lookup performance test
+  combine: FULL_PERFORMANCE ? 2000 : 200, // Combine operations test
+  hierarchy: FULL_PERFORMANCE ? 1000 : 100, // Hierarchy operations test
+  deepNesting: FULL_PERFORMANCE ? 1000 : 100, // Deep nesting visibility test
+  multiCycle: FULL_PERFORMANCE ? 500 : 50, // Multi-cycle test dataset
+  concurrent: FULL_PERFORMANCE ? 1000 : 100 // Concurrent operations test
+};
+
+// Performance thresholds: Adaptive based on dataset size
+const PERF_THRESHOLDS = {
+  init: FULL_PERFORMANCE ? 100 : 20, // Node initialization threshold (ms)
+  combine: FULL_PERFORMANCE ? 100 : 20, // Combine operations threshold (ms)
+  hierarchy: FULL_PERFORMANCE ? 500 : 100, // Hierarchy operations threshold (ms)
+  deepNesting: FULL_PERFORMANCE ? 700 : 100 // Deep nesting threshold (ms)
+};
 
 describe('NodeManager Performance Tests', () => {
   let nodeManager: NodeManager;
@@ -59,8 +89,8 @@ describe('NodeManager Performance Tests', () => {
     return { nodes, hierarchyMap };
   };
 
-  test('initializes 1000 nodes efficiently (< 100ms)', () => {
-    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(1000);
+  test(`initializes ${PERF_SCALE.init} nodes efficiently (< ${PERF_THRESHOLDS.init}ms)`, () => {
+    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.init);
 
     // Populate hierarchy cache BEFORE initializeNodes for graph-native architecture
     // This simulates what the backend adapter would do when loading from database
@@ -73,13 +103,13 @@ describe('NodeManager Performance Tests', () => {
     const endTime = performance.now();
 
     const duration = endTime - startTime;
-    console.log(`1000 node initialization: ${duration.toFixed(2)}ms`);
+    console.log(`${PERF_SCALE.init} node initialization: ${duration.toFixed(2)}ms`);
 
     // Primary assertion: Performance (time in ms)
-    expect(duration).toBeLessThan(100);
+    expect(duration).toBeLessThan(PERF_THRESHOLDS.init);
 
     // Verify all nodes were initialized
-    expect(nodeManager.nodes.size).toBe(1000);
+    expect(nodeManager.nodes.size).toBe(PERF_SCALE.init);
 
     // Note: In test environment with mocked Svelte reactivity, hierarchy may not be computed
     // correctly. In production, the hierarchy would be properly calculated.
@@ -87,8 +117,8 @@ describe('NodeManager Performance Tests', () => {
     expect(nodeManager.rootNodeIds.length).toBeGreaterThan(0); // At least some roots exist
   });
 
-  test('node lookup performance with 1000+ nodes (< 1ms)', () => {
-    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(1500);
+  test(`node lookup performance with ${PERF_SCALE.lookup}+ nodes (< 1ms)`, () => {
+    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.lookup);
     for (const [parentId, childIds] of hierarchyMap) {
       sharedNodeStore.updateChildrenCache(parentId, childIds);
     }
@@ -96,20 +126,20 @@ describe('NodeManager Performance Tests', () => {
 
     const startTime = performance.now();
     for (let i = 0; i < 100; i++) {
-      const randomId = `node-${Math.floor(Math.random() * 1500)}`;
+      const randomId = `node-${Math.floor(Math.random() * PERF_SCALE.lookup)}`;
       nodeManager.findNode(randomId);
     }
     const endTime = performance.now();
 
     const duration = endTime - startTime;
     const avgDuration = duration / 100;
-    console.log(`Average lookup time (1500 nodes): ${avgDuration.toFixed(4)}ms`);
+    console.log(`Average lookup time (${PERF_SCALE.lookup} nodes): ${avgDuration.toFixed(4)}ms`);
 
     expect(avgDuration).toBeLessThan(1);
   });
 
-  test('combineNodes performance with large document (< 100ms)', () => {
-    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(2000);
+  test(`combineNodes performance with large document (< ${PERF_THRESHOLDS.combine}ms)`, () => {
+    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.combine);
     for (const [parentId, childIds] of hierarchyMap) {
       sharedNodeStore.updateChildrenCache(parentId, childIds);
     }
@@ -126,10 +156,10 @@ describe('NodeManager Performance Tests', () => {
 
     const endTime = performance.now();
     const duration = endTime - startTime;
-    console.log(`10 node combinations (2000 node document): ${duration.toFixed(2)}ms`);
+    console.log(`10 node combinations (${PERF_SCALE.combine} node document): ${duration.toFixed(2)}ms`);
 
-    // Performance regression detection: alert if > 100ms
-    expect(duration).toBeLessThan(100);
+    // Performance regression detection: centralized threshold
+    expect(duration).toBeLessThan(PERF_THRESHOLDS.combine);
 
     // Issue performance warning if approaching limit
     if (duration > 80) {
@@ -139,15 +169,15 @@ describe('NodeManager Performance Tests', () => {
     }
   });
 
-  test('hierarchy operations scale efficiently (< 500ms for 100 operations)', () => {
+  test(`hierarchy operations scale efficiently (< ${PERF_THRESHOLDS.hierarchy}ms for 100 operations)`, () => {
     // Performance Note: Hierarchy operations have O(n) complexity due to:
     // 1. sortChildrenByBeforeSiblingId - O(n) to rebuild sibling order from linked list
     // 2. Cache lookups reduce repeated sorts but initial operations are expensive
-    // 3. 100 indent/outdent operations on 1000-node document = realistic threshold of 500ms
+    // 3. 100 indent/outdent operations on large document
     //
-    // Real-world performance: ~440ms measured in tests with proper caching
+    // Real-world performance: ~440ms measured in tests with proper caching (full mode)
     // This ensures operations complete in sub-second timeframes for user interactions
-    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(1000);
+    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.hierarchy);
     for (const [parentId, childIds] of hierarchyMap) {
       sharedNodeStore.updateChildrenCache(parentId, childIds);
     }
@@ -166,11 +196,10 @@ describe('NodeManager Performance Tests', () => {
 
     const endTime = performance.now();
     const duration = endTime - startTime;
-    console.log(`100 hierarchy operations: ${duration.toFixed(2)}ms`);
+    console.log(`100 hierarchy operations (${PERF_SCALE.hierarchy} nodes): ${duration.toFixed(2)}ms`);
 
-    // Adjusted threshold: 500ms is realistic for 100 operations on 1000 nodes
-    // This ensures user interactions complete in sub-second timeframes
-    expect(duration).toBeLessThan(500);
+    // Centralized threshold ensures user interactions complete in sub-second timeframes
+    expect(duration).toBeLessThan(PERF_THRESHOLDS.hierarchy);
 
     // Issue performance warning if approaching limit (helps catch regressions)
     if (duration > 400) {
@@ -180,11 +209,11 @@ describe('NodeManager Performance Tests', () => {
     }
   });
 
-  test('getVisibleNodes performance with large nested structure (< 700ms)', () => {
+  test(`getVisibleNodes performance with large nested structure (< ${PERF_THRESHOLDS.deepNesting}ms)`, () => {
     // Performance Note: Deep nesting has O(n²) worst-case complexity:
-    // 1. Must traverse all 1000 nodes in a chain
+    // 1. Must traverse all nodes in a chain
     // 2. Each level calls sortChildrenByBeforeSiblingId (O(n) per level)
-    // 3. 1000 levels of nesting = realistic threshold of 700ms
+    // 3. Deep nesting threshold varies by mode (full: 1000 levels, fast: 100 levels)
     //
     // Real-world impact: Deep nesting (>100 levels) is rare in actual usage
     // Most documents have shallow trees (< 10 levels), which perform well (< 50ms)
@@ -192,7 +221,7 @@ describe('NodeManager Performance Tests', () => {
 
     // Create deeply nested structure
     const nestedDataset = [];
-    for (let i = 0; i < 1000; i++) {
+    for (let i = 0; i < PERF_SCALE.deepNesting; i++) {
       const parentId = i > 0 ? `node-${i - 1}` : null;
       nestedDataset.push(createTestNode(`node-${i}`, `Content ${i}`, 'text', parentId));
     }
@@ -209,11 +238,10 @@ describe('NodeManager Performance Tests', () => {
     const endTime = performance.now();
 
     const duration = endTime - startTime;
-    console.log(`1000-level deep nesting visibility calculation: ${duration.toFixed(2)}ms`);
+    console.log(`${PERF_SCALE.deepNesting}-level deep nesting visibility calculation: ${duration.toFixed(2)}ms`);
 
-    // Adjusted threshold: 700ms is realistic for pathological 1000-level nesting
-    // Normal documents (< 10 levels) perform much better
-    expect(duration).toBeLessThan(700);
+    // Centralized threshold - normal documents (< 10 levels) perform much better
+    expect(duration).toBeLessThan(PERF_THRESHOLDS.deepNesting);
 
     // Issue performance warning if approaching limit
     if (duration > 600) {
@@ -224,7 +252,7 @@ describe('NodeManager Performance Tests', () => {
 
     // Note: visibleNodes returns 0 in test environment due to mocked $derived.by
     // Verify data structure integrity instead
-    expect(nodeManager.nodes.size).toBe(1000);
+    expect(nodeManager.nodes.size).toBe(PERF_SCALE.deepNesting);
     expect(nodeManager.rootNodeIds.length).toBeGreaterThan(0);
   });
 
@@ -234,7 +262,7 @@ describe('NodeManager Performance Tests', () => {
 
     // Perform many operations
     for (let cycle = 0; cycle < 10; cycle++) {
-      const { nodes: dataset, hierarchyMap } = generateLargeNodeDataset(500);
+      const { nodes: dataset, hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.multiCycle);
       for (const [parentId, childIds] of hierarchyMap) {
         sharedNodeStore.updateChildrenCache(parentId, childIds);
       }
@@ -256,7 +284,7 @@ describe('NodeManager Performance Tests', () => {
   });
 
   test('concurrent operations performance', () => {
-    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(1000);
+    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.concurrent);
     for (const [parentId, childIds] of hierarchyMap) {
       sharedNodeStore.updateChildrenCache(parentId, childIds);
     }
@@ -268,7 +296,7 @@ describe('NodeManager Performance Tests', () => {
     const operations = [];
     for (let i = 0; i < 200; i++) {
       operations.push(() => {
-        const nodeId = `node-${Math.floor(Math.random() * 1000)}`;
+        const nodeId = `node-${Math.floor(Math.random() * PERF_SCALE.concurrent)}`;
         nodeManager.updateNodeContent(nodeId, `Updated content ${i}`);
       });
     }
