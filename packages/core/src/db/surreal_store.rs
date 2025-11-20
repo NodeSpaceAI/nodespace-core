@@ -2221,6 +2221,80 @@ where
         Ok(())
     }
 
+    /// Rebalance child ordering for a parent when precision degrades
+    ///
+    /// When fractional ordering gets too granular (gaps < 0.0001), this rebalances
+    /// all children of a parent to have even spacing (1.0, 2.0, 3.0, etc.).
+    ///
+    /// This operation is atomic - either all children are rebalanced or none are.
+    ///
+    /// # Arguments
+    ///
+    /// * `parent_id` - ID of the parent node whose children should be rebalanced
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) on success
+    async fn rebalance_children_for_parent(&self, parent_id: &str) -> Result<()> {
+        use surrealdb::sql::Thing;
+
+        // Step 1: Get all children in current order
+        let parent_thing = Thing::from(("node".to_string(), parent_id.to_string()));
+
+        #[derive(Deserialize)]
+        struct EdgeOut {
+            out: Thing,
+        }
+
+        let mut edges_response = self
+            .db
+            .query("SELECT out FROM has_child WHERE in = $parent_thing ORDER BY order ASC;")
+            .bind(("parent_thing", parent_thing.clone()))
+            .await
+            .context("Failed to get children for rebalancing")?;
+
+        let edges: Vec<EdgeOut> = edges_response
+            .take(0)
+            .context("Failed to extract children for rebalancing")?;
+
+        if edges.is_empty() {
+            return Ok(()); // Nothing to rebalance
+        }
+
+        // Step 2: Calculate new orders [1.0, 2.0, 3.0, ...]
+        let new_orders = FractionalOrderCalculator::rebalance(edges.len());
+
+        // Step 3: Build atomic transaction to update all edges
+        // We need to update each has_child edge's order field
+        let mut transaction = String::from("BEGIN TRANSACTION;\n");
+
+        for (i, _edge) in edges.iter().enumerate() {
+            let new_order = new_orders[i];
+            transaction.push_str(&format!(
+                "UPDATE has_child SET order = {} WHERE in = $parent_thing AND out = $out{} FETCH AFTER;\n",
+                new_order, i
+            ));
+        }
+
+        transaction.push_str("COMMIT TRANSACTION;");
+
+        // Step 4: Execute transaction with all edges bound
+        let mut query_builder = self
+            .db
+            .query(&transaction)
+            .bind(("parent_thing", parent_thing));
+
+        for (i, edge) in edges.iter().enumerate() {
+            query_builder = query_builder.bind((format!("out{}", i), edge.out.clone()));
+        }
+
+        query_builder
+            .await
+            .context("Failed to rebalance children")?;
+
+        Ok(())
+    }
+
     /// Move a node to a new parent atomically
     ///
     /// Guarantees that either:
@@ -2254,12 +2328,12 @@ where
         &self,
         node_id: &str,
         new_parent_id: Option<&str>,
-        new_before_sibling_id: Option<&str>,
+        insert_after_sibling_id: Option<&str>,
     ) -> Result<()> {
         // Convert parameters to owned strings for 'static lifetime
         let node_id = node_id.to_string();
         let new_parent_id = new_parent_id.map(|s| s.to_string());
-        let _new_before_sibling_id = new_before_sibling_id.map(|s| s.to_string());
+        let insert_after_sibling_id = insert_after_sibling_id.map(|s| s.to_string());
 
         // Validate node exists
         let _node = self
@@ -2279,29 +2353,90 @@ where
         }
 
         // Calculate fractional order for the new position
-        // Get the last child's order value for the target parent
         #[derive(Deserialize)]
-        struct EdgeOrder {
+        struct EdgeWithOrder {
+            out: surrealdb::sql::Thing,
             order: f64,
         }
 
         let new_order = if let Some(ref parent_id) = new_parent_id {
             let parent_thing = surrealdb::sql::Thing::from(("node".to_string(), parent_id.clone()));
-            let mut order_response = self
+
+            // Get all child edges for this parent, ordered by order field
+            let mut edges_response = self
                 .db
-                .query("SELECT order FROM has_child WHERE in = $parent_thing ORDER BY order DESC LIMIT 1;")
-                .bind(("parent_thing", parent_thing))
+                .query(
+                    "SELECT out, order FROM has_child WHERE in = $parent_thing ORDER BY order ASC;",
+                )
+                .bind(("parent_thing", parent_thing.clone()))
                 .await
-                .context("Failed to get last child order")?;
+                .context("Failed to get child edges")?;
 
-            let last_order: Option<EdgeOrder> = order_response
+            let edges: Vec<EdgeWithOrder> = edges_response
                 .take(0)
-                .context("Failed to extract last child order")?;
+                .context("Failed to extract child edges")?;
 
-            if let Some(edge) = last_order {
-                FractionalOrderCalculator::calculate_order(Some(edge.order), None)
+            if let Some(after_id) = insert_after_sibling_id {
+                // Find the sibling we're inserting after
+                let after_thing =
+                    surrealdb::sql::Thing::from(("node".to_string(), after_id.clone()));
+                let after_index = edges
+                    .iter()
+                    .position(|e| e.out == after_thing)
+                    .ok_or_else(|| anyhow::anyhow!("Sibling not found: {}", after_id))?;
+
+                // Get orders before and after insertion point
+                let prev_order = edges[after_index].order;
+                let next_order = edges.get(after_index + 1).map(|e| e.order);
+
+                // Calculate new order between them
+                let calculated =
+                    FractionalOrderCalculator::calculate_order(Some(prev_order), next_order);
+
+                // Check if rebalancing is needed
+                if let Some(next) = next_order {
+                    if (next - prev_order) < 0.0001 {
+                        // Gap too small, need to rebalance before inserting
+                        self.rebalance_children_for_parent(parent_id).await?;
+
+                        // Re-query edges after rebalancing
+                        // NOTE: There is a small race condition window here - between rebalancing
+                        // completion and this re-query, another client could move/delete the sibling.
+                        // If this occurs, we'll get "Sibling not found after rebalancing" error and
+                        // the operation fails. This is an accepted limitation - clients can retry.
+                        // A fully atomic solution would require SurrealDB to support multi-step
+                        // transactions with deferred constraint checking, which isn't available.
+                        let mut edges_response = self
+                            .db
+                            .query("SELECT out, order FROM has_child WHERE in = $parent_thing ORDER BY order ASC;")
+                            .bind(("parent_thing", parent_thing.clone()))
+                            .await
+                            .context("Failed to get child edges after rebalancing")?;
+
+                        let edges: Vec<EdgeWithOrder> = edges_response
+                            .take(0)
+                            .context("Failed to extract child edges after rebalancing")?;
+
+                        let after_index = edges
+                            .iter()
+                            .position(|e| e.out == after_thing)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Sibling not found after rebalancing: {}", after_id)
+                            })?;
+
+                        let prev_order = edges[after_index].order;
+                        let next_order = edges.get(after_index + 1).map(|e| e.order);
+                        FractionalOrderCalculator::calculate_order(Some(prev_order), next_order)
+                    } else {
+                        calculated
+                    }
+                } else {
+                    calculated
+                }
             } else {
-                FractionalOrderCalculator::calculate_order(None, None)
+                // No insert_after_sibling specified, insert at beginning
+                let first_order = edges.first().map(|e| e.order);
+                FractionalOrderCalculator::calculate_order(None, first_order)
             }
         } else {
             0.0 // Root nodes don't use order
@@ -2367,14 +2502,21 @@ where
     }
 
     pub fn reorder_node(&self, _id: &str, _new_before_sibling_id: Option<&str>) -> Result<()> {
-        // With fractional ordering (Issue #550), nodes are reordered by updating the order field
-        // on has_child edges, not by updating a node field.
-        // This method is kept for backward compatibility but is a no-op.
-        // Node reordering happens through move_node with the same parent.
+        // DEPRECATED: This method is a no-op stub kept for API compatibility.
         //
-        // TODO: Remove this method once all callers are migrated to use move_node
+        // With fractional ordering (Issue #550), nodes are reordered by updating the order field
+        // on has_child edges, not by updating a node field. The old before_sibling_id approach
+        // is no longer used in the Rust backend.
+        //
+        // Node reordering is now handled by:
+        // 1. NodeOperations::reorder_node() - High-level wrapper with sibling chain integrity
+        // 2. move_node() - Low-level atomic operation for hierarchy changes
+        //
+        // This method exists solely to prevent breaking the public API, but it has no
+        // implementation and should not be called directly. All callers go through the
+        // NodeOperations wrapper which handles the legacy before_sibling_id semantics.
         tracing::warn!(
-            "reorder_node called - use move_node with same parent for fractional ordering"
+            "SurrealStore::reorder_node is deprecated and is a no-op. Use NodeOperations::reorder_node() instead."
         );
         Ok(())
     }
