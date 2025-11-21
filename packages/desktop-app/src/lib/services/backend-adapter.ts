@@ -194,17 +194,15 @@ export interface BackendAdapter {
    *
    * Performs a single database transaction that:
    * - Deletes the old parent-child edge
-   * - Updates the node's before_sibling_id field
-   * - Creates the new parent-child edge (if new parent specified)
+   * - Creates the new parent-child edge with fractional ordering
+   * - Backend handles sibling ordering via fractional IDs
    *
    * @param nodeId - Node to move
    * @param newParentId - New parent ID (null for root)
-   * @param newBeforeSiblingId - New position in sibling chain
    */
   moveNode(
     nodeId: string,
-    newParentId: string | null,
-    newBeforeSiblingId: string | null
+    newParentId: string | null
   ): Promise<void>;
 
   /**
@@ -540,16 +538,14 @@ export class TauriAdapter implements BackendAdapter {
 
   async moveNode(
     nodeId: string,
-    newParentId: string | null,
-    newBeforeSiblingId: string | null
+    newParentId: string | null
   ): Promise<void> {
     try {
       // Call the Tauri move_node command which handles the atomic operation
-      // (parent change + sibling position update in a single database transaction)
+      // Backend handles sibling ordering via fractional IDs on edges
       await invoke('move_node', {
         nodeId,
-        newParentId,
-        newBeforeSiblingId
+        newParentId
       });
     } catch (error) {
       const err = toError(error);
@@ -1228,8 +1224,7 @@ export class HttpAdapter implements BackendAdapter {
 
   async moveNode(
     nodeId: string,
-    newParentId: string | null,
-    _newBeforeSiblingId: string | null
+    newParentId: string | null
   ): Promise<void> {
     try {
       // Set the parent using the /api/nodes/:id/parent endpoint
@@ -1237,9 +1232,8 @@ export class HttpAdapter implements BackendAdapter {
       // hasn't been fully committed to database yet (common after node creation)
       await this.setParentWithRetry(nodeId, newParentId);
 
-      // Note: Sibling ordering is now handled by the backend's sibling_order column.
-      // The HTTP dev server would need a /api/nodes/:id/siblings/reorder endpoint
-      // to support explicit ordering. For now, the backend appends to the end.
+      // Note: Sibling ordering is now handled by the backend's fractional IDs.
+      // Ordering is determined entirely by the backend during edge creation.
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, nodeId, 'moveNode');

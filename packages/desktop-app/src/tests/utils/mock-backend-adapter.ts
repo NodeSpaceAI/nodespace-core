@@ -272,15 +272,14 @@ export class MockBackendAdapter implements BackendAdapter {
    */
   async moveNode(
     nodeId: string,
-    _newParentId: string | null,
-    _newBeforeSiblingId: string | null
+    _newParentId: string | null
   ): Promise<void> {
     // For mock adapter, we just verify the node exists
     const node = this.nodes.get(nodeId);
     if (!node) {
       throw new Error(`Node ${nodeId} not found`);
     }
-    // In a real implementation, this would update parent and beforeSiblingId atomically
+    // In a real implementation, this would update parent atomically via fractional ordering
     // For testing purposes, we just validate the operation was requested
   }
 

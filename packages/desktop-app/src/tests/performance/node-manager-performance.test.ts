@@ -21,7 +21,6 @@ import {
 } from '../../lib/services/reactive-node-service.svelte.js';
 import type { NodeManagerEvents } from '../../lib/services/reactive-node-service.svelte.js';
 import { createTestNode } from '../helpers';
-import { sharedNodeStore } from '../../lib/services/shared-node-store';
 
 // Performance test scaling based on environment variable
 const FULL_PERFORMANCE = process.env.TEST_FULL_PERFORMANCE === '1';
@@ -90,13 +89,12 @@ describe('NodeManager Performance Tests', () => {
   };
 
   test(`initializes ${PERF_SCALE.init} nodes efficiently (< ${PERF_THRESHOLDS.init}ms)`, () => {
-    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.init);
+    const { nodes: largeDataset } = generateLargeNodeDataset(PERF_SCALE.init);
 
     // Populate hierarchy cache BEFORE initializeNodes for graph-native architecture
     // This simulates what the backend adapter would do when loading from database
-    for (const [parentId, childIds] of hierarchyMap) {
-      sharedNodeStore.updateChildrenCache(parentId, childIds);
-    }
+    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy
+
 
     const startTime = performance.now();
     nodeManager.initializeNodes(largeDataset);
@@ -118,10 +116,9 @@ describe('NodeManager Performance Tests', () => {
   });
 
   test(`node lookup performance with ${PERF_SCALE.lookup}+ nodes (< 1ms)`, () => {
-    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.lookup);
-    for (const [parentId, childIds] of hierarchyMap) {
-      sharedNodeStore.updateChildrenCache(parentId, childIds);
-    }
+    const { nodes: largeDataset } = generateLargeNodeDataset(PERF_SCALE.lookup);
+    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy
+
     nodeManager.initializeNodes(largeDataset);
 
     const startTime = performance.now();
@@ -139,10 +136,9 @@ describe('NodeManager Performance Tests', () => {
   });
 
   test(`combineNodes performance with large document (< ${PERF_THRESHOLDS.combine}ms)`, () => {
-    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.combine);
-    for (const [parentId, childIds] of hierarchyMap) {
-      sharedNodeStore.updateChildrenCache(parentId, childIds);
-    }
+    const { nodes: largeDataset } = generateLargeNodeDataset(PERF_SCALE.combine);
+    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy
+
     nodeManager.initializeNodes(largeDataset);
 
     const startTime = performance.now();
@@ -177,10 +173,9 @@ describe('NodeManager Performance Tests', () => {
     //
     // Real-world performance: ~440ms measured in tests with proper caching (full mode)
     // This ensures operations complete in sub-second timeframes for user interactions
-    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.hierarchy);
-    for (const [parentId, childIds] of hierarchyMap) {
-      sharedNodeStore.updateChildrenCache(parentId, childIds);
-    }
+    const { nodes: largeDataset, hierarchyMap: _hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.hierarchy);
+    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy
+
     nodeManager.initializeNodes(largeDataset);
 
     const startTime = performance.now();
@@ -262,10 +257,9 @@ describe('NodeManager Performance Tests', () => {
 
     // Perform many operations
     for (let cycle = 0; cycle < 10; cycle++) {
-      const { nodes: dataset, hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.multiCycle);
-      for (const [parentId, childIds] of hierarchyMap) {
-        sharedNodeStore.updateChildrenCache(parentId, childIds);
-      }
+      const { nodes: dataset, hierarchyMap: _hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.multiCycle);
+    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy
+
       nodeManager.initializeNodes(dataset);
 
       // Perform various operations
@@ -284,10 +278,9 @@ describe('NodeManager Performance Tests', () => {
   });
 
   test('concurrent operations performance', () => {
-    const { nodes: largeDataset, hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.concurrent);
-    for (const [parentId, childIds] of hierarchyMap) {
-      sharedNodeStore.updateChildrenCache(parentId, childIds);
-    }
+    const { nodes: largeDataset, hierarchyMap: _hierarchyMap } = generateLargeNodeDataset(PERF_SCALE.concurrent);
+    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy
+
     nodeManager.initializeNodes(largeDataset);
 
     const startTime = performance.now();

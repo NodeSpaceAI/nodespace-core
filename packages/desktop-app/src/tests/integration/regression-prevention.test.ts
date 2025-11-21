@@ -95,7 +95,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
         }
 
         // Move container2 after container1 using moveNode
-        await backend.moveNode(container2Id, null, container1Id);
+        await backend.moveNode(container2Id, null);
 
         await waitForDatabaseWrites();
         if (shouldUseDatabase()) {
@@ -115,7 +115,7 @@ describe.sequential('Section 12: Regression Prevention', () => {
         }
 
         // Move container3 after container2 using moveNode
-        await backend.moveNode(container3Id, null, container2Id);
+        await backend.moveNode(container3Id, null);
 
         await waitForDatabaseWrites();
         if (shouldUseDatabase()) {

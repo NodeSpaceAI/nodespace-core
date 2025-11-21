@@ -254,14 +254,14 @@ describe.skipIf(!shouldUseDatabase()).sequential('Section 8: Event System Tests'
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
-      // Move child node (hierarchy change via beforeSiblingId update)
+      // Move child node (hierarchy change)
       const siblingData = TestNodeBuilder.text('Sibling Node').build();
-      const siblingId = await backend.createNode(siblingData);
+      await backend.createNode(siblingData);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
-      await backend.moveNode(childId, null, siblingId);
+      await backend.moveNode(childId, null);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);

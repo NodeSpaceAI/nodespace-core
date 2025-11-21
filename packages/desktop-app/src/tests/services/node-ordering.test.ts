@@ -123,7 +123,7 @@ describe.skipIf(!shouldUseDatabase()).sequential('Section 6: Node Ordering Tests
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Move node3 after node1 (reorder)
-      await backend.moveNode(node3Id, null, node1Id);
+      await backend.moveNode(node3Id, null);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);

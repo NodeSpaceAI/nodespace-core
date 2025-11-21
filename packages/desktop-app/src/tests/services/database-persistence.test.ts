@@ -187,13 +187,13 @@ describe.skipIf(!shouldUseDatabase()).sequential('Section 7: Database Persistenc
 
       // Reorder: A -> C -> B (move C between A and B)
       // Use moveNode to reorder (backend handles fractional IDs)
-      await backend.moveNode(nodeCId, null, nodeAId);
+      await backend.moveNode(nodeCId, null);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Move B after C
-      await backend.moveNode(nodeBId, null, nodeCId);
+      await backend.moveNode(nodeBId, null);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);

@@ -270,9 +270,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     sharedNodeStore.setNode(newNode, viewerSource, skipPersistence);
     _uiState[nodeId] = newUIState;
 
-    // CRITICAL: Update children cache when creating a new node
-    // This keeps the cache synchronized with the actual hierarchy
-    sharedNodeStore.addChildToCache(newParentId, nodeId);
+    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
 
     // Set focus using FocusManager (single source of truth)
     // This replaces manual autoFocus flag manipulation
@@ -709,11 +707,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const originalUIState = { ..._uiState[nodeId] };
     const originalRootNodeIds = [..._rootNodeIds];
 
-    // Get existing children to determine position (insert at end)
-    // Backend handles fractional ordering - we just need to know the last child for positioning
-    const existingChildren = sharedNodeStore.getNodesForParent(targetParentId).map((n) => n.id);
-    const beforeSiblingId = existingChildren.length > 0 ? existingChildren[existingChildren.length - 1] : null;
-
     // Optimistic UI update: Show the move immediately
     _uiState[nodeId] = { ..._uiState[nodeId], depth: (targetParentUIState?.depth || 0) + 1 };
     updateDescendantDepths(nodeId);
@@ -724,13 +717,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     setExpanded(targetParentId, true);
 
-    // Update children cache to reflect the move
-    sharedNodeStore.removeChildFromCache(currentParentId, nodeId);
-    sharedNodeStore.addChildToCache(targetParentId, nodeId);
+    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
+    // Sibling positioning removed (Issue #557) - Backend handles ordering via fractional IDs
 
     // Atomic backend operation - backend handles fractional ordering
     try {
-      await backendAdapter.moveNode(nodeId, targetParentId, beforeSiblingId);
+      await backendAdapter.moveNode(nodeId, targetParentId);
     } catch (error) {
       // Check if error is ignorable (unit test environment or unpersisted nodes)
       const isIgnorableError =
@@ -745,8 +737,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         // Non-ignorable error: rollback and fail
         _uiState[nodeId] = originalUIState;
         _rootNodeIds = originalRootNodeIds;
-        sharedNodeStore.removeChildFromCache(targetParentId, nodeId);
-        sharedNodeStore.addChildToCache(currentParentId, nodeId);
+        // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles rollback via LIVE SELECT
         updateDescendantDepths(nodeId);
 
         console.error('[indentNode] Failed to move node:', error);
@@ -803,7 +794,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const originalRootNodeIds = [..._rootNodeIds];
 
     const newDepth = newParentId ? (_uiState[newParentId]?.depth || 0) + 1 : 0;
-    const positionBeforeSibling = oldParentId;
 
     // Optimistic UI updates for main node
     _uiState[nodeId] = { ..._uiState[nodeId], depth: newDepth };
@@ -818,13 +808,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       ];
     }
 
-    // Update children cache to reflect the move
-    sharedNodeStore.removeChildFromCache(oldParentId, nodeId);
-    sharedNodeStore.addChildToCache(newParentId, nodeId);
+    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
 
     // Atomic backend operation for main node - backend handles fractional ordering
     try {
-      await backendAdapter.moveNode(nodeId, newParentId, positionBeforeSibling);
+      await backendAdapter.moveNode(nodeId, newParentId);
     } catch (error) {
       // Check if error is ignorable (unit test environment or unpersisted nodes)
       const isIgnorableError =
@@ -839,8 +827,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         // Non-ignorable error: rollback and fail
         _uiState[nodeId] = originalUIState;
         _rootNodeIds = originalRootNodeIds;
-        sharedNodeStore.removeChildFromCache(newParentId, nodeId);
-        sharedNodeStore.addChildToCache(oldParentId, nodeId);
+        // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles rollback via LIVE SELECT
         updateDescendantDepths(nodeId);
 
         console.error('[outdentNode] Failed to move node:', error);
@@ -862,14 +849,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Transfer siblings below as children
     if (siblingsBelow.length > 0) {
-      // Get existing children (already sorted by backend)
-      const existingChildren = sharedNodeStore
-        .getNodesForParent(nodeId)
-        .filter((n) => !siblingsBelow.includes(n.id))
-        .map((n) => n.id);
-
-      // Get last existing child for positioning (if any)
-      const lastSiblingId = existingChildren.length > 0 ? existingChildren[existingChildren.length - 1] : null;
+      // NOTE: Sibling positioning removed (Issue #557) - Backend handles ordering via fractional IDs
 
       // Transfer each sibling
       for (let i = 0; i < siblingsBelow.length; i++) {
@@ -879,21 +859,16 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           // Save state for rollback
           const siblingOriginalUIState = { ..._uiState[siblingId] };
 
-          // Position: after last existing child, or after previous sibling we just moved
-          const siblingBeforeSiblingId = i === 0 ? lastSiblingId : siblingsBelow[i - 1];
-
           // Optimistic UI update
           const siblingDepth = newDepth + 1;
           _uiState[siblingId] = { ..._uiState[siblingId], depth: siblingDepth };
           updateDescendantDepths(siblingId);
 
-          // Update children cache for sibling transfer
-          sharedNodeStore.removeChildFromCache(oldParentId, siblingId);
-          sharedNodeStore.addChildToCache(nodeId, siblingId);
+          // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
 
           // Atomic backend operation - backend handles fractional ordering
           try {
-            await backendAdapter.moveNode(siblingId, nodeId, siblingBeforeSiblingId);
+            await backendAdapter.moveNode(siblingId, nodeId);
           } catch (error) {
             // Check if error is ignorable
             const isIgnorableError =
@@ -907,8 +882,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
             if (!isIgnorableError) {
               // Non-ignorable error: rollback and skip this sibling
               _uiState[siblingId] = siblingOriginalUIState;
-              sharedNodeStore.removeChildFromCache(nodeId, siblingId);
-              sharedNodeStore.addChildToCache(oldParentId, siblingId);
+              // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles rollback via LIVE SELECT
               updateDescendantDepths(siblingId);
 
               console.error(`[outdentNode] Failed to move sibling ${siblingId}:`, error);
@@ -997,9 +971,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       // NOTE: beforeSiblingId removed - backend handles ordering via fractional ordering
       sharedNodeStore.updateNode(child.id, {}, viewerSource);
 
-      // CRITICAL: Update children cache when promoting children to new parent
-      sharedNodeStore.removeChildFromCache(nodeId, child.id);
-      sharedNodeStore.addChildToCache(newParentForChildren, child.id);
+      // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
 
       // CRITICAL: If promoting to root level, add to _rootNodeIds
       // Must reassign (not mutate) for Svelte 5 reactivity
@@ -1045,16 +1017,13 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
-    // Determine parent BEFORE deleting the node
-    const parents = sharedNodeStore.getParentsForNode(nodeId);
-    const parentId = parents.length > 0 ? parents[0].id : null;
-
+    // NOTE: Parent determination no longer needed - cache management removed (Issue #557)
     cleanupDebouncedOperations(nodeId);
 
     // NOTE: Sibling chain management removed - backend handles ordering via fractional ordering
 
     // CRITICAL: Update children cache to remove this node from its parent
-    sharedNodeStore.removeChildFromCache(parentId, nodeId);
+    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
 
     sharedNodeStore.deleteNode(nodeId, viewerSource);
     delete _uiState[nodeId];
@@ -1512,10 +1481,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         nodesByParent.get(parentKey)!.push(node.id);
       }
 
-      // Update cache for each parent (including root nodes with null parent)
-      for (const [parentId, childIds] of nodesByParent.entries()) {
-        sharedNodeStore.updateChildrenCache(parentId, childIds);
-      }
+      // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
 
       // Second pass: Compute depths and identify roots
       // NOTE: Now using backend queries to determine which nodes are children

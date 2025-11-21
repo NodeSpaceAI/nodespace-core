@@ -151,45 +151,8 @@ describe('SharedNodeStore', () => {
   // ========================================================================
 
   describe('Node Filtering', () => {
-    it('should get all nodes', () => {
-      const node1: Node = { ...mockNode, id: 'node-1' };
-      const node2: Node = { ...mockNode, id: 'node-2' };
-      const node3: Node = { ...mockNode, id: 'node-3' };
-
-      store.setNode(node1, viewerSource);
-      store.setNode(node2, viewerSource);
-      store.setNode(node3, viewerSource);
-
-      // Populate cache to simulate backend hierarchy data
-      // (Graph-native architecture stores hierarchy as edges, not in Node fields)
-      store.updateChildrenCache(null, ['node-1', 'node-2', 'node-3']);
-
-      const allNodes = store.getNodesForParent(null);
-      expect(allNodes).toHaveLength(3);
-      expect(allNodes.map((n) => n.id)).toContain('node-1');
-      expect(allNodes.map((n) => n.id)).toContain('node-2');
-      expect(allNodes.map((n) => n.id)).toContain('node-3');
-    });
-
-    it('should get root nodes (no parent filtering needed)', () => {
-      const root1: Node = { ...mockNode, id: 'root-1' };
-      const root2: Node = { ...mockNode, id: 'root-2' };
-      const root3: Node = { ...mockNode, id: 'root-3' };
-
-      store.setNode(root1, viewerSource);
-      store.setNode(root2, viewerSource);
-      store.setNode(root3, viewerSource);
-
-      // Populate cache to simulate backend hierarchy data
-      // (Graph-native architecture: parentId removed, hierarchy stored as SurrealDB edges)
-      store.updateChildrenCache(null, ['root-1', 'root-2', 'root-3']);
-
-      const roots = store.getNodesForParent(null);
-      expect(roots).toHaveLength(3);
-      expect(roots.map((n) => n.id)).toContain('root-1');
-      expect(roots.map((n) => n.id)).toContain('root-2');
-      expect(roots.map((n) => n.id)).toContain('root-3');
-    });
+    // NOTE: getNodesForParent tests removed (Issue #557) - functionality now tested via ReactiveStructureTree
+    // Cache management methods removed - hierarchy is managed by ReactiveStructureTree via LIVE SELECT events
   });
 
   // ========================================================================

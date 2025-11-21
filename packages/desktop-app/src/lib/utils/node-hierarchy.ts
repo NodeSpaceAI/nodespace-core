@@ -46,6 +46,5 @@ export function registerChildWithParent(parentId: string, childId: string): void
     return;
   }
 
-  // Update cache with new child
-  sharedNodeStore.updateChildrenCache(parentId, [...existingChildren, childId]);
+  // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
 }

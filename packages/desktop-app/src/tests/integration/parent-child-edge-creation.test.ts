@@ -140,11 +140,9 @@ describe.sequential('Parent-Child Edge Creation (Issue #528)', () => {
         viewerId: 'test-viewer'
       });
 
-      // Update children cache (what base-node-viewer.svelte does)
-      const existingChildren = sharedNodeStore.getNodesForParent(dateId).map((n) => n.id);
-      sharedNodeStore.updateChildrenCache(dateId, [...existingChildren, placeholderId]);
+      // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy
 
-      // Verify children cache was updated
+      // Verify children are retrieved via ReactiveStructureTree
       const updatedChildren = sharedNodeStore.getNodesForParent(dateId);
       expect(updatedChildren.length).toBe(1);
       expect(updatedChildren[0].id).toBe(placeholderId);
@@ -263,10 +261,7 @@ describe.sequential('Parent-Child Edge Creation (Issue #528)', () => {
       viewerId: 'test-viewer'
     });
 
-    // Update children cache (critical fix from Issue #528)
-    // This is what base-node-viewer.svelte does to prevent orphaning
-    const existingChildren = sharedNodeStore.getNodesForParent(dateId).map((n) => n.id);
-    sharedNodeStore.updateChildrenCache(dateId, [...existingChildren, placeholderId]);
+    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy
 
     // Verify node is now in parent's children (the key assertion)
     const childrenAfter = sharedNodeStore.getNodesForParent(dateId);
