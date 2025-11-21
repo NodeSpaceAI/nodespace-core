@@ -136,8 +136,10 @@ pub async fn handle_tools_call(
             nodes::handle_update_nodes_batch(node_operations, schema_service, arguments).await
         }
 
-        // Search
-        "search_containers" => search::handle_search_containers(embedding_service, arguments),
+        // Semantic Search
+        "semantic_search" => search::handle_semantic_search(embedding_service, arguments).await,
+        // Legacy alias for backward compatibility
+        "search_containers" => search::handle_search_containers(embedding_service, arguments).await,
 
         // Schema Management
         "add_schema_field" => schema::handle_add_schema_field(schema_service, arguments).await,
@@ -545,31 +547,28 @@ fn get_tool_schemas() -> Value {
             }
         },
         {
-            "name": "search_containers",
-            "description": "Search containers using natural language semantic similarity (vector embeddings). Examples: 'Q4 planning tasks', 'machine learning research notes', 'budget discussions'",
+            "name": "semantic_search",
+            "description": "Search nodes by semantic meaning using embeddings. Returns nodes ranked by similarity to the query. Use this to find relevant content using natural language.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Natural language search query (e.g., 'Q4 planning tasks')"
+                        "description": "Search query text (e.g., 'project planning notes', 'API design decisions')"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return (default: 10, max: 50)",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "default": 10
                     },
                     "threshold": {
                         "type": "number",
-                        "description": "Similarity threshold 0.0-1.0, lower = more similar (default: 0.7)",
+                        "description": "Minimum similarity threshold, 0.0 (no match) to 1.0 (exact match). Default: 0.7",
                         "minimum": 0.0,
                         "maximum": 1.0,
                         "default": 0.7
-                    },
-                    "limit": {
-                        "type": "number",
-                        "description": "Maximum number of results (default: 20)",
-                        "default": 20
-                    },
-                    "exact": {
-                        "type": "boolean",
-                        "description": "Use exact cosine distance instead of approximate DiskANN (default: false)",
-                        "default": false
                     }
                 },
                 "required": ["query"]

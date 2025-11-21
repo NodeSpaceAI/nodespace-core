@@ -174,4 +174,60 @@ impl NodeEmbeddingService {
         );
         Ok(success_count)
     }
+
+    /// Search for nodes by semantic similarity
+    ///
+    /// Generates an embedding for the query text using the NLP engine,
+    /// then searches the database for nodes with similar embeddings.
+    ///
+    /// # Arguments
+    /// * `query` - Natural language search query
+    /// * `limit` - Maximum number of results to return
+    /// * `threshold` - Minimum similarity threshold (0.0-1.0)
+    ///
+    /// # Returns
+    /// Vector of (Node, similarity_score) tuples, sorted by similarity descending
+    ///
+    /// # Errors
+    /// Returns error if:
+    /// - Embedding generation fails (NLP engine not initialized)
+    /// - Database search fails
+    pub async fn semantic_search(
+        &self,
+        query: &str,
+        limit: usize,
+        threshold: f32,
+    ) -> Result<Vec<(Node, f64)>, NodeServiceError> {
+        // Validate query
+        if query.trim().is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "Search query cannot be empty",
+            ));
+        }
+
+        // Generate embedding for the query text using NLP engine
+        let query_embedding = self.nlp_engine.generate_embedding(query).map_err(|e| {
+            NodeServiceError::SerializationError(format!(
+                "Failed to generate query embedding: {}",
+                e
+            ))
+        })?;
+
+        // Search database using the query embedding
+        let results = self
+            .store
+            .search_by_embedding(&query_embedding, limit as i64, Some(threshold as f64))
+            .await
+            .map_err(|e| {
+                NodeServiceError::SerializationError(format!("Semantic search failed: {}", e))
+            })?;
+
+        tracing::debug!(
+            "Semantic search for '{}' returned {} results",
+            query,
+            results.len()
+        );
+
+        Ok(results)
+    }
 }

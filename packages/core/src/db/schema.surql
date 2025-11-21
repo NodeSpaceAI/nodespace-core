@@ -122,6 +122,28 @@ DEFINE INDEX IF NOT EXISTS idx_mentions_out ON TABLE mentions COLUMNS out;
 DEFINE INDEX IF NOT EXISTS idx_unique_mention ON TABLE mentions COLUMNS in, out UNIQUE;
 
 -- ============================================================================
+-- EMBEDDINGS TABLE (Vector storage for semantic search)
+-- ============================================================================
+
+-- Embeddings table: Stores vector embeddings for semantic search
+-- Separate from node table for flexibility in multi-model support and efficient vector operations
+DEFINE TABLE IF NOT EXISTS embedding SCHEMAFULL;
+
+-- Required fields
+DEFINE FIELD IF NOT EXISTS node_id ON TABLE embedding TYPE record<node> ASSERT $value != NONE;
+DEFINE FIELD IF NOT EXISTS model_name ON TABLE embedding TYPE string DEFAULT 'bge-small-en-v1.5';
+DEFINE FIELD IF NOT EXISTS vector ON TABLE embedding TYPE array<float> ASSERT $value != NONE;
+DEFINE FIELD IF NOT EXISTS dimension ON TABLE embedding TYPE int ASSERT $value > 0;
+DEFINE FIELD IF NOT EXISTS createdAt ON TABLE embedding TYPE datetime DEFAULT time::now();
+DEFINE FIELD IF NOT EXISTS modifiedAt ON TABLE embedding TYPE datetime DEFAULT time::now();
+
+-- Indexes for efficient lookups
+DEFINE INDEX IF NOT EXISTS idx_embedding_node ON TABLE embedding COLUMNS node_id;
+DEFINE INDEX IF NOT EXISTS idx_embedding_model ON TABLE embedding COLUMNS model_name;
+-- Unique constraint: one embedding per node per model
+DEFINE INDEX IF NOT EXISTS idx_embedding_unique ON TABLE embedding COLUMNS node_id, model_name UNIQUE;
+
+-- ============================================================================
 -- Schema Version Tracking
 -- ============================================================================
 
