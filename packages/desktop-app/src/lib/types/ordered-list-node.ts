@@ -79,7 +79,6 @@ export const OrderedListNodeHelpers = {
       id: `ordered-list-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
       nodeType: 'ordered-list',
       content,
-      beforeSiblingId: null,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,

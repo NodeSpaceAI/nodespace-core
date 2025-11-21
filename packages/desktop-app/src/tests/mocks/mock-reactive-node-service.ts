@@ -17,7 +17,6 @@ export interface Node {
   inheritHeaderLevel: number;
   metadata: Record<string, unknown>;
   mentions?: string[];
-  beforeSiblingId?: string;
   isPlaceholder?: boolean;
 }
 
@@ -227,25 +226,24 @@ export function createMockReactiveNodeService(events: NodeManagerEvents) {
           content: unifiedNode.content,
           nodeType: unifiedNode.nodeType,
           depth: 0, // Will be calculated based on hierarchy
-          children: [], // Will be computed from beforeSiblingId relationships
+          children: [], // Backend handles ordering via fractional IDs
           expanded: defaultOptions.expanded,
           autoFocus: defaultOptions.autoFocus,
           inheritHeaderLevel: defaultOptions.inheritHeaderLevel,
           metadata: unifiedNode.properties,
-          mentions: unifiedNode.mentions,
-          beforeSiblingId: unifiedNode.beforeSiblingId || undefined
+          mentions: unifiedNode.mentions
         };
         _nodes[unifiedNode.id] = node;
       }
 
-      // Compute children arrays from beforeSiblingId relationships (simplified mock)
+      // Compute children arrays from parent relationships
       // In the real implementation, this would use HierarchyService
       for (const node of Object.values(_nodes)) {
         node.children = [];
       }
 
       // For mock purposes, treat all nodes as root nodes
-      // Real implementation would build hierarchy from beforeSiblingId chains
+      // Real implementation would build hierarchy from parent-child relationships
       _rootNodeIds = nodes.map((n) => n.id);
 
       // Calculate depths based on parent hierarchy

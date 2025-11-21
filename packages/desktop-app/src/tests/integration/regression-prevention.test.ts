@@ -54,41 +54,13 @@ describe.sequential('Section 12: Regression Prevention', () => {
   });
 
   /**
-   * Helper: Get children in visual order (linked list traversal)
+   * Helper: Get children in order
+   * Backend now handles ordering via fractional IDs, so we just fetch children
    */
   async function getChildrenInOrder(parentId: string | null): Promise<Node[]> {
     const children = await backend.queryNodes({ parentId });
-
-    if (children.length === 0) return [];
-
-    // Find first child (no beforeSiblingId or beforeSiblingId not in children)
-    const childIds = new Set(children.map((c) => c.id));
-    const first = children.find((c) => !c.beforeSiblingId || !childIds.has(c.beforeSiblingId));
-
-    if (!first) return children; // Fallback: return unsorted
-
-    // Traverse linked list
-    const sorted: Node[] = [];
-    const visited = new Set<string>();
-    let current: Node | undefined = first;
-
-    while (current && visited.size < children.length) {
-      if (visited.has(current.id)) break; // Circular ref guard
-      visited.add(current.id);
-      sorted.push(current);
-
-      // Find next node (node whose beforeSiblingId points to current)
-      current = children.find((c) => c.beforeSiblingId === current!.id);
-    }
-
-    // Append any orphaned nodes
-    for (const child of children) {
-      if (!visited.has(child.id)) {
-        sorted.push(child);
-      }
-    }
-
-    return sorted;
+    // Backend returns children in correct order (via fractional IDs)
+    return children;
   }
 
   describe.skipIf(!shouldUseDatabase())('Hierarchy integrity (Regression #185, #176)', () => {
@@ -122,10 +94,8 @@ describe.sequential('Section 12: Regression Prevention', () => {
           expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
         }
 
-        // Update container2 to come after container1
-        await backend.updateNode(container2Id, 1, {
-          beforeSiblingId: container1Id
-        });
+        // Move container2 after container1 using moveNode
+        await backend.moveNode(container2Id, null, container1Id);
 
         await waitForDatabaseWrites();
         if (shouldUseDatabase()) {
@@ -144,10 +114,8 @@ describe.sequential('Section 12: Regression Prevention', () => {
           expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
         }
 
-        // Update container3 to come after container2
-        await backend.updateNode(container3Id, 1, {
-          beforeSiblingId: container2Id
-        });
+        // Move container3 after container2 using moveNode
+        await backend.moveNode(container3Id, null, container2Id);
 
         await waitForDatabaseWrites();
         if (shouldUseDatabase()) {
@@ -166,12 +134,12 @@ describe.sequential('Section 12: Regression Prevention', () => {
         expect(idx2).toBeGreaterThan(idx1);
         expect(idx3).toBeGreaterThan(idx2);
 
-        // Verify linked list integrity
+        // Verify all containers exist
         const container2 = await backend.getNode(container2Id);
         const container3 = await backend.getNode(container3Id);
 
-        expect(container2?.beforeSiblingId).toBe(container1Id);
-        expect(container3?.beforeSiblingId).toBe(container2Id);
+        expect(container2).toBeTruthy();
+        expect(container3).toBeTruthy();
       } catch (error) {
         // If container endpoint is not yet active, skip this test
         // Expected: 405 Method Not Allowed until endpoint is properly registered

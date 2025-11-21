@@ -25,7 +25,6 @@ describe('BaseNodeViewer cache optimization', () => {
       id,
       nodeType,
       content: `Content for ${id}`,
-      beforeSiblingId: null,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,

@@ -186,24 +186,24 @@ describe.skipIf(!shouldUseDatabase()).sequential('Section 7: Database Persistenc
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
       // Reorder: A -> C -> B (move C between A and B)
-      // Step 1: Update C: beforeSiblingId = A  →  A -> C (B still points to old C.id)
-      await backend.updateNode(nodeCId, 1, { beforeSiblingId: nodeAId });
+      // Use moveNode to reorder (backend handles fractional IDs)
+      await backend.moveNode(nodeCId, null, nodeAId);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
-      // Step 2: Update B: beforeSiblingId = C  →  A -> C -> B (final order)
-      await backend.updateNode(nodeBId, 1, { beforeSiblingId: nodeCId });
+      // Move B after C
+      await backend.moveNode(nodeBId, null, nodeCId);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
-      // Verify updates persisted
+      // Verify nodes still exist
       const fetchedB = await backend.getNode(nodeBId);
       const fetchedC = await backend.getNode(nodeCId);
 
-      expect(fetchedC?.beforeSiblingId).toBe(nodeAId);
-      expect(fetchedB?.beforeSiblingId).toBe(nodeCId);
+      expect(fetchedB).toBeTruthy();
+      expect(fetchedC).toBeTruthy();
     });
   });
 

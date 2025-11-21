@@ -25,7 +25,6 @@ describe('Phase 3: MCP Integration (Simulated)', () => {
     id: 'test-node-1',
     nodeType: 'text',
     content: 'Initial content',
-    beforeSiblingId: null,
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
     version: 1,

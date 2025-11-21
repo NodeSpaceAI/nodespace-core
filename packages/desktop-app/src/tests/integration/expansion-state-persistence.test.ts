@@ -390,7 +390,6 @@ function createMockNode(id: string, content: string, _parentId: string | null = 
     id,
     nodeType: 'text',
     content,
-    beforeSiblingId: null,
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
     version: 1,

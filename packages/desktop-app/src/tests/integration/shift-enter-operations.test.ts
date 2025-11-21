@@ -85,7 +85,6 @@ describe('Shift+Enter Key Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'First line',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -115,7 +114,6 @@ describe('Shift+Enter Key Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'Line 1',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -143,7 +141,6 @@ describe('Shift+Enter Key Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: '**Bold text**',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -171,7 +168,6 @@ describe('Shift+Enter Key Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: '## Header',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -197,7 +193,6 @@ describe('Shift+Enter Key Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'Content',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -223,7 +218,6 @@ describe('Shift+Enter Key Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'Content',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -248,7 +242,6 @@ describe('Shift+Enter Key Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: '- List item',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -275,7 +268,6 @@ describe('Shift+Enter Key Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: '[ ] Task item',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -302,7 +294,6 @@ describe('Shift+Enter Key Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: '## Title',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -343,7 +334,6 @@ describe('Shift+Enter Key Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'Node 1',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -353,7 +343,6 @@ describe('Shift+Enter Key Operations', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Node 2',
-      beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -386,7 +375,6 @@ describe('Shift+Enter Key Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'Paragraph 1',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []

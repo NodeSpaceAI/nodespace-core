@@ -368,7 +368,6 @@ export class HierarchyService {
       id: string;
       node: Node;
       parentId: string | null;
-      beforeSiblingId: string | null;
       depth: number;
       children_count: number;
     }>;
@@ -390,7 +389,6 @@ export class HierarchyService {
         id: nodeId,
         node: node,
         parentId: parentId,
-        beforeSiblingId: node.beforeSiblingId || null, // For client-side ordering
         depth: this.getNodeDepth(nodeId),
         children_count: children.length
       };

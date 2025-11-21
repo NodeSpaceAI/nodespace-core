@@ -69,9 +69,6 @@ export async function retryOperation<T>(
  *   id: 'test-node-1',
  *   nodeType: 'text',
  *   content: 'Hello World',
- *   parentId: null,
- *   containerNodeId: null,
- *   beforeSiblingId: null,
  *   properties: {},
  *   embeddingVector: null,
  *   mentions: []
@@ -159,6 +156,9 @@ export function skipIfEndpointUnavailable(error: unknown, endpointName: string):
  * This centralized helper eliminates duplication across integration tests and
  * ensures consistent behavior in both test modes.
  *
+ * Note: Node ordering is now handled by the backend via fractional IDs.
+ * The beforeSiblingId parameter is no longer needed and has been removed.
+ *
  * @param adapter - The HttpAdapter instance (used only in database mode)
  * @param nodeData - The node data (without createdAt/modifiedAt timestamps)
  * @returns The created/built Node object with all fields populated
@@ -169,9 +169,6 @@ export function skipIfEndpointUnavailable(error: unknown, endpointName: string):
  *   id: 'test-node-1',
  *   nodeType: 'text',
  *   content: 'Hello World',
- *   parentId: null,
- *   containerNodeId: null,
- *   beforeSiblingId: null,
  *   properties: {},
  *   embeddingVector: null,
  *   mentions: []
@@ -192,7 +189,6 @@ export async function createNodeForCurrentMode(
       | 'ordered-list'
       | 'ai-chat';
     content: string;
-    beforeSiblingId: string | null;
     version?: number;
     properties: Record<string, unknown>;
     embeddingVector: number[] | null;
@@ -208,7 +204,6 @@ export async function createNodeForCurrentMode(
       .withId(nodeData.id)
       .withType(nodeData.nodeType)
       .withContent(nodeData.content)
-      .withBeforeSibling(nodeData.beforeSiblingId)
       .withVersion(nodeData.version ?? 1)
       .withProperties(nodeData.properties)
       .withEmbedding(nodeData.embeddingVector)

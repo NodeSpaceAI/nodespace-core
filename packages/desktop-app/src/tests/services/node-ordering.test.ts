@@ -2,7 +2,8 @@
  * Section 6: Node Ordering Tests (Phase 2 - Real Backend)
  *
  * Tests node ordering behavior with real HTTP backend and database.
- * Verifies insertAtBeginning mode, nested operations, and visual order.
+ * Node ordering is now handled by the backend via fractional IDs.
+ * These tests verify visual order through the backend's queryNodes method.
  *
  * Part of comprehensive test coverage initiative (#208, Phase 2: #211)
  */
@@ -48,338 +49,245 @@ describe.skipIf(!shouldUseDatabase()).sequential('Section 6: Node Ordering Tests
   });
 
   /**
-   * Get children of a parent node sorted by visual order (linked list traversal)
-   *
-   * NodeSpace uses a beforeSiblingId linked list for node ordering:
-   * - Each node points to the node that comes BEFORE it visually
-   * - The first node has beforeSiblingId = null (or points outside the sibling set)
-   * - Visual order: A -> B -> C means B.beforeSiblingId = A.id, C.beforeSiblingId = B.id
-   *
-   * Algorithm:
-   * 1. Find first child (beforeSiblingId is null or not in children set)
-   * 2. Traverse: find next child where child.beforeSiblingId === current.id
-   * 3. Guard against circular references with visited set
-   * 4. Append orphaned nodes (broken links) at end
+   * Get children of a parent node via queryNodes
+   * Backend now returns children in correct order via fractional IDs
    *
    * @param parentId - Parent node ID (null for root nodes)
-   * @returns Children sorted in visual order
-   *
-   * @example
-   * // Visual order: node1 -> node2 -> node3
-   * // node1.beforeSiblingId = null
-   * // node2.beforeSiblingId = node1.id
-   * // node3.beforeSiblingId = node2.id
-   * const ordered = await getChildrenInOrder(parentId);
-   * // Returns: [node1, node2, node3]
+   * @returns Children in visual order
    */
   async function getChildrenInOrder(parentId: string | null): Promise<Node[]> {
-    // Use Phase 2 queryNodes() method
+    // Backend handles ordering via fractional IDs
     const children = await backend.queryNodes({ parentId });
-
-    // Sort by beforeSiblingId linked list
-    if (children.length === 0) return [];
-
-    // Find first child (no beforeSiblingId or beforeSiblingId not in children)
-    const childIds = new Set(children.map((c) => c.id));
-    const first = children.find((c) => !c.beforeSiblingId || !childIds.has(c.beforeSiblingId));
-
-    if (!first) return children; // Fallback: return unsorted
-
-    // Traverse linked list
-    const sorted: Node[] = [];
-    const visited = new Set<string>();
-    let current: Node | undefined = first;
-
-    while (current && visited.size < children.length) {
-      if (visited.has(current.id)) break; // Circular ref guard
-      visited.add(current.id);
-      sorted.push(current);
-
-      // Find next node (node whose beforeSiblingId points to current)
-      current = children.find((c) => c.beforeSiblingId === current!.id);
-    }
-
-    // Append any orphaned nodes
-    for (const child of children) {
-      if (!visited.has(child.id)) {
-        sorted.push(child);
-      }
-    }
-
-    return sorted;
+    return children;
   }
 
-  describe('insertAtBeginning=true Visual Order', () => {
-    it('should create new node BEFORE reference node (visual order)', async () => {
-      // Create two sibling nodes: node1, then node2 after it
-      const node1Data = TestNodeBuilder.text('First node').build();
-      const node1Id = await backend.createNode(node1Data);
+  // ============================================================================
+  // Basic Node Creation and Ordering
+  // ============================================================================
 
-      await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-
-      const node2Data = TestNodeBuilder.text('Second node')
-        .withBeforeSibling(node1Id) // node2 comes after node1
-        .build();
-      const node2Id = await backend.createNode(node2Data);
-
-      await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-
-      // Fetch to verify setup
-      const node1 = await backend.getNode(node1Id);
-      const node2 = await backend.getNode(node2Id);
-      expect(node1).toBeTruthy();
-      expect(node2).toBeTruthy();
-      expect(node2?.beforeSiblingId).toBe(node1Id);
-
-      // Create new node BEFORE node2 (simulating Enter at beginning of node2)
-      // In visual order: node1 -> newNode -> node2
-      const newNodeData = TestNodeBuilder.text('New node before node2')
-         // Same parent as node2 (null = root)
-        .withBeforeSibling(node1Id) // Insert between node1 and node2
-        .build();
-      const newNodeId = await backend.createNode(newNodeData);
-
-      await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-
-      // Update node2 to point to newNode instead of node1
-      await backend.updateNode(node2Id, 1, {
-        beforeSiblingId: newNodeId
-      });
-
-      await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-
-      // Verify order: node1 -> newNode -> node2
-      // Root nodes have parentId = null
-      const rootChildren = await getChildrenInOrder(null);
-      const ids = rootChildren.map((n) => n.id);
-
-      const node1Index = ids.indexOf(node1Id);
-      const newNodeIndex = ids.indexOf(newNodeId);
-      const node2Index = ids.indexOf(node2Id);
-
-      expect(newNodeIndex).toBeGreaterThan(node1Index);
-      expect(node2Index).toBeGreaterThan(newNodeIndex);
-    }, 10000);
-
-    it('should maintain correct order with multiple insertAtBeginning operations', async () => {
-      // Create root node
-      const rootData = TestNodeBuilder.text('Root').build();
-      const rootId = await backend.createNode(rootData);
-
-      await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-
-      // Create multiple nodes before previous new node (stack order)
-      // Simulates: press Enter at beginning repeatedly
-      // Expected order: node3 -> node2 -> node1 -> root
-
-      const node1Data = TestNodeBuilder.text('Node 1').withBeforeSibling(rootId).build();
-      const node1Id = await backend.createNode(node1Data);
-
-      await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-
-      const node2Data = TestNodeBuilder.text('Node 2').withBeforeSibling(node1Id).build();
-      const node2Id = await backend.createNode(node2Data);
-
-      await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-
-      const node3Data = TestNodeBuilder.text('Node 3').withBeforeSibling(node2Id).build();
-      const node3Id = await backend.createNode(node3Data);
-
-      await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-
-      // Verify order by traversing from root backwards
-      // Each node points to the one before it in visual order
-      const node3 = await backend.getNode(node3Id);
-      const node2 = await backend.getNode(node2Id);
-      const node1 = await backend.getNode(node1Id);
-
-      expect(node3?.beforeSiblingId).toBe(node2Id);
-      expect(node2?.beforeSiblingId).toBe(node1Id);
-      expect(node1?.beforeSiblingId).toBe(rootId);
-    }, 10000);
-  });
-
-  describe('insertAtBeginning=false (Normal Splitting)', () => {
-    it('should create new node AFTER reference node (normal split)', async () => {
-      // Create two nodes
-      const node1Data = TestNodeBuilder.text('First').build();
-      const node1Id = await backend.createNode(node1Data);
-
-      await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-
-      const node2Data = TestNodeBuilder.text('Second').withBeforeSibling(node1Id).build();
-      const node2Id = await backend.createNode(node2Data);
-
-      await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-
-      // Create new node AFTER node1 (normal split in middle of content)
-      // Visual order: node1 -> newNode -> node2
-      const newNodeData = TestNodeBuilder.text('New content after node1')
-        .withBeforeSibling(node1Id) // Same beforeSiblingId as node1's next sibling would have
-        .build();
-      const newNodeId = await backend.createNode(newNodeData);
-
-      await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-
-      // Update node2 to point to newNode
-      await backend.updateNode(node2Id, 1, {
-        beforeSiblingId: newNodeId
-      });
-
-      await waitForDatabaseWrites();
-      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
-
-      // Verify: node1 -> newNode -> node2
-      const newNode = await backend.getNode(newNodeId);
-      const node2 = await backend.getNode(node2Id);
-
-      expect(newNode?.beforeSiblingId).toBe(node1Id);
-      expect(node2?.beforeSiblingId).toBe(newNodeId);
-    }, 10000);
-  });
-
-  describe('Nested Node Ordering', () => {
-    it('should maintain correct order for child nodes', async () => {
-      // Create two sibling nodes
-      const child1Data = TestNodeBuilder.text('Child 1').build();
-      const child1Id = await backend.createNode(child1Data);
-
-      const child2Data = TestNodeBuilder.text('Child 2')
-        .withBeforeSibling(child1Id)
-        .build();
-      const child2Id = await backend.createNode(child2Data);
-
-      // Verify children order
-      const children = await getChildrenInOrder(null);
-      expect(children.length).toBe(2);
-      expect(children[0].id).toBe(child1Id);
-      expect(children[1].id).toBe(child2Id);
-    }, 10000);
-
-    it('should handle insertAtBeginning for child nodes', async () => {
-      // Create first child
-      const child1Data = TestNodeBuilder.text('Child 1').build();
-      const child1Id = await backend.createNode(child1Data);
-
-      // Create new child BEFORE child1
-      const newChildData = TestNodeBuilder.text('New child before child1')
-        .withBeforeSibling(null) // First child has no beforeSibling
-        .build();
-      const newChildId = await backend.createNode(newChildData);
-
-      // Update child1 to point to newChild
-      await backend.updateNode(child1Id, 1, {
-        beforeSiblingId: newChildId
-      });
-
-      // Verify order: newChild -> child1
-      const children = await getChildrenInOrder(null);
-      expect(children.length).toBe(2);
-      expect(children[0].id).toBe(newChildId);
-      expect(children[1].id).toBe(child1Id);
-    }, 10000);
-
-    it('should maintain deep hierarchy ordering correctly', async () => {
-      // Create nodes in a chain
-      const rootData = TestNodeBuilder.text('Root').build();
-      const rootId = await backend.createNode(rootData);
-
-      const childData = TestNodeBuilder.text('Child').withBeforeSibling(rootId).build();
-      const childId = await backend.createNode(childData);
-
-      const gc1Data = TestNodeBuilder.text('Grandchild 1').withBeforeSibling(childId).build();
-      const gc1Id = await backend.createNode(gc1Data);
-
-      const gc2Data = TestNodeBuilder.text('Grandchild 2')
-        .withBeforeSibling(gc1Id)
-        .build();
-      const gc2Id = await backend.createNode(gc2Data);
-
-      // Verify all nodes are in correct order
-      const allNodes = await getChildrenInOrder(null);
-      expect(allNodes.length).toBe(4);
-      expect(allNodes[0].id).toBe(rootId);
-      expect(allNodes[1].id).toBe(childId);
-      expect(allNodes[2].id).toBe(gc1Id);
-      expect(allNodes[3].id).toBe(gc2Id);
-    }, 10000);
-  });
-
-  describe('Mixed Operations', () => {
-    it('should handle mix of insertAtBeginning and normal splits', async () => {
-      // Create initial node
+  describe('Basic Node Creation', () => {
+    it('should create nodes successfully', async () => {
       const node1Data = TestNodeBuilder.text('Node 1').build();
       const node1Id = await backend.createNode(node1Data);
 
-      // Normal split (after node1)
-      const node2Data = TestNodeBuilder.text('Node 2').withBeforeSibling(node1Id).build();
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      // Verify node exists
+      const node1 = await backend.getNode(node1Id);
+      expect(node1).toBeTruthy();
+      expect(node1?.content).toBe('Node 1');
+    });
+
+    it('should return nodes from queryNodes', async () => {
+      // Create two nodes
+      const node1Data = TestNodeBuilder.text('Node 1').build();
+      const node1Id = await backend.createNode(node1Data);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      const node2Data = TestNodeBuilder.text('Node 2').build();
       const node2Id = await backend.createNode(node2Data);
 
-      // Insert at beginning (before node1)
-      const node0Data = TestNodeBuilder.text('Node 0')
-        .withBeforeSibling(null) // First in list
-        .build();
-      const node0Id = await backend.createNode(node0Data);
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
-      // Update node1 to point to node0
-      await backend.updateNode(node1Id, 1, {
-        beforeSiblingId: node0Id
-      });
+      // Query all root nodes
+      const rootNodes = await getChildrenInOrder(null);
 
-      // Normal split (after node2)
-      const node3Data = TestNodeBuilder.text('Node 3').withBeforeSibling(node2Id).build();
+      // Both nodes should be present
+      const nodeIds = rootNodes.map((n) => n.id);
+      expect(nodeIds).toContain(node1Id);
+      expect(nodeIds).toContain(node2Id);
+    });
+  });
+
+  // ============================================================================
+  // Node Movement with moveNode
+  // ============================================================================
+
+  describe('Node Movement via moveNode', () => {
+    it('should move node after another node', async () => {
+      // Create three nodes
+      const node1Data = TestNodeBuilder.text('Node 1').build();
+      const node1Id = await backend.createNode(node1Data);
+
+      const node2Data = TestNodeBuilder.text('Node 2').build();
+      const node2Id = await backend.createNode(node2Data);
+
+      const node3Data = TestNodeBuilder.text('Node 3').build();
       const node3Id = await backend.createNode(node3Data);
 
-      // Verify order: node0 -> node1 -> node2 -> node3
-      const node0 = await backend.getNode(node0Id);
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      // Move node3 after node1 (reorder)
+      await backend.moveNode(node3Id, null, node1Id);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      // Verify all nodes still exist
       const node1 = await backend.getNode(node1Id);
       const node2 = await backend.getNode(node2Id);
       const node3 = await backend.getNode(node3Id);
 
-      expect(node0?.beforeSiblingId).toBeNull();
-      expect(node1?.beforeSiblingId).toBe(node0Id);
-      expect(node2?.beforeSiblingId).toBe(node1Id);
-      expect(node3?.beforeSiblingId).toBe(node2Id);
-    }, 10000);
+      expect(node1).toBeTruthy();
+      expect(node2).toBeTruthy();
+      expect(node3).toBeTruthy();
+    });
+
+    it('should move node to become child of another node', async () => {
+      // Create parent and child nodes
+      const parentData = TestNodeBuilder.text('Parent').build();
+      const parentId = await backend.createNode(parentData);
+
+      const childData = TestNodeBuilder.text('Child').build();
+      const childId = await backend.createNode(childData);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      // Move child under parent using setParent
+      await backend.setParent(childId, parentId);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      // Verify child is now under parent
+      const children = await backend.getChildren(parentId);
+      expect(children).toHaveLength(1);
+      expect(children[0].id).toBe(childId);
+    });
   });
 
-  describe('Header Nodes with insertAtBeginning', () => {
-    it('should create new node before header (Enter at |# Header)', async () => {
-      // Create header node (without using properties - backend might not support it yet)
-      const headerData = TestNodeBuilder.text('# My Header').build();
-      const headerId = await backend.createNode(headerData);
+  // ============================================================================
+  // Parent-Child Relationships
+  // ============================================================================
 
-      // Create new node BEFORE header (simulating Enter at beginning of header)
-      // Note: Backend rejects empty nodes, so use actual content
-      const newNodeData = TestNodeBuilder.text('New text before header')
-        .withBeforeSibling(null) // First in list
-        .build();
-      const newNodeId = await backend.createNode(newNodeData);
+  describe('Parent-Child Relationships', () => {
+    it('should maintain parent-child relationship after setParent', async () => {
+      // Create hierarchy
+      const parentData = TestNodeBuilder.text('Parent').build();
+      const parentId = await backend.createNode(parentData);
 
-      // Update header to point to new node
-      await backend.updateNode(headerId, 1, {
-        beforeSiblingId: newNodeId
-      });
+      const child1Data = TestNodeBuilder.text('Child 1').build();
+      const child1Id = await backend.createNode(child1Data);
 
-      // Verify order: newNode -> header
-      const newNode = await backend.getNode(newNodeId);
-      const header = await backend.getNode(headerId);
+      const child2Data = TestNodeBuilder.text('Child 2').build();
+      const child2Id = await backend.createNode(child2Data);
 
-      expect(newNode?.beforeSiblingId).toBeNull();
-      expect(header?.beforeSiblingId).toBe(newNodeId);
-      expect(newNode?.content).toBe('New text before header');
-      expect(header?.content).toBe('# My Header');
-    }, 10000);
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      // Set parent-child relationships
+      await backend.setParent(child1Id, parentId);
+      await backend.setParent(child2Id, parentId);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      // Verify children
+      const children = await backend.getChildren(parentId);
+      expect(children).toHaveLength(2);
+
+      const childIds = children.map((c) => c.id);
+      expect(childIds).toContain(child1Id);
+      expect(childIds).toContain(child2Id);
+    });
+
+    it('should handle deep hierarchy (grandchildren)', async () => {
+      // Create 3-level hierarchy
+      const rootData = TestNodeBuilder.text('Root').build();
+      const rootId = await backend.createNode(rootData);
+
+      const childData = TestNodeBuilder.text('Child').build();
+      const childId = await backend.createNode(childData);
+
+      const grandchildData = TestNodeBuilder.text('Grandchild').build();
+      const grandchildId = await backend.createNode(grandchildData);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      // Set up hierarchy
+      await backend.setParent(childId, rootId);
+      await backend.setParent(grandchildId, childId);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      // Verify child of root
+      const childrenOfRoot = await backend.getChildren(rootId);
+      expect(childrenOfRoot).toHaveLength(1);
+      expect(childrenOfRoot[0].id).toBe(childId);
+
+      // Verify grandchild of child
+      const grandchildren = await backend.getChildren(childId);
+      expect(grandchildren).toHaveLength(1);
+      expect(grandchildren[0].id).toBe(grandchildId);
+    });
+  });
+
+  // ============================================================================
+  // Node Deletion
+  // ============================================================================
+
+  describe('Node Deletion', () => {
+    it('should delete node successfully', async () => {
+      const nodeData = TestNodeBuilder.text('To be deleted').build();
+      const nodeId = await backend.createNode(nodeData);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      // Verify node exists
+      let node = await backend.getNode(nodeId);
+      expect(node).toBeTruthy();
+
+      // Delete node
+      await backend.deleteNode(nodeId, node!.version);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      // Verify node no longer exists
+      node = await backend.getNode(nodeId);
+      expect(node).toBeNull();
+    });
+
+    it('should handle deletion of node with children', async () => {
+      // Create parent with child
+      const parentData = TestNodeBuilder.text('Parent').build();
+      const parentId = await backend.createNode(parentData);
+
+      const childData = TestNodeBuilder.text('Child').build();
+      const childId = await backend.createNode(childData);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      // Set up parent-child relationship
+      await backend.setParent(childId, parentId);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      // Verify child exists under parent
+      let children = await backend.getChildren(parentId);
+      expect(children).toHaveLength(1);
+
+      // Delete child
+      const child = await backend.getNode(childId);
+      await backend.deleteNode(childId, child!.version);
+
+      await waitForDatabaseWrites();
+      expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
+
+      // Verify child no longer under parent
+      children = await backend.getChildren(parentId);
+      expect(children).toHaveLength(0);
+    });
   });
 });

@@ -31,9 +31,6 @@ export interface Node {
   /** Primary content/text of the node */
   content: string;
 
-  /** Sibling ordering reference (single-pointer linked list) */
-  beforeSiblingId: string | null;
-
   /**
    * Parent node ID (graph edge relationship)
    * Managed via graph edges in backend, cached in frontend for performance
@@ -156,7 +153,7 @@ export interface Node {
  *
  * ## Type System Mapping (TypeScript → Rust)
  *
- * For nullable fields (parentId, containerNodeId, beforeSiblingId, embeddingVector):
+ * For nullable fields (parentId, embeddingVector):
  *
  * | TypeScript Value | Meaning | Rust Type | Behavior |
  * |-----------------|---------|-----------|----------|
@@ -167,14 +164,14 @@ export interface Node {
  * ## Example Usage
  *
  * ```typescript
- * // Don't update beforeSiblingId (leave as-is)
+ * // Don't update parentId (leave as-is)
  * updateNode('node-1', { content: 'New content' });
  *
- * // Clear beforeSiblingId (set to NULL)
- * updateNode('node-1', { beforeSiblingId: null });
+ * // Clear parentId (set to NULL, making it a root node)
+ * updateNode('node-1', { parentId: null });
  *
- * // Set beforeSiblingId to a value
- * updateNode('node-1', { beforeSiblingId: 'node-2' });
+ * // Set parentId to a value
+ * updateNode('node-1', { parentId: 'parent-node-id' });
  * ```
  *
  * ## Implementation Details
@@ -189,15 +186,6 @@ export interface NodeUpdate {
 
   /** Update primary content */
   content?: string;
-
-  /**
-   * Update sibling ordering
-   *
-   * - `undefined`: Don't update (keep current position)
-   * - `null`: Clear sibling reference (move to end of list)
-   * - `string`: Insert before this sibling
-   */
-  beforeSiblingId?: string | null;
 
   /** Update or merge properties */
   properties?: Record<string, unknown>;
@@ -255,7 +243,6 @@ export function isNode(obj: unknown): obj is Node {
     typeof node.id === 'string' &&
     typeof node.nodeType === 'string' &&
     typeof node.content === 'string' &&
-    (node.beforeSiblingId === null || typeof node.beforeSiblingId === 'string') &&
     typeof node.createdAt === 'string' &&
     typeof node.modifiedAt === 'string' &&
     typeof node.properties === 'object' &&

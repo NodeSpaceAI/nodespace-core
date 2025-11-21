@@ -274,7 +274,6 @@ class ReactiveNodeData {
       version: nodeData.version,
       createdAt: new Date(nodeData.modifiedAt).toISOString(),
       modifiedAt: nodeData.modifiedAt,
-      beforeSiblingId: null, // Structure fields not stored here
       properties: {}
     };
 

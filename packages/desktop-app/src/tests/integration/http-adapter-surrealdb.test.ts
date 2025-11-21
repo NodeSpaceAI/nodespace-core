@@ -325,39 +325,37 @@ describe.skipIf(!(await isDevProxyAvailable()))('HttpAdapter with Dev-Proxy', ()
       expect(children[0].id).toBe('test-child');
     });
 
-    it('should maintain sibling order', async () => {
+    it('should maintain sibling order via parent-child relationships', async () => {
       const parentData = TestNodeBuilder.text('Parent').withId('test-sibling-parent').build();
 
       await adapter.createNode(parentData);
 
-      // Create siblings in order
+      // Create siblings
       const child1Data = TestNodeBuilder.text('Child 1')
         .withId('test-child-1')
-        .withBeforeSibling(null)
         .build();
 
       const child2Data = TestNodeBuilder.text('Child 2')
         .withId('test-child-2')
-        .withBeforeSibling('test-child-1')
         .build();
 
       const child3Data = TestNodeBuilder.text('Child 3')
         .withId('test-child-3')
-        .withBeforeSibling('test-child-2')
         .build();
 
       await adapter.createNode(child1Data);
       await adapter.createNode(child2Data);
       await adapter.createNode(child3Data);
 
-      // Verify sibling chain
-      const child1 = await adapter.getNode('test-child-1');
-      const child2 = await adapter.getNode('test-child-2');
-      const child3 = await adapter.getNode('test-child-3');
+      // Set up parent-child relationships
+      await adapter.setParent('test-child-1', 'test-sibling-parent');
+      await adapter.setParent('test-child-2', 'test-sibling-parent');
+      await adapter.setParent('test-child-3', 'test-sibling-parent');
 
-      expect(child1!.beforeSiblingId).toBeNull();
-      expect(child2!.beforeSiblingId).toBe('test-child-1');
-      expect(child3!.beforeSiblingId).toBe('test-child-2');
+      // Verify all children exist under parent
+      const children = await adapter.getChildren('test-sibling-parent');
+      expect(children).toHaveLength(3);
+      expect(children.map((c) => c.id).sort()).toEqual(['test-child-1', 'test-child-2', 'test-child-3']);
     });
 
     it('should update parent relationship', async () => {
@@ -717,16 +715,18 @@ Special: !@#$%^&*()`;
       const _retrieved = await adapter.getNode('test-container-mapping');
     });
 
-    it('should correctly map beforeSiblingId', async () => {
-      const nodeData = TestNodeBuilder.text('Sibling mapping')
-        .withId('test-sibling-mapping')
-        .withBeforeSibling('previous-sibling-id')
+    it('should correctly create node without beforeSiblingId', async () => {
+      // beforeSiblingId is no longer part of the Node interface
+      // Ordering is now handled by backend via fractional IDs
+      const nodeData = TestNodeBuilder.text('Node mapping')
+        .withId('test-node-mapping')
         .build();
 
       await adapter.createNode(nodeData);
 
-      const retrieved = await adapter.getNode('test-sibling-mapping');
-      expect(retrieved!.beforeSiblingId).toBe('previous-sibling-id');
+      const retrieved = await adapter.getNode('test-node-mapping');
+      expect(retrieved).not.toBeNull();
+      expect(retrieved!.content).toBe('Node mapping');
     });
 
     it('should correctly map createdAt and modifiedAt', async () => {
@@ -771,16 +771,18 @@ Special: !@#$%^&*()`;
       const _retrieved = await adapter.getNode('test-null-container');
     });
 
-    it('should handle null beforeSiblingId', async () => {
+    it('should handle node creation without ordering info', async () => {
+      // beforeSiblingId is no longer part of the Node interface
+      // Ordering is now handled by backend via fractional IDs
       const nodeData = TestNodeBuilder.text('First sibling')
         .withId('test-null-sibling')
-        .withBeforeSibling(null)
         .build();
 
       await adapter.createNode(nodeData);
 
       const retrieved = await adapter.getNode('test-null-sibling');
-      expect(retrieved!.beforeSiblingId).toBeNull();
+      expect(retrieved).not.toBeNull();
+      expect(retrieved!.content).toBe('First sibling');
     });
 
     it('should handle null embeddingVector', async () => {

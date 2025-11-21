@@ -412,29 +412,6 @@
   }
 
   /**
-   * Helper function to check if a node is a root node (has no parents)
-   * In graph-native architecture, root nodes are identified by having no parent relationships
-   *
-   * NOTE: Currently uses a workaround since getParentsForNode returns [] for all nodes
-   * TODO: Update to use sharedNodeStore.getParentsForNode() when parent API is implemented
-   */
-  function isRootNode(_nodeId: string): boolean {
-    // Workaround: Since getParentsForNode currently returns [] for all nodes,
-    // we treat all nodes as potential root nodes for now
-    // This is safe because we filter to persisted nodes below
-    const sharedNodeStore = (
-      services?.nodeManager as { sharedNodeStore?: { getParentsForNode: (_id: string) => unknown[] } }
-    )?.sharedNodeStore;
-
-    if (!sharedNodeStore?.getParentsForNode) {
-      return true; // Default to true if API not available
-    }
-
-    const parents = sharedNodeStore.getParentsForNode(_nodeId);
-    return parents.length === 0;
-  }
-
-  /**
    * Creates a new standalone top-level node from an @mention query
    * Returns the new node ID if successful, null otherwise
    */
@@ -444,35 +421,18 @@
         return null;
       }
 
-      const nodeManager = services.nodeManager;
       const { v4: uuidv4 } = await import('uuid');
       const { backendAdapter } = await import('$lib/services/backend-adapter');
 
       const newNodeId = uuidv4();
 
-      // Find the last root node to get the correct order
-      // IMPORTANT: Only use persisted nodes to avoid FOREIGN KEY constraint errors
-      const allNodes = Array.from(nodeManager.nodes.values());
-      const rootNodes = allNodes.filter((node) => isRootNode(node.id));
-
-      // Filter to only persisted root nodes (those that exist in the database)
-      // Check if SharedNodeStore has persistedNodeIds tracking
-      const sharedNodeStore = (
-        nodeManager as { sharedNodeStore?: { persistedNodeIds: Set<string> } }
-      ).sharedNodeStore;
-      const persistedRootNodes = sharedNodeStore?.persistedNodeIds
-        ? rootNodes.filter((node) => sharedNodeStore.persistedNodeIds.has(node.id))
-        : rootNodes; // Fallback to all nodes if tracking not available
-
-      const lastRootNode = persistedRootNodes[persistedRootNodes.length - 1];
-      const beforeSiblingId = lastRootNode ? lastRootNode.id : null;
-
       // Create node using backend adapter (works in both Tauri and browser)
+      // Note: Sibling ordering is now handled by the backend via sibling_order column,
+      // so we don't need to pass beforeSiblingId here.
       await backendAdapter.createNode({
         id: newNodeId,
         content: title,
         nodeType: 'text',
-        beforeSiblingId: beforeSiblingId,
         properties: {},
         embeddingVector: null
       });

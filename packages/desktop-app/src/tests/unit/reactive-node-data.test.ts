@@ -56,7 +56,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T00:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
 
@@ -75,7 +74,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T00:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
 
@@ -104,7 +102,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T00:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
       nodeData.nodes.set(nodeId, testNode);
@@ -199,7 +196,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T00:00:00Z',
-        beforeSiblingId: null,
         properties: { completed: false }
       };
       nodeData.nodes.set(nodeId, testNode);
@@ -277,7 +273,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T10:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
       nodeData.nodes.set(nodeId, originalNode);
@@ -309,7 +304,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T10:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
       nodeData.nodes.set(nodeId, testNode);
@@ -350,7 +344,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T10:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
       nodeData.nodes.set(nodeId, testNode);
@@ -371,7 +364,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T10:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
       nodeData.nodes.set(nodeId, testNode);
@@ -402,7 +394,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T10:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
 
@@ -413,7 +404,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T10:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
 
@@ -440,7 +430,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T10:00:00Z',
-        beforeSiblingId: null,
         properties: { completed: false }
       };
       nodeData.nodes.set(nodeId, testNode);
@@ -466,7 +455,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T10:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
 
@@ -477,7 +465,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T10:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
 
@@ -498,7 +485,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T10:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
 
@@ -533,7 +519,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T10:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
       nodeData.nodes.set(nodeId, testNode);
@@ -571,7 +556,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T10:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
       nodeData.nodes.set(nodeId, testNode);
@@ -598,7 +582,6 @@ describe('ReactiveNodeData', () => {
         version: 1,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T10:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
       nodeData.nodes.set(nodeId, testNode);
@@ -618,7 +601,6 @@ describe('ReactiveNodeData', () => {
         version: Number.MAX_SAFE_INTEGER,
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-01T10:00:00Z',
-        beforeSiblingId: null,
         properties: {}
       };
       nodeData.nodes.set(nodeId, testNode);

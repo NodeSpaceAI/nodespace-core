@@ -15,7 +15,6 @@ describe('ConflictResolver', () => {
     nodeType: 'text',
     content: 'Original content',
     properties: { status: 'draft', priority: 'low' },
-    beforeSiblingId: null,
     createdAt: '2024-01-01T00:00:00Z',
     modifiedAt: '2024-01-01T00:00:00Z',
     version: 1,
@@ -23,21 +22,21 @@ describe('ConflictResolver', () => {
   });
 
   describe('Auto-merge Strategy 1: Non-overlapping changes', () => {
-    it('should auto-merge structural changes (parent/sibling)', () => {
+    it('should auto-merge structural changes (nodeType changes)', () => {
       const currentNode = createNode({
         version: 2,
         content: 'Modified content',
         properties: { status: 'published' }
       });
       const yourChanges: Partial<Node> = {
-        beforeSiblingId: 'new-sibling'
+        nodeType: 'header'
       };
 
       const result = ConflictResolver.tryAutoMerge(yourChanges, currentNode, 1);
 
       expect(result.autoMerged).toBe(true);
       expect(result.strategy).toBe('auto-merged');
-      expect(result.mergedNode?.beforeSiblingId).toBe('new-sibling');
+      expect(result.mergedNode?.nodeType).toBe('header');
       expect(result.mergedNode?.content).toBe('Modified content');
       expect(result.mergedNode?.properties).toEqual({ status: 'published' });
     });
@@ -48,13 +47,13 @@ describe('ConflictResolver', () => {
         properties: { status: 'published', priority: 'high' }
       });
       const yourChanges: Partial<Node> = {
-        beforeSiblingId: 'new-sibling'
+        nodeType: 'header'
       };
 
       const result = ConflictResolver.tryAutoMerge(yourChanges, currentNode, 1);
 
       expect(result.autoMerged).toBe(true);
-      expect(result.mergedNode?.beforeSiblingId).toBe('new-sibling');
+      expect(result.mergedNode?.nodeType).toBe('header');
       expect(result.mergedNode?.properties).toEqual({ status: 'published', priority: 'high' });
     });
   });
@@ -197,7 +196,7 @@ describe('ConflictResolver', () => {
         version: 2,
       });
       const yourChanges: Partial<Node> = {
-        beforeSiblingId: 'sibling-1'
+        nodeType: 'header'
       };
 
       const result = ConflictResolver.tryAutoMerge(yourChanges, currentNode, 1);
@@ -401,20 +400,20 @@ describe('ConflictResolver', () => {
       });
     });
 
-    it('should handle user reordering while AI updates content', () => {
+    it('should handle user type change while AI updates content', () => {
       const currentNode = createNode({
         version: 2,
         content: 'AI-updated content'
       });
       const yourChanges: Partial<Node> = {
-        beforeSiblingId: 'new-position'
+        nodeType: 'header'
       };
 
       const result = ConflictResolver.tryAutoMerge(yourChanges, currentNode, 1);
 
       expect(result.autoMerged).toBe(true);
       expect(result.mergedNode?.content).toBe('AI-updated content');
-      expect(result.mergedNode?.beforeSiblingId).toBe('new-position');
+      expect(result.mergedNode?.nodeType).toBe('header');
     });
 
     it('should handle bulk property updates from MCP while user edits one property', () => {
@@ -457,7 +456,7 @@ describe('ConflictResolver', () => {
         current_node: currentNode
       };
       const yourChanges: Partial<Node> = {
-        beforeSiblingId: 'new-position'
+        nodeType: 'header'
       };
 
       const result = ConflictResolver.resolveFromConflictData(conflictData, yourChanges);

@@ -514,20 +514,16 @@ export class SharedNodeStore {
 
       // Phase 2.4: Persist to database (unless skipped)
       // IMPORTANT: For viewer-sourced updates:
-      // - Structural changes (parentId, beforeSiblingId, containerNodeId) persist immediately
+      // - Structural changes persist immediately
       // - Content changes persist in debounced mode
       // This ensures hierarchy operations work while debouncing rapid typing
       const persistBehavior = this.determinePersistenceBehavior(source, options, changes);
       if (persistBehavior.shouldPersist) {
-        // GUARD: Check if beforeSiblingId or parentId reference unpersisted placeholders
-        // Placeholders use skipPersistence, so there's no operation to wait for
-        // Remove these references to avoid FOREIGN KEY constraint violations
-        //
-        // Type casting explanation: TypeScript doesn't allow deleting properties from Partial<Node>
-        // Issue #479: Remove placeholder checks - all real nodes (even blank) should be persisted
-        // FOREIGN KEY validation will be handled by persistence coordinator dependencies
+        // Issue #479: All real nodes (even blank) should be persisted
+        // FOREIGN KEY validation is handled by persistence coordinator dependencies
+        // Structural changes (sibling ordering) are now handled via backend moveNode()
 
-        const isStructuralChange = 'beforeSiblingId' in changes;
+        const isStructuralChange = false; // Structural changes now handled via backend moveNode()
         const isContentChange = 'content' in changes;
         const isNodeTypeChange = 'nodeType' in changes;
         const isPropertyChange = 'properties' in changes;
@@ -552,22 +548,8 @@ export class SharedNodeStore {
           const dependencies: Array<string | (() => Promise<void>)> = [];
 
           // Parent/container relationships are now managed via graph edges in the backend
+          // Sibling ordering is now managed via fractional position IDs in the backend
           // No frontend foreign key dependency tracking needed
-
-          /**
-           * Ensure beforeSiblingId is persisted (FOREIGN KEY constraint)
-           *
-           * Backend validates that beforeSiblingId must reference an existing node.
-           * Add dependency when:
-           * - beforeSiblingId is set
-           * - NOT already persisted to database
-           */
-          if (
-            updatedNode.beforeSiblingId &&
-            !this.persistedNodeIds.has(updatedNode.beforeSiblingId)
-          ) {
-            dependencies.push(updatedNode.beforeSiblingId);
-          }
 
           // Add any additional dependencies from options
           if (options.persistenceDependencies) {
@@ -645,10 +627,6 @@ export class SharedNodeStore {
                     }
                   }
 
-                  // CRITICAL: After persisting a placeholder that now has content,
-                  // update any nodes that reference this node in their beforeSiblingId
-                  // (these updates were skipped earlier to avoid FOREIGN KEY violations)
-                  this.updateDeferredSiblingReferences(nodeId);
                 }
                 // Mark update as persisted
                 this.markUpdatePersisted(nodeId, update);
@@ -717,12 +695,10 @@ export class SharedNodeStore {
     const isNewNode = !this.persistedNodeIds.has(node.id);
 
     // Emit event for HierarchyService cache invalidation
-    // ONLY when hierarchical relationships change (siblings, new nodes)
+    // ONLY when new nodes are created (hierarchy changes handled via backend moveNode)
     // Content-only updates should not trigger hierarchy cache invalidation
     const existingNode = this.nodes.get(node.id);
-    const isHierarchyChange =
-      !existingNode ||
-      existingNode.beforeSiblingId !== node.beforeSiblingId;
+    const isHierarchyChange = !existingNode; // New nodes trigger hierarchy event
 
     this.nodes.set(node.id, node);
     this.versions.set(node.id, this.getNextVersion(node.id));
@@ -767,19 +743,9 @@ export class SharedNodeStore {
         // Issue #479: No placeholder checks - all real nodes should be persisted
 
         // Delegate to PersistenceCoordinator
+        // Sibling ordering is now managed via fractional position IDs in the backend
+        // No frontend foreign key dependency tracking needed for beforeSiblingId
         const dependencies: Array<string | (() => Promise<void>)> = [];
-
-        /**
-         * Ensure beforeSiblingId is persisted (FOREIGN KEY constraint)
-         *
-         * Backend validates that beforeSiblingId must reference an existing node.
-         * Add dependency when:
-         * - beforeSiblingId is set
-         * - NOT already persisted to database
-         */
-        if (node.beforeSiblingId && !this.persistedNodeIds.has(node.beforeSiblingId)) {
-          dependencies.push(node.beforeSiblingId);
-        }
 
         // Issue #479: Always persist the full node including content
         // Real nodes (even with only syntax like "## ") must include content field for backend validation
@@ -1052,184 +1018,27 @@ export class SharedNodeStore {
   }
 
   /**
-   * Update deferred sibling references after a placeholder is persisted
-   *
-   * ARCHITECTURAL DECISION:
-   * Placeholders use skipPersistence to avoid backend validation errors (empty content).
-   * When they're later persisted (user adds content), we must manually update any
-   * sibling nodes that reference them in beforeSiblingId. These updates were deferred
-   * earlier to avoid FOREIGN KEY constraint violations.
-   *
-   * This is simpler than conditional persistence and avoids circular dependencies.
-   * Alternative approaches (conditional persistence, polling) add complexity without
-   * significant benefit. This manual reconciliation is a proven pattern.
-   *
-   * PERFORMANCE CHARACTERISTICS:
-   * - Complexity: O(n) where n = total nodes in memory
-   * - Typical case: 1-5 nodes need reconciliation (user rarely creates many placeholders)
-   * - Large documents: With 1000+ nodes, this could add ~1-5ms per placeholder persistence
-   * - Mitigation: Placeholders persist on content addition (user typing), not bulk operations
-   * - Future optimization: Could maintain explicit deferred reference map if needed
-   *
-   * @param newlyPersistedNodeId - ID of the node that was just persisted
-   */
-  private updateDeferredSiblingReferences(newlyPersistedNodeId: string): void {
-    // Find all nodes in memory that have this node as their beforeSiblingId
-    // but haven't persisted that reference yet (due to FOREIGN KEY constraints)
-    const nodesToUpdate: Array<{ nodeId: string; changes: Partial<Node> }> = [];
-
-    for (const [id, node] of this.nodes.entries()) {
-      if (!this.persistedNodeIds.has(id)) {
-        continue; // Skip unpersisted nodes
-      }
-
-      const changes: Partial<Node> = {};
-
-      // Check if this node has the newly-persisted node as beforeSiblingId
-      if (node.beforeSiblingId === newlyPersistedNodeId) {
-        changes.beforeSiblingId = newlyPersistedNodeId;
-      }
-
-      if (Object.keys(changes).length > 0) {
-        nodesToUpdate.push({ nodeId: id, changes });
-      }
-    }
-
-    if (nodesToUpdate.length === 0) {
-      return; // No deferred updates needed
-    }
-
-    // Update each node through normal updateNode flow
-    // Use 'database' source with explicit immediate persistence
-    const reconciliationSource: UpdateSource = {
-      type: 'database',
-      reason: 'deferred-reference-reconciliation'
-    };
-
-    for (const { nodeId, changes } of nodesToUpdate) {
-      this.updateNode(nodeId, changes, reconciliationSource, {
-        skipConflictDetection: true, // Skip conflict detection for reconciliation
-        persist: 'immediate' // Explicit immediate persistence
-      });
-    }
-  }
-
-  /**
-   * Validate FOREIGN KEY references before structural update
-   * Replaces BaseNodeViewer's inline validation logic
+   * Validate node references before update
    *
    * @param nodeId - Node to validate
-   * @param parentId - Proposed parent ID
-   * @param beforeSiblingId - Proposed sibling ID
-   * @param viewerParentId - Special case: viewer's parent exists but isn't loaded in store
-   * @returns Validated references and any errors
+   * @returns Validation result with any errors
+   *
+   * @deprecated Structural changes (beforeSiblingId) are now handled via backend moveNode().
+   * This method is kept for backward compatibility but only validates node existence.
    */
   async validateNodeReferences(
-    nodeId: string,
-    parentId: string | null,
-    beforeSiblingId: string | null,
-    viewerParentId: string | null
+    nodeId: string
   ): Promise<{
-    validatedParentId: string | null;
-    validatedBeforeSiblingId: string | null;
     errors: string[];
   }> {
     const errors: string[] = [];
-    let validatedParentId = parentId;
-    let validatedBeforeSiblingId = beforeSiblingId;
 
     // Validate node still exists
     if (!this.hasNode(nodeId)) {
       errors.push(`Node ${nodeId} not found (may have been deleted)`);
-      return { validatedParentId, validatedBeforeSiblingId, errors };
     }
 
-    // Validate parentId exists
-    if (validatedParentId) {
-      // Special case: viewer's parent exists in database but not loaded in store
-      const isViewerParent = validatedParentId === viewerParentId;
-      if (!isViewerParent && !this.hasNode(validatedParentId)) {
-        errors.push(`Parent ${validatedParentId} not found (may have been deleted)`);
-      }
-    }
-
-    // Validate beforeSiblingId exists
-    if (validatedBeforeSiblingId) {
-      if (!this.hasNode(validatedBeforeSiblingId)) {
-        console.warn(
-          `[SharedNodeStore] beforeSiblingId ${validatedBeforeSiblingId} not found, null-ing reference`
-        );
-        validatedBeforeSiblingId = null;
-      }
-    }
-
-    return { validatedParentId, validatedBeforeSiblingId, errors };
-  }
-
-  /**
-   * Update structural changes with validation and serial processing
-   * Replaces BaseNodeViewer's complex structural watcher logic
-   *
-   * @param updates - Array of structural updates
-   * @param source - Update source
-   * @param viewerParentId - Viewer's parent ID (for reference validation) - DEPRECATED, ignored
-   * @returns Results with succeeded/failed updates
-   */
-  async updateStructuralChangesValidated(
-    updates: Array<{
-      nodeId: string;
-      beforeSiblingId: string | null;
-    }>,
-    source: UpdateSource,
-    _viewerParentId: string | null
-  ): Promise<{
-    succeeded: typeof updates;
-    failed: typeof updates;
-    errors: Map<string, Error>;
-  }> {
-    const succeeded: typeof updates = [];
-    const failed: typeof updates = [];
-    const errors = new Map<string, Error>();
-
-    // Process updates serially to prevent race conditions
-    for (const update of updates) {
-      try {
-        // Validate FOREIGN KEY references
-        const validation = await this.validateNodeReferences(
-          update.nodeId,
-          null, // parentId parameter deprecated
-          update.beforeSiblingId,
-          null // viewerParentId deprecated
-        );
-
-        if (validation.errors.length > 0) {
-          failed.push(update);
-          errors.set(update.nodeId, new Error(validation.errors.join('; ')));
-          continue;
-        }
-
-        // Apply validated update
-        this.updateNode(
-          update.nodeId,
-          {
-            beforeSiblingId: validation.validatedBeforeSiblingId
-          },
-          source
-        );
-
-        succeeded.push({
-          ...update,
-          beforeSiblingId: validation.validatedBeforeSiblingId
-        });
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        console.error('[SharedNodeStore] Structural update failed:', update.nodeId, err);
-        failed.push(update);
-        errors.set(update.nodeId, err);
-      }
-    }
-
-    return { succeeded, failed, errors };
+    return { errors };
   }
 
   // ========================================================================
@@ -1578,10 +1387,8 @@ export class SharedNodeStore {
    * @returns 'structure' for hierarchy changes, 'metadata' for computed fields, 'content' otherwise
    */
   private determineUpdateType(changes: Partial<Node>): 'content' | 'structure' | 'metadata' {
-    // Structural changes take precedence
-    if ('beforeSiblingId' in changes) {
-      return 'structure';
-    }
+    // Structural changes (hierarchy/ordering) are now handled via backend moveNode()
+    // Frontend no longer tracks beforeSiblingId, so we skip structure detection
 
     // Metadata-only changes (computed fields that don't affect content)
     if (this.isMetadataOnlyUpdate(changes)) {
@@ -1891,12 +1698,9 @@ export class SharedNodeStore {
     const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
 
     // Use PersistenceCoordinator for coordinated persistence
+    // Sibling ordering is now managed via fractional position IDs in the backend
+    // No frontend foreign key dependency tracking needed for beforeSiblingId
     const dependencies: Array<string | (() => Promise<void>)> = [];
-
-    // Ensure beforeSiblingId is persisted (FOREIGN KEY)
-    if (finalNode.beforeSiblingId && !this.persistedNodeIds.has(finalNode.beforeSiblingId)) {
-      dependencies.push(finalNode.beforeSiblingId);
-    }
 
     // Persist with immediate mode (batches should not be debounced)
     PersistenceCoordinator.getInstance().persist(
@@ -1933,9 +1737,6 @@ export class SharedNodeStore {
                 finalNode.version = createdNode.version;
                 this.nodes.set(nodeId, finalNode); // Update local node with backend version
               }
-
-              // Update deferred sibling references
-              this.updateDeferredSiblingReferences(nodeId);
             } catch (createError) {
               // If CREATE fails (node already exists from race), try UPDATE with batched changes
               if (

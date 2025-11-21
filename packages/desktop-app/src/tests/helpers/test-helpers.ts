@@ -66,7 +66,6 @@ export function createTestNode(
       id,
       nodeType: options.nodeType || 'text',
       content: options.content ?? 'Test content',
-      beforeSiblingId: options.beforeSiblingId ?? null,
       parentId: options.parentId ?? null,
       createdAt: options.createdAt || now,
       modifiedAt: options.modifiedAt || now,
@@ -86,7 +85,6 @@ export function createTestNode(
     id,
     nodeType: nodeType || 'text',
     content: content ?? 'Test content',
-    beforeSiblingId: null,
     parentId: parentId ?? null, // Use parentId parameter for hierarchy
     createdAt: now,
     modifiedAt: now,

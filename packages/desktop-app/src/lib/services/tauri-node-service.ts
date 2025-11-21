@@ -283,44 +283,6 @@ export class TauriNodeService {
   }
 
   /**
-   * Save a node with parent creation - unified upsert operation
-   *
-   * Ensures parent exists, then creates or updates the node in a single transaction.
-   * Eliminates database locking issues from multiple sequential queries.
-   *
-   * @param nodeId - ID of the node to save
-   * @param data - Node data including content, node_type, parent_id, origin_node_id, and before_sibling_id
-   * @throws NodeOperationError if operation fails
-   */
-  async saveNodeWithParent(
-    nodeId: string,
-    data: {
-      content: string;
-      nodeType: string;
-      parentId: string;
-      containerNodeId: string;
-      beforeSiblingId?: string | null;
-    }
-  ): Promise<void> {
-    this.ensureInitialized();
-
-    try {
-      await universalInvoke<void>('save_node_with_parent', {
-        nodeId,
-        content: data.content,
-        nodeType: data.nodeType,
-        parentId: data.parentId,
-        containerNodeId: data.containerNodeId,
-        beforeSiblingId: data.beforeSiblingId || null
-      });
-    } catch (error) {
-      const err = toError(error);
-      console.error('[TauriNodeService] Failed to save node with parent:', nodeId, err);
-      throw new NodeOperationError(err.message, nodeId, 'saveWithParent');
-    }
-  }
-
-  /**
    * Get database path (if initialized)
    */
   getDatabasePath(): string | null {

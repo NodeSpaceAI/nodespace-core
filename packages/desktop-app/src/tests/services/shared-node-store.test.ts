@@ -26,7 +26,6 @@ describe('SharedNodeStore', () => {
     id: 'test-node-1',
     nodeType: 'text',
     content: 'Test content',
-    beforeSiblingId: null,
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
     version: 1,
@@ -599,19 +598,19 @@ describe('SharedNodeStore', () => {
         expect(PersistenceCoordinator.getInstance().isPersisted('test-node')).toBe(true);
       });
 
-      it('should handle structural changes with immediate persistence', async () => {
+      it('should handle content changes with debounced persistence', async () => {
         const node: Node = { ...mockNode, id: 'node' };
 
         store.setNode(node, viewerSource, true); // skipPersistence
 
-        // Update structural property (triggers immediate persistence)
-        store.updateNode('node', { beforeSiblingId: 'sibling-1' }, viewerSource);
+        // Update content (triggers debounced persistence)
+        store.updateNode('node', { content: 'Updated content' }, viewerSource);
 
         // Should update in memory immediately
-        expect(store.getNode('node')?.beforeSiblingId).toBe('sibling-1');
+        expect(store.getNode('node')?.content).toBe('Updated content');
 
-        // Wait for immediate persistence
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        // Wait for debounced persistence (debounce is ~400ms + some buffer)
+        await new Promise((resolve) => setTimeout(resolve, 500));
 
         // Persistence should have been triggered
         expect(PersistenceCoordinator.getInstance().isPersisted('node')).toBe(true);
@@ -678,192 +677,9 @@ describe('SharedNodeStore', () => {
       });
     });
 
-    // --------------------------------------------------------------------
-    // validateNodeReferences()
-    // --------------------------------------------------------------------
-    describe('validateNodeReferences', () => {
-      it('should return error when node does not exist', async () => {
-        const result = await store.validateNodeReferences('non-existent', null, null, null);
-
-        expect(result.errors).toHaveLength(1);
-        expect(result.errors[0]).toContain('not found');
-      });
-
-      it('should skip parent validation (parentId removed)', async () => {
-        store.setNode(mockNode, viewerSource);
-
-        const result = await store.validateNodeReferences(
-          mockNode.id,
-          null,
-          null,
-          null
-        );
-
-        expect(result.errors).toHaveLength(0);
-      });
-
-      it('should validate without parent references', async () => {
-        store.setNode(mockNode, viewerSource);
-
-        const result = await store.validateNodeReferences(
-          mockNode.id,
-          null,
-          null,
-          null
-        );
-
-        expect(result.errors).toHaveLength(0);
-        expect(result.validatedParentId).toBeNull();
-      });
-
-      it('should null out invalid beforeSiblingId', async () => {
-        store.setNode(mockNode, viewerSource);
-
-        const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-        const result = await store.validateNodeReferences(
-          mockNode.id,
-          null,
-          'non-existent-sibling',
-          null
-        );
-
-        expect(result.errors).toHaveLength(0);
-        expect(result.validatedBeforeSiblingId).toBeNull();
-        expect(consoleSpy).toHaveBeenCalled();
-
-        consoleSpy.mockRestore();
-      });
-
-      it('should validate sibling references successfully', async () => {
-        const sibling: Node = { ...mockNode, id: 'sibling-1' };
-        store.setNode(mockNode, viewerSource);
-        store.setNode(sibling, viewerSource);
-
-        const result = await store.validateNodeReferences(
-          mockNode.id,
-          null,
-          'sibling-1',
-          null
-        );
-
-        expect(result.errors).toHaveLength(0);
-        expect(result.validatedParentId).toBeNull();
-        expect(result.validatedBeforeSiblingId).toBe('sibling-1');
-      });
-    });
-
-    // --------------------------------------------------------------------
-    // updateStructuralChangesValidated()
-    // --------------------------------------------------------------------
-    describe('updateStructuralChangesValidated', () => {
-      it('should process valid updates successfully', async () => {
-        const node1: Node = { ...mockNode, id: 'node-1' };
-        const node2: Node = { ...mockNode, id: 'node-2' };
-
-        store.setNode(node1, viewerSource);
-        store.setNode(node2, viewerSource);
-
-        const updates = [
-          { nodeId: 'node-1', beforeSiblingId: null },
-          { nodeId: 'node-2', beforeSiblingId: 'node-1' }
-        ];
-
-        const result = await store.updateStructuralChangesValidated(updates, viewerSource, null);
-
-        expect(result.succeeded).toHaveLength(2);
-        expect(result.failed).toHaveLength(0);
-        expect(result.errors.size).toBe(0);
-
-        // Verify updates were applied
-        expect(store.getNode('node-2')?.beforeSiblingId).toBe('node-1');
-      });
-
-      it('should handle validation errors gracefully', async () => {
-        store.setNode(mockNode, viewerSource);
-
-        const updates = [
-          { nodeId: mockNode.id, beforeSiblingId: null }
-        ];
-
-        const result = await store.updateStructuralChangesValidated(updates, viewerSource, null);
-
-        // Should succeed since no parent validation is required
-        expect(result.succeeded).toHaveLength(1);
-        expect(result.failed).toHaveLength(0);
-        expect(result.errors.size).toBe(0);
-      });
-
-      it('should process updates serially', async () => {
-        const node1: Node = { ...mockNode, id: 'node-1' };
-        const node2: Node = { ...mockNode, id: 'node-2' };
-
-        store.setNode(node1, viewerSource);
-        store.setNode(node2, viewerSource);
-
-        const executionOrder: string[] = [];
-        const originalUpdateNode = store.updateNode.bind(store);
-
-        // Mock updateNode to track execution order
-        store.updateNode = vi.fn((nodeId, changes, source, options) => {
-          executionOrder.push(nodeId);
-          return originalUpdateNode(nodeId, changes, source, options);
-        });
-
-        const updates = [
-          { nodeId: 'node-1', beforeSiblingId: null },
-          { nodeId: 'node-2', beforeSiblingId: null }
-        ];
-
-        await store.updateStructuralChangesValidated(updates, viewerSource, null);
-
-        // Verify serial processing (node-1 before node-2)
-        expect(executionOrder).toEqual(['node-1', 'node-2']);
-
-        // Restore original method
-        store.updateNode = originalUpdateNode;
-      });
-
-      it('should null out invalid beforeSiblingId references', async () => {
-        const node: Node = { ...mockNode, id: 'node-1' };
-
-        store.setNode(node, viewerSource);
-
-        const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-        const updates = [
-          {
-            nodeId: 'node-1',
-            beforeSiblingId: 'non-existent-sibling'
-          }
-        ];
-
-        const result = await store.updateStructuralChangesValidated(updates, viewerSource, null);
-
-        expect(result.succeeded).toHaveLength(1);
-        expect(result.succeeded[0].beforeSiblingId).toBeNull();
-
-        consoleSpy.mockRestore();
-      });
-
-      it('should handle mixed success and failure', async () => {
-        const node1: Node = { ...mockNode, id: 'node-1' };
-
-        store.setNode(node1, viewerSource);
-
-        const updates = [
-          { nodeId: 'node-1', beforeSiblingId: null },
-          { nodeId: 'non-existent-node', beforeSiblingId: null }
-        ];
-
-        const result = await store.updateStructuralChangesValidated(updates, viewerSource, null);
-
-        expect(result.succeeded).toHaveLength(1);
-        expect(result.failed).toHaveLength(1);
-        expect(result.succeeded[0].nodeId).toBe('node-1');
-        expect(result.failed[0].nodeId).toBe('non-existent-node');
-      });
-    });
+    // NOTE: validateNodeReferences() and updateStructuralChangesValidated()
+    // were removed as part of the beforeSiblingId removal (Issue #575).
+    // Node ordering is now handled by the backend via fractional IDs and moveNode.
   });
 
   // ========================================================================
@@ -1261,7 +1077,6 @@ describe('SharedNodeStore', () => {
       id: 'persist-test',
       nodeType: 'text',
       content: 'Test',
-      beforeSiblingId: null,
       version: 1,
       properties: {},
       createdAt: Date.now().toString(),
@@ -1299,11 +1114,12 @@ describe('SharedNodeStore', () => {
 
         // Update with explicit persist: true (triggers persistence with auto mode)
         // Structural changes use immediate mode, content changes use debounced mode
-        store.updateNode('persist-test', { beforeSiblingId: 'sibling-1' }, viewerSource, {
+        store.updateNode('persist-test', { nodeType: 'header' }, viewerSource, {
           persist: true
         });
 
         // Should update in memory immediately
+        expect(store.getNode('persist-test')?.nodeType).toBe('header');
 
         // Structural change should trigger immediate persistence (not debounced)
         // Check that operation was queued (isPending or isPersisted)

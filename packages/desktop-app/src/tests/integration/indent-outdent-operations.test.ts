@@ -76,7 +76,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -86,7 +85,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
-      beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -122,7 +120,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -143,7 +140,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -153,7 +149,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
-      beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -163,7 +158,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'child-1',
       nodeType: 'text',
       content: 'Child of Second',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -200,7 +194,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -210,7 +203,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'child',
       nodeType: 'text',
       content: 'Child',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -250,7 +242,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'root',
       nodeType: 'text',
       content: 'Root',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -271,7 +262,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -281,7 +271,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'child-1',
       nodeType: 'text',
       content: 'Child 1',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -291,7 +280,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'child-2',
       nodeType: 'text',
       content: 'Child 2',
-      beforeSiblingId: 'child-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -301,7 +289,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'child-3',
       nodeType: 'text',
       content: 'Child 3',
-      beforeSiblingId: 'child-2',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -322,7 +309,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -332,7 +318,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'child',
       nodeType: 'text',
       content: 'Child',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -353,22 +338,21 @@ describe('Indent/Outdent Operations', () => {
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
 
-    // Verify: child positioned after parent
-    const outdentedChild = service.findNode('child');
-    expect(outdentedChild?.beforeSiblingId).toBe('parent');
+    // Verify: child is now at root level (depth 0)
+    const childUI = service.getUIState('child');
+    expect(childUI?.depth).toBe(0);
 
     // Verify: Visual order
     const visible = service.visibleNodes(null);
     expect(visible.map((n) => n.id)).toEqual(['parent', 'child']);
   });
 
-  it('should update sibling chain when indenting', async () => {
+  it('should update hierarchy when indenting', async () => {
     // Setup: Create three siblings
     const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -378,7 +362,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
-      beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -388,7 +371,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-3',
       nodeType: 'text',
       content: 'Third',
-      beforeSiblingId: 'node-2',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -402,13 +384,13 @@ describe('Indent/Outdent Operations', () => {
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
 
-    // Verify: node-3 now points to node-1 (bypassing node-2)
-    const node3Updated = service.findNode('node-3');
-    expect(node3Updated?.beforeSiblingId).toBe('node-1');
+    // Verify: node-2 is now at depth 1 (child of node-1)
+    const node2UI = service.getUIState('node-2');
+    expect(node2UI?.depth).toBe(1);
 
     // Verify: Visual order maintained at root level
     const visible = service.visibleNodes(null);
-    const rootIds = visible.map((n) => n.id);
+    const rootIds = visible.filter((n) => service.getUIState(n.id)?.depth === 0).map((n) => n.id);
     expect(rootIds).toContain('node-1');
     expect(rootIds).toContain('node-3');
   });
@@ -419,7 +401,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -429,7 +410,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
-      beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -439,7 +419,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'child-of-2',
       nodeType: 'text',
       content: 'Child',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -474,7 +453,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -484,7 +462,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'existing-child',
       nodeType: 'text',
       content: 'Existing Child',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -494,7 +471,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
-      beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -516,9 +492,9 @@ describe('Indent/Outdent Operations', () => {
     // CRITICAL: Wait for async database writes to complete before checking persistence
     await waitForDatabaseWrites();
 
-    // Verify: node-2 positioned after existing child
-    const node2Updated = service.findNode('node-2');
-    expect(node2Updated?.beforeSiblingId).toBe('existing-child');
+    // Verify: node-2 is now at depth 1 (sibling of existing-child under node-1)
+    const node2UI = service.getUIState('node-2');
+    expect(node2UI?.depth).toBe(1);
 
     // Verify: Visual order
     const visible = service.visibleNodes(null);
@@ -533,7 +509,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'Level 0',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -543,7 +518,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Level 1',
-      beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -553,7 +527,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-3',
       nodeType: 'text',
       content: 'Level 2',
-      beforeSiblingId: 'node-2',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -583,7 +556,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'Level 0',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -593,7 +565,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Level 1',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -603,7 +574,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-3',
       nodeType: 'text',
       content: 'Level 2',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -629,7 +599,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -639,7 +608,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'child-1',
       nodeType: 'text',
       content: 'Child 1',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -649,7 +617,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'child-2',
       nodeType: 'text',
       content: 'Child 2',
-      beforeSiblingId: 'child-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -670,7 +637,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -680,7 +646,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'node-2',
       nodeType: 'text',
       content: 'Second',
-      beforeSiblingId: 'node-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -711,7 +676,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'code-1',
       nodeType: 'code-block',
       content: '```js\nconsole.log("test");\n```',
-      beforeSiblingId: null,
       properties: { language: 'javascript' },
       embeddingVector: null,
       mentions: []
@@ -721,7 +685,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'text-1',
       nodeType: 'text',
       content: 'Some text',
-      beforeSiblingId: 'code-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -735,9 +698,11 @@ describe('Indent/Outdent Operations', () => {
     // Verify: Indent was prevented
     expect(result).toBe(false);
 
-    // Verify: Text node unchanged
+    // Verify: Text node still exists and depth is unchanged (still at root)
     const unchanged = service.findNode('text-1');
-    expect(unchanged?.beforeSiblingId).toBe('code-1');
+    expect(unchanged).toBeTruthy();
+    const unchangedUI = service.getUIState('text-1');
+    expect(unchangedUI?.depth).toBe(0);
 
     // Verify: Code-block has no children (through graph relationships)
     const allNodes = service.visibleNodes(null);
@@ -750,7 +715,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'text-1',
       nodeType: 'text',
       content: 'First text',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -760,7 +724,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'text-2',
       nodeType: 'text',
       content: 'Second text',
-      beforeSiblingId: 'text-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -784,7 +747,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'header-1',
       nodeType: 'header',
       content: 'Header',
-      beforeSiblingId: null,
       properties: { level: 1 },
       embeddingVector: null,
       mentions: []
@@ -794,7 +756,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'text-1',
       nodeType: 'text',
       content: 'Content',
-      beforeSiblingId: 'header-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -818,7 +779,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'task-1',
       nodeType: 'task',
       content: 'Task item',
-      beforeSiblingId: null,
       properties: { completed: false },
       embeddingVector: null,
       mentions: []
@@ -828,7 +788,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'text-1',
       nodeType: 'text',
       content: 'Task details',
-      beforeSiblingId: 'task-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -856,7 +815,6 @@ describe('Indent/Outdent Operations', () => {
       id: '2025-11-07',
       nodeType: 'date',
       content: '', // Date nodes have empty content by design
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -866,7 +824,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -876,7 +833,6 @@ describe('Indent/Outdent Operations', () => {
       id: 'child',
       nodeType: 'text',
       content: 'Test',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []

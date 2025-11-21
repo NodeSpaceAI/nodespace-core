@@ -261,7 +261,7 @@ describe.skipIf(!shouldUseDatabase()).sequential('Section 8: Event System Tests'
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
 
-      await backend.updateNode(childId, 1, { beforeSiblingId: siblingId });
+      await backend.moveNode(childId, null, siblingId);
 
       await waitForDatabaseWrites();
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);

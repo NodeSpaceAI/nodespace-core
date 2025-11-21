@@ -27,7 +27,6 @@ describe('NavigationService - navigateToNodeInOtherPane', () => {
       nodeType: 'text',
       content: 'Test Node Content',
       version: 1,
-      beforeSiblingId: null,
       properties: {},
       createdAt: Date.now().toString(),
       modifiedAt: Date.now().toString()
@@ -83,8 +82,7 @@ describe('NavigationService - navigateToNodeInOtherPane', () => {
         nodeType: 'date',
         content: '2025-12-25', // Date nodes have content matching ID
         version: 1,
-        beforeSiblingId: null,
-        properties: {},
+          properties: {},
         createdAt: Date.now().toString(),
         modifiedAt: Date.now().toString()
       };
@@ -124,8 +122,7 @@ describe('NavigationService - navigateToNodeInOtherPane', () => {
         nodeType: 'text',
         content: 'Test Node 2 Content',
         version: 1,
-        beforeSiblingId: null,
-        properties: {},
+          properties: {},
         createdAt: Date.now().toString(),
         modifiedAt: Date.now().toString()
       };

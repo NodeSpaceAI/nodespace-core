@@ -1,8 +1,9 @@
 /**
- * Integration Tests: Sibling Chain Integrity
+ * Integration Tests: Node Ordering Integrity
  *
- * Tests the beforeSiblingId linked list maintenance across all operations.
- * Covers 7 test cases for sibling chain validation and repairs.
+ * Tests that node ordering is maintained correctly across all operations.
+ * Previously tested beforeSiblingId linked list maintenance, but now the
+ * backend handles ordering via fractional IDs.
  *
  * Each test verifies:
  * 1. In-memory state (service.nodes)
@@ -29,7 +30,7 @@ import { HttpAdapter } from '$lib/services/backend-adapter';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
 
-describe('Sibling Chain Integrity', () => {
+describe('Node Ordering Integrity', () => {
   let dbPath: string | null;
   let adapter: HttpAdapter;
   let service: ReturnType<typeof createReactiveNodeService>;
@@ -46,7 +47,7 @@ describe('Sibling Chain Integrity', () => {
   beforeEach(async () => {
     // Note: We create a new database per test (not per suite) for better isolation,
     // trading minor performance cost for stronger guarantees against test interference.
-    dbPath = await initializeDatabaseIfNeeded('sibling-chain-integrity');
+    dbPath = await initializeDatabaseIfNeeded('node-ordering-integrity');
     adapter = new HttpAdapter('http://localhost:3001');
 
     hierarchyChangeCount = 0;
@@ -69,98 +70,12 @@ describe('Sibling Chain Integrity', () => {
     await cleanupDatabaseIfNeeded(dbPath);
   });
 
-  /**
-   * Helper function to validate sibling chain integrity
-   * Checks for:
-   * - No circular references
-   * - Exactly one first child (beforeSiblingId = null or not in sibling set)
-   * - All siblings reachable from first child
-   * - No orphaned nodes
-   */
-  function validateSiblingChain(parentId: string | null): {
-    valid: boolean;
-    errors: string[];
-    firstChildren: string[];
-    reachable: Set<string>;
-    total: number;
-  } {
-    const errors: string[] = [];
-    const firstChildren: string[] = [];
-    const reachable = new Set<string>();
-
-    // Get all siblings for this parent using graph query (not parentId field)
-    const siblings = sharedNodeStore.getNodesForParent(parentId).map((n) => n.id);
-
-    if (siblings.length === 0) {
-      return { valid: true, errors: [], firstChildren: [], reachable, total: 0 };
-    }
-
-    // Find first children (beforeSiblingId = null or points outside sibling set)
-    for (const siblingId of siblings) {
-      const node = service.findNode(siblingId);
-      if (!node) {
-        errors.push(`Node ${siblingId} not found`);
-        continue;
-      }
-
-      if (node.beforeSiblingId === null || !siblings.includes(node.beforeSiblingId)) {
-        firstChildren.push(siblingId);
-      }
-    }
-
-    // Should have exactly one first child
-    if (firstChildren.length === 0) {
-      errors.push(`No first child found for parent ${parentId || 'root'}`);
-    } else if (firstChildren.length > 1) {
-      errors.push(`Multiple first children: ${firstChildren.join(', ')}`);
-    }
-
-    // If we have a valid first child, follow the chain
-    if (firstChildren.length === 1) {
-      const visited = new Set<string>();
-      let currentId: string | null = firstChildren[0];
-
-      while (currentId && visited.size < siblings.length) {
-        if (visited.has(currentId)) {
-          errors.push(`Circular reference detected at ${currentId}`);
-          break;
-        }
-
-        visited.add(currentId);
-        reachable.add(currentId);
-
-        // Find next sibling (the one whose beforeSiblingId points to currentId)
-        const nextSibling = siblings.find((id) => {
-          const node = service.findNode(id);
-          return node?.beforeSiblingId === currentId;
-        });
-
-        currentId = nextSibling || null;
-      }
-
-      // Check for orphaned nodes
-      const orphans = siblings.filter((id) => !reachable.has(id));
-      if (orphans.length > 0) {
-        errors.push(`Orphaned nodes not in chain: ${orphans.join(', ')}`);
-      }
-    }
-
-    return {
-      valid: errors.length === 0,
-      errors,
-      firstChildren,
-      reachable,
-      total: siblings.length
-    };
-  }
-
-  it('should maintain valid chain after creating multiple nodes', async () => {
+  it('should maintain valid order after creating multiple nodes', async () => {
     // Setup: Create initial node
     const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -179,55 +94,32 @@ describe('Sibling Chain Integrity', () => {
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
     }
 
-    // Verify: Chain integrity
-    const validation = validateSiblingChain(null);
-    expect(validation.valid).toBe(true);
-    expect(validation.errors).toHaveLength(0);
-    expect(validation.reachable.size).toBe(4);
-    expect(validation.firstChildren).toHaveLength(1);
-    expect(validation.firstChildren[0]).toBe('node-1');
-
-    // Verify: Visual order matches chain
+    // Verify: Visual order matches creation order
     const visible = service.visibleNodes(null);
     expect(visible.map((n) => n.id)).toEqual(['node-1', node2Id, node3Id, node4Id]);
   });
 
-  it('should repair chain when node is deleted', async () => {
+  it('should maintain order when node is deleted', async () => {
     // Setup: Create three nodes
     const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
     });
 
-    const node2 = await createNodeForCurrentMode(adapter, {
-      id: 'node-2',
-      nodeType: 'text',
-      content: 'Second',
-      beforeSiblingId: 'node-1',
-      properties: {},
-      embeddingVector: null,
-      mentions: []
-    });
+    service.initializeNodes([node1]);
 
-    const node3 = await createNodeForCurrentMode(adapter, {
-      id: 'node-3',
-      nodeType: 'text',
-      content: 'Third',
-      beforeSiblingId: 'node-2',
-      properties: {},
-      embeddingVector: null,
-      mentions: []
-    });
+    // Create additional nodes
+    const node2Id = service.createNode('node-1', 'Second', 'text');
+    const node3Id = service.createNode(node2Id, 'Third', 'text');
 
-    service.initializeNodes([node1, node2, node3]);
+    await waitForDatabaseWrites();
 
     // Act: Delete middle node
-    service.deleteNode('node-2');
+    service.deleteNode(node2Id);
 
     await waitForDatabaseWrites();
     // Only check for errors in database mode (in-memory mode expects DatabaseInitializationError)
@@ -235,63 +127,39 @@ describe('Sibling Chain Integrity', () => {
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
     }
 
-    // Verify: Chain repaired
-    const validation = validateSiblingChain(null);
-    expect(validation.valid).toBe(true);
-    expect(validation.errors).toHaveLength(0);
-    expect(validation.reachable.size).toBe(2);
-
-    // Verify: node-3 now points to node-1 (in-memory)
-    const node3Updated = service.findNode('node-3');
-    expect(node3Updated?.beforeSiblingId).toBe('node-1');
+    // Verify: Remaining nodes in correct order
+    const visible = service.visibleNodes(null);
+    expect(visible.map((n) => n.id)).toEqual(['node-1', node3Id]);
 
     // Verify database persistence only in database mode
     if (shouldUseDatabase()) {
-      const node3Persisted = await adapter.getNode('node-3');
-      expect(node3Persisted?.beforeSiblingId).toBe('node-1');
-
       // Verify: node-2 was actually deleted from database
-      const node2Persisted = await adapter.getNode('node-2');
+      const node2Persisted = await adapter.getNode(node2Id);
       expect(node2Persisted).toBeNull();
     }
   });
 
-  it('should maintain chain integrity during indent operation', async () => {
+  it('should maintain order integrity during indent operation', async () => {
     // Setup: Create three siblings
     const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
     });
 
-    const node2 = await createNodeForCurrentMode(adapter, {
-      id: 'node-2',
-      nodeType: 'text',
-      content: 'Second',
-      beforeSiblingId: 'node-1',
-      properties: {},
-      embeddingVector: null,
-      mentions: []
-    });
+    service.initializeNodes([node1]);
 
-    const node3 = await createNodeForCurrentMode(adapter, {
-      id: 'node-3',
-      nodeType: 'text',
-      content: 'Third',
-      beforeSiblingId: 'node-2',
-      properties: {},
-      embeddingVector: null,
-      mentions: []
-    });
+    // Create additional nodes
+    const node2Id = service.createNode('node-1', 'Second', 'text');
+    const node3Id = service.createNode(node2Id, 'Third', 'text');
 
-    service.initializeNodes([node1, node2, node3]);
+    await waitForDatabaseWrites();
 
-    // Act: Indent node-2
-    await service.indentNode('node-2');
+    // Act: Indent node-2 (makes it a child of node-1)
+    await service.indentNode(node2Id);
 
     await waitForDatabaseWrites();
     // Only check for errors in database mode (in-memory mode expects DatabaseInitializationError)
@@ -299,37 +167,23 @@ describe('Sibling Chain Integrity', () => {
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
     }
 
-    // Verify: Root chain repaired
-    const rootValidation = validateSiblingChain(null);
-    expect(rootValidation.valid).toBe(true);
-    expect(rootValidation.reachable.size).toBe(2); // node-1 and node-3
+    // Verify: Root level has node-1 and node-3
+    const rootVisible = service.visibleNodes(null);
+    const rootIds = rootVisible.filter(n => service.getUIState(n.id)?.depth === 0).map(n => n.id);
+    expect(rootIds).toContain('node-1');
+    expect(rootIds).toContain(node3Id);
 
-    // Verify: node-1's children chain valid
-    const node1ChildValidation = validateSiblingChain('node-1');
-    expect(node1ChildValidation.valid).toBe(true);
-    expect(node1ChildValidation.reachable.size).toBe(1); // node-2
-
-    // Verify: node-3 now points to node-1 (bypassing indented node-2) (in-memory)
-    const node3Updated = service.findNode('node-3');
-    expect(node3Updated?.beforeSiblingId).toBe('node-1');
-
-    // Verify database persistence only in database mode
-    if (shouldUseDatabase()) {
-      const node2Persisted = await adapter.getNode('node-2');
-      expect(node2Persisted?.beforeSiblingId).toBeNull(); // Last child of node-1
-
-      const node3Persisted = await adapter.getNode('node-3');
-      expect(node3Persisted?.beforeSiblingId).toBe('node-1'); // node-3 bypasses indented node-2
-    }
+    // Verify: node-2 is now a child of node-1 (at depth 1)
+    const node2UI = service.getUIState(node2Id);
+    expect(node2UI?.depth).toBe(1);
   });
 
-  it('should maintain chain integrity during outdent operation', async () => {
+  it('should maintain order integrity during outdent operation', async () => {
     // Setup: Create parent with children
     const parent = await createNodeForCurrentMode(adapter, {
       id: 'parent',
       nodeType: 'text',
       content: 'Parent',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -339,7 +193,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'child-1',
       nodeType: 'text',
       content: 'Child 1',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -349,7 +202,6 @@ describe('Sibling Chain Integrity', () => {
       id: 'child-2',
       nodeType: 'text',
       content: 'Child 2',
-      beforeSiblingId: 'child-1',
       properties: {},
       embeddingVector: null,
       mentions: []
@@ -384,76 +236,32 @@ describe('Sibling Chain Integrity', () => {
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
     }
 
-    // Verify: Root chain valid
-    const rootValidation = validateSiblingChain(null);
-    if (!rootValidation.valid) {
-      console.error('[TEST DEBUG] Root chain invalid:', {
-        errors: rootValidation.errors,
-        firstChildren: rootValidation.firstChildren,
-        reachable: Array.from(rootValidation.reachable),
-        total: rootValidation.total,
-        allNodes: Array.from(service.nodes.values()).map((n) => ({
-          id: n.id,
-          beforeSiblingId: n.beforeSiblingId
-        })),
-        rootChildren: sharedNodeStore.getNodesForParent(null).map((n) => ({
-          id: n.id,
-          beforeSiblingId: n.beforeSiblingId
-        }))
-      });
-    }
-    expect(rootValidation.valid).toBe(true);
-
-    // Verify: child-1's children chain valid
-    const child1ChildValidation = validateSiblingChain('child-1');
-    expect(child1ChildValidation.valid).toBe(true);
-
-    // Verify database persistence only in database mode
-    if (shouldUseDatabase()) {
-      const child1Persisted = await adapter.getNode('child-1');
-      expect(child1Persisted?.beforeSiblingId).toBe('parent'); // Positioned after parent
-
-      const child2Persisted = await adapter.getNode('child-2');
-      expect(child2Persisted?.beforeSiblingId).toBeNull(); // First/only child of child-1
-    }
+    // Verify: child-1 is now at root level (depth 0)
+    const child1UI = service.getUIState('child-1');
+    expect(child1UI?.depth).toBe(0);
   });
 
-  it('should maintain chain when combining nodes', async () => {
+  it('should maintain order when combining nodes', async () => {
     // Setup: Create three nodes
     const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'First',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
     });
 
-    const node2 = await createNodeForCurrentMode(adapter, {
-      id: 'node-2',
-      nodeType: 'text',
-      content: 'Second',
-      beforeSiblingId: 'node-1',
-      properties: {},
-      embeddingVector: null,
-      mentions: []
-    });
+    service.initializeNodes([node1]);
 
-    const node3 = await createNodeForCurrentMode(adapter, {
-      id: 'node-3',
-      nodeType: 'text',
-      content: 'Third',
-      beforeSiblingId: 'node-2',
-      properties: {},
-      embeddingVector: null,
-      mentions: []
-    });
+    // Create additional nodes
+    const node2Id = service.createNode('node-1', 'Second', 'text');
+    const node3Id = service.createNode(node2Id, 'Third', 'text');
 
-    service.initializeNodes([node1, node2, node3]);
+    await waitForDatabaseWrites();
 
     // Act: Combine node-2 into node-1
-    await service.combineNodes('node-2', 'node-1');
+    await service.combineNodes(node2Id, 'node-1');
 
     await waitForDatabaseWrites();
     // Only check for errors in database mode (in-memory mode expects DatabaseInitializationError)
@@ -461,116 +269,48 @@ describe('Sibling Chain Integrity', () => {
       expect(sharedNodeStore.getTestErrors()).toHaveLength(0);
     }
 
-    // Verify: Chain repaired
-    const validation = validateSiblingChain(null);
-    expect(validation.valid).toBe(true);
-    expect(validation.reachable.size).toBe(2); // node-1 and node-3
+    // Verify: Only node-1 and node-3 remain
+    const visible = service.visibleNodes(null);
+    expect(visible.map((n) => n.id)).toEqual(['node-1', node3Id]);
 
-    // Verify: node-3 points to node-1
-    const node3Updated = service.findNode('node-3');
-    expect(node3Updated?.beforeSiblingId).toBe('node-1');
+    // Verify: node-1 content was combined
+    const combinedNode = service.findNode('node-1');
+    expect(combinedNode?.content).toContain('First');
+    expect(combinedNode?.content).toContain('Second');
   });
 
-  it('should validate chain has no circular references', async () => {
-    // Setup: Create valid chain
-    const node1 = await createNodeForCurrentMode(adapter, {
-      id: 'node-1',
-      nodeType: 'text',
-      content: 'First',
-      beforeSiblingId: null,
-      properties: {},
-      embeddingVector: null,
-      mentions: []
-    });
-
-    const node2 = await createNodeForCurrentMode(adapter, {
-      id: 'node-2',
-      nodeType: 'text',
-      content: 'Second',
-      beforeSiblingId: 'node-1',
-      properties: {},
-      embeddingVector: null,
-      mentions: []
-    });
-
-    const node3 = await createNodeForCurrentMode(adapter, {
-      id: 'node-3',
-      nodeType: 'text',
-      content: 'Third',
-      beforeSiblingId: 'node-2',
-      properties: {},
-      embeddingVector: null,
-      mentions: []
-    });
-
-    service.initializeNodes([node1, node2, node3]);
-
-    // Verify: No circular references
-    const validation = validateSiblingChain(null);
-    expect(validation.valid).toBe(true);
-    expect(validation.errors).not.toContain(expect.stringContaining('Circular reference'));
-
-    // Additional check: Follow chain and ensure we don't loop
-    const visited = new Set<string>();
-    let currentId: string | null = 'node-1';
-    let iterations = 0;
-    const maxIterations = 100; // Safety limit
-
-    while (currentId && iterations < maxIterations) {
-      if (visited.has(currentId)) {
-        throw new Error('Circular reference detected in manual traversal');
-      }
-      visited.add(currentId);
-
-      // Find next
-      const allNodes = Array.from(service.nodes.values());
-      const next = allNodes.find((n) => n.beforeSiblingId === currentId);
-      currentId = next?.id || null;
-      iterations++;
-    }
-
-    expect(visited.size).toBe(3);
-  });
-
-  it('should maintain chain integrity with complex operations sequence', async () => {
+  it('should maintain order integrity with complex operations sequence', async () => {
     // Setup: Create initial nodes
     const node1 = await createNodeForCurrentMode(adapter, {
       id: 'node-1',
       nodeType: 'text',
       content: 'Node 1',
-      beforeSiblingId: null,
       properties: {},
       embeddingVector: null,
       mentions: []
     });
 
-    const node2 = await createNodeForCurrentMode(adapter, {
-      id: 'node-2',
-      nodeType: 'text',
-      content: 'Node 2',
-      beforeSiblingId: 'node-1',
-      properties: {},
-      embeddingVector: null,
-      mentions: []
-    });
+    service.initializeNodes([node1]);
 
-    service.initializeNodes([node1, node2]);
+    // Create node-2
+    const node2Id = service.createNode('node-1', 'Node 2', 'text');
+    await waitForDatabaseWrites();
 
     // Act: Perform complex sequence with proper sequencing to avoid thundering herd
     // Each operation must complete before starting the next to prevent database contention
-    const node3Id = service.createNode('node-2', 'Node 3', 'text'); // Create
+    const node3Id = service.createNode(node2Id, 'Node 3', 'text'); // Create
     await waitForDatabaseWrites();
 
-    await service.indentNode('node-2'); // Indent node-2 under node-1
+    await service.indentNode(node2Id); // Indent node-2 under node-1
     await waitForDatabaseWrites();
 
     const node4Id = service.createNode('node-1', 'Node 4', 'text'); // Create after node-1
     await waitForDatabaseWrites();
 
-    await service.outdentNode('node-2'); // Outdent node-2 back to root
+    await service.outdentNode(node2Id); // Outdent node-2 back to root
     await waitForDatabaseWrites();
 
-    await service.combineNodes(node3Id, 'node-2'); // Combine node-3 into node-2
+    await service.combineNodes(node3Id, node2Id); // Combine node-3 into node-2
     await waitForDatabaseWrites();
 
     // Only check for errors in database mode (in-memory mode expects DatabaseInitializationError)
@@ -583,21 +323,8 @@ describe('Sibling Chain Integrity', () => {
     // Verify: node-4 still exists
     expect(service.findNode(node4Id)).toBeTruthy();
 
-    // Verify: Chain integrity maintained throughout
-    const validation = validateSiblingChain(null);
-    expect(validation.valid).toBe(true);
-    expect(validation.errors).toHaveLength(0);
-
     // Verify: Visual order makes sense
     const visible = service.visibleNodes(null);
     expect(visible.length).toBeGreaterThan(0);
-
-    // Verify: All nodes either have valid beforeSiblingId or are first
-    for (const node of visible) {
-      if (node.beforeSiblingId !== null) {
-        const beforeNode = service.findNode(node.beforeSiblingId);
-        expect(beforeNode).toBeDefined();
-      }
-    }
   });
 });

@@ -185,8 +185,9 @@ export class ConflictResolver {
       return true;
     }
 
-    // Structural changes (parent, sibling) rarely overlap
-    if (changedFields.has('parentId') || changedFields.has('beforeSiblingId')) {
+    // Structural changes (parent, nodeType) rarely overlap
+    // Note: beforeSiblingId was removed - ordering is now handled by backend via fractional IDs
+    if (changedFields.has('parentId') || changedFields.has('nodeType')) {
       return false;
     }
 

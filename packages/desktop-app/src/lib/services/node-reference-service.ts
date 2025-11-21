@@ -716,7 +716,6 @@ export class NodeReferenceService {
         id: nodeId,
         nodeType: nodeType,
         content: content,
-        beforeSiblingId: null,
         version: 1,
         mentions: [],
         properties: {

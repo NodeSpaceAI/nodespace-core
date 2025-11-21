@@ -141,7 +141,6 @@ export async function initializeTestDatabase(
             id: sentinelId,
             nodeType: 'text',
             content: '__SENTINEL__',
-            beforeSiblingId: null,
             properties: {},
             embeddingVector: null,
             mentions: []

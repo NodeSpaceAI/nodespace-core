@@ -274,7 +274,6 @@ function createMockNode(id: string, content: string): Node {
     id,
     nodeType: 'text',
     content,
-    beforeSiblingId: null,
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
     version: 1,

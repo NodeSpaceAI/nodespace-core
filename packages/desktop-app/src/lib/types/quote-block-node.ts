@@ -79,7 +79,6 @@ export const QuoteBlockNodeHelpers = {
       id: `quote-block-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
       nodeType: 'quote-block',
       content,
-      beforeSiblingId: null,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,

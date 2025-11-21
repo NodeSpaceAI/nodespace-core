@@ -34,8 +34,7 @@ import { eventBus } from './event-bus';
 import type {
   NodeCreatedEvent,
   NodeUpdatedEvent,
-  NodeDeletedEvent,
-  HierarchyChangedEvent
+  NodeDeletedEvent
 } from './event-types';
 import type {
   SchemaDefinition,
@@ -467,16 +466,9 @@ export class TauriAdapter implements BackendAdapter {
 
       // Determine update type based on what fields were updated
       let updateType: 'content' | 'hierarchy' | 'status' | 'metadata' | 'nodeType' = 'content';
-      const affectedNodes: string[] = [id];
 
       if ('content' in update) {
         updateType = 'content';
-      } else if ('beforeSiblingId' in update) {
-        updateType = 'hierarchy';
-        // Track affected nodes for hierarchy changes (only if not null)
-        if (update.beforeSiblingId !== undefined && update.beforeSiblingId !== null) {
-          affectedNodes.push(update.beforeSiblingId);
-        }
       } else if ('nodeType' in update) {
         updateType = 'nodeType';
       }
@@ -491,16 +483,8 @@ export class TauriAdapter implements BackendAdapter {
         newValue: updatedNode
       });
 
-      // Emit hierarchy:changed event for structural changes
-      if (updateType === 'hierarchy') {
-        eventBus.emit<HierarchyChangedEvent>({
-          type: 'hierarchy:changed',
-          namespace: 'lifecycle',
-          source: 'TauriAdapter',
-          affectedNodes: affectedNodes,
-          changeType: 'move'
-        });
-      }
+      // Issue #575: Hierarchy changes (beforeSiblingId) are now handled by backend
+      // via moveNode command with atomic sibling_order updates
 
       return updatedNode;
     } catch (error) {
@@ -1069,7 +1053,6 @@ export class HttpAdapter implements BackendAdapter {
           id: node.id,
           nodeType: node.nodeType,
           content: node.content,
-          beforeSiblingId: node.beforeSiblingId,
           properties: node.properties,
           mentions: node.mentions
         };
@@ -1142,16 +1125,9 @@ export class HttpAdapter implements BackendAdapter {
 
       // Determine update type based on what fields were updated
       let updateType: 'content' | 'hierarchy' | 'status' | 'metadata' | 'nodeType' = 'content';
-      const affectedNodes: string[] = [id];
 
       if ('content' in update) {
         updateType = 'content';
-      } else if ('beforeSiblingId' in update) {
-        updateType = 'hierarchy';
-        // Track affected nodes for hierarchy changes (only if not null)
-        if (update.beforeSiblingId !== undefined && update.beforeSiblingId !== null) {
-          affectedNodes.push(update.beforeSiblingId);
-        }
       } else if ('nodeType' in update) {
         updateType = 'nodeType';
       }
@@ -1166,16 +1142,8 @@ export class HttpAdapter implements BackendAdapter {
         newValue: updatedNode
       });
 
-      // Emit hierarchy:changed event for structural changes
-      if (updateType === 'hierarchy') {
-        eventBus.emit<HierarchyChangedEvent>({
-          type: 'hierarchy:changed',
-          namespace: 'lifecycle',
-          source: 'HttpAdapter',
-          affectedNodes: affectedNodes,
-          changeType: 'move'
-        });
-      }
+      // Issue #575: Hierarchy changes (beforeSiblingId) are now handled by backend
+      // via moveNode API with atomic sibling_order updates
 
       return updatedNode;
     } catch (error) {
@@ -1261,24 +1229,17 @@ export class HttpAdapter implements BackendAdapter {
   async moveNode(
     nodeId: string,
     newParentId: string | null,
-    newBeforeSiblingId: string | null
+    _newBeforeSiblingId: string | null
   ): Promise<void> {
     try {
-      // First, set the parent using the /api/nodes/:id/parent endpoint
+      // Set the parent using the /api/nodes/:id/parent endpoint
       // Use retry logic with exponential backoff to handle race condition where node
       // hasn't been fully committed to database yet (common after node creation)
       await this.setParentWithRetry(nodeId, newParentId);
 
-      // Then, if there's a sibling position change, update beforeSiblingId
-      // The beforeSiblingId is used to maintain sibling order within a parent
-      if (newBeforeSiblingId !== undefined && newBeforeSiblingId !== null) {
-        // Use updateNode to set the beforeSiblingId
-        // Note: We need to fetch the node first to get the current version for optimistic concurrency control
-        const node = await this.getNode(nodeId);
-        if (node) {
-          await this.updateNode(nodeId, node.version, { beforeSiblingId: newBeforeSiblingId });
-        }
-      }
+      // Note: Sibling ordering is now handled by the backend's sibling_order column.
+      // The HTTP dev server would need a /api/nodes/:id/siblings/reorder endpoint
+      // to support explicit ordering. For now, the backend appends to the end.
     } catch (error) {
       const err = toError(error);
       throw new NodeOperationError(err.message, nodeId, 'moveNode');

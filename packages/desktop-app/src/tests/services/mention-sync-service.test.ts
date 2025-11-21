@@ -101,7 +101,6 @@ describe('MentionSyncService', () => {
         content: 'Shopping list',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: [],
         properties: {}
@@ -113,7 +112,6 @@ describe('MentionSyncService', () => {
         content: 'Remember to check [Buy groceries](nodespace://task-123) before going out.',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}
@@ -142,7 +140,6 @@ describe('MentionSyncService', () => {
         content: 'Updated Task',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: [],
         properties: {}
@@ -155,7 +152,6 @@ describe('MentionSyncService', () => {
           'First: [Old Task](nodespace://task-123), Second: [Old Task](nodespace://task-123)',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}
@@ -179,7 +175,6 @@ describe('MentionSyncService', () => {
         content: 'New Title',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: [],
         properties: {}
@@ -191,7 +186,6 @@ describe('MentionSyncService', () => {
         content: 'See [Old Title](nodespace://task-123)',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}
@@ -203,7 +197,6 @@ describe('MentionSyncService', () => {
         content: 'Check [Old Title](nodespace://task-123)',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}
@@ -228,7 +221,6 @@ describe('MentionSyncService', () => {
         content: 'Same Title',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: [],
         properties: {}
@@ -240,7 +232,6 @@ describe('MentionSyncService', () => {
         content: 'See [Same Title](nodespace://task-123)',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}
@@ -263,7 +254,6 @@ describe('MentionSyncService', () => {
         content: 'Standalone Task',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: [],
         properties: {}
@@ -284,7 +274,6 @@ describe('MentionSyncService', () => {
         content: '## Important Task\nWith additional details',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: [],
         properties: {}
@@ -296,7 +285,6 @@ describe('MentionSyncService', () => {
         content: 'See [Old Title](nodespace://task-123)',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}
@@ -319,7 +307,6 @@ describe('MentionSyncService', () => {
         content: 'See [Shopping list](nodespace://task-123) for details.',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}
@@ -342,7 +329,6 @@ describe('MentionSyncService', () => {
         content: 'First: [Task A](nodespace://task-123), Second: [Task A](nodespace://task-123)',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}
@@ -363,7 +349,6 @@ describe('MentionSyncService', () => {
         content: 'See [Task](nodespace://task-123)',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}
@@ -375,7 +360,6 @@ describe('MentionSyncService', () => {
         content: 'Check [Task](nodespace://task-123)',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}
@@ -405,7 +389,6 @@ describe('MentionSyncService', () => {
         content: 'Updated Task',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: [],
         properties: {}
@@ -417,7 +400,6 @@ describe('MentionSyncService', () => {
         content: 'See [Old Task](nodespace://task-123)',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}
@@ -457,7 +439,6 @@ describe('MentionSyncService', () => {
         content: 'See [Task](nodespace://task-123)',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}
@@ -493,7 +474,6 @@ describe('MentionSyncService', () => {
         content: 'New Title',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: [],
         properties: {}
@@ -505,7 +485,6 @@ describe('MentionSyncService', () => {
         content: 'See [Old Title](nodespace://task-123)',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}
@@ -571,7 +550,6 @@ describe('MentionSyncService', () => {
         content: 'Task Title',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: [],
         properties: {}
@@ -583,7 +561,6 @@ describe('MentionSyncService', () => {
         content: 'See [Old](nodespace://task-999)',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-999'],
         properties: {}
@@ -628,7 +605,6 @@ describe('MentionSyncService', () => {
         content: '',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: [],
         properties: {}
@@ -647,7 +623,6 @@ describe('MentionSyncService', () => {
         content: 'Task (with) [special] {chars}',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: [],
         properties: {}
@@ -659,7 +634,6 @@ describe('MentionSyncService', () => {
         content: 'See [Old](nodespace://task-123)',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}
@@ -682,7 +656,6 @@ describe('MentionSyncService', () => {
         content: longTitle,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: [],
         properties: {}
@@ -694,7 +667,6 @@ describe('MentionSyncService', () => {
         content: 'See [Old](nodespace://task-123)',
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
-        beforeSiblingId: null,
         version: 1,
         mentions: ['task-123'],
         properties: {}

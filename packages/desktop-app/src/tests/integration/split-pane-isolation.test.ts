@@ -21,7 +21,6 @@ describe('Split-Pane Content Isolation', () => {
       version: 1,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
-      beforeSiblingId: null,
       properties: {}
     };
 
@@ -32,7 +31,6 @@ describe('Split-Pane Content Isolation', () => {
       version: 1,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
-      beforeSiblingId: null,
       properties: {}
     };
 
@@ -43,7 +41,6 @@ describe('Split-Pane Content Isolation', () => {
       version: 1,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
-      beforeSiblingId: null,
       properties: {}
     };
 
@@ -54,7 +51,6 @@ describe('Split-Pane Content Isolation', () => {
       version: 1,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
-      beforeSiblingId: null,
       properties: {}
     };
 
@@ -92,7 +88,6 @@ describe('Split-Pane Content Isolation', () => {
       version: 1,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
-      beforeSiblingId: null,
       properties: {}
     };
 
@@ -103,7 +98,6 @@ describe('Split-Pane Content Isolation', () => {
       version: 1,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
-      beforeSiblingId: null,
       properties: {}
     };
 
@@ -136,7 +130,6 @@ describe('Split-Pane Content Isolation', () => {
       version: 1,
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
-      beforeSiblingId: null,
       properties: {}
     };
 

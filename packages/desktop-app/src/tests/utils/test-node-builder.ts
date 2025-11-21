@@ -25,7 +25,6 @@ export class TestNodeBuilder {
   private node: Partial<Node> = {
     nodeType: 'text',
     content: '',
-    beforeSiblingId: null,
     version: 1,
     properties: {},
     embeddingVector: null,
@@ -85,9 +84,11 @@ export class TestNodeBuilder {
 
   /**
    * Set before sibling ID
+   * @deprecated beforeSiblingId is no longer part of the Node interface - ordering is handled by backend
    */
-  withBeforeSibling(beforeSiblingId: string | null): this {
-    this.node.beforeSiblingId = beforeSiblingId;
+  withBeforeSibling(_beforeSiblingId: string | null): this {
+    // No-op: beforeSiblingId is no longer part of the Node interface
+    // Ordering is now handled by backend via fractional IDs
     return this;
   }
 
@@ -190,7 +191,6 @@ export class TestNodeBuilder {
       id: this.node.id,
       nodeType: this.node.nodeType,
       content: this.node.content,
-      beforeSiblingId: this.node.beforeSiblingId ?? null,
       version: this.node.version ?? 1,
       properties: this.node.properties ?? {},
       embeddingVector: this.node.embeddingVector ?? null,
