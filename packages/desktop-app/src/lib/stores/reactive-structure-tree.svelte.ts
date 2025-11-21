@@ -12,6 +12,7 @@
  * - Real-time synchronization via Tauri events
  */
 
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import type { EdgeEventData } from '$lib/services/event-types';
@@ -28,13 +29,8 @@ class ReactiveStructureTree {
   private initialized = false;
 
   /**
-   * Initialize the tree with LIVE SELECT event subscriptions
+   * Initialize the tree with bulk load and LIVE SELECT event subscriptions
    * This should be called once during app startup
-   *
-   * TODO (#XXXX): Add bulk initialization from backend on startup
-   * Currently the tree starts empty and gets populated via LIVE SELECT events.
-   * This works functionally but means existing hierarchy isn't visible until
-   * external operations trigger events. Need backend command to fetch all edges.
    */
   async initialize() {
     if (this.initialized) return;
@@ -42,11 +38,13 @@ class ReactiveStructureTree {
     console.log('[ReactiveStructureTree] Initializing...');
 
     try {
-      // TODO: Add initial bulk load before subscribing to events
-      // const initialEdges = await tauriNodeService.getAllEdges();
-      // this.buildTree(initialEdges);
+      // Bulk load existing edges from backend before subscribing to events
+      // This ensures the tree is populated with existing hierarchy on startup
+      const initialEdges = await invoke<EdgeEventData[]>('get_all_edges');
+      this.buildTree(initialEdges);
+      console.log('[ReactiveStructureTree] Bulk loaded', initialEdges.length, 'edges');
 
-      // Subscribe to LIVE SELECT structure events
+      // Subscribe to LIVE SELECT structure events for real-time updates
       await this.subscribeToEvents();
 
       this.initialized = true;
@@ -58,8 +56,8 @@ class ReactiveStructureTree {
   }
 
   /**
-   * Build initial tree from bulk edge data
-   * Used for initialization when getAllEdges() backend method is available
+   * Build tree from bulk edge data
+   * Called during initialization to populate the tree with existing edges
    * @private
    */
   private buildTree(edges: EdgeEventData[]) {

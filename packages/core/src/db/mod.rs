@@ -27,4 +27,4 @@ mod surreal_store;
 pub use error::DatabaseError;
 pub use fractional_ordering::FractionalOrderCalculator;
 pub use index_manager::IndexManager;
-pub use surreal_store::{EmbeddedStore, HttpStore, SurrealStore};
+pub use surreal_store::{EdgeRecord, EmbeddedStore, HttpStore, SurrealStore};
