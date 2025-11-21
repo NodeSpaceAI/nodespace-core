@@ -408,7 +408,8 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 
 6. **Conduct Code Review**
    - **FOLLOW UNIVERSAL PROCESS**: Use the code review guidelines in the [PR review documentation](docs/architecture/development/process/pr-review.md)
-   - Use `senior-architect-reviewer` agent for complex features
+   - Use `/pragmatic-code-review` command for comprehensive PR reviews
+   - Use `senior-architect-reviewer` agent for complex architectural decisions
    - All quality gates and review requirements apply universally to AI agents and human reviewers
 
 7. **Merge PR and Clean Up Feature Branch**
