@@ -30,8 +30,8 @@ pub enum NodeServiceError {
     InvalidParent { parent_id: String },
 
     /// Invalid root reference
-    #[error("Invalid root node: {container_node_id}")]
-    InvalidRoot { container_node_id: String },
+    #[error("Invalid root node: {root_node_id}")]
+    InvalidRoot { root_node_id: String },
 
     /// Circular reference detected
     #[error("Circular reference detected: {context}")]
@@ -76,9 +76,9 @@ impl NodeServiceError {
     }
 
     /// Create an invalid root error
-    pub fn invalid_root(container_node_id: impl Into<String>) -> Self {
+    pub fn invalid_root(root_node_id: impl Into<String>) -> Self {
         Self::InvalidRoot {
-            container_node_id: container_node_id.into(),
+            root_node_id: root_node_id.into(),
         }
     }
 

@@ -45,7 +45,7 @@ fn command_error_with_details(
 ///
 /// # Arguments
 ///
-/// * `container_id` - ID of the topic node to embed
+/// * `root_id` - ID of the topic/root node to embed
 ///
 /// # Errors
 ///
@@ -59,19 +59,19 @@ fn command_error_with_details(
 /// ```typescript
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
-/// await invoke('generate_container_embedding', {
-///   containerId: 'topic-uuid-123'
+/// await invoke('generate_root_embedding', {
+///   rootId: 'topic-uuid-123'
 /// });
 /// ```
 #[tauri::command]
-pub async fn generate_container_embedding(
+pub async fn generate_root_embedding(
     state: State<'_, EmbeddingState>,
     node_service: State<'_, NodeService>,
-    container_id: String,
+    root_id: String,
 ) -> Result<(), CommandError> {
     // Get the node from the database
     let node = node_service
-        .get_node(&container_id)
+        .get_node(&root_id)
         .await
         .map_err(|e| {
             command_error_with_details(
@@ -80,9 +80,10 @@ pub async fn generate_container_embedding(
                 format!("{:?}", e),
             )
         })?
-        .ok_or_else(|| command_error(format!("Node not found: {}", container_id), "NOT_FOUND"))?;
+        .ok_or_else(|| command_error(format!("Node not found: {}", root_id), "NOT_FOUND"))?;
 
     // Generate and store embedding
+    // Note: NodeEmbeddingService method still uses legacy name, will be updated in Phase 6
     state.service.embed_container(&node).await.map_err(|e| {
         command_error_with_details(
             format!("Failed to generate embedding: {}", e),
@@ -91,14 +92,14 @@ pub async fn generate_container_embedding(
         )
     })?;
 
-    tracing::info!("Generated embedding for node: {}", container_id);
+    tracing::info!("Generated embedding for node: {}", root_id);
     Ok(())
 }
 
-/// Search parameters for topic similarity search
+/// Search parameters for topic/root similarity search
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SearchContainersParams {
+pub struct SearchRootsParams {
     /// Search query text
     pub query: String,
 
@@ -124,7 +125,7 @@ pub struct SearchContainersParams {
     pub exact: Option<bool>,
 }
 
-/// Search containers by semantic similarity using vector embeddings
+/// Search root nodes by semantic similarity using vector embeddings
 ///
 /// Uses SurrealDB's native `vector::similarity::cosine()` function to find
 /// semantically similar nodes based on their content embeddings.
@@ -145,7 +146,7 @@ pub struct SearchContainersParams {
 /// ```typescript
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
-/// const results = await invoke('search_containers', {
+/// const results = await invoke('search_roots', {
 ///   params: {
 ///     query: 'machine learning algorithms',
 ///     threshold: 0.5,  // 0.5 = moderate similarity (default)
@@ -156,10 +157,10 @@ pub struct SearchContainersParams {
 /// console.log(`Found ${results.length} similar nodes`);
 /// ```
 #[tauri::command]
-pub async fn search_containers(
+pub async fn search_roots(
     state: State<'_, EmbeddingState>,
     node_service: State<'_, NodeService>,
-    params: SearchContainersParams,
+    params: SearchRootsParams,
 ) -> Result<Vec<Node>, CommandError> {
     // Validate query parameter
     if params.query.trim().is_empty() {
@@ -213,15 +214,15 @@ pub async fn search_containers(
     Ok(results.into_iter().map(|(node, _score)| node).collect())
 }
 
-/// Update embedding for a topic node immediately
+/// Update embedding for a topic/root node immediately
 ///
 /// Use this for explicit user actions like "Regenerate Embedding" button.
 /// For automatic updates on content changes, use the smart triggers
-/// (on_container_closed, on_container_idle) instead.
+/// (on_root_closed, on_root_idle) instead.
 ///
 /// # Arguments
 ///
-/// * `container_id` - ID of the topic node to update
+/// * `root_id` - ID of the topic/root node to update
 ///
 /// # Example (from frontend)
 ///
@@ -229,19 +230,19 @@ pub async fn search_containers(
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
 /// // User clicks "Regenerate Embedding" button
-/// await invoke('update_container_embedding', {
-///   containerId: 'topic-uuid-123'
+/// await invoke('update_root_embedding', {
+///   rootId: 'topic-uuid-123'
 /// });
 /// ```
 #[tauri::command]
-pub async fn update_container_embedding(
+pub async fn update_root_embedding(
     state: State<'_, EmbeddingState>,
     node_service: State<'_, NodeService>,
-    container_id: String,
+    root_id: String,
 ) -> Result<(), CommandError> {
     // Get the node from the database
     let node = node_service
-        .get_node(&container_id)
+        .get_node(&root_id)
         .await
         .map_err(|e| {
             command_error_with_details(
@@ -250,9 +251,10 @@ pub async fn update_container_embedding(
                 format!("{:?}", e),
             )
         })?
-        .ok_or_else(|| command_error(format!("Node not found: {}", container_id), "NOT_FOUND"))?;
+        .ok_or_else(|| command_error(format!("Node not found: {}", root_id), "NOT_FOUND"))?;
 
     // Generate and store embedding
+    // Note: NodeEmbeddingService method still uses legacy name, will be updated in Phase 6
     state.service.embed_container(&node).await.map_err(|e| {
         command_error_with_details(
             format!("Failed to update embedding: {}", e),
@@ -261,14 +263,14 @@ pub async fn update_container_embedding(
         )
     })?;
 
-    tracing::info!("Updated embedding for node: {}", container_id);
+    tracing::info!("Updated embedding for node: {}", root_id);
     Ok(())
 }
 
 /// Schedule a debounced embedding update (DEPRECATED - Will be removed in v0.2.0)
 ///
 /// **DEPRECATED**: This command will be removed in version 0.2.0.
-/// Use `on_container_closed` or `on_container_idle` smart triggers instead.
+/// Use `on_root_closed` or `on_root_idle` smart triggers instead.
 ///
 /// This is now a no-op. Content changes automatically mark topics as stale in the backend.
 /// The stale flag system replaces the old debounce approach.
@@ -277,16 +279,16 @@ pub async fn update_container_embedding(
 ///
 /// Replace:
 /// ```typescript
-/// await invoke('schedule_container_embedding_update', { containerId });
+/// await invoke('schedule_root_embedding_update', { rootId });
 /// ```
 ///
 /// With:
 /// ```typescript
 /// // When topic is closed/unfocused:
-/// await invoke('on_container_closed', { containerId });
+/// await invoke('on_root_closed', { rootId });
 ///
 /// // After 30 seconds of idle time:
-/// await invoke('on_container_idle', { containerId });
+/// await invoke('on_root_idle', { rootId });
 /// ```
 ///
 /// # Deprecation Timeline
@@ -296,16 +298,16 @@ pub async fn update_container_embedding(
 #[tauri::command]
 #[deprecated(
     since = "0.1.0",
-    note = "Use on_container_closed or on_container_idle smart triggers instead. Will be removed in v0.2.0."
+    note = "Use on_root_closed or on_root_idle smart triggers instead. Will be removed in v0.2.0."
 )]
-pub async fn schedule_container_embedding_update(
+pub async fn schedule_root_embedding_update(
     _state: State<'_, EmbeddingState>,
-    container_id: String,
+    root_id: String,
 ) -> Result<(), CommandError> {
     // Log deprecation warning
     tracing::warn!(
-        container_id = %container_id,
-        "DEPRECATED: schedule_container_embedding_update called. Use on_container_closed or on_container_idle instead. This command will be removed in v0.2.0."
+        root_id = %root_id,
+        "DEPRECATED: schedule_root_embedding_update called. Use on_root_closed or on_root_idle instead. This command will be removed in v0.2.0."
     );
 
     // No-op for backward compatibility
@@ -313,14 +315,14 @@ pub async fn schedule_container_embedding_update(
     Ok(())
 }
 
-/// Smart trigger: Topic closed/unfocused
+/// Smart trigger: Topic/root closed/unfocused
 ///
-/// Called when user closes or navigates away from a topic.
+/// Called when user closes or navigates away from a topic/root.
 /// If the topic was recently edited, it triggers immediate re-embedding.
 ///
 /// # Arguments
 ///
-/// * `container_id` - ID of the topic that was closed
+/// * `root_id` - ID of the topic/root that was closed
 ///
 /// # Example (from frontend)
 ///
@@ -328,17 +330,17 @@ pub async fn schedule_container_embedding_update(
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
 /// // User closes topic page or switches to another topic
-/// await invoke('on_container_closed', { containerId: 'topic-uuid-123' });
+/// await invoke('on_root_closed', { rootId: 'topic-uuid-123' });
 /// ```
 #[tauri::command]
-pub async fn on_container_closed(
+pub async fn on_root_closed(
     state: State<'_, EmbeddingState>,
     node_service: State<'_, NodeService>,
-    container_id: String,
+    root_id: String,
 ) -> Result<(), CommandError> {
     // Get the node from the database
     let node = node_service
-        .get_node(&container_id)
+        .get_node(&root_id)
         .await
         .map_err(|e| {
             command_error_with_details(
@@ -347,9 +349,10 @@ pub async fn on_container_closed(
                 format!("{:?}", e),
             )
         })?
-        .ok_or_else(|| command_error(format!("Node not found: {}", container_id), "NOT_FOUND"))?;
+        .ok_or_else(|| command_error(format!("Node not found: {}", root_id), "NOT_FOUND"))?;
 
     // Generate embedding (will be marked as stale by background if content changes)
+    // Note: NodeEmbeddingService method still uses legacy name, will be updated in Phase 6
     state.service.embed_container(&node).await.map_err(|e| {
         command_error_with_details(
             format!("Failed to regenerate embedding: {}", e),
@@ -358,18 +361,18 @@ pub async fn on_container_closed(
         )
     })?;
 
-    tracing::info!("Generated embedding on close for node: {}", container_id);
+    tracing::info!("Generated embedding on close for node: {}", root_id);
     Ok(())
 }
 
 /// Smart trigger: Idle timeout
 ///
 /// Called when user has stopped editing for 30+ seconds.
-/// Triggers re-embedding if topic is stale.
+/// Triggers re-embedding if topic/root is stale.
 ///
 /// # Arguments
 ///
-/// * `container_id` - ID of the topic to check
+/// * `root_id` - ID of the topic/root to check
 ///
 /// # Returns
 ///
@@ -381,20 +384,20 @@ pub async fn on_container_closed(
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
 /// // After 30 seconds of idle time
-/// const wasEmbedded = await invoke('on_container_idle', {
-///   containerId: 'topic-uuid-123'
+/// const wasEmbedded = await invoke('on_root_idle', {
+///   rootId: 'topic-uuid-123'
 /// });
 /// console.log(`Re-embedded: ${wasEmbedded}`);
 /// ```
 #[tauri::command]
-pub async fn on_container_idle(
+pub async fn on_root_idle(
     state: State<'_, EmbeddingState>,
     node_service: State<'_, NodeService>,
-    container_id: String,
+    root_id: String,
 ) -> Result<bool, CommandError> {
     // Get the node from the database
     let node = node_service
-        .get_node(&container_id)
+        .get_node(&root_id)
         .await
         .map_err(|e| {
             command_error_with_details(
@@ -403,9 +406,10 @@ pub async fn on_container_idle(
                 format!("{:?}", e),
             )
         })?
-        .ok_or_else(|| command_error(format!("Node not found: {}", container_id), "NOT_FOUND"))?;
+        .ok_or_else(|| command_error(format!("Node not found: {}", root_id), "NOT_FOUND"))?;
 
     // Generate embedding (returns true to indicate processing was triggered)
+    // Note: NodeEmbeddingService method still uses legacy name, will be updated in Phase 6
     state.service.embed_container(&node).await.map_err(|e| {
         command_error_with_details(
             format!("Failed to regenerate embedding: {}", e),
@@ -414,7 +418,7 @@ pub async fn on_container_idle(
         )
     })?;
 
-    tracing::info!("Generated embedding on idle for node: {}", container_id);
+    tracing::info!("Generated embedding on idle for node: {}", root_id);
     Ok(true)
 }
 
@@ -453,9 +457,9 @@ pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<usize, 
     Ok(0)
 }
 
-/// Get count of stale topics
+/// Get count of stale topics/roots
 ///
-/// Returns the number of topics that need re-embedding.
+/// Returns the number of topics/roots that need re-embedding.
 /// Useful for showing status indicators in UI.
 ///
 /// # Example (from frontend)
@@ -463,11 +467,11 @@ pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<usize, 
 /// ```typescript
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
-/// const count = await invoke('get_stale_container_count');
+/// const count = await invoke('get_stale_root_count');
 /// // Display badge: "${count} topics need indexing"
 /// ```
 #[tauri::command]
-pub async fn get_stale_container_count(
+pub async fn get_stale_root_count(
     node_service: State<'_, NodeService>,
 ) -> Result<usize, CommandError> {
     // Get store from NodeService to query stale embeddings
@@ -487,51 +491,52 @@ pub async fn get_stale_container_count(
     Ok(stale_nodes.len())
 }
 
-/// Batch generate embeddings for multiple topics
+/// Batch generate embeddings for multiple topics/roots
 ///
 /// Useful for initial embedding generation or bulk operations.
 ///
 /// # Arguments
 ///
-/// * `container_ids` - Vector of topic IDs to embed
+/// * `root_ids` - Vector of topic/root IDs to embed
 ///
 /// # Returns
 ///
-/// Result containing number of successfully embedded topics
+/// Result containing number of successfully embedded topics/roots
 ///
 /// # Example (from frontend)
 ///
 /// ```typescript
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
-/// const containerIds = ['topic-1', 'topic-2', 'topic-3'];
-/// const result = await invoke('batch_generate_embeddings', { containerIds });
-/// console.log(`Embedded ${result.success_count} out of ${containerIds.length} topics`);
+/// const rootIds = ['topic-1', 'topic-2', 'topic-3'];
+/// const result = await invoke('batch_generate_embeddings', { rootIds });
+/// console.log(`Embedded ${result.success_count} out of ${rootIds.length} topics`);
 /// ```
 #[tauri::command]
 pub async fn batch_generate_embeddings(
     state: State<'_, EmbeddingState>,
     node_service: State<'_, NodeService>,
-    container_ids: Vec<String>,
+    root_ids: Vec<String>,
 ) -> Result<BatchEmbeddingResult, CommandError> {
     let mut success_count = 0;
     let mut failed_embeddings = Vec::new();
 
-    for container_id in container_ids {
+    for root_id in root_ids {
         // Get the node from the database
-        match node_service.get_node(&container_id).await {
+        match node_service.get_node(&root_id).await {
             Ok(Some(node)) => {
                 // Generate and store embedding
+                // Note: NodeEmbeddingService method still uses legacy name, will be updated in Phase 6
                 match state.service.embed_container(&node).await {
                     Ok(_) => {
                         success_count += 1;
-                        tracing::debug!("Embedded node: {}", container_id);
+                        tracing::debug!("Embedded node: {}", root_id);
                     }
                     Err(e) => {
                         let error_msg = format!("Failed to generate embedding: {}", e);
-                        tracing::error!("Node {}: {}", container_id, error_msg);
+                        tracing::error!("Node {}: {}", root_id, error_msg);
                         failed_embeddings.push(BatchEmbeddingError {
-                            container_id: container_id.clone(),
+                            root_id: root_id.clone(),
                             error: error_msg,
                         });
                     }
@@ -539,17 +544,17 @@ pub async fn batch_generate_embeddings(
             }
             Ok(None) => {
                 let error_msg = "Node not found".to_string();
-                tracing::error!("Node {}: {}", container_id, error_msg);
+                tracing::error!("Node {}: {}", root_id, error_msg);
                 failed_embeddings.push(BatchEmbeddingError {
-                    container_id: container_id.clone(),
+                    root_id: root_id.clone(),
                     error: error_msg,
                 });
             }
             Err(e) => {
                 let error_msg = format!("Failed to get node: {}", e);
-                tracing::error!("Node {}: {}", container_id, error_msg);
+                tracing::error!("Node {}: {}", root_id, error_msg);
                 failed_embeddings.push(BatchEmbeddingError {
-                    container_id: container_id.clone(),
+                    root_id: root_id.clone(),
                     error: error_msg,
                 });
             }
@@ -572,8 +577,8 @@ pub async fn batch_generate_embeddings(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchEmbeddingError {
-    /// ID of the topic that failed to embed
-    pub container_id: String,
+    /// ID of the topic/root that failed to embed
+    pub root_id: String,
 
     /// Error message describing the failure
     pub error: String,
@@ -596,7 +601,7 @@ mod tests {
 
     #[test]
     fn test_search_params_defaults() {
-        let params = SearchContainersParams {
+        let params = SearchRootsParams {
             query: "test".to_string(),
             threshold: None,
             limit: None,
@@ -610,7 +615,7 @@ mod tests {
 
     #[test]
     fn test_search_params_custom() {
-        let params = SearchContainersParams {
+        let params = SearchRootsParams {
             query: "test".to_string(),
             threshold: Some(0.8),
             limit: Some(50),

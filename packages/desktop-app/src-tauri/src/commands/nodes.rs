@@ -16,7 +16,7 @@ pub struct CreateNodeInput {
     pub node_type: String,
     pub content: String,
     pub parent_id: Option<String>,
-    // container_node_id removed - backend auto-derives root from parent chain (Issue #533)
+    // root_id removed - backend auto-derives root from parent chain (Issue #533)
     pub before_sibling_id: Option<String>,
     pub properties: serde_json::Value,
     #[serde(default)]
@@ -140,7 +140,7 @@ pub async fn create_node(
             node_type: node.node_type,
             content: node.content,
             parent_id: node.parent_id,
-            // container_node_id removed - backend auto-derives root from parent chain (Issue #533)
+            // root_id removed - backend auto-derives root from parent chain (Issue #533)
             before_sibling_id: node.before_sibling_id,
             properties: node.properties,
         })
@@ -148,10 +148,10 @@ pub async fn create_node(
         .map_err(Into::into)
 }
 
-/// Input for creating a container node
+/// Input for creating a root node (top-level container)
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateContainerNodeInput {
+pub struct CreateRootNodeInput {
     pub content: String,
     pub node_type: String,
     #[serde(default)]
@@ -168,59 +168,58 @@ pub struct SaveNodeWithParentInput {
     pub content: String,
     pub node_type: String,
     pub parent_id: String,
-    pub container_node_id: String,
+    pub root_id: String,
     #[serde(default)]
     pub before_sibling_id: Option<String>,
 }
 
-/// Create a new container node (root node with container_node_id = NULL)
+/// Create a new root node (top-level node that can contain other nodes)
 ///
-/// Uses NodeOperations to create container with business rule enforcement.
-/// Container nodes are root-level nodes that can contain other nodes.
+/// Uses NodeOperations to create root node with business rule enforcement.
+/// Root nodes are top-level nodes that can contain other nodes (pages, topics, etc.).
 /// Node type must have a corresponding schema defined in the system.
 /// NodeOperations ensures they have:
 /// - parent_id = None
-/// - container_node_id = None (they ARE containers)
 /// - before_sibling_id = None
 ///
 /// # Arguments
 /// * `operations` - NodeOperations instance from Tauri state
 /// * `service` - NodeService for mention relationship creation
 /// * `schema_service` - SchemaService instance for validating node type
-/// * `input` - Container node data
+/// * `input` - Root node data
 ///
 /// # Returns
-/// * `Ok(String)` - ID of the created container node
+/// * `Ok(String)` - ID of the created root node
 /// * `Err(CommandError)` - Error with details if creation fails
 ///
 /// # Example Frontend Usage
 /// ```typescript
-/// const nodeId = await invoke('create_container_node', {
+/// const nodeId = await invoke('create_root_node', {
 ///   input: {
 ///     content: 'Project Planning',
 ///     nodeType: 'text',
 ///     properties: {},
-///     mentionedBy: 'daily-note-id' // Optional: node that mentions this container
+///     mentionedBy: 'daily-note-id' // Optional: node that mentions this root
 ///   }
 /// });
 /// ```
 #[tauri::command]
-pub async fn create_container_node(
+pub async fn create_root_node(
     operations: State<'_, NodeOperations>,
     service: State<'_, NodeService>,
     schema_service: State<'_, SchemaService>,
-    input: CreateContainerNodeInput,
+    input: CreateRootNodeInput,
 ) -> Result<String, CommandError> {
     validate_node_type(&input.node_type, &schema_service).await?;
 
-    // Create container node with NodeOperations (enforces container rules)
+    // Create root node with NodeOperations (enforces root node rules)
     let node_id = operations
         .create_node(CreateNodeParams {
-            id: None, // Let NodeOperations generate ID for containers
+            id: None, // Let NodeOperations generate ID for root nodes
             node_type: input.node_type,
             content: input.content,
             parent_id: None, // parent_id = None for root nodes
-            // container_node_id removed - backend auto-derives root from parent chain (Issue #533)
+            // root is derived from parent chain (Issue #533)
             before_sibling_id: None, // before_sibling_id = None for root nodes
             properties: input.properties,
         })
@@ -507,39 +506,36 @@ pub async fn get_children(
     service.get_children(&parent_id).await.map_err(Into::into)
 }
 
-/// Bulk fetch all nodes belonging to an origin node (viewer/page)
+/// Bulk fetch all nodes belonging to a root node (viewer/page)
 ///
 /// This is the efficient way to load a complete document tree:
-/// - Single database query fetches all nodes with the same container_node_id
+/// - Single database query fetches all nodes with the same root
 /// - In-memory hierarchy reconstruction using parent_id and before_sibling_id
 ///
-/// Phase 5 (Issue #511): Uses graph edges instead of container_node_id field
+/// Phase 5 (Issue #511): Uses graph edges instead of root_id field
 ///
 /// # Arguments
 /// * `service` - Node service instance from Tauri state
-/// * `container_node_id` - ID of the parent node (e.g., date page ID)
+/// * `root_id` - ID of the root node (e.g., date page ID)
 ///
 /// # Returns
-/// * `Ok(Vec<Node>)` - All children of this parent
+/// * `Ok(Vec<Node>)` - All children of this root
 /// * `Err(CommandError)` - Error with details if operation fails
 ///
 /// # Example Frontend Usage
 /// ```typescript
-/// const nodes = await invoke('get_nodes_by_container_id', {
-///   containerNodeId: '2025-10-05'
+/// const nodes = await invoke('get_nodes_by_root_id', {
+///   rootId: '2025-10-05'
 /// });
 /// console.log(`Loaded ${nodes.length} nodes for this date`);
 /// ```
 #[tauri::command]
-pub async fn get_nodes_by_container_id(
+pub async fn get_nodes_by_root_id(
     service: State<'_, NodeService>,
-    container_node_id: String,
+    root_id: String,
 ) -> Result<Vec<Node>, CommandError> {
     // Phase 5 (Issue #511): Redirect to get_children (graph-native)
-    service
-        .get_children(&container_node_id)
-        .await
-        .map_err(Into::into)
+    service.get_children(&root_id).await.map_err(Into::into)
 }
 
 /// Query nodes with flexible filtering
@@ -667,7 +663,7 @@ pub async fn mention_autocomplete(
 ///   content: 'Updated content',
 ///   nodeType: 'text',
 ///   parentId: '2025-10-05',
-///   containerNodeId: '2025-10-05',
+///   rootId: '2025-10-05',
 ///   beforeSiblingId: null
 /// });
 /// ```
@@ -703,7 +699,7 @@ pub async fn save_node_with_parent(
             &input.content,
             &input.node_type,
             &input.parent_id,
-            &input.container_node_id,
+            &input.root_id,
             input.before_sibling_id.as_deref(),
         )
         .await
@@ -763,40 +759,41 @@ pub async fn get_incoming_mentions(
     service.get_mentioned_by(&node_id).await.map_err(Into::into)
 }
 
-/// Get containers of nodes that mention the target node (backlinks at container level)
+/// Get root nodes of nodes that mention the target node (backlinks at root level)
 ///
-/// This resolves incoming mentions to their container nodes and deduplicates.
+/// This resolves incoming mentions to their root nodes and deduplicates.
 ///
 /// Unlike `get_incoming_mentions` which returns individual mentioning nodes,
-/// this resolves to their container nodes and deduplicates automatically.
+/// this resolves to their root nodes and deduplicates automatically.
 ///
-/// # Container Resolution Logic
-/// - For task and ai-chat nodes: Returns the node's own ID (they are their own containers)
-/// - For other nodes: Returns their container_node_id (or the node ID itself if it's a root)
+/// # Root Resolution Logic
+/// - For task and ai-chat nodes: Returns the node's own ID (they are their own roots)
+/// - For other nodes: Returns their root node ID (or the node ID itself if it's a root)
 ///
 /// # Arguments
 /// * `service` - Node service instance from Tauri state
 /// * `node_id` - ID of the node to find backlinks for
 ///
 /// # Returns
-/// * `Ok(Vec<String>)` - List of unique container node IDs (empty if no backlinks)
+/// * `Ok(Vec<String>)` - List of unique root node IDs (empty if no backlinks)
 /// * `Err(CommandError)` - Error with details if operation fails
 ///
 /// # Example
-/// If nodes A and B (both children of Container X) mention target node,
-/// returns `['container-x-id']` instead of `['node-a-id', 'node-b-id']`
+/// If nodes A and B (both children of Root X) mention target node,
+/// returns `['root-x-id']` instead of `['node-a-id', 'node-b-id']`
 ///
 /// # Example Frontend Usage
 /// ```typescript
-/// const containers = await invoke('get_mentioning_containers', {
+/// const roots = await invoke('get_mentioning_roots', {
 ///   nodeId: 'node-123'
 /// });
 /// ```
 #[tauri::command]
-pub async fn get_mentioning_containers(
+pub async fn get_mentioning_roots(
     service: State<'_, NodeService>,
     node_id: String,
 ) -> Result<Vec<String>, CommandError> {
+    // Note: NodeService method still uses legacy name, will be updated in Phase 6
     service
         .get_mentioning_containers(&node_id)
         .await

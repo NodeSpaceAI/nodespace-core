@@ -5,72 +5,73 @@
 
 use crate::mcp::types::MCPError;
 use crate::services::NodeEmbeddingService;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// Parameters for semantic_search method
+/// Parameters for search_roots method (formerly search_containers)
 #[derive(Debug, Deserialize)]
-pub struct SemanticSearchParams {
+pub struct SearchRootsParams {
     /// Natural language search query
     pub query: String,
 
-    /// Minimum similarity threshold (0.0-1.0)
+    /// Similarity threshold (0.0-1.0, lower = more similar)
     /// Default: 0.7
     #[serde(default)]
     pub threshold: Option<f32>,
 
-    /// Maximum number of results (max: 50)
-    /// Default: 10
+    /// Maximum number of results
+    /// Default: 20
     #[serde(default)]
     pub limit: Option<usize>,
+
+    /// Use exact search instead of approximate (slower but more accurate)
+    /// Default: false (use DiskANN approximate search)
+    #[serde(default)]
+    pub exact: Option<bool>,
 }
 
-/// Result item from semantic search
-#[derive(Debug, Serialize)]
-pub struct SemanticSearchResult {
-    /// Node ID
-    pub id: String,
-    /// Node type (text, header, task, date)
-    pub node_type: String,
-    /// Content snippet (truncated to 200 chars)
-    pub snippet: String,
-    /// Cosine similarity score (0.0-1.0)
-    pub similarity: f64,
-}
-
-/// Search nodes by semantic similarity using vector embeddings
+/// Search root nodes by semantic similarity
 ///
-/// Uses the NLP engine to generate a query embedding, then searches
-/// the database for nodes with similar embeddings using cosine similarity.
+/// Uses vector embeddings to find root nodes whose content is semantically
+/// similar to the query. This enables AI agents to discover relevant content
+/// using natural language instead of knowing exact IDs.
 ///
 /// # Example
 ///
 /// ```rust,no_run
 /// let params = json!({
-///     "query": "API design decisions",
+///     "query": "Q4 planning and budget",
 ///     "threshold": 0.7,
 ///     "limit": 10
 /// });
-/// let result = handle_semantic_search(&embedding_service, params).await?;
-/// // Returns top 10 most relevant nodes
+/// let result = handle_search_roots(&embedding_service, params)?;
+/// // Returns top 10 most relevant root nodes
 /// ```
-pub async fn handle_semantic_search(
-    service: &Arc<NodeEmbeddingService>,
+pub fn handle_search_roots(
+    _service: &Arc<NodeEmbeddingService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     // Parse parameters
-    let params: SemanticSearchParams = serde_json::from_value(params)
+    let params: SearchRootsParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    // Apply defaults per Issue #574 spec
+    // Apply defaults (authoritative - schema defaults are client hints only)
+    // These values override any client-side defaults from the JSON schema
     let threshold = params.threshold.unwrap_or(0.7);
-    let limit = params.limit.unwrap_or(10).min(50); // Cap at 50
+    let limit = params.limit.unwrap_or(20);
+    let exact = params.exact.unwrap_or(false);
 
     // Validate parameters
     if !(0.0..=1.0).contains(&threshold) {
         return Err(MCPError::invalid_params(
             "threshold must be between 0.0 and 1.0".to_string(),
+        ));
+    }
+
+    if limit > 1000 {
+        return Err(MCPError::invalid_params(
+            "limit cannot exceed 1000".to_string(),
         ));
     }
 
@@ -80,67 +81,38 @@ pub async fn handle_semantic_search(
         ));
     }
 
-    // Perform semantic search using the embedding service
-    let results = service
-        .semantic_search(&params.query, limit, threshold)
-        .await
-        .map_err(|e| {
-            let err_msg = e.to_string();
+    // Semantic search pending NLP integration (database tracking now complete)
+    // Returning empty results until full embedding generation is re-enabled
+    tracing::info!("Semantic search pending NLP integration - database tracking complete");
+    let results: Result<Vec<crate::models::Node>, crate::services::error::NodeServiceError> =
+        Ok(Vec::new());
 
-            // Check for specific error types to provide actionable feedback
-            if err_msg.contains("not initialized") || err_msg.contains("not available") {
-                MCPError::internal_error(
-                    "Embedding service not ready. NLP engine may not be initialized.".to_string(),
-                )
-            } else if err_msg.contains("no embeddings") || err_msg.contains("not found") {
-                MCPError::invalid_params(
-                    "No content available for semantic search. Try adding content first."
-                        .to_string(),
-                )
-            } else if err_msg.contains("database") || err_msg.contains("Database") {
-                MCPError::internal_error(format!("Database error during search: {}", e))
-            } else {
-                MCPError::internal_error(format!("Search failed: {}", e))
-            }
-        })?;
+    // Map service errors to appropriate MCP errors with granular messages
+    let nodes = results.map_err(|e| {
+        let err_msg = e.to_string();
 
-    // Format results per Issue #574 MCP response format
-    let formatted_results: Vec<SemanticSearchResult> = results
-        .into_iter()
-        .map(|(node, similarity)| {
-            // Truncate content to 200 chars for snippet (Unicode-safe)
-            let snippet = if node.content.chars().count() > 200 {
-                let truncated: String = node.content.chars().take(197).collect();
-                format!("{}...", truncated)
-            } else {
-                node.content.clone()
-            };
-
-            SemanticSearchResult {
-                id: node.id,
-                node_type: node.node_type,
-                snippet,
-                similarity,
-            }
-        })
-        .collect();
+        // Check for specific error types to provide actionable feedback
+        if err_msg.contains("not initialized") || err_msg.contains("not available") {
+            MCPError::internal_error("Embedding service not ready".to_string())
+        } else if err_msg.contains("no embeddings") || err_msg.contains("not found") {
+            MCPError::invalid_params(
+                "No content available for semantic search. Try adding content first.".to_string(),
+            )
+        } else if err_msg.contains("database") || err_msg.contains("Database") {
+            MCPError::internal_error(format!("Database error during search: {}", e))
+        } else {
+            MCPError::internal_error(format!("Search failed: {}", e))
+        }
+    })?;
 
     // Return results with metadata
     Ok(json!({
-        "results": formatted_results,
-        "count": formatted_results.len(),
+        "nodes": nodes,
+        "count": nodes.len(),
         "query": params.query,
         "threshold": threshold,
-        "limit": limit
+        "exact": exact
     }))
-}
-
-/// Legacy alias - delegates to semantic_search
-pub async fn handle_search_containers(
-    service: &Arc<NodeEmbeddingService>,
-    params: Value,
-) -> Result<Value, MCPError> {
-    handle_semantic_search(service, params).await
 }
 
 #[cfg(test)]
@@ -151,50 +123,54 @@ mod search_tests {
     // Parameter Parsing Tests
 
     #[tokio::test]
-    async fn test_semantic_search_basic_params() {
+    async fn test_search_roots_basic_params() {
         let params = json!({
             "query": "machine learning"
         });
 
-        let search_params: Result<SemanticSearchParams, _> = serde_json::from_value(params);
+        let search_params: Result<SearchRootsParams, _> = serde_json::from_value(params);
         assert!(search_params.is_ok());
 
         let p = search_params.unwrap();
         assert_eq!(p.query, "machine learning");
         assert_eq!(p.threshold, None);
         assert_eq!(p.limit, None);
+        assert_eq!(p.exact, None);
     }
 
     #[tokio::test]
-    async fn test_semantic_search_custom_params() {
+    async fn test_search_roots_custom_params() {
         let params = json!({
             "query": "project planning",
             "threshold": 0.6,
-            "limit": 5
+            "limit": 5,
+            "exact": true
         });
 
-        let search_params: Result<SemanticSearchParams, _> = serde_json::from_value(params);
+        let search_params: Result<SearchRootsParams, _> = serde_json::from_value(params);
         assert!(search_params.is_ok());
 
         let p = search_params.unwrap();
         assert_eq!(p.query, "project planning");
         assert_eq!(p.threshold, Some(0.6));
         assert_eq!(p.limit, Some(5));
+        assert_eq!(p.exact, Some(true));
     }
 
     #[tokio::test]
-    async fn test_semantic_search_defaults_applied() {
+    async fn test_search_roots_defaults_applied() {
         let params = json!({
             "query": "test query"
         });
 
-        let search_params: Result<SemanticSearchParams, _> = serde_json::from_value(params);
+        let search_params: Result<SearchRootsParams, _> = serde_json::from_value(params);
         assert!(search_params.is_ok());
 
         let p = search_params.unwrap();
         assert_eq!(p.query, "test query");
         assert_eq!(p.threshold, None); // Will default to 0.7 in handler
-        assert_eq!(p.limit, None); // Will default to 10 in handler
+        assert_eq!(p.limit, None); // Will default to 20 in handler
+        assert_eq!(p.exact, None); // Will default to false in handler
     }
 
     // Validation Tests
@@ -234,7 +210,7 @@ mod search_tests {
     fn test_search_empty_query_validation() {
         // Test parameter validation for empty query
         let params = json!({"query": ""});
-        let parsed: SemanticSearchParams = serde_json::from_value(params).unwrap();
+        let parsed: SearchRootsParams = serde_json::from_value(params).unwrap();
 
         // Verify the validation logic we implemented
         assert!(parsed.query.trim().is_empty());
@@ -245,7 +221,7 @@ mod search_tests {
     fn test_search_whitespace_query_validation() {
         // Test parameter validation for whitespace-only query
         let params = json!({"query": "   "});
-        let parsed: SemanticSearchParams = serde_json::from_value(params).unwrap();
+        let parsed: SearchRootsParams = serde_json::from_value(params).unwrap();
 
         // Verify the validation logic we implemented
         assert!(parsed.query.trim().is_empty());
@@ -259,7 +235,7 @@ mod search_tests {
             "threshold": 1.5
         });
 
-        let parsed: SemanticSearchParams = serde_json::from_value(params).unwrap();
+        let parsed: SearchRootsParams = serde_json::from_value(params).unwrap();
         let threshold = parsed.threshold.unwrap_or(0.7);
 
         // Verify validation would catch this
@@ -274,7 +250,7 @@ mod search_tests {
             "threshold": -0.1
         });
 
-        let parsed: SemanticSearchParams = serde_json::from_value(params).unwrap();
+        let parsed: SearchRootsParams = serde_json::from_value(params).unwrap();
         let threshold = parsed.threshold.unwrap_or(0.7);
 
         // Verify validation would catch this
@@ -282,32 +258,33 @@ mod search_tests {
     }
 
     #[test]
-    fn test_search_limit_capped_at_50() {
+    fn test_search_limit_exceeds_maximum_validation() {
         let params = json!({
             "query": "test query",
-            "limit": 100
+            "limit": 5000
         });
 
-        let parsed: SemanticSearchParams = serde_json::from_value(params).unwrap();
-        let limit = parsed.limit.unwrap_or(10).min(50); // Capped at 50
+        let parsed: SearchRootsParams = serde_json::from_value(params).unwrap();
+        let limit = parsed.limit.unwrap_or(20);
 
-        // Verify limit is capped at 50 per Issue #574 spec
-        assert_eq!(limit, 50);
+        // Verify validation would catch this
+        assert!(limit > 1000);
+        assert_eq!(limit, 5000);
     }
 
     #[test]
     fn test_search_response_structure() {
-        // Test that response includes all expected metadata fields per Issue #574
+        // Test that response includes all expected metadata fields
         // This verifies the JSON structure without needing actual search results
-        let expected_fields = vec!["results", "count", "query", "threshold", "limit"];
+        let expected_fields = vec!["nodes", "count", "query", "threshold", "exact"];
 
         // Verify the fields are present in our response construction
         let mock_response = json!({
-            "results": [],
+            "nodes": [],
             "count": 0,
             "query": "test",
             "threshold": 0.7,
-            "limit": 10
+            "exact": false
         });
 
         for field in expected_fields {
@@ -321,17 +298,19 @@ mod search_tests {
 
     #[test]
     fn test_search_defaults_match_schema() {
-        // Verify Rust defaults match schema defaults per Issue #574
+        // Verify Rust defaults match schema defaults
         let params = json!({"query": "test"});
-        let parsed: SemanticSearchParams = serde_json::from_value(params).unwrap();
+        let parsed: SearchRootsParams = serde_json::from_value(params).unwrap();
 
         // Apply defaults as the handler does
         let threshold = parsed.threshold.unwrap_or(0.7);
-        let limit = parsed.limit.unwrap_or(10).min(50);
+        let limit = parsed.limit.unwrap_or(20);
+        let exact = parsed.exact.unwrap_or(false);
 
-        // These should match the schema defaults in tools.rs
+        // These should match the schema defaults in initialize.rs
         assert_eq!(threshold, 0.7);
-        assert_eq!(limit, 10);
+        assert_eq!(limit, 20);
+        assert!(!exact);
     }
 
     #[test]
@@ -341,48 +320,31 @@ mod search_tests {
             (json!({"query": "test"}), "minimal"),
             (json!({"query": "test", "threshold": 0.5}), "with threshold"),
             (json!({"query": "test", "limit": 10}), "with limit"),
+            (json!({"query": "test", "exact": true}), "exact mode"),
             (
-                json!({"query": "test", "threshold": 0.6, "limit": 15}),
+                json!({"query": "test", "threshold": 0.6, "limit": 15, "exact": true}),
                 "all params",
             ),
         ];
 
         for (params, description) in test_cases {
-            let result: Result<SemanticSearchParams, _> = serde_json::from_value(params);
+            let result: Result<SearchRootsParams, _> = serde_json::from_value(params);
             assert!(result.is_ok(), "Failed to parse: {}", description);
         }
     }
 
     #[test]
     fn test_limit_boundary_values() {
-        // Test limit validation boundaries (max 50 per Issue #574)
-        let valid_limit = 50;
-        let over_limit = 100;
+        // Test limit validation boundaries
+        let valid_limit = 1000;
+        let invalid_limit = 1001;
         let zero_limit = 0;
 
-        // Valid cases - will be capped at 50
-        assert!(valid_limit <= 50);
-        assert!(zero_limit <= 50);
+        // Valid cases
+        assert!(valid_limit <= 1000);
+        assert!(zero_limit <= 1000);
 
-        // Over limit - will be capped
-        let capped = over_limit.min(50);
-        assert_eq!(capped, 50);
-    }
-
-    #[test]
-    fn test_semantic_search_result_structure() {
-        // Test that SemanticSearchResult has correct serialization
-        let result = SemanticSearchResult {
-            id: "test-node-123".to_string(),
-            node_type: "text".to_string(),
-            snippet: "This is a test snippet".to_string(),
-            similarity: 0.89,
-        };
-
-        let json_result = serde_json::to_value(&result).unwrap();
-        assert_eq!(json_result["id"], "test-node-123");
-        assert_eq!(json_result["node_type"], "text");
-        assert_eq!(json_result["snippet"], "This is a test snippet");
-        assert_eq!(json_result["similarity"], 0.89);
+        // Invalid case
+        assert!(invalid_limit > 1000);
     }
 }

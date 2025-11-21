@@ -291,19 +291,19 @@ where
         NaiveDate::parse_from_str(id, "%Y-%m-%d").is_ok()
     }
 
-    /// Resolve container_node_id for non-container nodes
+    /// Resolve root_id for non-root nodes
     ///
-    /// Business Rule 2: Every non-container node MUST have a container_node_id.
+    /// Business Rule 2: Every non-root node MUST have a root_id.
     /// If not provided explicitly, infer it from the parent.
     ///
     /// # Arguments
     ///
-    /// * `container_node_id` - Explicitly provided container (may be None)
+    /// * `root_id` - Explicitly provided root (may be None)
     /// * `parent_id` - Parent node ID (may be None)
     ///
     /// # Returns
     ///
-    /// The resolved container_node_id or an error if it cannot be determined
+    /// The resolved root_id or an error if it cannot be determined
     ///
     /// # Errors
     ///
@@ -323,15 +323,15 @@ where
                 .await?
                 .ok_or_else(|| NodeOperationError::node_not_found(parent_id.to_string()))?;
 
-            // Get the container by traversing up to the root
-            // If parent is a root (no parent of its own), use the parent as the container
-            // Otherwise, get the parent's container recursively
-            let container_id = self.node_service.get_container_id(parent_id).await?;
-            return Ok(container_id);
+            // Get the root by traversing up the parent chain
+            // If parent is a root (no parent of its own), use the parent as the root
+            // Otherwise, get the parent's root recursively
+            let root_id = self.node_service.get_root_id(parent_id).await?;
+            return Ok(root_id);
         }
 
-        // Cannot resolve container
-        Err(NodeOperationError::non_container_must_have_container(
+        // Cannot resolve root
+        Err(NodeOperationError::non_root_must_have_root(
             node_id.to_string(),
             node_type.to_string(),
         ))
@@ -516,9 +516,8 @@ where
 
         // Business Rule 1: Auto-derive container/root from parent chain
         // If node has a parent, traverse parent edges to find the root node
-        // If node has NO parent, it IS the root (container_id = None)
-        let (final_parent_id, _final_container_id, final_sibling_id) = if params.parent_id.is_some()
-        {
+        // If node has NO parent, it IS the root (root_id = None)
+        let (final_parent_id, _final_root_id, final_sibling_id) = if params.parent_id.is_some() {
             // Node has a parent - derive container from parent chain
             let resolved_container = self
                 .resolve_container(
@@ -613,8 +612,8 @@ where
 
         // Note: Container relationship is NOT stored as an edge.
         // Container is determined by traversing UP the parent chain to find the root node.
-        // The final_container_id is used for validation/queries but doesn't create database edges.
-        // See NodeService::get_container_id() for the graph traversal implementation.
+        // The final_root_id is used for validation/queries but doesn't create database edges.
+        // See NodeService::get_root_id() for the graph traversal implementation.
 
         Ok(created_id)
     }
@@ -696,17 +695,11 @@ where
         Ok(self.node_service.get_children(parent_id).await?)
     }
 
-    /// Get all descendants of a container node
+    /// Get all descendants of a root node
     ///
-    /// Returns all nodes within the container's hierarchy (not just direct children).
-    pub async fn get_descendants(
-        &self,
-        container_id: &str,
-    ) -> Result<Vec<Node>, NodeOperationError> {
-        Ok(self
-            .node_service
-            .get_nodes_by_container_id(container_id)
-            .await?)
+    /// Returns all nodes within the root's hierarchy (not just direct children).
+    pub async fn get_descendants(&self, root_id: &str) -> Result<Vec<Node>, NodeOperationError> {
+        Ok(self.node_service.get_nodes_by_root_id(root_id).await?)
     }
 
     /// Get the parent ID of a node
@@ -742,9 +735,9 @@ where
     /// # Returns
     ///
     /// The container node ID (the node itself if it's already a root)
-    pub async fn get_container_id(&self, node_id: &str) -> Result<String, NodeOperationError> {
+    pub async fn get_root_id(&self, node_id: &str) -> Result<String, NodeOperationError> {
         // Delegate to NodeService which implements the traversal algorithm
-        Ok(self.node_service.get_container_id(node_id).await?)
+        Ok(self.node_service.get_root_id(node_id).await?)
     }
 
     // =========================================================================
@@ -907,7 +900,7 @@ where
             .await?
             .ok_or_else(|| NodeOperationError::node_not_found(node_id.to_string()))?;
 
-        // NOTE: Hierarchy changes (parent_id, container_node_id) are no longer supported in update_node.
+        // NOTE: Hierarchy changes (parent_id, root_id) are no longer supported in update_node.
         // Use the move_node() API instead for changing node hierarchy.
 
         let sibling_changed = update
@@ -1012,8 +1005,8 @@ where
     /// Move a node to a new parent
     ///
     /// This method enforces Rules 2, 4, and 5:
-    /// - Validates parent-container consistency
-    /// - Updates container_node_id if needed
+    /// - Validates parent-root consistency
+    /// - Updates root_id if needed
     /// - Separate from content updates
     ///
     /// # Arguments
@@ -1066,11 +1059,11 @@ where
                 .ok_or_else(|| NodeOperationError::node_not_found(parent_id.to_string()))?;
 
             // Get container from parent using service method
-            self.node_service.get_container_id(parent_id).await?
+            self.node_service.get_root_id(parent_id).await?
         } else {
             // Moving to root - node must have explicit container
             // Get current container
-            self.node_service.get_container_id(node_id).await?
+            self.node_service.get_root_id(node_id).await?
         };
 
         // Delegate to NodeService to perform the edge operations:
@@ -1463,7 +1456,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Create a child WITHOUT container_node_id - should infer from parent
+        // Create a child WITHOUT root_id - should infer from parent
         let child_id = operations
             .create_node(CreateNodeParams {
                 id: None, // Test generates ID
@@ -1476,16 +1469,16 @@ mod tests {
             .await
             .unwrap();
 
-        // Graph Architecture Note: Parent-child and container relationships are now managed
-        // via graph edges in the SurrealDB schema, not via parent_id/container_node_id fields.
+        // Graph Architecture Note: Parent-child and root relationships are now managed
+        // via graph edges in the SurrealDB schema, not via parent_id/root_id fields.
         // The relationship assertions would be verified via edge queries.
         let _child = operations.get_node(&child_id).await.unwrap().unwrap();
         // TODO: Verify parent-child relationship via graph edge query when edge API is available
     }
 
     #[tokio::test]
-    #[ignore = "TODO(#533): Re-enable after container concept cleanup"]
-    async fn test_parent_container_mismatch_error() {
+    #[ignore = "TODO(#533): Re-enable after root concept cleanup"]
+    async fn test_parent_root_mismatch_error() {
         let (operations, _temp_dir) = setup_test_operations().await.unwrap();
 
         // Create two separate date containers
@@ -1538,15 +1531,15 @@ mod tests {
             })
             .await;
 
-        // Verify error is ParentContainerMismatch
+        // Verify error is ParentRootMismatch
         assert!(
             result.is_err(),
-            "Should error when parent and child have different containers"
+            "Should error when parent and child have different roots"
         );
         let error = result.unwrap_err();
         assert!(
-            matches!(error, NodeOperationError::ParentContainerMismatch { .. }),
-            "Error should be ParentContainerMismatch, got: {:?}",
+            matches!(error, NodeOperationError::ParentRootMismatch { .. }),
+            "Error should be ParentRootMismatch, got: {:?}",
             error
         );
     }
@@ -2040,8 +2033,8 @@ mod tests {
             .await
             .unwrap();
 
-        // Graph Architecture Note: Parent-child and container relationships are now managed
-        // via graph edges in the SurrealDB schema, not via parent_id/container_node_id fields.
+        // Graph Architecture Note: Parent-child and root relationships are now managed
+        // via graph edges in the SurrealDB schema, not via parent_id/root_id fields.
         let _child = operations.get_node(&child_id).await.unwrap().unwrap();
         // TODO: Verify parent-child relationship via graph edge query when edge API is available
     }
@@ -2150,8 +2143,8 @@ mod tests {
     async fn test_concurrent_move_version_conflict() {
         let (operations, _temp_dir) = setup_test_operations().await.unwrap();
 
-        // Create container
-        let _container_id = operations
+        // Create root
+        let _root_id = operations
             .create_node(CreateNodeParams {
                 id: None, // Auto-generate UUID
                 node_type: "date".to_string(),
@@ -2163,7 +2156,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Create two parent nodes in the container
+        // Create two parent nodes in the root
         let parent1_id = operations
             .create_node(CreateNodeParams {
                 id: None, // Auto-generate UUID
@@ -2231,8 +2224,8 @@ mod tests {
     async fn test_concurrent_reorder_version_conflict() {
         let (operations, _temp_dir) = setup_test_operations().await.unwrap();
 
-        // Create container
-        let _container_id = operations
+        // Create root
+        let _root_id = operations
             .create_node(CreateNodeParams {
                 id: None, // Auto-generate UUID
                 node_type: "date".to_string(),
@@ -2456,8 +2449,8 @@ mod tests {
     async fn test_update_node_with_hierarchy_content_only() {
         let (operations, _temp_dir) = setup_test_operations().await.unwrap();
 
-        // Create container and node
-        let container_id = operations
+        // Create root and node
+        let root_id = operations
             .create_node(CreateNodeParams {
                 id: None,
                 node_type: "date".to_string(),
@@ -2474,7 +2467,7 @@ mod tests {
                 id: None,
                 node_type: "text".to_string(),
                 content: "Original".to_string(),
-                parent_id: Some(container_id.clone()),
+                parent_id: Some(root_id.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -2500,8 +2493,8 @@ mod tests {
     async fn test_update_node_with_hierarchy_hierarchy_only() {
         let (operations, _temp_dir) = setup_test_operations().await.unwrap();
 
-        // Create container
-        let container_id = operations
+        // Create root
+        let root_id = operations
             .create_node(CreateNodeParams {
                 id: None,
                 node_type: "date".to_string(),
@@ -2519,7 +2512,7 @@ mod tests {
                 id: None,
                 node_type: "text".to_string(),
                 content: "Parent".to_string(),
-                parent_id: Some(container_id.clone()),
+                parent_id: Some(root_id.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -2532,7 +2525,7 @@ mod tests {
                 id: None,
                 node_type: "text".to_string(),
                 content: "Child".to_string(),
-                parent_id: Some(container_id.clone()),
+                parent_id: Some(root_id.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -2559,8 +2552,8 @@ mod tests {
     async fn test_update_node_with_hierarchy_combined_update() {
         let (operations, _temp_dir) = setup_test_operations().await.unwrap();
 
-        // Create container and parent
-        let container_id = operations
+        // Create root and parent
+        let root_id = operations
             .create_node(CreateNodeParams {
                 id: None,
                 node_type: "date".to_string(),
@@ -2577,7 +2570,7 @@ mod tests {
                 id: None,
                 node_type: "text".to_string(),
                 content: "Parent".to_string(),
-                parent_id: Some(container_id.clone()),
+                parent_id: Some(root_id.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -2589,7 +2582,7 @@ mod tests {
                 id: None,
                 node_type: "text".to_string(),
                 content: "Child".to_string(),
-                parent_id: Some(container_id.clone()),
+                parent_id: Some(root_id.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -2618,7 +2611,7 @@ mod tests {
     async fn test_update_node_with_hierarchy_empty_update_fails() {
         let (operations, _temp_dir) = setup_test_operations().await.unwrap();
 
-        let container_id = operations
+        let root_id = operations
             .create_node(CreateNodeParams {
                 id: None,
                 node_type: "date".to_string(),
@@ -2635,7 +2628,7 @@ mod tests {
                 id: None,
                 node_type: "text".to_string(),
                 content: "Test".to_string(),
-                parent_id: Some(container_id.clone()),
+                parent_id: Some(root_id.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })
@@ -2658,7 +2651,7 @@ mod tests {
     async fn test_update_node_with_hierarchy_version_conflict() {
         let (operations, _temp_dir) = setup_test_operations().await.unwrap();
 
-        let container_id = operations
+        let root_id = operations
             .create_node(CreateNodeParams {
                 id: None,
                 node_type: "date".to_string(),
@@ -2675,7 +2668,7 @@ mod tests {
                 id: None,
                 node_type: "text".to_string(),
                 content: "Original".to_string(),
-                parent_id: Some(container_id.clone()),
+                parent_id: Some(root_id.clone()),
                 before_sibling_id: None,
                 properties: json!({}),
             })

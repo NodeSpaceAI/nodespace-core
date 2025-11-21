@@ -234,7 +234,7 @@ fn map_schema_error(err: NodeServiceError) -> (StatusCode, Json<ApiError>) {
 /// - `node_type`: Required. Must be a registered node type (e.g., "text", "task", "date").
 /// - `content`: Primary text content. MAY be empty string (Issue #484 - blank nodes allowed).
 /// - `parent_id`: Optional parent node for hierarchical relationships.
-/// - `container_node_id`: Optional container for spatial/collection relationships.
+/// - `root_id`: Optional root for spatial/collection relationships.
 /// - `before_sibling_id`: Optional sibling for ordering within parent.
 /// - `properties`: Schema-driven JSON properties. Backend applies default values if schema exists.
 /// - `embedding_vector`: Optional vector for semantic search (currently unused).
@@ -269,7 +269,7 @@ struct CreateNodeRequest {
     // While Node type no longer has this field (stored as graph edges),
     // the CREATE operation needs this info to establish parent-child relationships
     // The operations layer (NodeOperations::create_node) handles edge creation
-    // Note (Issue #533): container_node_id removed - backend auto-derives root from parent chain
+    // Note (Issue #533): root_id removed - backend auto-derives root from parent chain
     pub parent_id: Option<String>,
     pub before_sibling_id: Option<String>,
     pub properties: serde_json::Value,
@@ -625,8 +625,8 @@ async fn get_children_by_parent(
     State(state): State<AppState>,
     Path(parent_id): Path<String>,
 ) -> ApiResult<Vec<Node>> {
-    // Phase 5 (Issue #511): Use get_children instead of get_nodes_by_container_id
-    // Graph edges replace container_node_id field
+    // Phase 5 (Issue #511): Use get_children instead of get_nodes_by_root_id
+    // Graph edges replace root_id field
     let nodes = state
         .node_service
         .get_children(&parent_id)

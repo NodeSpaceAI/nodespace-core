@@ -126,8 +126,17 @@ pub async fn handle_tools_call(
         "get_markdown_from_node_id" => {
             markdown::handle_get_markdown_from_node_id(node_operations, arguments).await
         }
+        // New preferred tool name for root updates
+        "update_root_from_markdown" => {
+            markdown::handle_update_root_from_markdown(node_operations, arguments).await
+        }
+        // DEPRECATED: Use update_root_from_markdown instead
+        // Kept for backward compatibility - logs deprecation warning
         "update_container_from_markdown" => {
-            markdown::handle_update_container_from_markdown(node_operations, arguments).await
+            tracing::warn!(
+                "Tool 'update_container_from_markdown' is deprecated. Use 'update_root_from_markdown' instead."
+            );
+            markdown::handle_update_root_from_markdown(node_operations, arguments).await
         }
 
         // Batch Operations
@@ -136,10 +145,15 @@ pub async fn handle_tools_call(
             nodes::handle_update_nodes_batch(node_operations, schema_service, arguments).await
         }
 
-        // Semantic Search
-        "semantic_search" => search::handle_semantic_search(embedding_service, arguments).await,
-        // Legacy alias for backward compatibility
-        "search_containers" => search::handle_search_containers(embedding_service, arguments).await,
+        // Search
+        // New preferred tool name for root search
+        "search_roots" => search::handle_search_roots(embedding_service, arguments),
+        // DEPRECATED: Use search_roots instead
+        // Kept for backward compatibility - logs deprecation warning
+        "search_containers" => {
+            tracing::warn!("Tool 'search_containers' is deprecated. Use 'search_roots' instead.");
+            search::handle_search_roots(embedding_service, arguments)
+        }
 
         // Schema Management
         "add_schema_field" => schema::handle_add_schema_field(schema_service, arguments).await,
@@ -239,9 +253,9 @@ fn get_tool_schemas() -> Value {
                         "type": "string",
                         "description": "Optional parent node ID for hierarchy"
                     },
-                    "container_node_id": {
+                    "root_id": {
                         "type": "string",
-                        "description": "Optional container/document ID"
+                        "description": "Optional root/document ID"
                     },
                     "properties": {
                         "type": "object",
@@ -529,46 +543,98 @@ fn get_tool_schemas() -> Value {
             }
         },
         {
+            "name": "update_root_from_markdown",
+            "description": "Replace all root node children with new structure parsed from markdown (bulk replacement, GitHub-style). Deletes existing children and creates new hierarchy. Use this when AI needs to reorganize or rewrite entire document structures.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "root_id": {
+                        "type": "string",
+                        "description": "Root node ID to update (also accepts 'container_id' for backward compatibility)"
+                    },
+                    "markdown": {
+                        "type": "string",
+                        "description": "New markdown content to parse and replace children. Will be parsed into nodes under the existing root."
+                    }
+                },
+                "required": ["markdown"]
+            }
+        },
+        {
             "name": "update_container_from_markdown",
-            "description": "Replace all container children with new structure parsed from markdown (bulk replacement, GitHub-style). Deletes existing children and creates new hierarchy. Use this when AI needs to reorganize or rewrite entire document structures.",
+            "description": "[DEPRECATED: Use update_root_from_markdown instead] Replace all container children with new structure parsed from markdown.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "container_id": {
                         "type": "string",
-                        "description": "Container node ID to update"
+                        "description": "[DEPRECATED: Use root_id with update_root_from_markdown] Container node ID to update"
                     },
                     "markdown": {
                         "type": "string",
-                        "description": "New markdown content to parse and replace children. Will be parsed into nodes under the existing container."
+                        "description": "New markdown content to parse and replace children."
                     }
                 },
                 "required": ["container_id", "markdown"]
             }
         },
         {
-            "name": "semantic_search",
-            "description": "Search nodes by semantic meaning using embeddings. Returns nodes ranked by similarity to the query. Use this to find relevant content using natural language.",
+            "name": "search_roots",
+            "description": "Search root nodes using natural language semantic similarity (vector embeddings). Examples: 'Q4 planning tasks', 'machine learning research notes', 'budget discussions'",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query text (e.g., 'project planning notes', 'API design decisions')"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return (default: 10, max: 50)",
-                        "minimum": 1,
-                        "maximum": 50,
-                        "default": 10
+                        "description": "Natural language search query (e.g., 'Q4 planning tasks')"
                     },
                     "threshold": {
                         "type": "number",
-                        "description": "Minimum similarity threshold, 0.0 (no match) to 1.0 (exact match). Default: 0.7",
+                        "description": "Similarity threshold 0.0-1.0, lower = more similar (default: 0.7)",
                         "minimum": 0.0,
                         "maximum": 1.0,
                         "default": 0.7
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of results (default: 20)",
+                        "default": 20
+                    },
+                    "exact": {
+                        "type": "boolean",
+                        "description": "Use exact cosine distance instead of approximate DiskANN (default: false)",
+                        "default": false
+                    }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "search_containers",
+            "description": "[DEPRECATED: Use search_roots instead] Search containers using natural language semantic similarity.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language search query"
+                    },
+                    "threshold": {
+                        "type": "number",
+                        "description": "Similarity threshold 0.0-1.0 (default: 0.7)",
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "default": 0.7
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of results (default: 20)",
+                        "default": 20
+                    },
+                    "exact": {
+                        "type": "boolean",
+                        "description": "Use exact search (default: false)",
+                        "default": false
                     }
                 },
                 "required": ["query"]

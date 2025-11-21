@@ -56,7 +56,7 @@ pub struct MCPCreateNodeParams {
     #[serde(default)]
     pub parent_id: Option<String>,
     #[serde(default)]
-    pub container_node_id: Option<String>,
+    pub root_id: Option<String>,
     #[serde(default)]
     pub before_sibling_id: Option<String>,
     #[serde(default)]
@@ -103,7 +103,7 @@ pub struct QueryNodesParams {
     #[serde(default)]
     pub parent_id: Option<String>,
     #[serde(default)]
-    pub container_node_id: Option<String>,
+    pub root_id: Option<String>,
     #[serde(default)]
     pub limit: Option<usize>,
     #[serde(default)]
@@ -208,7 +208,7 @@ pub async fn handle_create_node(
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
     // Create node via NodeOperations (enforces all business rules)
-    // Note: container_node_id is auto-derived from parent chain by backend
+    // Note: root_id is auto-derived from parent chain by backend
     let node_id = operations
         .create_node(CreateNodeParams {
             id: None, // MCP generates IDs server-side
@@ -318,7 +318,7 @@ pub async fn handle_update_node(
     //
     // MCP update_node intentionally restricts certain fields for data integrity:
     // - parent_id: Use move_node operation for parent changes
-    // - container_node_id: Auto-calculated with parent changes
+    // - root_id: Auto-calculated with parent changes
     // - before_sibling_id: Use reorder_node operation for sibling changes
     // - embedding_vector: Embeddings are auto-generated from content via background jobs
     //
@@ -380,16 +380,18 @@ pub async fn handle_query_nodes(
         filter = filter.with_node_type(node_type);
     }
 
-    // Note: parent_id and container_node_id filters removed in graph-native refactor
+    // Note: parent_id and root_id filters removed in graph-native refactor
     // These parameters are kept in the MCP API for backward compatibility but ignored
     // Clients should use graph queries to traverse relationships instead
     if params.parent_id.is_some() {
         tracing::warn!("parent_id filter ignored - use graph queries for relationship traversal");
     }
 
-    if params.container_node_id.is_some() {
+    // DEPRECATED: root_id filter is ignored in graph-native architecture
+    // Kept for backward compatibility but clients should use graph queries
+    if params.root_id.is_some() {
         tracing::warn!(
-            "container_node_id filter ignored - use graph queries for relationship traversal"
+            "root_id filter is deprecated. Filter ignored - use graph queries for relationship traversal"
         );
     }
 

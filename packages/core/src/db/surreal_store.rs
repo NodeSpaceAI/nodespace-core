@@ -17,7 +17,7 @@
 //! 2. **SCHEMAFULL + FLEXIBLE**: Core fields strictly typed, user extensions allowed (Issue #560)
 //! 3. **Record IDs**: Native SurrealDB format `node:uuid` (type embedded in ID)
 //! 4. **Hub-and-Spoke**: Universal `node` table + spoke tables (task, date, schema) with bidirectional Record Links
-//! 5. **Graph Edges**: Hierarchy via `has_child` edges (no parent_id/container_node_id fields)
+//! 5. **Graph Edges**: Hierarchy via `has_child` edges (no parent_id/root_id fields)
 //! 6. **Direct Access**: No abstraction layers, SurrealStore used directly by services
 //!
 //! # Performance Targets (from PoC)
@@ -137,7 +137,7 @@ fn validate_node_type(node_type: &str) -> Result<()> {
 ///   - Automatically set when content changes, cleared when embedding regenerated
 ///
 /// - **v1.2** (Issue #511): Graph-native architecture
-///   - Removed `uuid`, `parent_id`, `container_node_id`, `properties` fields
+///   - Removed `uuid`, `parent_id`, `root_id`, `properties` fields
 ///   - Added `data` field: Optional record link to type-specific table
 ///   - Added `variants` field: Type history for lossless type switching
 ///   - Added `_schema_version` field: Universal versioning
@@ -2613,7 +2613,7 @@ where
         &self,
         source_id: &str,
         target_id: &str,
-        container_id: &str,
+        root_id: &str,
     ) -> Result<()> {
         // Get node types to construct proper Record IDs
         let source_node = self
@@ -2649,14 +2649,13 @@ where
         // Only create mention if it doesn't exist
         if existing_mention_ids.is_empty() {
             // RELATE statement using Thing objects
-            let query =
-                "RELATE $source->mentions->$target CONTENT { container_id: $container_id };";
+            let query = "RELATE $source->mentions->$target CONTENT { root_id: $root_id };";
 
             self.db
                 .query(query)
                 .bind(("source", source_thing))
                 .bind(("target", target_thing))
-                .bind(("container_id", container_id.to_string()))
+                .bind(("root_id", root_id.to_string()))
                 .await
                 .context("Failed to create mention")?;
         }
@@ -2790,35 +2789,32 @@ where
         let record_id = Self::to_record_id(&node.node_type, &node.id);
         let thing = Thing::from(("nodes", Id::String(record_id)));
 
-        let query = "SELECT container_id FROM mentions WHERE out = $node_thing;";
+        let query = "SELECT root_id FROM mentions WHERE out = $node_thing;";
         let mut response = self
             .db
             .query(query)
             .bind(("node_thing", thing))
             .await
-            .context("Failed to get mentioning containers")?;
+            .context("Failed to get mentioning roots")?;
 
         #[derive(Debug, Deserialize)]
         struct MentionRecord {
-            container_id: String,
+            root_id: String,
         }
 
         let mention_records: Vec<MentionRecord> = response
             .take(0)
-            .context("Failed to extract container IDs from response")?;
+            .context("Failed to extract root IDs from response")?;
 
-        // Deduplicate container IDs
-        let mut container_ids: Vec<String> = mention_records
-            .into_iter()
-            .map(|m| m.container_id)
-            .collect();
-        container_ids.sort();
-        container_ids.dedup();
+        // Deduplicate root IDs
+        let mut root_ids: Vec<String> = mention_records.into_iter().map(|m| m.root_id).collect();
+        root_ids.sort();
+        root_ids.dedup();
 
         // Fetch full node records
         let mut nodes = Vec::new();
-        for container_id in container_ids {
-            if let Some(node) = self.get_node(&container_id).await? {
+        for root_id in root_ids {
+            if let Some(node) = self.get_node(&root_id).await? {
                 nodes.push(node);
             }
         }
@@ -3004,7 +3000,7 @@ where
         // SurrealDB query using vector::similarity::cosine
         // We need to explicitly select fields to avoid deserialization issues with the computed similarity field
         // Use SurrealQL's OR operator to provide defaults for NONE values (SurrealDB's COALESCE equivalent)
-        // Note: parent_id/container_node_id removed - use graph edges instead
+        // Note: parent_id/root_id removed - use graph edges instead
         let query = r#"
             SELECT
                 id,

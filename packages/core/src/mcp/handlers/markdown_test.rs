@@ -6,7 +6,7 @@
 mod tests {
     use crate::db::SurrealStore;
     use crate::mcp::handlers::markdown::{
-        handle_create_nodes_from_markdown, handle_update_container_from_markdown,
+        handle_create_nodes_from_markdown, handle_update_root_from_markdown,
     };
     use crate::operations::NodeOperations;
     use crate::services::NodeService;
@@ -54,8 +54,8 @@ Some content under subtitle."#;
         assert_eq!(node_ids.len(), 4);
 
         // Verify first node is the container ("Test Document")
-        let container_id = result["container_node_id"].as_str().unwrap();
-        assert_eq!(container_id, node_ids[0]);
+        let root_id = result["root_id"].as_str().unwrap();
+        assert_eq!(root_id, node_ids[0]);
     }
 
     #[tokio::test]
@@ -82,8 +82,8 @@ Text under second H2"#;
         assert_eq!(result["nodes_created"], 6);
 
         // Get the container node (created from container_title)
-        let container_id = result["container_node_id"].as_str().unwrap();
-        let container = operations.get_node(container_id).await.unwrap().unwrap();
+        let root_id = result["root_id"].as_str().unwrap();
+        let container = operations.get_node(root_id).await.unwrap().unwrap();
 
         assert_eq!(container.content, "Hierarchy Test"); // Container from container_title
         assert_eq!(container.node_type, "text");
@@ -558,8 +558,8 @@ Regular paragraph text."#;
             .await
             .unwrap();
 
-        let container_id = result["container_node_id"].as_str().unwrap();
-        let container = operations.get_node(container_id).await.unwrap().unwrap();
+        let root_id = result["root_id"].as_str().unwrap();
+        let container = operations.get_node(root_id).await.unwrap().unwrap();
 
         // Container should be a root node created from container_title
         assert_eq!(container.node_type, "text"); // "Container Test" is plain text
@@ -584,7 +584,7 @@ Text content
             .await
             .unwrap();
 
-        let _container_id = result["container_node_id"].as_str().unwrap();
+        let _root_id = result["root_id"].as_str().unwrap();
         let node_ids = result["node_ids"].as_array().unwrap();
 
         // Verify all non-container nodes are descendants of the container (via graph edges)
@@ -894,7 +894,7 @@ Text paragraph
         let import_result = handle_create_nodes_from_markdown(&operations, params)
             .await
             .unwrap();
-        let root_id = import_result["container_node_id"].as_str().unwrap();
+        let root_id = import_result["root_id"].as_str().unwrap();
 
         // Export markdown
         let export_params = json!({
@@ -935,7 +935,7 @@ Text paragraph
         let import_result = handle_create_nodes_from_markdown(&operations, params)
             .await
             .unwrap();
-        let root_id = import_result["container_node_id"].as_str().unwrap();
+        let root_id = import_result["root_id"].as_str().unwrap();
 
         // Export with max_depth=3 to include container + 2 levels of children
         // Depth counting: container=0, # Root=1, ## Child 1=2
@@ -978,7 +978,7 @@ Text paragraph
         let import_result = handle_create_nodes_from_markdown(&operations, params)
             .await
             .unwrap();
-        let root_id = import_result["container_node_id"].as_str().unwrap();
+        let root_id = import_result["root_id"].as_str().unwrap();
 
         // Export WITHOUT children
         let export_params = json!({
@@ -1018,7 +1018,7 @@ Text paragraph
         let import_result = handle_create_nodes_from_markdown(&operations, import_params)
             .await
             .unwrap();
-        let container_id = import_result["container_node_id"].as_str().unwrap();
+        let root_id = import_result["root_id"].as_str().unwrap();
 
         // Note: Actual node count may include additional nodes for blank lines or parsing artifacts
         // Let's verify the count matches what we actually get
@@ -1031,7 +1031,7 @@ Text paragraph
 
         // Export
         let export_params = json!({
-            "node_id": container_id,
+            "node_id": root_id,
             "include_children": true
         });
         let export_result = handle_get_markdown_from_node_id(&operations, export_params)
@@ -1108,7 +1108,7 @@ Text under section 1
         let import_result = handle_create_nodes_from_markdown(&operations, import_params)
             .await
             .unwrap();
-        let root_id = import_result["container_node_id"].as_str().unwrap();
+        let root_id = import_result["root_id"].as_str().unwrap();
 
         // Verify node count: container + 3 headers + 1 text + 2 list items
         let actual_count = import_result["nodes_created"].as_u64().unwrap();
@@ -1243,11 +1243,11 @@ Text under section 1
             .await
             .unwrap();
 
-        let container_id = import_result["container_node_id"].as_str().unwrap();
+        let root_id = import_result["root_id"].as_str().unwrap();
 
         // Export
         let export_params = json!({
-            "node_id": container_id,
+            "node_id": root_id,
             "include_children": true
         });
 
@@ -1291,7 +1291,7 @@ Regular text after code."#;
         let import_result = handle_create_nodes_from_markdown(&operations, import_params)
             .await
             .unwrap();
-        let root_id = import_result["container_node_id"].as_str().unwrap();
+        let root_id = import_result["root_id"].as_str().unwrap();
 
         // Verify node count: container + header + code block + text
         let actual_count = import_result["nodes_created"].as_u64().unwrap();
@@ -1326,14 +1326,15 @@ Regular text after code."#;
     }
 
     // =========================================================================
-    // Batch Container Update Tests (update_container_from_markdown)
+    // Batch Root Update Tests (update_root_from_markdown)
+    // Tests use deprecated container_id parameter for backward compatibility validation
     // =========================================================================
 
     #[tokio::test]
-    async fn test_update_container_from_markdown_basic() {
+    async fn test_update_root_from_markdown_basic() {
         let (operations, _temp_dir) = setup_test_service().await;
 
-        // Create container with some children
+        // Create root with some children
         let create_params = json!({
             "markdown_content": "- Old item 1\n- Old item 2",
             "container_title": "# Test Container"
@@ -1342,24 +1343,26 @@ Regular text after code."#;
         let create_result = handle_create_nodes_from_markdown(&operations, create_params)
             .await
             .unwrap();
-        let container_id = create_result["container_node_id"].as_str().unwrap();
+        let root_id = create_result["root_id"].as_str().unwrap();
 
-        // Update container with new markdown
+        // Update root with new markdown using new root_id parameter
         let update_params = json!({
-            "container_id": container_id,
+            "root_id": root_id,
             "markdown": "- New item 1\n- New item 2\n- New item 3"
         });
 
-        let result = handle_update_container_from_markdown(&operations, update_params)
+        let result = handle_update_root_from_markdown(&operations, update_params)
             .await
             .unwrap();
 
-        assert_eq!(result["container_id"], container_id);
+        // Response should include both root_id (new) and container_id (deprecated)
+        assert_eq!(result["root_id"], root_id);
+        assert_eq!(result["container_id"], root_id); // Backward compatibility
         assert_eq!(result["nodes_deleted"].as_u64().unwrap(), 2); // 2 old items
         assert_eq!(result["nodes_created"].as_u64().unwrap(), 3); // 3 new items
 
         // Verify new structure - get direct children via graph
-        let children = operations.get_children(container_id).await.unwrap();
+        let children = operations.get_children(root_id).await.unwrap();
 
         // Verify all expected content is present (order not guaranteed since order_by not implemented yet)
         assert_eq!(children.len(), 3);
@@ -1379,10 +1382,40 @@ Regular text after code."#;
     }
 
     #[tokio::test]
-    async fn test_update_container_from_markdown_complex_structure() {
+    async fn test_update_root_from_markdown_backward_compat_container_id() {
         let (operations, _temp_dir) = setup_test_service().await;
 
-        // Create container with simple structure
+        // Create root with some children
+        let create_params = json!({
+            "markdown_content": "- Old item",
+            "container_title": "# Test"
+        });
+
+        let create_result = handle_create_nodes_from_markdown(&operations, create_params)
+            .await
+            .unwrap();
+        let root_id = create_result["root_id"].as_str().unwrap();
+
+        // Update using deprecated container_id parameter (backward compatibility)
+        let update_params = json!({
+            "container_id": root_id,  // DEPRECATED but should still work
+            "markdown": "- New item"
+        });
+
+        let result = handle_update_root_from_markdown(&operations, update_params)
+            .await
+            .unwrap();
+
+        // Should work with deprecated container_id
+        assert_eq!(result["root_id"], root_id);
+        assert_eq!(result["nodes_created"].as_u64().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_update_root_from_markdown_complex_structure() {
+        let (operations, _temp_dir) = setup_test_service().await;
+
+        // Create root with simple structure
         let create_params = json!({
             "markdown_content": "Simple text",
             "container_title": "# Document"
@@ -1391,23 +1424,23 @@ Regular text after code."#;
         let create_result = handle_create_nodes_from_markdown(&operations, create_params)
             .await
             .unwrap();
-        let container_id = create_result["container_node_id"].as_str().unwrap();
+        let root_id = create_result["root_id"].as_str().unwrap();
 
         // Update with complex hierarchy
         let update_params = json!({
-            "container_id": container_id,
+            "root_id": root_id,
             "markdown": "## Phase 1\n- Task A\n- Task B\n\n## Phase 2\n- Task C"
         });
 
-        let result = handle_update_container_from_markdown(&operations, update_params)
+        let result = handle_update_root_from_markdown(&operations, update_params)
             .await
             .unwrap();
 
-        assert_eq!(result["container_id"], container_id);
+        assert_eq!(result["root_id"], root_id);
         assert!(result["nodes_created"].as_u64().unwrap() >= 5); // 2 headers + 3 tasks
 
         // Verify hierarchy was created - get descendants via graph traversal
-        let children = operations.get_descendants(container_id).await.unwrap();
+        let children = operations.get_descendants(root_id).await.unwrap();
 
         // Should have headers and tasks
         let has_headers = children.iter().any(|n| n.node_type == "header");
@@ -1417,15 +1450,15 @@ Regular text after code."#;
     }
 
     #[tokio::test]
-    async fn test_update_container_from_markdown_nonexistent_container() {
+    async fn test_update_root_from_markdown_nonexistent_root() {
         let (operations, _temp_dir) = setup_test_service().await;
 
         let params = json!({
-            "container_id": "nonexistent-container-id",
+            "root_id": "nonexistent-root-id",
             "markdown": "New content"
         });
 
-        let result = handle_update_container_from_markdown(&operations, params).await;
+        let result = handle_update_root_from_markdown(&operations, params).await;
 
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -1433,10 +1466,26 @@ Regular text after code."#;
     }
 
     #[tokio::test]
-    async fn test_update_container_from_markdown_empty_markdown() {
+    async fn test_update_root_from_markdown_missing_id() {
         let (operations, _temp_dir) = setup_test_service().await;
 
-        // Create container with children
+        // Missing both root_id and container_id
+        let params = json!({
+            "markdown": "New content"
+        });
+
+        let result = handle_update_root_from_markdown(&operations, params).await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.message.contains("root_id") || error.message.contains("container_id"));
+    }
+
+    #[tokio::test]
+    async fn test_update_root_from_markdown_empty_markdown() {
+        let (operations, _temp_dir) = setup_test_service().await;
+
+        // Create root with children
         let create_params = json!({
             "markdown_content": "- Item 1\n- Item 2",
             "container_title": "# Container"
@@ -1445,15 +1494,15 @@ Regular text after code."#;
         let create_result = handle_create_nodes_from_markdown(&operations, create_params)
             .await
             .unwrap();
-        let container_id = create_result["container_node_id"].as_str().unwrap();
+        let root_id = create_result["root_id"].as_str().unwrap();
 
         // Update with empty markdown (should delete all children)
         let update_params = json!({
-            "container_id": container_id,
+            "root_id": root_id,
             "markdown": ""
         });
 
-        let result = handle_update_container_from_markdown(&operations, update_params)
+        let result = handle_update_root_from_markdown(&operations, update_params)
             .await
             .unwrap();
 
@@ -1461,16 +1510,16 @@ Regular text after code."#;
         assert_eq!(result["nodes_created"].as_u64().unwrap(), 0);
 
         // Verify no children remain
-        let children = operations.get_children(container_id).await.unwrap();
+        let children = operations.get_children(root_id).await.unwrap();
 
         assert_eq!(children.len(), 0);
     }
 
     #[tokio::test]
-    async fn test_update_container_from_markdown_exceeds_size_limit() {
+    async fn test_update_root_from_markdown_exceeds_size_limit() {
         let (operations, _temp_dir) = setup_test_service().await;
 
-        // Create container
+        // Create root
         let create_params = json!({
             "markdown_content": "Test",
             "container_title": "# Container"
@@ -1479,16 +1528,16 @@ Regular text after code."#;
         let create_result = handle_create_nodes_from_markdown(&operations, create_params)
             .await
             .unwrap();
-        let container_id = create_result["container_node_id"].as_str().unwrap();
+        let root_id = create_result["root_id"].as_str().unwrap();
 
         // Try to update with markdown exceeding 1MB limit
         let large_markdown = "x".repeat(1_000_001);
         let update_params = json!({
-            "container_id": container_id,
+            "root_id": root_id,
             "markdown": large_markdown
         });
 
-        let result = handle_update_container_from_markdown(&operations, update_params).await;
+        let result = handle_update_root_from_markdown(&operations, update_params).await;
 
         assert!(result.is_err());
         let error = result.unwrap_err();

@@ -62,15 +62,18 @@ pub struct CreateNodesFromMarkdownParams {
     /// ```
     pub markdown_content: String,
 
-    /// Title for the container node (REQUIRED).
+    /// Title for the root node (REQUIRED).
     ///
-    /// This creates a separate container node that all markdown_content nodes
+    /// This creates a separate root node that all markdown_content nodes
     /// will be children of. Can be:
-    /// - A date string (YYYY-MM-DD) to use/create a date container
-    /// - Markdown text (e.g., "# My Document" or "Project Notes") to create a text/header container
+    /// - A date string (YYYY-MM-DD) to use/create a date root
+    /// - Markdown text (e.g., "# My Document" or "Project Notes") to create a text/header root
     ///
-    /// The parsed container type must be text, header, or date.
-    /// Multi-line types (code-block, quote-block, ordered-list) cannot be containers.
+    /// The parsed root type must be text, header, or date.
+    /// Multi-line types (code-block, quote-block, ordered-list) cannot be roots.
+    ///
+    /// NOTE: Field name kept as `container_title` for MCP API backward compatibility.
+    /// Internally, this represents the "root" node in the graph-native architecture.
     pub container_title: String,
 }
 
@@ -110,16 +113,16 @@ struct ParserContext {
     node_ids: Vec<String>,
     /// All created nodes with metadata (id + type)
     nodes: Vec<NodeMetadata>,
-    /// Container node ID (determined by strategy)
-    container_node_id: Option<String>,
+    /// Root node ID (determined by strategy)
+    root_id: Option<String>,
     /// Whether the first node has been created (for tracking purposes)
     first_node_created: bool,
 }
 
 impl ParserContext {
     fn new_with_strategy(strategy: ContainerStrategy) -> Self {
-        // For DateContainer strategy, set container_node_id immediately
-        let container_node_id = match &strategy {
+        // For DateContainer strategy, set root_id immediately
+        let root_id = match &strategy {
             ContainerStrategy::DateContainer(date) => Some(date.clone()),
             ContainerStrategy::TitleAsContainer(_) => None, // Will be set after parsing title
         };
@@ -130,7 +133,7 @@ impl ParserContext {
             last_sibling: None,
             node_ids: Vec::new(),
             nodes: Vec::new(),
-            container_node_id,
+            root_id,
             first_node_created: false,
         }
     }
@@ -160,8 +163,8 @@ impl ParserContext {
         let mut context =
             Self::new_with_strategy(ContainerStrategy::TitleAsContainer(container_content));
 
-        // Set container_node_id to the existing container
-        context.container_node_id = Some(container_id.clone());
+        // Set root_id to the existing container
+        context.root_id = Some(container_id.clone());
 
         // Set up initial heading stack with container as root (level 0)
         // This makes all parsed nodes children of the container
@@ -247,9 +250,9 @@ pub async fn handle_create_nodes_from_markdown(
 
     // For TitleAsContainer, parse the title first to create the container node
     if let ContainerStrategy::TitleAsContainer(ref title) = container_strategy {
-        // Temporarily clear container_node_id so the container node itself is created as a container
-        // (with container_node_id = None, which is required for container nodes)
-        context.container_node_id = None;
+        // Temporarily clear root_id so the container node itself is created as a root
+        // (with root_id = None, which is required for root nodes)
+        context.root_id = None;
 
         parse_markdown(title, operations, &mut context).await?;
 
@@ -269,8 +272,8 @@ pub async fn handle_create_nodes_from_markdown(
             )));
         }
 
-        // Set this node as the container for subsequent nodes
-        context.container_node_id = Some(container_node.id.clone());
+        // Set this node as the root for subsequent nodes
+        context.root_id = Some(container_node.id.clone());
 
         // CRITICAL: Set the container as the initial parent for top-level nodes in markdown_content
         // This makes the first heading in markdown_content a CHILD of the container, not a sibling
@@ -291,13 +294,13 @@ pub async fn handle_create_nodes_from_markdown(
         )));
     }
 
-    let container_node_id = context
-        .container_node_id
-        .ok_or_else(|| MCPError::internal_error("No container node created".to_string()))?;
+    let root_id = context
+        .root_id
+        .ok_or_else(|| MCPError::internal_error("No root node created".to_string()))?;
 
     Ok(json!({
         "success": true,
-        "container_node_id": container_node_id,
+        "root_id": root_id,
         "nodes_created": context.nodes.len(),
         "node_ids": context.node_ids,
         "nodes": context.nodes
@@ -645,7 +648,7 @@ async fn parse_markdown(
             node_type,
             &content,
             parent_id.clone(),
-            context.container_node_id.clone(),
+            context.root_id.clone(),
             None, // Fractional ordering handles positioning on edges
         )
         .await?;
@@ -990,18 +993,26 @@ fn count_nodes_in_markdown(markdown: &str) -> usize {
 // Bulk Container Update (update_container_from_markdown)
 // ============================================================================
 
-/// Parameters for update_container_from_markdown method
+/// Parameters for update_root_from_markdown method
+///
+/// Supports backward compatibility with deprecated `container_id` parameter.
+/// New code should use `root_id` instead.
 #[derive(Debug, Deserialize)]
-pub struct UpdateContainerFromMarkdownParams {
-    /// Container node ID to update
-    pub container_id: String,
+pub struct UpdateRootFromMarkdownParams {
+    /// Root node ID to update (preferred)
+    #[serde(default)]
+    pub root_id: Option<String>,
+    /// DEPRECATED: Use root_id instead. Container node ID to update.
+    /// Kept for backward compatibility with existing MCP clients.
+    #[serde(default)]
+    pub container_id: Option<String>,
     /// New markdown content (replaces all children)
     pub markdown: String,
 }
 
-/// Replace container's children with nodes parsed from markdown
+/// Replace root node's children with nodes parsed from markdown
 ///
-/// Similar to create_nodes_from_markdown but operates on an existing container.
+/// Similar to create_nodes_from_markdown but operates on an existing root node.
 /// Deletes all existing children and creates new hierarchy from markdown.
 ///
 /// This enables "GitHub-style" bulk updates where AI edits markdown freely
@@ -1013,34 +1024,59 @@ pub struct UpdateContainerFromMarkdownParams {
 /// 1. Delete all existing children (with individual delete operations)
 /// 2. Create new nodes from markdown (with individual create operations)
 ///
-/// If phase 2 fails (e.g., markdown parsing error, resource limits), the container
+/// If phase 2 fails (e.g., markdown parsing error, resource limits), the root
 /// will be left in an inconsistent state with old children deleted but new children
 /// not fully created. This is acceptable for AI-driven workflows where:
 /// - AI agents can retry the entire operation if it fails
 /// - Partial state is better than blocking on transaction complexity
-/// - The container itself remains valid (only children are affected)
+/// - The root node itself remains valid (only children are affected)
 ///
 /// **For production use**: Consider implementing transaction support if atomicity
 /// guarantees are required for your use case.
 ///
+/// # Backward Compatibility
+///
+/// This function accepts both `root_id` (preferred) and `container_id` (deprecated).
+/// If both are provided, `root_id` takes precedence.
+///
 /// # Example
 ///
 /// ```rust,no_run
+/// // New style (preferred)
 /// let params = json!({
-///     "container_id": "container-123",
+///     "root_id": "root-123",
 ///     "markdown": "# Updated Plan\n- New task 1\n- New task 2"
 /// });
-/// let result = handle_update_container_from_markdown(&operations, params).await?;
+/// // Or deprecated style (still works)
+/// let params = json!({
+///     "container_id": "root-123",
+///     "markdown": "# Updated Plan\n- New task 1\n- New task 2"
+/// });
+/// let result = handle_update_root_from_markdown(&operations, params).await?;
 /// // Old children deleted, new structure created
 /// // Returns deletion_failures if any deletes failed
 /// ```
-pub async fn handle_update_container_from_markdown(
+pub async fn handle_update_root_from_markdown(
     operations: &Arc<NodeOperations>,
     params: Value,
 ) -> Result<Value, MCPError> {
     // Parse parameters
-    let params: UpdateContainerFromMarkdownParams = serde_json::from_value(params)
+    let params: UpdateRootFromMarkdownParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
+
+    // Resolve root_id with backward compatibility for container_id
+    let root_id = match (params.root_id, params.container_id) {
+        (Some(root_id), _) => root_id, // Prefer root_id
+        (None, Some(container_id)) => {
+            tracing::warn!("Parameter 'container_id' is deprecated. Use 'root_id' instead.");
+            container_id
+        }
+        (None, None) => {
+            return Err(MCPError::invalid_params(
+                "Either 'root_id' or 'container_id' is required".to_string(),
+            ));
+        }
+    };
 
     // Validate markdown content size
     if params.markdown.len() > MAX_MARKDOWN_SIZE {
@@ -1051,23 +1087,23 @@ pub async fn handle_update_container_from_markdown(
         )));
     }
 
-    // Validate container exists
-    let container = operations
-        .get_node(&params.container_id)
+    // Validate root node exists
+    let root_node = operations
+        .get_node(&root_id)
         .await
-        .map_err(|e| MCPError::internal_error(format!("Failed to get container: {}", e)))?
-        .ok_or_else(|| MCPError::node_not_found(&params.container_id))?;
+        .map_err(|e| MCPError::internal_error(format!("Failed to get root node: {}", e)))?
+        .ok_or_else(|| MCPError::node_not_found(&root_id))?;
 
     // Get all existing descendants using graph traversal
     // This gets ALL nodes in the hierarchy, including nested children
-    // Critical for proper cleanup of structures like: Container → Header → Tasks
+    // Critical for proper cleanup of structures like: Root → Header → Tasks
     let mut existing_children = operations
-        .get_descendants(&params.container_id)
+        .get_descendants(&root_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to get children: {}", e)))?;
 
-    // Note: get_nodes_by_container() already excludes the container itself
-    // (container has container_node_id = None, not equal to itself)
+    // Note: get_nodes_by_root() already excludes the root itself
+    // (root has root_node_id = None, not equal to itself)
 
     // Delete in REVERSE order to avoid version conflicts from sibling chain updates.
     // Background: operations.delete_node() updates the next sibling's version when fixing
@@ -1118,12 +1154,11 @@ pub async fn handle_update_container_from_markdown(
         }
     }
 
-    // Create parser context for the existing container
-    // This properly initializes the parser state to treat the container as root
-    let mut context = ParserContext::new_for_existing_container(
-        params.container_id.clone(),
-        container.content.clone(),
-    );
+    // Create parser context for the existing root node
+    // This properly initializes the parser state to treat the root as hierarchy root
+    // Note: new_for_existing_container is kept for internal compatibility but works for roots
+    let mut context =
+        ParserContext::new_for_existing_container(root_id.clone(), root_node.content.clone());
 
     // Parse the new markdown content and create nodes
     parse_markdown(&params.markdown, operations, &mut context).await?;
@@ -1137,8 +1172,10 @@ pub async fn handle_update_container_from_markdown(
         )));
     }
 
+    // Return both root_id (new) and container_id (deprecated) for backward compatibility
     Ok(json!({
-        "container_id": params.container_id,
+        "root_id": root_id,
+        "container_id": root_id,  // DEPRECATED: For backward compatibility
         "nodes_deleted": deleted_count,
         "deletion_failures": deletion_failures,
         "nodes_created": context.nodes.len(),

@@ -15,63 +15,65 @@ use thiserror::Error;
 /// ```rust
 /// use nodespace_core::operations::NodeOperationError;
 ///
-/// // Container type violation
-/// let err = NodeOperationError::ContainerCannotHaveParent {
+/// // Root type violation
+/// let err = NodeOperationError::RootCannotHaveParent {
 ///     node_id: "2025-01-03".to_string(),
 ///     node_type: "date".to_string(),
 /// };
 ///
-/// // Non-container missing container
-/// let err = NodeOperationError::NonContainerMustHaveContainer {
+/// // Non-root missing root
+/// let err = NodeOperationError::NonRootMustHaveRoot {
 ///     node_id: "node-123".to_string(),
 ///     node_type: "text".to_string(),
 /// };
 /// ```
 #[derive(Error, Debug)]
 pub enum NodeOperationError {
-    /// Container nodes (date, topic, project) cannot have parent_id set
+    /// Root nodes (date, topic, project) cannot have parent_id set
     ///
-    /// Container nodes are root-level entities and must have:
+    /// Root nodes are root-level entities and must have:
     /// - parent_id = None
-    /// - container_node_id = None
+    /// - root_node_id = None
     /// - before_sibling_id = None
-    #[error("Container node '{node_id}' of type '{node_type}' cannot have a parent")]
-    ContainerCannotHaveParent { node_id: String, node_type: String },
+    #[error("Root node '{node_id}' of type '{node_type}' cannot have a parent")]
+    RootCannotHaveParent { node_id: String, node_type: String },
 
-    /// Container nodes (date, topic, project) cannot have container_node_id set
+    /// Root nodes (date, topic, project) cannot have root_node_id set
     ///
-    /// Container nodes define their own scope and cannot belong to another container.
-    #[error("Container node '{node_id}' of type '{node_type}' cannot have a container_node_id")]
-    ContainerCannotHaveContainer { node_id: String, node_type: String },
+    /// Root nodes define their own scope and cannot belong to another root.
+    #[error("Root node '{node_id}' of type '{node_type}' cannot have a root_node_id")]
+    RootCannotHaveRoot { node_id: String, node_type: String },
 
-    /// Container nodes (date, topic, project) cannot have before_sibling_id set
+    /// Root nodes (date, topic, project) cannot have before_sibling_id set
     ///
-    /// Container nodes are independent entities that don't participate in sibling ordering.
-    #[error("Container node '{node_id}' of type '{node_type}' cannot have a before_sibling_id")]
-    ContainerCannotHaveSibling { node_id: String, node_type: String },
+    /// Root nodes are independent entities that don't participate in sibling ordering.
+    #[error("Root node '{node_id}' of type '{node_type}' cannot have a before_sibling_id")]
+    RootCannotHaveSibling { node_id: String, node_type: String },
 
-    /// Node type cannot be a container
+    /// Node type cannot be a root
     ///
-    /// Only specific node types (date, text, header) can be containers.
-    /// Multi-line types (code-block, quote-block, ordered-list, task) cannot be containers.
-    #[error("Node '{node_id}' of type '{node_type}' cannot be a container. Only date, text, and header nodes can be containers.")]
-    InvalidContainerType { node_id: String, node_type: String },
+    /// Only specific node types (date, text, header) can be roots.
+    /// Multi-line types (code-block, quote-block, ordered-list, task) cannot be roots.
+    #[error("Node '{node_id}' of type '{node_type}' cannot be a root. Only date, text, and header nodes can be roots.")]
+    InvalidRootType { node_id: String, node_type: String },
 
-    /// Non-container nodes must have a container_node_id
+    /// Non-root nodes must have a root_node_id
     ///
-    /// Every non-container node must belong to exactly one container (date, topic, or project).
-    /// The container_node_id can be inferred from the parent if not provided explicitly.
-    #[error("Non-container node '{node_id}' of type '{node_type}' must have a container_node_id")]
-    NonContainerMustHaveContainer { node_id: String, node_type: String },
+    /// Every non-root node must belong to exactly one root (date, topic, or project).
+    /// The root_node_id can be inferred from the parent if not provided explicitly.
+    #[error("Non-root node '{node_id}' of type '{node_type}' must have a root_node_id")]
+    NonRootMustHaveRoot { node_id: String, node_type: String },
 
-    /// Parent and child must be in the same container
+    /// Parent and child must be in the same root
     ///
-    /// A node's parent must be in the same container as the node itself.
-    /// This ensures consistent hierarchy within each container.
-    #[error("Parent-container mismatch: parent has container '{parent_container}', child has container '{child_container}'")]
-    ParentContainerMismatch {
-        parent_container: String,
-        child_container: String,
+    /// A node's parent must be in the same root as the node itself.
+    /// This ensures consistent hierarchy within each root.
+    #[error(
+        "Parent-root mismatch: parent has root '{parent_root}', child has root '{child_root}'"
+    )]
+    ParentRootMismatch {
+        parent_root: String,
+        child_root: String,
     },
 
     /// Referenced node does not exist
@@ -158,36 +160,36 @@ pub enum NodeOperationError {
 }
 
 impl NodeOperationError {
-    /// Create a ContainerCannotHaveParent error
-    pub fn container_cannot_have_parent(node_id: String, node_type: String) -> Self {
-        Self::ContainerCannotHaveParent { node_id, node_type }
+    /// Create a RootCannotHaveParent error
+    pub fn root_cannot_have_parent(node_id: String, node_type: String) -> Self {
+        Self::RootCannotHaveParent { node_id, node_type }
     }
 
-    /// Create a ContainerCannotHaveContainer error
-    pub fn container_cannot_have_container(node_id: String, node_type: String) -> Self {
-        Self::ContainerCannotHaveContainer { node_id, node_type }
+    /// Create a RootCannotHaveRoot error
+    pub fn root_cannot_have_root(node_id: String, node_type: String) -> Self {
+        Self::RootCannotHaveRoot { node_id, node_type }
     }
 
-    /// Create a ContainerCannotHaveSibling error
-    pub fn container_cannot_have_sibling(node_id: String, node_type: String) -> Self {
-        Self::ContainerCannotHaveSibling { node_id, node_type }
+    /// Create a RootCannotHaveSibling error
+    pub fn root_cannot_have_sibling(node_id: String, node_type: String) -> Self {
+        Self::RootCannotHaveSibling { node_id, node_type }
     }
 
-    /// Create an InvalidContainerType error
-    pub fn invalid_container_type(node_id: String, node_type: String) -> Self {
-        Self::InvalidContainerType { node_id, node_type }
+    /// Create an InvalidRootType error
+    pub fn invalid_root_type(node_id: String, node_type: String) -> Self {
+        Self::InvalidRootType { node_id, node_type }
     }
 
-    /// Create a NonContainerMustHaveContainer error
-    pub fn non_container_must_have_container(node_id: String, node_type: String) -> Self {
-        Self::NonContainerMustHaveContainer { node_id, node_type }
+    /// Create a NonRootMustHaveRoot error
+    pub fn non_root_must_have_root(node_id: String, node_type: String) -> Self {
+        Self::NonRootMustHaveRoot { node_id, node_type }
     }
 
-    /// Create a ParentContainerMismatch error
-    pub fn parent_container_mismatch(parent_container: String, child_container: String) -> Self {
-        Self::ParentContainerMismatch {
-            parent_container,
-            child_container,
+    /// Create a ParentRootMismatch error
+    pub fn parent_root_mismatch(parent_root: String, child_root: String) -> Self {
+        Self::ParentRootMismatch {
+            parent_root,
+            child_root,
         }
     }
 
@@ -245,82 +247,70 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_container_cannot_have_parent_error() {
-        let err = NodeOperationError::container_cannot_have_parent(
+    fn test_root_cannot_have_parent_error() {
+        let err = NodeOperationError::root_cannot_have_parent(
             "2025-01-03".to_string(),
             "date".to_string(),
         );
         assert!(matches!(
             err,
-            NodeOperationError::ContainerCannotHaveParent { .. }
+            NodeOperationError::RootCannotHaveParent { .. }
         ));
         assert_eq!(
             format!("{}", err),
-            "Container node '2025-01-03' of type 'date' cannot have a parent"
+            "Root node '2025-01-03' of type 'date' cannot have a parent"
         );
     }
 
     #[test]
-    fn test_container_cannot_have_container_error() {
-        let err = NodeOperationError::container_cannot_have_container(
+    fn test_root_cannot_have_root_error() {
+        let err =
+            NodeOperationError::root_cannot_have_root("2025-01-03".to_string(), "date".to_string());
+        assert!(matches!(err, NodeOperationError::RootCannotHaveRoot { .. }));
+        assert_eq!(
+            format!("{}", err),
+            "Root node '2025-01-03' of type 'date' cannot have a root_node_id"
+        );
+    }
+
+    #[test]
+    fn test_root_cannot_have_sibling_error() {
+        let err = NodeOperationError::root_cannot_have_sibling(
             "2025-01-03".to_string(),
             "date".to_string(),
         );
         assert!(matches!(
             err,
-            NodeOperationError::ContainerCannotHaveContainer { .. }
+            NodeOperationError::RootCannotHaveSibling { .. }
         ));
         assert_eq!(
             format!("{}", err),
-            "Container node '2025-01-03' of type 'date' cannot have a container_node_id"
+            "Root node '2025-01-03' of type 'date' cannot have a before_sibling_id"
         );
     }
 
     #[test]
-    fn test_container_cannot_have_sibling_error() {
-        let err = NodeOperationError::container_cannot_have_sibling(
-            "2025-01-03".to_string(),
-            "date".to_string(),
-        );
+    fn test_non_root_must_have_root_error() {
+        let err =
+            NodeOperationError::non_root_must_have_root("node-123".to_string(), "text".to_string());
         assert!(matches!(
             err,
-            NodeOperationError::ContainerCannotHaveSibling { .. }
+            NodeOperationError::NonRootMustHaveRoot { .. }
         ));
         assert_eq!(
             format!("{}", err),
-            "Container node '2025-01-03' of type 'date' cannot have a before_sibling_id"
+            "Non-root node 'node-123' of type 'text' must have a root_node_id"
         );
     }
 
     #[test]
-    fn test_non_container_must_have_container_error() {
-        let err = NodeOperationError::non_container_must_have_container(
-            "node-123".to_string(),
-            "text".to_string(),
-        );
-        assert!(matches!(
-            err,
-            NodeOperationError::NonContainerMustHaveContainer { .. }
-        ));
+    fn test_parent_root_mismatch_error() {
+        let err =
+            NodeOperationError::parent_root_mismatch("date-1".to_string(), "date-2".to_string());
+        assert!(matches!(err, NodeOperationError::ParentRootMismatch { .. }));
         assert_eq!(
             format!("{}", err),
-            "Non-container node 'node-123' of type 'text' must have a container_node_id"
-        );
-    }
-
-    #[test]
-    fn test_parent_container_mismatch_error() {
-        let err = NodeOperationError::parent_container_mismatch(
-            "date-1".to_string(),
-            "date-2".to_string(),
-        );
-        assert!(matches!(
-            err,
-            NodeOperationError::ParentContainerMismatch { .. }
-        ));
-        assert_eq!(
-            format!("{}", err),
-            "Parent-container mismatch: parent has container 'date-1', child has container 'date-2'"
+            "Parent-root mismatch: parent has root 'date-1', child has root 'date-2'"
         );
     }
 

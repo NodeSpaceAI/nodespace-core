@@ -27,12 +27,12 @@ mod tests {
             "node_type": "task",
             "content": "Task content",
             "parent_id": "parent-123",
-            "container_node_id": "container-456",
+            "root_id": "root-456",
             "properties": {}
         });
 
         assert_eq!(params["parent_id"], "parent-123");
-        assert_eq!(params["container_node_id"], "container-456");
+        assert_eq!(params["root_id"], "root-456");
     }
 
     #[test]
@@ -71,14 +71,14 @@ mod tests {
         let params = json!({
             "filter": {
                 "node_type": "text",
-                "container_node_id": "container-123"
+                "root_id": "root-123"
             },
             "limit": 10,
             "offset": 0
         });
 
         assert_eq!(params["filter"]["node_type"], "text");
-        assert_eq!(params["filter"]["container_node_id"], "container-123");
+        assert_eq!(params["filter"]["root_id"], "root-123");
         assert_eq!(params["limit"], 10);
         assert_eq!(params["offset"], 0);
     }
@@ -598,7 +598,7 @@ mod integration_tests {
     async fn test_move_child_to_index_beyond_sibling_count() {
         let (operations, _schema_service, _temp_dir) = setup_test_operations().await.unwrap();
 
-        // Create date container
+        // Create date root
         let date = operations
             .create_node(CreateNodeParams {
                 id: None, // Test generates ID
@@ -690,7 +690,7 @@ mod integration_tests {
     async fn test_get_node_tree_with_max_depth_1() {
         let (operations, _schema_service, _temp_dir) = setup_test_operations().await.unwrap();
 
-        // Create date container
+        // Create date root
         let date = operations
             .create_node(CreateNodeParams {
                 id: None, // Test generates ID
@@ -775,7 +775,7 @@ mod integration_tests {
     async fn test_get_child_at_index_out_of_bounds() {
         let (operations, _schema_service, _temp_dir) = setup_test_operations().await.unwrap();
 
-        // Create date container
+        // Create date root
         let date = operations
             .create_node(CreateNodeParams {
                 id: None, // Test generates ID
@@ -834,7 +834,7 @@ mod integration_tests {
     async fn test_get_children_ordered_with_multiple_insertions() {
         let (operations, _schema_service, _temp_dir) = setup_test_operations().await.unwrap();
 
-        // Create date container
+        // Create date root
         let date = operations
             .create_node(CreateNodeParams {
                 id: None, // Test generates ID
@@ -1094,8 +1094,8 @@ mod integration_tests {
     async fn test_update_nodes_batch_success() {
         let (operations, schema_service, _temp_dir) = setup_test_operations().await.unwrap();
 
-        // Create a container first
-        let container = operations
+        // Create a root first
+        let root = operations
             .create_node(CreateNodeParams {
                 id: None,
                 node_type: "text".to_string(),
@@ -1112,7 +1112,7 @@ mod integration_tests {
                 id: None,
                 node_type: "task".to_string(),
                 content: "- [ ] Task 1".to_string(),
-                parent_id: Some(container.clone()),
+                parent_id: Some(root.clone()),
                 before_sibling_id: None,
                 properties: json!({"task": {"status": "OPEN"}}),
             })
@@ -1124,7 +1124,7 @@ mod integration_tests {
                 id: None,
                 node_type: "task".to_string(),
                 content: "- [ ] Task 2".to_string(),
-                parent_id: Some(container.clone()),
+                parent_id: Some(root.clone()),
                 before_sibling_id: Some(node1.clone()),
                 properties: json!({"task": {"status": "OPEN"}}),
             })
@@ -1351,12 +1351,12 @@ mod integration_tests {
 
         let (operations, schema_service, _temp_dir) = setup_test_operations().await.unwrap();
 
-        // Create a container
-        let container = operations
+        // Create a root
+        let root = operations
             .create_node(CreateNodeParams {
                 id: None,
                 node_type: "text".to_string(),
-                content: "# Benchmark Container".to_string(),
+                content: "# Benchmark Root".to_string(),
                 parent_id: None,
                 before_sibling_id: None,
                 properties: json!({}),
@@ -1372,7 +1372,7 @@ mod integration_tests {
                     id: None,
                     node_type: "task".to_string(),
                     content: format!("- [ ] Task {}", i),
-                    parent_id: Some(container.clone()),
+                    parent_id: Some(root.clone()),
                     before_sibling_id: None,
                     properties: json!({}),
                 })
