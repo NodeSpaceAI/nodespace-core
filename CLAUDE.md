@@ -407,9 +407,23 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    - Automatically updates project status to "Ready for Review"
 
 6. **Conduct Code Review**
-   - **FOLLOW UNIVERSAL PROCESS**: Use the code review guidelines in the [PR review documentation](docs/architecture/development/process/pr-review.md) 
+   - **FOLLOW UNIVERSAL PROCESS**: Use the code review guidelines in the [PR review documentation](docs/architecture/development/process/pr-review.md)
    - Use `senior-architect-reviewer` agent for complex features
    - All quality gates and review requirements apply universally to AI agents and human reviewers
+
+7. **Merge PR and Clean Up Feature Branch**
+   ```bash
+   # Merge the PR (use GitHub CLI or GitHub UI)
+   gh pr merge <number> --auto --squash
+
+   # After merge is confirmed, delete the local feature branch
+   git branch -d feature/issue-<number>-brief-description
+
+   # Switch back to main
+   git checkout main
+   git pull origin main
+   ```
+   **NOTE**: Remote branch is automatically deleted by GitHub's branch auto-delete setting. Only local cleanup is needed.
 
 **TodoWrite Tool Users - UPDATED:**
 
