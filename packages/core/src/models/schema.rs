@@ -39,6 +39,33 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// Simpler field definition for schema creation (user input)
+///
+/// This is a simplified structure used when creating new schemas via MCP or API.
+/// It gets converted to `SchemaField` internally with proper defaults.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FieldDefinition {
+    /// Field name
+    pub name: String,
+
+    /// Field type (e.g., "string", "number", "person", "project", etc.)
+    #[serde(rename = "type")]
+    pub field_type: String,
+
+    /// Whether this field is required
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+
+    /// Default value for the field
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<serde_json::Value>,
+
+    /// For nested objects, the structure definition
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<HashMap<String, serde_json::Value>>,
+}
 
 /// Protection level for schema fields
 ///

@@ -5,7 +5,7 @@
 //! clear error messages.
 
 use crate::mcp::types::MCPError;
-use crate::models::schema::ProtectionLevel;
+use crate::models::schema::{FieldDefinition, ProtectionLevel};
 use crate::services::SchemaService;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -79,6 +79,17 @@ pub struct RemoveSchemaEnumValueParams {
 pub struct GetSchemaDefinitionParams {
     /// Schema ID to retrieve
     pub schema_id: String,
+}
+
+/// Parameters for create_user_schema MCP method
+#[derive(Debug, Deserialize)]
+pub struct CreateUserSchemaParams {
+    /// Schema type name (e.g., "invoice", "project")
+    pub type_name: String,
+    /// Human-readable display name
+    pub display_name: String,
+    /// List of field definitions
+    pub fields: Vec<FieldDefinition>,
 }
 
 /// Add a new field to a schema
@@ -340,6 +351,59 @@ pub async fn handle_get_schema_definition(
 
     Ok(json!({
         "schema": schema_json
+    }))
+}
+
+/// Create a new user-defined schema
+///
+/// # MCP Tool Description
+/// Create a new user-defined schema with spoke table, relation tables, and schema
+/// node atomically. The spoke table is created as SCHEMALESS for user types.
+/// Reference fields automatically generate relation tables with auto-naming convention.
+///
+/// # Parameters
+/// - `type_name`: Schema type name (e.g., "invoice", "project")
+/// - `display_name`: Human-readable display name
+/// - `fields`: Array of field definitions with:
+///   - `name`: Field name
+///   - `type`: Field type (string/number/boolean/date/json/object or reference type)
+///   - `required`: Whether field is required (optional)
+///   - `default`: Default value (optional)
+///   - `schema`: For nested objects (optional)
+///
+/// # Field Types
+/// - **Primitive types** (stored in spoke table): string, number, boolean, date, json, object
+/// - **Reference types** (create relation tables): any other type (person, project, task, etc.)
+///
+/// # Relation Table Naming
+/// Reference fields automatically generate relation tables with naming convention:
+/// `{source_type}_{field_name}` (e.g., `invoice_customer`, `task_assignee`)
+///
+/// # Returns
+/// - `schema_id`: ID of the created schema node
+/// - `type_name`: The schema type name
+/// - `success`: true
+///
+/// # Errors
+/// - `VALIDATION_ERROR`: Schema already exists or referenced type doesn't exist
+/// - `INTERNAL_ERROR`: Database operation failed
+pub async fn handle_create_user_schema(
+    schema_service: &Arc<SchemaService>,
+    params: Value,
+) -> Result<Value, MCPError> {
+    let params: CreateUserSchemaParams = serde_json::from_value(params)
+        .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
+
+    // Create schema via SchemaService
+    let schema_id = schema_service
+        .create_user_schema(&params.type_name, &params.display_name, params.fields)
+        .await
+        .map_err(|e| MCPError::validation_error(e.to_string()))?;
+
+    Ok(json!({
+        "schema_id": schema_id,
+        "type_name": params.type_name,
+        "success": true
     }))
 }
 
@@ -607,5 +671,141 @@ mod tests {
         assert_eq!(schema["version"].as_u64().unwrap(), 1);
         assert!(schema["fields"].is_array());
         assert!(!schema["fields"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_create_user_schema() {
+        let (schema_service, _node_service, _temp) = setup_test_service().await;
+
+        let params = json!({
+            "type_name": "invoice",
+            "display_name": "Invoice",
+            "fields": [
+                {
+                    "name": "total",
+                    "type": "number",
+                    "required": true
+                },
+                {
+                    "name": "description",
+                    "type": "string",
+                    "required": false
+                }
+            ]
+        });
+
+        let result = handle_create_user_schema(&schema_service, params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["type_name"], "invoice");
+        assert_eq!(result["success"], true);
+        assert!(result["schema_id"].is_string());
+
+        // Verify schema was created
+        let schema = schema_service.get_schema("invoice").await.unwrap();
+        assert_eq!(schema.fields.len(), 2);
+        assert_eq!(schema.fields[0].name, "total");
+        assert_eq!(schema.fields[1].name, "description");
+    }
+
+    #[tokio::test]
+    async fn test_create_user_schema_with_reference() {
+        let (schema_service, _node_service, _temp) = setup_test_service().await;
+
+        // First create invoice schema
+        let invoice_params = json!({
+            "type_name": "invoice",
+            "display_name": "Invoice",
+            "fields": [
+                {
+                    "name": "amount",
+                    "type": "number",
+                    "required": true
+                }
+            ]
+        });
+
+        handle_create_user_schema(&schema_service, invoice_params)
+            .await
+            .unwrap();
+
+        // Then create expense with reference to invoice
+        let expense_params = json!({
+            "type_name": "expense",
+            "display_name": "Expense",
+            "fields": [
+                {
+                    "name": "description",
+                    "type": "string",
+                    "required": true
+                },
+                {
+                    "name": "invoice_ref",
+                    "type": "invoice",
+                    "required": false
+                }
+            ]
+        });
+
+        let result = handle_create_user_schema(&schema_service, expense_params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+
+        // Verify relation field is stored as record
+        let schema = schema_service.get_schema("expense").await.unwrap();
+        assert_eq!(schema.fields[1].field_type, "record");
+    }
+
+    #[tokio::test]
+    async fn test_create_user_schema_duplicate_rejected() {
+        let (schema_service, _node_service, _temp) = setup_test_service().await;
+
+        let params = json!({
+            "type_name": "duplicate",
+            "display_name": "Duplicate",
+            "fields": [
+                {
+                    "name": "name",
+                    "type": "string",
+                    "required": true
+                }
+            ]
+        });
+
+        // First creation succeeds
+        handle_create_user_schema(&schema_service, params.clone())
+            .await
+            .unwrap();
+
+        // Second creation fails
+        let result = handle_create_user_schema(&schema_service, params).await;
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.message.contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn test_create_user_schema_invalid_reference_rejected() {
+        let (schema_service, _node_service, _temp) = setup_test_service().await;
+
+        let params = json!({
+            "type_name": "invoice",
+            "display_name": "Invoice",
+            "fields": [
+                {
+                    "name": "customer",
+                    "type": "nonexistent_type",
+                    "required": false
+                }
+            ]
+        });
+
+        let result = handle_create_user_schema(&schema_service, params).await;
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.message.contains("does not exist"));
     }
 }

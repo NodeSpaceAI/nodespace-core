@@ -20,8 +20,8 @@ fn test_tools_list_returns_all_schemas() {
 
     let tools = response["tools"].as_array().unwrap();
 
-    // Verify all 21 tools are present (16 original + 5 schema management tools)
-    assert_eq!(tools.len(), 21);
+    // Verify all 22 tools are present (16 original + 6 schema management tools)
+    assert_eq!(tools.len(), 22);
 
     // Verify tool names
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();

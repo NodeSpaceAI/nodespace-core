@@ -10,17 +10,20 @@ async fn test_schema_property_hydration() -> Result<(), Box<dyn std::error::Erro
 
     println!("✅ Database initialized");
 
-    // Create a schema node with properties
+    // Debug: Check if core schemas were seeded by trying to get one
+    println!("📊 Checking if core schemas are present...");
+    match store.get_node("task").await {
+        Ok(Some(node)) => println!("✅ Found task schema: {}", node.id),
+        Ok(None) => println!("❌ Task schema not found"),
+        Err(e) => println!("❌ Error checking for task schema: {}", e),
+    }
+
+    // Create a simple schema node with minimal properties
     let schema_node = Node::new_with_id(
-        "date".to_string(),
+        "simple".to_string(),
         "schema".to_string(),
-        "Date".to_string(),
-        json!({
-            "is_core": true,
-            "version": 1,
-            "description": "Date node schema",
-            "fields": []
-        }),
+        "Simple Schema".to_string(),
+        json!({"test": "value"}),
     );
 
     println!("📝 Creating schema node with ID 'date'...");
@@ -33,7 +36,31 @@ async fn test_schema_property_hydration() -> Result<(), Box<dyn std::error::Erro
 
     // Retrieve the schema node via get_node
     println!("\n🔍 Retrieving schema node via get_node()...");
-    let retrieved = store.get_node("date").await?;
+
+    // Debug: Check what's in the node table using get_node
+    println!("📊 Checking node table...");
+    match store.get_node("simple").await {
+        Ok(Some(node)) => println!("✅ Found node: {} (type: {})", node.id, node.node_type),
+        Ok(None) => println!("❌ Node not found"),
+        Err(e) => println!("❌ Error checking node: {}", e),
+    }
+
+    // Debug: Check what's in the schema table
+    println!("📊 Checking schema table...");
+    let schema_query = "SELECT * FROM schema;";
+    let mut schema_response = store.db().query(schema_query).await;
+    match schema_response {
+        Ok(ref mut response) => {
+            let schema_records: Result<Vec<serde_json::Value>, _> = response.take(0);
+            match schema_records {
+                Ok(records) => println!("Records in schema table: {:?}", records),
+                Err(e) => println!("Error deserializing schema table: {:?}", e),
+            }
+        }
+        Err(e) => println!("Error querying schema table: {:?}", e),
+    }
+
+    let retrieved = store.get_node("simple").await?;
 
     match retrieved {
         Some(node) => {
@@ -60,7 +87,7 @@ async fn test_schema_property_hydration() -> Result<(), Box<dyn std::error::Erro
 
     // Test via get_schema method
     println!("\n🔍 Testing get_schema method...");
-    let schema = store.get_schema("date").await?;
+    let schema = store.get_schema("simple").await?;
 
     match schema {
         Some(props) => {

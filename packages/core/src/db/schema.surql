@@ -19,7 +19,8 @@
 DEFINE TABLE IF NOT EXISTS node SCHEMAFULL;
 
 -- Required universal fields
-DEFINE FIELD IF NOT EXISTS id ON TABLE node TYPE string ASSERT $value != NONE;
+-- NOTE: 'id' is the Record ID (primary key) and is automatically managed by SurrealDB
+-- Do NOT redefine it - let SurrealDB handle it natively as a Thing type
 DEFINE FIELD IF NOT EXISTS content ON TABLE node TYPE string DEFAULT "";
 DEFINE FIELD IF NOT EXISTS nodeType ON TABLE node TYPE string ASSERT $value != NONE;
 DEFINE FIELD IF NOT EXISTS data ON TABLE node TYPE option<record>;  -- Record Link to spoke (task, date, schema, or NULL)
@@ -40,8 +41,7 @@ DEFINE INDEX IF NOT EXISTS idx_node_modified ON TABLE node COLUMNS modifiedAt;
 
 -- Task spoke: Status, priority, due dates with efficient indexing
 DEFINE TABLE IF NOT EXISTS task SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS id ON TABLE task TYPE record ASSERT $value != NONE;
-DEFINE FIELD IF NOT EXISTS node ON TABLE task TYPE record ASSERT $value != NONE;  -- Reverse link to hub
+DEFINE FIELD IF NOT EXISTS node ON TABLE task TYPE option<record>;  -- Reverse link to hub node
 
 -- Core task fields (indexed for queries)
 DEFINE FIELD IF NOT EXISTS status ON TABLE task TYPE string DEFAULT 'todo';
@@ -61,8 +61,7 @@ DEFINE INDEX IF NOT EXISTS idx_task_due_date ON TABLE task COLUMNS due_date;
 
 -- Date spoke: Timezone, holiday tracking
 DEFINE TABLE IF NOT EXISTS date SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS id ON TABLE date TYPE record ASSERT $value != NONE;
-DEFINE FIELD IF NOT EXISTS node ON TABLE date TYPE record ASSERT $value != NONE;  -- Reverse link to hub
+DEFINE FIELD IF NOT EXISTS node ON TABLE date TYPE option<record>;  -- Reverse link to hub node
 
 -- Core date fields
 DEFINE FIELD IF NOT EXISTS timezone ON TABLE date TYPE string DEFAULT 'UTC';
@@ -74,13 +73,16 @@ DEFINE FIELD IF NOT EXISTS is_holiday ON TABLE date TYPE bool DEFAULT false;
 
 -- Schema spoke: Type definitions
 DEFINE TABLE IF NOT EXISTS schema SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS id ON TABLE schema TYPE record ASSERT $value != NONE;
-DEFINE FIELD IF NOT EXISTS node ON TABLE schema TYPE record ASSERT $value != NONE;  -- Reverse link to hub
+DEFINE FIELD IF NOT EXISTS node ON TABLE schema TYPE option<record>;  -- Reverse link to hub node
 
 -- Core schema fields
+-- NOTE: Storing entire schema as JSON string due to SurrealDB binary protocol limitations
+-- with nested arrays containing enums. The properties binding converts the object to a
+-- JSON string on CREATE/UPDATE, and we deserialize it on retrieval.
 DEFINE FIELD IF NOT EXISTS is_core ON TABLE schema TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS version ON TABLE schema TYPE int DEFAULT 1;
-DEFINE FIELD IF NOT EXISTS fields ON TABLE schema TYPE array DEFAULT [];
+DEFINE FIELD IF NOT EXISTS description ON TABLE schema TYPE string DEFAULT "";
+DEFINE FIELD IF NOT EXISTS fields ON TABLE schema TYPE option<string> DEFAULT NONE;
 
 -- Note: SCHEMAFULL allows undefined fields by default (flexible)
 

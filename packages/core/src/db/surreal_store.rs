@@ -173,8 +173,11 @@ struct SurrealNode {
     #[serde(rename = "modifiedAt")]
     modified_at: String,
     embedding_vector: Option<Vec<f32>>,
+    #[serde(default)]
     embedding_stale: bool,
+    #[serde(default)]
     mentions: Vec<String>,
+    #[serde(default)]
     mentioned_by: Vec<String>,
     // Graph-native architecture fields (Issue #511)
     /// FETCH data Limitation (Issue #511):
@@ -809,88 +812,103 @@ where
     C: surrealdb::Connection,
 {
     pub async fn create_node(&self, node: Node) -> Result<Node> {
-        // Convert embedding blob to f32 array if present
-        // embedding_vector is already Vec<f32>, no conversion needed
-        let embedding_f32 = node.embedding_vector.clone();
+        // Note: embedding_vector is not stored in hub-and-spoke architecture
+        // Embeddings are managed separately for optimization
 
-        // Insert into universal node table (graph-native architecture)
-        // Record ID format: node:uuid (constructed by type::thing)
-        // For types without dedicated tables (text, date, etc.), properties are stored here
-        // For types with dedicated tables (task, schema), properties go in the type-specific table
-        //
-        // NOTE: _schema_version is managed by NodeService, not SurrealStore.
-        // NodeService adds _schema_version only for node types with schema fields (task, person, etc.).
-        // Types with empty schemas (text, date, header, etc.) don't need versioning.
-        // Don't add _schema_version here - it causes properties pollution.
+        // Check if we need to create a spoke record for properties
+        let has_properties = !node
+            .properties
+            .as_object()
+            .unwrap_or(&serde_json::Map::new())
+            .is_empty();
+        let should_create_spoke = TYPES_WITH_PROPERTIES.contains(&node.node_type.as_str());
         let props_with_schema = node.properties.as_object().cloned().unwrap_or_default();
 
-        let query = "
-            CREATE type::thing($table, $id) CONTENT {
-                type: $node_type,
+        // Create hub node using simpler table:id syntax
+        // Note: IDs with special characters (hyphens, spaces, etc.) need to be backtick-quoted
+        let hub_query = format!(
+            r#"
+            CREATE node:`{}` CONTENT {{
+                nodeType: $node_type,
                 content: $content,
-                before_sibling_id: $before_sibling_id,
                 version: $version,
-                created_at: $created_at,
-                modified_at: $modified_at,
-                embedding_vector: $embedding_vector,
-                embedding_stale: $embedding_stale,
-                mentions: $mentions,
-                mentioned_by: $mentioned_by,
-                data: $data,
-                variants: $variants,
-                properties: $properties
-            };
-        ";
+                before_sibling_id: $before_sibling_id,
+                createdAt: time::now(),
+                modifiedAt: time::now(),
+                embedding_vector: [],
+                embedding_stale: false,
+                mentions: [],
+                mentioned_by: [],
+                data: $data
+            }};
+        "#,
+            node.id
+        );
 
-        // Initialize graph-native fields
-        let variants_value = serde_json::json!({});
-
-        self.db
-            .query(query)
-            .bind(("table", "node"))
-            .bind(("id", node.id.clone())) // Just the UUID, type::thing will construct node:uuid
+        let mut response = self
+            .db
+            .query(&hub_query)
             .bind(("node_type", node.node_type.clone()))
             .bind(("content", node.content.clone()))
-            .bind(("before_sibling_id", node.before_sibling_id.clone()))
             .bind(("version", node.version))
-            .bind(("created_at", node.created_at.to_rfc3339()))
-            .bind(("modified_at", node.modified_at.to_rfc3339()))
-            .bind(("embedding_vector", embedding_f32))
-            .bind(("embedding_stale", false))
-            .bind(("mentions", Vec::<String>::new()))
-            .bind(("mentioned_by", Vec::<String>::new()))
-            .bind(("data", None::<String>)) // Will be set below if type has properties
-            .bind(("variants", variants_value))
-            .bind(("properties", serde_json::Value::Object(props_with_schema)))
+            .bind(("before_sibling_id", node.before_sibling_id.clone()))
+            .bind(("data", None::<String>))
             .await
             .context("Failed to create node in universal table")?;
 
-        // Insert into type-specific table for types with properties (task, schema)
-        if TYPES_WITH_PROPERTIES.contains(&node.node_type.as_str())
-            && !node
-                .properties
-                .as_object()
-                .unwrap_or(&serde_json::Map::new())
-                .is_empty()
-        {
-            // Store properties directly in type-specific table (flattened)
-            self.db
-                .query("CREATE type::thing($table, $id) CONTENT $properties;")
-                .bind(("table", node.node_type.clone()))
-                .bind(("id", node.id.clone()))
-                .bind(("properties", node.properties.clone()))
-                .await
-                .context("Failed to create node in type-specific table")?;
+        // Consume the CREATE response - critical for persistence
+        let _: Result<Vec<serde_json::Value>, _> = response.take(0usize);
 
-            // Set data field to link to type-specific record and clear hub properties
-            // Hub-and-spoke pattern: properties live ONLY in spoke table, not duplicated in hub
-            // The get_node() method fetches spoke data using OMIT id pattern (line 1136)
-            self.db
-                .query("UPDATE type::thing('node', $id) SET data = type::thing($type_table, $id), properties = {};")
-                .bind(("id", node.id.clone()))
-                .bind(("type_table", node.node_type.clone()))
+        // Create spoke record if needed
+        if should_create_spoke && has_properties {
+            // CREATE spoke record with properties using simpler table:id syntax
+            // Note: IDs with special characters (hyphens, spaces, etc.) need backtick-quoting
+            let spoke_query = format!(
+                "CREATE {}:`{}` CONTENT $properties;",
+                node.node_type, node.id
+            );
+
+            // For schema type, convert fields array to JSON string to preserve complex nested structures
+            // during SurrealDB binary protocol serialization
+            let mut bound_properties = props_with_schema.clone();
+            if node.node_type == "schema" {
+                if let Some(fields_value) = bound_properties.get("fields") {
+                    let fields_str = serde_json::to_string(fields_value)
+                        .context("Failed to stringify schema fields")?;
+                    bound_properties
+                        .insert("fields".to_string(), serde_json::Value::String(fields_str));
+                }
+            }
+
+            let mut spoke_response = self
+                .db
+                .query(&spoke_query)
+                .bind(("properties", Value::Object(bound_properties)))
                 .await
-                .context("Failed to set data link and clear hub properties")?;
+                .context("Failed to create spoke record")?;
+
+            // Consume spoke response - CREATE returns created records
+            let _ = spoke_response.take::<Vec<serde_json::Value>>(0usize);
+
+            // Set bidirectional links: hub -> spoke and spoke -> hub
+            let link_query = format!(
+                r#"
+                UPDATE node:`{}` SET data = {}:`{}`;
+                UPDATE {}:`{}` SET node = node:`{}`;
+            "#,
+                node.id, node.node_type, node.id, node.node_type, node.id, node.id
+            );
+
+            let mut link_response = self
+                .db
+                .query(&link_query)
+                .await
+                .context("Failed to set spoke links")?;
+
+            // Consume link responses - both UPDATE statements
+            // UPDATE returns updated records which may have deserialization quirks
+            let _: Result<Vec<serde_json::Value>, _> = link_response.take(0usize);
+            let _: Result<Vec<serde_json::Value>, _> = link_response.take(1usize);
         }
 
         // Note: Parent-child relationships are now established separately via move_node()
@@ -1125,11 +1143,11 @@ where
         // Direct record ID lookup (O(1) primary key access)
         // Note: We don't use FETCH data because it causes deserialization issues
         // with the polymorphic data field (Thing vs Object)
-        let query = "SELECT * FROM type::thing('node', $id);";
+        // IDs with special characters need backtick-quoting
+        let query = format!("SELECT * FROM node:`{}`;", id);
         let mut response = self
             .db
-            .query(query)
-            .bind(("id", id.to_string()))
+            .query(&query)
             .await
             .context("Failed to query node by record ID")?;
 
@@ -1143,17 +1161,12 @@ where
         if let Some(ref mut node) = node_opt {
             let types_with_properties = ["task", "schema"];
             if types_with_properties.contains(&node.node_type.as_str()) {
-                // Fetch properties using SQL query, excluding 'id' field to avoid Thing deserialization issues
-                // SELECT * OMIT id gets all fields except the id (which is a Thing type that can't deserialize to JSON)
-                let props_query = format!(
-                    "SELECT * OMIT id FROM type::thing('{}', $id);",
-                    node.node_type
-                );
-                let mut props_response = self
-                    .db
-                    .query(&props_query)
-                    .bind(("id", id.to_string()))
-                    .await;
+                // Fetch properties from spoke table using direct record ID lookup
+                // Omit 'id' and 'node' fields - both are Thing types that can't deserialize to JSON
+                let props_query =
+                    format!("SELECT * OMIT id, node FROM {}:`{}`;", node.node_type, id);
+
+                let mut props_response = self.db.query(&props_query).await;
 
                 let result: Option<serde_json::Value> = match props_response {
                     Ok(ref mut response) => {
@@ -1165,9 +1178,16 @@ where
                             Ok(records) => {
                                 let props_opt = records.into_iter().next().map(|map| {
                                     tracing::debug!(
-                                        "Raw properties from {}: {:?}",
+                                        "Raw properties from {} - keys: {:?}",
                                         node.node_type,
-                                        map
+                                        map.keys().collect::<Vec<_>>()
+                                    );
+                                    tracing::debug!(
+                                        "Raw properties full: {}",
+                                        serde_json::to_string_pretty(&serde_json::Value::Object(
+                                            map.clone().into_iter().collect()
+                                        ))
+                                        .unwrap_or_default()
                                     );
                                     serde_json::Value::Object(map.into_iter().collect())
                                 });
@@ -1190,8 +1210,20 @@ where
                     }
                 };
 
-                if let Some(props) = result {
-                    // Properties already exclude 'id' due to OMIT in query
+                if let Some(mut props) = result {
+                    // If schema fields were stored as JSON string, parse them back
+                    if node.node_type == "schema" {
+                        if let Some(serde_json::Value::String(fields_str)) = props.get("fields") {
+                            if let Ok(fields_value) =
+                                serde_json::from_str::<serde_json::Value>(fields_str)
+                            {
+                                // Replace the stringified value with the parsed array
+                                if let Some(obj) = props.as_object_mut() {
+                                    obj.insert("fields".to_string(), fields_value);
+                                }
+                            }
+                        }
+                    }
                     node.properties = props;
                 }
             }
@@ -1278,12 +1310,24 @@ where
         query_builder.await.context("Failed to update node")?;
 
         // If properties were provided and node type has type-specific table, update it there too
-        if let Some(updated_props) = update.properties {
+        if let Some(mut updated_props) = update.properties {
             if TYPES_WITH_PROPERTIES.contains(&updated_node_type.as_str()) {
                 // UPSERT with MERGE to preserve existing spoke data on type reconversions
                 // Scenario: text→task creates task:uuid, task→text preserves it, text→task reconnects
                 // MERGE ensures old task properties (priority, due_date) aren't lost on reconversion
                 // Only adds missing defaults, preserves user-set values
+
+                // For schema type, stringify fields array before binding
+                if updated_node_type == "schema" {
+                    if let Some(fields_value) = updated_props.get("fields") {
+                        let fields_str = serde_json::to_string(fields_value)
+                            .context("Failed to stringify schema fields in update")?;
+                        if let Some(obj) = updated_props.as_object_mut() {
+                            obj.insert("fields".to_string(), serde_json::Value::String(fields_str));
+                        }
+                    }
+                }
+
                 self.db
                     .query("UPSERT type::thing($table, $id) MERGE $properties;")
                     .bind(("table", updated_node_type.clone()))
@@ -1397,8 +1441,18 @@ where
         };
 
         // Prepare properties
-        let props_with_schema = new_properties.as_object().cloned().unwrap_or_default();
+        let mut props_with_schema = new_properties.as_object().cloned().unwrap_or_default();
         let has_new_type_table = TYPES_WITH_PROPERTIES.contains(&new_type.as_str());
+
+        // For schema type, stringify fields array before binding
+        if new_type == "schema" {
+            if let Some(fields_value) = props_with_schema.get("fields") {
+                let fields_str = serde_json::to_string(fields_value)
+                    .context("Failed to stringify schema fields in switch_node_type")?;
+                props_with_schema
+                    .insert("fields".to_string(), serde_json::Value::String(fields_str));
+            }
+        }
 
         // Build atomic transaction using Thing parameters
         let transaction_query = if has_new_type_table && !props_with_schema.is_empty() {
