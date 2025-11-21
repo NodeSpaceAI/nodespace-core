@@ -218,16 +218,18 @@ describe('Date Picker Functionality', () => {
       // This test documents the expected behavior:
       // 1. User selects date from shortcuts or calendar
       // 2. Date is formatted as YYYY-MM-DD
-      // 3. Markdown link is created: [YYYY-MM-DD](nodespace://YYYY-MM-DD)
+      // 3. Markdown link is created: [](nodespace://YYYY-MM-DD) - UUID only, no display text
       // 4. NO database node is created at this point
       // 5. Database node only created when user adds content to the date page
+      // 6. Display text is fetched at render time from the referenced node
 
       const dateStr = '2025-10-15';
-      const expectedMarkdown = `[${dateStr}](nodespace://${dateStr})`;
+      // UUID-only format: display text is empty, fetched at render time
+      const expectedMarkdown = `[](nodespace://${dateStr})`;
 
       // The actual implementation calls controller.insertNodeReference(dateStr, dateStr)
-      // which generates the markdown link format shown above
-      expect(expectedMarkdown).toBe('[2025-10-15](nodespace://2025-10-15)');
+      // which generates the markdown link format shown above (title param is ignored)
+      expect(expectedMarkdown).toBe('[](nodespace://2025-10-15)');
     });
 
     it('should generate correct nodespace:// URI format', () => {

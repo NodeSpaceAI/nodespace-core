@@ -198,10 +198,11 @@ export class ContentProcessor {
   // Performance optimization: Cache frequently accessed patterns
   private readonly HEADER_REGEX = /^(#{1,6})\s+(.*)$/gm;
   private readonly WIKILINK_REGEX = /\[\[([^[\]]+(?:\[[^[\]]*\][^[\]]*)*)\]\]/g;
+  // Match both nodespace://uuid and nodespace://node/uuid formats, allowing empty display text
   private readonly NODESPACE_REF_REGEX =
-    /\[([^\]]+)\]\(nodespace:\/\/node\/([a-zA-Z0-9_-]+)(?:\?[^)]*)?\)/g;
+    /\[([^\]]*)\]\(nodespace:\/\/(?:node\/)?([a-zA-Z0-9_-]+)(?:\?[^)]*)?\)/g;
   private readonly NODESPACE_URI_REGEX =
-    /nodespace:\/\/([a-zA-Z0-9_-]+)\/([a-zA-Z0-9_-]+)(?:\/([a-zA-Z0-9_-]+))?/g;
+    /nodespace:\/\/(?:node\/)?([a-zA-Z0-9_-]+)(?:\/([a-zA-Z0-9_-]+))?/g;
   private readonly BOLD_REGEX = /\*\*(.*?)\*\*/g;
   private readonly ITALIC_REGEX = /(?<!\*)\*(?!\*)([^*]+)\*(?!\*)/g;
   private readonly CODE_REGEX = /`([^`]+)`/g;
@@ -744,9 +745,8 @@ export class ContentProcessor {
     // Find plain nodespace:// URIs (not in markdown links)
     this.NODESPACE_URI_REGEX.lastIndex = 0;
     while ((match = this.NODESPACE_URI_REGEX.exec(text)) !== null) {
-      // const nodeType = match[1]; // Node type not used in pattern creation
-      const nodeId = match[2];
-      const nodeName = match[3] || nodeId;
+      const nodeId = match[1];
+      const nodeName = match[2] || nodeId;
       const uri = match[0];
 
       patterns.push({
@@ -910,16 +910,17 @@ export class ContentProcessor {
 
         // Fallback to basic rendering for invalid references or if decoration fails
         const statusClass = refNode.isValid ? 'ns-noderef-valid' : 'ns-noderef-invalid';
-        const title = refNode.reference?.title || refNode.displayText;
+        // Use fetched title, then stored displayText, then nodeId as fallback
+        const displayTitle = refNode.reference?.title || refNode.displayText || refNode.nodeId;
         const tooltip = refNode.isValid
-          ? `Navigate to: ${title}`
+          ? `Navigate to: ${displayTitle}`
           : `Broken reference: ${refNode.nodeId}`;
 
-        return `<a class="ns-noderef ${statusClass}" 
-                   href="${this.escapeHtml(refNode.uri)}" 
-                   data-node-id="${this.escapeHtml(refNode.nodeId)}" 
-                   data-uri="${this.escapeHtml(refNode.uri)}" 
-                   title="${this.escapeHtml(tooltip)}">${this.escapeHtml(refNode.displayText)}</a>`;
+        return `<a class="ns-noderef ${statusClass}"
+                   href="${this.escapeHtml(refNode.uri)}"
+                   data-node-id="${this.escapeHtml(refNode.nodeId)}"
+                   data-uri="${this.escapeHtml(refNode.uri)}"
+                   title="${this.escapeHtml(tooltip)}">${this.escapeHtml(displayTitle)}</a>`;
       }
 
       case 'bold': {
@@ -1056,18 +1057,20 @@ export class ContentProcessor {
   /**
    * Detect nodespace:// URIs in content
    * Enhanced version of NodeReferenceService.detectNodespaceLinks for ContentProcessor
+   * Supports both nodespace://uuid and nodespace://node/uuid formats, with empty display text
    */
   public detectNodespaceURIs(content: string): NodespaceLink[] {
     const links: NodespaceLink[] = [];
-    const regex = /\[([^\]]+)\]\(nodespace:\/\/node\/([a-zA-Z0-9_-]+)(?:\?[^)]*)?\)/g;
+    // Match both formats, allowing empty display text
+    const regex = /\[([^\]]*)\]\(nodespace:\/\/(?:node\/)?([a-zA-Z0-9_-]+)(?:\?[^)]*)?\)/g;
 
     let match;
     while ((match = regex.exec(content)) !== null) {
       const displayText = match[1];
       const nodeId = match[2];
       const fullMatch = match[0];
-      const uriMatch = fullMatch.match(/nodespace:\/\/node\/[a-zA-Z0-9_-]+(?:\?[^)]*)?/);
-      const uri = uriMatch ? uriMatch[0] : `nodespace://node/${nodeId}`;
+      const uriMatch = fullMatch.match(/nodespace:\/\/(?:node\/)?[a-zA-Z0-9_-]+(?:\?[^)]*)?/);
+      const uri = uriMatch ? uriMatch[0] : `nodespace://${nodeId}`;
 
       // Check if reference is valid using cache or NodeReferenceService
       let isValid = false;

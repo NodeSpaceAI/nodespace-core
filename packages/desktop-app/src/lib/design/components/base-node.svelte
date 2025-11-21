@@ -392,10 +392,10 @@
       if (result.id === 'new') {
         const newNodeId = await createNewNodeFromMention(result.title);
         if (newNodeId) {
-          controller.insertNodeReference(newNodeId, result.title);
+          controller.insertNodeReference(newNodeId);
         }
       } else {
-        controller.insertNodeReference(result.id, result.title);
+        controller.insertNodeReference(result.id);
       }
     }
 
@@ -473,7 +473,7 @@
 
     if (controller) {
       // Insert as a node reference (date nodes are virtual, no DB creation needed)
-      controller.insertNodeReference(dateStr, dateStr);
+      controller.insertNodeReference(dateStr);
     }
 
     // Hide date picker and autocomplete

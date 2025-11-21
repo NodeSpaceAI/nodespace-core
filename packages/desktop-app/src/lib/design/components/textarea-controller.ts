@@ -894,16 +894,17 @@ export class TextareaController {
 
   /**
    * Insert node reference at current @mention position
+   * Stores only UUID - display text is fetched at render time
    */
-  public insertNodeReference(nodeId: string, nodeTitle: string): void {
+  public insertNodeReference(nodeId: string): void {
     if (!this.mentionSession) return;
 
     const content = this.element.value;
     const before = content.substring(0, this.mentionSession.startPosition);
     const after = content.substring(this.getCursorPosition());
 
-    // Insert node reference in markdown format
-    const reference = `[@${nodeTitle}](nodespace://${nodeId})`;
+    // Insert node reference with UUID only - display text fetched at render time
+    const reference = `[](nodespace://${nodeId})`;
     const newContent = before + reference + after;
 
     this.element.value = newContent;

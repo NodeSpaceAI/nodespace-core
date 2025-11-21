@@ -712,7 +712,7 @@ describe('TextareaController', () => {
   });
 
   describe('Content manipulation', () => {
-    it('should insert node reference correctly', () => {
+    it('should insert node reference correctly (UUID-only format)', () => {
       controller.initialize('Hello @', true);
 
       // Set cursor after @
@@ -722,10 +722,11 @@ describe('TextareaController', () => {
       // Trigger @mention detection
       element.dispatchEvent(new Event('input', { bubbles: true }));
 
-      // Insert node reference
-      controller.insertNodeReference('node-123', 'My Node');
+      // Insert node reference - stores UUID only, display text fetched at render time
+      controller.insertNodeReference('node-123');
 
-      expect(element.value).toContain('[@My Node](nodespace://node-123)');
+      // New format: [](nodespace://uuid) - no display text stored
+      expect(element.value).toContain('[](nodespace://node-123)');
     });
 
     it('should insert slash command content correctly', () => {
