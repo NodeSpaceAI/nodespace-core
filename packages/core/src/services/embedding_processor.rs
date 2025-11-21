@@ -6,7 +6,9 @@
 //! - Periodic batch processing (30-second interval)
 //! - Manual trigger support for explicit user actions
 //! - Graceful shutdown with tokio::select!
+//! - Two-level embeddability support (Issue #573)
 
+use crate::behaviors::NodeBehaviorRegistry;
 use crate::services::error::NodeServiceError;
 use crate::services::NodeEmbeddingService;
 use std::sync::Arc;
@@ -82,6 +84,75 @@ impl EmbeddingProcessor {
         })
     }
 
+    /// Create and start embedding processor with two-level embeddability support
+    ///
+    /// Spawns a background task that periodically processes stale embeddings
+    /// every 30 seconds using behavior-aware embedding. The task can be triggered
+    /// manually via `trigger_batch_embed()` and will gracefully shutdown when
+    /// the processor is dropped.
+    ///
+    /// # Two-Level Embeddability (Issue #573)
+    ///
+    /// This constructor uses the NodeBehaviorRegistry to determine:
+    /// 1. Which nodes should be embedded (e.g., text/header yes, task/date no)
+    /// 2. What content children contribute to parent embeddings
+    ///
+    /// # Arguments
+    /// * `embedding_service` - The embedding service for processing nodes
+    /// * `registry` - The behavior registry for looking up node type behaviors
+    ///
+    /// # Returns
+    /// A new EmbeddingProcessor instance with active background task
+    pub fn new_with_behavior(
+        embedding_service: Arc<NodeEmbeddingService>,
+        registry: Arc<NodeBehaviorRegistry>,
+    ) -> Result<Self, NodeServiceError> {
+        tracing::info!("EmbeddingProcessor initializing with two-level embeddability");
+
+        let (trigger_tx, mut trigger_rx) = mpsc::channel(10);
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+
+        // Spawn background task for periodic processing with behavior support
+        let service_clone = embedding_service.clone();
+        let registry_clone = registry;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(BACKGROUND_INTERVAL_SECS));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                tokio::select! {
+                    // Periodic processing with behavior
+                    _ = interval.tick() => {
+                        tracing::debug!("Background embedding processor tick (with behavior)");
+                        if let Err(e) = Self::process_batch_with_behavior(&service_clone, &registry_clone).await {
+                            tracing::error!("Background embedding processing failed: {}", e);
+                        }
+                    }
+
+                    // Manual trigger with behavior
+                    Some(_) = trigger_rx.recv() => {
+                        tracing::info!("Manual embedding batch triggered (with behavior)");
+                        if let Err(e) = Self::process_batch_with_behavior(&service_clone, &registry_clone).await {
+                            tracing::error!("Manual embedding processing failed: {}", e);
+                        }
+                    }
+
+                    // Graceful shutdown
+                    _ = shutdown_rx.recv() => {
+                        tracing::info!("EmbeddingProcessor shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            embedding_service,
+            trigger_tx,
+            _shutdown_tx: shutdown_tx,
+        })
+    }
+
     /// Internal helper to process a batch of stale embeddings
     ///
     /// Uses `None` for batch limit to process ALL stale nodes in a single run.
@@ -101,6 +172,33 @@ impl EmbeddingProcessor {
             }
             Err(e) => {
                 tracing::error!("Batch embedding failed: {}", e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Internal helper to process a batch of stale embeddings with behavior support
+    ///
+    /// Uses two-level embeddability (Issue #573) to determine which nodes to embed
+    /// and what content to include from children.
+    async fn process_batch_with_behavior(
+        service: &Arc<NodeEmbeddingService>,
+        registry: &Arc<NodeBehaviorRegistry>,
+    ) -> Result<usize, NodeServiceError> {
+        match service
+            .batch_embed_containers_with_behavior(registry, None)
+            .await
+        {
+            Ok(0) => {
+                tracing::debug!("No stale embeddings to process (with behavior)");
+                Ok(0)
+            }
+            Ok(count) => {
+                tracing::info!("Processed {} stale embeddings (with behavior)", count);
+                Ok(count)
+            }
+            Err(e) => {
+                tracing::error!("Batch embedding with behavior failed: {}", e);
                 Err(e)
             }
         }

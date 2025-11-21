@@ -236,6 +236,49 @@ pub trait NodeBehavior: Send + Sync {
     fn default_metadata(&self) -> serde_json::Value {
         serde_json::json!({})
     }
+
+    /// Returns embeddable text content if this node should be embedded as a root.
+    ///
+    /// Returns `Some(text)` if:
+    /// - Node should be embedded on its own (text nodes, headers with content)
+    ///
+    /// Returns `None` if:
+    /// - Node only contributes to parent embedding (don't embed as standalone)
+    /// - Empty/whitespace-only content
+    ///
+    /// # Examples
+    ///
+    /// Text nodes: Returns the full content
+    /// Headers: Returns the header text (behavior decides if should be root)
+    /// Tasks: Returns None (only contribute to parent)
+    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
+        if node.content.trim().is_empty() {
+            None
+        } else {
+            Some(node.content.clone())
+        }
+    }
+
+    /// Returns content this node contributes to its parent's embedding.
+    ///
+    /// Returns `Some(text)` if node has content that should be included when
+    /// parent node is embedded (node contributes to parent's embedding).
+    ///
+    /// Returns `None` if node doesn't contribute to parent.
+    ///
+    /// # Examples
+    ///
+    /// Text nodes: Returns the full content (contributes to parent)
+    /// Headers: Returns the header text (contributes title to parent)
+    /// Tasks: Returns None (don't contribute to parent date nodes)
+    /// Dates: Returns None (dates don't nest under other nodes)
+    fn get_parent_contribution(&self, node: &Node) -> Option<String> {
+        if node.content.trim().is_empty() {
+            None
+        } else {
+            Some(node.content.clone())
+        }
+    }
 }
 
 /// Check if a string contains only whitespace (including Unicode whitespace)
@@ -486,6 +529,22 @@ impl NodeBehavior for TaskNodeBehavior {
             }
         })
     }
+
+    /// Tasks are not embedded as standalone roots
+    ///
+    /// Tasks are typically action items under date nodes or projects.
+    /// They don't carry semantic content worth embedding independently.
+    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
+        None
+    }
+
+    /// Tasks don't contribute to parent embeddings
+    ///
+    /// Tasks under date nodes shouldn't pollute the date's semantic embedding.
+    /// The date node represents "what I worked on" not "my todo list".
+    fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
+        None
+    }
 }
 
 /// Built-in behavior for code block nodes
@@ -732,6 +791,22 @@ impl NodeBehavior for DateNodeBehavior {
             "is_holiday": false,
             "timezone": "UTC"
         })
+    }
+
+    /// Date nodes are not embedded (they're containers)
+    ///
+    /// Date nodes are organizational containers, not semantic content.
+    /// Their children (text nodes) carry the actual embeddable content.
+    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
+        None
+    }
+
+    /// Dates don't nest under other nodes
+    ///
+    /// Date nodes are always root-level containers, they never contribute
+    /// content to a parent's embedding.
+    fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
+        None
     }
 }
 
@@ -1532,5 +1607,201 @@ mod tests {
 
         let node = Node::new("text".to_string(), "Test".to_string(), json!({}));
         assert!(behavior.validate(&node).is_ok());
+    }
+
+    // =========================================================================
+    // Two-Level Embeddability Tests (Issue #573)
+    // =========================================================================
+
+    #[test]
+    fn test_text_node_embeddable_content() {
+        let behavior = TextNodeBehavior;
+
+        // Text node with content should be embeddable
+        let node = Node::new("text".to_string(), "Hello world".to_string(), json!({}));
+        let content = behavior.get_embeddable_content(&node);
+        assert!(content.is_some());
+        assert_eq!(content.unwrap(), "Hello world");
+
+        // Text node should contribute to parent
+        let contribution = behavior.get_parent_contribution(&node);
+        assert!(contribution.is_some());
+        assert_eq!(contribution.unwrap(), "Hello world");
+    }
+
+    #[test]
+    fn test_text_node_empty_not_embeddable() {
+        let behavior = TextNodeBehavior;
+
+        // Empty text node should NOT be embeddable
+        let empty_node = Node::new("text".to_string(), "".to_string(), json!({}));
+        assert!(behavior.get_embeddable_content(&empty_node).is_none());
+        assert!(behavior.get_parent_contribution(&empty_node).is_none());
+
+        // Whitespace-only text node should NOT be embeddable
+        let whitespace_node = Node::new("text".to_string(), "   ".to_string(), json!({}));
+        assert!(behavior.get_embeddable_content(&whitespace_node).is_none());
+        assert!(behavior.get_parent_contribution(&whitespace_node).is_none());
+    }
+
+    #[test]
+    fn test_header_node_embeddable_content() {
+        let behavior = HeaderNodeBehavior;
+
+        // Header node with content should be embeddable
+        let node = Node::new(
+            "header".to_string(),
+            "## Section Title".to_string(),
+            json!({"headerLevel": 2}),
+        );
+        let content = behavior.get_embeddable_content(&node);
+        assert!(content.is_some());
+        assert_eq!(content.unwrap(), "## Section Title");
+
+        // Header should contribute to parent
+        let contribution = behavior.get_parent_contribution(&node);
+        assert!(contribution.is_some());
+    }
+
+    #[test]
+    fn test_task_node_not_embeddable() {
+        let behavior = TaskNodeBehavior;
+
+        // Task node should NOT be embeddable as root
+        let node = Node::new(
+            "task".to_string(),
+            "Buy groceries".to_string(),
+            json!({"status": "OPEN"}),
+        );
+        assert!(
+            behavior.get_embeddable_content(&node).is_none(),
+            "Task nodes should not be embeddable as roots"
+        );
+
+        // Task should NOT contribute to parent
+        assert!(
+            behavior.get_parent_contribution(&node).is_none(),
+            "Task nodes should not contribute to parent embeddings"
+        );
+    }
+
+    #[test]
+    fn test_date_node_not_embeddable() {
+        let behavior = DateNodeBehavior;
+
+        // Date node should NOT be embeddable as root
+        let node = Node::new_with_id(
+            "2025-01-15".to_string(),
+            "date".to_string(),
+            "2025-01-15".to_string(),
+            json!({}),
+        );
+        assert!(
+            behavior.get_embeddable_content(&node).is_none(),
+            "Date nodes should not be embeddable (containers only)"
+        );
+
+        // Date should NOT contribute to parent
+        assert!(
+            behavior.get_parent_contribution(&node).is_none(),
+            "Date nodes should not contribute to parent embeddings"
+        );
+    }
+
+    #[test]
+    fn test_code_block_uses_default_embeddability() {
+        let behavior = CodeBlockNodeBehavior;
+
+        // Code block should use default implementation (embeddable if content exists)
+        let node = Node::new(
+            "code-block".to_string(),
+            "```rust\nfn main() {}".to_string(),
+            json!({"language": "rust"}),
+        );
+
+        // Uses default implementation - embeddable if non-empty content
+        let content = behavior.get_embeddable_content(&node);
+        assert!(content.is_some());
+        assert_eq!(content.unwrap(), "```rust\nfn main() {}");
+
+        // Contributes to parent
+        assert!(behavior.get_parent_contribution(&node).is_some());
+    }
+
+    #[test]
+    fn test_quote_block_uses_default_embeddability() {
+        let behavior = QuoteBlockNodeBehavior;
+
+        // Quote block should use default implementation
+        let node = Node::new(
+            "quote-block".to_string(),
+            "> Some quote".to_string(),
+            json!({}),
+        );
+
+        let content = behavior.get_embeddable_content(&node);
+        assert!(content.is_some());
+        assert_eq!(content.unwrap(), "> Some quote");
+    }
+
+    #[test]
+    fn test_ordered_list_uses_default_embeddability() {
+        let behavior = OrderedListNodeBehavior;
+
+        // Ordered list should use default implementation
+        let node = Node::new(
+            "ordered-list".to_string(),
+            "1. First item".to_string(),
+            json!({}),
+        );
+
+        let content = behavior.get_embeddable_content(&node);
+        assert!(content.is_some());
+        assert_eq!(content.unwrap(), "1. First item");
+    }
+
+    #[test]
+    fn test_schema_node_embeddability() {
+        let behavior = SchemaNodeBehavior;
+
+        // Schema nodes have content (the schema name)
+        let node = Node::new(
+            "schema".to_string(),
+            "task".to_string(),
+            json!({"is_core": true, "fields": []}),
+        );
+
+        // Default implementation - embeddable if content exists
+        let content = behavior.get_embeddable_content(&node);
+        assert!(content.is_some());
+    }
+
+    #[test]
+    fn test_registry_embeddability_lookup() {
+        let registry = NodeBehaviorRegistry::new();
+
+        // Text node - embeddable
+        let text_node = Node::new("text".to_string(), "Content".to_string(), json!({}));
+        let text_behavior = registry.get("text").unwrap();
+        assert!(text_behavior.get_embeddable_content(&text_node).is_some());
+
+        // Task node - not embeddable
+        let task_node = Node::new(
+            "task".to_string(),
+            "Task content".to_string(),
+            json!({"status": "OPEN"}),
+        );
+        let task_behavior = registry.get("task").unwrap();
+        assert!(task_behavior.get_embeddable_content(&task_node).is_none());
+
+        // Date node - not embeddable
+        let date_node = Node::new_with_id(
+            "2025-01-15".to_string(),
+            "date".to_string(),
+            "2025-01-15".to_string(),
+            json!({}),
+        );
+        let date_behavior = registry.get("date").unwrap();
+        assert!(date_behavior.get_embeddable_content(&date_node).is_none());
     }
 }
