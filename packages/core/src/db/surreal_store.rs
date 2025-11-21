@@ -994,10 +994,6 @@ where
         let node_type = node_type.to_string();
         let content = content.to_string();
 
-        let now = Utc::now();
-        let created_at = now.to_rfc3339();
-        let modified_at = now.to_rfc3339();
-
         // Validate parent exists (prevent orphan nodes)
         let parent_exists = self.get_node(&parent_id).await?;
         if parent_exists.is_none() {
@@ -1038,15 +1034,10 @@ where
         let props_with_schema = properties.as_object().cloned().unwrap_or_default();
         let has_type_table = TYPES_WITH_PROPERTIES.contains(&node_type.as_str());
 
-        // Prepare spoke properties with mandatory reverse link (spoke -> hub)
+        // Prepare spoke properties WITHOUT the node field (we'll set it in the query using a Thing binding)
+        // This is because JSON objects can't represent SurrealDB Record Links properly
         let spoke_properties = if has_type_table && !props_with_schema.is_empty() {
-            let mut spoke_props = props_with_schema.clone();
-            // Add mandatory reverse link field: node (Record Link to hub)
-            spoke_props.insert(
-                "node".to_string(),
-                serde_json::json!({"tb": "node", "id": node_id}),
-            );
-            Some(Value::Object(spoke_props))
+            Some(Value::Object(props_with_schema.clone()))
         } else {
             None
         };
@@ -1057,30 +1048,34 @@ where
         // Build atomic transaction query with bidirectional Record Links (Issue #560)
         // This ensures ALL operations succeed or ALL fail
         // Hub-and-spoke: Create spoke with reverse link, then hub with forward link
+        // Note: Use time::now() for datetime fields instead of binding string timestamps
         let transaction_query = if has_type_table && !props_with_schema.is_empty() {
             // For types with dedicated tables (task, schema) - bidirectional links
             // Use dynamic properties binding to support all spoke types (not just task)
             r#"
                 BEGIN TRANSACTION;
 
-                -- Step 1: Create spoke (type-specific data) with dynamic properties + reverse link
+                -- Step 1: Create spoke (type-specific data) with properties
                 CREATE $type_id CONTENT $spoke_properties;
 
-                -- Step 2: Create hub (universal metadata) with forward link to spoke
+                -- Step 2: Set the reverse link (spoke.node -> hub) using proper Thing binding
+                UPDATE $type_id SET node = $node_id;
+
+                -- Step 3: Create hub (universal metadata) with forward link to spoke
                 CREATE $node_id CONTENT {
                     id: $node_id,
                     nodeType: $node_type,
                     content: $content,
                     data: $type_id,
                     version: 1,
-                    createdAt: $created_at,
-                    modifiedAt: $modified_at
+                    createdAt: time::now(),
+                    modifiedAt: time::now()
                 };
 
-                -- Step 3: Create parent-child edge (parent->has_child->child)
+                -- Step 4: Create parent-child edge (parent->has_child->child)
                 RELATE $parent_id->has_child->$node_id CONTENT {
                     order: $order,
-                    createdAt: $created_at,
+                    createdAt: time::now(),
                     version: 1
                 };
 
@@ -1099,14 +1094,14 @@ where
                     content: $content,
                     data: NONE,
                     version: 1,
-                    createdAt: $created_at,
-                    modifiedAt: $modified_at
+                    createdAt: time::now(),
+                    modifiedAt: time::now()
                 };
 
                 -- Create parent-child edge (parent->has_child->child)
                 RELATE $parent_id->has_child->$node_id CONTENT {
                     order: $order,
-                    createdAt: $created_at,
+                    createdAt: time::now(),
                     version: 1
                 };
 
@@ -1120,7 +1115,7 @@ where
         let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.clone()));
         let type_thing = surrealdb::sql::Thing::from((node_type.clone(), node_id.clone()));
 
-        // Execute transaction (we don't care about the return value, just the side effects)
+        // Execute transaction
         let mut query = self
             .db
             .query(transaction_query)
@@ -1129,8 +1124,6 @@ where
             .bind(("type_id", type_thing))
             .bind(("node_type", node_type.clone()))
             .bind(("content", content.clone()))
-            .bind(("created_at", created_at.clone()))
-            .bind(("modified_at", modified_at.clone()))
             .bind(("order", order));
 
         // Conditionally bind spoke_properties for types with dedicated tables
@@ -1138,25 +1131,23 @@ where
             query = query.bind(("spoke_properties", spoke_props));
         }
 
-        query.await.map(|_| ()).context(format!(
-            "Failed to create child node '{}' under parent '{}'",
+        let response = query.await.context(format!(
+            "Failed to execute create child node transaction for '{}' under parent '{}'",
             node_id, parent_id
         ))?;
 
-        // Construct and return the created node
-        Ok(Node {
-            id: node_id,
-            node_type,
-            content,
-            before_sibling_id: None,
-            version: 1,
-            created_at: now,
-            modified_at: now,
-            properties,
-            embedding_vector: None,
-            mentions: Vec::new(),
-            mentioned_by: Vec::new(),
-        })
+        // Check transaction response for errors
+        // We need to consume results to ensure execution, but ignore serialization errors
+        // that occur when SurrealDB returns internal types (like transaction markers)
+        response.check().context(format!(
+            "Transaction failed when creating child node '{}' under parent '{}'",
+            node_id, parent_id
+        ))?;
+
+        // Fetch and return created node (ensures timestamps match database values)
+        self.get_node(&node_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Node not found after creation for '{}'", node_id))
     }
 
     pub async fn get_node(&self, id: &str) -> Result<Option<Node>> {
@@ -1455,8 +1446,6 @@ where
             .ok_or_else(|| anyhow::anyhow!("Node not found: {}", node_id))?;
 
         let old_type = current_node.node_type.clone();
-        let now = Utc::now();
-        let modified_at = now.to_rfc3339();
 
         // Build variants update: preserve old type, add new type
         // variants map format: {"task": "task:uuid", "text": null, ...}
@@ -1478,25 +1467,26 @@ where
         let has_new_type_table = TYPES_WITH_PROPERTIES.contains(&new_type.as_str());
 
         // Build atomic transaction using Thing parameters
+        // Note: Field names are camelCase (nodeType, modifiedAt) to match hub schema
         let transaction_query = if has_new_type_table && !props_with_schema.is_empty() {
             // New type has properties table
             r#"
                 BEGIN TRANSACTION;
 
-                -- Update node type and variants map
-                UPDATE $node_id SET
-                    type = $new_type,
-                    modified_at = $modified_at,
-                    version = version + 1,
-                    variants[$old_type] = $old_type_record,
-                    variants[$new_type] = $new_type_id,
-                    properties = $properties;
-
                 -- Create new type-specific record
                 CREATE $new_type_id CONTENT $properties;
 
-                -- Update data link to point to new type-specific record
-                UPDATE $node_id SET data = $new_type_id;
+                -- Set the reverse link (spoke.node -> hub) using proper Thing binding
+                UPDATE $new_type_id SET node = $node_id;
+
+                -- Update node type, variants map, and data link
+                UPDATE $node_id SET
+                    nodeType = $new_type,
+                    modifiedAt = time::now(),
+                    version = version + 1,
+                    variants[$old_type] = $old_type_record,
+                    variants[$new_type] = $new_type_id,
+                    data = $new_type_id;
 
                 COMMIT TRANSACTION;
             "#
@@ -1508,12 +1498,11 @@ where
 
                 -- Update node type and variants map
                 UPDATE $node_id SET
-                    type = $new_type,
-                    modified_at = $modified_at,
+                    nodeType = $new_type,
+                    modifiedAt = time::now(),
                     version = version + 1,
                     variants[$old_type] = $old_type_record,
                     variants[$new_type] = $new_type_record,
-                    properties = $properties,
                     data = NONE;
 
                 COMMIT TRANSACTION;
@@ -1525,8 +1514,9 @@ where
         let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.clone()));
         let new_type_thing = surrealdb::sql::Thing::from((new_type.clone(), node_id.clone()));
 
-        // Execute transaction (we don't care about the return value, just the side effects)
-        self.db
+        // Execute transaction
+        let response = self
+            .db
             .query(transaction_query)
             .bind(("node_id", node_thing))
             .bind(("new_type_id", new_type_thing))
@@ -1534,14 +1524,18 @@ where
             .bind(("old_type", old_type.clone()))
             .bind(("old_type_record", old_type_record))
             .bind(("new_type_record", new_type_record))
-            .bind(("modified_at", modified_at))
             .bind(("properties", Value::Object(props_with_schema)))
             .await
-            .map(|_| ())
             .context(format!(
-                "Failed to switch node '{}' type from '{}' to '{}'",
-                node_id, old_type, new_type
+                "Failed to execute switch type transaction for node '{}'",
+                node_id
             ))?;
+
+        // Check transaction response for errors
+        response.check().context(format!(
+            "Transaction failed when switching node '{}' type from '{}' to '{}'",
+            node_id, old_type, new_type
+        ))?;
 
         // Fetch and return updated node
         self.get_node(&node_id)
