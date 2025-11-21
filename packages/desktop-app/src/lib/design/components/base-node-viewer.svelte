@@ -254,8 +254,7 @@
         nodeManager.updateNodeContent(nodeId, newValue);
       } catch (error) {
         console.error('[BaseNodeViewer] Failed to update header content:', error);
-        // TODO: Show user-facing error notification via event bus
-        // eventBus.emit({ type: 'error:node-update-failed', nodeId, error });
+        // TODO: Show user-facing error notification via toast/notification system
       }
     }
   }

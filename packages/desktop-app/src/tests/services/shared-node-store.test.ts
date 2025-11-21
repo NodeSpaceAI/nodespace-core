@@ -134,15 +134,6 @@ describe('SharedNodeStore', () => {
   });
 
   // ========================================================================
-  // Node Filtering (by parent)
-  // ========================================================================
-
-  describe('Node Filtering', () => {
-    // NOTE: getNodesForParent tests removed (Issue #557) - functionality now tested via ReactiveStructureTree
-    // Cache management methods removed - hierarchy is managed by ReactiveStructureTree via LIVE SELECT events
-  });
-
-  // ========================================================================
   // Update Operations
   // ========================================================================
 

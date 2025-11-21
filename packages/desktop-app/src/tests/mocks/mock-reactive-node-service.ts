@@ -237,7 +237,7 @@ export function createMockReactiveNodeService(events: NodeManagerEvents) {
       }
 
       // Compute children arrays from parent relationships
-      // In the real implementation, this would use HierarchyService
+      // In the real implementation, this uses ReactiveStructureTree
       for (const node of Object.values(_nodes)) {
         node.children = [];
       }

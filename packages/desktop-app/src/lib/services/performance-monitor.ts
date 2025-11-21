@@ -303,23 +303,6 @@ export class PerformanceMonitor {
         threshold: (this.memoryLeakThreshold / 1024 / 1024).toFixed(2) + 'MB',
         snapshots: recent.length
       });
-
-      // Emit memory warning event if EventBus is available
-      if (
-        typeof window !== 'undefined' &&
-        'eventBus' in window &&
-        (window as Window & { eventBus?: { emit: (event: unknown) => void } }).eventBus
-      ) {
-        (window as Window & { eventBus: { emit: (event: unknown) => void } }).eventBus.emit({
-          type: 'performance:memory-warning',
-          namespace: 'system',
-          source: 'PerformanceMonitor',
-          timestamp: Date.now(),
-          memoryUsage: snapshot.heapUsed,
-          threshold: this.memoryLeakThreshold,
-          metadata: { trend: 'growing' }
-        });
-      }
     }
   }
 
@@ -382,25 +365,6 @@ export class PerformanceMonitor {
         current: currentValue.toFixed(2) + 'ms',
         regression: (regressionRatio * 100).toFixed(1) + '%'
       });
-
-      // Emit regression event if EventBus is available
-      if (
-        typeof window !== 'undefined' &&
-        'eventBus' in window &&
-        (window as Window & { eventBus?: { emit: (event: unknown) => void } }).eventBus
-      ) {
-        (window as Window & { eventBus: { emit: (event: unknown) => void } }).eventBus.emit({
-          type: 'performance:regression',
-          namespace: 'quality',
-          source: 'PerformanceMonitor',
-          timestamp: Date.now(),
-          operation,
-          baseline: baseline.actual,
-          current: currentValue,
-          regressionPercent: regressionRatio * 100,
-          metadata: { threshold: this.regressionThreshold * 100 }
-        });
-      }
     }
   }
 

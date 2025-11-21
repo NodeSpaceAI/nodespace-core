@@ -23,7 +23,7 @@
 import { emit } from '@tauri-apps/api/event';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import { nodeData } from '$lib/stores/reactive-node-data.svelte';
-import type { PersistenceFailedEvent } from '$lib/services/event-types';
+import type { PersistenceFailedEvent } from '$lib/types/event-types';
 import type { Node } from '$lib/types';
 
 // Development-only logging helper

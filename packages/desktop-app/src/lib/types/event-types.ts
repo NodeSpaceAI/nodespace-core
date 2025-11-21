@@ -40,3 +40,31 @@ export interface EdgeEventData {
   positionId?: string;
   order: number; // Sort order for children
 }
+
+// ============================================================================
+// Error Events
+// ============================================================================
+
+/**
+ * Persistence failure event for optimistic operation rollbacks
+ * Emitted when a backend operation fails after optimistic update
+ */
+export interface PersistenceFailedEvent {
+  type: 'error:persistence-failed';
+  namespace: 'error';
+  timestamp: number;
+  source: string;
+  message: string;
+  failedNodeIds: string[];
+  failureReason: 'timeout' | 'foreign-key-constraint' | 'database-locked' | 'unknown';
+  canRetry: boolean;
+  affectedOperations: Array<{
+    nodeId: string;
+    operation: string;
+    error: string;
+  }>;
+  metadata?: {
+    originalError: string;
+    description: string;
+  };
+}

@@ -31,12 +31,6 @@ import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
 import { schemaService } from './schema-service';
 import { moveNode as moveNodeCommand } from './tauri-commands';
 
-// No-op event emitter (eventBus removed - LIVE SELECT handles real-time sync)
-const eventBus = {
-  emit: <T>(_event: T) => {
-    // No-op: Events are now handled by LIVE SELECT
-  }
-};
 
 export interface NodeManagerEvents {
   focusRequested: (nodeId: string, position?: number) => void;
@@ -72,7 +66,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   // Manual reactivity trigger - incremented when SharedNodeStore updates
   let _updateTrigger = $state(0);
 
-  const serviceName = 'ReactiveNodeService';
   const contentProcessor = ContentProcessor.getInstance();
 
   // Subscribe to SharedNodeStore changes for reactive updates
@@ -344,35 +337,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.nodeCreated(nodeId);
     events.hierarchyChanged();
 
-    eventBus.emit<Record<string, unknown>>({
-      type: 'node:created',
-      namespace: 'lifecycle',
-      source: serviceName,
-      nodeId,
-      nodeType,
-      metadata: {}
-    });
-
-    eventBus.emit<Record<string, unknown>>({
-      type: 'hierarchy:changed',
-      namespace: 'lifecycle',
-      source: serviceName,
-      changeType: 'create',
-      affectedNodes: [nodeId]
-    });
-
-    eventBus.emit<Record<string, unknown>>({
-      type: 'cache:invalidate',
-      namespace: 'coordination',
-      source: serviceName,
-      cacheKey: `node:${nodeId}`,
-      scope: 'node',
-      nodeId,
-      reason: 'node-created'
-    });
-
-    emitReferenceUpdateNeeded(nodeId);
-
     // If we're not focusing the new node, keep focus on the original node
     if (!shouldFocusNewNode && afterNode) {
       focusManager.setEditingNode(afterNodeId, paneId);
@@ -433,8 +397,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       inheritHeaderLevel: headerLevel
     };
 
-    emitNodeUpdated(nodeId, 'content', content);
-    emitReferenceUpdateNeeded(nodeId);
     scheduleContentProcessing(nodeId, content);
   }
 
@@ -479,7 +441,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       skipConflictDetection: true
     });
 
-    emitNodeUpdated(nodeId, 'nodeType', nodeType);
     scheduleContentProcessing(nodeId, node.content);
   }
 
@@ -493,7 +454,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     });
 
     _updateTrigger++;
-    emitNodeUpdated(nodeId, 'mentions', mentions);
   }
 
   function updateNodeProperties(
@@ -511,7 +471,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     );
 
     _updateTrigger++;
-    emitNodeUpdated(nodeId, 'properties', properties);
   }
 
   function scheduleContentProcessing(nodeId: string, content: string): void {
@@ -540,8 +499,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
-    emitReferenceUpdateNeeded(nodeId);
-
     const operations = debouncedOperations.get(nodeId);
     if (operations) {
       operations.fastTimer = undefined;
@@ -549,59 +506,13 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     }
   }
 
-  function processExpensiveContentOperations(nodeId: string, content: string): void {
+  function processExpensiveContentOperations(nodeId: string, _content: string): void {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
-    emitExpensivePersistenceNeeded(nodeId, content);
-    emitVectorEmbeddingNeeded(nodeId, content);
-    emitReferencePropagatationNeeded(nodeId, content);
-
+    // Note: Expensive operations (persistence, embeddings, reference propagation)
+    // are now handled via LIVE SELECT and backend polling
     debouncedOperations.delete(nodeId);
-  }
-
-  function emitReferenceUpdateNeeded(nodeId: string): void {
-    eventBus.emit<Record<string, unknown>>({
-      type: 'references:update-needed',
-      namespace: 'coordination',
-      source: serviceName,
-      nodeId,
-      updateType: 'content',
-      metadata: {}
-    });
-  }
-
-  function emitExpensivePersistenceNeeded(nodeId: string, content: string): void {
-    eventBus.emit<Record<string, unknown>>({
-      type: 'node:persistence-needed',
-      namespace: 'backend',
-      source: serviceName,
-      nodeId,
-      content,
-      metadata: {}
-    });
-  }
-
-  function emitVectorEmbeddingNeeded(nodeId: string, content: string): void {
-    eventBus.emit<Record<string, unknown>>({
-      type: 'node:embedding-needed',
-      namespace: 'ai',
-      source: serviceName,
-      nodeId,
-      content,
-      metadata: {}
-    });
-  }
-
-  function emitReferencePropagatationNeeded(nodeId: string, content: string): void {
-    eventBus.emit<Record<string, unknown>>({
-      type: 'node:reference-propagation-needed',
-      namespace: 'references',
-      source: serviceName,
-      nodeId,
-      content,
-      metadata: {}
-    });
   }
 
   function combineNodes(
@@ -766,14 +677,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.hierarchyChanged();
     _updateTrigger++;
 
-    eventBus.emit<Record<string, unknown>>({
-      type: 'hierarchy:changed',
-      namespace: 'lifecycle',
-      source: serviceName,
-      changeType: 'indent',
-      affectedNodes: [nodeId]
-    });
-
     return true;
   }
 
@@ -916,14 +819,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.hierarchyChanged();
     _updateTrigger++;
 
-    eventBus.emit<Record<string, unknown>>({
-      type: 'hierarchy:changed',
-      namespace: 'lifecycle',
-      source: serviceName,
-      changeType: 'outdent',
-      affectedNodes: [nodeId]
-    });
-
     return true;
   }
 
@@ -1045,39 +940,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.nodeDeleted(nodeId);
     events.hierarchyChanged();
     _updateTrigger++;
-
-    eventBus.emit<Record<string, unknown>>({
-      type: 'node:deleted',
-      namespace: 'lifecycle',
-      source: serviceName,
-      nodeId
-    });
-
-    eventBus.emit<Record<string, unknown>>({
-      type: 'hierarchy:changed',
-      namespace: 'lifecycle',
-      source: serviceName,
-      changeType: 'delete',
-      affectedNodes: [nodeId]
-    });
-
-    eventBus.emit<Record<string, unknown>>({
-      type: 'cache:invalidate',
-      namespace: 'coordination',
-      source: serviceName,
-      cacheKey: 'all',
-      scope: 'global',
-      reason: 'node-deleted'
-    });
-
-    eventBus.emit<Record<string, unknown>>({
-      type: 'references:update-needed',
-      namespace: 'coordination',
-      source: serviceName,
-      nodeId,
-      updateType: 'deletion',
-      metadata: {}
-    });
   }
 
   /**
@@ -1124,28 +986,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       events.hierarchyChanged();
       _updateTrigger++;
 
-      const status: 'expanded' | 'collapsed' = expanded ? 'expanded' : 'collapsed';
-      const changeType: 'expand' | 'collapse' = expanded
-        ? 'expand'
-        : 'collapse';
-
-      eventBus.emit<Record<string, unknown>>({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: serviceName,
-        nodeId,
-        status
-      });
-
-      eventBus.emit<Record<string, unknown>>({
-        type: 'hierarchy:changed',
-        namespace: 'lifecycle',
-        source: serviceName,
-        changeType,
-        affectedNodes: [nodeId],
-        metadata: {}
-      });
-
       return true;
     } catch (error) {
       console.error(`[ReactiveNodeService] Error setting expanded state for ${nodeId}:`, error);
@@ -1176,32 +1016,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         _uiState[nodeId] = { ...uiState, expanded };
         changedCount++;
         affectedNodes.push(nodeId);
-
-        // Emit individual status change events
-        const status: 'expanded' | 'collapsed' = expanded ? 'expanded' : 'collapsed';
-        eventBus.emit<Record<string, unknown>>({
-          type: 'node:status-changed',
-          namespace: 'coordination',
-          source: serviceName,
-          nodeId,
-          status
-        });
       }
 
       // Only trigger UI update once if anything changed
       if (changedCount > 0) {
         events.hierarchyChanged();
         _updateTrigger++;
-
-        // Emit single hierarchy changed event for all changes
-        eventBus.emit<Record<string, unknown>>({
-          type: 'hierarchy:changed',
-          namespace: 'lifecycle',
-          source: serviceName,
-          changeType: 'expand', // Simplified - batch operations are expansion-focused
-          affectedNodes,
-          metadata: { batchSize: changedCount }
-        });
       }
 
       return changedCount;
@@ -1222,28 +1042,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       events.hierarchyChanged();
       _updateTrigger++;
 
-      const status: 'expanded' | 'collapsed' = newExpandedState
-        ? 'expanded'
-        : 'collapsed';
-      const changeType: 'expand' | 'collapse' =
-        newExpandedState ? 'expand' : 'collapse';
-
-      eventBus.emit<Record<string, unknown>>({
-        type: 'node:status-changed',
-        namespace: 'coordination',
-        source: serviceName,
-        nodeId,
-        status
-      });
-
-      eventBus.emit<Record<string, unknown>>({
-        type: 'hierarchy:changed',
-        namespace: 'lifecycle',
-        source: serviceName,
-        changeType,
-        affectedNodes: [nodeId]
-      });
-
       return true;
     } catch (error) {
       console.error('Error toggling node expansion:', error);
@@ -1257,39 +1055,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       if (operations.fastTimer) clearTimeout(operations.fastTimer);
       if (operations.expensiveTimer) clearTimeout(operations.expensiveTimer);
       debouncedOperations.delete(nodeId);
-    }
-  }
-
-  function emitNodeUpdated(nodeId: string, updateType: string, newValue: unknown): void {
-    eventBus.emit<Record<string, unknown>>({
-      type: 'node:updated',
-      namespace: 'lifecycle',
-      source: serviceName,
-      nodeId,
-      updateType: updateType as 'content' | 'metadata' | 'hierarchy',
-      newValue
-    });
-
-    if (updateType === 'content') {
-      eventBus.emit<Record<string, unknown>>({
-        type: 'decoration:update-needed',
-        namespace: 'interaction',
-        source: serviceName,
-        nodeId,
-        decorationType: 'content',
-        reason: 'content-changed',
-        metadata: {}
-      });
-
-      eventBus.emit<Record<string, unknown>>({
-        type: 'cache:invalidate',
-        namespace: 'coordination',
-        source: serviceName,
-        cacheKey: `node:${nodeId}`,
-        scope: 'node',
-        nodeId,
-        reason: 'content-updated'
-      });
     }
   }
 

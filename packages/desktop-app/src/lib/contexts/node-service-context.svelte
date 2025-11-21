@@ -17,8 +17,6 @@
   import type { ContentProcessor as ContentProcessorType, NodeReferenceService as NodeReferenceServiceType } from '$lib/services/content-processor';
 
   // Service interface definition with proper types
-  // Note: hierarchy-service and tauri-node-service deleted in Issue #558
-  // Hierarchy is now handled by ReactiveStructureTree, Tauri ops via tauri-commands
   export interface NodeServices {
     nodeReferenceService: NodeReferenceServiceType | null;
     nodeManager: ReactiveNodeService;
@@ -41,11 +39,6 @@
   import type { Snippet } from 'svelte';
 
   // Service imports
-  // Note: NodeReferenceService, HierarchyService, tauriNodeService, and MentionSyncService
-  // were deleted in Issue #558
-  // Hierarchy is now handled by ReactiveStructureTree in SharedNodeStore
-  // Tauri operations go through tauri-commands.ts directly
-  // Mention sync is handled by LIVE SELECT events via tauri-sync-listener
   import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
   import { ContentProcessor } from '$lib/services/content-processor';
   import { focusManager } from '$lib/services/focus-manager.svelte';
@@ -102,14 +95,8 @@
 
       const contentProcessor = ContentProcessor.getInstance();
 
-      // Note: HierarchyService, NodeReferenceService, and MentionSyncService deleted in Issue #558
-      // Hierarchy is now handled by ReactiveStructureTree in SharedNodeStore
-      // NodeReferenceService functionality moved to content-processor
-      // Mention sync is handled by LIVE SELECT events via tauri-sync-listener
-
       // Create service bundle and update reactive state
       // (context was already set at component init with the container reference)
-      // Note: nodeReferenceService is now null - functionality moved to content-processor
       servicesContainer.services = {
         nodeReferenceService: null,
         nodeManager,

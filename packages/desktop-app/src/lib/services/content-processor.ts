@@ -75,22 +75,6 @@ export interface NodeReferenceService {
   addReference?(sourceNodeId: string, targetNodeId: string): Promise<void>;
 }
 
-// ============================================================================
-// No-op event emitter (eventBus removed - LIVE SELECT handles real-time sync)
-// ============================================================================
-
-const noopEventEmitter = {
-  emit: (_event: unknown) => {
-    // No-op: Events are now handled by LIVE SELECT
-  },
-  subscribe: (_type: string, _handler: (event: unknown) => void) => {
-    // No-op: Events are now handled by LIVE SELECT
-    return () => {}; // Return unsubscribe function
-  }
-};
-
-// Use no-op emitter in place of eventBus
-const eventBus = noopEventEmitter;
 
 // ============================================================================
 // Core AST Types for Dual-Representation
@@ -237,8 +221,7 @@ export class ContentProcessor {
   }
 
   private constructor() {
-    // Set up EventBus integration for reference coordination
-    this.setupEventBusIntegration();
+    // Private constructor enforces singleton pattern via getInstance()
   }
 
   /**
@@ -249,41 +232,15 @@ export class ContentProcessor {
   }
 
   /**
-   * Set up EventBus integration for reference coordination
+   * Invalidate cached references for a specific node.
+   *
+   * Call this method when a node's content or properties change to ensure
+   * that any cached references to that node are refreshed on next access.
+   * This is typically needed after node updates, deletions, or title changes.
+   *
+   * @param nodeId - The ID of the node whose cached references should be invalidated
    */
-  private setupEventBusIntegration(): void {
-    // Listen for references update needed events
-    eventBus.subscribe('references:update-needed', (event) => {
-      // Type assertion for specific event type
-      const refEvent = event as { updateType: string; nodeId: string };
-      if (refEvent.updateType === 'content' || refEvent.updateType === 'deletion') {
-        // When content changes or nodes are deleted, we might need to update references
-        this.emitCacheInvalidate('node', refEvent.nodeId, 'reference content changed');
-
-        // Clear reference cache for affected nodes
-        this.invalidateReferenceCache(refEvent.nodeId);
-      }
-    });
-
-    // Listen for node updates to invalidate reference cache
-    eventBus.subscribe('node:updated', (event) => {
-      const nodeEvent = event as { updateType: string; nodeId: string };
-      if (nodeEvent.updateType === 'content') {
-        this.invalidateReferenceCache(nodeEvent.nodeId);
-      }
-    });
-
-    // Listen for node deletion to clean up references
-    eventBus.subscribe('node:deleted', (event) => {
-      const nodeEvent = event as { nodeId: string };
-      this.invalidateReferenceCache(nodeEvent.nodeId);
-    });
-  }
-
-  /**
-   * Invalidate cached references for a specific node
-   */
-  private invalidateReferenceCache(nodeId: string): void {
+  public invalidateReferenceCache(nodeId: string): void {
     const urisToRemove: string[] = [];
 
     for (const [uri, cached] of this.referenceCache) {
@@ -1198,25 +1155,6 @@ export class ContentProcessor {
       refNode.reference = reference || undefined;
       refNode.isValid = !!reference?.isValid;
 
-      // Emit reference resolution event
-      if (sourceNodeId) {
-        const resolutionEvent: Record<string, unknown> =
-          {
-            type: 'reference:resolved',
-            namespace: 'coordination',
-            source: this.serviceName,
-            referenceId: refNode.uri,
-            target: refNode.nodeId,
-            nodeId: sourceNodeId,
-            resolutionResult: refNode.isValid ? 'found' : 'not-found',
-            metadata: {
-              displayText: refNode.displayText,
-              cached: false
-            }
-          };
-        eventBus.emit(resolutionEvent);
-      }
-
       // Add bidirectional reference if valid and sourceNodeId provided
       if (refNode.isValid && sourceNodeId && reference && this.nodeReferenceService?.addReference) {
         try {
@@ -1282,99 +1220,12 @@ export class ContentProcessor {
     };
   }
 
-  // ============================================================================
-  // EventBus Integration Methods
-  // ============================================================================
-
   /**
-   * Emit cache invalidation event
+   * Process content and prepare wikilinks
+   * Returns prepared content with detected links
    */
-  private emitCacheInvalidate(
-    scope: 'single' | 'node' | 'global',
-    nodeId?: string,
-    reason?: string
-  ): void {
-    const cacheEvent: Record<string, unknown> = {
-      type: 'cache:invalidate',
-      namespace: 'coordination',
-      source: this.serviceName,
-      timestamp: Date.now(),
-      cacheKey: nodeId ? `contentProcessor:${nodeId}` : 'contentProcessor:global',
-      scope,
-      nodeId,
-      reason: reason || 'content processing'
-    };
-    eventBus.emit(cacheEvent);
-  }
-
-  /**
-   * Process content and emit wikilink detection events
-   * Enhanced with nodespace:// URI detection
-   */
-  public processContentWithEventEmission(content: string, nodeId: string): PreparedContent {
-    const prepared = this.prepareBacklinkSyntax(content);
-
-    // Emit events for detected wikilinks (Phase 2+ preparation)
-    for (const wikiLink of prepared.wikiLinks) {
-      const backlinkEvent: Record<string, unknown> = {
-        type: 'backlink:detected',
-        namespace: 'phase2',
-        source: this.serviceName,
-        timestamp: Date.now(),
-        sourceNodeId: nodeId,
-        targetNodeId: wikiLink.target, // In Phase 2, this will be resolved to actual node ID
-        linkType: 'wikilink',
-        linkText: wikiLink.displayText || '',
-        metadata: {
-          startPos: wikiLink.startPos,
-          endPos: wikiLink.endPos,
-          target: wikiLink.target
-        }
-      };
-      eventBus.emit(backlinkEvent);
-    }
-
-    // Detect and emit events for nodespace:// references
-    const nodespaceLinks = this.detectNodespaceURIs(content);
-    for (const nodeLink of nodespaceLinks) {
-      // Emit backlink detected event
-      const backlinkEvent: Record<string, unknown> = {
-        type: 'backlink:detected',
-        namespace: 'phase2',
-        source: this.serviceName,
-        timestamp: Date.now(),
-        sourceNodeId: nodeId,
-        targetNodeId: nodeLink.nodeId,
-        linkType: 'nodespace-ref',
-        linkText: nodeLink.displayText || '',
-        metadata: {
-          startPos: nodeLink.startPos,
-          endPos: nodeLink.endPos,
-          uri: nodeLink.uri,
-          isValid: nodeLink.isValid
-        }
-      };
-      eventBus.emit(backlinkEvent);
-
-      // Emit reference resolution event
-      const resolutionEvent: Record<string, unknown> = {
-        type: 'reference:resolved',
-        namespace: 'coordination',
-        source: this.serviceName,
-        referenceId: nodeLink.uri,
-        target: nodeLink.nodeId,
-        nodeId: nodeId,
-        resolutionResult: nodeLink.isValid ? 'found' : 'not-found',
-        metadata: {
-          displayText: nodeLink.displayText,
-          startPos: nodeLink.startPos,
-          endPos: nodeLink.endPos
-        }
-      };
-      eventBus.emit(resolutionEvent);
-    }
-
-    return prepared;
+  public processContentWithEventEmission(content: string, _nodeId: string): PreparedContent {
+    return this.prepareBacklinkSyntax(content);
   }
 
   /**

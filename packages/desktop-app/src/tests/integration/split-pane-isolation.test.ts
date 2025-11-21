@@ -1,12 +1,15 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store';
+import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import type { Node } from '$lib/types/node';
 
 describe('Split-Pane Content Isolation', () => {
   beforeEach(() => {
     // Reset shared node store to clear state from previous tests
     sharedNodeStore.__resetForTesting();
+    // Reset structure tree to clean state
+    structureTree.children = new Map();
 
     // Clear any test errors from previous tests
     sharedNodeStore.clearTestErrors();
@@ -54,12 +57,15 @@ describe('Split-Pane Content Isolation', () => {
       properties: {}
     };
 
+    // Set up nodes with parentId to establish hierarchy
     sharedNodeStore.setNode(parentA, { type: 'database', reason: 'test-setup' });
     sharedNodeStore.setNode(parentB, { type: 'database', reason: 'test-setup' });
-    sharedNodeStore.setNode(childA1, { type: 'database', reason: 'test-setup' });
-    sharedNodeStore.setNode(childB1, { type: 'database', reason: 'test-setup' });
+    sharedNodeStore.setNode({ ...childA1, parentId: 'parent-a' }, { type: 'database', reason: 'test-setup' });
+    sharedNodeStore.setNode({ ...childB1, parentId: 'parent-b' }, { type: 'database', reason: 'test-setup' });
 
-    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy
+    // Set up edges in structureTree for hierarchy queries
+    structureTree.__testOnly_addChild({ id: 'edge-a1', in: 'parent-a', out: 'child-a1', edgeType: 'child', order: 1.0 });
+    structureTree.__testOnly_addChild({ id: 'edge-b1', in: 'parent-b', out: 'child-b1', edgeType: 'child', order: 1.0 });
 
     // Create service (simulating nodeManager)
     const mockEvents = { emit: () => {}, on: () => () => {}, hierarchyChanged: () => {} };
@@ -100,9 +106,10 @@ describe('Split-Pane Content Isolation', () => {
     };
 
     sharedNodeStore.setNode(parent, { type: 'database', reason: 'test-setup' });
-    sharedNodeStore.setNode(child1, { type: 'database', reason: 'test-setup' });
+    sharedNodeStore.setNode({ ...child1, parentId: 'shared-parent' }, { type: 'database', reason: 'test-setup' });
 
-    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy
+    // Set up edge in structureTree for hierarchy queries
+    structureTree.__testOnly_addChild({ id: 'edge-1', in: 'shared-parent', out: 'child-1', edgeType: 'child', order: 1.0 });
 
     const mockEvents = { emit: () => {}, on: () => () => {}, hierarchyChanged: () => {} };
     const service = createReactiveNodeService(mockEvents as never);

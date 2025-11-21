@@ -6,43 +6,18 @@
  *
  * - Node creation and manipulation
  * - Async timing and effects
- * - EventBus testing utilities
  * - Mock event handler creation
  * - Component testing utilities
  *
  * Usage:
  * ```typescript
- * import { createTestNode, waitForEffects, createEventLogger } from '@tests/helpers';
+ * import { createTestNode, waitForEffects } from '@tests/helpers';
  * ```
  */
 
 import { tick } from 'svelte';
 import { vi, type MockInstance } from 'vitest';
 import type { Node, NodeUIState } from '$lib/types/node';
-
-// Note: eventBus removed in Issue #558 - providing stub types for test compatibility
-// Real events are now handled by LIVE SELECT through Tauri
-
-/**
- * Stub event type for test helpers (eventBus removed)
- */
-export interface NodeSpaceEvent {
-  type: string;
-  namespace?: string;
-  source?: string;
-  nodeId?: string;
-  [key: string]: unknown;
-}
-
-/**
- * Stub event bus for test helpers (eventBus removed)
- */
-const eventBus = {
-  subscribe: (_type: string, _handler: (event: NodeSpaceEvent) => void) => () => {},
-  emit: (_event: NodeSpaceEvent) => {},
-  waitFor: <T>(_type: string, _filter?: unknown, _timeout?: number): Promise<T> =>
-    new Promise((_resolve, reject) => reject(new Error('eventBus removed - use LIVE SELECT')))
-};
 
 // ============================================================================
 // Node Creation Utilities
@@ -297,26 +272,6 @@ export async function waitForEffects(additionalMs: number = 0): Promise<void> {
 }
 
 /**
- * Wait for EventBus batch processing
- *
- * EventBus batches certain operations. This helper waits for
- * typical batch durations used in tests.
- *
- * @param batchMs - Batch processing time (default: 100ms)
- * @returns Promise that resolves after batch processing
- *
- * @example
- * ```typescript
- * eventBus.emit({ type: 'node:updated', nodeId: 'test-1' });
- * await waitForEventBusBatch();
- * // Now batched handlers have processed
- * ```
- */
-export async function waitForEventBusBatch(batchMs: number = 100): Promise<void> {
-  await waitForEffects(batchMs);
-}
-
-/**
  * Wait for async operation with custom duration
  *
  * Generic async wait utility for tests that need specific timing.
@@ -331,192 +286,6 @@ export async function waitForEventBusBatch(batchMs: number = 100): Promise<void>
  */
 export async function waitForAsync(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// ============================================================================
-// EventBus Testing Utilities
-// ============================================================================
-
-/**
- * Event logger for collecting and analyzing events
- *
- * Captures all events emitted during tests for verification.
- * Useful for verifying event sequences and debugging event flow.
- */
-export interface EventLogger {
-  /** All captured events */
-  events: NodeSpaceEvent[];
-  /** Subscribe to eventBus - returns unsubscribe function */
-  subscribe: () => () => void;
-  /** Clear all captured events */
-  clear: () => void;
-  /** Get array of event types in order */
-  getEventTypes: () => string[];
-  /** Find first event of specific type */
-  findEvent: (type: string) => NodeSpaceEvent | undefined;
-  /** Find all events of specific type */
-  findAllEvents: (type: string) => NodeSpaceEvent[];
-  /** Check if event type was emitted */
-  hasEvent: (type: string) => boolean;
-}
-
-/**
- * Create an event logger that collects all events
- *
- * Useful for verifying event sequences and debugging event flow.
- *
- * @returns EventLogger instance
- *
- * @example
- * ```typescript
- * const logger = createEventLogger();
- * const unsubscribe = logger.subscribe();
- *
- * // ... trigger some operations ...
- *
- * expect(logger.events).toHaveLength(3);
- * expect(logger.hasEvent('node:created')).toBe(true);
- * expect(logger.getEventTypes()).toEqual(['node:created', 'node:updated', 'hierarchy:changed']);
- *
- * unsubscribe();
- * ```
- */
-export function createEventLogger(): EventLogger {
-  const events: NodeSpaceEvent[] = [];
-
-  return {
-    events,
-    subscribe: () =>
-      eventBus.subscribe('*', (e) => {
-        events.push(e);
-      }),
-    clear: () => {
-      events.length = 0;
-    },
-    getEventTypes: () => events.map((e) => e.type),
-    findEvent: (type) => events.find((e) => e.type === type),
-    findAllEvents: (type) => events.filter((e) => e.type === type),
-    hasEvent: (type) => events.some((e) => e.type === type)
-  };
-}
-
-/**
- * Event collector for specific event types
- *
- * Subscribes to EventBus and collects events of specific type(s).
- */
-export interface EventCollector<T extends NodeSpaceEvent = NodeSpaceEvent> {
-  /** Collected events */
-  events: T[];
-  /** Unsubscribe from eventBus */
-  unsubscribe: () => void;
-  /** Clear collected events */
-  clear: () => void;
-  /** Wait for N events to be collected */
-  waitForCount: (count: number, timeoutMs?: number) => Promise<T[]>;
-}
-
-/**
- * Subscribe and collect specific event types
- *
- * @param eventTypes - Event type(s) to collect (string or array)
- * @returns EventCollector instance
- *
- * @example
- * ```typescript
- * const collector = subscribeAndCollect<NodeCreatedEvent>('node:created');
- *
- * // ... trigger operations ...
- *
- * await collector.waitForCount(2);
- * expect(collector.events).toHaveLength(2);
- *
- * collector.unsubscribe();
- * ```
- */
-export function subscribeAndCollect<T extends NodeSpaceEvent = NodeSpaceEvent>(
-  eventTypes: string | string[]
-): EventCollector<T> {
-  const events: T[] = [];
-  const types = Array.isArray(eventTypes) ? eventTypes : [eventTypes];
-
-  const unsubscribe = eventBus.subscribe('*', (e) => {
-    if (types.includes(e.type)) {
-      events.push(e as T);
-    }
-  });
-
-  return {
-    events,
-    unsubscribe,
-    clear: () => {
-      events.length = 0;
-    },
-    waitForCount: async (count: number, timeoutMs: number = 3000): Promise<T[]> => {
-      const startTime = Date.now();
-      while (events.length < count && Date.now() - startTime < timeoutMs) {
-        await waitForAsync(10);
-      }
-      if (events.length < count) {
-        throw new Error(
-          `Timeout waiting for ${count} events. Got ${events.length} after ${timeoutMs}ms`
-        );
-      }
-      return events;
-    }
-  };
-}
-
-/**
- * Wait for specific event to be emitted
- *
- * @param eventType - Event type to wait for
- * @param timeoutMs - Maximum time to wait (default: 1000ms)
- * @returns Promise that resolves with the event
- *
- * @example
- * ```typescript
- * const event = await waitForEvent<NodeCreatedEvent>('node:created', 2000);
- * expect(event.nodeId).toBe('test-node-1');
- * ```
- */
-export async function waitForEvent<T extends NodeSpaceEvent>(
-  eventType: T['type'],
-  timeoutMs: number = 1000
-): Promise<T> {
-  return eventBus.waitFor(eventType, undefined, timeoutMs);
-}
-
-/**
- * Verify events fired in expected order
- *
- * Checks that events appear in the specified sequence, though
- * other events may appear between them.
- *
- * @param events - Array of events to check
- * @param expectedTypes - Expected event types in order
- *
- * @example
- * ```typescript
- * const logger = createEventLogger();
- * // ... operations ...
- * expectEventSequence(logger.events, ['node:created', 'node:updated', 'hierarchy:changed']);
- * ```
- */
-export function expectEventSequence(events: NodeSpaceEvent[], expectedTypes: string[]): void {
-  const actualTypes = events.map((e) => e.type as string);
-  let lastIndex = -1;
-
-  for (const expectedType of expectedTypes) {
-    const index = actualTypes.indexOf(expectedType, lastIndex + 1);
-    if (index === -1) {
-      throw new Error(
-        `Expected event "${expectedType}" not found after previous events. ` +
-          `Event sequence: ${actualTypes.join(' → ')}`
-      );
-    }
-    lastIndex = index;
-  }
 }
 
 // ============================================================================

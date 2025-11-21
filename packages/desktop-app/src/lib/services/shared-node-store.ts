@@ -605,7 +605,6 @@ export class SharedNodeStore {
       // Notify subscribers
       this.notifySubscribers(nodeId, updatedNode, source);
 
-      // Log update event (eventBus removed - LIVE SELECT handles real-time sync)
       console.debug(`[SharedNodeStore] Node updated: ${nodeId}, type: ${this.determineUpdateType(changes)}`);
 
       // Update metrics
@@ -793,18 +792,16 @@ export class SharedNodeStore {
   setNode(node: Node, source: UpdateSource, skipPersistence = false): void {
     const isNewNode = !this.persistedNodeIds.has(node.id);
 
-    // Emit event for HierarchyService cache invalidation
-    // ONLY when new nodes are created (hierarchy changes handled via backend moveNode)
-    // Content-only updates should not trigger hierarchy cache invalidation
+    // Track hierarchy changes for logging
+    // New nodes trigger hierarchy change, content-only updates do not
     const existingNode = this.nodes.get(node.id);
-    const isHierarchyChange = !existingNode; // New nodes trigger hierarchy event
+    const isHierarchyChange = !existingNode;
 
     this.nodes.set(node.id, node);
     this.versions.set(node.id, this.getNextVersion(node.id));
     this.notifySubscribers(node.id, node, source);
 
     if (isHierarchyChange) {
-      // Log hierarchy change (eventBus removed - LIVE SELECT handles real-time sync)
       console.debug(`[SharedNodeStore] Hierarchy change for node: ${node.id}`);
     }
 
@@ -952,7 +949,6 @@ export class SharedNodeStore {
       this.persistedNodeIds.delete(nodeId); // Remove from tracking set
       this.notifySubscribers(nodeId, node, source);
 
-      // Log delete event (eventBus removed - LIVE SELECT handles real-time sync)
       console.debug(`[SharedNodeStore] Node deleted: ${nodeId}`);
 
       // Phase 2.4: Persist deletion to database
@@ -1262,7 +1258,6 @@ export class SharedNodeStore {
     this.nodes.set(conflict.nodeId, resolution.resolvedNode);
     this.versions.set(conflict.nodeId, this.getNextVersion(conflict.nodeId));
 
-    // Log conflict resolution (eventBus removed)
     console.debug(`[SharedNodeStore] Conflict resolved for node: ${conflict.nodeId}, strategy: ${resolution.strategy}`);
 
     // Notify subscribers
@@ -1322,7 +1317,6 @@ export class SharedNodeStore {
       this.notifySubscribers(nodeId, currentNode, updateToRollback.source);
     }
 
-    // Log rollback event (eventBus removed)
     console.debug(`[SharedNodeStore] Update rolled back for node: ${nodeId}`);
   }
 

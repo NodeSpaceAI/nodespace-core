@@ -11,7 +11,7 @@
 export const ASYNC_HANDLER_TIMEOUT_MS = 10;
 
 /**
- * Timeout for async error propagation in EventBus
- * Used when testing error handling in event chains
+ * Timeout for async error propagation
+ * Used when testing error handling in async chains
  */
 export const ASYNC_ERROR_PROPAGATION_TIMEOUT_MS = 20;

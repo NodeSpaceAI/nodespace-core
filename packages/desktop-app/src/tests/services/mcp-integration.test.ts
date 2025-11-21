@@ -2,14 +2,8 @@
  * MCP Integration Tests (Phase 3)
  *
  * These tests simulate MCP server behavior to validate the architecture
- * is ready for MCP integration (Issue #112).
- *
- * NOTE: This test suite is SKIPPED because it depends on deleted services:
- * - event-bus (deleted in #558)
- *
- * The tests validated MCP update propagation through the event bus.
- * These tests need to be rewritten to match the new architecture
- * when MCP integration is revisited.
+ * is ready for MCP integration (Issue #112). Tests use SharedNodeStore
+ * directly with LIVE SELECT architecture for real-time sync.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -212,8 +206,6 @@ describe('Phase 3: MCP Integration (Simulated)', () => {
       const final = store.getNode(mockNode.id);
       expect(final?.content).toBe('AI agent concurrent edit');
     });
-
-    // Note: Event-based conflict resolution tests removed (eventBus deleted in #558)
   });
 
   // ========================================================================
