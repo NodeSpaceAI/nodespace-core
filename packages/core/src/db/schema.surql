@@ -76,15 +76,19 @@ DEFINE TABLE IF NOT EXISTS schema SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS node ON TABLE schema TYPE option<record>;  -- Reverse link to hub node
 
 -- Core schema fields
--- NOTE: Storing entire schema as JSON string due to SurrealDB binary protocol limitations
--- with nested arrays containing enums. The properties binding converts the object to a
--- JSON string on CREATE/UPDATE, and we deserialize it on retrieval.
+-- NOTE: Using native array<object> storage for fields to enable querying inside schemas
+-- (e.g., "Find all schemas with a core-protected field")
+-- Strong typing with Rust structs handles enum serialization/deserialization correctly
 DEFINE FIELD IF NOT EXISTS is_core ON TABLE schema TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS version ON TABLE schema TYPE int DEFAULT 1;
 DEFINE FIELD IF NOT EXISTS description ON TABLE schema TYPE string DEFAULT "";
-DEFINE FIELD IF NOT EXISTS fields ON TABLE schema TYPE option<string> DEFAULT NONE;
 
--- Note: SCHEMAFULL allows undefined fields by default (flexible)
+-- Fields array: stores SchemaField objects as flexible array
+-- Using FLEXIBLE to allow nested structures without strict constraints
+-- Validation is handled by Rust structs during serialization/deserialization
+-- Note: Changed from option<string> (stringified JSON) to option<array> to enable
+-- queryability and proper enum handling (see issue #587)
+DEFINE FIELD IF NOT EXISTS fields ON TABLE schema FLEXIBLE TYPE option<array> DEFAULT [];
 
 -- ============================================================================
 -- GRAPH RELATIONS (SCHEMAFULL - Node-to-node relationships)

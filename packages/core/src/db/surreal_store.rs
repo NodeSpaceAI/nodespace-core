@@ -47,6 +47,7 @@
 //! ```
 
 use crate::db::fractional_ordering::FractionalOrderCalculator;
+use crate::models::schema::SchemaDefinition;
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -868,27 +869,18 @@ where
                 node.node_type, node.id
             );
 
-            // For schema type, convert fields array to JSON string to preserve complex nested structures
-            // during SurrealDB binary protocol serialization
-            let mut bound_properties = props_with_schema.clone();
-            if node.node_type == "schema" {
-                if let Some(fields_value) = bound_properties.get("fields") {
-                    let fields_str = serde_json::to_string(fields_value)
-                        .context("Failed to stringify schema fields")?;
-                    bound_properties
-                        .insert("fields".to_string(), serde_json::Value::String(fields_str));
-                }
-            }
-
+            // Store properties directly - schema fields stored as native array<object>
+            // Strong typing with Rust structs handles enum serialization correctly
             let mut spoke_response = self
                 .db
                 .query(&spoke_query)
-                .bind(("properties", Value::Object(bound_properties)))
+                .bind(("properties", Value::Object(props_with_schema.clone())))
                 .await
                 .context("Failed to create spoke record")?;
 
-            // Consume spoke response - CREATE returns created records
-            let _ = spoke_response.take::<Vec<serde_json::Value>>(0usize);
+            // Consume spoke response - we don't need the returned data
+            // Ignore deserialization errors from CREATE response (may contain enum types)
+            let _: Result<Vec<serde_json::Value>, _> = spoke_response.take(0usize);
 
             // Set bidirectional links: hub -> spoke and spoke -> hub
             let link_query = format!(
@@ -1168,62 +1160,84 @@ where
 
                 let mut props_response = self.db.query(&props_query).await;
 
-                let result: Option<serde_json::Value> = match props_response {
-                    Ok(ref mut response) => {
-                        let raw: Result<
-                            Vec<std::collections::HashMap<String, serde_json::Value>>,
-                            _,
-                        > = response.take(0);
-                        match raw {
-                            Ok(records) => {
-                                let props_opt = records.into_iter().next().map(|map| {
-                                    tracing::debug!(
-                                        "Raw properties from {} - keys: {:?}",
-                                        node.node_type,
-                                        map.keys().collect::<Vec<_>>()
+                // For schema nodes, use strong typing (SchemaDefinition) which properly handles
+                // ProtectionLevel enums. SurrealDB SDK correctly serializes/deserializes when
+                // targeting a concrete Rust struct rather than generic serde_json::Value.
+                let result: Option<serde_json::Value> = if node.node_type == "schema" {
+                    match props_response {
+                        Ok(ref mut response) => {
+                            // Deserialize directly to SchemaDefinition - handles enums properly
+                            let raw: Result<Vec<SchemaDefinition>, _> = response.take(0);
+                            match raw {
+                                Ok(records) => {
+                                    records.into_iter().next().and_then(|schema_def| {
+                                        tracing::debug!(
+                                            "get_node({}) - deserialized SchemaDefinition with {} fields",
+                                            id,
+                                            schema_def.fields.len()
+                                        );
+                                        // Convert back to serde_json::Value for Node.properties
+                                        serde_json::to_value(&schema_def).ok()
+                                    })
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "get_node({}) - SchemaDefinition deserialization failed: {:?}",
+                                        id,
+                                        e
                                     );
-                                    tracing::debug!(
-                                        "Raw properties full: {}",
-                                        serde_json::to_string_pretty(&serde_json::Value::Object(
-                                            map.clone().into_iter().collect()
-                                        ))
-                                        .unwrap_or_default()
-                                    );
-                                    serde_json::Value::Object(map.into_iter().collect())
-                                });
-                                tracing::debug!(
-                                    "get_node({}) - properties after conversion: {:?}",
-                                    id,
-                                    props_opt
-                                );
-                                props_opt
-                            }
-                            Err(e) => {
-                                tracing::warn!("get_node({}) - failed to deserialize: {:?}", id, e);
-                                None
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("get_node({}) - query failed: {:?}", id, e);
-                        None
-                    }
-                };
-
-                if let Some(mut props) = result {
-                    // If schema fields were stored as JSON string, parse them back
-                    if node.node_type == "schema" {
-                        if let Some(serde_json::Value::String(fields_str)) = props.get("fields") {
-                            if let Ok(fields_value) =
-                                serde_json::from_str::<serde_json::Value>(fields_str)
-                            {
-                                // Replace the stringified value with the parsed array
-                                if let Some(obj) = props.as_object_mut() {
-                                    obj.insert("fields".to_string(), fields_value);
+                                    None
                                 }
                             }
                         }
+                        Err(e) => {
+                            tracing::warn!("get_node({}) - query failed: {:?}", id, e);
+                            None
+                        }
                     }
+                } else {
+                    // For non-schema types (task), use generic HashMap deserialization
+                    match props_response {
+                        Ok(ref mut response) => {
+                            let raw: Result<
+                                Vec<std::collections::HashMap<String, serde_json::Value>>,
+                                _,
+                            > = response.take(0);
+                            match raw {
+                                Ok(records) => {
+                                    let props_opt = records.into_iter().next().map(|map| {
+                                        tracing::debug!(
+                                            "Raw properties from {} - keys: {:?}",
+                                            node.node_type,
+                                            map.keys().collect::<Vec<_>>()
+                                        );
+                                        serde_json::Value::Object(map.into_iter().collect())
+                                    });
+                                    tracing::debug!(
+                                        "get_node({}) - properties after conversion: {:?}",
+                                        id,
+                                        props_opt
+                                    );
+                                    props_opt
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "get_node({}) - failed to deserialize: {:?}",
+                                        id,
+                                        e
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("get_node({}) - query failed: {:?}", id, e);
+                            None
+                        }
+                    }
+                };
+
+                if let Some(props) = result {
                     node.properties = props;
                 }
             }
@@ -1310,23 +1324,13 @@ where
         query_builder.await.context("Failed to update node")?;
 
         // If properties were provided and node type has type-specific table, update it there too
-        if let Some(mut updated_props) = update.properties {
+        if let Some(updated_props) = update.properties {
             if TYPES_WITH_PROPERTIES.contains(&updated_node_type.as_str()) {
                 // UPSERT with MERGE to preserve existing spoke data on type reconversions
                 // Scenario: text→task creates task:uuid, task→text preserves it, text→task reconnects
                 // MERGE ensures old task properties (priority, due_date) aren't lost on reconversion
                 // Only adds missing defaults, preserves user-set values
-
-                // For schema type, stringify fields array before binding
-                if updated_node_type == "schema" {
-                    if let Some(fields_value) = updated_props.get("fields") {
-                        let fields_str = serde_json::to_string(fields_value)
-                            .context("Failed to stringify schema fields in update")?;
-                        if let Some(obj) = updated_props.as_object_mut() {
-                            obj.insert("fields".to_string(), serde_json::Value::String(fields_str));
-                        }
-                    }
-                }
+                // Note: Schema properties stored directly - enums handled via strong typing on read
 
                 self.db
                     .query("UPSERT type::thing($table, $id) MERGE $properties;")
@@ -1441,18 +1445,9 @@ where
         };
 
         // Prepare properties
-        let mut props_with_schema = new_properties.as_object().cloned().unwrap_or_default();
+        // Note: Schema properties stored directly - enums handled via strong typing on read
+        let props_with_schema = new_properties.as_object().cloned().unwrap_or_default();
         let has_new_type_table = TYPES_WITH_PROPERTIES.contains(&new_type.as_str());
-
-        // For schema type, stringify fields array before binding
-        if new_type == "schema" {
-            if let Some(fields_value) = props_with_schema.get("fields") {
-                let fields_str = serde_json::to_string(fields_value)
-                    .context("Failed to stringify schema fields in switch_node_type")?;
-                props_with_schema
-                    .insert("fields".to_string(), serde_json::Value::String(fields_str));
-            }
-        }
 
         // Build atomic transaction using Thing parameters
         let transaction_query = if has_new_type_table && !props_with_schema.is_empty() {
@@ -3342,20 +3337,54 @@ mod tests {
 
     #[tokio::test]
     async fn test_schema_operations() -> Result<()> {
+        use crate::models::schema::{ProtectionLevel, SchemaDefinition, SchemaField};
+
         let (store, _temp_dir) = create_test_store().await?;
 
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "status": {"type": "string"}
-            }
-        });
+        // Create a proper SchemaDefinition with fields containing ProtectionLevel enum
+        // This tests that enums are stored and retrieved correctly without stringification
+        let schema_def = SchemaDefinition {
+            is_core: false,
+            version: 1,
+            description: "Test task schema".to_string(),
+            fields: vec![SchemaField {
+                name: "status".to_string(),
+                field_type: "enum".to_string(),
+                protection: ProtectionLevel::Core,
+                core_values: Some(vec![
+                    "OPEN".to_string(),
+                    "IN_PROGRESS".to_string(),
+                    "DONE".to_string(),
+                ]),
+                user_values: None,
+                indexed: true,
+                required: Some(true),
+                extensible: Some(true),
+                default: Some(serde_json::json!("OPEN")),
+                description: Some("Task status".to_string()),
+                item_type: None,
+                fields: None,
+                item_fields: None,
+            }],
+        };
 
+        let schema = serde_json::to_value(&schema_def)?;
         store.update_schema("task", &schema).await?;
 
+        // Fetch and verify the schema was stored correctly
         let fetched = store.get_schema("task").await?;
-        assert!(fetched.is_some());
-        assert_eq!(fetched.unwrap(), schema);
+        assert!(fetched.is_some(), "Schema should be fetched");
+
+        let fetched_value = fetched.unwrap();
+
+        // Verify the schema was stored and retrieved correctly with enum handling
+        let retrieved_schema: SchemaDefinition = serde_json::from_value(fetched_value)?;
+        assert_eq!(retrieved_schema.version, 1);
+        assert_eq!(retrieved_schema.description, "Test task schema");
+        assert_eq!(retrieved_schema.fields.len(), 1);
+        assert_eq!(retrieved_schema.fields[0].name, "status");
+        // Key assertion: ProtectionLevel enum correctly deserialized
+        assert_eq!(retrieved_schema.fields[0].protection, ProtectionLevel::Core);
 
         Ok(())
     }
