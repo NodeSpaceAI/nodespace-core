@@ -9,14 +9,16 @@
 
 <script lang="ts">
   import BaseNode from '$lib/design/components/base-node.svelte';
+  import { nodeData } from '$lib/stores/reactive-node-data.svelte';
+  import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 
   // Props
   let {
     nodeId,
     autoFocus = false,
-    content = '',
-    nodeType = 'text',
-    children = []
+    content: propsContent = '',
+    nodeType: propsNodeType = 'text',
+    children: propsChildren = []
   }: {
     nodeId: string;
     autoFocus?: boolean;
@@ -24,6 +26,16 @@
     nodeType?: string;
     children?: string[];
   } = $props();
+
+  // Use reactive stores directly instead of relying on props
+  // Components query the stores for current data and re-render automatically when data changes
+  let node = $derived(nodeData.getNode(nodeId));
+  let childIds = $derived(structureTree.getChildren(nodeId));
+
+  // Derive props from stores with fallback to passed props for backward compatibility
+  let content = $derived(node?.content ?? propsContent);
+  let nodeType = $derived(node?.nodeType ?? propsNodeType);
+  let children = $derived(childIds ?? propsChildren);
 
   // Text nodes always allow multiline editing
   const editableConfig = {

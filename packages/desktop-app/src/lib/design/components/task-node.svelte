@@ -19,6 +19,8 @@
   import type { NodeState } from '$lib/design/icons/registry';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
+  import { nodeData } from '$lib/stores/reactive-node-data.svelte';
+  import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 
   // Get paneId from context (set by PaneContent) - identifies which pane this node is in
   const sourcePaneId = getContext<string>('paneId') ?? DEFAULT_PANE_ID;
@@ -26,10 +28,10 @@
   // Props using Svelte 5 runes mode - same interface as BaseNode
   let {
     nodeId,
-    nodeType = 'task',
+    nodeType: propsNodeType = 'task',
     autoFocus = false,
-    content = '',
-    children = [],
+    content: propsContent = '',
+    children: propsChildren = [],
     metadata = {}
   }: {
     nodeId: string;
@@ -41,6 +43,16 @@
   } = $props();
 
   const dispatch = createEventDispatcher();
+
+  // Use reactive stores directly instead of relying on props
+  // Components query the stores for current data and re-render automatically when data changes
+  let node = $derived(nodeData.getNode(nodeId));
+  let childIds = $derived(structureTree.getChildren(nodeId));
+
+  // Derive props from stores with fallback to passed props for backward compatibility
+  let content = $derived(node?.content ?? propsContent);
+  let nodeType = $derived(node?.nodeType ?? propsNodeType);
+  let children = $derived(childIds ?? propsChildren);
 
   // Track if user is actively typing (hide button during typing)
   let isTyping = $state(false);

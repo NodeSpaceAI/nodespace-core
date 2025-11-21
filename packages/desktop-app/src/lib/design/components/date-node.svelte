@@ -12,17 +12,29 @@
   import BaseNode from '$lib/design/components/base-node.svelte';
   import Icon from '$lib/design/icons/icon.svelte';
   import type { NodeComponentProps } from '$lib/types/node-viewers.js';
+  import { nodeData } from '$lib/stores/reactive-node-data.svelte';
+  import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 
   // Props following the NodeComponentProps interface (for individual node components)
   let {
     nodeId,
-    content = '',
+    content: propsContent = '',
     autoFocus = false,
-    nodeType = 'date',
-    children = []
+    nodeType: propsNodeType = 'date',
+    children: propsChildren = []
   }: NodeComponentProps = $props();
 
   const dispatch = createEventDispatcher();
+
+  // Use reactive stores directly instead of relying on props
+  // Components query the stores for current data and re-render automatically when data changes
+  let node = $derived(nodeData.getNode(nodeId));
+  let childIds = $derived(structureTree.getChildren(nodeId));
+
+  // Derive props from stores with fallback to passed props for backward compatibility
+  let content = $derived(node?.content ?? propsContent);
+  let nodeType = $derived(node?.nodeType ?? propsNodeType);
+  let children = $derived(childIds ?? propsChildren);
 
   // Parse date from content - expects YYYY-MM-DD format or similar
   function parseDate(content: string): Date | null {
