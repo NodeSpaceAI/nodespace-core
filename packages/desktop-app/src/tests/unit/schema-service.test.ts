@@ -17,7 +17,6 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SchemaService, createSchemaService } from '$lib/services/schema-service';
-import type { BackendAdapter } from '$lib/services/backend-adapter';
 import type {
   SchemaDefinition,
   AddFieldResult,
@@ -26,26 +25,27 @@ import type {
   RemoveEnumValueResult
 } from '$lib/types/schema';
 
+import type { AddFieldConfig } from '$lib/types/schema';
+
+// Mock BackendAdapter interface matching schema-service.ts
+interface BackendAdapter {
+  getAllSchemas: () => Promise<Array<SchemaDefinition & { id: string }>>;
+  getSchema: (schemaId: string) => Promise<SchemaDefinition>;
+  addSchemaField: (schemaId: string, config: AddFieldConfig) => Promise<AddFieldResult>;
+  removeSchemaField: (schemaId: string, fieldName: string) => Promise<RemoveFieldResult>;
+  extendSchemaEnum: (schemaId: string, fieldName: string, newValues: string[]) => Promise<ExtendEnumResult>;
+  removeSchemaEnumValue: (schemaId: string, fieldName: string, value: string) => Promise<RemoveEnumValueResult>;
+}
+
 // Mock BackendAdapter
 const mockAdapter: BackendAdapter = {
+  getAllSchemas: vi.fn(),
   getSchema: vi.fn(),
   addSchemaField: vi.fn(),
   removeSchemaField: vi.fn(),
   extendSchemaEnum: vi.fn(),
-  removeSchemaEnumValue: vi.fn(),
-  // Add stubs for other required BackendAdapter methods (not used in these tests)
-  createNode: vi.fn(),
-  getNode: vi.fn(),
-  updateNode: vi.fn(),
-  deleteNode: vi.fn(),
-  listNodes: vi.fn(),
-  queryNodes: vi.fn(),
-  createNodeMention: vi.fn(),
-  deleteNodeMention: vi.fn(),
-  listNodeMentions: vi.fn(),
-  getEmbedding: vi.fn(),
-  generateEmbedding: vi.fn()
-} as unknown as BackendAdapter;
+  removeSchemaEnumValue: vi.fn()
+};
 
 describe('SchemaService', () => {
   let service: SchemaService;
@@ -263,7 +263,7 @@ describe('SchemaService', () => {
 
       const result = await service.extendEnum('task', 'status', 'BLOCKED');
 
-      expect(mockAdapter.extendSchemaEnum).toHaveBeenCalledWith('task', 'status', 'BLOCKED');
+      expect(mockAdapter.extendSchemaEnum).toHaveBeenCalledWith('task', 'status', ['BLOCKED']);
 
       expect(result).toEqual({
         schemaId: 'task',

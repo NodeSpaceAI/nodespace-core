@@ -19,8 +19,30 @@
 import { tick } from 'svelte';
 import { vi, type MockInstance } from 'vitest';
 import type { Node, NodeUIState } from '$lib/types/node';
-import { eventBus } from '$lib/services/event-bus';
-import type { NodeSpaceEvent } from '$lib/services/event-types';
+
+// Note: eventBus removed in Issue #558 - providing stub types for test compatibility
+// Real events are now handled by LIVE SELECT through Tauri
+
+/**
+ * Stub event type for test helpers (eventBus removed)
+ */
+export interface NodeSpaceEvent {
+  type: string;
+  namespace?: string;
+  source?: string;
+  nodeId?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Stub event bus for test helpers (eventBus removed)
+ */
+const eventBus = {
+  subscribe: (_type: string, _handler: (event: NodeSpaceEvent) => void) => () => {},
+  emit: (_event: NodeSpaceEvent) => {},
+  waitFor: <T>(_type: string, _filter?: unknown, _timeout?: number): Promise<T> =>
+    new Promise((_resolve, reject) => reject(new Error('eventBus removed - use LIVE SELECT')))
+};
 
 // ============================================================================
 // Node Creation Utilities

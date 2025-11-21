@@ -16,8 +16,8 @@
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import type { Node } from '$lib/types';
-import type { NodeEventData } from '$lib/services/event-types';
-import { tauriNodeService } from '$lib/services/tauri-node-service';
+import type { NodeEventData } from '$lib/types/event-types';
+import { updateNode } from '$lib/services/tauri-commands';
 
 /**
  * Debounced content update pending for a node
@@ -177,7 +177,7 @@ class ReactiveNodeData {
       this.pendingContentUpdates.delete(nodeId);
 
       // Persist to backend
-      const updated = await tauriNodeService.updateNode(nodeId, version, { content });
+      const updated = await updateNode(nodeId, version, { content });
 
       // Update local store with new version from backend
       const node = this.nodes.get(nodeId);
@@ -240,7 +240,7 @@ class ReactiveNodeData {
     version: number
   ) {
     try {
-      const updated = await tauriNodeService.updateNode(nodeId, version, { properties });
+      const updated = await updateNode(nodeId, version, { properties });
 
       // Update local store with new version from backend
       const node = this.nodes.get(nodeId);

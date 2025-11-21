@@ -12,7 +12,7 @@
  * - ~950 lines (self-contained) vs ~4250 lines (ContentEditableController + dependencies)
  */
 
-import type { TriggerContext } from '$lib/services/node-reference-service';
+import type { TriggerContext } from '$lib/services/content-processor';
 import type { SlashCommandContext } from '$lib/services/slash-command-service';
 import { KeyboardCommandRegistry } from '$lib/services/keyboard-command-registry';
 import { CreateNodeCommand } from '$lib/commands/keyboard/create-node.command';
@@ -711,8 +711,7 @@ export class TextareaController {
         startPosition: atIndex,
         endPosition: position,
         element: this.element,
-        isValid: true,
-        metadata: {}
+        isValid: true
       },
       cursorPosition: cursorCoords
     });

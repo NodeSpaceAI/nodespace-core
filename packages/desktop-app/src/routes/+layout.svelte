@@ -1,10 +1,10 @@
-<script>
+<script lang="ts">
   import { onMount } from 'svelte';
   import '../app.css';
   import AppShell from '$lib/components/layout/app-shell.svelte';
-  import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
   import { initializeSchemaPluginSystem } from '$lib/plugins/schema-plugin-loader';
   import { initializeTauriSyncListeners } from '$lib/services/tauri-sync-listener';
+  import { sharedNodeStore } from '$lib/services/shared-node-store';
 
   // Initialize schema plugin auto-registration system on mount
   onMount(async () => {
@@ -38,29 +38,26 @@
 
   // Flush pending saves on window close to prevent data loss
   onMount(() => {
-    // Check if running in Tauri (desktop app)
-    // Tauri adds __TAURI_INTERNALS__ to window at runtime
-    if ('__TAURI_INTERNALS__' in window) {
-      // Import Tauri APIs only if we're in Tauri
-      (async () => {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        const appWindow = getCurrentWindow();
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      // Check if there are pending writes
+      if (sharedNodeStore.hasPendingWrites()) {
+        // Try to flush pending operations
+        // Note: beforeunload has limited async support, but we try our best
+        event.preventDefault();
+        // returnValue assignment is required for Chrome
+        event.returnValue = '';
 
-        // Listen for Tauri window close event
-        await appWindow.onCloseRequested(async () => {
-          // Flush all pending debounced operations immediately
-          PersistenceCoordinator.getInstance().flushPending();
-        });
-      })();
-    } else {
-      // Running in browser - use beforeunload
-      const handleBeforeUnload = () => {
-        PersistenceCoordinator.getInstance().flushPending();
-      };
+        // Flush pending operations synchronously if possible
+        // Note: async operations may not complete in beforeunload, but we try
+        sharedNodeStore.flushAllPending();
+      }
+    };
 
-      window.addEventListener('beforeunload', handleBeforeUnload);
-      return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-    }
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
   });
 </script>
 

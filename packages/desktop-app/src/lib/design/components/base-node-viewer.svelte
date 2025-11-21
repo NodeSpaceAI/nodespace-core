@@ -17,8 +17,7 @@
   import SchemaPropertyForm from '$lib/components/property-forms/schema-property-form.svelte';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { sharedNodeStore } from '$lib/services/shared-node-store';
-  import { tauriNodeService } from '$lib/services/tauri-node-service';
-  import { PersistenceCoordinator } from '$lib/services/persistence-coordinator.svelte';
+  import * as tauriCommands from '$lib/services/tauri-commands';
   import { focusManager } from '$lib/services/focus-manager.svelte';
   import { NodeExpansionCoordinator } from '$lib/services/node-expansion-coordinator';
   import { nodeData as reactiveNodeData } from '$lib/stores/reactive-node-data.svelte';
@@ -645,7 +644,7 @@
       // SAFETY: Only load if node doesn't already exist in memory
       // This prevents overwriting nodes with pending unsaved changes
       if (!sharedNodeStore.hasNode(nodeId)) {
-        const parentNode = await tauriNodeService.getNode(nodeId);
+        const parentNode = await tauriCommands.getNode(nodeId);
         if (parentNode) {
           // Add parent node to shared store so header can access it
           // Database source type automatically marks node as persisted
@@ -1482,8 +1481,8 @@
     console.log('[BaseNodeViewer] onDestroy: Committing all active batches globally');
     sharedNodeStore.commitAllBatches();
 
-    // Flush pending debounced saves to prevent data loss
-    PersistenceCoordinator.getInstance().flushPending();
+    // Note: PersistenceCoordinator removed in Issue #558
+    // SimplePersistenceCoordinator handles debouncing inline in shared-node-store
 
     // Set cancellation flag to prevent stale writes
     isDestroyed = true;

@@ -14,18 +14,15 @@
 
   // Import proper types for the services
   import type { ReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
-  import type { HierarchyService as HierarchyServiceType } from '$lib/services/hierarchy-service';
-  import type { ContentProcessor as ContentProcessorType } from '$lib/services/content-processor';
-  import type { TauriNodeService as TauriNodeServiceType } from '$lib/services/tauri-node-service';
-  import type NodeReferenceServiceType from '$lib/services/node-reference-service';
+  import type { ContentProcessor as ContentProcessorType, NodeReferenceService as NodeReferenceServiceType } from '$lib/services/content-processor';
 
   // Service interface definition with proper types
+  // Note: hierarchy-service and tauri-node-service deleted in Issue #558
+  // Hierarchy is now handled by ReactiveStructureTree, Tauri ops via tauri-commands
   export interface NodeServices {
-    nodeReferenceService: NodeReferenceServiceType;
+    nodeReferenceService: NodeReferenceServiceType | null;
     nodeManager: ReactiveNodeService;
-    hierarchyService: HierarchyServiceType;
     contentProcessor: ContentProcessorType;
-    databaseService: TauriNodeServiceType;
   }
 
   // Context accessor functions
@@ -44,11 +41,12 @@
   import type { Snippet } from 'svelte';
 
   // Service imports
-  import NodeReferenceService from '$lib/services/node-reference-service';
-  import { MentionSyncService } from '$lib/services/mention-sync-service';
+  // Note: NodeReferenceService, HierarchyService, tauriNodeService, and MentionSyncService
+  // were deleted in Issue #558
+  // Hierarchy is now handled by ReactiveStructureTree in SharedNodeStore
+  // Tauri operations go through tauri-commands.ts directly
+  // Mention sync is handled by LIVE SELECT events via tauri-sync-listener
   import { createReactiveNodeService } from '$lib/services/reactive-node-service.svelte';
-  import { HierarchyService } from '$lib/services/hierarchy-service';
-  import { tauriNodeService } from '$lib/services/tauri-node-service';
   import { ContentProcessor } from '$lib/services/content-processor';
   import { focusManager } from '$lib/services/focus-manager.svelte';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
@@ -74,16 +72,8 @@
   // Initialize services on mount
   onMount(async () => {
     try {
-      // Try to initialize database (may fail in web mode)
-      try {
-        await tauriNodeService.initializeDatabase();
-      } catch (dbError) {
-        console.warn(
-          '[NodeServiceContext] Database unavailable, continuing without persistence:',
-          dbError
-        );
-        // Continue - services will work in memory-only mode
-      }
+      // Database initialization now happens via Tauri backend on app start
+      // No need to call tauriNodeService.initializeDatabase() - it was deleted
 
       // Create node manager events
       const nodeManagerEvents = {
@@ -110,29 +100,20 @@
 
       // No more demo data initialization - we'll load from real database
 
-      const hierarchyService = new HierarchyService(nodeManager);
       const contentProcessor = ContentProcessor.getInstance();
 
-      const nodeReferenceService = new NodeReferenceService(
-        nodeManager,
-        hierarchyService,
-        tauriNodeService,
-        contentProcessor
-      );
-
-      // Initialize MentionSyncService for automatic link text synchronization
-      // This service listens for node:updated and node:deleted events
-      // and automatically updates markdown link display text
-      new MentionSyncService(tauriNodeService);
+      // Note: HierarchyService, NodeReferenceService, and MentionSyncService deleted in Issue #558
+      // Hierarchy is now handled by ReactiveStructureTree in SharedNodeStore
+      // NodeReferenceService functionality moved to content-processor
+      // Mention sync is handled by LIVE SELECT events via tauri-sync-listener
 
       // Create service bundle and update reactive state
       // (context was already set at component init with the container reference)
+      // Note: nodeReferenceService is now null - functionality moved to content-processor
       servicesContainer.services = {
-        nodeReferenceService,
+        nodeReferenceService: null,
         nodeManager,
-        hierarchyService,
-        contentProcessor,
-        databaseService: tauriNodeService
+        contentProcessor
       };
 
       servicesInitialized = true;

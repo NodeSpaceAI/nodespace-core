@@ -100,22 +100,8 @@ export default async function setup() {
   //
   // Solution: Register plugins in setup.ts which runs in the same context as components
 
-  // Initialize PersistenceCoordinator for all tests
-  const { PersistenceCoordinator } = await import('$lib/services/persistence-coordinator.svelte');
-  PersistenceCoordinator.resetInstance();
-  const coordinator = PersistenceCoordinator.getInstance();
-
-  // Conditionally enable test mode based on database mode
-  // Test mode silently catches DatabaseInitializationError for in-memory testing
-  // Database mode expects real database and should surface errors
-  const useDatabase = process.env.TEST_USE_DATABASE === 'true';
-
-  if (!useDatabase) {
-    coordinator.enableTestMode();
-    console.log('✅ PersistenceCoordinator in test mode (in-memory only)');
-  } else {
-    console.log('✅ PersistenceCoordinator in database mode (HTTP adapter)');
-  }
+  // Note: PersistenceCoordinator removed in Issue #558
+  // Persistence is now handled by SimplePersistenceCoordinator inline in shared-node-store.ts
 
   console.log('✅ Global test setup complete: Plugin registry initialized');
 }

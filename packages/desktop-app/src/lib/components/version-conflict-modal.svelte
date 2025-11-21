@@ -1,6 +1,15 @@
 <script lang="ts">
   import type { Node } from '$lib/types';
-  import type { ConflictResolution } from '$lib/services/version-conflict-resolver';
+
+  // ConflictResolution type moved inline (version-conflict-resolver deleted in #558)
+  interface ConflictResolution {
+    type: 'yours' | 'current' | 'merged';
+    resolvedNode: Node;
+    details?: string;
+    mergedNode?: Node;
+    autoMerged?: boolean;
+    explanation?: string;
+  }
 
   /**
    * Version Conflict Modal

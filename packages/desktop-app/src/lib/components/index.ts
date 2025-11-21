@@ -12,11 +12,11 @@ export { default as BaseNodeReference } from './base-node-reference.svelte';
 export type { TreeNodeData } from '$lib/types/tree';
 
 // Export AutocompleteModal types - defined inline since they're UI-specific
+// Note: NodeReferenceService was deleted in #558, autocomplete modal needs refactoring
 export interface AutocompleteModalProps {
   visible: boolean;
   position: { x: number; y: number };
   query: string;
-  nodeReferenceService: import('$lib/services/node-reference-service').NodeReferenceService;
 }
 
 export interface NewNodeRequest {

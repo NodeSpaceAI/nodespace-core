@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { nodeData } from '$lib/stores/reactive-node-data.svelte';
 import type { Node } from '$lib/types';
-import type { NodeEventData } from '$lib/services/event-types';
+import type { NodeEventData } from '$lib/types/event-types';
 
 /**
  * Tests for ReactiveNodeData store

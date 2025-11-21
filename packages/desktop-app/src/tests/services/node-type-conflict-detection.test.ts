@@ -11,13 +11,11 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SharedNodeStore } from '../../lib/services/shared-node-store';
-import { PersistenceCoordinator } from '../../lib/services/persistence-coordinator.svelte';
 import type { Node } from '../../lib/types';
 import type { UpdateSource } from '../../lib/types/update-protocol';
 
 describe('NodeType Conflict Detection', () => {
   let store: SharedNodeStore;
-  let coordinator: PersistenceCoordinator;
 
   const viewer1Source: UpdateSource = {
     type: 'viewer',
@@ -31,21 +29,12 @@ describe('NodeType Conflict Detection', () => {
 
   beforeEach(() => {
     SharedNodeStore.resetInstance();
-    PersistenceCoordinator.resetInstance();
-
     store = SharedNodeStore.getInstance();
-    coordinator = PersistenceCoordinator.getInstance();
-
-    coordinator.enableTestMode();
-    coordinator.resetTestState();
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     store.clearAll();
     SharedNodeStore.resetInstance();
-
-    await coordinator.reset();
-    PersistenceCoordinator.resetInstance();
   });
 
   describe('NodeType Conversion Bypass', () => {

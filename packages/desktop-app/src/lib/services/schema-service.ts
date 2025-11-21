@@ -50,7 +50,7 @@
  * @see packages/desktop-app/src/lib/services/backend-adapter.ts - Backend adapter pattern
  */
 
-import { getBackendAdapter, type BackendAdapter } from './backend-adapter';
+import { invoke } from '@tauri-apps/api/core';
 import {
   SchemaOperationError,
   type SchemaDefinition,
@@ -60,6 +60,48 @@ import {
   type ExtendEnumResult,
   type RemoveEnumValueResult
 } from '$lib/types/schema';
+
+// ============================================================================
+// Simple Backend Adapter (inline replacement for deleted backend-adapter.ts)
+// ============================================================================
+
+/**
+ * Backend adapter interface for schema operations
+ */
+interface BackendAdapter {
+  getAllSchemas(): Promise<Array<SchemaDefinition & { id: string }>>;
+  getSchema(schemaId: string): Promise<SchemaDefinition>;
+  addSchemaField(schemaId: string, config: AddFieldConfig): Promise<AddFieldResult>;
+  removeSchemaField(schemaId: string, fieldName: string): Promise<RemoveFieldResult>;
+  extendSchemaEnum(schemaId: string, fieldName: string, newValues: string[]): Promise<ExtendEnumResult>;
+  removeSchemaEnumValue(schemaId: string, fieldName: string, value: string): Promise<RemoveEnumValueResult>;
+}
+
+/**
+ * Create a Tauri-based backend adapter using direct invoke calls
+ */
+function getBackendAdapter(): BackendAdapter {
+  return {
+    async getAllSchemas() {
+      return invoke<Array<SchemaDefinition & { id: string }>>('get_all_schemas');
+    },
+    async getSchema(schemaId: string) {
+      return invoke<SchemaDefinition>('get_schema', { schemaId });
+    },
+    async addSchemaField(schemaId: string, config: AddFieldConfig) {
+      return invoke<AddFieldResult>('add_schema_field', { schemaId, config });
+    },
+    async removeSchemaField(schemaId: string, fieldName: string) {
+      return invoke<RemoveFieldResult>('remove_schema_field', { schemaId, fieldName });
+    },
+    async extendSchemaEnum(schemaId: string, fieldName: string, newValues: string[]) {
+      return invoke<ExtendEnumResult>('extend_schema_enum', { schemaId, fieldName, newValues });
+    },
+    async removeSchemaEnumValue(schemaId: string, fieldName: string, value: string) {
+      return invoke<RemoveEnumValueResult>('remove_schema_enum_value', { schemaId, fieldName, value });
+    }
+  };
+}
 
 /**
  * Helper function to convert backend errors to user-friendly messages
@@ -363,7 +405,7 @@ export class SchemaService {
     }
 
     try {
-      const result = await this.adapter.extendSchemaEnum(schemaId, fieldName, value);
+      const result = await this.adapter.extendSchemaEnum(schemaId, fieldName, [value]);
 
       // Invalidate cache since schema was modified
       this.schemaCache.delete(schemaId);

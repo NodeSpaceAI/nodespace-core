@@ -16,19 +16,50 @@
 -->
 
 <script context="module" lang="ts">
-  import type { NodeReferenceService } from '$lib/services/node-reference-service';
-
   export interface AutocompleteModalProps {
     visible: boolean;
     position: { x: number; y: number };
     query: string;
-    nodeReferenceService: NodeReferenceService;
+    nodeReferenceService: NodeReferenceService | null;
   }
 
   export interface NewNodeRequest {
     type: 'create';
     content: string;
     nodeType: string;
+  }
+
+  // Types moved inline (previously from node-reference-service)
+  export interface AutocompleteResult {
+    suggestions: NodeSuggestion[];
+    hasMore: boolean;
+    totalCount?: number;
+    query: string;
+  }
+
+  export interface NodeSuggestion {
+    nodeId: string;
+    displayName?: string;
+    title?: string;
+    nodeType: string;
+    content?: string;
+    metadata?: Record<string, unknown>;
+    // Extended properties for search results (optional)
+    relevanceScore?: number;
+    matchType?: string;
+    matchPositions?: number[];
+    hierarchy?: string[];
+  }
+
+  // Stub interface - NodeReferenceService was deleted in #558
+  // These methods are stubbed to prevent TypeScript errors
+  // The autocomplete-modal needs refactoring to use a different service
+  export interface NodeReferenceService {
+    resolveNodeReference(_nodeId: string): Promise<any | null>;
+    showAutocomplete(_context: any): Promise<AutocompleteResult>;
+    searchNodes(_query: string, _limit?: number): Promise<any[]>;
+    resolveNodespaceURI(_uri: string): Promise<any | null>;
+    createNodespaceURI(_nodeId: string): string;
   }
 </script>
 
@@ -39,7 +70,6 @@
   import Badge from '$lib/components/ui/badge/badge.svelte';
   import Separator from '$lib/components/ui/separator/separator.svelte';
   import Icon, { type IconName } from '$lib/design/icons';
-  import type { AutocompleteResult, NodeSuggestion } from '$lib/services/node-reference-service';
   import type { Node } from '$lib/types';
 
   // ============================================================================
@@ -154,7 +184,7 @@
           await nodeReferenceService.showAutocomplete(triggerContext);
 
         searchResults = result.suggestions;
-        totalResults = result.totalCount;
+        totalResults = result.totalCount ?? 0;
         hasMore = result.hasMore;
         selectedIndex = 0;
       } catch (error) {
@@ -569,7 +599,7 @@
               <div class="flex-1 min-w-0 space-y-1">
                 <!-- Title with highlighting -->
                 <div class="font-medium text-sm leading-tight">
-                  {#each parseHighlights(suggestion.title, suggestion.matchPositions) as segment}
+                  {#each parseHighlights(suggestion.title ?? '', suggestion.matchPositions ?? []) as segment}
                     {#if segment.highlighted}
                       <mark class="bg-primary/20 text-primary px-0.5 rounded font-semibold">
                         {segment.text}
@@ -590,7 +620,7 @@
                 {/if}
 
                 <!-- Hierarchy path -->
-                {#if suggestion.hierarchy.length > 1}
+                {#if (suggestion.hierarchy?.length ?? 0) > 1}
                   <div class="flex items-center gap-1 text-xs text-muted-foreground">
                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path
@@ -601,7 +631,7 @@
                       ></path>
                     </svg>
                     <span class="truncate max-w-32">
-                      {suggestion.hierarchy.slice(0, -1).join(' › ')}
+                      {(suggestion.hierarchy ?? []).slice(0, -1).join(' › ')}
                     </span>
                   </div>
                 {/if}
@@ -615,11 +645,11 @@
                 </Badge>
 
                 <!-- Relevance indicator -->
-                {#if suggestion.relevanceScore > 0.85}
+                {#if (suggestion.relevanceScore ?? 0) > 0.85}
                   <Badge variant="outline" class="text-xs h-4 px-1 text-emerald-600">
                     Excellent
                   </Badge>
-                {:else if suggestion.relevanceScore > 0.7}
+                {:else if (suggestion.relevanceScore ?? 0) > 0.7}
                   <Badge variant="outline" class="text-xs h-4 px-1 text-blue-600">Good</Badge>
                 {/if}
               </div>

@@ -9,7 +9,7 @@
 
 <script lang="ts">
   import { Collapsible } from 'bits-ui';
-  import { backendAdapter } from '$lib/services/backend-adapter';
+  import * as tauriCommands from '$lib/services/tauri-commands';
   import Icon, { type IconName } from '$lib/design/icons/icon.svelte';
   import { onMount } from 'svelte';
   import type { Node } from '$lib/types/node';
@@ -24,11 +24,11 @@
   onMount(async () => {
     try {
       // Get container IDs that mention this node
-      const containerIds = await backendAdapter.getMentioningContainers(nodeId);
+      const containerIds = await tauriCommands.getMentioningContainers(nodeId);
 
       // Fetch full node data for each container explicitly
       // (don't rely on cache - ensure we always have the latest data)
-      const nodes = await Promise.all(containerIds.map((id) => backendAdapter.getNode(id)));
+      const nodes = await Promise.all(containerIds.map((id) => tauriCommands.getNode(id)));
 
       // Filter out null values (nodes that no longer exist)
       backlinks = nodes.filter((node): node is Node => node !== null);

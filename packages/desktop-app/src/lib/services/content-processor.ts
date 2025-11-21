@@ -13,11 +13,84 @@
  */
 
 import { stripMarkdown, validateMarkdown } from './markdown-utils.js';
-import { eventBus } from './event-bus';
-import type { NodeReferenceService, NodeReference, NodespaceLink } from './node-reference-service';
 import { NodeDecoratorFactory } from './base-node-decoration';
 import type { DecorationContext } from './base-node-decoration';
 import type { ComponentDecoration } from '../types/component-decoration';
+
+// ============================================================================
+// Types previously from node-reference-service.ts (now inline)
+// ============================================================================
+
+/**
+ * Represents a resolved node reference with metadata
+ */
+export interface NodeReference {
+  nodeId: string;
+  content?: string;
+  nodeType?: string;
+  exists: boolean;
+  displayName?: string;
+  title?: string;
+  isValid?: boolean;
+  properties?: Record<string, unknown>;
+}
+
+/**
+ * Represents a nodespace:// link parsed from content
+ */
+export interface NodespaceLink {
+  uri: string;
+  nodeId: string;
+  displayText?: string;
+  startPosition: number;
+  endPosition: number;
+  startPos?: number; // Legacy alias
+  endPos?: number; // Legacy alias
+  isValid?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Trigger context for autocomplete/commands
+ */
+export interface TriggerContext {
+  trigger: '@' | '/' | '[[';
+  query: string;
+  startPosition: number;
+  endPosition: number;
+  element?: HTMLElement;
+  isValid?: boolean;
+}
+
+/**
+ * Service interface for resolving node references
+ * Note: Most methods are optional as the service may not be configured
+ */
+export interface NodeReferenceService {
+  resolveNodeReference(nodeId: string): Promise<NodeReference | null>;
+  resolveNodespaceURI?(uri: string): Promise<NodeReference | null>;
+  parseNodespaceURI?(uri: string): NodeReference | null;
+  detectNodespaceLinks(content: string): NodespaceLink[];
+  createNodeReference(nodeId: string, displayText?: string): string;
+  addReference?(sourceNodeId: string, targetNodeId: string): Promise<void>;
+}
+
+// ============================================================================
+// No-op event emitter (eventBus removed - LIVE SELECT handles real-time sync)
+// ============================================================================
+
+const noopEventEmitter = {
+  emit: (_event: unknown) => {
+    // No-op: Events are now handled by LIVE SELECT
+  },
+  subscribe: (_type: string, _handler: (event: unknown) => void) => {
+    // No-op: Events are now handled by LIVE SELECT
+    return () => {}; // Return unsubscribe function
+  }
+};
+
+// Use no-op emitter in place of eventBus
+const eventBus = noopEventEmitter;
 
 // ============================================================================
 // Core AST Types for Dual-Representation
@@ -182,7 +255,7 @@ export class ContentProcessor {
     // Listen for references update needed events
     eventBus.subscribe('references:update-needed', (event) => {
       // Type assertion for specific event type
-      const refEvent = event as import('./event-types').ReferencesUpdateNeededEvent;
+      const refEvent = event as { updateType: string; nodeId: string };
       if (refEvent.updateType === 'content' || refEvent.updateType === 'deletion') {
         // When content changes or nodes are deleted, we might need to update references
         this.emitCacheInvalidate('node', refEvent.nodeId, 'reference content changed');
@@ -194,7 +267,7 @@ export class ContentProcessor {
 
     // Listen for node updates to invalidate reference cache
     eventBus.subscribe('node:updated', (event) => {
-      const nodeEvent = event as import('./event-types').NodeUpdatedEvent;
+      const nodeEvent = event as { updateType: string; nodeId: string };
       if (nodeEvent.updateType === 'content') {
         this.invalidateReferenceCache(nodeEvent.nodeId);
       }
@@ -202,7 +275,7 @@ export class ContentProcessor {
 
     // Listen for node deletion to clean up references
     eventBus.subscribe('node:deleted', (event) => {
-      const nodeEvent = event as import('./event-types').NodeDeletedEvent;
+      const nodeEvent = event as { nodeId: string };
       this.invalidateReferenceCache(nodeEvent.nodeId);
     });
   }
@@ -844,7 +917,7 @@ export class ContentProcessor {
         const refNode = node as NodespaceRefNode;
 
         // Use the rich decoration system if the reference is valid
-        if (refNode.isValid && refNode.reference && this.nodeReferenceService) {
+        if (refNode.isValid && refNode.reference && this.nodeReferenceService?.resolveNodespaceURI) {
           try {
             // Get the actual node to determine its type
             const referencedNode = await this.nodeReferenceService.resolveNodespaceURI(refNode.uri);
@@ -853,11 +926,11 @@ export class ContentProcessor {
               // Create decoration context
               const decorationContext: DecorationContext = {
                 nodeId: refNode.nodeId,
-                nodeType: referencedNode.nodeType,
-                title: refNode.reference.title || refNode.displayText,
-                content: referencedNode.content,
+                nodeType: referencedNode.nodeType ?? 'text',
+                title: refNode.reference.title ?? refNode.displayText ?? '',
+                content: referencedNode.content ?? '',
                 uri: refNode.uri,
-                metadata: referencedNode.properties || {},
+                metadata: referencedNode.properties ?? {},
                 targetElement: null!, // Will be set when DOM element is created
                 displayContext: 'inline'
               };
@@ -1041,15 +1114,17 @@ export class ContentProcessor {
 
       // Check if reference is valid using cache or NodeReferenceService
       let isValid = false;
-      if (this.nodeReferenceService) {
+      if (this.nodeReferenceService?.resolveNodespaceURI) {
         const resolved = this.nodeReferenceService.resolveNodespaceURI(uri);
         isValid = !!resolved;
       }
 
       links.push({
         uri,
+        startPosition: match.index ?? 0,
+        endPosition: (match.index ?? 0) + fullMatch.length,
         startPos: match.index,
-        endPos: match.index + fullMatch.length,
+        endPos: (match.index ?? 0) + fullMatch.length,
         nodeId,
         displayText,
         isValid,
@@ -1111,11 +1186,11 @@ export class ContentProcessor {
 
     try {
       // Parse and resolve URI
-      const reference = this.nodeReferenceService.parseNodespaceURI(refNode.uri);
+      const reference = this.nodeReferenceService?.parseNodespaceURI?.(refNode.uri);
 
       // Cache the result
       this.referenceCache.set(refNode.uri, {
-        reference,
+        reference: reference ?? null,
         timestamp: Date.now()
       });
 
@@ -1125,7 +1200,7 @@ export class ContentProcessor {
 
       // Emit reference resolution event
       if (sourceNodeId) {
-        const resolutionEvent: Omit<import('./event-types').ReferenceResolutionEvent, 'timestamp'> =
+        const resolutionEvent: Record<string, unknown> =
           {
             type: 'reference:resolved',
             namespace: 'coordination',
@@ -1143,7 +1218,7 @@ export class ContentProcessor {
       }
 
       // Add bidirectional reference if valid and sourceNodeId provided
-      if (refNode.isValid && sourceNodeId && reference) {
+      if (refNode.isValid && sourceNodeId && reference && this.nodeReferenceService?.addReference) {
         try {
           await this.nodeReferenceService.addReference(sourceNodeId, refNode.nodeId);
         } catch (error) {
@@ -1219,7 +1294,7 @@ export class ContentProcessor {
     nodeId?: string,
     reason?: string
   ): void {
-    const cacheEvent: import('./event-types').CacheInvalidateEvent = {
+    const cacheEvent: Record<string, unknown> = {
       type: 'cache:invalidate',
       namespace: 'coordination',
       source: this.serviceName,
@@ -1241,7 +1316,7 @@ export class ContentProcessor {
 
     // Emit events for detected wikilinks (Phase 2+ preparation)
     for (const wikiLink of prepared.wikiLinks) {
-      const backlinkEvent: import('./event-types').BacklinkDetectedEvent = {
+      const backlinkEvent: Record<string, unknown> = {
         type: 'backlink:detected',
         namespace: 'phase2',
         source: this.serviceName,
@@ -1263,7 +1338,7 @@ export class ContentProcessor {
     const nodespaceLinks = this.detectNodespaceURIs(content);
     for (const nodeLink of nodespaceLinks) {
       // Emit backlink detected event
-      const backlinkEvent: import('./event-types').BacklinkDetectedEvent = {
+      const backlinkEvent: Record<string, unknown> = {
         type: 'backlink:detected',
         namespace: 'phase2',
         source: this.serviceName,
@@ -1282,7 +1357,7 @@ export class ContentProcessor {
       eventBus.emit(backlinkEvent);
 
       // Emit reference resolution event
-      const resolutionEvent: Omit<import('./event-types').ReferenceResolutionEvent, 'timestamp'> = {
+      const resolutionEvent: Record<string, unknown> = {
         type: 'reference:resolved',
         namespace: 'coordination',
         source: this.serviceName,
@@ -1322,7 +1397,7 @@ export class ContentProcessor {
 
     // Resolve references if service is available
     let resolved = false;
-    if (this.nodeReferenceService) {
+    if (this.nodeReferenceService?.parseNodespaceURI && this.nodeReferenceService?.addReference) {
       for (const link of nodespaceLinks) {
         try {
           const reference = this.nodeReferenceService.parseNodespaceURI(link.uri);

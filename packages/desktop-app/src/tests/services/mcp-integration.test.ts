@@ -4,18 +4,16 @@
  * These tests simulate MCP server behavior to validate the architecture
  * is ready for MCP integration (Issue #112).
  *
- * The tests use simulated MCP updates to verify:
- * - External updates propagate to all viewers
- * - Conflict detection works with MCP updates
- * - Multi-viewer synchronization
- * - Update batching and performance
+ * NOTE: This test suite is SKIPPED because it depends on deleted services:
+ * - event-bus (deleted in #558)
  *
- * When Issue #112 is complete, these tests will guide the actual integration.
+ * The tests validated MCP update propagation through the event bus.
+ * These tests need to be rewritten to match the new architecture
+ * when MCP integration is revisited.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SharedNodeStore } from '../../lib/services/shared-node-store';
-import { eventBus } from '../../lib/services/event-bus';
 import type { Node } from '../../lib/types';
 import type { UpdateSource, NodeUpdate } from '../../lib/types/update-protocol';
 
@@ -161,9 +159,6 @@ describe('Phase 3: MCP Integration (Simulated)', () => {
     });
 
     it('should integrate with ReactiveNodeService viewer instances', () => {
-      // This test demonstrates the integration pattern between
-      // SharedNodeStore and ReactiveNodeService viewers
-
       store.setNode(mockNode, viewerSource, true);
 
       // Create viewer subscriptions (simulating what ReactiveNodeService does)
@@ -218,33 +213,7 @@ describe('Phase 3: MCP Integration (Simulated)', () => {
       expect(final?.content).toBe('AI agent concurrent edit');
     });
 
-    it('should emit conflict-resolved event for MCP conflicts', () => {
-      store.setNode(mockNode, viewerSource, true);
-
-      // Track emitted events
-      const events: string[] = [];
-      eventBus.subscribe('node:conflict-resolved', () => {
-        events.push('conflict-resolved');
-      });
-
-      // Create conflicting updates
-      store.updateNode(mockNode.id, { content: 'Local edit' }, viewerSource, {
-        skipPersistence: true
-      });
-
-      const mcpUpdate: NodeUpdate = {
-        nodeId: mockNode.id,
-        changes: { content: 'MCP edit' },
-        source: { type: 'mcp-server' },
-        timestamp: Date.now() + 100, // Later timestamp
-        previousVersion: 0 // Old version triggers conflict
-      };
-
-      store.handleExternalUpdate('mcp-server', mcpUpdate);
-
-      // Should have detected and resolved conflict
-      expect(events).toContain('conflict-resolved');
-    });
+    // Note: Event-based conflict resolution tests removed (eventBus deleted in #558)
   });
 
   // ========================================================================
@@ -332,16 +301,9 @@ describe('Phase 3: MCP Integration (Simulated)', () => {
 
   describe('MCP Integration Readiness', () => {
     it('should provide clear integration point for MCP server', () => {
-      // This test documents the expected integration pattern for #112
-
       store.setNode(mockNode, viewerSource, true);
 
-      // FUTURE: When MCP server from #112 is ready, integration will look like:
-      // mcpServer.on('node:updated', (update) => {
-      //   sharedStore.handleExternalUpdate('mcp-server', update);
-      // });
-
-      // For now, simulate what that would do:
+      // Simulate what MCP integration would do
       const simulateMCPServerEvent = (update: NodeUpdate) => {
         store.handleExternalUpdate('mcp-server', update);
       };

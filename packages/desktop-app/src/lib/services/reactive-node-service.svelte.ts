@@ -21,7 +21,6 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { ContentProcessor } from './content-processor';
-import { eventBus } from './event-bus';
 import { SharedNodeStore } from './shared-node-store';
 import { getFocusManager } from './focus-manager.svelte';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
@@ -29,8 +28,15 @@ import type { Node, NodeUIState } from '$lib/types';
 import { createDefaultUIState } from '$lib/types';
 import type { UpdateSource } from '$lib/types/update-protocol';
 import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
-import { backendAdapter } from './backend-adapter';
 import { schemaService } from './schema-service';
+import { moveNode as moveNodeCommand } from './tauri-commands';
+
+// No-op event emitter (eventBus removed - LIVE SELECT handles real-time sync)
+const eventBus = {
+  emit: <T>(_event: T) => {
+    // No-op: Events are now handled by LIVE SELECT
+  }
+};
 
 export interface NodeManagerEvents {
   focusRequested: (nodeId: string, position?: number) => void;
@@ -338,7 +344,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.nodeCreated(nodeId);
     events.hierarchyChanged();
 
-    eventBus.emit<import('./event-types').NodeCreatedEvent>({
+    eventBus.emit<Record<string, unknown>>({
       type: 'node:created',
       namespace: 'lifecycle',
       source: serviceName,
@@ -347,7 +353,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       metadata: {}
     });
 
-    eventBus.emit<import('./event-types').HierarchyChangedEvent>({
+    eventBus.emit<Record<string, unknown>>({
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: serviceName,
@@ -355,7 +361,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       affectedNodes: [nodeId]
     });
 
-    eventBus.emit<import('./event-types').CacheInvalidateEvent>({
+    eventBus.emit<Record<string, unknown>>({
       type: 'cache:invalidate',
       namespace: 'coordination',
       source: serviceName,
@@ -555,7 +561,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function emitReferenceUpdateNeeded(nodeId: string): void {
-    eventBus.emit<import('./event-types').ReferencesUpdateNeededEvent>({
+    eventBus.emit<Record<string, unknown>>({
       type: 'references:update-needed',
       namespace: 'coordination',
       source: serviceName,
@@ -566,7 +572,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function emitExpensivePersistenceNeeded(nodeId: string, content: string): void {
-    eventBus.emit<import('./event-types').NodePersistenceEvent>({
+    eventBus.emit<Record<string, unknown>>({
       type: 'node:persistence-needed',
       namespace: 'backend',
       source: serviceName,
@@ -577,7 +583,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function emitVectorEmbeddingNeeded(nodeId: string, content: string): void {
-    eventBus.emit<import('./event-types').NodeEmbeddingEvent>({
+    eventBus.emit<Record<string, unknown>>({
       type: 'node:embedding-needed',
       namespace: 'ai',
       source: serviceName,
@@ -588,7 +594,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function emitReferencePropagatationNeeded(nodeId: string, content: string): void {
-    eventBus.emit<import('./event-types').NodeReferencePropagationEvent>({
+    eventBus.emit<Record<string, unknown>>({
       type: 'node:reference-propagation-needed',
       namespace: 'references',
       source: serviceName,
@@ -722,7 +728,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Atomic backend operation - backend handles fractional ordering
     try {
-      await backendAdapter.moveNode(nodeId, targetParentId);
+      await moveNodeCommand(nodeId, targetParentId, null);
     } catch (error) {
       // Check if error is ignorable (unit test environment or unpersisted nodes)
       const isIgnorableError =
@@ -760,7 +766,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.hierarchyChanged();
     _updateTrigger++;
 
-    eventBus.emit<import('./event-types').HierarchyChangedEvent>({
+    eventBus.emit<Record<string, unknown>>({
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: serviceName,
@@ -812,7 +818,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Atomic backend operation for main node - backend handles fractional ordering
     try {
-      await backendAdapter.moveNode(nodeId, newParentId);
+      await moveNodeCommand(nodeId, newParentId, null);
     } catch (error) {
       // Check if error is ignorable (unit test environment or unpersisted nodes)
       const isIgnorableError =
@@ -868,7 +874,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
           // Atomic backend operation - backend handles fractional ordering
           try {
-            await backendAdapter.moveNode(siblingId, nodeId);
+            await moveNodeCommand(siblingId, nodeId, null);
           } catch (error) {
             // Check if error is ignorable
             const isIgnorableError =
@@ -910,7 +916,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.hierarchyChanged();
     _updateTrigger++;
 
-    eventBus.emit<import('./event-types').HierarchyChangedEvent>({
+    eventBus.emit<Record<string, unknown>>({
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: serviceName,
@@ -1040,14 +1046,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.hierarchyChanged();
     _updateTrigger++;
 
-    eventBus.emit<import('./event-types').NodeDeletedEvent>({
+    eventBus.emit<Record<string, unknown>>({
       type: 'node:deleted',
       namespace: 'lifecycle',
       source: serviceName,
       nodeId
     });
 
-    eventBus.emit<import('./event-types').HierarchyChangedEvent>({
+    eventBus.emit<Record<string, unknown>>({
       type: 'hierarchy:changed',
       namespace: 'lifecycle',
       source: serviceName,
@@ -1055,7 +1061,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       affectedNodes: [nodeId]
     });
 
-    eventBus.emit<import('./event-types').CacheInvalidateEvent>({
+    eventBus.emit<Record<string, unknown>>({
       type: 'cache:invalidate',
       namespace: 'coordination',
       source: serviceName,
@@ -1064,7 +1070,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       reason: 'node-deleted'
     });
 
-    eventBus.emit<import('./event-types').ReferencesUpdateNeededEvent>({
+    eventBus.emit<Record<string, unknown>>({
       type: 'references:update-needed',
       namespace: 'coordination',
       source: serviceName,
@@ -1118,12 +1124,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       events.hierarchyChanged();
       _updateTrigger++;
 
-      const status: import('./event-types').NodeStatus = expanded ? 'expanded' : 'collapsed';
-      const changeType: import('./event-types').HierarchyChangedEvent['changeType'] = expanded
+      const status: 'expanded' | 'collapsed' = expanded ? 'expanded' : 'collapsed';
+      const changeType: 'expand' | 'collapse' = expanded
         ? 'expand'
         : 'collapse';
 
-      eventBus.emit<import('./event-types').NodeStatusChangedEvent>({
+      eventBus.emit<Record<string, unknown>>({
         type: 'node:status-changed',
         namespace: 'coordination',
         source: serviceName,
@@ -1131,7 +1137,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         status
       });
 
-      eventBus.emit<import('./event-types').HierarchyChangedEvent>({
+      eventBus.emit<Record<string, unknown>>({
         type: 'hierarchy:changed',
         namespace: 'lifecycle',
         source: serviceName,
@@ -1172,8 +1178,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         affectedNodes.push(nodeId);
 
         // Emit individual status change events
-        const status: import('./event-types').NodeStatus = expanded ? 'expanded' : 'collapsed';
-        eventBus.emit<import('./event-types').NodeStatusChangedEvent>({
+        const status: 'expanded' | 'collapsed' = expanded ? 'expanded' : 'collapsed';
+        eventBus.emit<Record<string, unknown>>({
           type: 'node:status-changed',
           namespace: 'coordination',
           source: serviceName,
@@ -1188,7 +1194,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         _updateTrigger++;
 
         // Emit single hierarchy changed event for all changes
-        eventBus.emit<import('./event-types').HierarchyChangedEvent>({
+        eventBus.emit<Record<string, unknown>>({
           type: 'hierarchy:changed',
           namespace: 'lifecycle',
           source: serviceName,
@@ -1216,13 +1222,13 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       events.hierarchyChanged();
       _updateTrigger++;
 
-      const status: import('./event-types').NodeStatus = newExpandedState
+      const status: 'expanded' | 'collapsed' = newExpandedState
         ? 'expanded'
         : 'collapsed';
-      const changeType: import('./event-types').HierarchyChangedEvent['changeType'] =
+      const changeType: 'expand' | 'collapse' =
         newExpandedState ? 'expand' : 'collapse';
 
-      eventBus.emit<import('./event-types').NodeStatusChangedEvent>({
+      eventBus.emit<Record<string, unknown>>({
         type: 'node:status-changed',
         namespace: 'coordination',
         source: serviceName,
@@ -1230,7 +1236,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         status
       });
 
-      eventBus.emit<import('./event-types').HierarchyChangedEvent>({
+      eventBus.emit<Record<string, unknown>>({
         type: 'hierarchy:changed',
         namespace: 'lifecycle',
         source: serviceName,
@@ -1255,17 +1261,17 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   function emitNodeUpdated(nodeId: string, updateType: string, newValue: unknown): void {
-    eventBus.emit<import('./event-types').NodeUpdatedEvent>({
+    eventBus.emit<Record<string, unknown>>({
       type: 'node:updated',
       namespace: 'lifecycle',
       source: serviceName,
       nodeId,
-      updateType: updateType as import('./event-types').NodeUpdatedEvent['updateType'],
+      updateType: updateType as 'content' | 'metadata' | 'hierarchy',
       newValue
     });
 
     if (updateType === 'content') {
-      eventBus.emit<import('./event-types').DecorationUpdateNeededEvent>({
+      eventBus.emit<Record<string, unknown>>({
         type: 'decoration:update-needed',
         namespace: 'interaction',
         source: serviceName,
@@ -1275,7 +1281,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         metadata: {}
       });
 
-      eventBus.emit<import('./event-types').CacheInvalidateEvent>({
+      eventBus.emit<Record<string, unknown>>({
         type: 'cache:invalidate',
         namespace: 'coordination',
         source: serviceName,

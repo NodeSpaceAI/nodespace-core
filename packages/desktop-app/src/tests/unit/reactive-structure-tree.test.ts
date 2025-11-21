@@ -193,6 +193,7 @@ describe('ReactiveStructureTree', () => {
         id: 'edge1',
         in: 'parent1',
         out: 'child1',
+        edgeType: 'child',
         order: 1.0
       });
 
@@ -200,6 +201,7 @@ describe('ReactiveStructureTree', () => {
         id: 'edge3',
         in: 'parent1',
         out: 'child3',
+        edgeType: 'child',
         order: 3.0
       });
 
@@ -208,6 +210,7 @@ describe('ReactiveStructureTree', () => {
         id: 'edge2',
         in: 'parent1',
         out: 'child2',
+        edgeType: 'child',
         order: 2.0
       });
 
@@ -225,6 +228,7 @@ describe('ReactiveStructureTree', () => {
           id: `edge${i}`,
           in: parentId,
           out: `child${i}`,
+          edgeType: 'child',
           order: orders[i]
         });
       }
@@ -242,6 +246,7 @@ describe('ReactiveStructureTree', () => {
         id: 'edge2',
         in: 'parent1',
         out: 'child2',
+        edgeType: 'child',
         order: 2.0
       });
 
@@ -249,6 +254,7 @@ describe('ReactiveStructureTree', () => {
         id: 'edge3',
         in: 'parent1',
         out: 'child3',
+        edgeType: 'child',
         order: 3.0
       });
 
@@ -257,6 +263,7 @@ describe('ReactiveStructureTree', () => {
         id: 'edge1',
         in: 'parent1',
         out: 'child1',
+        edgeType: 'child',
         order: 0.5
       });
 
@@ -270,6 +277,7 @@ describe('ReactiveStructureTree', () => {
         id: 'edge1',
         in: 'parent1',
         out: 'child1',
+        edgeType: 'child',
         order: 1.0
       });
 
@@ -277,6 +285,7 @@ describe('ReactiveStructureTree', () => {
         id: 'edge2',
         in: 'parent1',
         out: 'child2',
+        edgeType: 'child',
         order: 2.0
       });
 
@@ -285,6 +294,7 @@ describe('ReactiveStructureTree', () => {
         id: 'edge3',
         in: 'parent1',
         out: 'child3',
+        edgeType: 'child',
         order: 4.0
       });
 
@@ -391,9 +401,9 @@ describe('ReactiveStructureTree', () => {
       // Test the buildTree logic by manually calling addChild in the expected order
       // This exercises the actual implementation path
       const edges = [
-        { id: 'edge:1', in: 'parent1', out: 'child1', order: 1.0 },
-        { id: 'edge:2', in: 'parent1', out: 'child2', order: 2.0 },
-        { id: 'edge:3', in: 'parent2', out: 'child3', order: 1.0 }
+        { id: 'edge:1', in: 'parent1', out: 'child1', edgeType: 'child', order: 1.0 },
+        { id: 'edge:2', in: 'parent1', out: 'child2', edgeType: 'child', order: 2.0 },
+        { id: 'edge:3', in: 'parent2', out: 'child3', edgeType: 'child', order: 1.0 }
       ];
 
       // Clear previous state
@@ -420,10 +430,10 @@ describe('ReactiveStructureTree', () => {
 
     it('should handle bulk load with many edges and maintain sort order', () => {
       const edges = [
-        { id: 'edge:1', in: 'root', out: 'a', order: 3.0 },
-        { id: 'edge:2', in: 'root', out: 'b', order: 1.0 },
-        { id: 'edge:3', in: 'root', out: 'c', order: 2.0 },
-        { id: 'edge:4', in: 'root', out: 'd', order: 4.0 }
+        { id: 'edge:1', in: 'root', out: 'a', edgeType: 'child', order: 3.0 },
+        { id: 'edge:2', in: 'root', out: 'b', edgeType: 'child', order: 1.0 },
+        { id: 'edge:3', in: 'root', out: 'c', edgeType: 'child', order: 2.0 },
+        { id: 'edge:4', in: 'root', out: 'd', edgeType: 'child', order: 4.0 }
       ];
 
       structureTree.children.clear();

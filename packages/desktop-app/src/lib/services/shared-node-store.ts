@@ -22,12 +22,10 @@
  * - Phase 7: Advanced conflict resolution (OT/CRDT)
  */
 
-import { eventBus } from './event-bus';
-import { tauriNodeService } from './tauri-node-service';
-import { PersistenceCoordinator, OperationCancelledError } from './persistence-coordinator.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import { requiresAtomicBatching } from '$lib/utils/placeholder-detection';
 import { shouldLogDatabaseErrors, isTestEnvironment } from '$lib/utils/test-environment';
+import * as tauriCommands from './tauri-commands';
 import type { Node } from '$lib/types';
 import type {
   NodeUpdate,
@@ -39,8 +37,206 @@ import type {
   StoreMetrics,
   UpdateOptions
 } from '$lib/types/update-protocol';
-import type { ConflictResolvedEvent, UpdateRolledBackEvent, NodeUpdatedEvent } from './event-types';
-import { createDefaultResolver } from './conflict-resolvers';
+
+// ============================================================================
+// Simple Debounce Utility
+// ============================================================================
+
+interface PendingOperation {
+  nodeId: string;
+  operation: () => Promise<void>;
+  timeoutId: ReturnType<typeof setTimeout>;
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
+class SimplePersistenceCoordinator {
+  private static instance: SimplePersistenceCoordinator | null = null;
+  private pendingOperations = new Map<string, PendingOperation>();
+  private readonly DEBOUNCE_MS = 500;
+
+  static getInstance(): SimplePersistenceCoordinator {
+    if (!SimplePersistenceCoordinator.instance) {
+      SimplePersistenceCoordinator.instance = new SimplePersistenceCoordinator();
+    }
+    return SimplePersistenceCoordinator.instance;
+  }
+
+  static resetInstance(): void {
+    SimplePersistenceCoordinator.instance = null;
+  }
+
+  persist(
+    nodeId: string,
+    operation: () => Promise<void>,
+    options: { mode: 'immediate' | 'debounce'; dependencies?: Array<string | (() => Promise<void>)> } = { mode: 'debounce' }
+  ): { promise: Promise<void> } {
+    // Cancel existing pending operation for this node
+    this.cancelPending(nodeId);
+
+    let resolve: () => void = () => {};
+    let reject: (error: Error) => void = () => {};
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+
+    const executeOperation = async () => {
+      try {
+        // Wait for dependencies if any
+        if (options.dependencies) {
+          for (const dep of options.dependencies) {
+            if (typeof dep === 'function') {
+              await dep();
+            } else {
+              // Wait for dependent node to finish
+              const pending = this.pendingOperations.get(dep);
+              if (pending) {
+                await pending.promise;
+              }
+            }
+          }
+        }
+        await operation();
+        resolve();
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      } finally {
+        this.pendingOperations.delete(nodeId);
+      }
+    };
+
+    if (options.mode === 'immediate') {
+      const pending: PendingOperation = {
+        nodeId,
+        operation,
+        timeoutId: setTimeout(() => {}, 0),
+        promise,
+        resolve,
+        reject
+      };
+      this.pendingOperations.set(nodeId, pending);
+      executeOperation();
+    } else {
+      const timeoutId = setTimeout(executeOperation, this.DEBOUNCE_MS);
+      const pending: PendingOperation = {
+        nodeId,
+        operation,
+        timeoutId,
+        promise,
+        resolve,
+        reject
+      };
+      this.pendingOperations.set(nodeId, pending);
+    }
+
+    return { promise };
+  }
+
+  cancelPending(nodeId: string): void {
+    const pending = this.pendingOperations.get(nodeId);
+    if (pending) {
+      clearTimeout(pending.timeoutId);
+      this.pendingOperations.delete(nodeId);
+    }
+  }
+
+  isPending(nodeId: string): boolean {
+    return this.pendingOperations.has(nodeId);
+  }
+
+  /**
+   * Flush all pending operations immediately.
+   * Used on window close to prevent data loss.
+   *
+   * @returns Promise that resolves when all pending operations complete or timeout
+   */
+  async flushPending(): Promise<void> {
+    const nodeIds = Array.from(this.pendingOperations.keys());
+    if (nodeIds.length === 0) return;
+
+    // Execute all pending operations immediately by clearing their timeouts and running them
+    const promises: Promise<void>[] = [];
+    for (const [nodeId, pending] of this.pendingOperations) {
+      clearTimeout(pending.timeoutId);
+      // Execute the operation directly - start the execution, then wait on the pending promise
+      pending.operation().then(
+        () => pending.resolve(),
+        (error) => pending.reject(error instanceof Error ? error : new Error(String(error)))
+      ).finally(() => {
+        this.pendingOperations.delete(nodeId);
+      });
+      promises.push(pending.promise.catch(() => {})); // Ignore errors, just wait for completion
+    }
+
+    // Wait for all to complete with a timeout
+    await Promise.race([
+      Promise.all(promises),
+      new Promise<void>((resolve) => setTimeout(resolve, 5000)) // 5 second timeout
+    ]);
+  }
+
+  async waitForPersistence(nodeIds: string[], timeoutMs = 5000): Promise<Set<string>> {
+    const failed = new Set<string>();
+    const promises = nodeIds.map(async (nodeId) => {
+      const pending = this.pendingOperations.get(nodeId);
+      if (pending) {
+        try {
+          await Promise.race([
+            pending.promise,
+            new Promise<void>((_, reject) => setTimeout(() => reject(new Error('Timeout')), timeoutMs))
+          ]);
+        } catch {
+          failed.add(nodeId);
+        }
+      }
+    });
+    await Promise.all(promises);
+    return failed;
+  }
+
+  getMetrics(): { pendingOperations: number } {
+    return { pendingOperations: this.pendingOperations.size };
+  }
+}
+
+// Use simple coordinator
+const PersistenceCoordinator = SimplePersistenceCoordinator;
+
+// Simple error class for cancelled operations
+class OperationCancelledError extends Error {
+  constructor(message = 'Operation cancelled') {
+    super(message);
+    this.name = 'OperationCancelledError';
+  }
+}
+
+// ============================================================================
+// Simple Conflict Resolver (Last-Write-Wins)
+// ============================================================================
+
+function createDefaultResolver(): ConflictResolver {
+  return {
+    resolve(conflict: Conflict, existingNode: Node) {
+      // Last-write-wins: use the remote update
+      const resolvedNode = {
+        ...existingNode,
+        ...conflict.remoteUpdate.changes,
+        modifiedAt: new Date().toISOString()
+      };
+      return {
+        nodeId: conflict.nodeId,
+        resolvedNode,
+        strategy: 'last-write-wins' as const,
+        discardedUpdate: conflict.localUpdate
+      };
+    },
+    getStrategyName() {
+      return 'Last Write Wins';
+    }
+  };
+}
 
 // ============================================================================
 // Database Write Coordination (Phase 2.4)
@@ -409,16 +605,8 @@ export class SharedNodeStore {
       // Notify subscribers
       this.notifySubscribers(nodeId, updatedNode, source);
 
-      // Emit event - cast to bypass type checking for now
-      // TODO: Update event-types.ts to support source tracking
-      eventBus.emit({
-        type: 'node:updated',
-        namespace: 'lifecycle',
-        source: source.type,
-        nodeId,
-        updateType: this.determineUpdateType(changes),
-        newValue: changes
-      } as never);
+      // Log update event (eventBus removed - LIVE SELECT handles real-time sync)
+      console.debug(`[SharedNodeStore] Node updated: ${nodeId}, type: ${this.determineUpdateType(changes)}`);
 
       // Update metrics
       this.metrics.updateCount++;
@@ -491,7 +679,7 @@ export class SharedNodeStore {
                   try {
                     // CRITICAL: Capture updated node to get new version from backend
                     // This prevents version conflicts on subsequent updates
-                    const updatedNodeFromBackend = await tauriNodeService.updateNode(
+                    const updatedNodeFromBackend = await tauriCommands.updateNode(
                       nodeId,
                       currentVersion,
                       updatePayload
@@ -515,7 +703,7 @@ export class SharedNodeStore {
                       console.warn(
                         `[SharedNodeStore] Node ${nodeId} not found in database, creating instead of updating`
                       );
-                      await tauriNodeService.createNode(updatedNode);
+                      await tauriCommands.createNode(updatedNode);
                       this.persistedNodeIds.add(nodeId); // Now it's persisted
                     } else {
                       // Re-throw other errors
@@ -524,12 +712,12 @@ export class SharedNodeStore {
                   }
                 } else {
                   // Node doesn't exist yet (was a placeholder or new node)
-                  await tauriNodeService.createNode(updatedNode);
+                  await tauriCommands.createNode(updatedNode);
                   this.persistedNodeIds.add(nodeId); // Track as persisted
 
                   // CRITICAL: Fetch the created node to get its version from backend
                   // This prevents version conflicts on subsequent updates
-                  const createdNode = await tauriNodeService.getNode(nodeId);
+                  const createdNode = await tauriCommands.getNode(nodeId);
                   if (createdNode) {
                     const localNode = this.nodes.get(nodeId);
                     if (localNode) {
@@ -616,16 +804,8 @@ export class SharedNodeStore {
     this.notifySubscribers(node.id, node, source);
 
     if (isHierarchyChange) {
-      const event: NodeUpdatedEvent = {
-        type: 'node:updated',
-        namespace: 'lifecycle',
-        source: source.type,
-        nodeId: node.id,
-        updateType: 'hierarchy',
-        newValue: node,
-        timestamp: Date.now()
-      };
-      eventBus.emit(event as never); // Keep 'as never' only for eventBus.emit signature issue
+      // Log hierarchy change (eventBus removed - LIVE SELECT handles real-time sync)
+      console.debug(`[SharedNodeStore] Hierarchy change for node: ${node.id}`);
     }
 
     // Determine persistence behavior using new explicit API
@@ -674,7 +854,7 @@ export class SharedNodeStore {
                 try {
                   // Get current version for optimistic concurrency control
                   const currentVersion = node.version ?? 1;
-                  await tauriNodeService.updateNode(node.id, currentVersion, node);
+                  await tauriCommands.updateNode(node.id, currentVersion, node);
                 } catch (updateError) {
                   // If UPDATE fails because node doesn't exist, try CREATE instead
                   const errorMessage =
@@ -690,19 +870,19 @@ export class SharedNodeStore {
                     console.warn(
                       `[SharedNodeStore] Node ${node.id} not found in database, creating instead of updating (error: ${errorMessage})`
                     );
-                    await tauriNodeService.createNode(node);
+                    await tauriCommands.createNode(node);
                     this.persistedNodeIds.add(node.id);
                   } else {
                     throw updateError;
                   }
                 }
               } else {
-                await tauriNodeService.createNode(node);
+                await tauriCommands.createNode(node);
                 this.persistedNodeIds.add(node.id); // Track as persisted
 
                 // CRITICAL: Fetch the created node to get its version from backend
                 // This prevents version conflicts on subsequent updates
-                const createdNode = await tauriNodeService.getNode(node.id);
+                const createdNode = await tauriCommands.getNode(node.id);
                 if (createdNode) {
                   node.version = createdNode.version;
                   this.nodes.set(node.id, node); // Update local node with backend version
@@ -772,14 +952,8 @@ export class SharedNodeStore {
       this.persistedNodeIds.delete(nodeId); // Remove from tracking set
       this.notifySubscribers(nodeId, node, source);
 
-      // Emit event - cast to bypass type checking for now
-      // TODO: Update event-types.ts to support source tracking
-      eventBus.emit({
-        type: 'node:deleted',
-        namespace: 'lifecycle',
-        source: source.type,
-        nodeId
-      } as never);
+      // Log delete event (eventBus removed - LIVE SELECT handles real-time sync)
+      console.debug(`[SharedNodeStore] Node deleted: ${nodeId}`);
 
       // Phase 2.4: Persist deletion to database
       const persistBehavior = this.determinePersistenceBehavior(source, { skipPersistence });
@@ -797,7 +971,7 @@ export class SharedNodeStore {
               // Get current version for optimistic concurrency control
               // Note: node has already been removed from this.nodes, so we use the captured node variable
               const currentVersion = node.version ?? 1;
-              await tauriNodeService.deleteNode(nodeId, currentVersion);
+              await tauriCommands.deleteNode(nodeId, currentVersion);
             } catch (dbError) {
               const error = dbError instanceof Error ? dbError : new Error(String(dbError));
 
@@ -858,7 +1032,7 @@ export class SharedNodeStore {
    */
   async loadChildrenForParent(parentId: string): Promise<Node[]> {
     try {
-      const nodes = await tauriNodeService.getNodesByContainerId(parentId);
+      const nodes = await tauriCommands.getNodesByContainerId(parentId);
 
       // Add nodes to store with database source
       // Database source type will automatically mark nodes as persisted (see determinePersistenceBehavior)
@@ -1088,16 +1262,8 @@ export class SharedNodeStore {
     this.nodes.set(conflict.nodeId, resolution.resolvedNode);
     this.versions.set(conflict.nodeId, this.getNextVersion(conflict.nodeId));
 
-    // Notify about conflict resolution
-    eventBus.emit<ConflictResolvedEvent>({
-      type: 'node:conflict-resolved',
-      namespace: 'lifecycle',
-      source: 'shared-node-store',
-      nodeId: conflict.nodeId,
-      conflictType: conflict.conflictType,
-      strategy: resolution.strategy,
-      discardedUpdate: resolution.discardedUpdate
-    });
+    // Log conflict resolution (eventBus removed)
+    console.debug(`[SharedNodeStore] Conflict resolved for node: ${conflict.nodeId}, strategy: ${resolution.strategy}`);
 
     // Notify subscribers
     this.notifySubscribers(conflict.nodeId, resolution.resolvedNode, conflict.remoteUpdate.source);
@@ -1156,15 +1322,8 @@ export class SharedNodeStore {
       this.notifySubscribers(nodeId, currentNode, updateToRollback.source);
     }
 
-    // Emit rollback event
-    eventBus.emit<UpdateRolledBackEvent>({
-      type: 'node:update-rolled-back',
-      namespace: 'lifecycle',
-      source: 'shared-node-store',
-      nodeId,
-      reason: 'Database write failed',
-      failedUpdate: updateToRollback
-    });
+    // Log rollback event (eventBus removed)
+    console.debug(`[SharedNodeStore] Update rolled back for node: ${nodeId}`);
   }
 
   /**
@@ -1631,16 +1790,16 @@ export class SharedNodeStore {
           if (isPersistedToDatabase) {
             // Get current version for optimistic concurrency control
             const currentVersion = finalNode.version ?? 1;
-            await tauriNodeService.updateNode(nodeId, currentVersion, changes);
+            await tauriCommands.updateNode(nodeId, currentVersion, changes);
           } else {
             // Try CREATE, but handle race condition where old path persisted first
             try {
-              await tauriNodeService.createNode(finalNode);
+              await tauriCommands.createNode(finalNode);
               this.persistedNodeIds.add(nodeId);
 
               // CRITICAL: Fetch the created node to get its version from backend
               // This prevents version conflicts on subsequent updates
-              const createdNode = await tauriNodeService.getNode(nodeId);
+              const createdNode = await tauriCommands.getNode(nodeId);
               if (createdNode) {
                 finalNode.version = createdNode.version;
                 this.nodes.set(nodeId, finalNode); // Update local node with backend version
@@ -1655,7 +1814,7 @@ export class SharedNodeStore {
                 // Race detected: Old debounced path persisted before batch started
                 // Update with batched changes to fix inconsistent state
                 const currentVersion = finalNode.version ?? 1;
-                await tauriNodeService.updateNode(nodeId, currentVersion, changes);
+                await tauriCommands.updateNode(nodeId, currentVersion, changes);
                 this.persistedNodeIds.add(nodeId);
               } else {
                 throw createError;
@@ -1695,6 +1854,24 @@ export class SharedNodeStore {
   hasPendingWrites(): boolean {
     const metrics = PersistenceCoordinator.getInstance().getMetrics();
     return metrics.pendingOperations > 0;
+  }
+
+  /**
+   * Flush all pending persistence operations immediately.
+   * Used on window close to prevent data loss.
+   *
+   * This will:
+   * 1. Commit any active batches
+   * 2. Execute all debounced persistence operations immediately
+   *
+   * @returns Promise that resolves when all pending operations complete
+   */
+  async flushAllPending(): Promise<void> {
+    // First, commit all active batches
+    this.commitAllBatches();
+
+    // Then flush all pending persistence operations
+    await PersistenceCoordinator.getInstance().flushPending();
   }
 
   /**

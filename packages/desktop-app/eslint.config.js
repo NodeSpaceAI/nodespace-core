@@ -207,7 +207,8 @@ export default [
         AbortController: 'readonly',
         AbortSignal: 'readonly',
         RequestInit: 'readonly',
-        Response: 'readonly'
+        Response: 'readonly',
+        BeforeUnloadEvent: 'readonly'
       }
     },
     plugins: {
