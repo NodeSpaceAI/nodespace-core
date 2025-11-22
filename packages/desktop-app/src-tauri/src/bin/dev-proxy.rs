@@ -20,10 +20,11 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::Json,
+    response::{sse::Event, Json, Sse},
     routing::{delete, get, patch, post},
     Router,
 };
+use futures::stream::Stream;
 use nodespace_core::{
     db::HttpStore,
     models::{
@@ -34,7 +35,9 @@ use nodespace_core::{
     services::{NodeService, NodeServiceError, SchemaService},
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{convert::Infallible, sync::Arc, time::Duration};
+use tokio::sync::broadcast;
+use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 use tower_http::cors::CorsLayer;
 
 // Type alias for HTTP client types
@@ -42,12 +45,61 @@ type HttpNodeService = NodeService<surrealdb::engine::remote::http::Client>;
 type HttpSchemaService = SchemaService<surrealdb::engine::remote::http::Client>;
 type HttpNodeOperations = NodeOperations<surrealdb::engine::remote::http::Client>;
 
+// ============================================================================
+// SSE Events for Browser Mode Real-Time Sync
+// ============================================================================
+
+/// SSE event types for real-time synchronization
+///
+/// These events mirror the structure expected by the frontend BrowserSyncService.
+/// Events are broadcast after each successful database operation to notify
+/// all connected browser clients of changes.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum SseEvent {
+    /// A new node was created
+    NodeCreated {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        #[serde(rename = "nodeData")]
+        node_data: Node,
+    },
+    /// An existing node was updated
+    NodeUpdated {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+        #[serde(rename = "nodeData")]
+        node_data: Node,
+    },
+    /// A node was deleted
+    NodeDeleted {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+    },
+    /// A parent-child edge was created
+    EdgeCreated {
+        #[serde(rename = "parentId")]
+        parent_id: String,
+        #[serde(rename = "childId")]
+        child_id: String,
+    },
+    /// A parent-child edge was deleted
+    EdgeDeleted {
+        #[serde(rename = "parentId")]
+        parent_id: String,
+        #[serde(rename = "childId")]
+        child_id: String,
+    },
+}
+
 /// Application state shared across handlers
 #[derive(Clone)]
 struct AppState {
     node_service: Arc<HttpNodeService>,
     schema_service: Arc<HttpSchemaService>,
     operations: Arc<HttpNodeOperations>,
+    /// Broadcast channel for SSE events to connected browser clients
+    event_tx: broadcast::Sender<SseEvent>,
 }
 
 /// Structured error response matching Tauri's CommandError format
@@ -333,16 +385,24 @@ async fn main() -> anyhow::Result<()> {
     let operations = Arc::new(NodeOperations::new(node_service.clone()));
     println!("✅ NodeOperations initialized");
 
+    // Create broadcast channel for SSE events (capacity 100 messages)
+    // Lagging receivers will skip missed messages rather than blocking senders
+    let (event_tx, _) = broadcast::channel::<SseEvent>(100);
+    println!("📡 SSE broadcast channel initialized");
+
     let state = AppState {
         node_service,
         schema_service,
         operations,
+        event_tx,
     };
 
     // Build HTTP router
     let app = Router::new()
         // Health check (useful for testing)
         .route("/health", get(health_check))
+        // SSE endpoint for real-time sync in browser mode
+        .route("/api/events", get(sse_handler))
         // Database initialization (no-op - already initialized on startup)
         .route("/api/database/init", post(init_database))
         // Node CRUD endpoints
@@ -404,6 +464,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("\n🚀 Dev proxy server started!");
     println!("   Listening on: http://127.0.0.1:3001");
+    println!("   SSE endpoint: http://127.0.0.1:3001/api/events");
     println!("   NodeService → SurrealDB (port 8000)");
     println!("   Surrealist can connect to port 8000\n");
 
@@ -416,6 +477,59 @@ async fn main() -> anyhow::Result<()> {
 
 async fn health_check() -> &'static str {
     "OK"
+}
+
+/// SSE endpoint for real-time sync in browser mode
+///
+/// Browser clients connect to this endpoint to receive real-time updates when
+/// database changes occur. This is the browser-mode equivalent of Tauri's
+/// LIVE SELECT event subscription.
+///
+/// # Protocol
+/// - Server-Sent Events (SSE) - one-way server→client stream
+/// - Events are JSON-encoded SseEvent objects
+/// - Includes keepalive comments every 30 seconds to prevent timeouts
+///
+/// # Usage
+/// ```javascript
+/// const eventSource = new EventSource('http://localhost:3001/api/events');
+/// eventSource.onmessage = (event) => {
+///     const data = JSON.parse(event.data);
+///     // Handle nodeCreated, nodeUpdated, nodeDeleted, edgeCreated, edgeDeleted
+/// };
+/// ```
+async fn sse_handler(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.event_tx.subscribe();
+
+    // Transform broadcast messages into SSE events
+    let stream = BroadcastStream::new(rx).filter_map(|result| {
+        // Skip lagged/closed errors, only process actual messages
+        match result {
+            Ok(sse_event) => {
+                // Serialize event to JSON
+                match serde_json::to_string(&sse_event) {
+                    Ok(json) => Some(Ok(Event::default().data(json))),
+                    Err(e) => {
+                        tracing::error!("Failed to serialize SSE event: {}", e);
+                        None
+                    }
+                }
+            }
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                tracing::warn!("SSE client lagged by {} messages", n);
+                None
+            }
+        }
+    });
+
+    // Use Axum's built-in keepalive to prevent connection timeouts
+    Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(Duration::from_secs(30))
+            .text("keepalive"),
+    )
 }
 
 /// Database initialization endpoint (no-op for dev-proxy)
@@ -453,12 +567,32 @@ async fn create_node(
         properties: req.properties,
     };
 
+    let parent_id_clone = params.parent_id.clone();
     let id = state.operations.create_node(params).await.map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             Json(ApiError::new("CREATE_FAILED", e.to_string())),
         )
     })?;
+
+    // Broadcast SSE event for the created node
+    // Fetch the full node data for the event payload
+    if let Ok(Some(node)) = state.node_service.get_node(&id).await {
+        let _ = state.event_tx.send(SseEvent::NodeCreated {
+            node_id: id.clone(),
+            node_data: node,
+        });
+        tracing::debug!("SSE: NodeCreated event sent for node {}", id);
+
+        // If node has a parent, also broadcast edge created event
+        if let Some(parent_id) = parent_id_clone {
+            let _ = state.event_tx.send(SseEvent::EdgeCreated {
+                parent_id,
+                child_id: id.clone(),
+            });
+            tracing::debug!("SSE: EdgeCreated event sent for node {}", id);
+        }
+    }
 
     Ok(Json(id))
 }
@@ -524,6 +658,13 @@ async fn update_node(
             )
         })?;
 
+    // Broadcast SSE event for the updated node
+    let _ = state.event_tx.send(SseEvent::NodeUpdated {
+        node_id: id.clone(),
+        node_data: updated_node.clone(),
+    });
+    tracing::debug!("SSE: NodeUpdated event sent for node {}", id);
+
     Ok(Json(updated_node))
 }
 
@@ -570,6 +711,12 @@ async fn delete_node(
         }
     }
 
+    // Broadcast SSE event for the deleted node
+    let _ = state.event_tx.send(SseEvent::NodeDeleted {
+        node_id: id.clone(),
+    });
+    tracing::debug!("SSE: NodeDeleted event sent for node {}", id);
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -586,11 +733,39 @@ async fn set_parent(
     Path(node_id): Path<String>,
     Json(request): Json<SetParentRequest>,
 ) -> ApiStatusResult {
+    // Get current parent before moving (for edge deleted event)
+    let old_parent_id = state
+        .node_service
+        .get_parent(&node_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|n| n.id);
+
     state
         .node_service
         .move_node(&node_id, request.parent_id.as_deref())
         .await
         .map_err(map_node_service_error)?;
+
+    // Broadcast SSE edge events
+    // If node had an old parent, send edge deleted event
+    if let Some(old_parent) = old_parent_id {
+        let _ = state.event_tx.send(SseEvent::EdgeDeleted {
+            parent_id: old_parent,
+            child_id: node_id.clone(),
+        });
+        tracing::debug!("SSE: EdgeDeleted event sent for node {}", node_id);
+    }
+
+    // If node has a new parent, send edge created event
+    if let Some(ref new_parent) = request.parent_id {
+        let _ = state.event_tx.send(SseEvent::EdgeCreated {
+            parent_id: new_parent.clone(),
+            child_id: node_id.clone(),
+        });
+        tracing::debug!("SSE: EdgeCreated event sent for node {}", node_id);
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

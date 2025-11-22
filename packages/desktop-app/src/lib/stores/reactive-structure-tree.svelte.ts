@@ -165,8 +165,11 @@ class ReactiveStructureTree {
 
   /**
    * Add a child with binary search insertion to maintain sort by order
+   *
+   * Note: This method is public to support browser mode SSE sync (BrowserSyncService)
+   * which needs to update the tree structure when external changes are detected.
    */
-  private addChild(rel: HierarchyRelationship) {
+  addChild(rel: HierarchyRelationship) {
     const parentId = rel.parentId;
     const childId = rel.childId;
     const order = rel.order;
@@ -226,8 +229,11 @@ class ReactiveStructureTree {
 
   /**
    * Remove a child from parent's children
+   *
+   * Note: This method is public to support browser mode SSE sync (BrowserSyncService)
+   * which needs to update the tree structure when external changes are detected.
    */
-  private removeChild(rel: HierarchyRelationship) {
+  removeChild(rel: HierarchyRelationship) {
     const parentId = rel.parentId;
     const childId = rel.childId;
 
