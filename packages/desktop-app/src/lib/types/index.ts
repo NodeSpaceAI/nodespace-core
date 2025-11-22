@@ -24,7 +24,6 @@ export { isCommandError, toError, DatabaseInitializationError, NodeOperationErro
 
 // Event types
 export type { NodeEventData, HierarchyRelationship, NodeWithChildren, PersistenceFailedEvent } from './event-types';
-export { getParentId, getChildId } from './event-types';
 
 // Re-export existing types for convenience
 export type { NodeViewerProps } from './node-viewers';

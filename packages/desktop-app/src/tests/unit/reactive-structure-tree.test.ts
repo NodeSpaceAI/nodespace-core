@@ -190,24 +190,21 @@ describe('ReactiveStructureTree', () => {
     it('should maintain sorted order with single insertion', () => {
       // Start with two children
       structureTree.__testOnly_addChild({
-        id: 'edge1',
-        in: 'parent1',
-        out: 'child1',
+        parentId: 'parent1',
+        childId: 'child1',
         order: 1.0
       });
 
       structureTree.__testOnly_addChild({
-        id: 'edge3',
-        in: 'parent1',
-        out: 'child3',
+        parentId: 'parent1',
+        childId: 'child3',
         order: 3.0
       });
 
       // Insert child2 with order 2.0 between existing children using binary search
       structureTree.__testOnly_addChild({
-        id: 'edge2',
-        in: 'parent1',
-        out: 'child2',
+        parentId: 'parent1',
+        childId: 'child2',
         order: 2.0
       });
 
@@ -222,9 +219,8 @@ describe('ReactiveStructureTree', () => {
       // Use actual binary search insertion via addChild
       for (let i = 0; i < orders.length; i++) {
         structureTree.__testOnly_addChild({
-          id: `edge${i}`,
-          in: parentId,
-          out: `child${i}`,
+          parentId,
+          childId: `child${i}`,
           order: orders[i]
         });
       }
@@ -239,24 +235,21 @@ describe('ReactiveStructureTree', () => {
     it('should handle insertion at beginning', () => {
       // Add existing children
       structureTree.__testOnly_addChild({
-        id: 'edge2',
-        in: 'parent1',
-        out: 'child2',
+        parentId: 'parent1',
+        childId: 'child2',
         order: 2.0
       });
 
       structureTree.__testOnly_addChild({
-        id: 'edge3',
-        in: 'parent1',
-        out: 'child3',
+        parentId: 'parent1',
+        childId: 'child3',
         order: 3.0
       });
 
       // Insert at beginning using binary search (order 0.5 < 2.0)
       structureTree.__testOnly_addChild({
-        id: 'edge1',
-        in: 'parent1',
-        out: 'child1',
+        parentId: 'parent1',
+        childId: 'child1',
         order: 0.5
       });
 
@@ -267,24 +260,21 @@ describe('ReactiveStructureTree', () => {
     it('should handle insertion at end', () => {
       // Add existing children
       structureTree.__testOnly_addChild({
-        id: 'edge1',
-        in: 'parent1',
-        out: 'child1',
+        parentId: 'parent1',
+        childId: 'child1',
         order: 1.0
       });
 
       structureTree.__testOnly_addChild({
-        id: 'edge2',
-        in: 'parent1',
-        out: 'child2',
+        parentId: 'parent1',
+        childId: 'child2',
         order: 2.0
       });
 
       // Insert at end using binary search (order 4.0 > 2.0)
       structureTree.__testOnly_addChild({
-        id: 'edge3',
-        in: 'parent1',
-        out: 'child3',
+        parentId: 'parent1',
+        childId: 'child3',
         order: 4.0
       });
 
@@ -387,21 +377,21 @@ describe('ReactiveStructureTree', () => {
   });
 
   describe('buildTree (bulk load)', () => {
-    it('should populate tree from bulk edge data', () => {
+    it('should populate tree from bulk relationship data', () => {
       // Test the buildTree logic by manually calling addChild in the expected order
       // This exercises the actual implementation path
-      const edges = [
-        { id: 'edge:1', in: 'parent1', out: 'child1', order: 1.0 },
-        { id: 'edge:2', in: 'parent1', out: 'child2', order: 2.0 },
-        { id: 'edge:3', in: 'parent2', out: 'child3', order: 1.0 }
+      const relationships = [
+        { parentId: 'parent1', childId: 'child1', order: 1.0 },
+        { parentId: 'parent1', childId: 'child2', order: 2.0 },
+        { parentId: 'parent2', childId: 'child3', order: 1.0 }
       ];
 
       // Clear previous state
       structureTree.children.clear();
 
-      // Simulate what buildTree does: add edges via addChild
-      for (const edge of edges) {
-        structureTree.__testOnly_addChild(edge);
+      // Simulate what buildTree does: add relationships via addChild
+      for (const rel of relationships) {
+        structureTree.__testOnly_addChild(rel);
       }
 
       // Verify parent1 has children in correct order
@@ -418,22 +408,22 @@ describe('ReactiveStructureTree', () => {
       ]);
     });
 
-    it('should handle bulk load with many edges and maintain sort order', () => {
-      const edges = [
-        { id: 'edge:1', in: 'root', out: 'a', order: 3.0 },
-        { id: 'edge:2', in: 'root', out: 'b', order: 1.0 },
-        { id: 'edge:3', in: 'root', out: 'c', order: 2.0 },
-        { id: 'edge:4', in: 'root', out: 'd', order: 4.0 }
+    it('should handle bulk load with many relationships and maintain sort order', () => {
+      const relationships = [
+        { parentId: 'root', childId: 'a', order: 3.0 },
+        { parentId: 'root', childId: 'b', order: 1.0 },
+        { parentId: 'root', childId: 'c', order: 2.0 },
+        { parentId: 'root', childId: 'd', order: 4.0 }
       ];
 
       structureTree.children.clear();
 
-      // Add edges in unsorted order to test sort functionality
-      for (const edge of edges) {
-        structureTree.__testOnly_addChild(edge);
+      // Add relationships in unsorted order to test sort functionality
+      for (const rel of relationships) {
+        structureTree.__testOnly_addChild(rel);
       }
 
-      // Verify edges are sorted correctly
+      // Verify relationships are sorted correctly
       const children = structureTree.getChildrenWithOrder('root');
       expect(children.map(c => c.nodeId)).toEqual(['b', 'c', 'a', 'd']);
     });
@@ -441,7 +431,7 @@ describe('ReactiveStructureTree', () => {
     it('should handle empty bulk load', () => {
       structureTree.children.clear();
 
-      // No edges to add
+      // No relationships to add
       expect(structureTree.children.size).toBe(0);
     });
   });

@@ -20,15 +20,36 @@ pub struct NodeData {
     pub modified_at: String,
 }
 
-/// Edge data structure from database
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EdgeData {
+/// Edge data structure from database (for internal tracking)
+/// Contains id for change detection, but id is not sent to frontend
+#[derive(Debug, Clone, Deserialize)]
+struct EdgeDbRecord {
     pub id: String,
     #[serde(rename = "in")]
     pub parent_id: String,
     #[serde(rename = "out")]
     pub child_id: String,
     pub order: f64,
+}
+
+/// Hierarchy relationship for frontend (domain-focused naming)
+/// Excludes edge ID as frontend doesn't need it
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HierarchyRelationship {
+    pub parent_id: String,
+    pub child_id: String,
+    pub order: f64,
+}
+
+impl From<&EdgeDbRecord> for HierarchyRelationship {
+    fn from(edge: &EdgeDbRecord) -> Self {
+        Self {
+            parent_id: edge.parent_id.clone(),
+            child_id: edge.child_id.clone(),
+            order: edge.order,
+        }
+    }
 }
 
 /// Service for managing real-time database synchronization
@@ -145,7 +166,7 @@ impl LiveQueryService {
         info!("Loaded {} nodes into baseline", node_versions.len());
 
         // Load all edges
-        let edges: Vec<EdgeData> = self
+        let edges: Vec<EdgeDbRecord> = self
             .store
             .db()
             .query("SELECT id, in, out, order FROM has_child")
@@ -233,7 +254,7 @@ impl LiveQueryService {
 
     /// Check for edge changes (created, updated, deleted)
     async fn check_edge_changes(&self) -> Result<()> {
-        let edges: Vec<EdgeData> = self
+        let edges: Vec<EdgeDbRecord> = self
             .store
             .db()
             .query("SELECT id, in, out, order FROM has_child")
@@ -310,10 +331,12 @@ impl LiveQueryService {
     }
 
     /// Emit edge event to Tauri frontend
-    fn emit_edge_event(&self, change_type: &str, edge: &EdgeData) {
+    /// Converts internal EdgeDbRecord to HierarchyRelationship at the serialization boundary
+    fn emit_edge_event(&self, change_type: &str, edge: &EdgeDbRecord) {
         let event_name = format!("edge:{}", change_type);
+        let relationship: HierarchyRelationship = edge.into();
 
-        if let Err(e) = self.app.emit(&event_name, edge) {
+        if let Err(e) = self.app.emit(&event_name, &relationship) {
             error!("Failed to emit {}: {}", event_name, e);
         }
     }
@@ -353,7 +376,7 @@ impl LiveQueryService {
     }
 
     /// Compute hash of edge data for change detection
-    fn compute_edge_hash(edge: &EdgeData) -> u64 {
+    fn compute_edge_hash(edge: &EdgeDbRecord) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 

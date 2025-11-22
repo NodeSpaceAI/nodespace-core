@@ -32,23 +32,13 @@ export interface NodeEventData {
  * Hierarchy relationship event data from LIVE SELECT
  * Represents parent-child relationships in the node tree
  *
- * Note: The `in` and `out` field names come from SurrealDB's graph edge format.
- * Frontend code should use the domain-friendly aliases: parentId and childId.
+ * Backend converts SurrealDB edge format to this type at the
+ * serialization boundary, isolating database implementation details.
  */
 export interface HierarchyRelationship {
-  id: string;
-  in: string; // Parent node ID (SurrealDB edge format)
-  out: string; // Child node ID (SurrealDB edge format)
+  parentId: string; // Parent node ID
+  childId: string; // Child node ID
   order: number; // Sort order for children (fractional ordering)
-}
-
-// Domain-friendly getters for the relationship
-export function getParentId(rel: HierarchyRelationship): string {
-  return rel.in;
-}
-
-export function getChildId(rel: HierarchyRelationship): string {
-  return rel.out;
 }
 
 // ============================================================================

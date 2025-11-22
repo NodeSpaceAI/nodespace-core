@@ -44,9 +44,8 @@ describe('OptimisticOperationManager', () => {
       const optimisticUpdate = () => {
         optimisticUpdateCalled = true;
         structureTree.__testOnly_addChild({
-          id: 'edge-1',
-          in: 'parent',
-          out: 'child',
+          parentId: 'parent',
+          childId: 'child',
           order: 1.0
         });
       };
@@ -72,9 +71,8 @@ describe('OptimisticOperationManager', () => {
       // Arrange
       const optimisticUpdate = () => {
         structureTree.__testOnly_addChild({
-          id: 'edge-1',
-          in: 'parent',
-          out: 'child',
+          parentId: 'parent',
+          childId: 'child',
           order: 1.0
         });
       };
@@ -107,9 +105,8 @@ describe('OptimisticOperationManager', () => {
       // Arrange
       const optimisticUpdate = () => {
         structureTree.__testOnly_addChild({
-          id: 'edge-1',
-          in: 'parent',
-          out: 'child',
+          parentId: 'parent',
+          childId: 'child',
           order: 1.0
         });
       };
@@ -141,9 +138,8 @@ describe('OptimisticOperationManager', () => {
 
       const optimisticUpdate = () => {
         structureTree.__testOnly_addChild({
-          id: 'edge-1',
-          in: 'parent',
-          out: 'child',
+          parentId: 'parent',
+          childId: 'child',
           order: 1.0
         });
       };
@@ -280,9 +276,8 @@ describe('OptimisticOperationManager', () => {
         }
 
         structureTree.__testOnly_addChild({
-          id: 'edge-1',
-          in: 'parent',
-          out: 'child',
+          parentId: 'parent',
+          childId: 'child',
           order: 1.0
         });
       };
@@ -322,9 +317,8 @@ describe('OptimisticOperationManager', () => {
           optimisticUpdate: () => {
             update1Called = true;
             structureTree.__testOnly_addChild({
-              id: 'edge-1',
-              in: 'parent',
-              out: 'child1',
+              parentId: 'parent',
+              childId: 'child1',
               order: 1.0
             });
           },
@@ -336,9 +330,8 @@ describe('OptimisticOperationManager', () => {
           optimisticUpdate: () => {
             update2Called = true;
             structureTree.__testOnly_addChild({
-              id: 'edge-2',
-              in: 'parent',
-              out: 'child2',
+              parentId: 'parent',
+              childId: 'child2',
               order: 2.0
             });
           },
@@ -363,9 +356,8 @@ describe('OptimisticOperationManager', () => {
         {
           optimisticUpdate: () => {
             structureTree.__testOnly_addChild({
-              id: 'edge-1',
-              in: 'parent',
-              out: 'child1',
+              parentId: 'parent',
+              childId: 'child1',
               order: 1.0
             });
           },
@@ -376,9 +368,8 @@ describe('OptimisticOperationManager', () => {
         {
           optimisticUpdate: () => {
             structureTree.__testOnly_addChild({
-              id: 'edge-2',
-              in: 'parent',
-              out: 'child2',
+              parentId: 'parent',
+              childId: 'child2',
               order: 2.0
             });
           },
@@ -408,9 +399,8 @@ describe('OptimisticOperationManager', () => {
         {
           optimisticUpdate: () => {
             structureTree.__testOnly_addChild({
-              id: 'edge-1',
-              in: 'parent',
-              out: 'child1',
+              parentId: 'parent',
+              childId: 'child1',
               order: 1.0
             });
           },
@@ -421,9 +411,8 @@ describe('OptimisticOperationManager', () => {
         {
           optimisticUpdate: () => {
             structureTree.__testOnly_addChild({
-              id: 'edge-2',
-              in: 'parent',
-              out: 'child2',
+              parentId: 'parent',
+              childId: 'child2',
               order: 2.0
             });
           },
@@ -460,9 +449,8 @@ describe('OptimisticOperationManager', () => {
 
       const optimisticUpdate = () => {
         structureTree.__testOnly_addChild({
-          id: 'edge-1',
-          in: 'parent',
-          out: 'child',
+          parentId: 'parent',
+          childId: 'child',
           order: 1.0
         });
       };
@@ -498,9 +486,8 @@ describe('OptimisticOperationManager', () => {
 
       const optimisticUpdate = () => {
         structureTree.__testOnly_addChild({
-          id: 'edge-1',
-          in: 'parent',
-          out: 'child',
+          parentId: 'parent',
+          childId: 'child',
           order: 1.0
         });
       };
@@ -538,9 +525,8 @@ describe('OptimisticOperationManager', () => {
 
       const optimisticUpdate = () => {
         structureTree.__testOnly_addChild({
-          id: 'edge-1',
-          in: 'parent',
-          out: 'child',
+          parentId: 'parent',
+          childId: 'child',
           order: 1.0
         });
       };
@@ -576,9 +562,8 @@ describe('OptimisticOperationManager', () => {
 
       const optimisticUpdate = () => {
         structureTree.__testOnly_addChild({
-          id: 'edge-1',
-          in: 'parent',
-          out: 'child',
+          parentId: 'parent',
+          childId: 'child',
           order: 1.0
         });
       };
@@ -613,16 +598,14 @@ describe('OptimisticOperationManager', () => {
     it('should work with ReactiveStructureTree snapshot/restore', async () => {
       // Arrange - Set up initial structure
       structureTree.__testOnly_addChild({
-        id: 'edge-1',
-        in: 'root',
-        out: 'child1',
+        parentId: 'root',
+        childId: 'child1',
         order: 1.0
       });
 
       structureTree.__testOnly_addChild({
-        id: 'edge-2',
-        in: 'root',
-        out: 'child2',
+        parentId: 'root',
+        childId: 'child2',
         order: 2.0
       });
 
@@ -631,9 +614,8 @@ describe('OptimisticOperationManager', () => {
       // Act - Operation that will fail
       const optimisticUpdate = () => {
         structureTree.__testOnly_addChild({
-          id: 'edge-3',
-          in: 'root',
-          out: 'child3',
+          parentId: 'root',
+          childId: 'child3',
           order: 3.0
         });
       };
@@ -662,9 +644,8 @@ describe('OptimisticOperationManager', () => {
       const optimisticUpdate = () => {
         // Both structure and data changes
         structureTree.__testOnly_addChild({
-          id: 'edge-1',
-          in: 'parent',
-          out: 'child',
+          parentId: 'parent',
+          childId: 'child',
           order: 1.0
         });
 

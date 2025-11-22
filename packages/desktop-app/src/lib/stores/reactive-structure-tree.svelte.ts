@@ -58,20 +58,20 @@ class ReactiveStructureTree {
   }
 
   /**
-   * Build tree from bulk edge data
-   * Called during initialization to populate the tree with existing edges
+   * Build tree from bulk relationship data
+   * Called during initialization to populate the tree with existing relationships
    * @private
    */
-  private buildTree(edges: HierarchyRelationship[]) {
+  private buildTree(relationships: HierarchyRelationship[]) {
     const tree = new Map<string, ChildInfo[]>();
 
-    for (const edge of edges) {
-      if (!tree.has(edge.in)) {
-        tree.set(edge.in, []);
+    for (const rel of relationships) {
+      if (!tree.has(rel.parentId)) {
+        tree.set(rel.parentId, []);
       }
-      tree.get(edge.in)!.push({
-        nodeId: edge.out,
-        order: edge.order
+      tree.get(rel.parentId)!.push({
+        nodeId: rel.childId,
+        order: rel.order
       });
     }
 
@@ -166,10 +166,10 @@ class ReactiveStructureTree {
   /**
    * Add a child with binary search insertion to maintain sort by order
    */
-  private addChild(edge: HierarchyRelationship) {
-    const parentId = edge.in;
-    const childId = edge.out;
-    const order = edge.order;
+  private addChild(rel: HierarchyRelationship) {
+    const parentId = rel.parentId;
+    const childId = rel.childId;
+    const order = rel.order;
 
     let children = this.children.get(parentId);
     if (!children) {
@@ -181,8 +181,8 @@ class ReactiveStructureTree {
     const existingIndex = children.findIndex((c) => c.nodeId === childId);
     if (existingIndex >= 0) {
       console.warn(
-        `[ReactiveStructureTree] Duplicate edge detected: ${childId} already child of ${parentId}`,
-        edge
+        `[ReactiveStructureTree] Duplicate relationship detected: ${childId} already child of ${parentId}`,
+        rel
       );
       // Update order if different
       if (children[existingIndex].order !== order) {
@@ -200,7 +200,7 @@ class ReactiveStructureTree {
     if (currentParent && currentParent !== parentId) {
       console.error(
         `[ReactiveStructureTree] Tree invariant violation: ${childId} already has parent ${currentParent}, cannot add to ${parentId}`,
-        edge
+        rel
       );
       // In a tree structure, a node can only have one parent
       // This indicates either a database inconsistency or a bug in event emission
@@ -227,9 +227,9 @@ class ReactiveStructureTree {
   /**
    * Remove a child from parent's children
    */
-  private removeChild(edge: HierarchyRelationship) {
-    const parentId = edge.in;
-    const childId = edge.out;
+  private removeChild(rel: HierarchyRelationship) {
+    const parentId = rel.parentId;
+    const childId = rel.childId;
 
     const children = this.children.get(parentId) || [];
     const filtered = children.filter((c) => c.nodeId !== childId);
@@ -244,10 +244,10 @@ class ReactiveStructureTree {
   /**
    * Update child order (rare - only during rebalancing)
    */
-  private updateChildOrder(edge: HierarchyRelationship) {
+  private updateChildOrder(rel: HierarchyRelationship) {
     // Remove and re-add to update order
-    this.removeChild(edge);
-    this.addChild(edge);
+    this.removeChild(rel);
+    this.addChild(rel);
   }
 
   /**
@@ -318,9 +318,8 @@ class ReactiveStructureTree {
    */
   addInMemoryRelationship(parentId: string, childId: string, order: number = 1.0) {
     this.addChild({
-      id: `${parentId}-${childId}`,
-      in: parentId,
-      out: childId,
+      parentId,
+      childId,
       order
     });
   }

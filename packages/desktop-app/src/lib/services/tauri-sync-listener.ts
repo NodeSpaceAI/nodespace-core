@@ -49,11 +49,11 @@ export async function initializeTauriSyncListeners(): Promise<void> {
     // Listen for hierarchy events (debug logging)
     // Note: Backend still emits 'edge:*' events - these will be renamed to 'hierarchy:*' in a future refactor
     await listen<HierarchyRelationship>('edge:created', (event) => {
-      console.debug(`[TauriSync] Hierarchy relationship created: ${event.payload.in} -> ${event.payload.out}`);
+      console.debug(`[TauriSync] Hierarchy relationship created: ${event.payload.parentId} -> ${event.payload.childId}`);
     });
 
     await listen<HierarchyRelationship>('edge:updated', (event) => {
-      console.debug(`[TauriSync] Hierarchy relationship updated: ${event.payload.in} -> ${event.payload.out}`);
+      console.debug(`[TauriSync] Hierarchy relationship updated: ${event.payload.parentId} -> ${event.payload.childId}`);
     });
 
     await listen<{ id: string }>('edge:deleted', (event) => {

@@ -64,18 +64,33 @@ use surrealdb::Surreal;
 /// Represents a has_child edge from the database
 ///
 /// Used for bulk loading the tree structure on startup.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Deserializes from SurrealDB edge format (in/out) but serializes
+/// to frontend-friendly format (parentId/childId).
+#[derive(Debug, Clone, Deserialize)]
 pub struct EdgeRecord {
-    /// Edge ID in SurrealDB format (e.g., "has_child:123")
-    pub id: String,
-    /// Parent node ID
+    /// Parent node ID (SurrealDB `in` field)
     #[serde(rename = "in")]
-    pub in_node: String,
-    /// Child node ID
+    pub parent_id: String,
+    /// Child node ID (SurrealDB `out` field)
     #[serde(rename = "out")]
-    pub out_node: String,
+    pub child_id: String,
     /// Order position for this child in parent's children list
     pub order: f64,
+}
+
+/// Custom serialization for EdgeRecord to emit parentId/childId (camelCase)
+impl serde::Serialize for EdgeRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("EdgeRecord", 3)?;
+        state.serialize_field("parentId", &self.parent_id)?;
+        state.serialize_field("childId", &self.child_id)?;
+        state.serialize_field("order", &self.order)?;
+        state.end()
+    }
 }
 
 /// Types that require type-specific tables for storing properties
@@ -3278,40 +3293,21 @@ where
     /// // Load all edges to populate the tree on startup
     /// let edges = store.get_all_edges().await?;
     /// for edge in edges {
-    ///     println!("Edge: {} -> {}", edge.in_node, edge.out_node);
+    ///     println!("Edge: {} -> {}", edge.parent_id, edge.child_id);
     /// }
     /// # Ok(())
     /// # }
     /// ```
     pub async fn get_all_edges(&self) -> Result<Vec<EdgeRecord>> {
-        #[derive(Deserialize)]
-        struct EdgeOut {
-            id: String,
-            #[serde(rename = "in")]
-            in_node: String,
-            out: String,
-            order: f64,
-        }
-
         let mut response = self
             .db
-            .query("SELECT id, in, out, order FROM has_child ORDER BY `in`, `order` ASC;")
+            .query("SELECT in, out, order FROM has_child ORDER BY `in`, `order` ASC;")
             .await
             .context("Failed to query all edges")?;
 
-        let edges: Vec<EdgeOut> = response.take(0).context("Failed to extract edges")?;
+        let edges: Vec<EdgeRecord> = response.take(0).context("Failed to extract edges")?;
 
-        let result = edges
-            .into_iter()
-            .map(|edge| EdgeRecord {
-                id: edge.id,
-                in_node: edge.in_node,
-                out_node: edge.out,
-                order: edge.order,
-            })
-            .collect();
-
-        Ok(result)
+        Ok(edges)
     }
 
     pub fn close(&self) -> Result<()> {
@@ -4194,9 +4190,8 @@ mod tests {
         // Verify we got the edges
         assert!(!edges.is_empty(), "Should have retrieved edges");
 
-        // Verify serialization: edges should use 'in' and 'out' field names
-        // This validates that the #[serde(rename)] attributes work correctly
-        let parent_edges: Vec<_> = edges.iter().filter(|e| e.in_node == parent.id).collect();
+        // Verify edges use parent_id/child_id field names
+        let parent_edges: Vec<_> = edges.iter().filter(|e| e.parent_id == parent.id).collect();
 
         assert_eq!(parent_edges.len(), 3, "Should have 3 children for parent");
 
@@ -4210,7 +4205,7 @@ mod tests {
         );
 
         // Verify edge fields map correctly to child IDs
-        let child_ids: Vec<_> = parent_edges.iter().map(|e| e.out_node.clone()).collect();
+        let child_ids: Vec<_> = parent_edges.iter().map(|e| e.child_id.clone()).collect();
         assert!(child_ids.contains(&child1.id), "Should contain child1 ID");
         assert!(child_ids.contains(&child2.id), "Should contain child2 ID");
         assert!(child_ids.contains(&child3.id), "Should contain child3 ID");
