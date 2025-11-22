@@ -45,7 +45,7 @@
 //!     status: 'todo'
 //! };
 //! CREATE node:`{uuid}` CONTENT {
-//!     nodeType: 'task',
+//!     node_type: 'task',
 //!     data: type::thing('task', '{uuid}'),  // Forward link
 //!     ...
 //! };
@@ -68,10 +68,10 @@ mod hub_spoke_tests {
     use tempfile::TempDir;
 
     /// Test helper struct for hub nodes with proper Thing type for Record Links
+    /// Note: Field names match snake_case database schema (node_type, modified_at)
     #[derive(Debug, Deserialize, Serialize)]
     struct NodeWithData {
         id: Thing,
-        #[serde(rename = "nodeType")]
         node_type: String,
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,7 +105,7 @@ mod hub_spoke_tests {
             .query(
                 r#"
                 CREATE node:test CONTENT {
-                    content: "Missing nodeType field"
+                    content: "Missing node_type field"
                 }
             "#,
             )
@@ -114,7 +114,7 @@ mod hub_spoke_tests {
 
         assert!(
             result.is_err(),
-            "Should fail validation without required nodeType field"
+            "Should fail validation without required node_type field"
         );
 
         Ok(())
@@ -168,12 +168,12 @@ mod hub_spoke_tests {
 
                 -- Step 2: Create hub with forward link to spoke
                 CREATE node:`{uuid}` CONTENT {{
-                    nodeType: 'task',
+                    node_type: 'task',
                     content: 'Test task',
                     data: type::thing('task', '{uuid}'),
                     version: 1,
-                    createdAt: time::now(),
-                    modifiedAt: time::now()
+                    created_at: time::now(),
+                    modified_at: time::now()
                 }};
 
                 COMMIT TRANSACTION;
@@ -235,12 +235,12 @@ mod hub_spoke_tests {
                 }};
 
                 CREATE node:`{uuid}` CONTENT {{
-                    nodeType: 'task',
+                    node_type: 'task',
                     content: 'Task via spoke',
                     data: type::thing('task', '{uuid}'),
                     version: 1,
-                    createdAt: time::now(),
-                    modifiedAt: time::now()
+                    created_at: time::now(),
+                    modified_at: time::now()
                 }};
 
                 COMMIT TRANSACTION;
@@ -296,9 +296,9 @@ mod hub_spoke_tests {
                     status: 'todo'
                 }};
 
-                -- Invalid hub creation (missing required nodeType)
+                -- Invalid hub creation (missing required node_type)
                 CREATE node:`{uuid}` CONTENT {{
-                    content: 'Missing nodeType'
+                    content: 'Missing node_type'
                 }};
 
                 COMMIT TRANSACTION;
@@ -333,22 +333,22 @@ mod hub_spoke_tests {
                 r#"
                 CREATE node:parent CONTENT {
                     id: type::thing('node', 'parent'),
-                    nodeType: 'text',
+                    node_type: 'text',
                     content: 'Parent node',
                     data: NONE,
                     version: 1,
-                    createdAt: time::now(),
-                    modifiedAt: time::now()
+                    created_at: time::now(),
+                    modified_at: time::now()
                 };
 
                 CREATE node:child CONTENT {
                     id: type::thing('node', 'child'),
-                    nodeType: 'text',
+                    node_type: 'text',
                     content: 'Child node',
                     data: NONE,
                     version: 1,
-                    createdAt: time::now(),
-                    modifiedAt: time::now()
+                    created_at: time::now(),
+                    modified_at: time::now()
                 };
             "#,
             )
@@ -361,7 +361,7 @@ mod hub_spoke_tests {
                 r#"
                 RELATE node:parent->has_child->node:child CONTENT {
                     order: 1.5,
-                    createdAt: time::now(),
+                    created_at: time::now(),
                     version: 1
                 }
             "#,
@@ -399,22 +399,22 @@ mod hub_spoke_tests {
                 r#"
                 CREATE node:source CONTENT {
                     id: type::thing('node', 'source'),
-                    nodeType: 'text',
+                    node_type: 'text',
                     content: 'Source mentions target',
                     data: NONE,
                     version: 1,
-                    createdAt: time::now(),
-                    modifiedAt: time::now()
+                    created_at: time::now(),
+                    modified_at: time::now()
                 };
 
                 CREATE node:target CONTENT {
                     id: type::thing('node', 'target'),
-                    nodeType: 'text',
+                    node_type: 'text',
                     content: 'Target node',
                     data: NONE,
                     version: 1,
-                    createdAt: time::now(),
-                    modifiedAt: time::now()
+                    created_at: time::now(),
+                    modified_at: time::now()
                 };
             "#,
             )
@@ -426,7 +426,7 @@ mod hub_spoke_tests {
             .query(
                 r#"
                 RELATE node:source->mentions->node:target CONTENT {
-                    createdAt: time::now(),
+                    created_at: time::now(),
                     context: "inline mention",
                     offset: 10
                 }
@@ -478,12 +478,12 @@ mod hub_spoke_tests {
             .query(format!(
                 r#"
                 CREATE node:`{uuid}` CONTENT {{
-                    nodeType: 'text',
+                    node_type: 'text',
                     content: 'Simple text node',
                     data: NONE,
                     version: 1,
-                    createdAt: time::now(),
-                    modifiedAt: time::now()
+                    created_at: time::now(),
+                    modified_at: time::now()
                 }}
             "#
             ))

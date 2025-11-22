@@ -9,14 +9,13 @@ use tracing::{debug, error, info, warn};
 use nodespace_core::SurrealStore;
 
 /// Node data structure from database
+/// Note: Field names match snake_case database schema (node_type, modified_at)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeData {
     pub id: String,
     pub content: String,
-    #[serde(rename = "nodeType")]
     pub node_type: String,
     pub version: i32,
-    #[serde(rename = "modifiedAt")]
     pub modified_at: String,
 }
 
@@ -155,7 +154,7 @@ impl LiveQueryService {
         let nodes: Vec<NodeData> = self
             .store
             .db()
-            .query("SELECT id, content, nodeType, version, modifiedAt FROM node")
+            .query("SELECT id, content, node_type, version, modified_at FROM node")
             .await?
             .take(0)?;
 
@@ -201,7 +200,7 @@ impl LiveQueryService {
         let nodes: Vec<NodeData> = self
             .store
             .db()
-            .query("SELECT id, content, nodeType, version, modifiedAt FROM node")
+            .query("SELECT id, content, node_type, version, modified_at FROM node")
             .await?
             .take(0)?;
 

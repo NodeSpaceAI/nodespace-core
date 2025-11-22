@@ -64,33 +64,18 @@ use surrealdb::Surreal;
 /// Represents a has_child edge from the database
 ///
 /// Used for bulk loading the tree structure on startup.
-/// Deserializes from SurrealDB edge format (in/out) but serializes
-/// to frontend-friendly format (parentId/childId).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeRecord {
-    /// Parent node ID (SurrealDB `in` field)
+    /// Edge ID in SurrealDB format (e.g., "has_child:123")
+    pub id: String,
+    /// Parent node ID
     #[serde(rename = "in")]
-    pub parent_id: String,
-    /// Child node ID (SurrealDB `out` field)
+    pub in_node: String,
+    /// Child node ID
     #[serde(rename = "out")]
-    pub child_id: String,
+    pub out_node: String,
     /// Order position for this child in parent's children list
     pub order: f64,
-}
-
-/// Custom serialization for EdgeRecord to emit parentId/childId (camelCase)
-impl serde::Serialize for EdgeRecord {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("EdgeRecord", 3)?;
-        state.serialize_field("parentId", &self.parent_id)?;
-        state.serialize_field("childId", &self.child_id)?;
-        state.serialize_field("order", &self.order)?;
-        state.end()
-    }
 }
 
 /// Types that require type-specific tables for storing properties
@@ -179,14 +164,11 @@ fn validate_node_type(node_type: &str) -> Result<()> {
 struct SurrealNode {
     // Record ID is stored in the 'id' field returned by SurrealDB (e.g., node:⟨uuid⟩)
     id: Thing, // SurrealDB record ID (table:id format)
-    #[serde(rename = "nodeType")]
     node_type: String,
     content: String,
     before_sibling_id: Option<String>,
     version: i64,
-    #[serde(rename = "createdAt")]
     created_at: String,
-    #[serde(rename = "modifiedAt")]
     modified_at: String,
     embedding_vector: Option<Vec<f32>>,
     #[serde(default)]
@@ -331,23 +313,19 @@ async fn batch_fetch_properties<C: surrealdb::Connection>(
     let mut result = std::collections::HashMap::new();
 
     for node_id in node_ids {
-        // Query spoke table using OMIT id to exclude Thing-typed id field
-        // This matches the pattern from individual get_node() fetching (line 1136)
-        let query = format!("SELECT * OMIT id FROM type::thing('{}', $id);", node_type);
+        // Query spoke table using backtick-quoted ID (same pattern as get_node)
+        // IDs with special characters (hyphens, etc.) need backtick-quoting in SurrealDB
+        let query = format!("SELECT * OMIT id, node FROM {}:`{}`;", node_type, node_id);
 
-        // Clone node_id so we own it and can pass to bind
+        // Clone node_id so we own it
         let node_id_owned = node_id.clone();
 
-        let mut response = db
-            .query(&query)
-            .bind(("id", node_id_owned.clone()))
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to fetch properties for type '{}' id '{}'",
-                    node_type, node_id_owned
-                )
-            })?;
+        let mut response = db.query(&query).await.with_context(|| {
+            format!(
+                "Failed to fetch properties for type '{}' id '{}'",
+                node_type, node_id_owned
+            )
+        })?;
 
         // Deserialize as generic Value
         let records: Vec<Value> = response.take(0).with_context(|| {
@@ -829,12 +807,12 @@ where
         let hub_query = format!(
             r#"
             CREATE node:`{}` CONTENT {{
-                nodeType: $node_type,
+                node_type: $node_type,
                 content: $content,
                 version: $version,
                 before_sibling_id: $before_sibling_id,
-                createdAt: time::now(),
-                modifiedAt: time::now(),
+                created_at: time::now(),
+                modified_at: time::now(),
                 embedding_vector: [],
                 embedding_stale: false,
                 mentions: [],
@@ -1074,18 +1052,18 @@ where
                 -- Step 3: Create hub (universal metadata) with forward link to spoke
                 CREATE $node_id CONTENT {
                     id: $node_id,
-                    nodeType: $node_type,
+                    node_type: $node_type,
                     content: $content,
                     data: $type_id,
                     version: 1,
-                    createdAt: time::now(),
-                    modifiedAt: time::now()
+                    created_at: time::now(),
+                    modified_at: time::now()
                 };
 
                 -- Step 4: Create parent-child edge (parent->has_child->child)
                 RELATE $parent_id->has_child->$node_id CONTENT {
                     order: $order,
-                    createdAt: time::now(),
+                    created_at: time::now(),
                     version: 1
                 };
 
@@ -1100,18 +1078,18 @@ where
                 -- Create hub only (no spoke needed for simple types)
                 CREATE $node_id CONTENT {
                     id: $node_id,
-                    nodeType: $node_type,
+                    node_type: $node_type,
                     content: $content,
                     data: NONE,
                     version: 1,
-                    createdAt: time::now(),
-                    modifiedAt: time::now()
+                    created_at: time::now(),
+                    modified_at: time::now()
                 };
 
                 -- Create parent-child edge (parent->has_child->child)
                 RELATE $parent_id->has_child->$node_id CONTENT {
                     order: $order,
-                    createdAt: time::now(),
+                    created_at: time::now(),
                     version: 1
                 };
 
@@ -1313,7 +1291,7 @@ where
                 "
                 UPDATE type::thing('node', $id) SET
                     content = $content,
-                    type = $node_type,
+                    node_type = $node_type,
                     before_sibling_id = $before_sibling_id,
                     modified_at = time::now(),
                     version = version + 1,
@@ -1327,7 +1305,7 @@ where
                 "
                 UPDATE type::thing('node', $id) SET
                     content = $content,
-                    type = $node_type,
+                    node_type = $node_type,
                     before_sibling_id = $before_sibling_id,
                     modified_at = time::now(),
                     version = version + 1,
@@ -1477,7 +1455,7 @@ where
         let has_new_type_table = TYPES_WITH_PROPERTIES.contains(&new_type.as_str());
 
         // Build atomic transaction using Thing parameters
-        // Note: Field names are camelCase (nodeType, modifiedAt) to match hub schema
+        // Note: Field names use snake_case (node_type, modified_at) to match hub schema
         let transaction_query = if has_new_type_table && !props_with_schema.is_empty() {
             // New type has properties table
             r#"
@@ -1491,8 +1469,8 @@ where
 
                 -- Update node type, variants map, and data link
                 UPDATE $node_id SET
-                    nodeType = $new_type,
-                    modifiedAt = time::now(),
+                    node_type = $new_type,
+                    modified_at = time::now(),
                     version = version + 1,
                     variants[$old_type] = $old_type_record,
                     variants[$new_type] = $new_type_id,
@@ -1508,8 +1486,8 @@ where
 
                 -- Update node type and variants map
                 UPDATE $node_id SET
-                    nodeType = $new_type,
-                    modifiedAt = time::now(),
+                    node_type = $new_type,
+                    modified_at = time::now(),
                     version = version + 1,
                     variants[$old_type] = $old_type_record,
                     variants[$new_type] = $new_type_record,
@@ -1612,7 +1590,7 @@ where
         let query = "
             UPDATE type::thing('node', $id) SET
                 content = $content,
-                type = $node_type,
+                node_type = $node_type,
                 before_sibling_id = $before_sibling_id,
                 properties = $properties,
                 modified_at = time::now(),
@@ -1855,7 +1833,7 @@ where
         let mut conditions = Vec::new();
 
         if query.node_type.is_some() {
-            conditions.push("type = $node_type".to_string());
+            conditions.push("node_type = $node_type".to_string());
         }
 
         // Note: include_containers_and_tasks field removed - use graph edges and separate queries instead
@@ -2210,90 +2188,6 @@ where
         Ok(Some(results[0].clone()))
     }
 
-    /// Get a node with its entire subtree as nested children using recursive FETCH
-    ///
-    /// Returns a single node with all its descendants recursively nested as a tree.
-    /// Uses SurrealDB's recursive graph traversal to fetch the entire subtree in a single
-    /// query, eliminating the need for frontend tree reconstruction and N+1 queries.
-    ///
-    /// # Arguments
-    ///
-    /// * `parent_id` - ID of the root node to fetch with its entire subtree
-    ///
-    /// # Returns
-    ///
-    /// A JSON object representing the node and its complete nested tree structure.
-    /// The `children` field contains an array of child nodes, each with their own
-    /// `children` arrays recursively nested.
-    ///
-    /// # Performance
-    ///
-    /// Single recursive query to database - O(n) where n is total nodes in subtree.
-    /// Much faster than fetching flat nodes array + separate edges array + frontend reconstruction.
-    ///
-    /// # Implementation
-    ///
-    /// Uses `->has_child->(node ORDER BY ->has_child.order)` for edge traversal with ordering.
-    /// The `.@` recursive projection repeats the pattern infinitely for all tree depths.
-    pub async fn get_children_tree(&self, parent_id: &str) -> Result<serde_json::Value> {
-        use surrealdb::sql::Thing;
-
-        let parent_thing = Thing::from(("node".to_string(), parent_id.to_string()));
-
-        // Recursive query: Returns parent node with all descendants nested
-        // Ordered by has_child.order to maintain fractional ordering
-        // Note: Using explicit fields instead of * to ensure camelCase serialization
-        let query = "
-            SELECT
-                id,
-                nodeType,
-                content,
-                version,
-                createdAt,
-                modifiedAt,
-                properties,
-                embeddingVector,
-                embeddingStale,
-                mentions,
-                mentionedBy,
-                _schema_version,
-                ->has_child->(node ORDER BY ->has_child.order).{
-                    id,
-                    nodeType,
-                    content,
-                    version,
-                    createdAt,
-                    modifiedAt,
-                    properties,
-                    embeddingVector,
-                    embeddingStale,
-                    mentions,
-                    mentionedBy,
-                    _schema_version,
-                    children: ->has_child->(node ORDER BY ->has_child.order).@
-                } AS children
-            FROM $parent_thing;
-        ";
-
-        let mut response = self
-            .db
-            .query(query)
-            .bind(("parent_thing", parent_thing))
-            .await
-            .context("Failed to fetch children tree")?;
-
-        let results: Vec<serde_json::Value> = response
-            .take(0)
-            .context("Failed to parse children tree results")?;
-
-        if results.is_empty() {
-            return Ok(serde_json::json!({}));
-        }
-
-        // Return the root node with its nested tree structure
-        Ok(results[0].clone())
-    }
-
     pub async fn search_nodes_by_content(
         &self,
         search_query: &str,
@@ -2631,7 +2525,7 @@ where
                 -- Create new parent edge with fractional order
                 RELATE $parent_id->has_child->$node_id CONTENT {
                     order: $order,
-                    createdAt: time::now()
+                    created_at: time::now()
                 };
 
                 COMMIT TRANSACTION;
@@ -3214,7 +3108,7 @@ where
             let update_stmt = format!(
                 "UPDATE type::thing('node', $id_{idx}) SET
                     content = $content_{idx},
-                    type = $node_type_{idx},
+                    node_type = $node_type_{idx},
                     before_sibling_id = $before_sibling_id_{idx},
                     modified_at = time::now(),
                     version = version + 1,
@@ -3293,21 +3187,60 @@ where
     /// // Load all edges to populate the tree on startup
     /// let edges = store.get_all_edges().await?;
     /// for edge in edges {
-    ///     println!("Edge: {} -> {}", edge.parent_id, edge.child_id);
+    ///     println!("Edge: {} -> {}", edge.in_node, edge.out_node);
     /// }
     /// # Ok(())
     /// # }
     /// ```
     pub async fn get_all_edges(&self) -> Result<Vec<EdgeRecord>> {
+        // SurrealDB returns Thing types for id, in, out fields on relation tables
+        // We need to deserialize as Thing and extract the string ID
+        #[derive(Deserialize)]
+        struct EdgeOut {
+            id: Thing,
+            #[serde(rename = "in")]
+            in_node: Thing,
+            out: Thing,
+            order: f64,
+        }
+
         let mut response = self
             .db
-            .query("SELECT in, out, order FROM has_child ORDER BY `in`, `order` ASC;")
+            .query("SELECT id, in, out, order FROM has_child ORDER BY `in`, `order` ASC;")
             .await
             .context("Failed to query all edges")?;
 
-        let edges: Vec<EdgeRecord> = response.take(0).context("Failed to extract edges")?;
+        let edges: Vec<EdgeOut> = response.take(0).context("Failed to extract edges")?;
 
-        Ok(edges)
+        // Extract string IDs from Thing types
+        let result = edges
+            .into_iter()
+            .map(|edge| {
+                let id_str = match &edge.id.id {
+                    Id::String(s) => s.clone(),
+                    Id::Number(n) => n.to_string(),
+                    _ => edge.id.to_string(),
+                };
+                let in_str = match &edge.in_node.id {
+                    Id::String(s) => s.clone(),
+                    Id::Number(n) => n.to_string(),
+                    _ => edge.in_node.to_string(),
+                };
+                let out_str = match &edge.out.id {
+                    Id::String(s) => s.clone(),
+                    Id::Number(n) => n.to_string(),
+                    _ => edge.out.to_string(),
+                };
+                EdgeRecord {
+                    id: id_str,
+                    in_node: in_str,
+                    out_node: out_str,
+                    order: edge.order,
+                }
+            })
+            .collect();
+
+        Ok(result)
     }
 
     pub fn close(&self) -> Result<()> {
@@ -4190,8 +4123,9 @@ mod tests {
         // Verify we got the edges
         assert!(!edges.is_empty(), "Should have retrieved edges");
 
-        // Verify edges use parent_id/child_id field names
-        let parent_edges: Vec<_> = edges.iter().filter(|e| e.parent_id == parent.id).collect();
+        // Verify serialization: edges should use 'in' and 'out' field names
+        // This validates that the #[serde(rename)] attributes work correctly
+        let parent_edges: Vec<_> = edges.iter().filter(|e| e.in_node == parent.id).collect();
 
         assert_eq!(parent_edges.len(), 3, "Should have 3 children for parent");
 
@@ -4205,7 +4139,7 @@ mod tests {
         );
 
         // Verify edge fields map correctly to child IDs
-        let child_ids: Vec<_> = parent_edges.iter().map(|e| e.child_id.clone()).collect();
+        let child_ids: Vec<_> = parent_edges.iter().map(|e| e.out_node.clone()).collect();
         assert!(child_ids.contains(&child1.id), "Should contain child1 ID");
         assert!(child_ids.contains(&child2.id), "Should contain child2 ID");
         assert!(child_ids.contains(&child3.id), "Should contain child3 ID");

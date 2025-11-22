@@ -22,15 +22,15 @@ DEFINE TABLE IF NOT EXISTS node SCHEMAFULL;
 -- NOTE: 'id' is the Record ID (primary key) and is automatically managed by SurrealDB
 -- Do NOT redefine it - let SurrealDB handle it natively as a Thing type
 DEFINE FIELD IF NOT EXISTS content ON TABLE node TYPE string DEFAULT "";
-DEFINE FIELD IF NOT EXISTS nodeType ON TABLE node TYPE string ASSERT $value != NONE;
+DEFINE FIELD IF NOT EXISTS node_type ON TABLE node TYPE string ASSERT $value != NONE;
 DEFINE FIELD IF NOT EXISTS data ON TABLE node TYPE option<record>;  -- Record Link to spoke (task, date, schema, or NULL)
 DEFINE FIELD IF NOT EXISTS version ON TABLE node TYPE int DEFAULT 1 ASSERT $value >= 1;
-DEFINE FIELD IF NOT EXISTS createdAt ON TABLE node TYPE datetime DEFAULT time::now();
-DEFINE FIELD IF NOT EXISTS modifiedAt ON TABLE node TYPE datetime DEFAULT time::now();
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE node TYPE datetime DEFAULT time::now();
+DEFINE FIELD IF NOT EXISTS modified_at ON TABLE node TYPE datetime DEFAULT time::now();
 
 -- Indexes for performance
-DEFINE INDEX IF NOT EXISTS idx_node_type ON TABLE node COLUMNS nodeType;
-DEFINE INDEX IF NOT EXISTS idx_node_modified ON TABLE node COLUMNS modifiedAt;
+DEFINE INDEX IF NOT EXISTS idx_node_type ON TABLE node COLUMNS node_type;
+DEFINE INDEX IF NOT EXISTS idx_node_modified ON TABLE node COLUMNS modified_at;
 
 -- NO beforeSiblingId - structure lives in has_child edges!
 -- NO parentId - hierarchy lives in has_child edges!
@@ -99,7 +99,7 @@ DEFINE TABLE IF NOT EXISTS has_child SCHEMAFULL TYPE RELATION IN node OUT node;
 
 -- Required fields for hierarchy
 DEFINE FIELD IF NOT EXISTS order ON TABLE has_child TYPE float ASSERT $value != NONE;
-DEFINE FIELD IF NOT EXISTS createdAt ON TABLE has_child TYPE datetime DEFAULT time::now();
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE has_child TYPE datetime DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS version ON TABLE has_child TYPE int DEFAULT 1;  -- OCC for concurrent edits
 
 -- Index for efficient ordering queries
@@ -114,7 +114,7 @@ DEFINE INDEX IF NOT EXISTS idx_unique_child ON TABLE has_child COLUMNS in, out U
 DEFINE TABLE IF NOT EXISTS mentions SCHEMAFULL TYPE RELATION IN node OUT node;
 
 -- Required base fields
-DEFINE FIELD IF NOT EXISTS createdAt ON TABLE mentions TYPE datetime DEFAULT time::now();
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE mentions TYPE datetime DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS context ON TABLE mentions TYPE string DEFAULT "";
 DEFINE FIELD IF NOT EXISTS offset ON TABLE mentions TYPE int DEFAULT 0;
 
@@ -138,8 +138,8 @@ DEFINE FIELD IF NOT EXISTS node_id ON TABLE embedding TYPE record<node> ASSERT $
 DEFINE FIELD IF NOT EXISTS model_name ON TABLE embedding TYPE string DEFAULT 'bge-small-en-v1.5';
 DEFINE FIELD IF NOT EXISTS vector ON TABLE embedding TYPE array<float> ASSERT $value != NONE;
 DEFINE FIELD IF NOT EXISTS dimension ON TABLE embedding TYPE int ASSERT $value > 0;
-DEFINE FIELD IF NOT EXISTS createdAt ON TABLE embedding TYPE datetime DEFAULT time::now();
-DEFINE FIELD IF NOT EXISTS modifiedAt ON TABLE embedding TYPE datetime DEFAULT time::now();
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE embedding TYPE datetime DEFAULT time::now();
+DEFINE FIELD IF NOT EXISTS modified_at ON TABLE embedding TYPE datetime DEFAULT time::now();
 
 -- Indexes for efficient lookups
 DEFINE INDEX IF NOT EXISTS idx_embedding_node ON TABLE embedding COLUMNS node_id;

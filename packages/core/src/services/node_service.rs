@@ -1446,9 +1446,13 @@ where
         parent_id: &str,
     ) -> Result<serde_json::Value, NodeServiceError> {
         self.store
-            .get_children_tree(parent_id)
+            .get_children(Some(parent_id))
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map(|nodes| {
+                // Convert nodes to JSON tree structure
+                serde_json::to_value(nodes).unwrap_or(serde_json::Value::Array(vec![]))
+            })
     }
 
     /// Check if a node is a root node (has no parent)
