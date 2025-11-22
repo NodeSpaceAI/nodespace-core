@@ -10,7 +10,6 @@
   import { onMount, onDestroy, getContext, tick } from 'svelte';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
   import { formatTabTitle } from '$lib/utils/text-formatting';
-  import { registerChildWithParent } from '$lib/utils/node-hierarchy';
   import { pluginRegistry } from '$lib/components/viewers/index';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import BacklinksPanel from '$lib/design/components/backlinks-panel.svelte';
@@ -1603,10 +1602,8 @@
                     // Use setEditingNodeFromTypeConversion to prevent blur handler from clearing state
                     focusManager.setEditingNodeFromTypeConversion(promotedNode.id, cursorPosition, paneId);
 
-                    // Register edge in ReactiveStructureTree (synchronous in-memory)
-                    registerChildWithParent(nodeId, promotedNode.id);
-
                     // Add to shared store (in-memory only, don't persist yet)
+                    // Note: LIVE SELECT handles parent-child relationship via edge:created events
                     sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, true);
 
                     // CRITICAL FIX: Clear viewerPlaceholder SYNCHRONOUSLY to prevent subsequent
@@ -1696,10 +1693,8 @@
                     });
 
                     // Add to store and trigger persistence
+                    // Note: LIVE SELECT handles parent-child relationship via edge:created events
                     sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
-
-                    // CRITICAL FIX (Issue #528): Update children cache to establish parent-child relationship
-                    registerChildWithParent(nodeId, promotedNode.id);
 
                     viewerPlaceholder = null;
                   } else {
@@ -1793,10 +1788,8 @@
                     });
 
                     // Add to store and trigger persistence
+                    // Note: LIVE SELECT handles parent-child relationship via edge:created events
                     sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
-
-                    // CRITICAL FIX (Issue #528): Update children cache to establish parent-child relationship
-                    registerChildWithParent(nodeId, promotedNode.id);
 
                     viewerPlaceholder = null;
                   } else {
