@@ -506,6 +506,52 @@ pub async fn get_children(
     service.get_children(&parent_id).await.map_err(Into::into)
 }
 
+/// Get a node with its entire subtree as a nested tree structure
+///
+/// Returns a single parent node with all its descendants recursively nested as a tree.
+/// This optimization eliminates the need for frontend tree reconstruction by fetching
+/// the entire subtree in a single database query using SurrealDB's recursive FETCH.
+///
+/// # Performance
+/// - Single recursive query to database
+/// - Eliminates O(n) tree reconstruction on frontend
+/// - Much faster than fetching flat children array + edges + reconstructing
+///
+/// # Arguments
+/// * `service` - Node service instance from Tauri state
+/// * `parent_id` - ID of the root node to fetch with its entire subtree
+///
+/// # Returns
+/// * `Ok(NodeWithChildren)` - Root node with complete nested tree structure
+/// * `Err(CommandError)` - Error with details if operation fails
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// const tree = await invoke('get_children_tree', {
+///   parent_id: 'my-root-id'
+/// });
+/// // tree has structure:
+/// // {
+/// //   id: 'my-root-id',
+/// //   nodeType: 'text',
+/// //   content: 'Root',
+/// //   children: [
+/// //     { id: 'child-1', content: '...', children: [...] },
+/// //     { id: 'child-2', content: '...', children: [...] }
+/// //   ]
+/// // }
+/// ```
+#[tauri::command]
+pub async fn get_children_tree(
+    service: State<'_, NodeService>,
+    parent_id: String,
+) -> Result<serde_json::Value, CommandError> {
+    service
+        .get_children_tree(&parent_id)
+        .await
+        .map_err(Into::into)
+}
+
 /// Bulk fetch all nodes belonging to a root node (viewer/page)
 ///
 /// This is the efficient way to load a complete document tree:

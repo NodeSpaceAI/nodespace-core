@@ -22,5 +22,9 @@ export { isOrderedListNode, OrderedListNodeHelpers } from './ordered-list-node';
 export type { CommandError } from './errors';
 export { isCommandError, toError, DatabaseInitializationError, NodeOperationError } from './errors';
 
+// Event types
+export type { NodeEventData, HierarchyRelationship, NodeWithChildren, PersistenceFailedEvent } from './event-types';
+export { getParentId, getChildId } from './event-types';
+
 // Re-export existing types for convenience
 export type { NodeViewerProps } from './node-viewers';

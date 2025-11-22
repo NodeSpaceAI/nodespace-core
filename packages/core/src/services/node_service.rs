@@ -1424,6 +1424,33 @@ where
         Ok(children)
     }
 
+    /// Get a node with all its descendants recursively nested (optimized for initial load)
+    ///
+    /// Uses SurrealDB's recursive FETCH to return the entire subtree in a single query.
+    /// This eliminates the need for O(n) tree reconstruction on the frontend.
+    ///
+    /// The returned structure contains:
+    /// - The parent node with all fields (id, nodeType, content, version, etc.)
+    /// - A `children` array containing recursively nested child nodes
+    /// - Each child node has the same structure, allowing infinite depth traversal
+    ///
+    /// # Arguments
+    ///
+    /// * `parent_id` - The parent node ID
+    ///
+    /// # Returns
+    ///
+    /// `serde_json::Value` containing the nested tree structure
+    pub async fn get_children_tree(
+        &self,
+        parent_id: &str,
+    ) -> Result<serde_json::Value, NodeServiceError> {
+        self.store
+            .get_children_tree(parent_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+    }
+
     /// Check if a node is a root node (has no parent)
     ///
     /// A root node is one that has no incoming `has_child` edges.

@@ -22,7 +22,7 @@
 
 /* global fetch, crypto */
 
-import type { Node } from '$lib/types';
+import type { Node, NodeWithChildren } from '$lib/types';
 import type {
   SchemaDefinition,
   AddFieldConfig,
@@ -101,6 +101,7 @@ export interface BackendAdapter {
   // Hierarchy
   getChildren(parentId: string): Promise<Node[]>;
   getDescendants(rootNodeId: string): Promise<Node[]>;
+  getChildrenTree(parentId: string): Promise<NodeWithChildren | null>;
   moveNode(nodeId: string, newParentId: string | null, beforeSiblingId?: string | null): Promise<void>;
   reorderNode(nodeId: string, beforeSiblingId: string | null): Promise<void>;
   getAllEdges(): Promise<EdgeRecord[]>;
@@ -181,6 +182,16 @@ class TauriAdapter implements BackendAdapter {
     const invoke = await this.getInvoke();
     // Note: Backend command still uses legacy name - can be renamed in backend separately
     return invoke<Node[]>('get_nodes_by_container_id', { container_node_id: rootNodeId });
+  }
+
+  async getChildrenTree(parentId: string): Promise<NodeWithChildren | null> {
+    const invoke = await this.getInvoke();
+    const result = await invoke<NodeWithChildren | Record<string, never>>('get_children_tree', { parent_id: parentId });
+    // Backend returns {} for non-existent parent, normalize to null
+    if (!result || Object.keys(result).length === 0) {
+      return null;
+    }
+    return result as NodeWithChildren;
   }
 
   async moveNode(nodeId: string, newParentId: string | null, beforeSiblingId?: string | null): Promise<void> {
@@ -393,6 +404,16 @@ class HttpAdapter implements BackendAdapter {
     return this.getChildren(rootNodeId);
   }
 
+  async getChildrenTree(parentId: string): Promise<NodeWithChildren | null> {
+    const response = await fetch(`${this.baseUrl}/api/nodes/${encodeURIComponent(parentId)}/children-tree`);
+    const result = await this.handleResponse<NodeWithChildren | Record<string, never>>(response);
+    // Backend returns {} for non-existent parent, normalize to null
+    if (!result || Object.keys(result).length === 0) {
+      return null;
+    }
+    return result as NodeWithChildren;
+  }
+
   async moveNode(nodeId: string, newParentId: string | null, _beforeSiblingId?: string | null): Promise<void> {
     const response = await fetch(`${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/parent`, {
       method: 'POST',
@@ -562,6 +583,22 @@ class MockAdapter implements BackendAdapter {
   }
   async getChildren(_parentId: string): Promise<Node[]> {
     return [];
+  }
+  async getChildrenTree(parentId: string): Promise<NodeWithChildren | null> {
+    // Return null for non-existent parent (consistent with API contract)
+    if (!parentId || parentId === 'non-existent') {
+      return null;
+    }
+    // Return realistic mock structure with empty children
+    return {
+      id: parentId,
+      nodeType: 'text',
+      content: '',
+      version: 0,
+      createdAt: new Date().toISOString(),
+      modifiedAt: new Date().toISOString(),
+      children: []
+    };
   }
   async getDescendants(_rootNodeId: string): Promise<Node[]> {
     return [];

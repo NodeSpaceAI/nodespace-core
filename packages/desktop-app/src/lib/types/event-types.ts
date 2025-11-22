@@ -51,6 +51,35 @@ export function getChildId(rel: HierarchyRelationship): string {
   return rel.out;
 }
 
+// ============================================================================
+// Nested Tree Structure (for Recursive FETCH optimization)
+// ============================================================================
+
+/**
+ * Node with nested children structure for recursive tree fetching
+ *
+ * Represents a single node with all its descendants recursively nested.
+ * Used for optimizing initial load by fetching the entire subtree in
+ * a single database query instead of reconstructing the tree in the frontend.
+ */
+export interface NodeWithChildren {
+  // Node fields (same as Node interface)
+  id: string;
+  nodeType: string;
+  content: string;
+  version: number;
+  createdAt: string;
+  modifiedAt: string;
+  properties?: Record<string, unknown>;
+  embeddingVector?: number[];
+  embeddingStale?: boolean;
+  mentions?: string[];
+  mentionedBy?: string[];
+  _schema_version?: number;
+
+  // Nested children (recursive)
+  children?: NodeWithChildren[];
+}
 
 // ============================================================================
 // Error Events

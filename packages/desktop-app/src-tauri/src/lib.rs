@@ -206,6 +206,7 @@ pub fn run() {
             commands::nodes::reorder_node,
             commands::nodes::delete_node,
             commands::nodes::get_children,
+            commands::nodes::get_children_tree,
             commands::nodes::get_nodes_by_root_id,
             commands::nodes::query_nodes_simple,
             commands::nodes::mention_autocomplete,

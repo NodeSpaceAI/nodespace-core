@@ -2195,6 +2195,90 @@ where
         Ok(Some(results[0].clone()))
     }
 
+    /// Get a node with its entire subtree as nested children using recursive FETCH
+    ///
+    /// Returns a single node with all its descendants recursively nested as a tree.
+    /// Uses SurrealDB's recursive graph traversal to fetch the entire subtree in a single
+    /// query, eliminating the need for frontend tree reconstruction and N+1 queries.
+    ///
+    /// # Arguments
+    ///
+    /// * `parent_id` - ID of the root node to fetch with its entire subtree
+    ///
+    /// # Returns
+    ///
+    /// A JSON object representing the node and its complete nested tree structure.
+    /// The `children` field contains an array of child nodes, each with their own
+    /// `children` arrays recursively nested.
+    ///
+    /// # Performance
+    ///
+    /// Single recursive query to database - O(n) where n is total nodes in subtree.
+    /// Much faster than fetching flat nodes array + separate edges array + frontend reconstruction.
+    ///
+    /// # Implementation
+    ///
+    /// Uses `->has_child->(node ORDER BY ->has_child.order)` for edge traversal with ordering.
+    /// The `.@` recursive projection repeats the pattern infinitely for all tree depths.
+    pub async fn get_children_tree(&self, parent_id: &str) -> Result<serde_json::Value> {
+        use surrealdb::sql::Thing;
+
+        let parent_thing = Thing::from(("node".to_string(), parent_id.to_string()));
+
+        // Recursive query: Returns parent node with all descendants nested
+        // Ordered by has_child.order to maintain fractional ordering
+        // Note: Using explicit fields instead of * to ensure camelCase serialization
+        let query = "
+            SELECT
+                id,
+                nodeType,
+                content,
+                version,
+                createdAt,
+                modifiedAt,
+                properties,
+                embeddingVector,
+                embeddingStale,
+                mentions,
+                mentionedBy,
+                _schema_version,
+                ->has_child->(node ORDER BY ->has_child.order).{
+                    id,
+                    nodeType,
+                    content,
+                    version,
+                    createdAt,
+                    modifiedAt,
+                    properties,
+                    embeddingVector,
+                    embeddingStale,
+                    mentions,
+                    mentionedBy,
+                    _schema_version,
+                    children: ->has_child->(node ORDER BY ->has_child.order).@
+                } AS children
+            FROM $parent_thing;
+        ";
+
+        let mut response = self
+            .db
+            .query(query)
+            .bind(("parent_thing", parent_thing))
+            .await
+            .context("Failed to fetch children tree")?;
+
+        let results: Vec<serde_json::Value> = response
+            .take(0)
+            .context("Failed to parse children tree results")?;
+
+        if results.is_empty() {
+            return Ok(serde_json::json!({}));
+        }
+
+        // Return the root node with its nested tree structure
+        Ok(results[0].clone())
+    }
+
     pub async fn search_nodes_by_content(
         &self,
         search_query: &str,
