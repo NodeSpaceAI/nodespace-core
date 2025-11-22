@@ -47,7 +47,6 @@ describe('OptimisticOperationManager', () => {
           id: 'edge-1',
           in: 'parent',
           out: 'child',
-          edgeType: 'child',
           order: 1.0
         });
       };
@@ -76,7 +75,6 @@ describe('OptimisticOperationManager', () => {
           id: 'edge-1',
           in: 'parent',
           out: 'child',
-          edgeType: 'child',
           order: 1.0
         });
       };
@@ -112,7 +110,6 @@ describe('OptimisticOperationManager', () => {
           id: 'edge-1',
           in: 'parent',
           out: 'child',
-          edgeType: 'child',
           order: 1.0
         });
       };
@@ -147,7 +144,6 @@ describe('OptimisticOperationManager', () => {
           id: 'edge-1',
           in: 'parent',
           out: 'child',
-          edgeType: 'child',
           order: 1.0
         });
       };
@@ -287,7 +283,6 @@ describe('OptimisticOperationManager', () => {
           id: 'edge-1',
           in: 'parent',
           out: 'child',
-          edgeType: 'child',
           order: 1.0
         });
       };
@@ -330,7 +325,6 @@ describe('OptimisticOperationManager', () => {
               id: 'edge-1',
               in: 'parent',
               out: 'child1',
-              edgeType: 'child',
               order: 1.0
             });
           },
@@ -345,7 +339,6 @@ describe('OptimisticOperationManager', () => {
               id: 'edge-2',
               in: 'parent',
               out: 'child2',
-              edgeType: 'child',
               order: 2.0
             });
           },
@@ -373,7 +366,6 @@ describe('OptimisticOperationManager', () => {
               id: 'edge-1',
               in: 'parent',
               out: 'child1',
-              edgeType: 'child',
               order: 1.0
             });
           },
@@ -387,7 +379,6 @@ describe('OptimisticOperationManager', () => {
               id: 'edge-2',
               in: 'parent',
               out: 'child2',
-              edgeType: 'child',
               order: 2.0
             });
           },
@@ -420,7 +411,6 @@ describe('OptimisticOperationManager', () => {
               id: 'edge-1',
               in: 'parent',
               out: 'child1',
-              edgeType: 'child',
               order: 1.0
             });
           },
@@ -434,7 +424,6 @@ describe('OptimisticOperationManager', () => {
               id: 'edge-2',
               in: 'parent',
               out: 'child2',
-              edgeType: 'child',
               order: 2.0
             });
           },
@@ -474,7 +463,6 @@ describe('OptimisticOperationManager', () => {
           id: 'edge-1',
           in: 'parent',
           out: 'child',
-          edgeType: 'child',
           order: 1.0
         });
       };
@@ -513,7 +501,6 @@ describe('OptimisticOperationManager', () => {
           id: 'edge-1',
           in: 'parent',
           out: 'child',
-          edgeType: 'child',
           order: 1.0
         });
       };
@@ -554,7 +541,6 @@ describe('OptimisticOperationManager', () => {
           id: 'edge-1',
           in: 'parent',
           out: 'child',
-          edgeType: 'child',
           order: 1.0
         });
       };
@@ -593,7 +579,6 @@ describe('OptimisticOperationManager', () => {
           id: 'edge-1',
           in: 'parent',
           out: 'child',
-          edgeType: 'child',
           order: 1.0
         });
       };
@@ -631,7 +616,6 @@ describe('OptimisticOperationManager', () => {
         id: 'edge-1',
         in: 'root',
         out: 'child1',
-        edgeType: 'child',
         order: 1.0
       });
 
@@ -639,7 +623,6 @@ describe('OptimisticOperationManager', () => {
         id: 'edge-2',
         in: 'root',
         out: 'child2',
-        edgeType: 'child',
         order: 2.0
       });
 
@@ -651,7 +634,6 @@ describe('OptimisticOperationManager', () => {
           id: 'edge-3',
           in: 'root',
           out: 'child3',
-          edgeType: 'child',
           order: 3.0
         });
       };
@@ -683,7 +665,6 @@ describe('OptimisticOperationManager', () => {
           id: 'edge-1',
           in: 'parent',
           out: 'child',
-          edgeType: 'child',
           order: 1.0
         });
 

@@ -6,6 +6,7 @@
  */
 
 import { sharedNodeStore } from '$lib/services/shared-node-store';
+import { structureTree as reactiveStructureTree } from '$lib/stores/reactive-structure-tree.svelte';
 
 /**
  * Registers a child node with its parent in the SharedNodeStore children cache.
@@ -39,12 +40,22 @@ export function registerChildWithParent(parentId: string, childId: string): void
   }
 
   // Get existing children (if any)
-  const existingChildren = sharedNodeStore.getNodesForParent(parentId).map((n) => n.id);
+  const existingChildren = reactiveStructureTree.getChildren(parentId);
 
   // Don't add duplicate
   if (existingChildren.includes(childId)) {
     return;
   }
 
-  // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
+  // CRITICAL FIX: Manually add in-memory relationship to ReactiveStructureTree
+  // For placeholder promotion, the node hasn't been persisted yet so LIVE SELECT won't fire
+  // We need to manually register the relationship so visibleNodesFromStores includes the promoted node
+  // This prevents a new placeholder from being created immediately after promotion
+  //
+  // TODO: This is a workaround. The proper fix (per hierarchy-reactivity-architecture-review.md)
+  // is for the backend to return complete relationship data from node creation, allowing the
+  // frontend to apply a proper optimistic update instead of manufacturing relationship records.
+  // See Issue #528 for the placeholder promotion bug context.
+  const order = existingChildren.length > 0 ? existingChildren.length + 1.0 : 1.0;
+  reactiveStructureTree.addInMemoryRelationship(parentId, childId, order);
 }

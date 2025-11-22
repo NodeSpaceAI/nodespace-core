@@ -7,14 +7,14 @@
  * Note: This module provides debug logging for sync events. The actual event
  * handling is done directly by:
  * - ReactiveNodeData (node events)
- * - ReactiveStructureTree (edge events)
+ * - ReactiveStructureTree (hierarchy events)
  *
  * These stores subscribe to Tauri events directly rather than through an
  * intermediate event bus layer.
  */
 
 import { listen } from '@tauri-apps/api/event';
-import type { NodeEventData, EdgeEventData } from '$lib/types/event-types';
+import type { NodeEventData, HierarchyRelationship } from '$lib/types/event-types';
 
 /**
  * Initialize Tauri real-time synchronization event listeners
@@ -46,17 +46,18 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       console.debug(`[TauriSync] Node deleted: ${event.payload.id}`);
     });
 
-    // Listen for edge events (debug logging)
-    await listen<EdgeEventData>('edge:created', (event) => {
-      console.debug(`[TauriSync] Edge created: ${event.payload.in} -> ${event.payload.out}`);
+    // Listen for hierarchy events (debug logging)
+    // Note: Backend still emits 'edge:*' events - these will be renamed to 'hierarchy:*' in a future refactor
+    await listen<HierarchyRelationship>('edge:created', (event) => {
+      console.debug(`[TauriSync] Hierarchy relationship created: ${event.payload.in} -> ${event.payload.out}`);
     });
 
-    await listen<EdgeEventData>('edge:updated', (event) => {
-      console.debug(`[TauriSync] Edge updated: ${event.payload.in} -> ${event.payload.out}`);
+    await listen<HierarchyRelationship>('edge:updated', (event) => {
+      console.debug(`[TauriSync] Hierarchy relationship updated: ${event.payload.in} -> ${event.payload.out}`);
     });
 
     await listen<{ id: string }>('edge:deleted', (event) => {
-      console.debug(`[TauriSync] Edge deleted: ${event.payload.id}`);
+      console.debug(`[TauriSync] Hierarchy relationship deleted: ${event.payload.id}`);
     });
 
     // Listen for synchronization errors

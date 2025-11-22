@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { SchemaService, createSchemaService } from '$lib/services/schema-service';
+import { SchemaService, createSchemaService, type SchemaBackendAdapter } from '$lib/services/schema-service';
 import type {
   SchemaDefinition,
   AddFieldResult,
@@ -25,20 +25,8 @@ import type {
   RemoveEnumValueResult
 } from '$lib/types/schema';
 
-import type { AddFieldConfig } from '$lib/types/schema';
-
-// Mock BackendAdapter interface matching schema-service.ts
-interface BackendAdapter {
-  getAllSchemas: () => Promise<Array<SchemaDefinition & { id: string }>>;
-  getSchema: (schemaId: string) => Promise<SchemaDefinition>;
-  addSchemaField: (schemaId: string, config: AddFieldConfig) => Promise<AddFieldResult>;
-  removeSchemaField: (schemaId: string, fieldName: string) => Promise<RemoveFieldResult>;
-  extendSchemaEnum: (schemaId: string, fieldName: string, newValues: string[]) => Promise<ExtendEnumResult>;
-  removeSchemaEnumValue: (schemaId: string, fieldName: string, value: string) => Promise<RemoveEnumValueResult>;
-}
-
-// Mock BackendAdapter
-const mockAdapter: BackendAdapter = {
+// Mock BackendAdapter using the exported type
+const mockAdapter: SchemaBackendAdapter = {
   getAllSchemas: vi.fn(),
   getSchema: vi.fn(),
   addSchemaField: vi.fn(),

@@ -41,7 +41,7 @@ const KEYBOARD_COMMANDS = {
 };
 
 export interface TextareaControllerEvents {
-  contentChanged: (content: string) => void;
+  contentChanged: (content: string, cursorPosition: number) => void;
   focus: () => void;
   blur: () => void;
   createNewNode: (data: {
@@ -571,9 +571,10 @@ export class TextareaController {
 
   private handleInput(): void {
     const content = this.element.value;
+    const cursorPosition = this.element.selectionStart ?? content.length;
 
     // Emit content changed event
-    this.events.contentChanged(content);
+    this.events.contentChanged(content, cursorPosition);
 
     // Auto-resize
     this.adjustHeight();
@@ -908,10 +909,11 @@ export class TextareaController {
     const newContent = before + reference + after;
 
     this.element.value = newContent;
-    this.setCursorPosition(before.length + reference.length);
+    const newCursorPosition = before.length + reference.length;
+    this.setCursorPosition(newCursorPosition);
 
     this.mentionSession = null;
-    this.events.contentChanged(newContent);
+    this.events.contentChanged(newContent, newCursorPosition);
     this.adjustHeight();
   }
 
@@ -938,7 +940,7 @@ export class TextareaController {
     this.setCursorPosition(cursorPosition);
 
     this.slashCommandSession = null;
-    this.events.contentChanged(newContent);
+    this.events.contentChanged(newContent, cursorPosition);
     this.adjustHeight();
 
     return cursorPosition;
@@ -988,7 +990,7 @@ export class TextareaController {
     this.element.selectionStart = newCursorStart;
     this.element.selectionEnd = newCursorEnd;
 
-    this.events.contentChanged(newContent);
+    this.events.contentChanged(newContent, newCursorEnd);
     this.adjustHeight();
   }
 

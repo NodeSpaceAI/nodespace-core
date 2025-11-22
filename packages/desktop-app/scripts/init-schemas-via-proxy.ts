@@ -30,7 +30,6 @@ interface CreateNodeRequest {
   nodeType: string;
   content: string;
   parentId?: string | null;
-  containerNodeId?: string | null;
   beforeSiblingId?: string | null;
   properties?: Record<string, unknown>;
 }

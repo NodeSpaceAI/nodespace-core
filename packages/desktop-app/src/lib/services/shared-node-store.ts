@@ -428,15 +428,20 @@ export class SharedNodeStore {
   }
 
   /**
-   * Get nodes filtered by parent ID (synchronous, ReactiveStructureTree-based)
+   * Get child nodes for a parent (synchronous, in-memory lookup)
    *
-   * Delegates to ReactiveStructureTree which maintains hierarchy via LIVE SELECT events.
-   * The structure tree is automatically updated when edges are created/moved/deleted.
+   * This is a convenience method that combines:
+   * 1. structureTree.getChildren(parentId) - get ordered child IDs
+   * 2. Map lookup for each ID - get Node objects
    *
-   * NOTE: In tests without ReactiveStructureTree initialized, returns empty array.
+   * Use this when you need Node objects, not just IDs.
+   * For IDs only, use structureTree.getChildren() directly (more efficient).
+   * For async DB loading, use loadChildrenForParent().
+   *
+   * NOTE: Returns empty array in tests without ReactiveStructureTree initialized.
    *
    * @param parentId - Parent node ID, or null for root-level nodes
-   * @returns Array of child nodes (from ReactiveStructureTree)
+   * @returns Array of child Node objects in sorted order
    */
   getNodesForParent(parentId: string | null): Node[] {
     // In tests, structureTree may not be initialized
@@ -1020,15 +1025,17 @@ export class SharedNodeStore {
   // ========================================================================
 
   /**
-   * Load child nodes from database for a parent
-   * Replaces BaseNodeViewer's direct databaseService.getNodesByContainerId() call
+   * Load direct child nodes from database for a parent
    *
-   * @param parentId - The parent/container node ID
-   * @returns Array of child nodes loaded from database
+   * Note: This loads only direct children, not all descendants.
+   * For recursive loading, use getDescendants().
+   *
+   * @param parentId - The parent node ID
+   * @returns Array of direct child nodes loaded from database
    */
   async loadChildrenForParent(parentId: string): Promise<Node[]> {
     try {
-      const nodes = await tauriCommands.getNodesByContainerId(parentId);
+      const nodes = await tauriCommands.getChildren(parentId);
 
       // Add nodes to store with database source
       // Database source type will automatically mark nodes as persisted (see determinePersistenceBehavior)

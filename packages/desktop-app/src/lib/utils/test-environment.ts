@@ -1,15 +1,22 @@
 /**
  * Test Environment Utilities
  *
- * Provides utilities for detecting test environment and determining whether
- * database errors should be logged to console.
+ * Provides utilities for detecting test environment and determining
+ * whether database errors should be logged to console.
  *
  * These utilities support the TEST_USE_DATABASE flag pattern which allows tests
  * to run in two modes:
  * - In-memory mode (default): Fast, no database, errors suppressed
  * - Database mode (TEST_USE_DATABASE=true): Full integration, errors logged
  *
+ * Note: Browser mode detection is handled by the BackendAdapter pattern in
+ * backend-adapter.ts which automatically selects the right transport:
+ * - Tauri IPC (desktop app)
+ * - HTTP fetch (browser dev mode via dev-proxy)
+ * - Mocks (test environment)
+ *
  * @see src/tests/utils/should-use-database.ts for full test utilities
+ * @see src/lib/services/backend-adapter.ts for environment-aware backend communication
  */
 
 /**

@@ -63,9 +63,9 @@ describe('Split-Pane Content Isolation', () => {
     sharedNodeStore.setNode({ ...childA1, parentId: 'parent-a' }, { type: 'database', reason: 'test-setup' });
     sharedNodeStore.setNode({ ...childB1, parentId: 'parent-b' }, { type: 'database', reason: 'test-setup' });
 
-    // Set up edges in structureTree for hierarchy queries
-    structureTree.__testOnly_addChild({ id: 'edge-a1', in: 'parent-a', out: 'child-a1', edgeType: 'child', order: 1.0 });
-    structureTree.__testOnly_addChild({ id: 'edge-b1', in: 'parent-b', out: 'child-b1', edgeType: 'child', order: 1.0 });
+    // Set up hierarchy relationships in structureTree for hierarchy queries
+    structureTree.__testOnly_addChild({ id: 'edge-a1', in: 'parent-a', out: 'child-a1', order: 1.0 });
+    structureTree.__testOnly_addChild({ id: 'edge-b1', in: 'parent-b', out: 'child-b1', order: 1.0 });
 
     // Create service (simulating nodeManager)
     const mockEvents = { emit: () => {}, on: () => () => {}, hierarchyChanged: () => {} };
@@ -108,8 +108,8 @@ describe('Split-Pane Content Isolation', () => {
     sharedNodeStore.setNode(parent, { type: 'database', reason: 'test-setup' });
     sharedNodeStore.setNode({ ...child1, parentId: 'shared-parent' }, { type: 'database', reason: 'test-setup' });
 
-    // Set up edge in structureTree for hierarchy queries
-    structureTree.__testOnly_addChild({ id: 'edge-1', in: 'shared-parent', out: 'child-1', edgeType: 'child', order: 1.0 });
+    // Set up hierarchy relationship in structureTree for hierarchy queries
+    structureTree.__testOnly_addChild({ id: 'edge-1', in: 'shared-parent', out: 'child-1', order: 1.0 });
 
     const mockEvents = { emit: () => {}, on: () => () => {}, hierarchyChanged: () => {} };
     const service = createReactiveNodeService(mockEvents as never);

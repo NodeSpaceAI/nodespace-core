@@ -10,8 +10,9 @@ export default defineConfig(async () => ({
   // Fix esbuild CSS processing issues
   esbuild: {
     keepNames: true,
-    // Use a safer target that doesn't trigger esbuild service crashes
-    target: 'es2020'
+    // Use es2022 to preserve native class fields for Svelte 5 $state() runes
+    // Svelte compiler needs to process $state() BEFORE esbuild transforms class fields
+    target: 'es2022'
   },
 
   // CSS configuration for stable processing

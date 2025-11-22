@@ -50,7 +50,7 @@
  * @see packages/desktop-app/src/lib/services/backend-adapter.ts - Backend adapter pattern
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { backendAdapter, type BackendAdapter } from './backend-adapter';
 import {
   SchemaOperationError,
   type SchemaDefinition,
@@ -62,45 +62,23 @@ import {
 } from '$lib/types/schema';
 
 // ============================================================================
-// Simple Backend Adapter (inline replacement for deleted backend-adapter.ts)
+// Backend Adapter (uses the centralized adapter from backend-adapter.ts)
 // ============================================================================
 
 /**
- * Backend adapter interface for schema operations
+ * Subset of BackendAdapter methods required for schema operations
  */
-interface BackendAdapter {
-  getAllSchemas(): Promise<Array<SchemaDefinition & { id: string }>>;
-  getSchema(schemaId: string): Promise<SchemaDefinition>;
-  addSchemaField(schemaId: string, config: AddFieldConfig): Promise<AddFieldResult>;
-  removeSchemaField(schemaId: string, fieldName: string): Promise<RemoveFieldResult>;
-  extendSchemaEnum(schemaId: string, fieldName: string, newValues: string[]): Promise<ExtendEnumResult>;
-  removeSchemaEnumValue(schemaId: string, fieldName: string, value: string): Promise<RemoveEnumValueResult>;
-}
+export type SchemaBackendAdapter = Pick<BackendAdapter,
+  'getAllSchemas' | 'getSchema' | 'addSchemaField' | 'removeSchemaField' |
+  'extendSchemaEnum' | 'removeSchemaEnumValue'
+>;
 
 /**
- * Create a Tauri-based backend adapter using direct invoke calls
+ * Get the backend adapter for schema operations.
+ * Uses the centralized backendAdapter which auto-detects environment.
  */
-function getBackendAdapter(): BackendAdapter {
-  return {
-    async getAllSchemas() {
-      return invoke<Array<SchemaDefinition & { id: string }>>('get_all_schemas');
-    },
-    async getSchema(schemaId: string) {
-      return invoke<SchemaDefinition>('get_schema', { schemaId });
-    },
-    async addSchemaField(schemaId: string, config: AddFieldConfig) {
-      return invoke<AddFieldResult>('add_schema_field', { schemaId, config });
-    },
-    async removeSchemaField(schemaId: string, fieldName: string) {
-      return invoke<RemoveFieldResult>('remove_schema_field', { schemaId, fieldName });
-    },
-    async extendSchemaEnum(schemaId: string, fieldName: string, newValues: string[]) {
-      return invoke<ExtendEnumResult>('extend_schema_enum', { schemaId, fieldName, newValues });
-    },
-    async removeSchemaEnumValue(schemaId: string, fieldName: string, value: string) {
-      return invoke<RemoveEnumValueResult>('remove_schema_enum_value', { schemaId, fieldName, value });
-    }
-  };
+function getBackendAdapter(): SchemaBackendAdapter {
+  return backendAdapter;
 }
 
 /**
@@ -202,10 +180,10 @@ class LRUCache<K, V> {
  * Wraps Rust backend schema operations with TypeScript interface
  */
 export class SchemaService {
-  private adapter: BackendAdapter;
+  private adapter: SchemaBackendAdapter;
   private schemaCache: LRUCache<string, SchemaDefinition>;
 
-  constructor(adapter?: BackendAdapter) {
+  constructor(adapter?: SchemaBackendAdapter) {
     this.adapter = adapter ?? getBackendAdapter();
     this.schemaCache = new LRUCache(50);
   }

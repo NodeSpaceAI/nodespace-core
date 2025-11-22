@@ -868,8 +868,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // NOTE: beforeSiblingId logic removed - backend handles ordering via fractional ordering
     // Children will be appended in their existing order (already sorted by backend)
     for (const child of children) {
-      // NOTE: parentId and containerNodeId removed - hierarchy managed by backend via parent_of edges
-      // NOTE: beforeSiblingId removed - backend handles ordering via fractional ordering
+      // NOTE: hierarchy managed by backend via has_child edges
       sharedNodeStore.updateNode(child.id, {}, viewerSource);
 
       // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
@@ -1241,8 +1240,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       // CRITICAL: Build parent-child relationship cache from loaded nodes
       // This populates sharedNodeStore's childrenCache and parentsCache
       //
-      // Always build cache from nodes' containerNodeId field
-      // This works for both test scenarios and production (backend sets containerNodeId)
+      // Always build cache from nodes' parentId field
+      // This works for both test scenarios and production (backend sets parentId)
       const nodesByParent = new Map<string | null, string[]>();
       for (const node of nodes) {
         const parentKey = defaults.parentMapping?.[node.id] ?? node.parentId ?? null;

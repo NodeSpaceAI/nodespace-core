@@ -7,7 +7,7 @@
 -->
 
 <script lang="ts">
-  import { onMount, onDestroy, getContext } from 'svelte';
+  import { onMount, onDestroy, getContext, tick } from 'svelte';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
   import { formatTabTitle } from '$lib/utils/text-formatting';
   import { registerChildWithParent } from '$lib/utils/node-hierarchy';
@@ -97,6 +97,13 @@
   // Start as true to prevent watcher from firing before loadChildrenForParent() completes
   let isLoadingInitialNodes = true;
 
+  // Placeholder promotion flag - blocks new placeholder creation during async promotion window
+  // Prevents race condition where promotion triggers reactive effects before updates complete
+  let isPromoting = $state(false);
+
+  // Stable placeholder ID - reused across placeholder recreations to prevent unnecessary component remounts
+  let placeholderId = $state<string | null>(null);
+
   // Viewer-local placeholder (not in sharedNodeStore until it gets content)
   // This placeholder is only visible to this viewer instance
   let viewerPlaceholder = $state<Node | null>(null);
@@ -126,6 +133,9 @@
    */
   const visibleNodesFromStores = $derived.by(() => {
     if (!nodeId) return [];
+    // Establish reactive dependency on structure tree changes.
+    // Reading this value causes Svelte to re-run this derived when edges change.
+    void reactiveStructureTree.version;
 
     // Helper function to recursively flatten visible nodes with depth
     function flattenNodes(parentId: string, depth: number, result: Array<any> = []): Array<any> {
@@ -1321,15 +1331,25 @@
     return [];
   });
 
-  // Reactive effect: Create placeholder when children drop to zero
-  $effect(() => {
+  // CLEAN REACTIVE PATTERN: Compute placeholder state instead of coordinating it
+  // Pure $derived - no manual effects or state coordination needed
+  const shouldShowPlaceholder = $derived.by(() => {
+    if (!nodeId) return false;
+    if (isPromoting) return false; // Block during promotion to prevent race
     const realChildren = visibleNodesFromStores;
+    return realChildren.length === 0;
+  });
 
-    // If we have no real children and no placeholder, create one
-    if (realChildren.length === 0 && !viewerPlaceholder && nodeId) {
-      const placeholderId = globalThis.crypto.randomUUID();
+  // Reactive effect: Create/clear placeholder based on derived state
+  // This is the ONLY effect needed - just for instantiating the placeholder object
+  $effect(() => {
+    if (shouldShowPlaceholder && !viewerPlaceholder) {
+      // Create placeholder with stable ID if available
+      const id = placeholderId ?? globalThis.crypto.randomUUID();
+      if (!placeholderId) placeholderId = id;
+
       viewerPlaceholder = {
-        id: placeholderId,
+        id,
         nodeType: 'text',
         content: '',
         createdAt: new Date().toISOString(),
@@ -1338,14 +1358,7 @@
         properties: {},
         mentions: []
       };
-
-      // DON'T call initializeNodes() - keep placeholder completely viewer-local!
-      // Issue #479: Placeholder should NOT be in SharedNodeStore
-      // It will be rendered by nodesToRender derived state (line 1475-1487)
-      // and promoted to real node when user adds content (line 1746-1772)
-    }
-    // Clear placeholder when real children exist
-    else if (realChildren.length > 0 && viewerPlaceholder) {
+    } else if (!shouldShowPlaceholder && viewerPlaceholder) {
       viewerPlaceholder = null;
     }
   });
@@ -1567,8 +1580,9 @@
                 on:indentNode={handleIndentNode}
                 on:outdentNode={handleOutdentNode}
                 on:navigateArrow={handleArrowNavigation}
-                on:contentChanged={(e: CustomEvent<{ content: string }>) => {
+                on:contentChanged={(e: CustomEvent<{ content: string; cursorPosition?: number }>) => {
                   const content = e.detail.content;
+                  const cursorPosition = e.detail.cursorPosition ?? content.length;
 
                   // Check if this is the viewer-local placeholder getting its first content
                   if (
@@ -1577,27 +1591,43 @@
                     content.trim() !== '' &&
                     nodeId
                   ) {
+                    // ATOMIC PROMOTION: Set flag to block new placeholder creation
+                    isPromoting = true;
+
                     // Promote placeholder to real node by assigning parent and adding to store
                     const promotedNode = promotePlaceholderToNode(viewerPlaceholder, nodeId, {
                       content
                     });
 
-                    // Add to shared store (in-memory only, don't persist yet)
-                    // Subsequent typing will trigger updateNodeContent() which handles persistence
-                    sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, true);
+                    // Set editing state BEFORE store update
+                    // Use setEditingNodeFromTypeConversion to prevent blur handler from clearing state
+                    focusManager.setEditingNodeFromTypeConversion(promotedNode.id, cursorPosition, paneId);
 
-                    // CRITICAL FIX (Issue #528): Update children cache to establish parent-child relationship
-                    // After graph migration (PR #523), parent relationships are stored in:
-                    // 1. Backend: SurrealDB has_child edges
-                    // 2. Frontend: SharedNodeStore children/parents cache
-                    // Without this, the promoted node is orphaned and disappears from the UI
+                    // Register edge in ReactiveStructureTree (synchronous in-memory)
                     registerChildWithParent(nodeId, promotedNode.id);
 
-                    // Clear viewer placeholder - now using real node from store
+                    // Add to shared store (in-memory only, don't persist yet)
+                    sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, true);
+
+                    // CRITICAL FIX: Clear viewerPlaceholder SYNCHRONOUSLY to prevent subsequent
+                    // keystrokes from hitting the promotion path again while $effect is pending.
+                    // Without this, rapid typing can cause multiple setNode() calls with stale content.
                     viewerPlaceholder = null;
 
+                    // Clear placeholder ID so fresh one is created if needed later
+                    placeholderId = null;
+
+                    // Clear promotion flag after Svelte's microtask queue flushes.
+                    // tick() ensures our synchronous state changes above (viewerPlaceholder=null,
+                    // placeholderId=null) have propagated through $derived computations before
+                    // we allow new promotions. This is sufficient because the race condition
+                    // was caused by stale state, not async operations.
+                    tick().then(() => {
+                      isPromoting = false;
+                    });
+
                     // No need to reload - promoted node is already in shared store
-                    // Database query won't find it yet (CREATE is debounced)
+                    // Database query will find it once persisted (CREATE is debounced)
                   } else {
                     // Regular node content update (placeholder flag is handled automatically)
                     nodeManager.updateNodeContent(node.id, content);

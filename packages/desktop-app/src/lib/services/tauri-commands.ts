@@ -1,88 +1,42 @@
 /**
- * Tauri Command Wrappers
+ * Tauri Commands - Simplified API for Backend Communication
  *
- * Provides typed TypeScript wrappers for Tauri backend commands.
- * These replace the obsolete tauri-node-service.ts with direct invoke calls.
+ * This module provides a clean API for frontend components to communicate with the backend.
+ * It uses the BackendAdapter pattern to automatically select the right transport:
+ * - Tauri IPC (desktop app)
+ * - HTTP fetch (browser dev mode)
+ * - Mocks (test environment)
  *
- * Architecture:
- * - All database operations go through Tauri invoke
- * - LIVE SELECT events are handled by tauri-sync-listener.ts
- * - No intermediate service layer needed
- * - In test environment, operations are no-ops (mocked)
+ * Usage:
+ * ```typescript
+ * import * as tauriCommands from '$lib/services/tauri-commands';
+ *
+ * const nodes = await tauriCommands.getChildren('parent-id');
+ * ```
  */
 
-import { isTestEnvironment } from '$lib/utils/test-environment';
+import {
+  backendAdapter,
+  type CreateNodeInput,
+  type UpdateNodeInput,
+  type DeleteResult,
+  type EdgeRecord,
+  type NodeQuery,
+  type CreateContainerInput,
+  type SaveNodeWithParentInput
+} from './backend-adapter';
 import type { Node } from '$lib/types';
 
-// Lazy-loaded invoke function - only imported in non-test environment
-let _invoke: typeof import('@tauri-apps/api/core').invoke | null = null;
-
-/**
- * Get the Tauri invoke function, lazily loaded to avoid test environment errors.
- * In test environment, returns a no-op mock that silently succeeds.
- * This allows SharedNodeStore persistence logic to run without actual database calls.
- */
-async function getInvoke(): Promise<typeof import('@tauri-apps/api/core').invoke> {
-  if (isTestEnvironment()) {
-    // In test environment, return a no-op mock
-    // SharedNodeStore tests use in-memory state; actual Tauri calls are not needed
-    // This prevents unhandled rejection errors during debounced persistence
-    return (async <T>(): Promise<T> => {
-      // Return sensible defaults for different command types
-      // Most commands return void or empty results in test mode
-      return undefined as T;
-    }) as unknown as typeof import('@tauri-apps/api/core').invoke;
-  }
-
-  if (!_invoke) {
-    const tauriCore = await import('@tauri-apps/api/core');
-    _invoke = tauriCore.invoke;
-  }
-  return _invoke;
-}
-
-// ============================================================================
-// Types for Tauri Commands
-// ============================================================================
-
-/**
- * Input for creating a node via Tauri command
- */
-export interface CreateNodeInput {
-  id: string;
-  nodeType: string;
-  content: string;
-  parentId?: string | null;
-  beforeSiblingId?: string | null;
-  properties: Record<string, unknown>;
-}
-
-/**
- * Input for updating a node via Tauri command
- */
-export interface UpdateNodeInput {
-  content?: string;
-  nodeType?: string;
-  properties?: Record<string, unknown>;
-}
-
-/**
- * Result from delete operation
- */
-export interface DeleteResult {
-  deletedNodeIds: string[];
-}
-
-/**
- * Edge record from database
- */
-export interface EdgeRecord {
-  id: string;
-  in: string;
-  out: string;
-  edgeType: string;
-  positionId?: string;
-}
+// Re-export types for convenience
+export type {
+  CreateNodeInput,
+  UpdateNodeInput,
+  DeleteResult,
+  EdgeRecord,
+  NodeQuery,
+  CreateContainerInput,
+  SaveNodeWithParentInput
+};
 
 // ============================================================================
 // Node CRUD Commands
@@ -90,38 +44,16 @@ export interface EdgeRecord {
 
 /**
  * Create a new node
- * Accepts either CreateNodeInput or a full Node object
  */
 export async function createNode(input: CreateNodeInput | Node): Promise<string> {
-  const invoke = await getInvoke();
-  // Handle both CreateNodeInput and Node formats
-  const node = 'nodeType' in input && !('node_type' in input)
-    ? {
-        id: input.id,
-        node_type: input.nodeType,
-        content: input.content,
-        parent_id: (input as CreateNodeInput).parentId ?? null,
-        before_sibling_id: (input as CreateNodeInput).beforeSiblingId ?? null,
-        properties: input.properties ?? {}
-      }
-    : {
-        id: input.id,
-        node_type: input.nodeType,
-        content: input.content,
-        parent_id: null,
-        before_sibling_id: null,
-        properties: input.properties ?? {}
-      };
-
-  return invoke<string>('create_node', { node });
+  return backendAdapter.createNode(input);
 }
 
 /**
  * Get a node by ID
  */
 export async function getNode(id: string): Promise<Node | null> {
-  const invoke = await getInvoke();
-  return invoke<Node | null>('get_node', { id });
+  return backendAdapter.getNode(id);
 }
 
 /**
@@ -132,16 +64,14 @@ export async function updateNode(
   version: number,
   update: UpdateNodeInput
 ): Promise<Node> {
-  const invoke = await getInvoke();
-  return invoke<Node>('update_node', { id, version, update });
+  return backendAdapter.updateNode(id, version, update);
 }
 
 /**
  * Delete a node by ID
  */
 export async function deleteNode(id: string, version: number): Promise<DeleteResult> {
-  const invoke = await getInvoke();
-  return invoke<DeleteResult>('delete_node', { id, version });
+  return backendAdapter.deleteNode(id, version);
 }
 
 // ============================================================================
@@ -152,16 +82,14 @@ export async function deleteNode(id: string, version: number): Promise<DeleteRes
  * Get child nodes of a parent
  */
 export async function getChildren(parentId: string): Promise<Node[]> {
-  const invoke = await getInvoke();
-  return invoke<Node[]>('get_children', { parent_id: parentId });
+  return backendAdapter.getChildren(parentId);
 }
 
 /**
- * Get nodes by container ID (for page loading)
+ * Get all descendants of a node (entire subtree)
  */
-export async function getNodesByContainerId(containerNodeId: string): Promise<Node[]> {
-  const invoke = await getInvoke();
-  return invoke<Node[]>('get_nodes_by_container_id', { container_node_id: containerNodeId });
+export async function getDescendants(rootNodeId: string): Promise<Node[]> {
+  return backendAdapter.getDescendants(rootNodeId);
 }
 
 /**
@@ -170,38 +98,26 @@ export async function getNodesByContainerId(containerNodeId: string): Promise<No
 export async function moveNode(
   nodeId: string,
   newParentId: string | null,
-  newBeforeSiblingId: string | null
+  beforeSiblingId?: string | null
 ): Promise<void> {
-  const invoke = await getInvoke();
-  return invoke<void>('move_node', {
-    node_id: nodeId,
-    new_parent_id: newParentId,
-    new_before_sibling_id: newBeforeSiblingId
-  });
+  return backendAdapter.moveNode(nodeId, newParentId, beforeSiblingId);
 }
 
 /**
- * Reorder a node within its siblings
+ * Reorder a node among its siblings
  */
 export async function reorderNode(
   nodeId: string,
-  version: number,
   beforeSiblingId: string | null
 ): Promise<void> {
-  const invoke = await getInvoke();
-  return invoke<void>('reorder_node', {
-    node_id: nodeId,
-    version,
-    before_sibling_id: beforeSiblingId
-  });
+  return backendAdapter.reorderNode(nodeId, beforeSiblingId);
 }
 
 /**
  * Get all edges (for bulk tree loading)
  */
 export async function getAllEdges(): Promise<EdgeRecord[]> {
-  const invoke = await getInvoke();
-  return invoke<EdgeRecord[]>('get_all_edges', {});
+  return backendAdapter.getAllEdges();
 }
 
 // ============================================================================
@@ -209,17 +125,13 @@ export async function getAllEdges(): Promise<EdgeRecord[]> {
 // ============================================================================
 
 /**
- * Create a mention relationship
+ * Create a mention relationship between nodes
  */
 export async function createMention(
   mentioningNodeId: string,
   mentionedNodeId: string
 ): Promise<void> {
-  const invoke = await getInvoke();
-  return invoke<void>('create_node_mention', {
-    mentioning_node_id: mentioningNodeId,
-    mentioned_node_id: mentionedNodeId
-  });
+  return backendAdapter.createMention(mentioningNodeId, mentionedNodeId);
 }
 
 /**
@@ -229,35 +141,28 @@ export async function deleteMention(
   mentioningNodeId: string,
   mentionedNodeId: string
 ): Promise<void> {
-  const invoke = await getInvoke();
-  return invoke<void>('delete_node_mention', {
-    mentioning_node_id: mentioningNodeId,
-    mentioned_node_id: mentionedNodeId
-  });
+  return backendAdapter.deleteMention(mentioningNodeId, mentionedNodeId);
 }
 
 /**
  * Get outgoing mentions from a node
  */
 export async function getOutgoingMentions(nodeId: string): Promise<string[]> {
-  const invoke = await getInvoke();
-  return invoke<string[]>('get_outgoing_mentions', { node_id: nodeId });
+  return backendAdapter.getOutgoingMentions(nodeId);
 }
 
 /**
  * Get incoming mentions (backlinks) to a node
  */
 export async function getIncomingMentions(nodeId: string): Promise<string[]> {
-  const invoke = await getInvoke();
-  return invoke<string[]>('get_incoming_mentions', { node_id: nodeId });
+  return backendAdapter.getIncomingMentions(nodeId);
 }
 
 /**
  * Get containers of nodes that mention the target node
  */
 export async function getMentioningContainers(nodeId: string): Promise<string[]> {
-  const invoke = await getInvoke();
-  return invoke<string[]>('get_mentioning_containers', { node_id: nodeId });
+  return backendAdapter.getMentioningContainers(nodeId);
 }
 
 // ============================================================================
@@ -267,25 +172,15 @@ export async function getMentioningContainers(nodeId: string): Promise<string[]>
 /**
  * Query nodes with flexible filtering
  */
-export interface NodeQuery {
-  id?: string;
-  mentionedBy?: string;
-  contentContains?: string;
-  nodeType?: string;
-  limit?: number;
-}
-
 export async function queryNodes(query: NodeQuery): Promise<Node[]> {
-  const invoke = await getInvoke();
-  return invoke<Node[]>('query_nodes_simple', { query });
+  return backendAdapter.queryNodes(query);
 }
 
 /**
  * Mention autocomplete query
  */
 export async function mentionAutocomplete(query: string, limit?: number): Promise<Node[]> {
-  const invoke = await getInvoke();
-  return invoke<Node[]>('mention_autocomplete', { query, limit });
+  return backendAdapter.mentionAutocomplete(query, limit);
 }
 
 // ============================================================================
@@ -295,47 +190,13 @@ export async function mentionAutocomplete(query: string, limit?: number): Promis
 /**
  * Create a container node (root-level node)
  */
-export interface CreateContainerInput {
-  content: string;
-  nodeType: string;
-  properties?: Record<string, unknown>;
-  mentionedBy?: string;
-}
-
 export async function createContainerNode(input: CreateContainerInput): Promise<string> {
-  const invoke = await getInvoke();
-  return invoke<string>('create_container_node', {
-    input: {
-      content: input.content,
-      node_type: input.nodeType,
-      properties: input.properties ?? {},
-      mentioned_by: input.mentionedBy
-    }
-  });
+  return backendAdapter.createContainerNode(input);
 }
 
 /**
  * Save node with automatic parent creation
  */
-export interface SaveNodeWithParentInput {
-  nodeId: string;
-  content: string;
-  nodeType: string;
-  parentId: string;
-  containerNodeId: string;
-  beforeSiblingId?: string | null;
-}
-
 export async function saveNodeWithParent(input: SaveNodeWithParentInput): Promise<void> {
-  const invoke = await getInvoke();
-  return invoke<void>('save_node_with_parent', {
-    input: {
-      node_id: input.nodeId,
-      content: input.content,
-      node_type: input.nodeType,
-      parent_id: input.parentId,
-      container_node_id: input.containerNodeId,
-      before_sibling_id: input.beforeSiblingId
-    }
-  });
+  return backendAdapter.saveNodeWithParent(input);
 }

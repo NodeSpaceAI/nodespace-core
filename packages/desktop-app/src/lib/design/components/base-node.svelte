@@ -554,7 +554,7 @@
 
   // Event dispatcher - aligned with NodeViewerEventDetails interface
   const dispatch = createEventDispatcher<{
-    contentChanged: { content: string };
+    contentChanged: { content: string; cursorPosition?: number };
     focus: void;
     blur: void;
     createNewNode: {
@@ -579,7 +579,14 @@
 
   // Controller event handlers
   const controllerEvents: TextareaControllerEvents = {
-    contentChanged: (content: string) => dispatch('contentChanged', { content }),
+    contentChanged: (content: string, cursorPosition: number) => {
+      // Clear node-type-conversion flag after first content change
+      // This allows normal blur behavior to resume after placeholder promotion is complete
+      if (focusManager.cursorPosition?.type === 'node-type-conversion') {
+        focusManager.clearNodeTypeConversionCursorPosition();
+      }
+      dispatch('contentChanged', { content, cursorPosition });
+    },
     focus: () => {
       // Use FocusManager as single source of truth
       // Only update if this node isn't already set as editing
@@ -588,11 +595,10 @@
         focusManager.setEditingNode(nodeId, paneId);
       }
 
-      // CRITICAL: Clear node type conversion flag after successful focus
-      // This allows normal blur behavior to resume after the conversion is complete
-      if (focusManager.cursorPosition?.type === 'node-type-conversion') {
-        focusManager.clearNodeTypeConversionCursorPosition();
-      }
+      // REMOVED: Don't clear node-type-conversion flag here
+      // The flag must remain active until ALL old component blur events have fired
+      // Otherwise, the old placeholder's blur event will clear editing state
+      // The flag will be cleared after the first content change (typing continues)
 
       dispatch('focus');
     },
@@ -715,10 +721,14 @@
         controllerEvents,
         editableConfig
       );
-      controller.initialize(content, autoFocus);
+      // CRITICAL FIX: Focus if isEditing OR autoFocus is true
+      // This ensures placeholder→real node promotion preserves focus
+      // FocusManager.editingNodeId was set before promotion, so isEditing will be true
+      const shouldFocus = autoFocus || isEditing;
+      controller.initialize(content, shouldFocus);
     } else if (element && controller) {
       // If autoFocus is true and controller exists, still call focus to restore pending cursor position
-      if (autoFocus) {
+      if (autoFocus || isEditing) {
         setTimeout(() => controller?.focus(), 10);
       }
     } else if (!element && controller) {
