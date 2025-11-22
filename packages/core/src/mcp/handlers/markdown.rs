@@ -690,10 +690,11 @@ async fn create_node(
     content: &str,
     parent_id: Option<String>,
     _root_node_id: Option<String>, // Deprecated - kept for backward compat but ignored (root auto-derived from parent)
-    before_sibling_id: Option<String>,
+    _before_sibling_id: Option<String>, // Deprecated - sibling ordering now handled by edge order field
 ) -> Result<String, MCPError> {
     // Create node via NodeOperations (enforces all business rules)
     // Note: container/root is now auto-derived from parent chain by backend
+    // Note: sibling ordering is now handled via has_child edge order field
 
     // Provide required properties based on node type
     let properties = match node_type {
@@ -711,7 +712,7 @@ async fn create_node(
             node_type: node_type.to_string(),
             content: content.to_string(),
             parent_id,
-            before_sibling_id,
+            before_sibling_id: None, // Ordering handled by edge order field
             properties,
         })
         .await
@@ -912,6 +913,9 @@ fn export_node_hierarchy<'a>(
         Ok(())
     })
 }
+
+// NOTE: sort_by_sibling_chain removed - sibling ordering is now handled via
+// has_child edge order field. Children are returned in order from database.
 
 /// Count number of nodes in markdown (by counting HTML comments)
 fn count_nodes_in_markdown(markdown: &str) -> usize {

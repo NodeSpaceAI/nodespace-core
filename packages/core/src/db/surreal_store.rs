@@ -166,7 +166,6 @@ struct SurrealNode {
     id: Thing, // SurrealDB record ID (table:id format)
     node_type: String,
     content: String,
-    before_sibling_id: Option<String>,
     version: i64,
     created_at: String,
     modified_at: String,
@@ -265,7 +264,6 @@ impl From<SurrealNode> for Node {
             id,
             node_type: sn.node_type,
             content: sn.content,
-            before_sibling_id: sn.before_sibling_id,
             version: sn.version,
             created_at: DateTime::parse_from_rfc3339(&sn.created_at)
                 .map(|dt| dt.with_timezone(&Utc))
@@ -560,7 +558,6 @@ where
             id: "task".to_string(),
             node_type: "schema".to_string(),
             content: "Task".to_string(),
-            before_sibling_id: None,
             version: 1,
             created_at: now,
             modified_at: now,
@@ -637,7 +634,6 @@ where
             id: "date".to_string(),
             node_type: "schema".to_string(),
             content: "Date".to_string(),
-            before_sibling_id: None,
             version: 1,
             created_at: now,
             modified_at: now,
@@ -658,7 +654,6 @@ where
             id: "text".to_string(),
             node_type: "schema".to_string(),
             content: "Text".to_string(),
-            before_sibling_id: None,
             version: 1,
             created_at: now,
             modified_at: now,
@@ -679,7 +674,6 @@ where
             id: "header".to_string(),
             node_type: "schema".to_string(),
             content: "Header".to_string(),
-            before_sibling_id: None,
             version: 1,
             created_at: now,
             modified_at: now,
@@ -700,7 +694,6 @@ where
             id: "code-block".to_string(),
             node_type: "schema".to_string(),
             content: "Code Block".to_string(),
-            before_sibling_id: None,
             version: 1,
             created_at: now,
             modified_at: now,
@@ -721,7 +714,6 @@ where
             id: "quote-block".to_string(),
             node_type: "schema".to_string(),
             content: "Quote Block".to_string(),
-            before_sibling_id: None,
             version: 1,
             created_at: now,
             modified_at: now,
@@ -742,7 +734,6 @@ where
             id: "ordered-list".to_string(),
             node_type: "schema".to_string(),
             content: "Ordered List".to_string(),
-            before_sibling_id: None,
             version: 1,
             created_at: now,
             modified_at: now,
@@ -817,7 +808,6 @@ where
                 node_type: $node_type,
                 content: $content,
                 version: $version,
-                before_sibling_id: $before_sibling_id,
                 created_at: time::now(),
                 modified_at: time::now(),
                 embedding_vector: [],
@@ -837,7 +827,6 @@ where
             .bind(("node_type", node.node_type.clone()))
             .bind(("content", node.content.clone()))
             .bind(("version", node.version))
-            .bind(("before_sibling_id", node.before_sibling_id.clone()))
             .bind(("data", None::<String>))
             .bind(("properties", properties_for_hub))
             .await
@@ -950,7 +939,6 @@ where
     /// * `node_type` - Type of the node to create
     /// * `content` - Content of the node
     /// * `properties` - Properties for the node
-    /// * `before_sibling_id` - Optional sibling ordering
     ///
     /// # Returns
     ///
@@ -967,7 +955,6 @@ where
     ///     "text",
     ///     "Child content",
     ///     json!({}),
-    ///     None,
     /// ).await?;
     /// # Ok(())
     /// # }
@@ -978,7 +965,6 @@ where
         node_type: &str,
         content: &str,
         properties: Value,
-        _before_sibling_id: Option<&str>,
     ) -> Result<Node> {
         use uuid::Uuid;
 
@@ -1316,7 +1302,6 @@ where
                 UPDATE type::thing('node', $id) SET
                     content = $content,
                     node_type = $node_type,
-                    before_sibling_id = $before_sibling_id,
                     modified_at = time::now(),
                     version = version + 1,
                     embedding_vector = $embedding_vector,
@@ -1330,7 +1315,6 @@ where
                 UPDATE type::thing('node', $id) SET
                     content = $content,
                     node_type = $node_type,
-                    before_sibling_id = $before_sibling_id,
                     modified_at = time::now(),
                     version = version + 1,
                     embedding_vector = $embedding_vector;
@@ -1345,7 +1329,6 @@ where
             .bind(("id", id.to_string()))
             .bind(("content", updated_content))
             .bind(("node_type", updated_node_type.clone()))
-            .bind(("before_sibling_id", update.before_sibling_id.flatten()))
             .bind(("embedding_vector", embedding_f32));
 
         if bind_properties {
@@ -1615,7 +1598,6 @@ where
             UPDATE type::thing('node', $id) SET
                 content = $content,
                 node_type = $node_type,
-                before_sibling_id = $before_sibling_id,
                 properties = $properties,
                 modified_at = time::now(),
                 version = $new_version,
@@ -1639,7 +1621,6 @@ where
             .bind(("new_version", new_version))
             .bind(("content", updated_content))
             .bind(("node_type", updated_node_type))
-            .bind(("before_sibling_id", update.before_sibling_id.flatten()))
             .bind(("properties", updated_properties))
             .bind(("embedding_vector", embedding_f32))
             .await
@@ -2058,8 +2039,8 @@ where
             }
         }
 
-        // Sort by before_sibling_id in-memory (topological sort of linked list)
-        // TODO: Implement proper linked list ordering
+        // Children are ordered by has_child edge order field (fractional ordering)
+        // Sorting is done by the database query ORDER BY clause
         Ok(nodes)
     }
 
@@ -2161,7 +2142,6 @@ where
                 id,
                 type,
                 content,
-                before_sibling_id,
                 version,
                 created_at,
                 modified_at,
@@ -2176,7 +2156,6 @@ where
                     id,
                     type,
                     content,
-                    before_sibling_id,
                     version,
                     created_at,
                     modified_at,
@@ -2400,7 +2379,7 @@ where
     ///
     /// * `node_id` - ID of the node to move
     /// * `new_parent_id` - ID of the new parent (None = make root node)
-    /// * `new_before_sibling_id` - Optional sibling ordering in new location
+    /// * `insert_after_sibling_id` - Optional sibling to insert after (uses edge-based fractional ordering)
     ///
     /// # Returns
     ///
@@ -2593,26 +2572,6 @@ where
                 node_id, new_parent_id
             ))?;
 
-        Ok(())
-    }
-
-    pub fn reorder_node(&self, _id: &str, _new_before_sibling_id: Option<&str>) -> Result<()> {
-        // DEPRECATED: This method is a no-op stub kept for API compatibility.
-        //
-        // With fractional ordering (Issue #550), nodes are reordered by updating the order field
-        // on has_child edges, not by updating a node field. The old before_sibling_id approach
-        // is no longer used in the Rust backend.
-        //
-        // Node reordering is now handled by:
-        // 1. NodeOperations::reorder_node() - High-level wrapper with sibling chain integrity
-        // 2. move_node() - Low-level atomic operation for hierarchy changes
-        //
-        // This method exists solely to prevent breaking the public API, but it has no
-        // implementation and should not be called directly. All callers go through the
-        // NodeOperations wrapper which handles the legacy before_sibling_id semantics.
-        tracing::warn!(
-            "SurrealStore::reorder_node is deprecated and is a no-op. Use NodeOperations::reorder_node() instead."
-        );
         Ok(())
     }
 
@@ -2990,7 +2949,6 @@ where
                 id,
                 node_type,
                 content,
-                before_sibling_id,
                 version,
                 created_at,
                 modified_at,
@@ -3023,8 +2981,6 @@ where
             #[serde(rename = "type")]
             node_type: String,
             content: String,
-            #[serde(default)]
-            before_sibling_id: Option<String>,
             version: i64,
             created_at: String,
             modified_at: String,
@@ -3057,7 +3013,6 @@ where
                     id: nws.id,
                     node_type: nws.node_type,
                     content: nws.content,
-                    before_sibling_id: nws.before_sibling_id,
                     version: nws.version,
                     created_at: nws.created_at,
                     modified_at: nws.modified_at,
@@ -3147,7 +3102,6 @@ where
                 "UPDATE type::thing('node', $id_{idx}) SET
                     content = $content_{idx},
                     node_type = $node_type_{idx},
-                    before_sibling_id = $before_sibling_id_{idx},
                     modified_at = time::now(),
                     version = version + 1,
                     embedding_vector = $embedding_vector_{idx};",
@@ -3180,10 +3134,6 @@ where
                 .bind((format!("id_{}", idx), id.clone()))
                 .bind((format!("content_{}", idx), updated_content))
                 .bind((format!("node_type_{}", idx), updated_node_type))
-                .bind((
-                    format!("before_sibling_id_{}", idx),
-                    update.before_sibling_id.clone().flatten(),
-                ))
                 .bind((format!("embedding_vector_{}", idx), embedding_f32));
         }
 
@@ -3753,7 +3703,7 @@ mod tests {
 
         // Create child atomically
         let child = store
-            .create_child_node_atomic(&parent.id, "text", "Child content", json!({}), None)
+            .create_child_node_atomic(&parent.id, "text", "Child content", json!({}))
             .await?;
 
         // Verify child was created
@@ -3783,7 +3733,7 @@ mod tests {
         });
 
         let child = store
-            .create_child_node_atomic(&parent.id, "task", "Task content", properties, None)
+            .create_child_node_atomic(&parent.id, "task", "Task content", properties)
             .await?;
 
         // Verify properties were set
@@ -3804,7 +3754,7 @@ mod tests {
 
         // Try to create child with non-existent parent (should fail)
         let result = store
-            .create_child_node_atomic("non-existent-parent", "text", "Child", json!({}), None)
+            .create_child_node_atomic("non-existent-parent", "text", "Child", json!({}))
             .await;
 
         assert!(result.is_err());
@@ -3842,7 +3792,7 @@ mod tests {
             ))
             .await?;
         let child = store
-            .create_child_node_atomic(&parent1.id, "text", "Child", json!({}), None)
+            .create_child_node_atomic(&parent1.id, "text", "Child", json!({}))
             .await?;
 
         // Verify child is under parent1
@@ -3876,7 +3826,7 @@ mod tests {
             ))
             .await?;
         let child = store
-            .create_child_node_atomic(&parent.id, "text", "Child", json!({}), None)
+            .create_child_node_atomic(&parent.id, "text", "Child", json!({}))
             .await?;
 
         // Move child to root
@@ -3905,7 +3855,7 @@ mod tests {
             ))
             .await?;
         let child = store
-            .create_child_node_atomic(&parent.id, "text", "Child", json!({}), None)
+            .create_child_node_atomic(&parent.id, "text", "Child", json!({}))
             .await?;
 
         // Try to move parent under child (would create cycle)
@@ -3932,7 +3882,7 @@ mod tests {
             ))
             .await?;
         let child = store
-            .create_child_node_atomic(&parent.id, "text", "Child", json!({}), None)
+            .create_child_node_atomic(&parent.id, "text", "Child", json!({}))
             .await?;
 
         // Delete parent (should cascade delete edges)
@@ -4101,13 +4051,7 @@ mod tests {
         for i in 0..ITERATIONS {
             let start = std::time::Instant::now();
             let _child = store
-                .create_child_node_atomic(
-                    &parent.id,
-                    "text",
-                    &format!("Child{}", i),
-                    json!({}),
-                    None,
-                )
+                .create_child_node_atomic(&parent.id, "text", &format!("Child{}", i), json!({}))
                 .await?;
             measurements.push(start.elapsed());
         }
@@ -4147,15 +4091,15 @@ mod tests {
 
         // Create multiple child nodes
         let child1 = store
-            .create_child_node_atomic(&parent.id, "text", "Child 1", json!({}), None)
+            .create_child_node_atomic(&parent.id, "text", "Child 1", json!({}))
             .await?;
 
         let child2 = store
-            .create_child_node_atomic(&parent.id, "text", "Child 2", json!({}), None)
+            .create_child_node_atomic(&parent.id, "text", "Child 2", json!({}))
             .await?;
 
         let child3 = store
-            .create_child_node_atomic(&parent.id, "text", "Child 3", json!({}), None)
+            .create_child_node_atomic(&parent.id, "text", "Child 3", json!({}))
             .await?;
 
         // Fetch all edges using get_all_edges

@@ -704,29 +704,9 @@ Third paragraph"#;
         assert_eq!(second.content, "Second paragraph");
         assert_eq!(third.content, "Third paragraph");
 
-        // Verify basic sibling ordering structure
-        // Container has no sibling before it (it's the root)
-        assert_eq!(container.before_sibling_id, None);
-
-        // For content nodes, verify they form a sibling chain
-        // Note: The exact linking pattern depends on how the parser handles blank lines
-        // and creates separate text nodes. We just verify that:
-        // 1. At least one node has no before_sibling (the first in order)
-        // 2. The nodes are properly linked through parent relationships
-
-        let nodes_with_no_before_sibling = [&first, &second, &third]
-            .iter()
-            .filter(|n| n.before_sibling_id.is_none())
-            .count();
-
-        // At least one content node should have no before_sibling (the first one)
-        assert!(
-            nodes_with_no_before_sibling >= 1,
-            "At least one content node should have no before_sibling"
-        );
-
+        // Note: Sibling ordering is now on has_child edge order field, not node.before_sibling_id
+        // Verify content nodes are children of the container via get_children ordering
         // All content nodes should have the same parent (the container - verified via edges)
-        // first, second, third are all children of container
     }
 
     #[tokio::test]

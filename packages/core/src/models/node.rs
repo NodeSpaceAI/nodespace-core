@@ -74,11 +74,16 @@ pub enum ValidationError {
 /// - `id`: Unique identifier (UUID for most nodes, `YYYY-MM-DD` for date nodes)
 /// - `node_type`: Type identifier (e.g., "text", "task", "person", "date", "schema")
 /// - `content`: Primary content/text of the node
-/// - `before_sibling_id`: Optional reference for sibling ordering
 /// - `created_at`: Timestamp when node was created
 /// - `modified_at`: Timestamp when node was last modified
 /// - `properties`: JSON object containing all entity-specific fields
 /// - `embedding_vector`: Optional vector embedding for AI semantic search
+///
+/// # Sibling Ordering
+///
+/// Sibling ordering is managed via `has_child` edge `order` field (fractional ordering),
+/// not stored on the node itself. Use `SurrealStore::get_children()` to retrieve
+/// children in order.
 ///
 /// # Pure JSON Schema Pattern
 ///
@@ -124,9 +129,6 @@ pub struct Node {
 
     /// Primary content/text of the node
     pub content: String,
-
-    /// Sibling ordering reference (single-pointer linked list)
-    pub before_sibling_id: Option<String>,
 
     /// Optimistic concurrency control version (incremented on each update)
     /// Used to detect conflicting concurrent writes from MCP clients and Frontend UI
@@ -199,7 +201,6 @@ impl Node {
             id,
             node_type,
             content,
-            before_sibling_id: None,
             version: 1,
             created_at: now,
             modified_at: now,
@@ -243,7 +244,6 @@ impl Node {
             id,
             node_type,
             content,
-            before_sibling_id: None,
             version: 1,
             created_at: now,
             modified_at: now,
@@ -302,15 +302,6 @@ impl Node {
             ));
         }
 
-        // Validate no circular references (self-referencing)
-        if let Some(sibling_id) = &self.before_sibling_id {
-            if sibling_id == &self.id {
-                return Err(ValidationError::InvalidParent(
-                    "Node cannot be its own sibling".to_string(),
-                ));
-            }
-        }
-
         Ok(())
     }
 
@@ -346,13 +337,13 @@ impl Node {
 
 /// Custom deserializer for optional fields that accepts both plain values and nested Options
 ///
-/// This enables TypeScript frontend to send `{"beforeSiblingId": "value"}` instead of
-/// requiring the more complex `{"beforeSiblingId": {"value": "value"}}` structure.
+/// This enables TypeScript frontend to send `{"embeddingVector": [1.0, 2.0]}` instead of
+/// requiring the more complex `{"embeddingVector": {"value": [1.0, 2.0]}}` structure.
 ///
 /// Maps three input formats to the double-Option pattern:
 /// - Missing field → None (don't update)
 /// - null → Some(None) (set to NULL)
-/// - "value" → Some(Some("value")) (set to value)
+/// - value → Some(Some(value)) (set to value)
 fn deserialize_optional_field<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -370,8 +361,8 @@ where
 ///
 /// # Double-Option Pattern for Nullable Fields
 ///
-/// Fields like `before_sibling_id` and `embedding_vector`
-/// use a double-`Option` pattern to distinguish between three states:
+/// The `embedding_vector` field uses a double-`Option` pattern to distinguish
+/// between three states:
 ///
 /// - `None`: Don't change this field (omit from update)
 /// - `Some(None)`: Set the field to NULL (remove the reference)
@@ -391,17 +382,9 @@ where
 ///     ..Default::default()
 /// };
 ///
-/// // Update content and clear before_sibling_id (set to NULL)
-/// let update = NodeUpdate {
-///     content: Some("Updated content".to_string()),
-///     before_sibling_id: Some(None),  // Set before_sibling_id to NULL
-///     ..Default::default()
-/// };
-///
-/// // Update content and set new sibling ordering
+/// // Update content and properties
 /// let update = NodeUpdate {
 ///     content: Some("New content".to_string()),
-///     before_sibling_id: Some(Some("sibling-id".to_string())),  // Set to specific value
 ///     properties: Some(json!({"status": "DONE"})),
 ///     ..Default::default()
 /// };
@@ -416,19 +399,6 @@ pub struct NodeUpdate {
     /// Update primary content
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-
-    /// Update sibling ordering
-    ///
-    /// Uses double-Option pattern:
-    /// - `None`: Don't change before_sibling_id
-    /// - `Some(None)`: Set before_sibling_id to NULL (no explicit ordering)
-    /// - `Some(Some(id))`: Set before_sibling_id to the specified ID
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_optional_field"
-    )]
-    pub before_sibling_id: Option<Option<String>>,
 
     /// Update or merge properties
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -476,7 +446,6 @@ impl NodeUpdate {
     pub fn is_empty(&self) -> bool {
         self.node_type.is_none()
             && self.content.is_none()
-            && self.before_sibling_id.is_none()
             && self.properties.is_none()
             && self.embedding_vector.is_none()
     }
@@ -1000,17 +969,9 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_node_validation_circular_sibling() {
-        let mut node = Node::new("text".to_string(), "Test".to_string(), json!({}));
-        // Set before_sibling_id to self (circular reference)
-        node.before_sibling_id = Some(node.id.clone());
-
-        assert!(matches!(
-            node.validate(),
-            Err(ValidationError::InvalidParent(_))
-        ));
-    }
+    // NOTE: test_node_validation_circular_sibling removed - sibling ordering is now
+    // handled via has_child edge order field. Circular sibling references are no longer
+    // possible at the node level since before_sibling_id is stored on edges, not nodes.
 
     #[test]
     fn test_node_content_update() {

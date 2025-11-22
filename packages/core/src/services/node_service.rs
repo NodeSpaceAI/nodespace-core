@@ -901,7 +901,6 @@ where
                     id: id.to_string(),
                     node_type: "date".to_string(),
                     content: id.to_string(), // Content MUST match ID for validation
-                    before_sibling_id: None,
                     version: 1,
                     created_at: chrono::Utc::now(),
                     modified_at: chrono::Utc::now(),
@@ -981,9 +980,8 @@ where
             updated.content = content;
         }
 
-        if let Some(before_sibling_id) = update.before_sibling_id {
-            updated.before_sibling_id = before_sibling_id;
-        }
+        // NOTE: Sibling ordering is now handled via has_child edge order field.
+        // Use reorder_siblings() or move_node() for ordering changes.
 
         if let Some(properties) = update.properties {
             // Merge properties instead of replacing them to preserve _schema_version
@@ -1033,7 +1031,6 @@ where
         let node_update = crate::models::NodeUpdate {
             node_type: Some(updated.node_type.clone()),
             content: Some(updated.content.clone()),
-            before_sibling_id: Some(updated.before_sibling_id.clone()),
             properties: Some(updated.properties.clone()),
             embedding_vector: if updated.embedding_vector.is_some() {
                 Some(updated.embedding_vector.clone())
@@ -1129,9 +1126,8 @@ where
             updated.content = content;
         }
 
-        if let Some(before_sibling_id) = update.before_sibling_id {
-            updated.before_sibling_id = before_sibling_id;
-        }
+        // NOTE: Sibling ordering is now handled via has_child edge order field.
+        // Use reorder_siblings() or move_node() for ordering changes.
 
         if let Some(properties) = update.properties {
             // Merge properties instead of replacing them to preserve _schema_version
@@ -1164,7 +1160,6 @@ where
         let node_update = crate::models::NodeUpdate {
             node_type: Some(updated.node_type.clone()),
             content: Some(updated.content.clone()),
-            before_sibling_id: Some(updated.before_sibling_id.clone()),
             properties: Some(updated.properties.clone()),
             embedding_vector: if updated.embedding_vector.is_some() {
                 Some(updated.embedding_vector.clone())
@@ -1689,14 +1684,14 @@ where
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 
-    /// Reorder siblings using before_sibling_id pointer
+    /// Reorder a child within its parent's children list.
     ///
-    /// Sets the before_sibling_id to position a node in its sibling list.
+    /// Updates the `has_child` edge `order` field to reposition a node among its siblings.
     ///
     /// # Arguments
     ///
     /// * `node_id` - The node to reorder
-    /// * `before_sibling_id` - The sibling to position before (None = end of list)
+    /// * `insert_after` - The sibling to position after (None = first position)
     ///
     /// # Examples
     ///
@@ -1708,18 +1703,18 @@ where
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
     /// # let service = NodeService::new(db)?;
-    /// // Position node before sibling
-    /// service.reorder_siblings("node-id", Some("sibling-id")).await?;
+    /// // Position node after sibling
+    /// service.reorder_child("node-id", Some("sibling-id")).await?;
     ///
-    /// // Move to end of list
-    /// service.reorder_siblings("node-id", None).await?;
+    /// // Move to first position
+    /// service.reorder_child("node-id", None).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn reorder_siblings(
+    pub async fn reorder_child(
         &self,
         node_id: &str,
-        before_sibling_id: Option<&str>,
+        insert_after: Option<&str>,
     ) -> Result<(), NodeServiceError> {
         // Verify node exists
         let _node = self
@@ -1728,7 +1723,7 @@ where
             .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
 
         // Verify sibling exists if provided
-        if let Some(sibling_id) = before_sibling_id {
+        if let Some(sibling_id) = insert_after {
             let sibling_exists = self.node_exists(sibling_id).await?;
             if !sibling_exists {
                 return Err(NodeServiceError::hierarchy_violation(format!(
@@ -1738,66 +1733,72 @@ where
             }
         }
 
-        // Get current parent to maintain the same parent while reordering
-        let current_parent = self.get_parent(node_id).await?;
-        let parent_id = current_parent.as_ref().map(|n| n.id.as_str());
+        // Child ordering is handled via has_child edge order field.
+        // Get current parent to move within the same parent
+        let parent = self.get_parent(node_id).await?;
+        let parent_id = parent.map(|p| p.id);
 
-        // Convert before_sibling_id to insert_after_sibling_id for store.move_node
-        // before_sibling_id semantics: "place me BEFORE this sibling"
-        // move_node semantics: "insert AFTER this sibling" (or None for beginning)
-        //
-        // To place node BEFORE target_sibling, we need to find the sibling that
-        // comes BEFORE target_sibling and insert AFTER that one.
-        // If target_sibling is first (no sibling before it), we insert at beginning (None).
-        let insert_after_id = if let Some(target_sibling_id) = before_sibling_id {
-            if let Some(parent_id) = parent_id {
-                // Get all children in order
-                let children = self.get_children(parent_id).await?;
+        // Use move_node to handle edge ordering (insert_after semantics)
+        self.store
+            .move_node(node_id, parent_id.as_deref(), insert_after)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
-                // Find the position of the target sibling
-                let target_pos = children.iter().position(|c| c.id == target_sibling_id);
+        Ok(())
+    }
 
-                if let Some(pos) = target_pos {
-                    if pos == 0 {
-                        // Target is first child, insert at beginning
-                        None
-                    } else {
-                        // Find the child right before the target (skip self if present)
-                        let mut insert_after_child: Option<String> = None;
-                        for i in (0..pos).rev() {
-                            if children[i].id != node_id {
-                                insert_after_child = Some(children[i].id.clone());
-                                break;
-                            }
-                        }
-                        insert_after_child
-                    }
-                } else {
-                    // Target sibling not found in children, insert at beginning
-                    None
-                }
-            } else {
-                // No parent, can't reorder
-                None
-            }
-        } else {
-            // No before_sibling_id specified, insert at end (find last child)
-            if let Some(parent_id) = parent_id {
-                let children = self.get_children(parent_id).await?;
-                children
-                    .last()
-                    .filter(|c| c.id != node_id)
-                    .map(|c| c.id.clone())
+    /// Bump a node's version without changing any content.
+    ///
+    /// Used by operations like reorder that need OCC (optimistic concurrency control)
+    /// even though they don't modify the node's content directly.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The ID of the node to update
+    /// * `expected_version` - The version the caller expects (for OCC)
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) if version bump succeeds, Err if version mismatch or node not found
+    pub async fn update_node_with_version_bump(
+        &self,
+        node_id: &str,
+        expected_version: i64,
+    ) -> Result<(), NodeServiceError> {
+        // Get current node to preserve its values
+        let node = self
+            .get_node(node_id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
+
+        // Create update with current values (no actual changes, just version bump)
+        let node_update = crate::models::NodeUpdate {
+            node_type: Some(node.node_type.clone()),
+            content: Some(node.content.clone()),
+            properties: Some(node.properties.clone()),
+            embedding_vector: if node.embedding_vector.is_some() {
+                Some(node.embedding_vector.clone())
             } else {
                 None
-            }
+            },
         };
 
-        // Use store's move_node which handles fractional ordering properly
-        self.store
-            .move_node(node_id, parent_id, insert_after_id.as_deref())
+        // Perform atomic update with version check
+        let result = self
+            .store
+            .update_node_with_version_check(node_id, expected_version, node_update)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        // Check if update succeeded (version matched)
+        if result.is_none() {
+            return Err(NodeServiceError::query_failed(format!(
+                "Version conflict: expected version {} for node {}",
+                expected_version, node_id
+            )));
+        }
+
+        Ok(())
     }
 
     /// Query nodes with filtering
@@ -2147,9 +2148,8 @@ where
                 updated.content = content.clone();
             }
 
-            if let Some(before_sibling_id) = &update.before_sibling_id {
-                updated.before_sibling_id = before_sibling_id.clone();
-            }
+            // NOTE: Sibling ordering is now handled via has_child edge order field.
+            // Bulk updates don't support sibling reordering - use move_node instead.
 
             if let Some(properties) = &update.properties {
                 updated.properties = properties.clone();
@@ -2289,7 +2289,7 @@ where
             // Update existing node
             let update = NodeUpdate {
                 content: Some(content.to_string()),
-                before_sibling_id: Some(before_sibling_id.map(|s| s.to_string())),
+                // NOTE: Sibling ordering now handled via has_child edge order field
                 ..Default::default()
             };
             self.store
@@ -2298,9 +2298,9 @@ where
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to update node: {}", e))
                 })?;
-            // Update parent relationship via edge
+            // Update parent relationship via edge (handles sibling ordering)
             self.store
-                .move_node(node_id, Some(parent_id), None)
+                .move_node(node_id, Some(parent_id), before_sibling_id)
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to update parent: {}", e))
@@ -2311,7 +2311,6 @@ where
                 id: node_id.to_string(),
                 node_type: node_type.to_string(),
                 content: content.to_string(),
-                before_sibling_id: before_sibling_id.map(|s| s.to_string()),
                 version: 1,
                 properties: serde_json::json!({}),
                 mentions: vec![],
@@ -2323,9 +2322,9 @@ where
             self.store.create_node(node).await.map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to create node: {}", e))
             })?;
-            // Create parent relationship via edge
+            // Create parent relationship via edge (handles sibling ordering)
             self.store
-                .move_node(node_id, Some(parent_id), None)
+                .move_node(node_id, Some(parent_id), before_sibling_id)
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to set parent: {}", e))
@@ -2673,7 +2672,7 @@ mod tests {
         assert_eq!(date_node.id, "2025-10-13");
         assert_eq!(date_node.node_type, "date");
         assert_eq!(date_node.content, "2025-10-13"); // Content MUST match ID for validation
-        assert_eq!(date_node.before_sibling_id, None);
+                                                     // Note: Sibling ordering is now on has_child edge order field, not node.before_sibling_id
     }
 
     #[tokio::test]
@@ -2914,10 +2913,8 @@ mod tests {
         assert_eq!(children_before[1].id, child1_id, "Child1 should be second");
 
         // Reorder child1 to be before child2 (making child1 first)
-        service
-            .reorder_siblings(&child1_id, Some(&child2_id))
-            .await
-            .unwrap();
+        // Using insert_after=None means insert at beginning
+        service.reorder_child(&child1_id, None).await.unwrap();
 
         // Verify new order - child1 should now be first
         let children_after = service.get_children(&parent_id).await.unwrap();

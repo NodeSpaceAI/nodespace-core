@@ -233,19 +233,13 @@ mod tests {
         let result = queue.reorder_with_retry(&node_b, None, 3).await;
         assert!(result.is_ok(), "Reorder should succeed on first attempt");
 
-        // Verify new order: B is first
-        let b_after = operations.get_node(&node_b).await.unwrap().unwrap();
-        assert_eq!(b_after.before_sibling_id, None, "B should be first");
-
-        // TODO(#TBD): Fix reorder_node to update previous first sibling when moving to first position
-        // Currently, when B moves to first, A is not updated to point to B.
-        // This leaves A with before_sibling_id=None, creating an inconsistent chain.
-        // Expected behavior: A.before_sibling_id should be updated to Some(B)
-        // Current behavior: A.before_sibling_id remains None (BROKEN)
-        //
-        // Once reorder_node is fixed, uncomment this assertion:
-        // let a_after = operations.get_node(&node_a).await.unwrap().unwrap();
-        // assert_eq!(a_after.before_sibling_id, Some(node_b.clone()), "A should be after B");
+        // Verify new order via get_children (ordered by edge order field)
+        // Note: Sibling ordering is now on has_child edge order field, not node.before_sibling_id
+        let children = operations.get_children(&parent_id).await.unwrap();
+        assert_eq!(children.len(), 2);
+        // After reorder, B should be first
+        assert_eq!(children[0].id, node_b, "B should be first");
+        assert_eq!(children[1].id, node_a, "A should be second");
     }
 
     #[tokio::test]
@@ -529,18 +523,15 @@ mod tests {
         assert!(result1.is_ok(), "Task 1 should succeed with retries");
         assert!(result2.is_ok(), "Task 2 should succeed with retries");
 
-        // Verify final state is consistent (one of the valid orderings)
-        let a_final = operations.get_node(&node_a).await.unwrap().unwrap();
-        let b_final = operations.get_node(&node_b).await.unwrap().unwrap();
-        let c_final = operations.get_node(&node_c).await.unwrap().unwrap();
+        // Verify final state is consistent via get_children ordering
+        // Note: Sibling ordering is now on has_child edge order field, not node.before_sibling_id
+        let children = operations.get_children(&parent_id).await.unwrap();
+        assert_eq!(children.len(), 3, "Should have 3 children");
 
-        // Verify sibling chain integrity
-        // At least one node should be first (no before_sibling_id)
-        assert!(
-            a_final.before_sibling_id.is_none()
-                || b_final.before_sibling_id.is_none()
-                || c_final.before_sibling_id.is_none(),
-            "At least one node should be first (no before_sibling_id)"
-        );
+        // Verify all nodes are present (order may vary due to concurrent operations)
+        let child_ids: Vec<_> = children.iter().map(|n| n.id.clone()).collect();
+        assert!(child_ids.contains(&node_a), "A should be present");
+        assert!(child_ids.contains(&node_b), "B should be present");
+        assert!(child_ids.contains(&node_c), "C should be present");
     }
 }

@@ -454,7 +454,6 @@ mod tests {
             id: "test_schema".to_string(),
             node_type: "schema".to_string(),
             content: "Test Schema".to_string(),
-            before_sibling_id: None,
             version: 1,
             created_at: chrono::Utc::now(),
             modified_at: chrono::Utc::now(),

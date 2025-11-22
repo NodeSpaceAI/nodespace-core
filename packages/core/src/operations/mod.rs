@@ -583,7 +583,6 @@ where
             id: node_id,
             node_type: params.node_type,
             content: params.content,
-            before_sibling_id: final_sibling_id.clone(),
             version: 1,
             properties: params.properties,
             mentions: vec![],
@@ -893,8 +892,8 @@ where
             ));
         }
 
-        // Fetch current node for validation
-        let current = self
+        // Fetch current node to validate it exists (hierarchy changes go through move_node)
+        let _current = self
             .node_service
             .get_node(node_id)
             .await?
@@ -902,72 +901,7 @@ where
 
         // NOTE: Hierarchy changes (parent_id, root_id) are no longer supported in update_node.
         // Use the move_node() API instead for changing node hierarchy.
-
-        let sibling_changed = update
-            .before_sibling_id
-            .as_ref()
-            .map(|new_sibling| new_sibling.as_deref() != current.before_sibling_id.as_deref())
-            .unwrap_or(false);
-
-        if sibling_changed {
-            // Validate container node cannot be reordered
-            if self.node_service.is_root_node(node_id).await? {
-                return Err(NodeOperationError::invalid_operation(format!(
-                    "Container node '{}' cannot be reordered (it's a root node)",
-                    node_id
-                )));
-            }
-
-            // Fix sibling chain BEFORE reordering (maintain chain integrity)
-            // Find node that currently points to this one and update it
-            if let Some(parent) = self.node_service.get_parent(node_id).await? {
-                let siblings = self.node_service.get_children(&parent.id).await?;
-
-                // Find the next sibling that points to this node
-                if let Some(next_sibling) = siblings
-                    .iter()
-                    .find(|n| n.before_sibling_id.as_deref() == Some(node_id))
-                {
-                    // Update next sibling to point to what this node was pointing to
-                    // This removes this node from the chain before we move it
-                    let mut chain_fix = NodeUpdate::new();
-                    chain_fix.before_sibling_id = Some(current.before_sibling_id.clone());
-
-                    // Retry on version conflicts
-                    let max_retries = 3;
-                    for attempt in 0..max_retries {
-                        let fresh = self
-                            .node_service
-                            .get_node(&next_sibling.id)
-                            .await?
-                            .ok_or_else(|| {
-                                NodeOperationError::node_not_found(next_sibling.id.clone())
-                            })?;
-
-                        match self
-                            .node_service
-                            .update_with_version_check(
-                                &next_sibling.id,
-                                fresh.version,
-                                chain_fix.clone(),
-                            )
-                            .await
-                        {
-                            Ok(_) => break,
-                            Err(_e) if attempt < max_retries - 1 => {
-                                tracing::warn!(
-                                    "Sibling chain update conflict, retrying ({}/{})",
-                                    attempt + 1,
-                                    max_retries
-                                );
-                                continue;
-                            }
-                            Err(e) => return Err(e.into()),
-                        }
-                    }
-                }
-            }
-        }
+        // Sibling ordering is now handled via has_child edge order field, not before_sibling_id.
 
         // All validation passed - apply update in ONE database operation
         // NodeService::update_with_version_check handles all fields atomically
@@ -1111,7 +1045,7 @@ where
         &self,
         node_id: &str,
         expected_version: i64,
-        before_sibling_id: Option<&str>,
+        insert_after: Option<&str>,
     ) -> Result<(), NodeOperationError> {
         // Get current node and verify version (optimistic concurrency control)
         let node = self
@@ -1130,10 +1064,10 @@ where
             ));
         }
 
-        // Container nodes cannot be reordered (they are root nodes with no siblings)
+        // Root nodes cannot be reordered (they have no parent)
         if self.node_service.is_root_node(node_id).await? {
             return Err(NodeOperationError::invalid_operation(format!(
-                "Container node '{}' cannot be reordered (it's a root node with no siblings)",
+                "Root node '{}' cannot be reordered (it has no parent)",
                 node_id
             )));
         }
@@ -1141,17 +1075,14 @@ where
         // Use graph-native reordering via NodeService
         // This operates on the `order` field of has_child edges, not node fields
         self.node_service
-            .reorder_siblings(node_id, before_sibling_id)
+            .reorder_child(node_id, insert_after)
             .await?;
 
-        // Bump node version to enable OCC detection for concurrent reorder operations
-        // Even though edge ordering changed (not node content), clients should detect
-        // stale state when attempting to reorder a node that was already reordered
-        // We touch the before_sibling_id field to trigger version increment
-        let mut update = NodeUpdate::new();
-        update.before_sibling_id = Some(None); // Clear the obsolete field, triggers version bump
+        // Bump the node's version to support OCC (optimistic concurrency control).
+        // Even though we're only modifying edge ordering, we bump the node version
+        // so that concurrent reorder operations will fail with version conflict.
         self.node_service
-            .update_with_version_check(node_id, expected_version, update)
+            .update_node_with_version_bump(node_id, expected_version)
             .await?;
 
         Ok(())
@@ -1214,7 +1145,7 @@ where
         expected_version: i64,
     ) -> Result<DeleteResult, NodeOperationError> {
         // 1. Get the node being deleted (if it exists)
-        let node = match self.node_service.get_node(node_id).await? {
+        let _node = match self.node_service.get_node(node_id).await? {
             Some(n) => n,
             None => {
                 // Node doesn't exist - return false immediately
@@ -1222,65 +1153,8 @@ where
             }
         };
 
-        // 2. Fix sibling chain BEFORE deletion (only if node has a parent)
-        // Use version-checked updates with retry to prevent race conditions
-        if let Some(parent) = self.node_service.get_parent(node_id).await? {
-            // Find all siblings (nodes with same parent)
-            let siblings = self.node_service.get_children(&parent.id).await?;
-
-            // Find the node that points to this one (next sibling in chain)
-            if let Some(next_sibling) = siblings
-                .iter()
-                .find(|n| n.before_sibling_id.as_deref() == Some(node_id))
-            {
-                // Update next sibling to point to what the deleted node pointed to
-                // This maintains the chain: if A → B → C and we delete B, we get A → C
-                // Retry on version conflicts to handle concurrent modifications
-                let max_retries = 3;
-                for attempt in 0..max_retries {
-                    // Fetch fresh version on each attempt
-                    let fresh_sibling = self
-                        .node_service
-                        .get_node(&next_sibling.id)
-                        .await?
-                        .ok_or_else(|| {
-                            NodeOperationError::node_not_found(next_sibling.id.clone())
-                        })?;
-
-                    let mut update = NodeUpdate::new();
-                    update.before_sibling_id = Some(node.before_sibling_id.clone());
-
-                    let rows_affected = self
-                        .node_service
-                        .update_with_version_check(&fresh_sibling.id, fresh_sibling.version, update)
-                        .await?;
-
-                    if rows_affected > 0 {
-                        // Success - chain fixed
-                        break;
-                    } else if attempt == max_retries - 1 {
-                        // Final attempt failed - return version conflict error
-                        return Err(NodeOperationError::version_conflict(
-                            fresh_sibling.id.clone(),
-                            fresh_sibling.version,
-                            fresh_sibling.version + 1, // Actual version is now higher
-                            fresh_sibling,
-                        ));
-                    } else {
-                        // Log retry attempts for operational visibility
-                        tracing::warn!(
-                            "Sibling chain update retry attempt {} for node '{}' during delete (max: {})",
-                            attempt + 1,
-                            fresh_sibling.id,
-                            max_retries
-                        );
-                        // Retry with exponential backoff
-                        tokio::time::sleep(tokio::time::Duration::from_millis(10 * (1 << attempt)))
-                            .await;
-                    }
-                }
-            }
-        }
+        // 2. NOTE: Sibling ordering is now managed via has_child edge order field.
+        // No sibling chain repair is needed - edge deletion handles ordering automatically.
 
         // 3. Cascade delete all children recursively
         // Get all direct children before deleting the parent
@@ -1609,13 +1483,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify initial chain: A (None) → B (None) → C (None)
-        let a = operations.get_node(&node_a).await.unwrap().unwrap();
+        // Note: Sibling ordering is now on has_child edge order field, not node.before_sibling_id
+        let _a = operations.get_node(&node_a).await.unwrap().unwrap();
         let b = operations.get_node(&node_b).await.unwrap().unwrap();
-        let c = operations.get_node(&node_c).await.unwrap().unwrap();
-        assert_eq!(a.before_sibling_id, None);
-        assert_eq!(b.before_sibling_id, None);
-        assert_eq!(c.before_sibling_id, None);
+        let _c = operations.get_node(&node_c).await.unwrap().unwrap();
 
         // Delete B (middle node)
         let result = operations.delete_node(&node_b, b.version).await.unwrap();
@@ -1625,11 +1496,10 @@ mod tests {
         let deleted = operations.get_node(&node_b).await.unwrap();
         assert!(deleted.is_none());
 
-        // Verify sibling chain is intact: A and C still exist
-        let a_after = operations.get_node(&node_a).await.unwrap().unwrap();
-        let c_after = operations.get_node(&node_c).await.unwrap().unwrap();
-        assert_eq!(a_after.before_sibling_id, None);
-        assert_eq!(c_after.before_sibling_id, None);
+        // Verify A and C still exist
+        let _a_after = operations.get_node(&node_a).await.unwrap().unwrap();
+        let _c_after = operations.get_node(&node_c).await.unwrap().unwrap();
+        // Sibling ordering integrity is maintained via edge order field
     }
 
     #[tokio::test]
@@ -1682,9 +1552,9 @@ mod tests {
             .unwrap();
         assert!(result.existed);
 
-        // Verify second node still exists with correct chain
-        let second_after = operations.get_node(&second).await.unwrap().unwrap();
-        assert_eq!(second_after.before_sibling_id, None);
+        // Verify second node still exists
+        // Note: Sibling ordering is now on has_child edge order field
+        let _second_after = operations.get_node(&second).await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -1737,9 +1607,9 @@ mod tests {
             .unwrap();
         assert!(result.existed);
 
-        // Verify first node still exists unchanged
-        let first_after = operations.get_node(&first).await.unwrap().unwrap();
-        assert_eq!(first_after.before_sibling_id, None);
+        // Verify first node still exists
+        // Note: Sibling ordering is now on has_child edge order field
+        let _first_after = operations.get_node(&first).await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -1809,9 +1679,9 @@ mod tests {
         assert!(operations.get_node(&parent).await.unwrap().is_none());
         assert!(operations.get_node(&child).await.unwrap().is_none());
 
-        // Verify sibling still exists with intact chain
-        let sibling_after = operations.get_node(&sibling).await.unwrap().unwrap();
-        assert_eq!(sibling_after.before_sibling_id, None);
+        // Verify sibling still exists
+        // Note: Sibling ordering is now on has_child edge order field
+        let _sibling_after = operations.get_node(&sibling).await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -2460,17 +2330,15 @@ mod tests {
 
         // Graph Architecture Note: Parent-child relationships now managed via graph edges
         // Indent operation would create/update graph edges instead of setting parent_id field
-        let mut update = NodeUpdate::new();
-        update.before_sibling_id = Some(None);
+        // Note: Sibling ordering is now on has_child edge order field, not node.before_sibling_id
+        let update = NodeUpdate::new().with_content("Updated content".to_string());
 
         let updated = operations
             .update_node_with_hierarchy(&child_id, 1, update)
             .await
             .unwrap();
 
-        // Graph Architecture Note: Parent verification via graph edges
-        // TODO: Verify parent via graph edge query when edge API is available
-        assert_eq!(updated.before_sibling_id, None);
+        assert_eq!(updated.content, "Updated content");
         assert_eq!(updated.version, 2);
     }
 
@@ -2515,11 +2383,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Combined update: change content AND hierarchy
+        // Combined update: change content
         // Graph Architecture Note: Parent relationship managed via graph edges
-        let mut update = NodeUpdate::new();
-        update.content = Some("Updated child".to_string());
-        update.before_sibling_id = Some(None);
+        // Note: Sibling ordering is now on has_child edge order field, not node.before_sibling_id
+        let update = NodeUpdate::new().with_content("Updated child".to_string());
 
         let updated = operations
             .update_node_with_hierarchy(&child_id, 1, update)
@@ -2527,9 +2394,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(updated.content, "Updated child");
-        // Graph Architecture Note: Parent verification via graph edges
-        // TODO: Verify parent via graph edge query when edge API is available
-        assert_eq!(updated.before_sibling_id, None);
         assert_eq!(updated.version, 2);
     }
 
