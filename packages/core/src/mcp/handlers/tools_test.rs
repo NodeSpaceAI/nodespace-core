@@ -20,8 +20,8 @@ fn test_tools_list_returns_all_schemas() {
 
     let tools = response["tools"].as_array().unwrap();
 
-    // Verify all 22 tools are present (16 original + 6 schema management tools)
-    assert_eq!(tools.len(), 22);
+    // Verify all 24 tools are present (16 original + 6 schema management + 2 new)
+    assert_eq!(tools.len(), 24);
 
     // Verify tool names
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -43,6 +43,7 @@ fn test_tools_list_returns_all_schemas() {
     // Markdown
     assert!(tool_names.contains(&"create_nodes_from_markdown"));
     assert!(tool_names.contains(&"get_markdown_from_node_id"));
+    assert!(tool_names.contains(&"update_root_from_markdown"));
 
     // Batch operations
     assert!(tool_names.contains(&"get_nodes_batch"));
@@ -51,6 +52,7 @@ fn test_tools_list_returns_all_schemas() {
 
     // Search
     assert!(tool_names.contains(&"search_containers"));
+    assert!(tool_names.contains(&"search_roots"));
 
     // Schema management tools
     assert!(tool_names.contains(&"get_schema_definition"));
@@ -58,6 +60,7 @@ fn test_tools_list_returns_all_schemas() {
     assert!(tool_names.contains(&"remove_schema_field"));
     assert!(tool_names.contains(&"extend_schema_enum"));
     assert!(tool_names.contains(&"remove_schema_enum_value"));
+    assert!(tool_names.contains(&"create_entity_schema_from_description"));
 }
 
 #[test]

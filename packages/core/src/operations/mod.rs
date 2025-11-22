@@ -1113,15 +1113,24 @@ where
         expected_version: i64,
         before_sibling_id: Option<&str>,
     ) -> Result<(), NodeOperationError> {
-        // Get current node
+        // Get current node and verify version (optimistic concurrency control)
         let node = self
             .node_service
             .get_node(node_id)
             .await?
             .ok_or_else(|| NodeOperationError::node_not_found(node_id.to_string()))?;
 
+        // Check version before proceeding
+        if node.version != expected_version {
+            return Err(NodeOperationError::version_conflict(
+                node_id.to_string(),
+                expected_version,
+                node.version,
+                node,
+            ));
+        }
+
         // Container nodes cannot be reordered (they are root nodes with no siblings)
-        // Check actual container status using service method
         if self.node_service.is_root_node(node_id).await? {
             return Err(NodeOperationError::invalid_operation(format!(
                 "Container node '{}' cannot be reordered (it's a root node with no siblings)",
@@ -1129,104 +1138,21 @@ where
             )));
         }
 
-        // Fix sibling chain BEFORE reordering (maintain chain integrity)
-        // Use version-checked updates with retry to prevent race conditions
-        if let Some(parent) = self.node_service.get_parent(node_id).await? {
-            // Find all siblings (nodes with same parent)
-            let siblings = self.node_service.get_children(&parent.id).await?;
-
-            // Find the node that points to this one (next sibling in chain)
-            if let Some(next_sibling) = siblings
-                .iter()
-                .find(|n| n.before_sibling_id.as_deref() == Some(node_id))
-            {
-                // Update next sibling to skip over the moved node with version checking
-                // This maintains the chain: if A → B → C and we move B, we update C to point to A
-                // Retry on version conflicts to handle concurrent modifications
-                let max_retries = 3;
-                for attempt in 0..max_retries {
-                    // Fetch fresh version on each attempt
-                    let fresh_sibling = self
-                        .node_service
-                        .get_node(&next_sibling.id)
-                        .await?
-                        .ok_or_else(|| {
-                            NodeOperationError::node_not_found(next_sibling.id.clone())
-                        })?;
-
-                    let mut fix_update = NodeUpdate::new();
-                    fix_update.before_sibling_id = Some(node.before_sibling_id.clone());
-
-                    let rows_affected = self
-                        .node_service
-                        .update_with_version_check(
-                            &fresh_sibling.id,
-                            fresh_sibling.version,
-                            fix_update,
-                        )
-                        .await?;
-
-                    if rows_affected > 0 {
-                        // Success - chain fixed
-                        break;
-                    } else if attempt == max_retries - 1 {
-                        // Final attempt failed - return version conflict error
-                        return Err(NodeOperationError::version_conflict(
-                            fresh_sibling.id.clone(),
-                            fresh_sibling.version,
-                            fresh_sibling.version + 1, // Actual version is now higher
-                            fresh_sibling,
-                        ));
-                    } else {
-                        // Log retry attempts for operational visibility
-                        tracing::warn!(
-                            "Sibling chain update retry attempt {} for node '{}' during reorder (max: {})",
-                            attempt + 1,
-                            fresh_sibling.id,
-                            max_retries
-                        );
-                        // Retry with exponential backoff
-                        tokio::time::sleep(tokio::time::Duration::from_millis(10 * (1 << attempt)))
-                            .await;
-                    }
-                }
-            }
-        }
-
-        // Validate sibling position
-        let parent = self.node_service.get_parent(node_id).await?;
-        let new_sibling = self
-            .calculate_sibling_position(
-                parent.as_ref().map(|p| p.id.as_str()),
-                before_sibling_id.map(String::from),
-            )
+        // Use graph-native reordering via NodeService
+        // This operates on the `order` field of has_child edges, not node fields
+        self.node_service
+            .reorder_siblings(node_id, before_sibling_id)
             .await?;
 
-        // Create NodeUpdate with new sibling position
+        // Bump node version to enable OCC detection for concurrent reorder operations
+        // Even though edge ordering changed (not node content), clients should detect
+        // stale state when attempting to reorder a node that was already reordered
+        // We touch the before_sibling_id field to trigger version increment
         let mut update = NodeUpdate::new();
-        update.before_sibling_id = Some(new_sibling);
-
-        // Update with version check (optimistic concurrency control)
-        let rows_affected = self
-            .node_service
+        update.before_sibling_id = Some(None); // Clear the obsolete field, triggers version bump
+        self.node_service
             .update_with_version_check(node_id, expected_version, update)
             .await?;
-
-        // If version mismatch, fetch current state and return conflict error
-        if rows_affected == 0 {
-            let current = self
-                .node_service
-                .get_node(node_id)
-                .await?
-                .ok_or_else(|| NodeOperationError::node_not_found(node_id.to_string()))?;
-
-            return Err(NodeOperationError::version_conflict(
-                node_id.to_string(),
-                expected_version,
-                current.version,
-                current,
-            ));
-        }
 
         Ok(())
     }
@@ -1561,33 +1487,35 @@ mod tests {
             .await
             .unwrap();
 
-        // Create first node under date container (will be last in chain since no before_sibling_id)
+        // Create first node under date container
+        // API behavior: before_sibling_id = None means "append at end"
         let first = operations
             .create_node(CreateNodeParams {
                 id: None, // Test generates ID
                 node_type: "text".to_string(),
                 content: "First".to_string(),
                 parent_id: Some(date.clone()),
-                before_sibling_id: None, // No before_sibling_id = goes to end
+                before_sibling_id: None, // Appends at end (first child)
                 properties: json!({}),
             })
             .await
             .unwrap();
 
-        // Create second node under date container (also goes to end, after first)
+        // Create second node under date container (appends after first)
         let second = operations
             .create_node(CreateNodeParams {
                 id: None, // Test generates ID
                 node_type: "text".to_string(),
                 content: "Second".to_string(),
                 parent_id: Some(date.clone()),
-                before_sibling_id: None, // No before_sibling_id = goes to end
+                before_sibling_id: None, // Appends at end (after first)
                 properties: json!({}),
             })
             .await
             .unwrap();
 
-        // Create third node BEFORE second under date container (so ordering becomes: first → third → second)
+        // Create third node BEFORE second under date container
+        // This should place third before second in the children order
         let third = operations
             .create_node(CreateNodeParams {
                 id: None, // Test generates ID
@@ -1600,28 +1528,26 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify ordering
-        let first_node = operations.get_node(&first).await.unwrap().unwrap();
-        let second_node = operations.get_node(&second).await.unwrap().unwrap();
-        let third_node = operations.get_node(&third).await.unwrap().unwrap();
+        // Verify ordering via children order (graph-native architecture uses fractional order on edges)
+        let children = operations.get_children(&date).await.unwrap();
+        assert_eq!(children.len(), 3, "Should have 3 children");
 
-        // first has no before_sibling_id (it's first in chain)
+        // With documented API behavior (None = append at end):
+        // - first was added at end (only child at time)
+        // - second was added at end (after first)
+        // - third was added before second (between first and second)
+        // So final order should be: [first, third, second]
         assert_eq!(
-            first_node.before_sibling_id, None,
-            "First node should have no before_sibling_id"
+            children[0].id, first,
+            "First should be first (added first, appended at end)"
         );
-
-        // third comes before second
         assert_eq!(
-            third_node.before_sibling_id,
-            Some(second.clone()),
-            "Third node should come before second"
+            children[1].id, third,
+            "Third should be in the middle (added before second)"
         );
-
-        // second should still have no before_sibling_id (it's at the end)
         assert_eq!(
-            second_node.before_sibling_id, None,
-            "Second node should have no before_sibling_id (end of chain)"
+            children[2].id, second,
+            "Second should be last (third was inserted before it)"
         );
     }
 

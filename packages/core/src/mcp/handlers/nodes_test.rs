@@ -611,26 +611,26 @@ mod integration_tests {
             .await
             .unwrap();
 
-        // Create three children: A → B → C
+        // Create three children: A → B → C (using None = append at end)
         let node_a = operations
             .create_node(CreateNodeParams {
                 id: None, // Test generates ID
                 node_type: "text".to_string(),
                 content: "A".to_string(),
                 parent_id: Some(date.clone()),
-                before_sibling_id: None,
+                before_sibling_id: None, // First child
                 properties: json!({}),
             })
             .await
             .unwrap();
 
-        let node_b = operations
+        let _node_b = operations
             .create_node(CreateNodeParams {
                 id: None, // Test generates ID
                 node_type: "text".to_string(),
                 content: "B".to_string(),
                 parent_id: Some(date.clone()),
-                before_sibling_id: Some(node_a.clone()),
+                before_sibling_id: None, // Append after A
                 properties: json!({}),
             })
             .await
@@ -642,7 +642,7 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "C".to_string(),
                 parent_id: Some(date.clone()),
-                before_sibling_id: Some(node_b.clone()),
+                before_sibling_id: None, // Append after B
                 properties: json!({}),
             })
             .await

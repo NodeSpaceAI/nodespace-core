@@ -565,30 +565,22 @@ where
     async fn backfill_schema_version(&self, node: &mut Node) -> Result<(), NodeServiceError> {
         if let Some(props_obj) = node.properties.as_object() {
             if !props_obj.contains_key("_schema_version") {
-                // Check if node type has a schema with fields
-                if let Some(schema) = self.get_schema_for_type(&node.node_type).await? {
-                    // Only backfill if schema has fields (not empty schema)
-                    if let Some(fields) = schema.get("fields").and_then(|f| f.as_array()) {
-                        if !fields.is_empty() {
-                            // Schema has fields - backfill version for migration tracking
-                            let version =
-                                schema.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
+                // Determine version from schema if exists, otherwise default to 1
+                let version =
+                    if let Some(schema) = self.get_schema_for_type(&node.node_type).await? {
+                        schema.get("version").and_then(|v| v.as_i64()).unwrap_or(1)
+                    } else {
+                        1 // Default version for types without schema
+                    };
 
-                            // Add version to node properties IN-MEMORY ONLY
-                            // Don't persist to database - this prevents overwriting freshly created spoke records
-                            // Issue #511: After node type conversion, the spoke record has status+_schema_version
-                            // Backfill would MERGE just _schema_version, but the spoke already has it
-                            // Persisting backfill is unnecessary and risks race conditions
-                            if let Some(props_obj) = node.properties.as_object_mut() {
-                                props_obj.insert(
-                                    "_schema_version".to_string(),
-                                    serde_json::json!(version),
-                                );
-                            }
-                        }
-                    }
+                // Add version to node properties IN-MEMORY ONLY
+                // Don't persist to database - this prevents overwriting freshly created spoke records
+                // Issue #511: After node type conversion, the spoke record has status+_schema_version
+                // Backfill would MERGE just _schema_version, but the spoke already has it
+                // Persisting backfill is unnecessary and risks race conditions
+                if let Some(props_obj) = node.properties.as_object_mut() {
+                    props_obj.insert("_schema_version".to_string(), serde_json::json!(version));
                 }
-                // If no schema or empty schema, don't add version - it's not needed
             }
         }
         Ok(())
@@ -1652,10 +1644,47 @@ where
         parent_id: &str,
         before_sibling_id: Option<&str>,
     ) -> Result<(), NodeServiceError> {
+        // Convert before_sibling_id to insert_after_sibling_id for store.move_node
+        //
+        // API semantics (documented in CreateNodeParams):
+        //   before_sibling_id = Some(id) → "place me BEFORE this sibling"
+        //   before_sibling_id = None → "append at end of list"
+        //
+        // store.move_node semantics:
+        //   insert_after_sibling_id = Some(id) → "insert AFTER this sibling"
+        //   insert_after_sibling_id = None → "insert at beginning"
+        //
+        // Translation:
+        //   before_sibling_id = Some(id) → find sibling before target, insert after it
+        //   before_sibling_id = None → find last child, insert after it (append at end)
+        let insert_after_id = if let Some(target_sibling_id) = before_sibling_id {
+            // Get all children in order
+            let children = self.get_children(parent_id).await?;
+
+            // Find the position of the target sibling
+            let target_pos = children.iter().position(|c| c.id == target_sibling_id);
+
+            if let Some(pos) = target_pos {
+                if pos == 0 {
+                    // Target is first child, insert at beginning
+                    None
+                } else {
+                    // Insert after the child right before the target
+                    Some(children[pos - 1].id.clone())
+                }
+            } else {
+                // Target sibling not found, append at end
+                children.last().map(|c| c.id.clone())
+            }
+        } else {
+            // No before_sibling_id specified = append at END of list
+            let children = self.get_children(parent_id).await?;
+            children.last().map(|c| c.id.clone())
+        };
+
         // Use store's move_node which creates the has_child edge atomically
-        // with before_sibling_id in a single transaction
         self.store
-            .move_node(child_id, Some(parent_id), before_sibling_id)
+            .move_node(child_id, Some(parent_id), insert_after_id.as_deref())
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
@@ -1709,12 +1738,66 @@ where
             }
         }
 
-        let update = NodeUpdate {
-            before_sibling_id: Some(before_sibling_id.map(String::from)),
-            ..Default::default()
+        // Get current parent to maintain the same parent while reordering
+        let current_parent = self.get_parent(node_id).await?;
+        let parent_id = current_parent.as_ref().map(|n| n.id.as_str());
+
+        // Convert before_sibling_id to insert_after_sibling_id for store.move_node
+        // before_sibling_id semantics: "place me BEFORE this sibling"
+        // move_node semantics: "insert AFTER this sibling" (or None for beginning)
+        //
+        // To place node BEFORE target_sibling, we need to find the sibling that
+        // comes BEFORE target_sibling and insert AFTER that one.
+        // If target_sibling is first (no sibling before it), we insert at beginning (None).
+        let insert_after_id = if let Some(target_sibling_id) = before_sibling_id {
+            if let Some(parent_id) = parent_id {
+                // Get all children in order
+                let children = self.get_children(parent_id).await?;
+
+                // Find the position of the target sibling
+                let target_pos = children.iter().position(|c| c.id == target_sibling_id);
+
+                if let Some(pos) = target_pos {
+                    if pos == 0 {
+                        // Target is first child, insert at beginning
+                        None
+                    } else {
+                        // Find the child right before the target (skip self if present)
+                        let mut insert_after_child: Option<String> = None;
+                        for i in (0..pos).rev() {
+                            if children[i].id != node_id {
+                                insert_after_child = Some(children[i].id.clone());
+                                break;
+                            }
+                        }
+                        insert_after_child
+                    }
+                } else {
+                    // Target sibling not found in children, insert at beginning
+                    None
+                }
+            } else {
+                // No parent, can't reorder
+                None
+            }
+        } else {
+            // No before_sibling_id specified, insert at end (find last child)
+            if let Some(parent_id) = parent_id {
+                let children = self.get_children(parent_id).await?;
+                children
+                    .last()
+                    .filter(|c| c.id != node_id)
+                    .map(|c| c.id.clone())
+            } else {
+                None
+            }
         };
 
-        self.update_node(node_id, update).await
+        // Use store's move_node which handles fractional ordering properly
+        self.store
+            .move_node(node_id, parent_id, insert_after_id.as_deref())
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 
     /// Query nodes with filtering
@@ -2801,23 +2884,52 @@ mod tests {
     async fn test_reorder_siblings() {
         let (service, _temp) = create_test_service().await;
 
+        // Create parent node
         let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
-        let _parent_id = service.create_node(parent).await.unwrap();
+        let parent_id = service.create_node(parent).await.unwrap();
 
+        // Create two children under the parent
+        // Note: move_node without sibling inserts at BEGINNING, so child2 will be first
         let child1 = Node::new("text".to_string(), "Child 1".to_string(), json!({}));
         let child1_id = service.create_node(child1).await.unwrap();
-
-        let child2 = Node::new("text".to_string(), "Child 2".to_string(), json!({}));
-        let child2_id = service.create_node(child2).await.unwrap();
-
-        // Reorder child2 to be before child1
         service
-            .reorder_siblings(&child2_id, Some(&child1_id))
+            .move_node(&child1_id, Some(&parent_id))
             .await
             .unwrap();
 
-        let reordered = service.get_node(&child2_id).await.unwrap().unwrap();
-        assert_eq!(reordered.before_sibling_id, Some(child1_id));
+        let child2 = Node::new("text".to_string(), "Child 2".to_string(), json!({}));
+        let child2_id = service.create_node(child2).await.unwrap();
+        service
+            .move_node(&child2_id, Some(&parent_id))
+            .await
+            .unwrap();
+
+        // Get initial order - child2 should be FIRST (inserted at beginning)
+        let children_before = service.get_children(&parent_id).await.unwrap();
+        assert_eq!(children_before.len(), 2);
+        assert_eq!(
+            children_before[0].id, child2_id,
+            "Child2 should be first (inserted at beginning)"
+        );
+        assert_eq!(children_before[1].id, child1_id, "Child1 should be second");
+
+        // Reorder child1 to be before child2 (making child1 first)
+        service
+            .reorder_siblings(&child1_id, Some(&child2_id))
+            .await
+            .unwrap();
+
+        // Verify new order - child1 should now be first
+        let children_after = service.get_children(&parent_id).await.unwrap();
+        assert_eq!(children_after.len(), 2);
+        assert_eq!(
+            children_after[0].id, child1_id,
+            "Child1 should be first after reorder"
+        );
+        assert_eq!(
+            children_after[1].id, child2_id,
+            "Child2 should be second after reorder"
+        );
     }
 
     #[tokio::test]
@@ -3091,6 +3203,10 @@ mod tests {
     ///
     /// All tests use unique content markers (e.g., "UniqueBasicFilter") to prevent
     /// cross-test contamination and ensure proper test isolation.
+    /// Tests for basic node query functionality
+    ///
+    /// Note: The include_containers_and_tasks filter was removed. These tests now
+    /// verify that content search returns ALL matching nodes regardless of type.
     mod container_task_filter_tests {
         use super::*;
 
@@ -3106,7 +3222,7 @@ mod tests {
             );
             let root_id = service.create_node(root).await.unwrap();
 
-            // Create a task node (child of root - graph edges will establish relationship)
+            // Create a task node
             let task = Node::new_with_id(
                 "task-1".to_string(),
                 "task".to_string(),
@@ -3115,7 +3231,7 @@ mod tests {
             );
             let task_id = service.create_node(task).await.unwrap();
 
-            // Create a regular text child node (should be filtered out)
+            // Create a regular text child node
             let text_child = Node::new_with_id(
                 "text-child-1".to_string(),
                 "text".to_string(),
@@ -3124,21 +3240,21 @@ mod tests {
             );
             let text_child_id = service.create_node(text_child).await.unwrap();
 
-            // Query WITH filter enabled - use content match to isolate this test's nodes
-            let query_with_filter = crate::models::NodeQuery {
+            // Query using content match to isolate this test's nodes
+            let query = crate::models::NodeQuery {
                 content_contains: Some("UniqueBasicFilter".to_string()),
                 ..Default::default()
             };
-            let filtered_results = service.query_nodes_simple(query_with_filter).await.unwrap();
+            let results = service.query_nodes_simple(query).await.unwrap();
 
-            // Verify we only get root and task nodes
+            // All nodes matching the content filter should be returned
             assert_eq!(
-                filtered_results.len(),
-                2,
-                "Should return exactly 2 nodes (root + task)"
+                results.len(),
+                3,
+                "Should return all 3 nodes matching content filter"
             );
 
-            let result_ids: Vec<&str> = filtered_results.iter().map(|n| n.id.as_str()).collect();
+            let result_ids: Vec<&str> = results.iter().map(|n| n.id.as_str()).collect();
             assert!(
                 result_ids.contains(&root_id.as_str()),
                 "Should include root node"
@@ -3148,21 +3264,8 @@ mod tests {
                 "Should include task node"
             );
             assert!(
-                !result_ids.contains(&text_child_id.as_str()),
-                "Should NOT include text child node"
-            );
-
-            // Query WITHOUT filter - should get all 3 nodes created in this test
-            let query_no_filter = crate::models::NodeQuery {
-                content_contains: Some("UniqueBasicFilter".to_string()),
-                ..Default::default()
-            };
-            let unfiltered_results = service.query_nodes_simple(query_no_filter).await.unwrap();
-
-            assert_eq!(
-                unfiltered_results.len(),
-                3,
-                "Should return all 3 nodes when filter disabled"
+                result_ids.contains(&text_child_id.as_str()),
+                "Should include text child node"
             );
         }
 
@@ -3178,7 +3281,7 @@ mod tests {
             );
             let root_id = service.create_node(root).await.unwrap();
 
-            // Create task with "meeting" in content (child of root)
+            // Create task with "meeting" in content
             let task = Node::new_with_id(
                 "task-meeting".to_string(),
                 "task".to_string(),
@@ -3187,32 +3290,33 @@ mod tests {
             );
             let task_id = service.create_node(task).await.unwrap();
 
-            // Create text child with "meeting" in content (should be filtered out)
+            // Create text child with "meeting" in content
             let text_child = Node::new_with_id(
                 "text-meeting".to_string(),
                 "text".to_string(),
                 "Meeting agenda item".to_string(),
                 json!({}),
             );
-            service.create_node(text_child).await.unwrap();
+            let text_child_id = service.create_node(text_child).await.unwrap();
 
-            // Query for "meeting" WITH root/task filter
+            // Query for "meeting"
             let query = crate::models::NodeQuery {
                 content_contains: Some("meeting".to_string()),
                 ..Default::default()
             };
             let results = service.query_nodes_simple(query).await.unwrap();
 
-            // Should only return root and task, not the text child
+            // All 3 nodes with "meeting" should be returned
             assert_eq!(
                 results.len(),
-                2,
-                "Should return only root and task nodes with 'meeting'"
+                3,
+                "Should return all nodes with 'meeting' in content"
             );
 
             let result_ids: Vec<&str> = results.iter().map(|n| n.id.as_str()).collect();
             assert!(result_ids.contains(&root_id.as_str()));
             assert!(result_ids.contains(&task_id.as_str()));
+            assert!(result_ids.contains(&text_child_id.as_str()));
         }
 
         #[tokio::test]
@@ -3238,7 +3342,7 @@ mod tests {
             let root_id = service.create_node(root).await.unwrap();
             service.create_mention(&root_id, &target_id).await.unwrap();
 
-            // Create task that mentions target (child of root)
+            // Create task that mentions target
             let task = Node::new_with_id(
                 "task-mentions".to_string(),
                 "task".to_string(),
@@ -3248,7 +3352,7 @@ mod tests {
             let task_id = service.create_node(task).await.unwrap();
             service.create_mention(&task_id, &target_id).await.unwrap();
 
-            // Create text child that mentions target (should be filtered out)
+            // Create text child that mentions target
             let text_child = Node::new_with_id(
                 "text-mentions".to_string(),
                 "text".to_string(),
@@ -3261,24 +3365,24 @@ mod tests {
                 .await
                 .unwrap();
 
-            // Query nodes that mention target WITH root/task filter
+            // Query nodes that mention target
             let query = crate::models::NodeQuery {
                 mentioned_by: Some(target_id.clone()),
                 ..Default::default()
             };
             let results = service.query_nodes_simple(query).await.unwrap();
 
-            // Should only return root and task
+            // All 3 nodes that mention target should be returned
             assert_eq!(
                 results.len(),
-                2,
-                "Should return only root and task that mention target"
+                3,
+                "Should return all nodes that mention target"
             );
 
             let result_ids: Vec<&str> = results.iter().map(|n| n.id.as_str()).collect();
             assert!(result_ids.contains(&root_id.as_str()));
             assert!(result_ids.contains(&task_id.as_str()));
-            assert!(!result_ids.contains(&text_child_id.as_str()));
+            assert!(result_ids.contains(&text_child_id.as_str()));
         }
 
         #[tokio::test]
@@ -3380,7 +3484,7 @@ mod tests {
             let root = Node::new("text".to_string(), "Root page".to_string(), json!({}));
             let root_id = service.create_node(root).await.unwrap();
 
-            // Create a child text node in the root
+            // Create a child text node
             let child = Node::new_with_id(
                 "child-text".to_string(),
                 "text".to_string(),
@@ -3389,7 +3493,10 @@ mod tests {
             );
             let child_id = service.create_node(child).await.unwrap();
 
-            // Create target node
+            // Make child a child of root (establish hierarchy)
+            service.move_node(&child_id, Some(&root_id)).await.unwrap();
+
+            // Create target node (separate root)
             let target = Node::new_with_id(
                 "target".to_string(),
                 "text".to_string(),
@@ -3420,7 +3527,7 @@ mod tests {
             let root = Node::new("text".to_string(), "Root page".to_string(), json!({}));
             let root_id = service.create_node(root).await.unwrap();
 
-            // Create two child nodes in the same root
+            // Create two child nodes
             let child1 = Node::new_with_id(
                 "child-1".to_string(),
                 "text".to_string(),
@@ -3437,7 +3544,11 @@ mod tests {
             );
             let child2_id = service.create_node(child2).await.unwrap();
 
-            // Create target node
+            // Establish hierarchy: both children belong to root
+            service.move_node(&child1_id, Some(&root_id)).await.unwrap();
+            service.move_node(&child2_id, Some(&root_id)).await.unwrap();
+
+            // Create target node (separate root)
             let target = Node::new_with_id(
                 "target-dedup".to_string(),
                 "text".to_string(),
@@ -3476,7 +3587,7 @@ mod tests {
             let root = Node::new("text".to_string(), "Root page".to_string(), json!({}));
             let root_id = service.create_node(root).await.unwrap();
 
-            // Create a task node (child of root)
+            // Create a task node
             let task = Node::new_with_id(
                 "task-1".to_string(),
                 "task".to_string(),
@@ -3485,7 +3596,10 @@ mod tests {
             );
             let task_id = service.create_node(task).await.unwrap();
 
-            // Create target node
+            // Make task a child of root
+            service.move_node(&task_id, Some(&root_id)).await.unwrap();
+
+            // Create target node (separate root)
             let target = Node::new_with_id(
                 "target-task".to_string(),
                 "text".to_string(),
@@ -3599,7 +3713,7 @@ mod tests {
         async fn mixed_containers() {
             let (service, _temp) = create_test_service().await;
 
-            // Create three different containers
+            // Create three different containers (roots)
             let container1 = Node::new("text".to_string(), "Container page".to_string(), json!({}));
             let container1_id = service.create_node(container1).await.unwrap();
 
@@ -3609,7 +3723,7 @@ mod tests {
             let container3 = Node::new("text".to_string(), "Container 3".to_string(), json!({}));
             let container3_id = service.create_node(container3).await.unwrap();
 
-            // Create children in different containers
+            // Create children
             let child1 = Node::new_with_id(
                 "child-c1".to_string(),
                 "text".to_string(),
@@ -3626,7 +3740,7 @@ mod tests {
             );
             let child2_id = service.create_node(child2).await.unwrap();
 
-            // Create task in container 3 (should return itself)
+            // Create task (will be in container 3 but treated as its own container)
             let task = Node::new_with_id(
                 "task-c3".to_string(),
                 "task".to_string(),
@@ -3635,7 +3749,21 @@ mod tests {
             );
             let task_id = service.create_node(task).await.unwrap();
 
-            // Create target node
+            // Establish hierarchy: children belong to their containers
+            service
+                .move_node(&child1_id, Some(&container1_id))
+                .await
+                .unwrap();
+            service
+                .move_node(&child2_id, Some(&container2_id))
+                .await
+                .unwrap();
+            service
+                .move_node(&task_id, Some(&container3_id))
+                .await
+                .unwrap();
+
+            // Create target node (separate root)
             let target = Node::new_with_id(
                 "target-mixed".to_string(),
                 "text".to_string(),
@@ -3658,7 +3786,7 @@ mod tests {
             // Get mentioning containers
             let containers = service.get_mentioning_containers(&target_id).await.unwrap();
 
-            // Should return 3 unique containers (2 dates + task)
+            // Should return 3 unique containers (2 roots + task)
             assert_eq!(
                 containers.len(),
                 3,
@@ -3876,21 +4004,25 @@ mod tests {
             let root = Node::new("text".to_string(), "Root".to_string(), json!({}));
             let root_id = service.create_node(root).await.unwrap();
 
-            // Create child node as a child of the root (using parent relationship)
+            // Create child node
             let child = Node::new("text".to_string(), "Child".to_string(), json!({}));
             let child_id = service.create_node(child).await.unwrap();
 
-            // Try to update child to mention its own root
+            // Establish parent-child relationship (make child an actual child of root)
+            service.move_node(&child_id, Some(&root_id)).await.unwrap();
+
+            // Try to update child to mention its own parent (root)
             let update = NodeUpdate::new()
                 .with_content(format!("Mention root [@root](nodespace://{})", root_id));
             service.update_node(&child_id, update).await.unwrap();
 
             // Verify root-level self-reference was NOT created
+            // (child should not be able to mention its own parent)
             let child_with_mentions = service.get_node(&child_id).await.unwrap().unwrap();
             assert_eq!(
                 child_with_mentions.mentions.len(),
                 0,
-                "Should not create root-level self-reference"
+                "Should not create root-level self-reference (child mentioning its parent)"
             );
         }
 
@@ -4028,20 +4160,23 @@ mod tests {
             async fn test_auto_created_date_nodes_get_version() {
                 let (service, _temp) = create_test_service().await;
 
-                // Create a node with date parent (will auto-create date node)
-                let text_node = Node::new_with_id(
-                    "test-text-node".to_string(),
-                    "text".to_string(),
-                    "Test content".to_string(),
+                // Directly create a date node (simulating persisted date node)
+                // Types without schemas (date, text) get _schema_version via backfill on read
+                let date_node = Node::new_with_id(
+                    "2025-01-15".to_string(),
+                    "date".to_string(),
+                    "2025-01-15".to_string(),
                     json!({}),
                 );
+                service.create_node(date_node).await.unwrap();
 
-                service.create_node(text_node).await.unwrap();
-
-                // Verify the auto-created date node has _schema_version
-                let date_node = service.get_node("2025-01-15").await.unwrap().unwrap();
-                assert!(date_node.properties.get("_schema_version").is_some());
-                assert_eq!(date_node.properties["_schema_version"], 1);
+                // Retrieve the date node - backfill should add _schema_version
+                let retrieved = service.get_node("2025-01-15").await.unwrap().unwrap();
+                assert!(
+                    retrieved.properties.get("_schema_version").is_some(),
+                    "Date nodes should get _schema_version via backfill on read"
+                );
+                assert_eq!(retrieved.properties["_schema_version"], 1);
             }
 
             #[tokio::test]

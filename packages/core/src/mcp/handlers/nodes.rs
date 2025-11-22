@@ -11,7 +11,6 @@ use crate::services::SchemaService;
 use chrono::NaiveDate;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Convert NodeOperationError to MCPError with proper formatting
@@ -470,53 +469,37 @@ async fn ensure_parent_exists(
     }
 }
 
-/// Get all children of a parent in order by following the sibling chain
+/// Get all children of a parent in order
 ///
-/// Performance: O(n) using HashMap for constant-time lookups instead of O(n²) with repeated .find()
+/// In graph-native architecture, children are already ordered by the `order` field
+/// on has_child edges (fractional ordering), so we just map them to ChildInfo.
 async fn get_children_ordered(
     operations: &Arc<NodeOperations>,
     parent_id: &str,
     include_content: bool,
 ) -> Result<Vec<ChildInfo>, MCPError> {
-    // 1. Query all children using graph traversal
-    // In graph-native architecture, we use outgoing edges to find children
+    // In graph-native architecture, get_children() returns children already sorted
+    // by the `order` field on has_child edges (fractional ordering)
     let children = operations
         .get_children(parent_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to query children: {}", e)))?;
 
-    // 2. Build HashMap for O(1) lookups by before_sibling_id
-    //    Map: before_sibling_id -> Node (enables constant-time chain following)
-    let mut children_map: HashMap<Option<String>, &crate::models::Node> = HashMap::new();
-    for child in &children {
-        children_map.insert(child.before_sibling_id.clone(), child);
-    }
-
-    // 3. Follow the linked list from first to last
-    let mut ordered = Vec::new();
-    let mut current_before: Option<String> = None; // Start with first (before_sibling_id=None)
-
-    while let Some(node) = children_map.get(&current_before) {
-        ordered.push(ChildInfo {
-            index: ordered.len(),
-            node_id: node.id.clone(),
-            node_type: node.node_type.clone(),
+    // Map to ChildInfo with index
+    let ordered: Vec<ChildInfo> = children
+        .into_iter()
+        .enumerate()
+        .map(|(index, node)| ChildInfo {
+            index,
+            node_id: node.id,
+            node_type: node.node_type,
             content: if include_content {
-                Some(node.content.clone())
+                Some(node.content)
             } else {
                 None
             },
-        });
-        current_before = Some(node.id.clone());
-
-        // Infinite loop protection (circular chain detection)
-        if ordered.len() > children.len() {
-            return Err(MCPError::internal_error(format!(
-                "Circular sibling chain detected in parent '{}' - data corruption",
-                parent_id
-            )));
-        }
-    }
+        })
+        .collect();
 
     Ok(ordered)
 }
@@ -655,18 +638,15 @@ pub async fn handle_insert_child_at_index(
     let children_info = get_children_ordered(operations, &params.parent_id, false).await?;
 
     // 4. Calculate before_sibling_id based on index
-    // Note: before_sibling_id = the node that comes immediately BEFORE this one
-    // - Index 0 → before_sibling_id = None (first position, nothing before it)
-    // - Index 1 → before_sibling_id = children[0] (after first node)
-    // - Index >= length → before_sibling_id = children[last] (append at end)
-    let before_sibling_id = if params.index == 0 {
-        None // Insert at beginning
-    } else if params.index >= children_info.len() {
-        // Append at end: set before_sibling_id to last child
-        children_info.last().map(|c| c.node_id.clone())
+    // API semantics: before_sibling_id = the sibling to insert BEFORE
+    // - Index 0 → before_sibling_id = children[0] (insert before first child, if any)
+    // - Index N → before_sibling_id = children[N] (insert before Nth child)
+    // - Index >= length → before_sibling_id = None (append at end)
+    let before_sibling_id = if params.index >= children_info.len() {
+        None // Append at end
     } else {
-        // Insert at position: before_sibling_id = node at (index - 1)
-        Some(children_info[params.index - 1].node_id.clone())
+        // Insert before the child at this index
+        Some(children_info[params.index].node_id.clone())
     };
 
     // 5. Create node using pointer-based operation
@@ -683,28 +663,9 @@ pub async fn handle_insert_child_at_index(
         .await
         .map_err(|e| MCPError::node_creation_failed(format!("Failed to create node: {}", e)))?;
 
-    // 6. Fix sibling chain after insertion
-    // When inserting at a specific position, we need to update the node that was previously
-    // at that position to now point to the newly inserted node
-    if params.index < children_info.len() {
-        // There's a node that should come AFTER the new node
-        // Update it to point to the new node
-        let node_to_update_id = &children_info[params.index].node_id;
-
-        // Get current version for the node being reordered (side effect of insertion)
-        // Note: This is not passed by client since client doesn't control this sibling
-        let node_to_update = operations
-            .get_node(node_to_update_id)
-            .await
-            .map_err(|e| MCPError::node_not_found(&format!("Node not found: {}", e)))?
-            .ok_or_else(|| MCPError::node_not_found(node_to_update_id))?;
-
-        // Use reorder_node to update the old node's before_sibling_id to point to new node
-        operations
-            .reorder_node(node_to_update_id, node_to_update.version, Some(&node_id))
-            .await
-            .map_err(operation_error_to_mcp)?;
-    }
+    // Note: With graph-native architecture (fractional ordering on has_child edges),
+    // sibling chain fixing is no longer needed. The create_node operation with
+    // before_sibling_id already establishes the correct order.
 
     Ok(json!({
         "node_id": node_id,
@@ -749,18 +710,15 @@ pub async fn handle_move_child_to_index(
         .collect();
 
     // 3. Calculate new before_sibling_id
-    // Note: before_sibling_id semantics are "insert AFTER this node"
-    // - None means "first node" (no node before it)
-    // - Some(last_node_id) means "after last node" (append at end)
+    // API semantics: before_sibling_id = the sibling to insert BEFORE
+    // - Index 0 → before_sibling_id = siblings[0] (insert before first sibling, if any)
+    // - Index N → before_sibling_id = siblings[N] (insert before Nth sibling)
+    // - Index >= siblings.len() → before_sibling_id = None (append at end)
     let before_sibling_id = if params.index >= siblings.len() {
-        // Move to end: set before_sibling_id to last sibling
-        siblings.last().map(|s| s.node_id.clone())
-    } else if params.index == 0 {
-        // Move to beginning: before_sibling_id = None (first position)
-        None
+        None // Append at end
     } else {
-        // Insert at specific position: before_sibling_id = node at (index - 1)
-        Some(siblings[params.index - 1].node_id.clone())
+        // Move before the sibling at this index
+        Some(siblings[params.index].node_id.clone())
     };
 
     // 4. Use reorder_node operation (which now handles sibling chain integrity)

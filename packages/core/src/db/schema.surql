@@ -24,6 +24,7 @@ DEFINE TABLE IF NOT EXISTS node SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS content ON TABLE node TYPE string DEFAULT "";
 DEFINE FIELD IF NOT EXISTS node_type ON TABLE node TYPE string ASSERT $value != NONE;
 DEFINE FIELD IF NOT EXISTS data ON TABLE node TYPE option<record>;  -- Record Link to spoke (task, date, schema, or NULL)
+DEFINE FIELD IF NOT EXISTS properties ON TABLE node FLEXIBLE TYPE option<object>;  -- Properties for types without spoke tables (text, date, etc.)
 DEFINE FIELD IF NOT EXISTS version ON TABLE node TYPE int DEFAULT 1 ASSERT $value >= 1;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE node TYPE datetime DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS modified_at ON TABLE node TYPE datetime DEFAULT time::now();
@@ -117,6 +118,7 @@ DEFINE TABLE IF NOT EXISTS mentions SCHEMAFULL TYPE RELATION IN node OUT node;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE mentions TYPE datetime DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS context ON TABLE mentions TYPE string DEFAULT "";
 DEFINE FIELD IF NOT EXISTS offset ON TABLE mentions TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS root_id ON TABLE mentions TYPE option<string>;  -- Root node of mentioning node's tree
 
 -- Indexes for efficient queries
 DEFINE INDEX IF NOT EXISTS idx_mentions_in ON TABLE mentions COLUMNS in;

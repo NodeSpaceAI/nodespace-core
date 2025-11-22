@@ -822,31 +822,25 @@ pub async fn handle_get_markdown_from_node_id(
 
     // Export children if requested
     if params.include_children {
-        // Find direct children using graph relationships
-        // Query for nodes that have incoming edges from the root node
-        let child_ids = operations
+        // Get direct children using graph relationships
+        // In graph-native architecture, get_children returns nodes already sorted
+        // by the `order` field on has_child edges (fractional ordering)
+        let children = operations
             .get_children(&root_node.id)
             .await
             .map_err(|e| MCPError::internal_error(format!("Failed to get children: {}", e)))?;
 
-        let mut top_level_nodes: Vec<&Node> = child_ids
-            .iter()
-            .filter_map(|child| nodes_map.get(&child.id))
-            .collect();
-
-        // Sort by sibling order
-        sort_by_sibling_chain(&mut top_level_nodes);
-
-        // Export each top-level node and its descendants
-        for node in top_level_nodes {
+        // Export each child and its descendants (children are already in correct order)
+        for child in &children {
             export_node_hierarchy(
-                node,
-                &nodes_map,
+                operations,
+                child,
                 &mut markdown,
                 1, // Start at depth 1 (container is depth 0)
                 params.max_depth,
                 true, // Always include children when recursing
-            )?;
+            )
+            .await?;
         }
     }
 
@@ -858,130 +852,65 @@ pub async fn handle_get_markdown_from_node_id(
     }))
 }
 
-/// Recursively export node hierarchy to markdown using in-memory node map
-fn export_node_hierarchy(
+/// Recursively export node hierarchy to markdown
+///
+/// Uses graph traversal via NodeOperations to get children in correct order
+fn export_node_hierarchy<'a>(
+    operations: &'a Arc<NodeOperations>,
     node: &Node,
-    _nodes_map: &std::collections::HashMap<String, Node>,
-    output: &mut String,
+    output: &'a mut String,
     current_depth: usize,
     max_depth: usize,
     include_children: bool,
-) -> Result<(), MCPError> {
-    // Prevent infinite recursion
-    if current_depth >= max_depth {
-        let content_preview: String = node.content.chars().take(50).collect();
-        tracing::warn!(
-            "Max depth {} reached at node {} (content: {}{})",
-            max_depth,
-            node.id,
-            content_preview,
-            if node.content.len() > 50 { "..." } else { "" }
-        );
-        return Ok(());
-    }
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), MCPError>> + Send + 'a>> {
+    let node_id = node.id.clone();
+    let node_version = node.version;
+    let node_content = node.content.clone();
 
-    // Add minimal metadata comment with ID and version for OCC
-    output.push_str(&format!("<!-- {} v{} -->\n", node.id, node.version));
-
-    // Add content with proper formatting
-    // Note: Bullet detection requires parent lookup via graph traversal in production
-    // For now, output content as-is (bullet formatting handled during import)
-    output.push_str(&node.content);
-    output.push_str("\n\n");
-
-    // Recursively export children (if enabled)
-    if include_children {
-        // TODO: Implement proper child lookup using graph edges
-        // For now, skip children in recursive export (needs NodeOperations access for graph queries)
-        // The container-level export still works for top-level nodes (gets children via NodeOperations.get_children)
-        let children: Vec<&Node> = Vec::new();
-
-        // Sort children by sibling order (reconstruct before_sibling_id chain)
-        // let mut sorted_children = children;
-        // sort_by_sibling_chain(&mut sorted_children);
-
-        for _child in children {
-            // Skipping recursive export due to lack of graph edge access
-            // in this context. Would need to refactor to pass NodeOperations.
-        }
-    }
-
-    Ok(())
-}
-
-/// Sort nodes by their before_sibling_id chain to maintain visual order
-///
-/// This function reconstructs the sibling order by following the before_sibling_id chain.
-/// The before_sibling_id field means "I come AFTER this node", so we build a forward map
-/// to traverse from head to tail.
-fn sort_by_sibling_chain(nodes: &mut Vec<&Node>) {
-    if nodes.is_empty() {
-        return;
-    }
-
-    // Build forward map: before_sibling_id -> nodes that come after it
-    // Using Vec to detect duplicates (multiple nodes with same before_sibling_id)
-    use std::collections::HashMap;
-    let mut after_map: HashMap<Option<String>, Vec<&Node>> = HashMap::new();
-
-    for node in nodes.iter() {
-        after_map
-            .entry(node.before_sibling_id.clone())
-            .or_default()
-            .push(*node);
-    }
-
-    // Detect duplicate before_sibling_ids (data integrity issue)
-    for (before_id, nodes_after) in &after_map {
-        if nodes_after.len() > 1 {
+    Box::pin(async move {
+        // Prevent infinite recursion
+        if current_depth >= max_depth {
+            let content_preview: String = node_content.chars().take(50).collect();
             tracing::warn!(
-                "Multiple nodes have same before_sibling_id: {:?}. This indicates corrupted sibling chain data.",
-                before_id
+                "Max depth {} reached at node {} (content: {}{})",
+                max_depth,
+                node_id,
+                content_preview,
+                if node_content.len() > 50 { "..." } else { "" }
             );
+            return Ok(());
         }
-    }
 
-    // Find head: node with None or before_sibling not in this set
-    use std::collections::HashSet;
-    let node_ids: HashSet<_> = nodes.iter().map(|n| &n.id).collect();
-    let head = nodes
-        .iter()
-        .find(|n| {
-            n.before_sibling_id.is_none()
-                || !node_ids.contains(n.before_sibling_id.as_ref().unwrap())
-        })
-        .copied();
+        // Add minimal metadata comment with ID and version for OCC
+        output.push_str(&format!("<!-- {} v{} -->\n", node_id, node_version));
 
-    if let Some(mut current) = head {
-        let mut sorted = vec![current];
-        let mut visited: HashSet<&str> = HashSet::new();
-        visited.insert(&current.id);
+        // Add content with proper formatting
+        output.push_str(&node_content);
+        output.push_str("\n\n");
 
-        // Follow the chain forward using after_map
-        // Use visited set to detect cycles
-        while let Some(next_nodes) = after_map.get(&Some(current.id.clone())) {
-            if let Some(&next) = next_nodes.first() {
-                // Cycle detection: if we've seen this node before, we have a circular reference
-                if visited.contains(next.id.as_str()) {
-                    tracing::error!(
-                        "Circular sibling chain detected at node {}. This is a data corruption issue.",
-                        next.id
-                    );
-                    break;
-                }
+        // Recursively export children (if enabled)
+        if include_children {
+            // Get children using graph traversal (already sorted by edge order)
+            let children = operations
+                .get_children(&node_id)
+                .await
+                .map_err(|e| MCPError::internal_error(format!("Failed to get children: {}", e)))?;
 
-                visited.insert(&next.id);
-                sorted.push(next);
-                current = next;
-            } else {
-                break;
+            for child in &children {
+                export_node_hierarchy(
+                    operations,
+                    child,
+                    output,
+                    current_depth + 1,
+                    max_depth,
+                    include_children,
+                )
+                .await?;
             }
         }
 
-        // Replace the original vector with sorted nodes
-        nodes.clear();
-        nodes.extend(sorted);
-    }
+        Ok(())
+    })
 }
 
 /// Count number of nodes in markdown (by counting HTML comments)
