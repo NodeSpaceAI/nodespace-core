@@ -13,7 +13,6 @@
 //! let node = Node::new(
 //!     "task".to_string(),
 //!     "Implement feature".to_string(),
-//!     None,
 //!     json!({"status": "pending", "priority": 2}),
 //! );
 //! let task = TaskNode::from_node(node).unwrap();
@@ -88,7 +87,6 @@ impl TaskStatus {
 /// let node = Node::new(
 ///     "task".to_string(),
 ///     "Fix bug".to_string(),
-///     None,
 ///     json!({"status": "pending"}),
 /// );
 /// let mut task = TaskNode::from_node(node).unwrap();
@@ -114,7 +112,7 @@ impl TaskNode {
     /// use nodespace_core::models::{Node, TaskNode};
     /// use serde_json::json;
     ///
-    /// let node = Node::new("task".to_string(), "Test".to_string(), None, json!({}));
+    /// let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
     /// let task = TaskNode::from_node(node).unwrap();
     /// ```
     pub fn from_node(node: Node) -> Result<Self, ValidationError> {

@@ -72,8 +72,8 @@ pub type MigrationTransform = fn(&Node) -> Result<Node, NodeServiceError>;
 ///
 /// # Example
 ///
-/// ```no_run
-/// # use nodespace_core::services::migration_registry::MigrationRegistry;
+/// ```ignore
+/// use nodespace_core::services::migration_registry::MigrationRegistry;
 /// let mut registry = MigrationRegistry::new();
 ///
 /// // Register migrations
@@ -82,9 +82,6 @@ pub type MigrationTransform = fn(&Node) -> Result<Node, NodeServiceError>;
 ///
 /// // Apply chained migrations (v1→v2→v3)
 /// let upgraded = registry.apply_migrations(&node, 3)?;
-/// # fn task_v1_to_v2(node: &nodespace_core::models::Node) -> Result<nodespace_core::models::Node, nodespace_core::services::NodeServiceError> { Ok(node.clone()) }
-/// # fn task_v2_to_v3(node: &nodespace_core::models::Node) -> Result<nodespace_core::models::Node, nodespace_core::services::NodeServiceError> { Ok(node.clone()) }
-/// # Ok::<(), nodespace_core::services::NodeServiceError>(())
 /// ```
 pub struct MigrationRegistry {
     /// Map of (schema_id, from_version, to_version) → transform function

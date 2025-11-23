@@ -5,7 +5,7 @@ impl FractionalOrderCalculator {
     /// Calculate order value for inserting between prev and next
     ///
     /// # Examples
-    /// ```
+    /// ```text
     /// // Insert at beginning (before all)
     /// calculate_order(None, Some(1.0)) => 0.5
     ///

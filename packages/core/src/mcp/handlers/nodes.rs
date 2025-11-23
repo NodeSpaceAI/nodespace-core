@@ -211,7 +211,7 @@ pub async fn handle_create_node(
             node_type: mcp_params.node_type.clone(),
             content: mcp_params.content,
             parent_id: mcp_params.parent_id,
-            before_sibling_id: None, // Ordering handled by edge order field
+            insert_after_node_id: None, // Ordering handled by edge order field
             properties: mcp_params.properties,
         })
         .await
@@ -449,7 +449,7 @@ async fn ensure_parent_exists(
                 node_type: "date".to_string(),
                 content: parent_id.to_string(),
                 parent_id: None,
-                before_sibling_id: None,
+                insert_after_node_id: None,
                 properties: json!({}),
             })
             .await
@@ -633,16 +633,28 @@ pub async fn handle_insert_child_at_index(
     // 3. Get all siblings in order
     let children_info = get_children_ordered(operations, &params.parent_id, false).await?;
 
-    // 4. Calculate before_sibling_id based on index
-    // API semantics: before_sibling_id = the sibling to insert BEFORE
-    // - Index 0 → before_sibling_id = children[0] (insert before first child, if any)
-    // - Index N → before_sibling_id = children[N] (insert before Nth child)
-    // - Index >= length → before_sibling_id = None (append at end)
-    let before_sibling_id = if params.index >= children_info.len() {
-        None // Append at end
+    // 4. Calculate insert_after_node_id based on index
+    // API semantics: insert_after_node_id = the sibling to insert AFTER
+    // Note: The backend's calculate_sibling_position converts None to "append at end"
+    // by finding the last child. We need to explicitly pass the correct value for ALL cases.
+    //
+    // - Index 0 on empty list → None (first position)
+    // - Index 0 on non-empty list → Need to insert at beginning, but None would be transformed
+    //   to "after last child". We need to use reorder after creation instead.
+    // - Index N → insert_after_node_id = children[N-1] (insert after the previous child)
+    // - Index >= length → insert_after_node_id = children.last() (append at end)
+    //
+    // For index 0 on non-empty list, we'll create at end then reorder to beginning.
+    let needs_reorder_to_beginning = params.index == 0 && !children_info.is_empty();
+
+    let insert_after_node_id = if children_info.is_empty() {
+        None // Empty list - first position (beginning == end)
+    } else if params.index >= children_info.len() || params.index == 0 {
+        // Append at end (will reorder to beginning if index == 0)
+        Some(children_info.last().unwrap().node_id.clone())
     } else {
-        // Insert before the child at this index
-        Some(children_info[params.index].node_id.clone())
+        // Insert after the child at index-1
+        Some(children_info[params.index - 1].node_id.clone())
     };
 
     // 5. Create node using pointer-based operation
@@ -653,15 +665,34 @@ pub async fn handle_insert_child_at_index(
             node_type: params.node_type.clone(),
             content: params.content,
             parent_id: Some(params.parent_id.clone()),
-            before_sibling_id: before_sibling_id.clone(),
+            insert_after_node_id: insert_after_node_id.clone(),
             properties: params.properties,
         })
         .await
         .map_err(|e| MCPError::node_creation_failed(format!("Failed to create node: {}", e)))?;
 
+    // 6. If index 0 was requested on non-empty list, reorder to beginning
+    // We created at end, now move to beginning using reorder
+    if needs_reorder_to_beginning {
+        // Get the newly created node to get its version for OCC
+        let created_node = operations
+            .get_node(&node_id)
+            .await
+            .map_err(|e| MCPError::internal_error(format!("Failed to get created node: {}", e)))?
+            .ok_or_else(|| MCPError::internal_error("Created node not found".to_string()))?;
+
+        // Reorder to beginning (insert_after = None means first position)
+        operations
+            .reorder_node(&node_id, created_node.version, None)
+            .await
+            .map_err(|e| {
+                MCPError::internal_error(format!("Failed to reorder node to beginning: {}", e))
+            })?;
+    }
+
     // Note: With graph-native architecture (fractional ordering on has_child edges),
     // sibling chain fixing is no longer needed. The create_node operation with
-    // before_sibling_id already establishes the correct order.
+    // insert_after_node_id already establishes the correct order.
 
     Ok(json!({
         "node_id": node_id,
@@ -824,7 +855,7 @@ pub struct BatchGetResult {
 ///
 /// # Example
 ///
-/// ```rust,no_run
+/// ```ignore
 /// let params = json!({
 ///     "node_ids": ["task-1", "task-2", "task-3"]
 /// });
@@ -919,7 +950,7 @@ pub struct BatchUpdateFailure {
 ///
 /// # Example
 ///
-/// ```rust,no_run
+/// ```ignore
 /// let params = json!({
 ///     "updates": [
 ///         { "id": "task-1", "content": "- [x] Done" },

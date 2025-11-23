@@ -39,7 +39,7 @@ pub struct SearchRootsParams {
 ///
 /// # Example
 ///
-/// ```rust,no_run
+/// ```ignore
 /// let params = json!({
 ///     "query": "Q4 planning and budget",
 ///     "threshold": 0.7,

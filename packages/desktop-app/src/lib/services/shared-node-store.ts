@@ -331,6 +331,9 @@ export class SharedNodeStore {
   // Used for pattern conversions where content + nodeType must persist together
   private activeBatches = new Map<string, ActiveBatch>();
 
+  // Track pending tree loads to prevent duplicate concurrent loads from multiple tabs
+  private pendingTreeLoads = new Map<string, Promise<Node[]>>();
+
   private constructor() {
     // Private constructor for singleton
   }
@@ -1040,17 +1043,123 @@ export class SharedNodeStore {
       // Add nodes to store with database source
       // Database source type will automatically mark nodes as persisted (see determinePersistenceBehavior)
       const databaseSource = { type: 'database' as const, reason: 'loaded-from-db' };
-      for (const node of nodes) {
+      for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
         this.setNode(node, databaseSource); // skipPersistence removed - database source handles it
+
+        // CRITICAL FIX: Register parent-child edge in structureTree for browser mode
+        // In Tauri mode, LIVE SELECT events populate structureTree automatically.
+        // In browser mode (HTTP adapter), we must register edges manually here.
+        // Use index as order since backend returns children in sorted order.
+        structureTree.addInMemoryRelationship(parentId, node.id, i + 1);
       }
 
-      // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
-      // Nodes are automatically discovered by ReactiveStructureTree when edges are created in backend
       return nodes;
     } catch (error) {
       // Suppress expected errors in in-memory test mode
       if (shouldLogDatabaseErrors()) {
         console.error(`[SharedNodeStore] Failed to load children for parent ${parentId}:`, error);
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Load entire children tree recursively from database for a parent
+   *
+   * This method uses getChildrenTree which returns nested NodeWithChildren structure.
+   * It recursively flattens all nodes into the store and registers ALL parent-child
+   * edges in the structureTree, enabling proper expand/collapse for nested hierarchies.
+   *
+   * CRITICAL FOR BROWSER MODE: In Tauri mode, LIVE SELECT events populate the
+   * structureTree automatically. In browser mode (HTTP adapter), we must load
+   * the entire tree upfront and register edges manually.
+   *
+   * @param parentId - The parent node ID to load tree for
+   * @returns Array of ALL nodes (flattened) loaded from database
+   */
+  async loadChildrenTree(parentId: string): Promise<Node[]> {
+    // Check if a load is already in progress for this parent
+    const existingLoad = this.pendingTreeLoads.get(parentId);
+    if (existingLoad) {
+      console.log(`[SharedNodeStore] Reusing pending load for parent: ${parentId}`);
+      return existingLoad;
+    }
+
+    // Create new load promise and track it
+    const loadPromise = this.doLoadChildrenTree(parentId);
+    this.pendingTreeLoads.set(parentId, loadPromise);
+
+    try {
+      const result = await loadPromise;
+      return result;
+    } finally {
+      // Clean up tracking after load completes (success or failure)
+      this.pendingTreeLoads.delete(parentId);
+    }
+  }
+
+  private async doLoadChildrenTree(parentId: string): Promise<Node[]> {
+    try {
+      const tree = await tauriCommands.getChildrenTree(parentId);
+
+      if (!tree) {
+        return [];
+      }
+
+      const allNodes: Node[] = [];
+      const allRelationships: Array<{parentId: string, childId: string, order: number}> = [];
+      const databaseSource = { type: 'database' as const, reason: 'loaded-from-db' };
+
+      // Helper to recursively process NodeWithChildren and collect edges
+      const processNode = (nodeWithChildren: import('$lib/types').NodeWithChildren, nodeParentId: string, order: number) => {
+        // Extract Node fields (exclude 'children' property)
+
+        const { children, ...nodeFields } = nodeWithChildren;
+        const node: Node = nodeFields as Node;
+
+        // Add node to store
+        this.setNode(node, databaseSource);
+        allNodes.push(node);
+
+        // Collect parent-child edge (don't add to structureTree yet)
+        allRelationships.push({ parentId: nodeParentId, childId: node.id, order });
+
+        // Recursively process children
+        if (children && children.length > 0) {
+          for (let i = 0; i < children.length; i++) {
+            processNode(children[i], node.id, i + 1);
+          }
+        }
+      };
+
+      // Process all direct children of the parent
+      if (tree.children && tree.children.length > 0) {
+        for (let i = 0; i < tree.children.length; i++) {
+          processNode(tree.children[i], parentId, i + 1);
+        }
+      }
+
+      // Batch register all relationships to avoid effect loops
+      // This triggers only ONE reactivity update instead of N updates
+      // Filter out relationships that already exist to avoid duplicate detection overhead
+      if (allRelationships.length > 0) {
+        const newRelationships = allRelationships.filter(rel => {
+          const existingChildren = structureTree.getChildren(rel.parentId);
+          return !existingChildren.includes(rel.childId);
+        });
+
+        if (newRelationships.length > 0) {
+          structureTree.batchAddRelationships(newRelationships);
+        }
+      }
+
+      return allNodes;
+    } catch (error) {
+      // Suppress expected errors in in-memory test mode
+      if (shouldLogDatabaseErrors()) {
+        console.error(`[SharedNodeStore] Failed to load children tree for parent ${parentId}:`, error);
       }
 
       throw error;

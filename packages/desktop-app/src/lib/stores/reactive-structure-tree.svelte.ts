@@ -23,10 +23,9 @@ interface ChildInfo {
 }
 
 class ReactiveStructureTree {
-  // Reactive map using Svelte 5 $state - automatically triggers reactivity
-  children = $state(new Map<string, ChildInfo[]>());
-  // Version counter to ensure reactivity triggers on Map mutations
-  version = $state(0);
+  // Reactive map using Svelte 5 $state.raw() - Map mutations trigger reactivity automatically
+  // Using $state.raw() instead of $state() allows direct Map mutations to be tracked
+  children = $state.raw(new Map<string, ChildInfo[]>());
   private unlisteners: UnlistenFn[] = [];
   private initialized = false;
 
@@ -183,10 +182,8 @@ class ReactiveStructureTree {
     // Check if child already exists in current parent
     const existingIndex = children.findIndex((c) => c.nodeId === childId);
     if (existingIndex >= 0) {
-      console.warn(
-        `[ReactiveStructureTree] Duplicate relationship detected: ${childId} already child of ${parentId}`,
-        rel
-      );
+      // Duplicate detected - this is expected when relationships are loaded from multiple sources
+      // (e.g., bulk edge load + children-tree endpoint). Silently handle it.
       // Update order if different
       if (children[existingIndex].order !== order) {
         children[existingIndex].order = order;
@@ -221,10 +218,8 @@ class ReactiveStructureTree {
     };
 
     children.splice(insertIndex, 0, newChild);
-    // Notify Svelte of the change
+    // Notify Svelte of the change ($state.raw() tracks this automatically)
     this.children.set(parentId, children);
-    // Increment version to trigger reactivity in derived states
-    this.version++;
   }
 
   /**
@@ -327,6 +322,55 @@ class ReactiveStructureTree {
       parentId,
       childId,
       order
+    });
+  }
+
+  /**
+   * Batch add multiple relationships.
+   * With $state.raw(), reactivity is automatic so no special batching needed.
+   */
+  batchAddRelationships(relationships: Array<{parentId: string, childId: string, order: number}>) {
+    for (const rel of relationships) {
+      this.addChild(rel);
+    }
+  }
+
+  /**
+   * Move a child from one parent to another in-memory (for browser dev mode)
+   * This is necessary because LIVE SELECT events don't fire in browser mode.
+   *
+   * @param oldParentId - The current parent ID (null if root)
+   * @param newParentId - The new parent ID
+   * @param childId - The child node ID being moved
+   * @param order - Optional order value for the new position (defaults to appending)
+   */
+  moveInMemoryRelationship(
+    oldParentId: string | null,
+    newParentId: string,
+    childId: string,
+    order?: number
+  ) {
+    // Remove from old parent
+    if (oldParentId) {
+      this.removeChild({
+        parentId: oldParentId,
+        childId,
+        order: 0 // order not used for removal
+      });
+    }
+
+    // Calculate order if not provided - append to end
+    let newOrder = order;
+    if (newOrder === undefined) {
+      const existingChildren = this.children.get(newParentId) || [];
+      newOrder = existingChildren.length > 0 ? existingChildren.length + 1.0 : 1.0;
+    }
+
+    // Add to new parent
+    this.addChild({
+      parentId: newParentId,
+      childId,
+      order: newOrder
     });
   }
 

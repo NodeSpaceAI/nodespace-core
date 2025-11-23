@@ -23,7 +23,7 @@
 //! // Retry up to 3 times with exponential backoff (10ms, 20ms, 40ms)
 //! queue.reorder_with_retry(
 //!     "node-123",
-//!     Some("node-456"),  // before_sibling_id
+//!     Some("node-456"),  // insert_after_node_id
 //!     3,                 // max_retries
 //! ).await?;
 //! # Ok(())
@@ -58,7 +58,7 @@ impl SiblingOperationQueue {
     /// # Arguments
     ///
     /// * `node_id` - ID of the node to reorder
-    /// * `before_sibling_id` - Optional ID of the sibling this node should be placed before
+    /// * `insert_after_node_id` - Optional ID of the sibling this node should be placed after
     /// * `max_retries` - Maximum number of retry attempts (0 = single attempt, no retries)
     ///
     /// # Retry Behavior
@@ -93,7 +93,7 @@ impl SiblingOperationQueue {
     pub async fn reorder_with_retry(
         &self,
         node_id: &str,
-        before_sibling_id: Option<&str>,
+        insert_after_node_id: Option<&str>,
         max_retries: usize,
     ) -> Result<(), NodeOperationError> {
         let mut attempt = 0;
@@ -109,7 +109,7 @@ impl SiblingOperationQueue {
             // Attempt reorder with current version
             match self
                 .operations
-                .reorder_node(node_id, node.version, before_sibling_id)
+                .reorder_node(node_id, node.version, insert_after_node_id)
                 .await
             {
                 // Success - return immediately
@@ -198,7 +198,7 @@ mod tests {
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
                 parent_id: None,
-                before_sibling_id: None,
+                insert_after_node_id: None,
                 properties: json!({}),
             })
             .await
@@ -211,7 +211,7 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "Node A".to_string(),
                 parent_id: Some(parent_id.clone()),
-                before_sibling_id: None,
+                insert_after_node_id: None,
                 properties: json!({}),
             })
             .await
@@ -223,7 +223,7 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "Node B".to_string(),
                 parent_id: Some(parent_id.clone()),
-                before_sibling_id: Some(node_a.clone()),
+                insert_after_node_id: Some(node_a.clone()),
                 properties: json!({}),
             })
             .await
@@ -254,7 +254,7 @@ mod tests {
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
                 parent_id: None,
-                before_sibling_id: None,
+                insert_after_node_id: None,
                 properties: json!({}),
             })
             .await
@@ -267,7 +267,7 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "Original content".to_string(),
                 parent_id: Some(parent_id.clone()),
-                before_sibling_id: None,
+                insert_after_node_id: None,
                 properties: json!({}),
             })
             .await
@@ -307,7 +307,7 @@ mod tests {
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
                 parent_id: None,
-                before_sibling_id: None,
+                insert_after_node_id: None,
                 properties: json!({}),
             })
             .await
@@ -320,7 +320,7 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "Test".to_string(),
                 parent_id: Some(parent_id.clone()),
-                before_sibling_id: None,
+                insert_after_node_id: None,
                 properties: json!({}),
             })
             .await
@@ -353,7 +353,7 @@ mod tests {
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
                 parent_id: None,
-                before_sibling_id: None,
+                insert_after_node_id: None,
                 properties: json!({}),
             })
             .await
@@ -366,7 +366,7 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "Test".to_string(),
                 parent_id: Some(parent_id.clone()),
-                before_sibling_id: None,
+                insert_after_node_id: None,
                 properties: json!({}),
             })
             .await
@@ -451,7 +451,7 @@ mod tests {
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
                 parent_id: None,
-                before_sibling_id: None,
+                insert_after_node_id: None,
                 properties: json!({}),
             })
             .await
@@ -464,7 +464,7 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "A".to_string(),
                 parent_id: Some(parent_id.clone()),
-                before_sibling_id: None,
+                insert_after_node_id: None,
                 properties: json!({}),
             })
             .await
@@ -476,7 +476,7 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "B".to_string(),
                 parent_id: Some(parent_id.clone()),
-                before_sibling_id: Some(node_a.clone()),
+                insert_after_node_id: Some(node_a.clone()),
                 properties: json!({}),
             })
             .await
@@ -488,7 +488,7 @@ mod tests {
                 node_type: "text".to_string(),
                 content: "C".to_string(),
                 parent_id: Some(parent_id.clone()),
-                before_sibling_id: Some(node_b.clone()),
+                insert_after_node_id: Some(node_b.clone()),
                 properties: json!({}),
             })
             .await

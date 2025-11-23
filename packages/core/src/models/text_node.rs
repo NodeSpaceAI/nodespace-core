@@ -13,7 +13,6 @@
 //! let node = Node::new(
 //!     "text".to_string(),
 //!     "My note content".to_string(),
-//!     None,
 //!     json!({}),
 //! );
 //! let text = TextNode::from_node(node).unwrap();
@@ -39,7 +38,6 @@ use serde_json::json;
 /// let node = Node::new(
 ///     "text".to_string(),
 ///     "My content".to_string(),
-///     None,
 ///     json!({}),
 /// );
 /// let text = TextNode::from_node(node).unwrap();
@@ -62,7 +60,7 @@ impl TextNode {
     /// use nodespace_core::models::{Node, TextNode};
     /// use serde_json::json;
     ///
-    /// let node = Node::new("text".to_string(), "Content".to_string(), None, json!({}));
+    /// let node = Node::new("text".to_string(), "Content".to_string(), json!({}));
     /// let text = TextNode::from_node(node).unwrap();
     /// ```
     pub fn from_node(node: Node) -> Result<Self, ValidationError> {

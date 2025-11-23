@@ -162,7 +162,6 @@ pub trait NodeBehavior: Send + Sync {
     /// let node = Node::new(
     ///     "task".to_string(),
     ///     "Do something".to_string(),
-    ///     None,
     ///     json!({"status": "OPEN"}),
     /// );
     /// assert!(behavior.validate(&node).is_ok());
@@ -231,7 +230,8 @@ pub trait NodeBehavior: Send + Sync {
     /// # use serde_json::json;
     /// let behavior = TaskNodeBehavior;
     /// let defaults = behavior.default_metadata();
-    /// assert_eq!(defaults["status"], "pending");
+    /// // Task defaults use nested format: properties.task.status
+    /// assert_eq!(defaults["task"]["status"], "OPEN");
     /// ```
     fn default_metadata(&self) -> serde_json::Value {
         serde_json::json!({})
@@ -327,7 +327,6 @@ fn is_empty_or_whitespace(content: &str) -> bool {
 /// let node = Node::new(
 ///     "text".to_string(),
 ///     "Hello world".to_string(),
-///     None,
 ///     json!({}),
 /// );
 /// assert!(behavior.validate(&node).is_ok());
@@ -395,7 +394,6 @@ impl NodeBehavior for TextNodeBehavior {
 /// let node = Node::new(
 ///     "header".to_string(),
 ///     "## Hello World".to_string(),
-///     None,
 ///     json!({"headerLevel": 2}),
 /// );
 /// assert!(behavior.validate(&node).is_ok());
@@ -457,7 +455,6 @@ impl NodeBehavior for HeaderNodeBehavior {
 /// let node = Node::new(
 ///     "task".to_string(),
 ///     "Implement NodeBehavior trait".to_string(),
-///     None,
 ///     json!({"status": "IN_PROGRESS"}),
 /// );
 /// assert!(behavior.validate(&node).is_ok());
@@ -563,7 +560,6 @@ impl NodeBehavior for TaskNodeBehavior {
 /// let node = Node::new(
 ///     "code-block".to_string(),
 ///     "```javascript\nconst x = 1;".to_string(),
-///     None,
 ///     json!({"language": "javascript"}),
 /// );
 /// assert!(behavior.validate(&node).is_ok());
@@ -613,7 +609,6 @@ impl NodeBehavior for CodeBlockNodeBehavior {
 /// let node = Node::new(
 ///     "quote-block".to_string(),
 ///     "> Hello world".to_string(),
-///     None,
 ///     json!({}),
 /// );
 /// assert!(behavior.validate(&node).is_ok());
@@ -663,7 +658,6 @@ impl NodeBehavior for QuoteBlockNodeBehavior {
 /// let node = Node::new(
 ///     "ordered-list".to_string(),
 ///     "1. Hello world".to_string(),
-///     None,
 ///     json!({}),
 /// );
 /// assert!(behavior.validate(&node).is_ok());
@@ -742,7 +736,6 @@ impl NodeBehavior for OrderedListNodeBehavior {
 ///     "2025-01-03".to_string(),
 ///     "date".to_string(),
 ///     "2025-01-03".to_string(),
-///     None,
 ///     json!({}),
 /// );
 /// assert!(behavior.validate(&node).is_ok());
@@ -892,7 +885,6 @@ impl NodeBehavior for SchemaNodeBehavior {
 /// let node = Node::new(
 ///     "text".to_string(),
 ///     "Hello".to_string(),
-///     None,
 ///     json!({}),
 /// );
 /// assert!(registry.validate_node(&node).is_ok());
@@ -1026,7 +1018,6 @@ impl NodeBehaviorRegistry {
     /// let valid_node = Node::new(
     ///     "text".to_string(),
     ///     "Hello".to_string(),
-    ///     None,
     ///     json!({}),
     /// );
     /// assert!(registry.validate_node(&valid_node).is_ok());
@@ -1034,7 +1025,6 @@ impl NodeBehaviorRegistry {
     /// let invalid_node = Node::new(
     ///     "unknown_type".to_string(),
     ///     "Content".to_string(),
-    ///     None,
     ///     json!({}),
     /// );
     /// assert!(registry.validate_node(&invalid_node).is_err());

@@ -76,7 +76,6 @@ impl OrderedListNode {
     /// let node = Node::new(
     ///     "ordered-list".to_string(),
     ///     "Second step: implement solution".to_string(),
-    ///     None,
     ///     json!({}),
     /// );
     ///

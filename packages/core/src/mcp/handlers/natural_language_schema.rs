@@ -147,7 +147,7 @@ pub async fn handle_create_entity_schema_from_description(
         node_type: "schema".to_string(),
         content: params.entity_name.clone(),
         parent_id: None,
-        before_sibling_id: None,
+        insert_after_node_id: None,
         properties: serde_json::to_value(&schema_definition)
             .map_err(|e| MCPError::internal_error(format!("Failed to serialize schema: {}", e)))?,
     };

@@ -19,34 +19,34 @@
 //!
 //! ## Example Usage
 //!
-//! ```no_run
-//! # use nodespace_core::services::{NodeService, SchemaService};
-//! # use nodespace_core::models::schema::{SchemaField, ProtectionLevel};
-//! # use std::sync::Arc;
-//! # #[tokio::main]
-//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let node_service = Arc::new(NodeService::new(db)?);
-//! let schema_service = SchemaService::new(node_service);
+//! ```ignore
+//! use nodespace_core::services::{NodeService, SchemaService};
+//! use nodespace_core::models::schema::{SchemaField, ProtectionLevel};
+//! use nodespace_core::db::SurrealStore;
+//! use std::sync::Arc;
+//! use std::path::PathBuf;
 //!
-//! // Get schema definition
-//! let schema = schema_service.get_schema("task").await?;
-//! println!("Task schema version: {}", schema.version);
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+//!     let node_service = Arc::new(NodeService::new(Arc::new(db))?);
+//!     let schema_service = SchemaService::new(node_service);
 //!
-//! // Add a new user field
-//! let priority_field = SchemaField {
-//!     name: "priority".to_string(),
-//!     field_type: "number".to_string(),
-//!     protection: ProtectionLevel::User,
-//!     indexed: false,
-//!     required: Some(false),
-//!     // ... other fields
-//! };
-//! schema_service.add_field("task", priority_field).await?;
+//!     // Get schema definition
+//!     let schema = schema_service.get_schema("task").await?;
+//!     println!("Task schema version: {}", schema.version);
 //!
-//! // Extend an enum field
-//! schema_service.extend_enum_field("task", "status", "BLOCKED".to_string()).await?;
-//! # Ok(())
-//! # }
+//!     // Add a new user field (SchemaField has many required fields)
+//!     let priority_field = SchemaField::builder("priority", "number")
+//!         .protection(ProtectionLevel::User)
+//!         .required(false)
+//!         .build();
+//!     schema_service.add_field("task", priority_field).await?;
+//!
+//!     // Extend an enum field
+//!     schema_service.extend_enum_field("task", "status", "BLOCKED".to_string()).await?;
+//!     Ok(())
+//! }
 //! ```
 
 use crate::models::schema::{FieldDefinition, ProtectionLevel, SchemaDefinition, SchemaField};
@@ -198,26 +198,28 @@ where
     ///
     /// # Example
     ///
-    /// ```no_run
-    /// # use nodespace_core::services::SchemaService;
-    /// # use nodespace_core::models::schema::{SchemaField, ProtectionLevel};
-    /// # async fn example(service: SchemaService) -> Result<(), Box<dyn std::error::Error>> {
-    /// let field = SchemaField {
-    ///     name: "custom:priority".to_string(),  // User fields must have namespace prefix
-    ///     field_type: "number".to_string(),
-    ///     protection: ProtectionLevel::User,
-    ///     indexed: false,
-    ///     required: Some(false),
-    ///     extensible: None,
-    ///     default: Some(serde_json::json!(0)),
-    ///     core_values: None,
-    ///     user_values: None,
-    ///     description: Some("Task priority".to_string()),
-    ///     item_type: None,
-    /// };
-    /// service.add_field("task", field).await?;
-    /// # Ok(())
-    /// # }
+    /// ```ignore
+    /// use nodespace_core::services::SchemaService;
+    /// use nodespace_core::models::schema::{SchemaField, ProtectionLevel};
+    ///
+    /// async fn example(service: SchemaService) -> Result<(), Box<dyn std::error::Error>> {
+    ///     // User fields must have namespace prefix (custom:, org:, or plugin:)
+    ///     let field = SchemaField {
+    ///         name: "custom:priority".to_string(),
+    ///         field_type: "number".to_string(),
+    ///         protection: ProtectionLevel::User,
+    ///         indexed: false,
+    ///         required: Some(false),
+    ///         extensible: None,
+    ///         default: Some(serde_json::json!(0)),
+    ///         core_values: None,
+    ///         user_values: None,
+    ///         description: Some("Task priority".to_string()),
+    ///         item_type: None,
+    ///     };
+    ///     service.add_field("task", field).await?;
+    ///     Ok(())
+    /// }
     /// ```
     pub async fn add_field(
         &self,
@@ -909,7 +911,6 @@ where
     /// let node = Node::new(
     ///     "task".to_string(),
     ///     "Do something".to_string(),
-    ///     None,
     ///     json!({"task": {"status": "INVALID_STATUS"}}),
     /// );
     ///

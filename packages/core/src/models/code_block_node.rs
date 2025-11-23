@@ -82,7 +82,6 @@ impl CodeBlockNode {
     /// let node = Node::new(
     ///     "code-block".to_string(),
     ///     "const x = 1;".to_string(),
-    ///     None,
     ///     json!({"language": "javascript"}),
     /// );
     ///
@@ -136,7 +135,6 @@ impl CodeBlockNode {
     /// let node = Node::new(
     ///     "code-block".to_string(),
     ///     "fn main() {}".to_string(),
-    ///     None,
     ///     json!({}),
     /// );
     ///

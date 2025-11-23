@@ -25,7 +25,7 @@ import {
   type CreateContainerInput,
   type SaveNodeWithParentInput
 } from './backend-adapter';
-import type { Node } from '$lib/types';
+import type { Node, NodeWithChildren } from '$lib/types';
 
 // Re-export types for convenience
 export type {
@@ -93,14 +93,21 @@ export async function getDescendants(rootNodeId: string): Promise<Node[]> {
 }
 
 /**
+ * Get children tree with nested structure (for recursive loading in browser mode)
+ */
+export async function getChildrenTree(parentId: string): Promise<NodeWithChildren | null> {
+  return backendAdapter.getChildrenTree(parentId);
+}
+
+/**
  * Move a node to a new parent with new sibling position
  */
 export async function moveNode(
   nodeId: string,
   newParentId: string | null,
-  beforeSiblingId?: string | null
+  insertAfterNodeId?: string | null
 ): Promise<void> {
-  return backendAdapter.moveNode(nodeId, newParentId, beforeSiblingId);
+  return backendAdapter.moveNode(nodeId, newParentId, insertAfterNodeId ?? null);
 }
 
 /**

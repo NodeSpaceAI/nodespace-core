@@ -15,7 +15,6 @@
 //!     "2025-01-15".to_string(),
 //!     "date".to_string(),
 //!     "2025-01-15".to_string(),
-//!     None,
 //!     json!({"timezone": "UTC"}),
 //! );
 //! let date = DateNode::from_node(node).unwrap();
@@ -44,7 +43,6 @@ use serde_json::json;
 ///     "2025-01-15".to_string(),
 ///     "date".to_string(),
 ///     "2025-01-15".to_string(),
-///     None,
 ///     json!({}),
 /// );
 /// let date = DateNode::from_node(node).unwrap();
@@ -73,7 +71,6 @@ impl DateNode {
     ///     "2025-01-15".to_string(),
     ///     "date".to_string(),
     ///     "2025-01-15".to_string(),
-    ///     None,
     ///     json!({}),
     /// );
     /// let date = DateNode::from_node(node).unwrap();
@@ -152,7 +149,6 @@ impl DateNode {
     ///     "2025-01-15".to_string(),
     ///     "date".to_string(),
     ///     "2025-01-15".to_string(),
-    ///     None,
     ///     json!({}),
     /// );
     /// let date = DateNode::from_node(node).unwrap();

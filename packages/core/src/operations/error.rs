@@ -34,7 +34,6 @@ pub enum NodeOperationError {
     /// Root nodes are root-level entities and must have:
     /// - parent_id = None
     /// - root_node_id = None
-    /// - before_sibling_id = None
     #[error("Root node '{node_id}' of type '{node_type}' cannot have a parent")]
     RootCannotHaveParent { node_id: String, node_type: String },
 
@@ -44,10 +43,10 @@ pub enum NodeOperationError {
     #[error("Root node '{node_id}' of type '{node_type}' cannot have a root_node_id")]
     RootCannotHaveRoot { node_id: String, node_type: String },
 
-    /// Root nodes (date, topic, project) cannot have before_sibling_id set
+    /// Root nodes (date, topic, project) cannot have sibling ordering
     ///
     /// Root nodes are independent entities that don't participate in sibling ordering.
-    #[error("Root node '{node_id}' of type '{node_type}' cannot have a before_sibling_id")]
+    #[error("Root node '{node_id}' of type '{node_type}' cannot have sibling ordering")]
     RootCannotHaveSibling { node_id: String, node_type: String },
 
     /// Node type cannot be a root
@@ -84,7 +83,7 @@ pub enum NodeOperationError {
 
     /// Invalid sibling chain detected
     ///
-    /// The before_sibling_id creates an invalid or circular sibling chain.
+    /// The insert_after_node_id creates an invalid sibling reference.
     #[error("Invalid sibling chain: {reason}")]
     InvalidSiblingChain { reason: String },
 
@@ -285,7 +284,7 @@ mod tests {
         ));
         assert_eq!(
             format!("{}", err),
-            "Root node '2025-01-03' of type 'date' cannot have a before_sibling_id"
+            "Root node '2025-01-03' of type 'date' cannot have sibling ordering"
         );
     }
 

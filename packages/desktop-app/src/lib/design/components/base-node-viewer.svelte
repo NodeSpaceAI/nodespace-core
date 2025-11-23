@@ -132,9 +132,12 @@
    */
   const visibleNodesFromStores = $derived.by(() => {
     if (!nodeId) return [];
-    // Establish reactive dependency on structure tree changes.
-    // Reading this value causes Svelte to re-run this derived when edges change.
-    void reactiveStructureTree.version;
+    // Reactive dependency on structure tree is automatic with $state.raw()
+    // Svelte will re-run this derived when reactiveStructureTree.children changes
+
+    // Establish reactive dependency on node content/property changes via ReactiveNodeService
+    // The _updateTrigger is incremented by SharedNodeStore.subscribeAll callback
+    void nodeManager._updateTrigger;
 
     // Helper function to recursively flatten visible nodes with depth
     function flattenNodes(parentId: string, depth: number, result: Array<any> = []): Array<any> {
@@ -168,13 +171,15 @@
         }
 
         // Build node with UI state
+        // Get UI state from ReactiveNodeService (has expanded: true by default)
+        const uiState = nodeManager.getUIState(node.id);
         const nodeWithUI = {
           ...node,
           depth,
           children,
-          expanded: expandedState.get(node.id) ?? false,
+          expanded: uiState?.expanded ?? true, // Default to true (expanded by default)
           autoFocus: autoFocusNodes.has(node.id),
-          inheritHeaderLevel: 0,
+          inheritHeaderLevel: uiState?.inheritHeaderLevel ?? 0,
           isPlaceholder: false
         };
 
@@ -615,8 +620,8 @@
     placeholder: Node,
     parentNodeId: string,
     overrides: { content?: string; nodeType?: string }
-  ): Node & { _parentId?: string } {
-    // CRITICAL FIX (Issue #528): Include transient _parentId field
+  ): Node & { parentId?: string } {
+    // CRITICAL FIX (Issue #528): Include transient parentId field
     // This field is NOT part of the Node model (which stores hierarchy as graph edges)
     // but is needed by the backend HTTP API to create the parent-child edge relationship
     // The backend will extract this field and call operations.create_node() with it
@@ -632,7 +637,7 @@
       properties: placeholder.properties,
       mentions: placeholder.mentions || [],
       // Transient field for backend edge creation (not persisted in Node model)
-      _parentId: parentNodeId // Root/container auto-derived from parent chain by backend
+      parentId: parentNodeId // Root/container auto-derived from parent chain by backend
     };
   }
 
@@ -670,11 +675,13 @@
           allNodes = cached;
         } else {
           // Cache miss - fetch from database
-          allNodes = await sharedNodeStore.loadChildrenForParent(nodeId);
+          // Use loadChildrenTree which returns nested structure AND registers
+          // parent-child edges in structureTree (critical for expand control visibility)
+          allNodes = await sharedNodeStore.loadChildrenTree(nodeId);
         }
       } else {
         // Force refresh - bypass cache and fetch from database
-        allNodes = await sharedNodeStore.loadChildrenForParent(nodeId);
+        allNodes = await sharedNodeStore.loadChildrenTree(nodeId);
       }
 
       // Check if we have any nodes at all (reuse allNodes - no redundant cache check needed)
@@ -687,10 +694,13 @@
           // No children at all - create initial placeholder
           // Issue #479 Phase 1: Placeholder is completely viewer-local (NOT added to SharedNodeStore)
           // It's rendered via nodesToRender derived state and promoted to real node when user adds content
-          const placeholderId = globalThis.crypto.randomUUID();
+          const newPlaceholderId = globalThis.crypto.randomUUID();
+
+          // Store ID in state to keep in sync with reactive $effect
+          placeholderId = newPlaceholderId;
 
           viewerPlaceholder = {
-            id: placeholderId,
+            id: newPlaceholderId,
             nodeType: 'text',
             content: '',
             createdAt: new Date().toISOString(),
@@ -699,6 +709,9 @@
             properties: {},
             mentions: []
           };
+
+          // Focus is handled by BaseNode's onMount when autoFocus=true
+          // See nodesToRender derived state which sets autoFocus for placeholder
 
           // DON'T call initializeNodes() - keep placeholder completely viewer-local!
           // It will be rendered by nodesToRender derived state (line 1475-1487)
@@ -902,12 +915,12 @@
     // Create new node using NodeManager - placeholder if empty, real if has content
     let newNodeId: string;
 
-    // CRITICAL FIX: Use afterNode's parentId as the explicit parent
+    // CRITICAL FIX: Use afterNode's actual parent from parentsCache
     // The viewer's nodeId represents the viewer's display context (e.g., date node)
-    // but the actual parent is stored in the node's parentId field
-    // After indent, the node object's parentId is updated to reflect the new parent
-    const afterNode = nodeManager.findNode(afterNodeId);
-    const explicitParentId = afterNode?.parentId ?? nodeId ?? null;
+    // but the actual parent is stored in sharedNodeStore.getParentsForNode()
+    // After indent, the parent relationship is updated in the cache
+    const parents = sharedNodeStore.getParentsForNode(afterNodeId);
+    const explicitParentId = parents.length > 0 ? parents[0].id : (nodeId ?? null);
 
     // Add formatting syntax to the new content based on node type and header level
     // (applies to both empty and non-empty content for header inheritance)
@@ -1357,6 +1370,9 @@
         properties: {},
         mentions: []
       };
+
+      // Focus is handled by BaseNode's onMount when autoFocus=true
+      // See nodesToRender derived state which sets autoFocus for placeholder
     } else if (!shouldShowPlaceholder && viewerPlaceholder) {
       viewerPlaceholder = null;
     }

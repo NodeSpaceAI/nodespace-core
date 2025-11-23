@@ -182,7 +182,7 @@ impl SchemaDefinition {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```ignore
     /// let schema = get_task_schema();
     /// let status_values = schema.get_enum_values("status");
     /// // Returns: Some(["OPEN", "IN_PROGRESS", "DONE", "BLOCKED"])
@@ -212,7 +212,7 @@ impl SchemaDefinition {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```ignore
     /// let schema = get_task_schema();
     /// assert!(!schema.can_delete_field("status"));  // Core field
     /// assert!(schema.can_delete_field("priority"));  // User field

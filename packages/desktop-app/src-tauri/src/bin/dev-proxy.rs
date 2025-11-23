@@ -323,7 +323,7 @@ struct CreateNodeRequest {
     // The operations layer (NodeOperations::create_node) handles edge creation
     // Note (Issue #533): root_id removed - backend auto-derives root from parent chain
     pub parent_id: Option<String>,
-    pub before_sibling_id: Option<String>,
+    pub insert_after_node_id: Option<String>,
     pub properties: serde_json::Value,
     // TODO: Implement embedding_vector and mentions support in operations layer
     #[allow(dead_code)]
@@ -414,11 +414,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/nodes/:id/parent", post(set_parent))
         // Query endpoints
         .route("/api/nodes/:id/children", get(get_children))
+        .route("/api/nodes/:id/children-tree", get(get_children_tree))
         .route("/api/query", post(query_nodes))
-        .route(
-            "/api/nodes/by-container/:container_id",
-            get(get_children_by_parent),
-        )
         // Mention endpoints
         .route("/api/mentions", post(create_mention))
         .route("/api/mentions", delete(delete_mention))
@@ -563,7 +560,7 @@ async fn create_node(
         node_type: req.node_type,
         content: req.content,
         parent_id: req.parent_id,
-        before_sibling_id: req.before_sibling_id,
+        insert_after_node_id: req.insert_after_node_id,
         properties: req.properties,
     };
 
@@ -783,6 +780,19 @@ async fn get_children(
     Ok(Json(children))
 }
 
+async fn get_children_tree(
+    State(state): State<AppState>,
+    Path(parent_id): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let tree = state
+        .node_service
+        .get_children_tree(&parent_id)
+        .await
+        .map_err(map_node_service_error)?;
+
+    Ok(Json(tree))
+}
+
 async fn query_nodes(
     State(state): State<AppState>,
     Json(filter): Json<NodeFilter>,
@@ -790,21 +800,6 @@ async fn query_nodes(
     let nodes = state
         .node_service
         .query_nodes(filter)
-        .await
-        .map_err(map_node_service_error)?;
-
-    Ok(Json(nodes))
-}
-
-async fn get_children_by_parent(
-    State(state): State<AppState>,
-    Path(parent_id): Path<String>,
-) -> ApiResult<Vec<Node>> {
-    // Phase 5 (Issue #511): Use get_children instead of get_nodes_by_root_id
-    // Graph edges replace root_id field
-    let nodes = state
-        .node_service
-        .get_children(&parent_id)
         .await
         .map_err(map_node_service_error)?;
 

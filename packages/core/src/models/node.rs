@@ -277,7 +277,6 @@ impl Node {
     /// let node = Node::new(
     ///     "text".to_string(),
     ///     "Valid content".to_string(),
-    ///     None,
     ///     json!({}),
     /// );
     /// assert!(node.validate().is_ok());

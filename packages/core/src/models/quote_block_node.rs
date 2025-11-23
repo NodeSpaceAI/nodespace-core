@@ -76,7 +76,6 @@ impl QuoteBlockNode {
     /// let node = Node::new(
     ///     "quote-block".to_string(),
     ///     "All that glitters is not gold".to_string(),
-    ///     None,
     ///     json!({}),
     /// );
     ///

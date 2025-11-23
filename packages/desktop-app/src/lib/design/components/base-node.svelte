@@ -24,7 +24,7 @@
 -->
 
 <script lang="ts">
-  import { createEventDispatcher, onDestroy, untrack, tick, getContext } from 'svelte';
+  import { createEventDispatcher, onMount, onDestroy, untrack, tick, getContext } from 'svelte';
   // import { type NodeType } from '$lib/design/icons'; // Unused but preserved for future use
 
   import {
@@ -821,6 +821,14 @@
   $effect(() => {
     if (controller) {
       controller.setAutocompleteDropdownActive(showAutocomplete);
+    }
+  });
+
+  // AutoFocus on mount: When a node mounts with autoFocus=true, set it as the editing node
+  // This is the standard Svelte pattern - request focus when component mounts
+  onMount(() => {
+    if (autoFocus) {
+      focusManager.setEditingNode(nodeId, paneId);
     }
   });
 

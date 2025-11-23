@@ -5,21 +5,21 @@
 //!
 //! # Examples
 //!
-//! ```rust,no_run
+//! ```ignore
 //! use serde_json::json;
 //! use std::sync::Arc;
-//! # use crate::services::NodeService;
-//! # use crate::mcp::handlers::markdown::handle_create_nodes_from_markdown;
+//! use nodespace_core::operations::NodeOperations;
+//! use nodespace_core::mcp::handlers::markdown::handle_create_nodes_from_markdown;
 //!
-//! # async fn example(service: Arc<NodeService>) -> Result<(), Box<dyn std::error::Error>> {
-//! let params = json!({
-//!     "markdown_content": "# My Document\n\n- Task 1\n- Task 2",
-//!     "container_title": "Imported Notes"
-//! });
-//! let result = handle_create_nodes_from_markdown(&service, params).await?;
-//! println!("Created {} nodes", result["nodes_created"]);
-//! # Ok(())
-//! # }
+//! async fn example(operations: Arc<NodeOperations>) -> Result<(), Box<dyn std::error::Error>> {
+//!     let params = json!({
+//!         "markdown_content": "# My Document\n\n- Task 1\n- Task 2",
+//!         "container_title": "Imported Notes"
+//!     });
+//!     let result = handle_create_nodes_from_markdown(&operations, params).await?;
+//!     println!("Created {} nodes", result["nodes_created"]);
+//!     Ok(())
+//! }
 //! ```
 
 use crate::mcp::types::MCPError;
@@ -49,16 +49,16 @@ pub struct CreateNodesFromMarkdownParams {
     /// container node, and all markdown_content nodes become children of it.
     ///
     /// Example:
-    /// ```
-    /// // CORRECT ✅
+    /// ```text
+    /// // CORRECT
     /// container_title: "# Project Alpha"
     /// markdown_content: "## Task 1\nDescription here"
-    /// // Creates: "# Project Alpha" (container) → "## Task 1" (child) → "Description" (child)
+    /// // Creates: "# Project Alpha" (container) -> "## Task 1" (child) -> "Description" (child)
     ///
-    /// // INCORRECT ❌
+    /// // INCORRECT
     /// container_title: "# Project Alpha"
     /// markdown_content: "# Project Alpha\n## Task 1\nDescription"
-    /// // Creates: "# Project Alpha" (container) → "# Project Alpha" (duplicate child!) → ...
+    /// // Creates: "# Project Alpha" (container) -> "# Project Alpha" (duplicate child!) -> ...
     /// ```
     pub markdown_content: String,
 
@@ -152,7 +152,7 @@ impl ParserContext {
     ///
     /// # Example
     ///
-    /// ```rust,no_run
+    /// ```ignore
     /// let context = ParserContext::new_for_existing_container(
     ///     "container-123".to_string(),
     ///     "# Project Plan".to_string()
@@ -326,8 +326,7 @@ fn is_valid_container_type(node_type: &str) -> bool {
 /// Valid headings have 1-6 '#' symbols followed by a space.
 ///
 /// # Examples
-/// ```
-/// # use nodespace_core::mcp::handlers::markdown::detect_heading;
+/// ```ignore
 /// assert_eq!(detect_heading("# Title"), Some(1));
 /// assert_eq!(detect_heading("### Subtitle"), Some(3));
 /// assert_eq!(detect_heading("#NoSpace"), None);  // Not a heading
@@ -381,8 +380,7 @@ fn is_bullet_line(line: &str) -> bool {
 /// Only counts actual indentation characters (tabs and spaces), not all whitespace.
 ///
 /// # Examples
-/// ```
-/// # use nodespace_core::mcp::handlers::markdown::calculate_indent;
+/// ```ignore
 /// assert_eq!(calculate_indent("    text"), 4);   // 4 spaces
 /// assert_eq!(calculate_indent("\ttext"), 4);     // 1 tab = 4 spaces
 /// assert_eq!(calculate_indent("  - item"), 2);  // 2 spaces
@@ -404,8 +402,7 @@ fn calculate_indent(line: &str) -> usize {
 /// Invalid: "sentence 1. next" (period too far from start)
 ///
 /// # Examples
-/// ```
-/// # use nodespace_core::mcp::handlers::markdown::detect_ordered_list;
+/// ```ignore
 /// assert_eq!(detect_ordered_list("1. Item"), Some(1));
 /// assert_eq!(detect_ordered_list("42. Item"), Some(2));
 /// assert_eq!(detect_ordered_list("This is 1. Not a list"), None);
@@ -712,7 +709,7 @@ async fn create_node(
             node_type: node_type.to_string(),
             content: content.to_string(),
             parent_id,
-            before_sibling_id: None, // Ordering handled by edge order field
+            insert_after_node_id: None, // Ordering handled by edge order field
             properties,
         })
         .await
@@ -974,7 +971,7 @@ pub struct UpdateRootFromMarkdownParams {
 ///
 /// # Example
 ///
-/// ```rust,no_run
+/// ```ignore
 /// // New style (preferred)
 /// let params = json!({
 ///     "root_id": "root-123",

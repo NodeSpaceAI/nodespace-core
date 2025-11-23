@@ -30,6 +30,7 @@ import type { UpdateSource } from '$lib/types/update-protocol';
 import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
 import { schemaService } from './schema-service';
 import { moveNode as moveNodeCommand } from './tauri-commands';
+import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 
 
 export interface NodeManagerEvents {
@@ -269,8 +270,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     sharedNodeStore.setNode(newNode, viewerSource, skipPersistence);
     _uiState[nodeId] = newUIState;
 
-    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
-
+    // CRITICAL FIX: Register parent-child edge in ReactiveStructureTree for browser mode
     // Set focus using FocusManager (single source of truth)
     // This replaces manual autoFocus flag manipulation
     if (shouldFocusNewNode) {
@@ -280,26 +280,58 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // NOTE: Sibling linked list updates removed - backend handles ordering via fractional ordering
 
     // Bug 4 fix: Transfer children from expanded nodes
-    // If afterNode is expanded and has children, transfer them to the new node
-    if (!insertAtBeginning && afterUIState.expanded) {
-      const children = sharedNodeStore.getNodesForParent(afterNodeId);
+    // When creating a node from a parent with children, transfer those children to the new node
+    // This matches pre-migration behavior: new node appears between parent and children
+    const children = sharedNodeStore.getNodesForParent(afterNodeId);
+    const structureChildren = structureTree.getChildren(afterNodeId);
 
-      if (children.length > 0) {
-        // CRITICAL: Wait for newNode to be persisted before transferring children
-        // This prevents FOREIGN KEY constraint violations when children reference the new parent
-        // Use Promise to defer execution until after current synchronous stack completes
+    console.log('[createNode] Child transfer check:', {
+      afterNodeId,
+      insertAtBeginning,
+      sharedNodeStoreChildren: children.length,
+      structureTreeChildren: structureChildren.length,
+      children: children.map(c => c.id),
+      structureIds: structureChildren
+    });
+
+    // IMPORTANT: Always transfer children when not inserting at beginning,
+    // regardless of expanded state (expanded state is UI-only, doesn't affect structure)
+    if (!insertAtBeginning && children.length > 0) {
+        // OPTIMISTIC UI: Update structure tree IMMEDIATELY for instant visual feedback
+        // This ensures the UI shows the correct hierarchy without waiting for database
+        for (const child of children) {
+          structureTree.moveInMemoryRelationship(afterNodeId, nodeId, child.id);
+        }
+
+        // BACKGROUND PERSISTENCE: Database sync with error handling and rollback
+        // Database updates happen asynchronously without blocking UI
         Promise.resolve().then(async () => {
-          // Wait for newNode to be persisted to database
-          await sharedNodeStore.waitForNodeSaves([nodeId]);
+          try {
+            // Wait for newNode to be persisted to database
+            // This prevents FOREIGN KEY constraint violations when children reference the new parent
+            await sharedNodeStore.waitForNodeSaves([nodeId]);
 
-          // Now safe to transfer children - newNode exists in database
-          // NOTE: parentId removed - hierarchy managed by backend via parent_of edges
-          for (const child of children) {
-            // Backend will handle parent relationship through parent_of edges
-            sharedNodeStore.updateNode(child.id, {}, viewerSource);
+            // Persist child transfers to database
+            // Structure tree already updated above, so UI is already correct
+            for (const child of children) {
+              // Import moveNode dynamically to avoid circular dependency
+              const { moveNode } = await import('$lib/services/tauri-commands');
+              // Move child to be under the new node in database
+              await moveNode(child.id, nodeId);
+              // Note: No need to call structureTree.moveInMemoryRelationship() again
+              // It was already done synchronously above for instant UI update
+            }
+          } catch (error) {
+            // ROLLBACK: Revert optimistic UI changes on failure
+            console.error('[createNode] Failed to transfer children to database, rolling back:', error);
+            for (const child of children) {
+              // Move children back to original parent in structure tree
+              structureTree.moveInMemoryRelationship(nodeId, afterNodeId, child.id);
+            }
+            // TODO: Emit error event for UI notification (toast/banner)
+            // events.operationFailed?.('transfer_children', error);
           }
         });
-      }
     }
 
     // Handle hierarchy positioning
@@ -637,32 +669,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
     // Sibling positioning removed (Issue #557) - Backend handles ordering via fractional IDs
 
-    // Atomic backend operation - backend handles fractional ordering
-    try {
-      await moveNodeCommand(nodeId, targetParentId, null);
-    } catch (error) {
-      // Check if error is ignorable (unit test environment or unpersisted nodes)
-      const isIgnorableError =
-        error instanceof Error &&
-        (error.message.includes('404') ||
-          error.message.includes('Not Found') ||
-          error.message.includes('ECONNREFUSED') ||
-          error.message.includes('fetch failed') ||
-          error.message.includes('Failed to execute "fetch()"'));
-
-      if (!isIgnorableError) {
-        // Non-ignorable error: rollback and fail
-        _uiState[nodeId] = originalUIState;
-        _rootNodeIds = originalRootNodeIds;
-        // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles rollback via LIVE SELECT
-        updateDescendantDepths(nodeId);
-
-        console.error('[indentNode] Failed to move node:', error);
-        return false;
-      }
-      // Ignorable error: continue with UI updates (for unit tests without server)
-    }
-
+    // Update local state and notify (BEFORE backend call for instant UI response)
     // Update node's parentId to move it to the new parent
     // NOTE: beforeSiblingId removed from node - backend handles ordering via fractional ordering
     sharedNodeStore.updateNode(
@@ -672,10 +679,44 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       { isComputedField: true }
     );
 
-    // NOTE: Sibling chain management removed - backend handles ordering via fractional ordering
+    // CRITICAL FIX: Update ReactiveStructureTree for browser mode
+    // In Tauri mode, LIVE SELECT events update the tree, but in browser mode we must do it manually
+    structureTree.moveInMemoryRelationship(currentParentId, targetParentId, nodeId);
 
     events.hierarchyChanged();
     _updateTrigger++;
+
+    // Fire-and-forget backend persistence (don't await - keep UI responsive!)
+    moveNodeCommand(nodeId, targetParentId, null)
+      .then(() => {
+        // Success - backend persisted successfully
+      })
+      .catch((error) => {
+        // Check if error is ignorable (unit test environment or unpersisted nodes)
+        const isIgnorableError =
+          error instanceof Error &&
+          (error.message.includes('404') ||
+            error.message.includes('Not Found') ||
+            error.message.includes('ECONNREFUSED') ||
+            error.message.includes('fetch failed') ||
+            error.message.includes('Failed to execute "fetch()"'));
+
+        if (!isIgnorableError) {
+          // Non-ignorable error: rollback optimistic update
+          _uiState[nodeId] = originalUIState;
+          _rootNodeIds = originalRootNodeIds;
+          // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles rollback via LIVE SELECT
+          updateDescendantDepths(nodeId);
+          if (currentParentId) {
+            structureTree.moveInMemoryRelationship(targetParentId, currentParentId, nodeId);
+          }
+          events.hierarchyChanged();
+          _updateTrigger++;
+
+          console.error('[indentNode] Failed to move node, rolled back:', error);
+        }
+        // Ignorable error: keep UI updates (for unit tests without server)
+      });
 
     return true;
   }
@@ -684,6 +725,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return false;
 
+    // Get parent information
     const parents = sharedNodeStore.getParentsForNode(nodeId);
     if (parents.length === 0) return false;
 
@@ -719,32 +761,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
 
-    // Atomic backend operation for main node - backend handles fractional ordering
-    try {
-      await moveNodeCommand(nodeId, newParentId, null);
-    } catch (error) {
-      // Check if error is ignorable (unit test environment or unpersisted nodes)
-      const isIgnorableError =
-        error instanceof Error &&
-        (error.message.includes('404') ||
-          error.message.includes('Not Found') ||
-          error.message.includes('ECONNREFUSED') ||
-          error.message.includes('fetch failed') ||
-          error.message.includes('Failed to execute "fetch()"'));
-
-      if (!isIgnorableError) {
-        // Non-ignorable error: rollback and fail
-        _uiState[nodeId] = originalUIState;
-        _rootNodeIds = originalRootNodeIds;
-        // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles rollback via LIVE SELECT
-        updateDescendantDepths(nodeId);
-
-        console.error('[outdentNode] Failed to move node:', error);
-        return false;
-      }
-      // Ignorable error: continue with UI updates (for unit tests without server)
-    }
-
+    // Update local state and transfer siblings (BEFORE backend for instant UI)
     // Update node's parentId to move it to the new parent
     // NOTE: beforeSiblingId removed from node - backend handles ordering via fractional ordering
     sharedNodeStore.updateNode(
@@ -754,51 +771,25 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       { isComputedField: true }
     );
 
-    // NOTE: Sibling chain management removed - backend handles ordering via fractional ordering
+    // CRITICAL FIX: Update ReactiveStructureTree for browser mode
+    // In Tauri mode, LIVE SELECT events update the tree, but in browser mode we must do it manually
+    if (newParentId) {
+      structureTree.moveInMemoryRelationship(oldParentId, newParentId, nodeId);
+    }
 
-    // Transfer siblings below as children
+    // Transfer siblings below as children (optimistic UI first)
     if (siblingsBelow.length > 0) {
       // NOTE: Sibling positioning removed (Issue #557) - Backend handles ordering via fractional IDs
 
-      // Transfer each sibling
+      // Transfer each sibling - UI updates first
       for (let i = 0; i < siblingsBelow.length; i++) {
         const siblingId = siblingsBelow[i];
         const sibling = sharedNodeStore.getNode(siblingId);
         if (sibling) {
-          // Save state for rollback
-          const siblingOriginalUIState = { ..._uiState[siblingId] };
-
           // Optimistic UI update
           const siblingDepth = newDepth + 1;
           _uiState[siblingId] = { ..._uiState[siblingId], depth: siblingDepth };
           updateDescendantDepths(siblingId);
-
-          // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
-
-          // Atomic backend operation - backend handles fractional ordering
-          try {
-            await moveNodeCommand(siblingId, nodeId, null);
-          } catch (error) {
-            // Check if error is ignorable
-            const isIgnorableError =
-              error instanceof Error &&
-              (error.message.includes('404') ||
-                error.message.includes('Not Found') ||
-                error.message.includes('ECONNREFUSED') ||
-                error.message.includes('fetch failed') ||
-                error.message.includes('Failed to execute "fetch()"'));
-
-            if (!isIgnorableError) {
-              // Non-ignorable error: rollback and skip this sibling
-              _uiState[siblingId] = siblingOriginalUIState;
-              // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles rollback via LIVE SELECT
-              updateDescendantDepths(siblingId);
-
-              console.error(`[outdentNode] Failed to move sibling ${siblingId}:`, error);
-              continue;
-            }
-            // Ignorable error: continue with UI updates (for unit tests without server)
-          }
 
           // Update parentId to move sibling to new parent
           // NOTE: beforeSiblingId removed from node - backend handles ordering via fractional ordering
@@ -818,6 +809,54 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     events.hierarchyChanged();
     _updateTrigger++;
+
+    // Fire-and-forget backend persistence (main node + siblings - don't await!)
+    const backendPromises = [moveNodeCommand(nodeId, newParentId, null)];
+
+    // Add sibling transfer backend calls
+    for (const siblingId of siblingsBelow) {
+      backendPromises.push(moveNodeCommand(siblingId, nodeId, null));
+    }
+
+    Promise.all(backendPromises)
+      .then(() => {
+        // Success - all backend operations persisted successfully
+      })
+      .catch((error) => {
+        // Check if error is ignorable
+        const isIgnorableError =
+          error instanceof Error &&
+          (error.message.includes('404') ||
+            error.message.includes('Not Found') ||
+            error.message.includes('ECONNREFUSED') ||
+            error.message.includes('fetch failed') ||
+            error.message.includes('Failed to execute "fetch()"'));
+
+        if (!isIgnorableError) {
+          // Non-ignorable error: rollback all changes
+          _uiState[nodeId] = originalUIState;
+          _rootNodeIds = originalRootNodeIds;
+          updateDescendantDepths(nodeId);
+
+          // Rollback siblings
+          for (const siblingId of siblingsBelow) {
+            const sibling = sharedNodeStore.getNode(siblingId);
+            if (sibling) {
+              _uiState[siblingId] = { ..._uiState[siblingId], depth: (_uiState[oldParentId]?.depth || 0) + 1 };
+              updateDescendantDepths(siblingId);
+            }
+          }
+
+          if (newParentId) {
+            structureTree.moveInMemoryRelationship(newParentId, oldParentId, nodeId);
+          }
+          events.hierarchyChanged();
+          _updateTrigger++;
+
+          console.error('[outdentNode] Failed to move node, rolled back:', error);
+        }
+        // Ignorable error: keep UI updates (for unit tests without server)
+      });
 
     return true;
   }

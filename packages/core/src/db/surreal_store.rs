@@ -196,7 +196,7 @@ struct SurrealNode {
     ///
     /// The `id` field in the fetched object is a SurrealDB `Thing` type, which serde_json
     /// cannot deserialize to `Value`, causing:
-    /// ```
+    /// ```text
     /// Error: invalid type: enum, expected any valid JSON value
     /// ```
     ///
@@ -2202,7 +2202,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust,no_run
+    /// ```text
     /// // Get entire tree in ONE query:
     /// let tree = store.get_node_tree("root-uuid").await?;
     /// // tree.children[0].children[0]... (fully nested)
@@ -2220,63 +2220,109 @@ where
     /// FROM node:root_uuid;
     /// ```
     pub async fn get_node_tree(&self, root_id: &str) -> Result<Option<serde_json::Value>> {
-        use surrealdb::sql::Thing;
+        // NOTE: SurrealDB's `@` recursive repeat operator is NOT supported with RocksDB storage
+        // (returns UnsupportedRepeatRecurse error). We use Rust recursion instead.
+        //
+        // This fetches the tree by:
+        // 1. Getting the root node
+        // 2. Recursively fetching children using get_children()
+        // 3. Building nested JSON structure
 
-        let root_thing = Thing::from(("node".to_string(), root_id.to_string()));
+        // First, get the root node
+        let root_node = match self.get_node(root_id).await? {
+            Some(node) => node,
+            None => return Ok(None),
+        };
 
-        // Recursive query with @ operator for infinite depth traversal
-        let query = "
-            SELECT
-                id,
-                type,
-                content,
-                version,
-                created_at,
-                modified_at,
-                embedding_vector,
-                embedding_stale,
-                mentions,
-                mentioned_by,
-                data,
-                variants,
-                _schema_version,
-                ->has_child->node.{
-                    id,
-                    type,
-                    content,
-                    version,
-                    created_at,
-                    modified_at,
-                    embedding_vector,
-                    embedding_stale,
-                    mentions,
-                    mentioned_by,
-                    data,
-                    variants,
-                    _schema_version,
-                    children: ->has_child->node.@
-                } AS children
-            FROM $root_thing
-            FETCH data;
-        ";
+        // Build nested tree recursively
+        let tree = self.build_node_tree_recursive(&root_node).await?;
+        Ok(Some(tree))
+    }
 
-        let mut response = self
-            .db
-            .query(query)
-            .bind(("root_thing", root_thing))
+    /// Recursively build a node tree as JSON with nested children
+    ///
+    /// # Safety Guards
+    /// - Maximum depth limit (100 levels) prevents stack overflow on deeply nested hierarchies
+    /// - Cycle detection prevents infinite recursion on cyclic graphs
+    fn build_node_tree_recursive<'a>(
+        &'a self,
+        node: &'a Node,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + 'a>>
+    {
+        const MAX_DEPTH: usize = 100;
+
+        Box::pin(async move {
+            self.build_node_tree_with_guards(
+                node,
+                0,
+                MAX_DEPTH,
+                &mut std::collections::HashSet::new(),
+            )
             .await
-            .context("Failed to fetch node tree")?;
+        })
+    }
 
-        let results: Vec<serde_json::Value> = response
-            .take(0)
-            .context("Failed to parse node tree results")?;
+    /// Internal implementation with depth tracking and cycle detection
+    fn build_node_tree_with_guards<'a>(
+        &'a self,
+        node: &'a Node,
+        depth: usize,
+        max_depth: usize,
+        visited: &'a mut std::collections::HashSet<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            // Depth limit check - prevent stack overflow
+            if depth >= max_depth {
+                return Err(anyhow::anyhow!(
+                "Maximum tree depth ({}) exceeded at node '{}'. This may indicate a very deep hierarchy or a cycle.",
+                max_depth,
+                node.id
+            ));
+            }
 
-        if results.is_empty() {
-            return Ok(None);
-        }
+            // Cycle detection - prevent infinite recursion
+            if visited.contains(&node.id) {
+                return Err(anyhow::anyhow!(
+                    "Cycle detected: node '{}' appears multiple times in the hierarchy path",
+                    node.id
+                ));
+            }
+            visited.insert(node.id.clone());
 
-        // Return the tree as raw JSON (frontend can deserialize as needed)
-        Ok(Some(results[0].clone()))
+            // Get ordered children for this node (get_children returns Vec<Node> already ordered)
+            let children_nodes = self.get_children(Some(&node.id)).await?;
+
+            // Recursively build children trees
+            let mut children_json = Vec::new();
+            for child_node in &children_nodes {
+                let child_tree = self
+                    .build_node_tree_with_guards(child_node, depth + 1, max_depth, visited)
+                    .await?;
+                children_json.push(child_tree);
+            }
+
+            // Backtrack: remove from visited set to allow node to appear in other branches
+            visited.remove(&node.id);
+
+            // Build JSON for this node with children
+            // NOTE: Use bare node.id without "node:" prefix to match frontend expectations
+            Ok(serde_json::json!({
+                "id": node.id,
+                "type": node.node_type,
+                "content": node.content,
+                "version": node.version,
+                "created_at": node.created_at,
+                "modified_at": node.modified_at,
+                "embedding_vector": node.embedding_vector,
+                "mentions": node.mentions,
+                "mentioned_by": node.mentioned_by,
+                "data": node.properties,
+                "variants": serde_json::Value::Null,
+                "_schema_version": 1,
+                "children": children_json
+            }))
+        })
     }
 
     /// Get all nodes in a subtree using breadth-first traversal
@@ -2538,7 +2584,7 @@ where
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```text
     /// // Valid: A→B, B→C (adding C as child of B)
     /// validate_no_cycle("B", "C").await?; // ✓ OK
     ///
