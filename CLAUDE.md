@@ -120,15 +120,14 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 
 **Primary Task Source: GitHub Issues**
 
-⚠️ **IMPORTANT: All `bun run gh:*` commands must be run from the repository root directory (`/Users/malibio/nodespace/nodespace-core/`), NOT from subdirectories like `packages/desktop-app/`.**
+⚠️ **IMPORTANT: All `bun run gh:*` commands must be run from the repository root directory, NOT from subdirectories like `packages/desktop-app/`.**
 
 ```bash
 # CORRECT - from repository root
-cd /Users/malibio/nodespace/nodespace-core
 bun run gh:list
 
-# WRONG - from subdirectory  
-cd /Users/malibio/nodespace/nodespace-core/packages/desktop-app
+# WRONG - from subdirectory
+cd packages/desktop-app
 bun run gh:list  # ❌ Will fail
 
 # List all open issues
@@ -297,7 +296,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 
 1. **Pick an Issue & Assign Yourself**
    ```bash
-   # ⚠️ MUST be run from repository root: /Users/malibio/nodespace/nodespace-core/
+   # ⚠️ MUST be run from repository root
    bun run gh:list
    bun run gh:view <number>
    bun run gh:assign <number> "@me"
@@ -397,7 +396,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    git add .
    git commit -m "Fix linting and formatting"
 
-   # Create PR (MUST be run from repository root)
+   # Create PR (run from repository root)
    git push -u origin feature/issue-<number>-brief-description
    bun run gh:pr <number>
    ```
@@ -662,7 +661,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - `/docs/architecture/` - Complete technical specifications
 - `README.md` - Quick start and overview
 - GitHub issues - Detailed implementation requirements
-- Existing NodeSpace repositories in `/Users/malibio/nodespace/` for reference patterns
+- Existing NodeSpace repositories for reference patterns
 
 **When Stuck:**
 - Check related issues for context and dependencies

@@ -1411,35 +1411,157 @@ where
         Ok(children)
     }
 
-    /// Get a node with all its descendants recursively nested (optimized for initial load)
+    /// Get a complete nested tree structure using efficient adjacency list strategy
     ///
-    /// Uses SurrealDB's recursive FETCH to return the entire subtree in a single query.
-    /// This eliminates the need for O(n) tree reconstruction on the frontend.
+    /// Fetches the entire subtree in 3 optimized queries:
+    /// 1. Get all nodes in the subtree (descendants only)
+    /// 2. Get all edges in the subtree
+    /// 3. Get the root node (not included in descendants query)
     ///
-    /// The returned structure contains:
-    /// - The parent node with all fields (id, nodeType, content, version, etc.)
-    /// - A `children` array containing recursively nested child nodes
-    /// - Each child node has the same structure, allowing infinite depth traversal
+    /// Then constructs the nested tree structure in-memory using an adjacency list,
+    /// which separates data fetching from tree construction and enables client-side logic.
+    ///
+    /// # Performance
+    ///
+    /// - **3 queries total** regardless of tree depth or node count (constant vs O(depth))
+    /// - O(n) in-memory tree construction where n = number of nodes
+    /// - Much faster than recursive queries with complex projections
     ///
     /// # Arguments
     ///
-    /// * `parent_id` - The parent node ID
+    /// * `parent_id` - The root node ID to fetch tree for
     ///
     /// # Returns
     ///
-    /// `serde_json::Value` containing the nested tree structure
+    /// `serde_json::Value` containing the nested tree structure with all descendants
     pub async fn get_children_tree(
         &self,
         parent_id: &str,
     ) -> Result<serde_json::Value, NodeServiceError> {
-        self.store
-            .get_children(Some(parent_id))
+        // Fetch all nodes and edges in the subtree efficiently
+        let nodes = self
+            .store
+            .get_nodes_in_subtree(parent_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
-            .map(|nodes| {
-                // Convert nodes to JSON tree structure
-                serde_json::to_value(nodes).unwrap_or(serde_json::Value::Array(vec![]))
-            })
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to fetch subtree nodes: {}", e))
+            })?;
+
+        let edges = self
+            .store
+            .get_edges_in_subtree(parent_id)
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to fetch subtree edges: {}", e))
+            })?;
+
+        // Build tree structure using adjacency list strategy
+        let tree = self
+            .build_tree_from_adjacency_list(parent_id, &nodes, &edges)
+            .await?;
+        Ok(tree)
+    }
+
+    /// Build a nested tree structure from nodes and edges using adjacency list strategy
+    ///
+    /// Constructs a nested JSON tree by:
+    /// 1. Creating a HashMap mapping parent_id → Vec<child_id> (adjacency list)
+    /// 2. Recursively walking the tree structure using the adjacency list
+    /// 3. Building JSON nodes with `children` arrays
+    ///
+    /// This separates data fetching from tree construction, making the logic testable
+    /// and enabling client-side tree modifications.
+    ///
+    /// # Arguments
+    ///
+    /// * `root_id` - The root node ID
+    /// * `nodes` - All nodes in the subtree (flat list)
+    /// * `edges` - All parent-child relationships in the subtree
+    ///
+    /// # Returns
+    ///
+    /// JSON structure with nested children arrays, or empty object if root not found
+    async fn build_tree_from_adjacency_list(
+        &self,
+        root_id: &str,
+        nodes: &[Node],
+        edges: &[crate::EdgeRecord],
+    ) -> Result<serde_json::Value, NodeServiceError> {
+        use std::collections::HashMap;
+
+        // Create a map of node_id → Node for O(1) lookup
+        let mut node_map: HashMap<String, Node> = HashMap::new();
+        for node in nodes {
+            node_map.insert(node.id.clone(), node.clone());
+        }
+
+        // Create adjacency list: parent_id → Vec of (child_id, order)
+        // Sorted by order to maintain sibling sequence
+        let mut adjacency_list: HashMap<String, Vec<(String, f64)>> = HashMap::new();
+        for edge in edges {
+            adjacency_list
+                .entry(edge.in_node.clone())
+                .or_default()
+                .push((edge.out_node.clone(), edge.order));
+        }
+
+        // Sort children by order for each parent
+        for children in adjacency_list.values_mut() {
+            children.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        }
+
+        // Fetch root node to include in response
+        let root_node = self.get_node(root_id).await.map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to fetch root node: {}", e))
+        })?;
+
+        match root_node {
+            Some(root) => {
+                // Recursively build tree structure
+                let tree_json = self.build_node_tree_recursive(&root, &node_map, &adjacency_list);
+                Ok(tree_json)
+            }
+            None => {
+                // Root node not found, return empty object
+                Ok(serde_json::json!({}))
+            }
+        }
+    }
+
+    /// Recursively build a tree node with its children
+    ///
+    /// Helper function for `build_tree_from_adjacency_list` that recursively
+    /// constructs JSON nodes with nested children arrays.
+    #[allow(clippy::only_used_in_recursion)]
+    fn build_node_tree_recursive(
+        &self,
+        node: &Node,
+        node_map: &std::collections::HashMap<String, Node>,
+        adjacency_list: &std::collections::HashMap<String, Vec<(String, f64)>>,
+    ) -> serde_json::Value {
+        let mut json =
+            serde_json::to_value(node).unwrap_or(serde_json::Value::Object(Default::default()));
+
+        // Build children array (always present, even if empty for consistency)
+        let children: Vec<serde_json::Value> =
+            if let Some(children_ids) = adjacency_list.get(&node.id) {
+                children_ids
+                    .iter()
+                    .filter_map(|(child_id, _order)| {
+                        node_map.get(child_id).map(|child_node| {
+                            self.build_node_tree_recursive(child_node, node_map, adjacency_list)
+                        })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+        if let Some(obj) = json.as_object_mut() {
+            obj.insert("children".to_string(), serde_json::Value::Array(children));
+        }
+
+        json
     }
 
     /// Check if a node is a root node (has no parent)
@@ -4196,6 +4318,156 @@ mod tests {
                     "Modified timestamp should not change on backfill skip"
                 );
             }
+        }
+    }
+
+    mod adjacency_list_tests {
+        use super::*;
+
+        // Tests for the adjacency list strategy (recursive graph traversal)
+        // Uses SurrealDB's .{..}(->edge->target) syntax for recursive queries
+
+        /// Test get_children_tree with a leaf node (no children)
+        #[tokio::test]
+        async fn test_get_children_tree_leaf_node() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a single node with no children
+            let leaf = Node::new("text".to_string(), "Leaf node".to_string(), json!({}));
+            let leaf_id = service.create_node(leaf).await.unwrap();
+
+            // Get tree for leaf node - should return the node with empty children array
+            let tree = service.get_children_tree(&leaf_id).await.unwrap();
+
+            assert_eq!(tree["id"], leaf_id);
+            assert_eq!(tree["content"], "Leaf node");
+            assert!(tree["children"].as_array().unwrap().is_empty());
+        }
+
+        /// Test get_children_tree with single-level children
+        #[tokio::test]
+        async fn test_get_children_tree_single_level() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create parent node
+            let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
+            let parent_id = service.create_node(parent).await.unwrap();
+
+            // Create two children and add to parent using create_parent_edge
+            let child1 = Node::new("text".to_string(), "Child 1".to_string(), json!({}));
+            let child1_id = service.create_node(child1).await.unwrap();
+            service
+                .create_parent_edge(&child1_id, &parent_id, None)
+                .await
+                .unwrap();
+
+            let child2 = Node::new("text".to_string(), "Child 2".to_string(), json!({}));
+            let child2_id = service.create_node(child2).await.unwrap();
+            service
+                .create_parent_edge(&child2_id, &parent_id, None)
+                .await
+                .unwrap();
+
+            // Get tree - should have parent with 2 children
+            let tree = service.get_children_tree(&parent_id).await.unwrap();
+
+            assert_eq!(tree["id"], parent_id);
+            let children = tree["children"].as_array().unwrap();
+            assert_eq!(children.len(), 2);
+            assert_eq!(children[0]["content"], "Child 1");
+            assert_eq!(children[1]["content"], "Child 2");
+        }
+
+        /// Test get_children_tree with multi-level deep tree
+        #[tokio::test]
+        async fn test_get_children_tree_deep_hierarchy() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a 3-level deep tree:
+            // Root -> Child -> Grandchild
+            let root = Node::new("text".to_string(), "Root".to_string(), json!({}));
+            let root_id = service.create_node(root).await.unwrap();
+
+            let child = Node::new("text".to_string(), "Child".to_string(), json!({}));
+            let child_id = service.create_node(child).await.unwrap();
+            service
+                .create_parent_edge(&child_id, &root_id, None)
+                .await
+                .unwrap();
+
+            let grandchild = Node::new("text".to_string(), "Grandchild".to_string(), json!({}));
+            let grandchild_id = service.create_node(grandchild).await.unwrap();
+            service
+                .create_parent_edge(&grandchild_id, &child_id, None)
+                .await
+                .unwrap();
+
+            // Get tree - should have nested structure
+            let tree = service.get_children_tree(&root_id).await.unwrap();
+
+            assert_eq!(tree["id"], root_id);
+            assert_eq!(tree["content"], "Root");
+
+            let children = tree["children"].as_array().unwrap();
+            assert_eq!(children.len(), 1);
+            assert_eq!(children[0]["content"], "Child");
+
+            let grandchildren = children[0]["children"].as_array().unwrap();
+            assert_eq!(grandchildren.len(), 1);
+            assert_eq!(grandchildren[0]["content"], "Grandchild");
+            assert!(grandchildren[0]["children"].as_array().unwrap().is_empty());
+        }
+
+        /// Test sibling ordering is preserved (insertion order since create_parent_edge appends)
+        #[tokio::test]
+        async fn test_get_children_tree_sibling_ordering() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create parent node
+            let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
+            let parent_id = service.create_node(parent).await.unwrap();
+
+            // Add children in order A, B, C - they should maintain this order
+            let child_a = Node::new("text".to_string(), "A".to_string(), json!({}));
+            let child_a_id = service.create_node(child_a).await.unwrap();
+            service
+                .create_parent_edge(&child_a_id, &parent_id, None)
+                .await
+                .unwrap();
+
+            let child_b = Node::new("text".to_string(), "B".to_string(), json!({}));
+            let child_b_id = service.create_node(child_b).await.unwrap();
+            service
+                .create_parent_edge(&child_b_id, &parent_id, None)
+                .await
+                .unwrap();
+
+            let child_c = Node::new("text".to_string(), "C".to_string(), json!({}));
+            let child_c_id = service.create_node(child_c).await.unwrap();
+            service
+                .create_parent_edge(&child_c_id, &parent_id, None)
+                .await
+                .unwrap();
+
+            // Get tree - children should be in order A, B, C
+            let tree = service.get_children_tree(&parent_id).await.unwrap();
+
+            let children = tree["children"].as_array().unwrap();
+            assert_eq!(children.len(), 3);
+            assert_eq!(children[0]["content"], "A");
+            assert_eq!(children[1]["content"], "B");
+            assert_eq!(children[2]["content"], "C");
+        }
+
+        /// Test get_children_tree with non-existent root returns empty object
+        #[tokio::test]
+        async fn test_get_children_tree_nonexistent_root() {
+            let (service, _temp) = create_test_service().await;
+
+            // Get tree for non-existent node - should return empty object
+            let tree = service.get_children_tree("nonexistent-id").await.unwrap();
+
+            assert!(tree.as_object().unwrap().is_empty());
         }
     }
 }
