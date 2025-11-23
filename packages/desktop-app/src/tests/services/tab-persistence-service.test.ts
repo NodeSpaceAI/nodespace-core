@@ -3,6 +3,9 @@ import { TabPersistenceService } from '$lib/services/tab-persistence-service';
 import type { TabState } from '$lib/stores/navigation';
 
 describe('TabPersistenceService', () => {
+  // Fixed reference date for consistent testing: 2025-11-24 (Monday)
+  const REFERENCE_DATE = new Date('2025-11-24T12:00:00Z');
+
   beforeEach(() => {
     // Clear localStorage before each test
     localStorage.clear();
@@ -10,6 +13,8 @@ describe('TabPersistenceService', () => {
     TabPersistenceService.flush();
     // Use fake timers for debounce testing
     vi.useFakeTimers();
+    // Set system time to fixed date so relative date calculations are consistent
+    vi.setSystemTime(REFERENCE_DATE);
   });
 
   afterEach(() => {
@@ -413,7 +418,8 @@ describe('TabPersistenceService', () => {
 
   describe('date node title migration', () => {
     it('recomputes date titles on load', () => {
-      const today = new Date().toISOString().split('T')[0];
+      // Use REFERENCE_DATE (2025-11-24) as today
+      const today = REFERENCE_DATE.toISOString().split('T')[0];
       const stateWithDateNode: TabState = {
         tabs: [
           {
@@ -486,7 +492,8 @@ describe('TabPersistenceService', () => {
     });
 
     it('recomputes tomorrow date title correctly', () => {
-      const tomorrow = new Date();
+      // Calculate tomorrow based on REFERENCE_DATE
+      const tomorrow = new Date(REFERENCE_DATE);
       tomorrow.setDate(tomorrow.getDate() + 1);
       const tomorrowStr = tomorrow.toISOString().split('T')[0];
 
@@ -514,7 +521,8 @@ describe('TabPersistenceService', () => {
     });
 
     it('recomputes yesterday date title correctly', () => {
-      const yesterday = new Date();
+      // Calculate yesterday based on REFERENCE_DATE
+      const yesterday = new Date(REFERENCE_DATE);
       yesterday.setDate(yesterday.getDate() - 1);
       const yesterdayStr = yesterday.toISOString().split('T')[0];
 
