@@ -71,8 +71,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
   // Subscribe to SharedNodeStore changes for reactive updates
   // Wildcard subscription - updates _updateTrigger when any node changes
-  // Note: Unsubscribe handled automatically when service instance is garbage collected
-  const _unsubscribe = sharedNodeStore.subscribeAll((node) => {
+  // IMPORTANT: Call destroy() when unmounting to prevent subscription memory leak
+  let _subscriptionUnsubscribe: (() => void) | null = sharedNodeStore.subscribeAll((node) => {
     // CRITICAL: Initialize UI state for new nodes (e.g., promoted placeholders)
     // If UI state doesn't exist, compute depth and create default state
     if (!_uiState[node.id]) {
@@ -92,9 +92,6 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     _updateTrigger++;
   });
-
-  // Prevent unused variable warning (cleanup would happen here if needed)
-  void _unsubscribe;
 
   // NOTE: Backend now returns children pre-sorted via fractional ordering (ORDER BY order ASC)
   // No frontend sorting needed - we trust the backend's ordering
@@ -1145,6 +1142,20 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Direct access to UI state for computed properties
     getUIState(nodeId: string) {
       return _uiState[nodeId];
+    },
+
+    // Lifecycle management
+    /**
+     * Cleanup method to prevent subscription memory leaks.
+     * MUST be called when the service instance is no longer needed (e.g., on component unmount).
+     * Safe to call multiple times (idempotent).
+     * Failing to call this will result in subscription accumulation and unnecessary processing.
+     */
+    destroy() {
+      if (_subscriptionUnsubscribe) {
+        _subscriptionUnsubscribe();
+        _subscriptionUnsubscribe = null;
+      }
     },
 
     // Node operations

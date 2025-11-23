@@ -35,7 +35,7 @@
 </script>
 
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import type { Snippet } from 'svelte';
 
   // Service imports
@@ -107,6 +107,13 @@
     } catch (error) {
       console.error('NodeServiceContext: Failed to initialize services:', error);
       initializationError = error instanceof Error ? error.message : 'Unknown error';
+    }
+  });
+
+  // Cleanup subscriptions on unmount to prevent memory leaks (Issue #640)
+  onDestroy(() => {
+    if (servicesContainer.services?.nodeManager) {
+      servicesContainer.services.nodeManager.destroy();
     }
   });
 </script>
