@@ -31,7 +31,7 @@ pub use behaviors::{
     DateNodeBehavior, NodeBehavior, NodeBehaviorRegistry, ProcessingError, TaskNodeBehavior,
     TextNodeBehavior,
 };
-pub use db::{DatabaseError, EdgeRecord, SurrealStore};
+pub use db::{DatabaseError, DomainEvent, EdgeRecord, HierarchyRelationship, SurrealStore};
 pub use models::{
     FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter,
     ValidationError,
