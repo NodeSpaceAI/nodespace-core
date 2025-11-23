@@ -46,7 +46,9 @@
 //! }
 //! ```
 
-use crate::db::events::{DomainEvent, HierarchyRelationship};
+use crate::db::events::{
+    DomainEvent, EdgeRelationship, HierarchyRelationship, MentionRelationship,
+};
 use crate::db::fractional_ordering::FractionalOrderCalculator;
 use crate::models::schema::SchemaDefinition;
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate};
@@ -1202,11 +1204,13 @@ where
 
         // Emit domain events for observers
         self.emit_event(DomainEvent::NodeCreated(node.clone()));
-        self.emit_event(DomainEvent::EdgeCreated(HierarchyRelationship {
-            parent_id,
-            child_id: node_id,
-            order,
-        }));
+        self.emit_event(DomainEvent::EdgeCreated(EdgeRelationship::Hierarchy(
+            HierarchyRelationship {
+                parent_id,
+                child_id: node_id,
+                order,
+            },
+        )));
 
         Ok(node)
     }
@@ -2915,13 +2919,14 @@ where
 
         // Emit edge event after successful move
         if let Some(parent_id) = &new_parent_id {
-            use crate::db::HierarchyRelationship;
             let relationship = HierarchyRelationship {
                 parent_id: parent_id.clone(),
                 child_id: node_id.clone(),
                 order: new_order,
             };
-            self.emit_event(DomainEvent::EdgeUpdated(relationship));
+            self.emit_event(DomainEvent::EdgeUpdated(EdgeRelationship::Hierarchy(
+                relationship,
+            )));
         } else {
             // Moving to root (deleting parent edge)
             self.emit_event(DomainEvent::EdgeDeleted {
@@ -2981,14 +2986,14 @@ where
                 .context("Failed to create mention")?;
 
             // Emit edge created event for new mention
-            // Note: Order is 0.0 for mentions (they're not hierarchical)
-            use crate::db::HierarchyRelationship;
-            let relationship = HierarchyRelationship {
-                parent_id: source_id.to_string(),
-                child_id: target_id.to_string(),
-                order: 0.0,
+            // Mentions are bidirectional references, not parent-child hierarchies
+            let relationship = MentionRelationship {
+                source_id: source_id.to_string(),
+                target_id: target_id.to_string(),
             };
-            self.emit_event(DomainEvent::EdgeCreated(relationship));
+            self.emit_event(DomainEvent::EdgeCreated(EdgeRelationship::Mention(
+                relationship,
+            )));
         }
 
         Ok(())

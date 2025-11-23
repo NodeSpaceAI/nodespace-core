@@ -14,7 +14,7 @@
  */
 
 import { listen } from '@tauri-apps/api/event';
-import type { NodeEventData, HierarchyRelationship } from '$lib/types/event-types';
+import type { NodeEventData, EdgeRelationship } from '$lib/types/event-types';
 
 /**
  * Initialize Tauri real-time synchronization event listeners
@@ -46,14 +46,30 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       console.debug(`[TauriSync] Node deleted: ${event.payload.id}`);
     });
 
-    // Listen for hierarchy events (debug logging)
-    // Note: Backend still emits 'edge:*' events - these will be renamed to 'hierarchy:*' in a future refactor
-    await listen<HierarchyRelationship>('edge:created', (event) => {
-      console.debug(`[TauriSync] Hierarchy relationship created: ${event.payload.parentId} -> ${event.payload.childId}`);
+    // Listen for edge events (hierarchy and mention relationships)
+    // Serde internally-tagged format: fields are merged at top level (not nested)
+    await listen<EdgeRelationship>('edge:created', (event) => {
+      if (event.payload.type === 'hierarchy') {
+        console.debug(
+          `[TauriSync] Hierarchy relationship created: ${event.payload.parentId} -> ${event.payload.childId}`
+        );
+      } else if (event.payload.type === 'mention') {
+        console.debug(
+          `[TauriSync] Mention relationship created: ${event.payload.sourceId} -> ${event.payload.targetId}`
+        );
+      }
     });
 
-    await listen<HierarchyRelationship>('edge:updated', (event) => {
-      console.debug(`[TauriSync] Hierarchy relationship updated: ${event.payload.parentId} -> ${event.payload.childId}`);
+    await listen<EdgeRelationship>('edge:updated', (event) => {
+      if (event.payload.type === 'hierarchy') {
+        console.debug(
+          `[TauriSync] Hierarchy relationship updated: ${event.payload.parentId} -> ${event.payload.childId}`
+        );
+      } else if (event.payload.type === 'mention') {
+        console.debug(
+          `[TauriSync] Mention relationship updated: ${event.payload.sourceId} -> ${event.payload.targetId}`
+        );
+      }
     });
 
     await listen<{ id: string }>('edge:deleted', (event) => {

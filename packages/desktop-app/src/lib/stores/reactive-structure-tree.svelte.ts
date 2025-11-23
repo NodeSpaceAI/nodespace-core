@@ -15,7 +15,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
-import type { HierarchyRelationship } from '$lib/types/event-types';
+import type { HierarchyRelationship, EdgeRelationship } from '$lib/types/event-types';
 
 interface ChildInfo {
   nodeId: string;
@@ -89,9 +89,16 @@ class ReactiveStructureTree {
   private async subscribeToEvents() {
     try {
       // Edge created event
-      const unlistenCreated = await listen<HierarchyRelationship>('edge:created', (event) => {
-        console.log('[ReactiveStructureTree] Hierarchy relationship created:', event.payload);
-        this.addChild(event.payload);
+      const unlistenCreated = await listen<EdgeRelationship>('edge:created', (event) => {
+        // Serde internally-tagged format: fields are merged at top level
+        if (event.payload.type === 'hierarchy') {
+          // TypeScript narrows to HierarchyEdge, fields are directly on payload
+          console.log('[ReactiveStructureTree] Hierarchy relationship created:', event.payload);
+          this.addChild(event.payload);
+        } else if (event.payload.type === 'mention') {
+          // Mentions don't affect the tree structure, just log for debugging
+          console.log('[ReactiveStructureTree] Mention created (ignored):', event.payload);
+        }
       });
       this.unlisteners.push(unlistenCreated);
     } catch (error) {
@@ -101,9 +108,16 @@ class ReactiveStructureTree {
 
     try {
       // Edge deleted event
-      const unlistenDeleted = await listen<HierarchyRelationship>('edge:deleted', (event) => {
-        console.log('[ReactiveStructureTree] Hierarchy relationship deleted:', event.payload);
-        this.removeChild(event.payload);
+      const unlistenDeleted = await listen<EdgeRelationship>('edge:deleted', (event) => {
+        // Serde internally-tagged format: fields are merged at top level
+        if (event.payload.type === 'hierarchy') {
+          // TypeScript narrows to HierarchyEdge, fields are directly on payload
+          console.log('[ReactiveStructureTree] Hierarchy relationship deleted:', event.payload);
+          this.removeChild(event.payload);
+        } else if (event.payload.type === 'mention') {
+          // Mentions don't affect the tree structure, just log for debugging
+          console.log('[ReactiveStructureTree] Mention deleted (ignored):', event.payload);
+        }
       });
       this.unlisteners.push(unlistenDeleted);
     } catch (error) {
@@ -113,9 +127,16 @@ class ReactiveStructureTree {
 
     try {
       // Edge updated event (for order changes during rebalancing)
-      const unlistenUpdated = await listen<HierarchyRelationship>('edge:updated', (event) => {
-        console.log('[ReactiveStructureTree] Hierarchy relationship updated:', event.payload);
-        this.updateChildOrder(event.payload);
+      const unlistenUpdated = await listen<EdgeRelationship>('edge:updated', (event) => {
+        // Serde internally-tagged format: fields are merged at top level
+        if (event.payload.type === 'hierarchy') {
+          // TypeScript narrows to HierarchyEdge, fields are directly on payload
+          console.log('[ReactiveStructureTree] Hierarchy relationship updated:', event.payload);
+          this.updateChildOrder(event.payload);
+        } else if (event.payload.type === 'mention') {
+          // Mentions don't affect the tree structure, just log for debugging
+          console.log('[ReactiveStructureTree] Mention updated (ignored):', event.payload);
+        }
       });
       this.unlisteners.push(unlistenUpdated);
     } catch (error) {

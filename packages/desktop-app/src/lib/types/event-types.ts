@@ -42,6 +42,42 @@ export interface HierarchyRelationship {
 }
 
 // ============================================================================
+// Mention Event Data (Bidirectional References)
+// ============================================================================
+
+/**
+ * Mention relationship event data from LIVE SELECT
+ * Represents bidirectional references between nodes
+ *
+ * Unlike hierarchies, mentions are not parent-child relationships
+ * and do not have ordering. They represent connections or references.
+ */
+export interface MentionRelationship {
+  sourceId: string; // Node making the reference
+  targetId: string; // Node being referenced
+}
+
+// ============================================================================
+// Edge Relationship Type (Union of all edge types)
+// ============================================================================
+
+/**
+ * Edge relationship event data from LIVE SELECT
+ * Internally-tagged union type representing different relationship types
+ *
+ * Rust uses #[serde(tag = "type")] which produces an internally-tagged format
+ * where the discriminator is merged with the struct fields (NOT nested):
+ *
+ * - Hierarchy: { type: "hierarchy", parentId: "...", childId: "...", order: 1.0 }
+ * - Mention: { type: "mention", sourceId: "...", targetId: "..." }
+ *
+ * TypeScript intersection types model this correctly.
+ */
+export type HierarchyEdge = { type: 'hierarchy' } & HierarchyRelationship;
+export type MentionEdge = { type: 'mention' } & MentionRelationship;
+export type EdgeRelationship = HierarchyEdge | MentionEdge;
+
+// ============================================================================
 // Nested Tree Structure (for Recursive FETCH optimization)
 // ============================================================================
 
