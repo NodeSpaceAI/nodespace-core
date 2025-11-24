@@ -22,25 +22,50 @@
   let viewerComponents = $state<Map<string, unknown>>(new Map());
   let viewerLoadErrors = $state<Map<string, string>>(new Map());
 
-  // Load viewer for active tab's node type
+  // Load viewer when needed - moved to function called from onMount to avoid derived context issues
+  async function loadViewerForNodeType(nodeType: string) {
+    if (viewerComponents.has(nodeType) || viewerLoadErrors.has(nodeType)) {
+      return;
+    }
+
+    try {
+      const viewer = await pluginRegistry.getViewer(nodeType);
+      if (viewer) {
+        viewerComponents = new Map(viewerComponents.set(nodeType, viewer));
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error loading viewer';
+      console.error(`[PaneContent] Failed to load viewer for ${nodeType}:`, error);
+      viewerLoadErrors = new Map(viewerLoadErrors.set(nodeType, errorMessage));
+    }
+  }
+
+  // Derive viewer component for active tab - use non-reactive snapshot to break tracking
+  const ViewerComponent = $derived.by(() => {
+    const nodeType = activeTab?.content?.nodeType ?? 'text';
+    const components = $state.snapshot(viewerComponents);
+    return (components.get(nodeType) ?? BaseNodeViewer) as typeof BaseNodeViewer;
+  });
+
+  const isCustomViewer = $derived.by(() => {
+    const nodeType = activeTab?.content?.nodeType ?? 'text';
+    const components = $state.snapshot(viewerComponents);
+    return components.has(nodeType);
+  });
+
+  const loadError = $derived.by(() => {
+    const nodeType = activeTab?.content?.nodeType ?? 'text';
+    const errors = $state.snapshot(viewerLoadErrors);
+    return errors.get(nodeType);
+  });
+
+  const shouldDisableTitleUpdates = $derived(!isCustomViewer && (activeTab?.content?.nodeType ?? 'text') === 'date');
+
+  // Load viewer when active tab changes - use $effect but call async function
   $effect(() => {
     const nodeType = activeTab?.content?.nodeType;
-    if (nodeType && !viewerComponents.has(nodeType) && !viewerLoadErrors.has(nodeType)) {
-      (async () => {
-        try {
-          const viewer = await pluginRegistry.getViewer(nodeType);
-          if (viewer) {
-            viewerComponents.set(nodeType, viewer);
-            viewerComponents = new Map(viewerComponents); // Trigger reactivity
-          }
-        } catch (error) {
-          const errorMessage =
-            error instanceof Error ? error.message : 'Unknown error loading viewer';
-          console.error(`[PaneContent] Failed to load viewer for ${nodeType}:`, error);
-          viewerLoadErrors.set(nodeType, errorMessage);
-          viewerLoadErrors = new Map(viewerLoadErrors); // Trigger reactivity
-        }
-      })();
+    if (nodeType) {
+      loadViewerForNodeType(nodeType);
     }
   });
 </script>
@@ -48,7 +73,6 @@
 {#if activeTab?.content}
   {@const content = activeTab.content}
   {@const nodeType = content.nodeType ?? 'text'}
-  {@const loadError = viewerLoadErrors.get(nodeType)}
 
   {#if loadError}
     <!-- Plugin loading error -->
@@ -61,12 +85,7 @@
   {:else}
     <!-- Dynamic viewer routing via plugin registry -->
     <!-- Falls back to BaseNodeViewer if no custom viewer registered -->
-    {@const ViewerComponent = (viewerComponents.get(nodeType) ??
-      BaseNodeViewer) as typeof BaseNodeViewer}
-    {@const isCustomViewer = viewerComponents.has(nodeType)}
-    <!-- Disable title updates for fallback BaseNodeViewer when loading date nodes -->
-    <!-- Date titles are managed by DateNodeViewer, not BaseNodeViewer -->
-    {@const shouldDisableTitleUpdates = !isCustomViewer && nodeType === 'date'}
+    <!-- ViewerComponent, isCustomViewer, shouldDisableTitleUpdates now derived at script level -->
 
     <!-- KEY FIX: Use {#key} to force separate component instances per pane+nodeId -->
     <!-- This ensures each pane gets its own BaseNodeViewer instance with isolated state -->

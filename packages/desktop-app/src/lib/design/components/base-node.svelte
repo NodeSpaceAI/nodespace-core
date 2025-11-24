@@ -28,10 +28,11 @@
   // import { type NodeType } from '$lib/design/icons'; // Unused but preserved for future use
 
   import {
-    TextareaController,
+    createTextareaController,
     type TextareaControllerEvents,
-    type TextareaControllerConfig
-  } from './textarea-controller.js';
+    type TextareaControllerConfig,
+    type TextareaControllerState
+  } from './textarea-controller.svelte.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
   import { SlashCommandDropdown } from '$lib/components/ui/slash-command-dropdown';
   // Use shadcn Calendar component (official date picker pattern)
@@ -119,9 +120,11 @@
     return text;
   }
 
-  // DOM element and controller - Svelte bind:this assignment
+  // DOM element - Svelte bind:this assignment
   let textareaElement = $state<HTMLTextAreaElement | undefined>(undefined);
-  let controller = $state<TextareaController | null>(null);
+
+  // Controller created via factory with reactive prop syncing
+  let controller = $state<TextareaControllerState | null>(null);
 
   // View mode element for rendering markdown
   let viewElement = $state<HTMLDivElement | undefined>(undefined);
@@ -263,30 +266,12 @@
     );
   }
 
-  // Reactive effect to update autocomplete results when query changes
-  $effect(() => {
-    if (showAutocomplete && nodeReferenceService) {
-      // Use real search if services are available
-      if (services?.nodeManager) {
-        performRealSearch(currentQuery);
-      } else {
-        // Fallback to mock results ONLY in test mode when nodeManager is not available
-        autocompleteResults = generateMockResultsForTests(currentQuery);
-      }
-    }
-  });
+  // REMOVED: Autocomplete effect now handled directly by triggerDetected event handler
+  // When showAutocomplete changes, the handler calls performRealSearch or generateMockResultsForTests directly
 
-  // Watch calendar date selection with Svelte 5 reactivity
-  $effect(() => {
-    if (selectedCalendarDate) {
-      const { year, month, day } = selectedCalendarDate;
-      // Convert DateValue to JS Date (month is 1-indexed in DateValue, 0-indexed in JS Date)
-      const jsDate = new Date(year, month - 1, day);
-      handleDateSelection(jsDate);
-      // Reset for next selection
-      selectedCalendarDate = undefined;
-    }
-  });
+  // REMOVED: Calendar date selection effect
+  // Now handled via Calendar's onchange event handler: use a callback pattern
+  // The bind:value directive will still work, but we need to handle the selection via event
 
   // Cache to avoid redundant searches when typing after failed search
   let lastSearchQuery = '';
@@ -356,12 +341,7 @@
     }
   }
 
-  // Reactive effect to update slash commands when query changes
-  $effect(() => {
-    if (showSlashCommands) {
-      slashCommands = slashCommandService.filterCommands(currentSlashQuery);
-    }
-  });
+  // REMOVED: Slash command effect now handled directly by slashCommandDetected event handler
 
   // Autocomplete event handlers
   async function handleAutocompleteSelect(result: NodeResult) {
@@ -637,12 +617,31 @@
         currentQuery = data.triggerContext.query;
         autocompletePosition = data.cursorPosition;
         showAutocomplete = true;
+
+        // Notify controller that autocomplete is active
+        if (controller) {
+          controller.setAutocompleteDropdownActive(true);
+        }
+
+        // REMOVED: Effect that watched showAutocomplete - now call directly
+        // Use real search if services are available
+        if (services?.nodeManager) {
+          performRealSearch(currentQuery);
+        } else {
+          // Fallback to mock results ONLY in test mode when nodeManager is not available
+          autocompleteResults = generateMockResultsForTests(currentQuery);
+        }
       }
     },
     triggerHidden: () => {
       showAutocomplete = false;
       currentQuery = '';
       autocompleteResults = [];
+
+      // Notify controller that autocomplete is inactive
+      if (controller) {
+        controller.setAutocompleteDropdownActive(false);
+      }
     },
     nodeReferenceSelected: (data: { nodeId: string; nodeTitle: string }) => {
       // Forward the event for potential parent component handling
@@ -655,13 +654,26 @@
     }) => {
       currentSlashQuery = data.commandContext.query;
       slashCommandPosition = data.cursorPosition;
+
+      // REMOVED: Effect that watched showSlashCommands - now call directly
       slashCommands = slashCommandService.filterCommands(currentSlashQuery);
+
       showSlashCommands = true;
+
+      // Notify controller that slash command dropdown is active
+      if (controller) {
+        controller.setSlashCommandDropdownActive(true);
+      }
     },
     slashCommandHidden: () => {
       showSlashCommands = false;
       currentSlashQuery = '';
       slashCommands = [];
+
+      // Notify controller that slash command dropdown is inactive
+      if (controller) {
+        controller.setSlashCommandDropdownActive(false);
+      }
     },
     slashCommandSelected: (data: {
       command: {
@@ -703,38 +715,38 @@
     }
   };
 
-  // REMOVED: Manual sync $effect no longer needed
-  // isEditing is now $derived from FocusManager automatically
-  // This ensures perfect sync without manual coordination
+  // Initialize controller via factory (uses runes for reactive prop syncing)
+  // Factory eliminates need for manual content/config sync effects
+  onMount(() => {
+    controller = createTextareaController(
+      () => textareaElement,
+      () => nodeId,
+      () => nodeType,
+      () => paneId,
+      () => content,
+      () => editableConfig,
+      controllerEvents
+    );
+  });
 
-  // Initialize controller when element is available (Svelte 5 $effect)
-  // Note: Must explicitly access textareaElement to track dependency
+  onDestroy(() => {
+    if (controller) {
+      controller.destroy();
+    }
+  });
+
+  // Watch for element initialization to call controller.initialize()
   $effect(() => {
-    const element = textareaElement; // Force dependency tracking
-    if (element && !controller) {
-      // Create controller immediately - DOM should be ready when effect runs
-      controller = new TextareaController(
-        element,
-        nodeId,
-        nodeType,
-        paneId,
-        controllerEvents,
-        editableConfig
-      );
-      // CRITICAL FIX: Focus if isEditing OR autoFocus is true
-      // This ensures placeholder→real node promotion preserves focus
-      // FocusManager.editingNodeId was set before promotion, so isEditing will be true
+    const element = textareaElement;
+    if (element && controller) {
       const shouldFocus = autoFocus || isEditing;
-      controller.initialize(content, shouldFocus);
-    } else if (element && controller) {
-      // If autoFocus is true and controller exists, still call focus to restore pending cursor position
-      if (autoFocus || isEditing) {
+      // Only initialize if content is empty (first mount)
+      if (controller.getMarkdownContent() === '') {
+        controller.updateContent(content);
+      }
+      if (shouldFocus) {
         setTimeout(() => controller?.focus(), 10);
       }
-    } else if (!element && controller) {
-      // Element was destroyed (switched to view mode) - clean up controller
-      controller.destroy();
-      controller = null;
     }
   });
 
@@ -792,37 +804,9 @@
     }
   });
 
-  // Update content when prop changes
-  $effect(() => {
-    if (controller && content !== undefined) {
-      controller.updateContent(content);
-    }
-  });
-
-  // Update controller config when editableConfig prop changes
-  $effect(() => {
-    if (controller && editableConfig) {
-      controller.updateConfig(editableConfig);
-    }
-  });
-
-  // REMOVED: Old imperative $effect blocks for cursor positioning
-  // Replaced with declarative positionCursor action (see template below)
-  // The action reactively positions the cursor based on cursorPositionData from FocusManager
-
-  // Update controller when slash command dropdown state changes
-  $effect(() => {
-    if (controller) {
-      controller.setSlashCommandDropdownActive(showSlashCommands);
-    }
-  });
-
-  // Update controller when autocomplete dropdown state changes
-  $effect(() => {
-    if (controller) {
-      controller.setAutocompleteDropdownActive(showAutocomplete);
-    }
-  });
+  // REMOVED: Content sync effect - now handled by reactive factory function
+  // REMOVED: Config sync effect - now handled by reactive factory function
+  // REMOVED: Dropdown state sync - controller manages this internally through event handlers
 
   // AutoFocus on mount: When a node mounts with autoFocus=true, set it as the editing node
   // This is the standard Svelte pattern - request focus when component mounts
@@ -1013,7 +997,18 @@
       e.stopPropagation();
     }}
   >
-    <Calendar type="single" bind:value={selectedCalendarDate} />
+    <Calendar
+      type="single"
+      bind:value={selectedCalendarDate}
+      onValueChange={(date) => {
+        if (date) {
+          const { year, month, day } = date;
+          const jsDate = new Date(year, month - 1, day);
+          handleDateSelection(jsDate);
+        }
+        selectedCalendarDate = undefined;
+      }}
+    />
   </div>
 {/if}
 

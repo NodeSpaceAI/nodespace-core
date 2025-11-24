@@ -22,7 +22,7 @@
  * ```
  */
 
-import type { TextareaController } from '$lib/design/components/textarea-controller';
+import type { TextareaControllerState } from '$lib/design/components/textarea-controller';
 
 /**
  * Cursor position data types
@@ -70,7 +70,7 @@ export type CursorPosition =
 
 export interface PositionCursorParams {
   data: CursorPosition | null;
-  controller: TextareaController | null;
+  controller: TextareaControllerState | null;
 }
 
 /**
@@ -86,7 +86,7 @@ export function positionCursor(
 ): { update: (params: PositionCursorParams) => void } {
   let lastProcessedData: CursorPosition | null = null;
 
-  function applyPosition(data: CursorPosition | null, controller: TextareaController | null): void {
+  function applyPosition(data: CursorPosition | null, controller: TextareaControllerState | null): void {
     // Skip if no data or no controller
     if (!data || !controller) {
       return;
