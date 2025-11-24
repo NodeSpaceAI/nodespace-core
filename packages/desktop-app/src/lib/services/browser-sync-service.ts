@@ -3,16 +3,16 @@
  *
  * Provides real-time synchronization via Server-Sent Events when running
  * in browser mode (not Tauri desktop app). This is the browser-mode equivalent
- * of Tauri's LIVE SELECT event subscription.
+ * of Tauri's domain event subscription.
  *
  * Architecture:
- *   Browser ←──SSE──→ dev-proxy (port 3001) → SurrealDB (port 8000)
+ *   Browser ←──SSE──→ dev-proxy (port 3001) → SurrealStore (events)
  *                                                    ↑
- *   Surrealist ─────────────────────────────────────→
+ *   Surrealist ──────────────(direct DB changes)───→
  *
- * When changes are made via Surrealist (or any other DB client), the dev-proxy
- * broadcasts SSE events to connected browsers, which update the SharedNodeStore
- * and ReactiveStructureTree.
+ * The dev-proxy forwards domain events from SurrealStore as SSE to connected browsers,
+ * which update the SharedNodeStore and ReactiveStructureTree. This allows browser dev mode
+ * to have the same real-time sync as the desktop app.
  */
 
 /* global EventSource, MessageEvent */
@@ -31,6 +31,59 @@ type ConnectionState = 'disconnected' | 'connecting' | 'connected';
  *
  * Manages SSE connection to dev-proxy for real-time sync in browser mode.
  * Automatically reconnects on connection loss with exponential backoff.
+ *
+ * ## Event Ordering Guarantees
+ *
+ * **IMPORTANT**: SSE events are NOT guaranteed to arrive in the order they
+ * occurred on the server. Due to network latency and buffering, events may
+ * arrive out-of-order, potentially causing the following scenarios:
+ *
+ * ### Documented Race Conditions
+ *
+ * 1. **Edge Created Before Node Exists**
+ *    - Scenario: Backend creates Node N1 under Parent P
+ *    - Expected order: node:created → edge:created
+ *    - Possible order: edge:created → node:created
+ *    - Result: ReactiveStructureTree adds edge before SharedNodeStore has node
+ *    - Mitigation: Both stores handle missing nodes gracefully
+ *
+ * 2. **Node Deleted Before Edge Deleted**
+ *    - Scenario: Backend deletes Node N1 and its edges
+ *    - Expected order: edge:deleted → node:deleted (edges deleted first)
+ *    - Possible order: node:deleted → edge:deleted
+ *    - Result: Node gone from store but edge still in tree until edge:deleted arrives
+ *    - Mitigation: Both stores are idempotent and handle orphaned references
+ *
+ * 3. **Bulk Operations with Interleaved Events**
+ *    - Scenario: Creating/deleting multiple nodes and edges simultaneously
+ *    - Result: Events may arrive completely out-of-order
+ *    - Mitigation: Each store processes events independently and handles duplicates
+ *
+ * ### Defensive Measures
+ *
+ * The following safeguards prevent data corruption:
+ *
+ * - **ReactiveStructureTree.addChild()**:
+ *   - Detects duplicate edges (same parent/child pair)
+ *   - Detects tree invariant violations (node with multiple parents)
+ *   - Updates order if edge already exists with different order
+ *
+ * - **ReactiveStructureTree.removeChild()**:
+ *   - Gracefully handles missing edges (no error if edge doesn't exist)
+ *
+ * - **SharedNodeStore.setNode()**:
+ *   - Overwrites with latest data using version tracking
+ *   - Handles Last-Write-Wins conflict resolution
+ *
+ * ### Future Improvements
+ *
+ * If out-of-order events cause user-visible issues:
+ * 1. Implement event batching to group related operations
+ * 2. Add sequence numbers to verify event ordering
+ * 3. Buffer events and deliver in correct order
+ * 4. Add cache to detect missing nodes and delay edge processing
+ *
+ * See: https://github.com/malibio/nodespace-core/issues/643
  */
 class BrowserSyncService {
   private eventSource: EventSource | null = null;

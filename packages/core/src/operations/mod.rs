@@ -1007,22 +1007,14 @@ where
             )));
         }
 
-        // Validate new parent exists and get its container
-        let _new_container = if let Some(parent_id) = new_parent_id {
+        // Validate new parent exists
+        if let Some(parent_id) = new_parent_id {
             // Ensure parent exists
-            let _parent = self
-                .node_service
+            self.node_service
                 .get_node(parent_id)
                 .await?
                 .ok_or_else(|| NodeOperationError::node_not_found(parent_id.to_string()))?;
-
-            // Get container from parent using service method
-            self.node_service.get_root_id(parent_id).await?
-        } else {
-            // Moving to root - node must have explicit container
-            // Get current container
-            self.node_service.get_root_id(node_id).await?
-        };
+        }
 
         // Delegate to NodeService to perform the edge operations:
         // 1. Delete existing parent edge (via: DELETE has_child WHERE out = $child_thing)

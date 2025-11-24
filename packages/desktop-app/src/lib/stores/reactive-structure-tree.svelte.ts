@@ -2,14 +2,14 @@
  * ReactiveStructureTree - Reactive Store for Node Hierarchy
  *
  * Maintains a reactive map of parent→children relationships using Svelte 5 $state.
- * Subscribes to LIVE SELECT edge events (edge:created, edge:updated, edge:deleted)
+ * Subscribes to domain events (edge:created, edge:updated, edge:deleted)
  * and automatically keeps the tree synchronized and sorted.
  *
  * Features:
  * - Svelte 5 $state for automatic UI reactivity
  * - Binary search insertion to maintain sorted children
  * - Snapshot/restore for optimistic rollback
- * - Real-time synchronization via Tauri events
+ * - Real-time synchronization via domain events
  */
 
 import { invoke } from '@tauri-apps/api/core';
@@ -30,7 +30,7 @@ class ReactiveStructureTree {
   private initialized = false;
 
   /**
-   * Initialize the tree with bulk load and LIVE SELECT event subscriptions
+   * Initialize the tree with bulk load and domain event subscriptions
    * This should be called once during app startup
    */
   async initialize() {
@@ -45,7 +45,7 @@ class ReactiveStructureTree {
       this.buildTree(initialEdges);
       console.log('[ReactiveStructureTree] Bulk loaded', initialEdges.length, 'edges');
 
-      // Subscribe to LIVE SELECT structure events for real-time updates
+      // Subscribe to domain events for real-time updates
       await this.subscribeToEvents();
 
       this.initialized = true;
@@ -83,7 +83,7 @@ class ReactiveStructureTree {
   }
 
   /**
-   * Subscribe to edge CRUD events from LIVE SELECT
+   * Subscribe to domain events for edge CRUD operations
    * @throws Error if critical event subscriptions fail
    */
   private async subscribeToEvents() {
@@ -328,7 +328,7 @@ class ReactiveStructureTree {
    * Manually register an in-memory parent-child relationship (for placeholder promotion)
    *
    * Use this when creating parent-child relationships for nodes that haven't
-   * been persisted yet and won't trigger LIVE SELECT events.
+   * been persisted yet and won't trigger domain events.
    *
    * @param parentId - Parent node ID
    * @param childId - Child node ID

@@ -706,9 +706,6 @@ where
         // Note: No else clause - if no schema or empty schema, don't add version
         // The backfill_schema_version function will add it on read if needed
 
-        let _properties_json = serde_json::to_string(&properties)
-            .map_err(|e| NodeServiceError::serialization_error(e.to_string()))?;
-
         // Update node with properties (only versioned if schema has fields)
         node.properties = properties;
 

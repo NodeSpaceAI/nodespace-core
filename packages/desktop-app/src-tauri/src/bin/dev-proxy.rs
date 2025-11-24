@@ -391,10 +391,10 @@ async fn main() -> anyhow::Result<()> {
     println!("📡 SSE broadcast channel initialized");
 
     let state = AppState {
-        node_service,
+        node_service: node_service.clone(),
         schema_service,
         operations,
-        event_tx,
+        event_tx: event_tx.clone(),
     };
 
     // Build HTTP router

@@ -1,3 +1,3 @@
-pub mod live_query_service;
+pub mod domain_event_forwarder;
 
-pub use live_query_service::LiveQueryService;
+pub use domain_event_forwarder::DomainEventForwarder;

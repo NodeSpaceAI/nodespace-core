@@ -92,11 +92,11 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
         // Don't fail database init if MCP fails - MCP is optional
     }
 
-    // Initialize LIVE SELECT service for real-time synchronization
-    // This spawns background tasks that subscribe to database changes
-    if let Err(e) = crate::initialize_live_query_service(app.clone(), store.clone()) {
-        tracing::error!("❌ Failed to initialize LIVE SELECT service: {}", e);
-        // Don't fail database init if LIVE SELECT fails - it's optional for now
+    // Initialize domain event forwarding service for real-time synchronization
+    // This spawns background tasks that subscribe to domain events from SurrealStore
+    if let Err(e) = crate::initialize_domain_event_forwarder(app.clone(), store.clone()) {
+        tracing::error!("❌ Failed to initialize domain event forwarder: {}", e);
+        // Don't fail database init if forwarding fails - it's optional for now
     }
 
     Ok(())

@@ -14,28 +14,29 @@ struct DeletedPayload {
     id: String,
 }
 
-/// Service for managing real-time database synchronization
+/// Service for forwarding domain events to the Tauri frontend
 ///
 /// Subscribes to domain events from SurrealStore and forwards them to the Tauri frontend.
 /// Uses event-driven architecture with broadcast channels for efficient multi-subscriber support.
-pub struct LiveQueryService {
+/// This is a bridge between the business logic layer (SurrealStore) and the frontend UI.
+pub struct DomainEventForwarder {
     store: Arc<SurrealStore>,
     app: AppHandle,
 }
 
-impl LiveQueryService {
+impl DomainEventForwarder {
     pub fn new(store: Arc<SurrealStore>, app: AppHandle) -> Self {
         Self { store, app }
     }
 
-    /// Start the real-time synchronization service with event forwarding
+    /// Start the domain event forwarding service
     ///
-    /// This implementation subscribes to domain events from SurrealStore and forwards them
+    /// Subscribes to domain events from SurrealStore and forwards them
     /// to the Tauri frontend with the appropriate event names:
     /// - node:created, node:updated, node:deleted
     /// - edge:created, edge:updated, edge:deleted
     pub async fn run(self) -> Result<()> {
-        info!("🔧 Starting event-driven real-time synchronization service");
+        info!("🔧 Starting domain event forwarding service");
 
         // Emit initial status
         self.emit_status("connected", None);

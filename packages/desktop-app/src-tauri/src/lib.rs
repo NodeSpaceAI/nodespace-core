@@ -28,39 +28,42 @@ fn toggle_sidebar() -> String {
 #[cfg(test)]
 mod tests;
 
-/// Initialize LIVE SELECT service for real-time database synchronization
+/// Initialize domain event forwarding service for real-time frontend synchronization
 ///
-/// Spawns background tasks that subscribe to SurrealDB LIVE SELECT queries
-/// for node and edge tables. When database records change, Tauri events are
-/// emitted to the frontend to trigger UI updates, achieving real-time sync
-/// without polling or manual cache management.
-pub fn initialize_live_query_service(
+/// Spawns background tasks that subscribe to domain events from SurrealStore.
+/// When business logic emits domain events (node/edge created/updated/deleted),
+/// they are forwarded to the frontend via Tauri events to trigger UI updates,
+/// achieving real-time sync through event-driven architecture.
+pub fn initialize_domain_event_forwarder(
     app: tauri::AppHandle,
     store: std::sync::Arc<nodespace_core::SurrealStore>,
 ) -> anyhow::Result<()> {
-    use crate::services::LiveQueryService;
+    use crate::services::DomainEventForwarder;
     use futures::FutureExt;
 
-    tracing::info!("🔧 Initializing LIVE SELECT service...");
+    tracing::info!("🔧 Initializing domain event forwarding service...");
 
-    // Spawn live query service background tasks
+    // Spawn domain event forwarding service background task
     tauri::async_runtime::spawn(async move {
         let result = std::panic::AssertUnwindSafe(async {
-            let live_query = LiveQueryService::new(store, app);
-            live_query.run().await
+            let forwarder = DomainEventForwarder::new(store, app);
+            forwarder.run().await
         })
         .catch_unwind()
         .await;
 
         match result {
             Ok(Ok(_)) => {
-                tracing::info!("✅ LIVE SELECT service exited normally");
+                tracing::info!("✅ Domain event forwarding service exited normally");
             }
             Ok(Err(e)) => {
-                tracing::error!("❌ LIVE SELECT error: {}", e);
+                tracing::error!("❌ Domain event forwarding error: {}", e);
             }
             Err(panic_info) => {
-                tracing::error!("💥 LIVE SELECT service panicked: {:?}", panic_info);
+                tracing::error!(
+                    "💥 Domain event forwarding service panicked: {:?}",
+                    panic_info
+                );
             }
         }
     });
