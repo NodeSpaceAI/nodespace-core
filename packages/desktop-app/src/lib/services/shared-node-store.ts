@@ -1183,6 +1183,12 @@ export class SharedNodeStore {
       const allRelationships: Array<{parentId: string, childId: string, order: number}> = [];
       const databaseSource = { type: 'database' as const, reason: 'loaded-from-db' };
 
+      // OPTIMIZATION: Add parent node itself to the store
+      // This eliminates the need for a separate getNode() call in base-node-viewer
+      const { children: _children, ...parentNodeFields } = tree;
+      const parentNode: Node = parentNodeFields as Node;
+      allNodes.push(parentNode);
+
       // Helper to recursively process NodeWithChildren and collect nodes + edges
       // OPTIMIZED: Collects all nodes first, then batch adds them
       const processNode = (nodeWithChildren: import('$lib/types').NodeWithChildren, nodeParentId: string, order: number) => {
@@ -1221,10 +1227,23 @@ export class SharedNodeStore {
       // This triggers only ONE reactivity update instead of N updates
       // Filter out relationships that already exist to avoid duplicate detection overhead
       if (allRelationships.length > 0) {
-        const newRelationships = allRelationships.filter(rel => {
-          const existingChildren = structureTree.getChildren(rel.parentId);
-          return !existingChildren.includes(rel.childId);
-        });
+        // OPTIMIZATION: Build Set of existing child IDs across all parents (one pass)
+        // This avoids O(n²) complexity from repeated getChildren() calls in filter
+        const existingChildIds = new Set<string>();
+        const seenParents = new Set<string>();
+
+        for (const rel of allRelationships) {
+          if (!seenParents.has(rel.parentId)) {
+            seenParents.add(rel.parentId);
+            const children = structureTree.getChildren(rel.parentId);
+            children.forEach(id => existingChildIds.add(id));
+          }
+        }
+
+        // Filter using Set lookup (O(1) per check instead of O(n))
+        const newRelationships = allRelationships.filter(rel =>
+          !existingChildIds.has(rel.childId)
+        );
 
         if (newRelationships.length > 0) {
           structureTree.batchAddRelationships(newRelationships);
