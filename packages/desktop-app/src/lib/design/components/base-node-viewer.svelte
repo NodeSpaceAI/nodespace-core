@@ -240,37 +240,73 @@
   // So onMount runs fresh for each nodeId, eliminating the need for a reactive effect
   // ============================================================================
 
-  onMount(async () => {
+  onMount(() => {
+    // Set up scroll position management
+    // Restore scroll position when viewer becomes active
+    let scrollCleanup: (() => void) | null = null;
+
+    if (scrollContainer) {
+      const savedPosition = getScrollPosition(viewerId);
+      // Use requestAnimationFrame to ensure DOM is ready
+      requestAnimationFrame(() => {
+        if (scrollContainer) {
+          scrollContainer.scrollTop = savedPosition;
+        }
+      });
+
+      // Set up scroll position saving
+      const handleScroll = () => {
+        if (scrollContainer) {
+          saveScrollPosition(viewerId, scrollContainer.scrollTop);
+        }
+      };
+
+      scrollContainer.addEventListener('scroll', handleScroll, { passive: true });
+
+      // Store cleanup function
+      scrollCleanup = () => {
+        if (scrollContainer) {
+          scrollContainer.removeEventListener('scroll', handleScroll);
+        }
+      };
+    }
+
     if (!nodeId) {
       // currentViewedNode is now $derived - no manual assignment needed
-      return;
+      return scrollCleanup || undefined;
     }
 
-    try {
-      // Capture disableTitleUpdates at mount time
-      const shouldDisableTitleUpdates = disableTitleUpdates;
+    // Load children asynchronously (non-blocking)
+    (async () => {
+      try {
+        // Capture disableTitleUpdates at mount time
+        const shouldDisableTitleUpdates = disableTitleUpdates;
 
-      // Load children asynchronously
-      // Note: loadChildrenForParent has internal cache checking, so this is efficient
-      await loadChildrenForParent(nodeId);
+        // Load children asynchronously
+        // Note: loadChildrenForParent has internal cache checking, so this is efficient
+        await loadChildrenForParent(nodeId);
 
-      // CRITICAL: Prevent state updates after component destruction
-      if (isDestroyed) {
-        return;
+        // CRITICAL: Prevent state updates after component destruction
+        if (isDestroyed) {
+          return;
+        }
+
+        // After loading completes, initialize header content and update tab title
+        const node = sharedNodeStore.getNode(nodeId);
+        headerContent = node?.content || '';
+        // currentViewedNode is now $derived - no manual assignment needed
+
+        // Update tab title after node is loaded
+        if (!shouldDisableTitleUpdates) {
+          updateTabTitle(headerContent);
+        }
+      } catch (error) {
+        console.error('[BaseNodeViewer] Failed to load children:', error);
       }
+    })();
 
-      // After loading completes, initialize header content and update tab title
-      const node = sharedNodeStore.getNode(nodeId);
-      headerContent = node?.content || '';
-      // currentViewedNode is now $derived - no manual assignment needed
-
-      // Update tab title after node is loaded
-      if (!shouldDisableTitleUpdates) {
-        updateTabTitle(headerContent);
-      }
-    } catch (error) {
-      console.error('[BaseNodeViewer] Failed to load children:', error);
-    }
+    // Return cleanup function
+    return scrollCleanup || undefined;
   });
 
   /**
@@ -1380,46 +1416,9 @@
     return Math.min(...nodes.map((n) => n.depth || 0));
   });
 
-  // Set up scroll management when component mounts
-  onMount(() => {
-    // NOTE: Viewer registration with NodeExpansionCoordinator moved to loadChildrenForParent()
-    // This ensures nodes are loaded BEFORE attempting to restore expansion states
-    // Otherwise, all nodes are skipped as "missing" during restoration
-
-    // Core components are now pre-imported at module level for instant rendering
-    // No async loading needed - eliminates the placeholder flash
-
-    // Set up scroll position management
-    if (scrollContainer) {
-      // Restore scroll position when viewer becomes active
-      const savedPosition = getScrollPosition(viewerId);
-      // Use requestAnimationFrame to ensure DOM is ready
-      requestAnimationFrame(() => {
-        if (scrollContainer) {
-          scrollContainer.scrollTop = savedPosition;
-        }
-      });
-
-      // Set up scroll position saving
-      const handleScroll = () => {
-        if (scrollContainer) {
-          saveScrollPosition(viewerId, scrollContainer.scrollTop);
-        }
-      };
-
-      scrollContainer.addEventListener('scroll', handleScroll, { passive: true });
-
-      // Clean up scroll listener on unmount
-      return () => {
-        if (scrollContainer) {
-          scrollContainer.removeEventListener('scroll', handleScroll);
-        }
-      };
-    }
-  });
-
-  // Scroll position management moved to onMount lifecycle hook above
-  // This eliminates two $effect blocks while preserving all functionality
+  // Scroll position management now consolidated into main onMount above
+  // This eliminates redundant onMount callbacks while preserving all functionality
+  // The cleanup function returned from onMount handles scroll listener removal on unmount
 
   // Component loading: All core components are pre-imported at module level for instant rendering
   // Unknown/future node types automatically fall back to BaseNode in the template
@@ -1433,7 +1432,6 @@
     // CRITICAL: Commit ALL active batches globally BEFORE flushing
     // This ensures node type conversions (which use batches) are saved
     // We must commit globally because visible nodes might be empty if viewer already unmounted
-    console.log('[BaseNodeViewer] onDestroy: Committing all active batches globally');
     sharedNodeStore.commitAllBatches();
 
     // Note: PersistenceCoordinator removed in Issue #558
