@@ -921,74 +921,110 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   /**
-   * Promotes children of a node to a new parent using depth-aware selection.
-   * Shared logic used by both combineNodes and deleteNode.
+   * Promotes children of a deleted node so they maintain their visual depth.
    *
-   * @param nodeId - The node whose children will be promoted
-   * @param previousNodeId - The previous sibling to use for depth-aware parent selection
+   * When a node is deleted (via Backspace merge), its children should "shift up"
+   * visually while maintaining their depth level. This means finding an appropriate
+   * parent at (deletedNode.depth) by walking up from the merged-into node.
+   *
+   * Example:
+   * ```
+   * Starting:                     After deleting F (merges into "So so so deep"):
+   * • A (depth 0)                 • A (depth 0)
+   * • C (depth 0)                 • C (depth 0)
+   *   └─ • D (depth 1)              └─ • D (depth 1)
+   *        └─ • Even deeper (2)          └─ • Even deeper (2)
+   *             └─ • So so deep (3)           └─ • So so deepF (merged)
+   * • F (depth 0) ← deleted           └─ • G (depth 1, now child of C)
+   *   └─ • G (depth 1)                     └─ • H (depth 2)
+   *        └─ • H (depth 2)
+   * ```
+   *
+   * The rule: Find the ancestor of the merged-into node that is at the same depth
+   * as the deleted node. Children become children of that ancestor, maintaining
+   * their visual depth.
+   *
+   * @param nodeId - The node being deleted whose children will be promoted
+   * @param previousNodeId - The node that content is being merged into
    */
   function promoteChildren(nodeId: string, previousNodeId: string): void {
     const children = sharedNodeStore.getNodesForParent(nodeId);
     if (children.length === 0) return;
 
-    // Find the nearest ancestor node at the SAME depth as the deleted node
-    const _deletedNode = sharedNodeStore.getNode(nodeId);
-    const deletedNodeDepth = _uiState[nodeId]?.depth ?? 0;
-
-    // CRITICAL: If deleted node is at root level, promote children to root level too
-    // Don't make them children of the previous sibling - maintain the flat root structure
-    // NOTE: Now using backend query instead of deletedNode.parentId
-    const deletedNodeParents = sharedNodeStore.getParentsForNode(nodeId);
-    let newParentForChildren: string | null;
-    if (deletedNodeParents.length === 0) {
-      newParentForChildren = null; // Promote to root level
-    } else {
-      // For nested nodes, find a parent at the same depth
-      newParentForChildren = previousNodeId;
-      let searchNode: string | null = previousNodeId;
-
-      while (searchNode) {
-        const searchDepth = _uiState[searchNode]?.depth ?? 0;
-        if (searchDepth === deletedNodeDepth) {
-          newParentForChildren = searchNode;
-          break;
-        }
-        if (searchDepth < deletedNodeDepth) {
-          newParentForChildren = searchNode;
-          break;
-        }
-        const searchNodeParents = sharedNodeStore.getParentsForNode(searchNode);
-        searchNode = searchNodeParents.length > 0 ? searchNodeParents[0].id : null;
-      }
-    }
-
-    // Process each child individually
-    // NOTE: beforeSiblingId logic removed - backend handles ordering via fractional ordering
-    // Children will be appended in their existing order (already sorted by backend)
+    // Process each child - find parent and insertion point by walking up from merged-into node
     for (const child of children) {
-      // NOTE: hierarchy managed by backend via has_child edges
-      sharedNodeStore.updateNode(child.id, {}, viewerSource);
+      const childDepth = _uiState[child.id]?.depth ?? 0;
 
-      // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
+      // Walk up from merged-into node to find a node at the child's depth
+      // That node becomes the insertAfterNodeId
+      // The parent of that node becomes the new parent for the child
+      let insertAfterNodeId: string | null = null;
+      let newParentForChild: string | null = null;
+      let currentNode: string | null = previousNodeId;
 
-      // CRITICAL: If promoting to root level, add to _rootNodeIds
-      // Must reassign (not mutate) for Svelte 5 reactivity
-      if (newParentForChildren === null && !_rootNodeIds.includes(child.id)) {
+      while (currentNode !== null) {
+        const currentDepth = _uiState[currentNode]?.depth ?? 0;
+
+        if (currentDepth === childDepth) {
+          // Found a node at the same depth as the child
+          // Child will be inserted after this node
+          insertAfterNodeId = currentNode;
+
+          // New parent is this node's parent
+          const parents = sharedNodeStore.getParentsForNode(currentNode);
+          newParentForChild = parents.length > 0 ? parents[0].id : null;
+          break;
+        }
+
+        if (currentDepth < childDepth) {
+          // We've gone past the target depth
+          // This happens when child should be at root or there's no match
+          newParentForChild = currentNode;
+          break;
+        }
+
+        // Move up to parent
+        const parents = sharedNodeStore.getParentsForNode(currentNode);
+        currentNode = parents.length > 0 ? parents[0].id : null;
+      }
+
+      // Calculate the depth this child should have
+      const newChildDepth = newParentForChild !== null
+        ? (_uiState[newParentForChild]?.depth ?? 0) + 1
+        : 0;
+
+      // Use moveNodeCommand to properly update the has_child edge in the backend
+      // Insert after the node at the same depth to maintain visual order
+      // Don't await - let PersistenceCoordinator handle sequencing via deletionDependencies
+      moveNodeCommand(child.id, newParentForChild, insertAfterNodeId).catch((error) => {
+        console.error(`[promoteChildren] Failed to move child ${child.id} to parent ${newParentForChild}:`, error);
+      });
+
+      // Update local state for immediate UI feedback
+      sharedNodeStore.updateNode(
+        child.id,
+        { parentId: newParentForChild },
+        viewerSource,
+        { isComputedField: true } // Skip persistence since moveNodeCommand handles it
+      );
+
+      // Update ReactiveStructureTree for immediate UI update
+      if (newParentForChild !== null) {
+        structureTree.moveInMemoryRelationship(nodeId, newParentForChild, child.id);
+      }
+
+      // If promoting to root level, add to _rootNodeIds
+      if (newParentForChild === null && !_rootNodeIds.includes(child.id)) {
         _rootNodeIds = [..._rootNodeIds, child.id];
       }
 
-      // Update depth
-      const currentChildDepth = _uiState[child.id]?.depth ?? 0;
-      const targetDepth = newParentForChildren
-        ? (_uiState[newParentForChildren]?.depth ?? 0) + 1
-        : 0;
-      const newDepth = Math.min(currentChildDepth, targetDepth);
-
+      // Update depth - children maintain their visual position
       _uiState[child.id] = {
         ..._uiState[child.id],
-        depth: newDepth
+        depth: newChildDepth
       };
 
+      // Update all descendants' depths to maintain relative structure
       updateDescendantDepths(child.id);
     }
   }
