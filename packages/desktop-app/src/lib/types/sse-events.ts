@@ -22,6 +22,7 @@ export interface NodeCreatedEvent extends SseEventBase {
   type: 'nodeCreated';
   nodeId: string;
   nodeData: Node;
+  clientId?: string;
 }
 
 /**
@@ -31,6 +32,7 @@ export interface NodeUpdatedEvent extends SseEventBase {
   type: 'nodeUpdated';
   nodeId: string;
   nodeData: Node;
+  clientId?: string;
 }
 
 /**
@@ -39,6 +41,7 @@ export interface NodeUpdatedEvent extends SseEventBase {
 export interface NodeDeletedEvent extends SseEventBase {
   type: 'nodeDeleted';
   nodeId: string;
+  clientId?: string;
 }
 
 /**
@@ -48,6 +51,7 @@ export interface EdgeCreatedEvent extends SseEventBase {
   type: 'edgeCreated';
   parentId: string;
   childId: string;
+  clientId?: string;
 }
 
 /**
@@ -57,6 +61,7 @@ export interface EdgeDeletedEvent extends SseEventBase {
   type: 'edgeDeleted';
   parentId: string;
   childId: string;
+  clientId?: string;
 }
 
 /**

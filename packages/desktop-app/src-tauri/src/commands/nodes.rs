@@ -411,12 +411,12 @@ pub async fn delete_node(
 /// ```
 #[tauri::command]
 pub async fn move_node(
-    store: State<'_, SurrealStore>,
+    service: State<'_, NodeService>,
     node_id: String,
     new_parent_id: Option<String>,
     insert_after_node_id: Option<String>,
 ) -> Result<(), CommandError> {
-    store
+    service
         .move_node(
             &node_id,
             new_parent_id.as_deref(),
@@ -446,23 +446,23 @@ pub async fn move_node(
 /// # Errors
 /// Returns error if:
 /// - Node doesn't exist
-/// - before_sibling_id node doesn't exist
+/// - insert_after_node_id node doesn't exist
 /// - Sibling is not in the same parent
-/// - Container node cannot be reordered
+/// - Root node cannot be reordered
 ///
 /// # Example Frontend Usage
 /// ```typescript
-/// await invoke('reorder_node', { nodeId: 'node-123', beforeSiblingId: 'sibling-456' });
+/// await invoke('reorder_node', { nodeId: 'node-123', insertAfterNodeId: 'sibling-456' });
 /// ```
 #[tauri::command]
 pub async fn reorder_node(
     operations: State<'_, NodeOperations>,
     node_id: String,
     version: i64,
-    before_sibling_id: Option<String>,
+    insert_after_node_id: Option<String>,
 ) -> Result<(), CommandError> {
     operations
-        .reorder_node(&node_id, version, before_sibling_id.as_deref())
+        .reorder_node(&node_id, version, insert_after_node_id.as_deref())
         .await
         .map_err(Into::into)
 }

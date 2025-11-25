@@ -54,6 +54,9 @@ type HttpNodeOperations = NodeOperations<surrealdb::engine::remote::http::Client
 /// These events mirror the structure expected by the frontend BrowserSyncService.
 /// Events are broadcast after each successful database operation to notify
 /// all connected browser clients of changes.
+///
+/// Each event includes an optional client_id field to identify the originating client,
+/// allowing SSE handlers to filter out their own events (prevent feedback loop).
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SseEvent {
@@ -63,6 +66,8 @@ pub enum SseEvent {
         node_id: String,
         #[serde(rename = "nodeData")]
         node_data: Node,
+        #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
+        client_id: Option<String>,
     },
     /// An existing node was updated
     NodeUpdated {
@@ -70,11 +75,15 @@ pub enum SseEvent {
         node_id: String,
         #[serde(rename = "nodeData")]
         node_data: Node,
+        #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
+        client_id: Option<String>,
     },
     /// A node was deleted
     NodeDeleted {
         #[serde(rename = "nodeId")]
         node_id: String,
+        #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
+        client_id: Option<String>,
     },
     /// A parent-child edge was created
     EdgeCreated {
@@ -82,6 +91,8 @@ pub enum SseEvent {
         parent_id: String,
         #[serde(rename = "childId")]
         child_id: String,
+        #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
+        client_id: Option<String>,
     },
     /// A parent-child edge was deleted
     EdgeDeleted {
@@ -89,6 +100,8 @@ pub enum SseEvent {
         parent_id: String,
         #[serde(rename = "childId")]
         child_id: String,
+        #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
+        client_id: Option<String>,
     },
 }
 
@@ -429,7 +442,7 @@ async fn main() -> anyhow::Result<()> {
             get(get_incoming_mentions),
         )
         .route(
-            "/api/nodes/:id/mentions/containers",
+            "/api/nodes/:id/mentions/roots",
             get(get_mentioning_containers),
         )
         // Schema endpoints
@@ -487,9 +500,14 @@ async fn health_check() -> &'static str {
 /// - Events are JSON-encoded SseEvent objects
 /// - Includes keepalive comments every 30 seconds to prevent timeouts
 ///
+/// # Client ID Filtering
+/// Clients pass their ID via query parameter: `/api/events?clientId=xxx`
+/// Events originating from the same client are filtered out to prevent feedback loops.
+///
 /// # Usage
 /// ```javascript
-/// const eventSource = new EventSource('http://localhost:3001/api/events');
+/// const clientId = getClientId(); // from client-id.ts
+/// const eventSource = new EventSource(`http://localhost:3001/api/events?clientId=${clientId}`);
 /// eventSource.onmessage = (event) => {
 ///     const data = JSON.parse(event.data);
 ///     // Handle nodeCreated, nodeUpdated, nodeDeleted, edgeCreated, edgeDeleted
@@ -497,14 +515,41 @@ async fn health_check() -> &'static str {
 /// ```
 async fn sse_handler(
     State(state): State<AppState>,
+    query: axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    // Extract client ID from query parameters (EventSource API doesn't support custom headers)
+    let client_id = query.get("clientId").cloned();
+
+    tracing::debug!("SSE client connected with client_id: {:?}", client_id);
+
     let rx = state.event_tx.subscribe();
 
-    // Transform broadcast messages into SSE events
-    let stream = BroadcastStream::new(rx).filter_map(|result| {
+    // Transform broadcast messages into SSE events, filtering out events from this client
+    let stream = BroadcastStream::new(rx).filter_map(move |result| {
+        let client_id = client_id.clone();
         // Skip lagged/closed errors, only process actual messages
         match result {
             Ok(sse_event) => {
+                // Filter out events from this client (prevent feedback loop)
+                let event_client_id = match &sse_event {
+                    SseEvent::NodeCreated { client_id, .. } => client_id,
+                    SseEvent::NodeUpdated { client_id, .. } => client_id,
+                    SseEvent::NodeDeleted { client_id, .. } => client_id,
+                    SseEvent::EdgeCreated { client_id, .. } => client_id,
+                    SseEvent::EdgeDeleted { client_id, .. } => client_id,
+                };
+
+                // Skip if this event came from the same client
+                if let (Some(this_client), Some(event_client)) = (&client_id, event_client_id) {
+                    if this_client == event_client {
+                        tracing::debug!(
+                            "Filtering out SSE event from same client: {:?}",
+                            event_client
+                        );
+                        return None;
+                    }
+                }
+
                 // Serialize event to JSON
                 match serde_json::to_string(&sse_event) {
                     Ok(json) => Some(Ok(Event::default().data(json))),
@@ -541,8 +586,15 @@ async fn init_database() -> Json<serde_json::Value> {
 
 async fn create_node(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<CreateNodeRequest>,
 ) -> ApiResult<String> {
+    // Extract client ID for SSE filtering
+    let client_id = headers
+        .get("x-client-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
     // CRITICAL FIX (Issue #528): Use operations layer to handle edge creation
     // The operations layer (NodeOperations::create_node) creates parent-child edges
     // when parent_id is provided, using NodeService::move_node() to create the
@@ -578,6 +630,7 @@ async fn create_node(
         let _ = state.event_tx.send(SseEvent::NodeCreated {
             node_id: id.clone(),
             node_data: node,
+            client_id: client_id.clone(),
         });
         tracing::debug!("SSE: NodeCreated event sent for node {}", id);
 
@@ -586,6 +639,7 @@ async fn create_node(
             let _ = state.event_tx.send(SseEvent::EdgeCreated {
                 parent_id,
                 child_id: id.clone(),
+                client_id: client_id.clone(),
             });
             tracing::debug!("SSE: EdgeCreated event sent for node {}", id);
         }
@@ -614,9 +668,16 @@ async fn get_node(
 
 async fn update_node(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(request): Json<UpdateNodeRequest>,
 ) -> ApiResult<Node> {
+    // Extract client ID for SSE filtering
+    let client_id = headers
+        .get("x-client-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
     // Use optimistic concurrency control via version check
     let rows_affected = state
         .node_service
@@ -659,6 +720,7 @@ async fn update_node(
     let _ = state.event_tx.send(SseEvent::NodeUpdated {
         node_id: id.clone(),
         node_data: updated_node.clone(),
+        client_id,
     });
     tracing::debug!("SSE: NodeUpdated event sent for node {}", id);
 
@@ -667,9 +729,16 @@ async fn update_node(
 
 async fn delete_node(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(request): Json<DeleteNodeRequest>,
 ) -> ApiStatusResult {
+    // Extract client ID for SSE filtering
+    let client_id = headers
+        .get("x-client-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
     // Use optimistic concurrency control via version check
     let rows_affected = state
         .node_service
@@ -711,6 +780,7 @@ async fn delete_node(
     // Broadcast SSE event for the deleted node
     let _ = state.event_tx.send(SseEvent::NodeDeleted {
         node_id: id.clone(),
+        client_id,
     });
     tracing::debug!("SSE: NodeDeleted event sent for node {}", id);
 
@@ -723,13 +793,22 @@ async fn delete_node(
 struct SetParentRequest {
     /// New parent ID (null to make node a root)
     pub parent_id: Option<String>,
+    /// Optional sibling to insert after (None = insert at beginning)
+    pub insert_after_node_id: Option<String>,
 }
 
 async fn set_parent(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path(node_id): Path<String>,
     Json(request): Json<SetParentRequest>,
 ) -> ApiStatusResult {
+    // Extract client ID for SSE filtering
+    let client_id = headers
+        .get("x-client-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
     // Get current parent before moving (for edge deleted event)
     let old_parent_id = state
         .node_service
@@ -741,7 +820,11 @@ async fn set_parent(
 
     state
         .node_service
-        .move_node(&node_id, request.parent_id.as_deref())
+        .move_node(
+            &node_id,
+            request.parent_id.as_deref(),
+            request.insert_after_node_id.as_deref(),
+        )
         .await
         .map_err(map_node_service_error)?;
 
@@ -751,6 +834,7 @@ async fn set_parent(
         let _ = state.event_tx.send(SseEvent::EdgeDeleted {
             parent_id: old_parent,
             child_id: node_id.clone(),
+            client_id: client_id.clone(),
         });
         tracing::debug!("SSE: EdgeDeleted event sent for node {}", node_id);
     }
@@ -760,6 +844,7 @@ async fn set_parent(
         let _ = state.event_tx.send(SseEvent::EdgeCreated {
             parent_id: new_parent.clone(),
             child_id: node_id.clone(),
+            client_id: client_id.clone(),
         });
         tracing::debug!("SSE: EdgeCreated event sent for node {}", node_id);
     }

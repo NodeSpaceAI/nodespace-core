@@ -184,7 +184,10 @@ mod disabled_embedding_tests {
         assert!(!is_node_stale(&store, &root2_id).unwrap());
 
         // Move child from root1 to root2 (using move_node API)
-        service.move_node(&child_id, Some(&root2_id)).await.unwrap();
+        service
+            .move_node(&child_id, Some(&root2_id), None)
+            .await
+            .unwrap();
 
         // Verify BOTH old and new roots are marked as stale
         let root1_stale = is_node_stale(&store, &root1_id).unwrap();

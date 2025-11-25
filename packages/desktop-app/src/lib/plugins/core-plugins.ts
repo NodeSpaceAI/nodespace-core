@@ -455,9 +455,8 @@ export const corePlugins = [
   dateNodePlugin,
   codeBlockNodePlugin,
   quoteBlockNodePlugin,
-  orderedListNodePlugin,
-  userNodePlugin,
-  documentNodePlugin
+  orderedListNodePlugin
+  // Note: userNodePlugin and documentNodePlugin reserved for future use
 ];
 
 /**

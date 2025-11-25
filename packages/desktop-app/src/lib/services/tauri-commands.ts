@@ -22,8 +22,7 @@ import {
   type DeleteResult,
   type EdgeRecord,
   type NodeQuery,
-  type CreateContainerInput,
-  type SaveNodeWithParentInput
+  type CreateContainerInput
 } from './backend-adapter';
 import type { Node, NodeWithChildren } from '$lib/types';
 
@@ -34,8 +33,7 @@ export type {
   DeleteResult,
   EdgeRecord,
   NodeQuery,
-  CreateContainerInput,
-  SaveNodeWithParentInput
+  CreateContainerInput
 };
 
 // ============================================================================
@@ -111,16 +109,6 @@ export async function moveNode(
 }
 
 /**
- * Reorder a node among its siblings
- */
-export async function reorderNode(
-  nodeId: string,
-  beforeSiblingId: string | null
-): Promise<void> {
-  return backendAdapter.reorderNode(nodeId, beforeSiblingId);
-}
-
-/**
  * Get all edges (for bulk tree loading)
  */
 export async function getAllEdges(): Promise<EdgeRecord[]> {
@@ -166,9 +154,9 @@ export async function getIncomingMentions(nodeId: string): Promise<string[]> {
 }
 
 /**
- * Get containers of nodes that mention the target node
+ * Get root nodes that mention the target node (backlinks at root level)
  */
-export async function getMentioningContainers(nodeId: string): Promise<string[]> {
+export async function getMentioningRoots(nodeId: string): Promise<string[]> {
   return backendAdapter.getMentioningContainers(nodeId);
 }
 
@@ -201,9 +189,3 @@ export async function createContainerNode(input: CreateContainerInput): Promise<
   return backendAdapter.createContainerNode(input);
 }
 
-/**
- * Save node with automatic parent creation
- */
-export async function saveNodeWithParent(input: SaveNodeWithParentInput): Promise<void> {
-  return backendAdapter.saveNodeWithParent(input);
-}

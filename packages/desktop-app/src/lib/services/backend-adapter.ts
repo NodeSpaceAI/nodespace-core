@@ -23,6 +23,7 @@
 /* global fetch, crypto */
 
 import type { Node, NodeWithChildren } from '$lib/types';
+import { getClientId } from './client-id';
 import type {
   SchemaDefinition,
   AddFieldConfig,
@@ -79,13 +80,6 @@ export interface CreateContainerInput {
   mentionedBy?: string;
 }
 
-export interface SaveNodeWithParentInput {
-  nodeId: string;
-  content: string;
-  nodeType: string;
-  parentId: string;
-  beforeSiblingId?: string | null;
-}
 
 // ============================================================================
 // Backend Adapter Interface
@@ -103,7 +97,6 @@ export interface BackendAdapter {
   getDescendants(rootNodeId: string): Promise<Node[]>;
   getChildrenTree(parentId: string): Promise<NodeWithChildren | null>;
   moveNode(nodeId: string, newParentId: string | null, insertAfterNodeId: string | null): Promise<void>;
-  reorderNode(nodeId: string, beforeSiblingId: string | null): Promise<void>;
   getAllEdges(): Promise<EdgeRecord[]>;
 
   // Mentions
@@ -119,7 +112,6 @@ export interface BackendAdapter {
 
   // Composite operations
   createContainerNode(input: CreateContainerInput): Promise<string>;
-  saveNodeWithParent(input: SaveNodeWithParentInput): Promise<void>;
 
   // Schema operations
   getAllSchemas(): Promise<Array<SchemaDefinition & { id: string }>>;
@@ -147,13 +139,14 @@ class TauriAdapter implements BackendAdapter {
 
   async createNode(input: CreateNodeInput | Node): Promise<string> {
     const invoke = await this.getInvoke();
+    // Tauri 2.x with #[serde(rename_all = "camelCase")] expects camelCase field names
     const nodeInput = {
       id: input.id,
-      node_type: input.nodeType,
+      nodeType: input.nodeType,
       content: input.content,
       properties: input.properties ?? {},
       mentions: input.mentions ?? [],
-      parent_id: (input as CreateNodeInput).parentId ?? null
+      parentId: (input as CreateNodeInput).parentId ?? null
     };
     return invoke<string>('create_node', { node: nodeInput });
   }
@@ -175,7 +168,8 @@ class TauriAdapter implements BackendAdapter {
 
   async getChildren(parentId: string): Promise<Node[]> {
     const invoke = await this.getInvoke();
-    return invoke<Node[]>('get_children', { parent_id: parentId });
+    // Tauri 2.x auto-converts snake_case to camelCase
+    return invoke<Node[]>('get_children', { parentId });
   }
 
   async getDescendants(rootNodeId: string): Promise<Node[]> {
@@ -196,7 +190,8 @@ class TauriAdapter implements BackendAdapter {
 
   async getChildrenTree(parentId: string): Promise<NodeWithChildren | null> {
     const invoke = await this.getInvoke();
-    const result = await invoke<NodeWithChildren | Record<string, never>>('get_children_tree', { parent_id: parentId });
+    // Tauri 2.x auto-converts snake_case to camelCase
+    const result = await invoke<NodeWithChildren | Record<string, never>>('get_children_tree', { parentId });
     // Backend returns {} for non-existent parent, normalize to null
     if (!result || Object.keys(result).length === 0) {
       return null;
@@ -206,18 +201,11 @@ class TauriAdapter implements BackendAdapter {
 
   async moveNode(nodeId: string, newParentId: string | null, insertAfterNodeId: string | null): Promise<void> {
     const invoke = await this.getInvoke();
+    // Tauri 2.x auto-converts snake_case to camelCase
     return invoke<void>('move_node', {
-      node_id: nodeId,
-      new_parent_id: newParentId,
-      insert_after_node_id: insertAfterNodeId
-    });
-  }
-
-  async reorderNode(nodeId: string, beforeSiblingId: string | null): Promise<void> {
-    const invoke = await this.getInvoke();
-    return invoke<void>('reorder_node', {
-      node_id: nodeId,
-      before_sibling_id: beforeSiblingId
+      nodeId,
+      newParentId,
+      insertAfterNodeId
     });
   }
 
@@ -228,33 +216,38 @@ class TauriAdapter implements BackendAdapter {
 
   async createMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
     const invoke = await this.getInvoke();
-    return invoke<void>('create_mention', {
-      mentioning_node_id: mentioningNodeId,
-      mentioned_node_id: mentionedNodeId
+    // Tauri 2.x auto-converts snake_case to camelCase
+    return invoke<void>('create_node_mention', {
+      mentioningNodeId,
+      mentionedNodeId
     });
   }
 
   async deleteMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
     const invoke = await this.getInvoke();
-    return invoke<void>('delete_mention', {
-      mentioning_node_id: mentioningNodeId,
-      mentioned_node_id: mentionedNodeId
+    // Tauri 2.x auto-converts snake_case to camelCase
+    return invoke<void>('delete_node_mention', {
+      mentioningNodeId,
+      mentionedNodeId
     });
   }
 
   async getOutgoingMentions(nodeId: string): Promise<string[]> {
     const invoke = await this.getInvoke();
-    return invoke<string[]>('get_outgoing_mentions', { node_id: nodeId });
+    // Tauri 2.x auto-converts snake_case to camelCase
+    return invoke<string[]>('get_outgoing_mentions', { nodeId });
   }
 
   async getIncomingMentions(nodeId: string): Promise<string[]> {
     const invoke = await this.getInvoke();
-    return invoke<string[]>('get_incoming_mentions', { node_id: nodeId });
+    // Tauri 2.x auto-converts snake_case to camelCase
+    return invoke<string[]>('get_incoming_mentions', { nodeId });
   }
 
   async getMentioningContainers(nodeId: string): Promise<string[]> {
     const invoke = await this.getInvoke();
-    return invoke<string[]>('get_mentioning_containers', { node_id: nodeId });
+    // Tauri 2.x auto-converts snake_case Rust params to camelCase JS params
+    return invoke<string[]>('get_mentioning_roots', { nodeId });
   }
 
   async queryNodes(query: NodeQuery): Promise<Node[]> {
@@ -269,25 +262,13 @@ class TauriAdapter implements BackendAdapter {
 
   async createContainerNode(input: CreateContainerInput): Promise<string> {
     const invoke = await this.getInvoke();
-    return invoke<string>('create_container_node', {
+    // Keep snake_case for struct fields to match Rust serde expectations
+    return invoke<string>('create_root_node', {
       input: {
         content: input.content,
         node_type: input.nodeType,
         properties: input.properties ?? {},
         mentioned_by: input.mentionedBy
-      }
-    });
-  }
-
-  async saveNodeWithParent(input: SaveNodeWithParentInput): Promise<void> {
-    const invoke = await this.getInvoke();
-    return invoke<void>('save_node_with_parent', {
-      input: {
-        node_id: input.nodeId,
-        content: input.content,
-        node_type: input.nodeType,
-        parent_id: input.parentId,
-        before_sibling_id: input.beforeSiblingId
       }
     });
   }
@@ -329,9 +310,19 @@ class TauriAdapter implements BackendAdapter {
 
 class HttpAdapter implements BackendAdapter {
   private readonly baseUrl: string;
+  private readonly clientId: string;
 
   constructor(baseUrl: string = 'http://localhost:3001') {
     this.baseUrl = baseUrl;
+    // Get or create client ID for this browser session
+    this.clientId = getClientId();
+  }
+
+  private getHeaders(): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      'X-Client-Id': this.clientId
+    };
   }
 
   private async handleResponse<T>(response: Response): Promise<T> {
@@ -370,7 +361,7 @@ class HttpAdapter implements BackendAdapter {
 
     const response = await fetch(`${this.baseUrl}/api/nodes`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.getHeaders(),
       body: JSON.stringify(requestBody)
     });
 
@@ -386,7 +377,7 @@ class HttpAdapter implements BackendAdapter {
   async updateNode(id: string, version: number, update: UpdateNodeInput): Promise<Node> {
     const response = await fetch(`${this.baseUrl}/api/nodes/${encodeURIComponent(id)}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.getHeaders(),
       body: JSON.stringify({ ...update, version })
     });
     return await this.handleResponse<Node>(response);
@@ -395,7 +386,7 @@ class HttpAdapter implements BackendAdapter {
   async deleteNode(id: string, version: number): Promise<DeleteResult> {
     const response = await fetch(`${this.baseUrl}/api/nodes/${encodeURIComponent(id)}`, {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.getHeaders(),
       body: JSON.stringify({ version })
     });
     return await this.handleResponse<DeleteResult>(response);
@@ -435,15 +426,10 @@ class HttpAdapter implements BackendAdapter {
   async moveNode(nodeId: string, newParentId: string | null, insertAfterNodeId: string | null): Promise<void> {
     const response = await fetch(`${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/parent`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.getHeaders(),
       body: JSON.stringify({ parentId: newParentId, insertAfterNodeId })
     });
     await this.handleResponse<void>(response);
-  }
-
-  async reorderNode(_nodeId: string, _beforeSiblingId: string | null): Promise<void> {
-    // Reordering via HTTP not yet implemented - structure changes use fractional ordering
-    console.warn('[HttpAdapter] reorderNode not implemented for HTTP mode');
   }
 
   async getAllEdges(): Promise<EdgeRecord[]> {
@@ -455,7 +441,7 @@ class HttpAdapter implements BackendAdapter {
   async createMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}/api/mentions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.getHeaders(),
       body: JSON.stringify({ sourceId: mentioningNodeId, targetId: mentionedNodeId })
     });
     await this.handleResponse<void>(response);
@@ -464,7 +450,7 @@ class HttpAdapter implements BackendAdapter {
   async deleteMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}/api/mentions`, {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.getHeaders(),
       body: JSON.stringify({ sourceId: mentioningNodeId, targetId: mentionedNodeId })
     });
     await this.handleResponse<void>(response);
@@ -481,14 +467,14 @@ class HttpAdapter implements BackendAdapter {
   }
 
   async getMentioningContainers(nodeId: string): Promise<string[]> {
-    const response = await fetch(`${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/mentions/containers`);
+    const response = await fetch(`${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/mentions/roots`);
     return await this.handleResponse<string[]>(response);
   }
 
   async queryNodes(query: NodeQuery): Promise<Node[]> {
     const response = await fetch(`${this.baseUrl}/api/query`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.getHeaders(),
       body: JSON.stringify(query)
     });
     return await this.handleResponse<Node[]>(response);
@@ -497,7 +483,7 @@ class HttpAdapter implements BackendAdapter {
   async mentionAutocomplete(query: string, limit?: number): Promise<Node[]> {
     const response = await fetch(`${this.baseUrl}/api/mentions/autocomplete`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.getHeaders(),
       body: JSON.stringify({ query, limit })
     });
     return await this.handleResponse<Node[]>(response);
@@ -515,18 +501,6 @@ class HttpAdapter implements BackendAdapter {
     });
   }
 
-  async saveNodeWithParent(input: SaveNodeWithParentInput): Promise<void> {
-    // Create node first, then set parent
-    await this.createNode({
-      id: input.nodeId,
-      nodeType: input.nodeType,
-      content: input.content,
-      properties: {},
-      mentions: [],
-      parentId: input.parentId
-    });
-  }
-
   async getAllSchemas(): Promise<Array<SchemaDefinition & { id: string }>> {
     const response = await fetch(`${this.baseUrl}/api/schemas`);
     return await this.handleResponse<Array<SchemaDefinition & { id: string }>>(response);
@@ -540,7 +514,7 @@ class HttpAdapter implements BackendAdapter {
   async addSchemaField(schemaId: string, config: AddFieldConfig): Promise<AddFieldResult> {
     const response = await fetch(`${this.baseUrl}/api/schemas/${encodeURIComponent(schemaId)}/fields`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.getHeaders(),
       body: JSON.stringify(config)
     });
     return await this.handleResponse<AddFieldResult>(response);
@@ -563,7 +537,7 @@ class HttpAdapter implements BackendAdapter {
         `${this.baseUrl}/api/schemas/${encodeURIComponent(schemaId)}/fields/${encodeURIComponent(fieldName)}/enum`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: this.getHeaders(),
           body: JSON.stringify({ value })
         }
       );
@@ -622,7 +596,6 @@ class MockAdapter implements BackendAdapter {
     return [];
   }
   async moveNode(_nodeId: string, _newParentId: string | null, _insertAfterNodeId: string | null): Promise<void> {}
-  async reorderNode(_nodeId: string, _beforeSiblingId: string | null): Promise<void> {}
   async getAllEdges(): Promise<EdgeRecord[]> {
     return [];
   }
@@ -646,7 +619,6 @@ class MockAdapter implements BackendAdapter {
   async createContainerNode(_input: CreateContainerInput): Promise<string> {
     return 'mock-container-id';
   }
-  async saveNodeWithParent(_input: SaveNodeWithParentInput): Promise<void> {}
   async getAllSchemas(): Promise<Array<SchemaDefinition & { id: string }>> {
     return [];
   }

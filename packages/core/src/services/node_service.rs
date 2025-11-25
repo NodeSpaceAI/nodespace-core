@@ -1701,7 +1701,7 @@ where
     /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
     /// # let service = NodeService::new(db)?;
     /// // Move node under new parent
-    /// service.move_node("node-id", Some("new-parent-id")).await?;
+    /// service.move_node("node-id", Some("new-parent-id"), None).await?;
     ///
     /// // Make node a root
     /// service.move_node("node-id", None).await?;
@@ -1712,6 +1712,7 @@ where
         &self,
         node_id: &str,
         new_parent: Option<&str>,
+        insert_after_node_id: Option<&str>,
     ) -> Result<(), NodeServiceError> {
         // Verify node exists
         let _node = self
@@ -1737,7 +1738,7 @@ where
 
         // Hierarchy is now managed via edges - use store's move_node
         self.store
-            .move_node(node_id, new_parent, None)
+            .move_node(node_id, new_parent, insert_after_node_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
@@ -3011,14 +3012,14 @@ mod tests {
         let child1 = Node::new("text".to_string(), "Child 1".to_string(), json!({}));
         let child1_id = service.create_node(child1).await.unwrap();
         service
-            .move_node(&child1_id, Some(&parent_id))
+            .move_node(&child1_id, Some(&parent_id), None)
             .await
             .unwrap();
 
         let child2 = Node::new("text".to_string(), "Child 2".to_string(), json!({}));
         let child2_id = service.create_node(child2).await.unwrap();
         service
-            .move_node(&child2_id, Some(&parent_id))
+            .move_node(&child2_id, Some(&parent_id), None)
             .await
             .unwrap();
 
@@ -3610,7 +3611,10 @@ mod tests {
             let child_id = service.create_node(child).await.unwrap();
 
             // Make child a child of root (establish hierarchy)
-            service.move_node(&child_id, Some(&root_id)).await.unwrap();
+            service
+                .move_node(&child_id, Some(&root_id), None)
+                .await
+                .unwrap();
 
             // Create target node (separate root)
             let target = Node::new_with_id(
@@ -3661,8 +3665,14 @@ mod tests {
             let child2_id = service.create_node(child2).await.unwrap();
 
             // Establish hierarchy: both children belong to root
-            service.move_node(&child1_id, Some(&root_id)).await.unwrap();
-            service.move_node(&child2_id, Some(&root_id)).await.unwrap();
+            service
+                .move_node(&child1_id, Some(&root_id), None)
+                .await
+                .unwrap();
+            service
+                .move_node(&child2_id, Some(&root_id), None)
+                .await
+                .unwrap();
 
             // Create target node (separate root)
             let target = Node::new_with_id(
@@ -3713,7 +3723,10 @@ mod tests {
             let task_id = service.create_node(task).await.unwrap();
 
             // Make task a child of root
-            service.move_node(&task_id, Some(&root_id)).await.unwrap();
+            service
+                .move_node(&task_id, Some(&root_id), None)
+                .await
+                .unwrap();
 
             // Create target node (separate root)
             let target = Node::new_with_id(
@@ -3867,15 +3880,15 @@ mod tests {
 
             // Establish hierarchy: children belong to their containers
             service
-                .move_node(&child1_id, Some(&container1_id))
+                .move_node(&child1_id, Some(&container1_id), None)
                 .await
                 .unwrap();
             service
-                .move_node(&child2_id, Some(&container2_id))
+                .move_node(&child2_id, Some(&container2_id), None)
                 .await
                 .unwrap();
             service
-                .move_node(&task_id, Some(&container3_id))
+                .move_node(&task_id, Some(&container3_id), None)
                 .await
                 .unwrap();
 
@@ -4125,7 +4138,10 @@ mod tests {
             let child_id = service.create_node(child).await.unwrap();
 
             // Establish parent-child relationship (make child an actual child of root)
-            service.move_node(&child_id, Some(&root_id)).await.unwrap();
+            service
+                .move_node(&child_id, Some(&root_id), None)
+                .await
+                .unwrap();
 
             // Try to update child to mention its own parent (root)
             let update = NodeUpdate::new()
@@ -4354,14 +4370,14 @@ mod tests {
             let child1 = Node::new("text".to_string(), "Child 1".to_string(), json!({}));
             let child1_id = service.create_node(child1).await.unwrap();
             service
-                .create_parent_edge(&child1_id, &parent_id, None)
+                .create_parent_edge(&child1_id, &parent_id, None) // First child - insert at beginning
                 .await
                 .unwrap();
 
             let child2 = Node::new("text".to_string(), "Child 2".to_string(), json!({}));
             let child2_id = service.create_node(child2).await.unwrap();
             service
-                .create_parent_edge(&child2_id, &parent_id, None)
+                .create_parent_edge(&child2_id, &parent_id, Some(&child1_id)) // Insert after Child 1
                 .await
                 .unwrap();
 
@@ -4428,21 +4444,21 @@ mod tests {
             let child_a = Node::new("text".to_string(), "A".to_string(), json!({}));
             let child_a_id = service.create_node(child_a).await.unwrap();
             service
-                .create_parent_edge(&child_a_id, &parent_id, None)
+                .create_parent_edge(&child_a_id, &parent_id, None) // First child - insert at beginning
                 .await
                 .unwrap();
 
             let child_b = Node::new("text".to_string(), "B".to_string(), json!({}));
             let child_b_id = service.create_node(child_b).await.unwrap();
             service
-                .create_parent_edge(&child_b_id, &parent_id, None)
+                .create_parent_edge(&child_b_id, &parent_id, Some(&child_a_id)) // Insert after A
                 .await
                 .unwrap();
 
             let child_c = Node::new("text".to_string(), "C".to_string(), json!({}));
             let child_c_id = service.create_node(child_c).await.unwrap();
             service
-                .create_parent_edge(&child_c_id, &parent_id, None)
+                .create_parent_edge(&child_c_id, &parent_id, Some(&child_b_id)) // Insert after B
                 .await
                 .unwrap();
 

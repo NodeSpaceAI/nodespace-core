@@ -23,12 +23,12 @@
 
   onMount(async () => {
     try {
-      // Get container IDs that mention this node
-      const containerIds = await tauriCommands.getMentioningContainers(nodeId);
+      // Get root IDs that mention this node
+      const rootIds = await tauriCommands.getMentioningRoots(nodeId);
 
-      // Fetch full node data for each container explicitly
+      // Fetch full node data for each root explicitly
       // (don't rely on cache - ensure we always have the latest data)
-      const nodes = await Promise.all(containerIds.map((id) => tauriCommands.getNode(id)));
+      const nodes = await Promise.all(rootIds.map((id) => tauriCommands.getNode(id)));
 
       // Filter out null values (nodes that no longer exist)
       backlinks = nodes.filter((node): node is Node => node !== null);

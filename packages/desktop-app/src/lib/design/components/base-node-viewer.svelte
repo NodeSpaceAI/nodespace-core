@@ -945,7 +945,37 @@
       return;
     }
 
-    // Verify the target node exists
+    // CRITICAL FIX: Handle Enter key on viewer-local placeholder
+    // The placeholder is not in nodeManager.nodes until promoted
+    // If afterNodeId matches the placeholder, promote it first
+    const currentPlaceholder = viewerPlaceholder;
+    if (currentPlaceholder && afterNodeId === currentPlaceholder.id && nodeId) {
+      console.log('[handleCreateNewNode] Promoting placeholder before creating new node:', afterNodeId);
+
+      // Set promotion flag to prevent duplicate placeholder creation
+      isPromoting = true;
+
+      // Promote placeholder to real node (blank content is fine)
+      const promotedNode = promotePlaceholderToNode(currentPlaceholder, nodeId, {
+        content: currentContent ?? ''
+      });
+
+      // Add to shared store and persist immediately (not in-memory only)
+      // Persist now so it exists in DB when creating the next node with insertAfterNodeId
+      sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
+
+      // Add to structure tree for immediate visibility
+      reactiveStructureTree.addChild({
+        parentId: nodeId,
+        childId: promotedNode.id,
+        order: Date.now()
+      });
+
+      // Clear promotion flag
+      isPromoting = false;
+    }
+
+    // Verify the target node exists (should now exist after promotion)
     if (!nodeManager.nodes.has(afterNodeId)) {
       console.error('Target node does not exist:', afterNodeId);
       return;
@@ -1525,10 +1555,13 @@
                   const content = e.detail.content;
                   const cursorPosition = e.detail.cursorPosition ?? content.length;
 
+                  // CRITICAL: Capture $derived viewerPlaceholder immediately to prevent race condition
+                  const currentPlaceholder = viewerPlaceholder;
+
                   // Check if this is the viewer-local placeholder getting its first content
                   if (
-                    viewerPlaceholder &&
-                    node.id === viewerPlaceholder.id &&
+                    currentPlaceholder &&
+                    node.id === currentPlaceholder.id &&
                     content.trim() !== '' &&
                     nodeId
                   ) {
@@ -1536,7 +1569,7 @@
                     isPromoting = true;
 
                     // Promote placeholder to real node by assigning parent and adding to store
-                    const promotedNode = promotePlaceholderToNode(viewerPlaceholder, nodeId, {
+                    const promotedNode = promotePlaceholderToNode(currentPlaceholder, nodeId, {
                       content
                     });
 
@@ -1544,9 +1577,19 @@
                     // Use setEditingNodeFromTypeConversion to prevent blur handler from clearing state
                     focusManager.setEditingNodeFromTypeConversion(promotedNode.id, cursorPosition, paneId);
 
-                    // Add to shared store (in-memory only, don't persist yet)
-                    // Note: LIVE SELECT handles parent-child relationship via edge:created events
-                    sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, true);
+                    // Add to shared store with persistence enabled
+                    // Setting false allows debounced content updates to persist to database
+                    sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
+
+                    // CRITICAL: Add parent-child edge to reactiveStructureTree immediately
+                    // This makes the promoted node visible in visibleNodesFromStores, which causes
+                    // shouldShowPlaceholder to become false, switching the binding from placeholder to real child.
+                    // Backend will also create the edge when persisting, and SSE will confirm (no-op since already added).
+                    reactiveStructureTree.addChild({
+                      parentId: nodeId,
+                      childId: promotedNode.id,
+                      order: Date.now()
+                    });
 
                     // CRITICAL FIX: Clear viewerPlaceholder SYNCHRONOUSLY to prevent subsequent
                     // keystrokes from hitting the promotion path again while $effect is pending.

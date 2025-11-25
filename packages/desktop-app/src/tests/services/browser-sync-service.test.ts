@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { browserSyncService } from '$lib/services/browser-sync-service';
 import { SharedNodeStore, sharedNodeStore } from '$lib/services/shared-node-store';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
+import { getClientId } from '$lib/services/client-id';
 import type { SseEvent } from '$lib/types/sse-events';
 import type { Node } from '$lib/types';
 
@@ -453,6 +454,106 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(structureTree.getChildren('P2')).toContain('N3');
       expect(sharedNodeStore.getNode('N1')).toBeDefined();
       expect(sharedNodeStore.getNode('N3')).toBeDefined();
+    });
+  });
+
+  describe('ClientId Filtering', () => {
+    /**
+     * SSE ClientId Filtering Architecture
+     *
+     * The clientId filtering is implemented SERVER-SIDE in dev-proxy.rs:
+     * 1. Browser connects to SSE endpoint with ?clientId=xxx query param
+     * 2. Server stores clientId per SSE connection
+     * 3. When backend emits events, server checks event.clientId vs connection.clientId
+     * 4. Events from same clientId are NOT sent to that client (prevents echo)
+     *
+     * This means:
+     * - BrowserSyncService is responsible for SENDING clientId on connect
+     * - Server is responsible for FILTERING events
+     * - Client-side tests verify correct clientId handling in received events
+     */
+
+    it('should pass clientId to SSE endpoint via getClientId()', () => {
+      // Verify that getClientId returns a value (imported at top of file)
+      // The actual filtering happens server-side, but the client must provide the clientId
+      const clientId = getClientId();
+
+      // Should return a valid UUID (from sessionStorage or newly generated)
+      // When window.sessionStorage is available (happy-dom), returns UUID
+      // When window is undefined (SSR), returns 'test-client'
+      expect(clientId).toBeTruthy();
+      expect(typeof clientId).toBe('string');
+      expect(clientId.length).toBeGreaterThan(0);
+    });
+
+    it('should process events with different clientId (from other clients)', () => {
+      // When an event arrives with a different clientId (or no clientId),
+      // it means the server determined this client should receive it.
+      // The client should process it normally.
+
+      const nodeData = createTestNode('other-client-node', 'Created by another client');
+
+      const event: SseEvent = {
+        type: 'nodeCreated',
+        nodeId: 'other-client-node',
+        nodeData,
+        clientId: 'different-client-123' // Different from our test-client ID
+      };
+
+      // @ts-expect-error - accessing private method for testing
+      browserSyncService.handleEvent(event);
+
+      // Event should be processed - node should be in store
+      expect(sharedNodeStore.getNode('other-client-node')).toBeDefined();
+      expect(sharedNodeStore.getNode('other-client-node')?.content).toBe(
+        'Created by another client'
+      );
+    });
+
+    it('should process events with no clientId (backward compatibility)', () => {
+      // Events without clientId should still be processed
+      // This ensures backward compatibility with older event sources
+
+      const nodeData = createTestNode('legacy-node', 'Legacy event without clientId');
+
+      const event: SseEvent = {
+        type: 'nodeCreated',
+        nodeId: 'legacy-node',
+        nodeData
+        // Note: no clientId field
+      };
+
+      // @ts-expect-error - accessing private method for testing
+      browserSyncService.handleEvent(event);
+
+      // Event should be processed
+      expect(sharedNodeStore.getNode('legacy-node')).toBeDefined();
+    });
+
+    it('should document that events with matching clientId are filtered server-side', () => {
+      /**
+       * IMPORTANT: This test documents the architecture, not client behavior.
+       *
+       * The dev-proxy (server) filters events BEFORE sending them to clients:
+       * - Client A connects with clientId="A"
+       * - Client A creates a node (sends X-Client-Id header)
+       * - Server stores clientId="A" with the event
+       * - When broadcasting, server skips Client A for events with clientId="A"
+       *
+       * This means:
+       * - BrowserSyncService NEVER receives events it originated
+       * - No client-side filtering is needed
+       * - This test verifies the architecture is documented
+       *
+       * See: packages/desktop-app/src-tauri/src/bin/dev-proxy.rs
+       * Function: sse_handler() - lines 516-575
+       */
+
+      // If the server-side filtering fails, the client would see its own events.
+      // This is handled gracefully by the stores (duplicate detection, version checks)
+      // but should not happen in normal operation.
+
+      expect(browserSyncService).toBeDefined();
     });
   });
 

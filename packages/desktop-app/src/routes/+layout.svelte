@@ -5,34 +5,51 @@
   import { initializeSchemaPluginSystem } from '$lib/plugins/schema-plugin-loader';
   import { initializeTauriSyncListeners } from '$lib/services/tauri-sync-listener';
   import { sharedNodeStore } from '$lib/services/shared-node-store';
+  import { initializeApp } from '$lib/services/app-initialization';
 
-  // Initialize schema plugin auto-registration system on mount
-  onMount(async () => {
-    // This registers existing custom entity schemas as plugins on app startup
-    const result = await initializeSchemaPluginSystem();
+  let isInitialized = false;
 
-    if (!result.success) {
-      console.warn(
-        `[App Layout] Custom entities unavailable: ${result.error}. ` +
-          `Core functionality will work normally.`
-      );
-      // Don't block app startup on plugin registration failure
-      // Custom entities will be unavailable but app remains functional
-    } else {
-      console.log(
-        `[App Layout] Custom entity system ready (${result.registeredCount} entities loaded)`
-      );
-    }
-  });
-
-  // Initialize Tauri LIVE SELECT event listeners for real-time synchronization
+  // Initialize database first, then schema plugins, then sync listeners
   onMount(async () => {
     try {
-      await initializeTauriSyncListeners();
+      // Step 1: Initialize database and Tauri services
+      await initializeApp();
+
+      // Step 2: Initialize schema plugin auto-registration system
+      // This must happen after database is ready
+      try {
+        const result = await initializeSchemaPluginSystem();
+
+        if (!result.success) {
+          console.warn(
+            `[App Layout] Custom entities unavailable: ${result.error}. ` +
+              `Core functionality will work normally.`
+          );
+          // Don't block app startup on plugin registration failure
+          // Custom entities will be unavailable but app remains functional
+        } else {
+          console.log(
+            `[App Layout] Custom entity system ready (${result.registeredCount} entities loaded)`
+          );
+        }
+      } catch (error) {
+        console.error('[App Layout] Schema plugin initialization failed:', error);
+      }
+
+      // Step 3: Initialize Tauri LIVE SELECT event listeners for real-time synchronization
+      try {
+        await initializeTauriSyncListeners();
+      } catch (error) {
+        console.warn('[App Layout] Tauri sync listeners failed to initialize:', error);
+        // Don't block app startup if sync listeners fail
+        // App will continue to work, just without real-time updates
+      }
+
+      // Mark as initialized - this will trigger the app to render
+      isInitialized = true;
+      console.log('[App Layout] Initialization complete, rendering app');
     } catch (error) {
-      console.warn('[App Layout] Tauri sync listeners failed to initialize:', error);
-      // Don't block app startup if sync listeners fail
-      // App will continue to work, just without real-time updates
+      console.error('[App Layout] Critical initialization error:', error);
     }
   });
 
@@ -61,6 +78,12 @@
   });
 </script>
 
-<AppShell>
-  <slot />
-</AppShell>
+{#if isInitialized}
+  <AppShell>
+    <slot />
+  </AppShell>
+{:else}
+  <div class="initialization-screen">
+    <p>Initializing NodeSpace...</p>
+  </div>
+{/if}

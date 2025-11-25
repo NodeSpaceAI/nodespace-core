@@ -19,6 +19,7 @@
 
 import { sharedNodeStore } from './shared-node-store';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
+import { getClientId } from './client-id';
 import type { SseEvent } from '$lib/types/sse-events';
 
 /**
@@ -136,10 +137,15 @@ class BrowserSyncService {
     }
 
     this.connectionState = 'connecting';
-    console.log('[BrowserSyncService] Connecting to SSE endpoint:', this.sseEndpoint);
+
+    // Include clientId as query parameter (EventSource doesn't support custom headers)
+    const clientId = getClientId();
+    const sseUrl = `${this.sseEndpoint}?clientId=${encodeURIComponent(clientId)}`;
+
+    console.log('[BrowserSyncService] Connecting to SSE endpoint:', sseUrl);
 
     try {
-      this.eventSource = new EventSource(this.sseEndpoint);
+      this.eventSource = new EventSource(sseUrl);
 
       this.eventSource.onopen = () => {
         console.log('[BrowserSyncService] SSE connection established');
@@ -206,12 +212,20 @@ class BrowserSyncService {
         console.log('[BrowserSyncService] Edge created:', event.parentId, '->', event.childId);
         // Update ReactiveStructureTree with new edge
         // Note: structureTree.addChild expects HierarchyRelationship format
+        // IMPORTANT: Check if edge already exists (added optimistically by createNode)
+        // to avoid overwriting the correct order with Date.now()
         if (structureTree) {
-          structureTree.addChild({
-            parentId: event.parentId,
-            childId: event.childId,
-            order: Date.now() // Use timestamp as order (will be sorted properly on next load)
-          });
+          const existingChildren = structureTree.getChildrenWithOrder(event.parentId);
+          const alreadyExists = existingChildren.some(c => c.nodeId === event.childId);
+          if (!alreadyExists) {
+            structureTree.addChild({
+              parentId: event.parentId,
+              childId: event.childId,
+              order: Date.now() // Use timestamp as order (will be sorted properly on next load)
+            });
+          } else {
+            console.log('[BrowserSyncService] Edge already exists (optimistic), skipping:', event.childId);
+          }
         }
         break;
 

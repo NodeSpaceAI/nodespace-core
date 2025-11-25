@@ -28,25 +28,35 @@ use tokio::fs;
 /// services persist for the application lifetime. To change database location,
 /// the application must be restarted.
 async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> {
+    eprintln!("🔧 [init_services] Starting service initialization...");
+    tracing::info!("🔧 [init_services] Starting service initialization...");
+
     // Check if state already exists to prevent reinitialization
     if app.try_state::<SurrealStore>().is_some() {
+        eprintln!("⚠️  [init_services] Database already initialized");
         return Err(
             "Database already initialized. Restart the app to change location.".to_string(),
         );
     }
 
     // Initialize SurrealDB store
-    let store = Arc::new(
-        SurrealStore::new(db_path)
-            .await
-            .map_err(|e| format!("Failed to initialize database: {}", e))?,
-    );
+    eprintln!("🔧 [init_services] Initializing SurrealDB store...");
+    tracing::info!("🔧 [init_services] Initializing SurrealDB store...");
+    let store = Arc::new(SurrealStore::new(db_path).await.map_err(|e| {
+        let msg = format!("Failed to initialize database: {}", e);
+        eprintln!("❌ [init_services] {}", msg);
+        msg
+    })?);
+    eprintln!("✅ [init_services] SurrealDB store initialized");
+    tracing::info!("✅ [init_services] SurrealDB store initialized");
 
     // Initialize node service with SurrealStore
+    tracing::info!("🔧 [init_services] Initializing NodeService...");
     let node_service = NodeService::new(store.clone())
         .map_err(|e| format!("Failed to initialize node service: {}", e))?;
 
     let node_service_arc = Arc::new(node_service);
+    tracing::info!("✅ [init_services] NodeService initialized");
 
     // Initialize NodeOperations business logic layer (wraps NodeService)
     let node_operations = NodeOperations::new(node_service_arc.clone());
@@ -55,6 +65,7 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     let schema_service = SchemaService::new(node_service_arc.clone());
 
     // Initialize NLP engine for embeddings
+    tracing::info!("🔧 [init_services] Initializing NLP engine...");
     let mut nlp_engine = EmbeddingService::new(Default::default())
         .map_err(|e| format!("Failed to initialize NLP engine: {}", e))?;
 
@@ -64,6 +75,7 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
         .map_err(|e| format!("Failed to load NLP model: {}", e))?;
 
     let nlp_engine_arc = Arc::new(nlp_engine);
+    tracing::info!("✅ [init_services] NLP engine initialized");
 
     // Initialize embedding service with SurrealStore
     let embedding_service = NodeEmbeddingService::new(nlp_engine_arc.clone(), store.clone());
@@ -75,6 +87,8 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     let processor_arc = Arc::new(processor);
 
     // Manage all services
+    eprintln!("🔧 [init_services] Registering services with Tauri app.manage()...");
+    tracing::info!("🔧 [init_services] Registering services with Tauri app.manage()...");
     app.manage(store.clone());
     app.manage(node_service_arc.as_ref().clone());
     app.manage(node_operations);
@@ -84,6 +98,8 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
         processor: processor_arc.clone(),
     });
     app.manage(processor_arc);
+    eprintln!("✅ [init_services] All services registered with Tauri");
+    tracing::info!("✅ [init_services] All services registered with Tauri");
 
     // Initialize MCP server now that NodeService is available
     // MCP will use the same NodeService as Tauri commands
@@ -99,6 +115,7 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
         // Don't fail database init if forwarding fails - it's optional for now
     }
 
+    tracing::info!("✅ [init_services] Service initialization complete");
     Ok(())
 }
 

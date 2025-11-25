@@ -1020,7 +1020,9 @@ where
         // 1. Delete existing parent edge (via: DELETE has_child WHERE out = $child_thing)
         // 2. Create new parent edge if specified (via: RELATE $parent_thing->has_child->$child_thing)
         // Note: Container edge doesn't exist - container is determined by traversing to root
-        self.node_service.move_node(node_id, new_parent_id).await?;
+        self.node_service
+            .move_node(node_id, new_parent_id, None)
+            .await?;
 
         tracing::debug!("Moved node {} to new parent: {:?}", node_id, new_parent_id);
 
@@ -2083,16 +2085,14 @@ mod tests {
         let b1 = operations.get_node(&node_b).await.unwrap().unwrap();
         let b2 = operations.get_node(&node_b).await.unwrap().unwrap();
 
-        // Client 1 reorders B before A
+        // Client 1 reorders B after A (B was before A, now B will be after A)
         operations
             .reorder_node(&node_b, b1.version, Some(&node_a))
             .await
             .unwrap();
 
-        // Client 2 tries to reorder B with stale version
-        let result = operations
-            .reorder_node(&node_b, b2.version, None) // Move to end
-            .await;
+        // Client 2 tries to reorder B with stale version (would move to beginning)
+        let result = operations.reorder_node(&node_b, b2.version, None).await;
 
         assert!(
             matches!(result, Err(NodeOperationError::VersionConflict { .. })),
