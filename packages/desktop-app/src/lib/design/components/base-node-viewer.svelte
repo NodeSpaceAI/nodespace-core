@@ -25,7 +25,6 @@
   import { nodeData as reactiveNodeData } from '$lib/stores/reactive-node-data.svelte';
   import { structureTree as reactiveStructureTree } from '$lib/stores/reactive-structure-tree.svelte';
   import type { Node } from '$lib/types';
-  import type { UpdateSource } from '$lib/types/update-protocol';
   import type { Snippet } from 'svelte';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
   import { getViewerId, saveScrollPosition, getScrollPosition } from '$lib/stores/scroll-state';
@@ -78,56 +77,50 @@
 
   const nodeManager = services.nodeManager;
 
-  // Define update source for all BaseNodeViewer operations
-  // Using 'viewer' type to indicate updates originating from this UI component
-  const VIEWER_SOURCE: UpdateSource = {
-    type: 'viewer',
-    viewerId: nodeId || 'root'
-  };
-
   // Editable header state (for default header when no custom snippet provided)
   // Use local $state so input binding works and we can update tab title immediately
   let headerContent = $state('');
 
-  // Track last saved content to detect actual changes
-  const lastSavedContent = new Map<string, string>();
-
   // Cancellation flag to prevent database writes after component unmounts
   let isDestroyed = false;
-
-  // Loading flag to prevent watchers from firing during initial load
-  // Start as true to prevent watcher from firing before loadChildrenForParent() completes
-  let isLoadingInitialNodes = true;
 
   // Placeholder promotion flag - blocks new placeholder creation during async promotion window
   // Prevents race condition where promotion triggers reactive effects before updates complete
   let isPromoting = $state(false);
 
-  // Stable placeholder ID - reused across placeholder recreations to prevent unnecessary component remounts
-  // Uses $state to avoid mutation during derived evaluation (Svelte 5 best practice)
-  let placeholderId = $state<string | null>(null);
+  // Stable placeholder ID - cached outside reactive system to avoid mutations during derived evaluation
+  // Issue #653: Eliminated $effect by using a non-reactive cache variable
+  // The ID is created lazily when first needed and reset when placeholder is promoted
+  let cachedPlaceholderId: string | null = null;
 
-  // Effect to manage placeholder ID lifecycle - creates/resets based on visibility
-  // This ensures we don't mutate state during derived evaluation
-  $effect(() => {
-    // Note: shouldShowPlaceholder is defined later in the file
-    // This forward reference is safe in Svelte 5
-    if (shouldShowPlaceholder && !placeholderId) {
-      // Create new ID when placeholder becomes visible
-      placeholderId = globalThis.crypto.randomUUID();
-    } else if (!shouldShowPlaceholder && placeholderId) {
-      // Reset ID when placeholder is hidden
-      placeholderId = null;
+  /**
+   * Get or create a stable placeholder ID
+   * Uses lazy initialization - creates ID on first access, reuses on subsequent accesses
+   * Call resetPlaceholderId() when placeholder is promoted to ensure fresh ID next time
+   */
+  function getOrCreatePlaceholderId(): string {
+    if (!cachedPlaceholderId) {
+      cachedPlaceholderId = globalThis.crypto.randomUUID();
     }
-  });
+    return cachedPlaceholderId;
+  }
+
+  /**
+   * Reset the cached placeholder ID (called when placeholder is promoted to real node)
+   * This ensures a fresh ID is generated for the next placeholder
+   */
+  function resetPlaceholderId(): void {
+    cachedPlaceholderId = null;
+  }
 
   // Viewer-local placeholder (not in sharedNodeStore until it gets content)
   // This placeholder is only visible to this viewer instance
-  // Derived from shouldShowPlaceholder and placeholderId (no mutations during evaluation)
+  // Issue #653: Now uses lazy ID generation instead of $effect-managed state
   const viewerPlaceholder = $derived.by<Node | null>(() => {
-    if (shouldShowPlaceholder && placeholderId) {
+    // Note: shouldShowPlaceholder is defined later in the file (forward reference is safe in Svelte 5)
+    if (shouldShowPlaceholder) {
       return {
-        id: placeholderId,
+        id: getOrCreatePlaceholderId(),
         nodeType: 'text',
         content: '',
         createdAt: new Date().toISOString(),
@@ -347,17 +340,6 @@
     }
   }
 
-  // Track pending content saves for new nodes (keyed by node ID)
-  // Structural updates must wait for these to complete to avoid FOREIGN KEY errors
-  const pendingContentSavePromises = new Map<string, Promise<void>>();
-
-  // Timeout configuration for promise coordination
-  const CONTENT_SAVE_TIMEOUT_MS = 5000; // 5 seconds
-
-  // Explicit coordination: Promise that resolves when structural updates complete
-  // The deletion watcher awaits this to ensure children are reassigned before parent deletion
-  let pendingStructuralUpdatesPromise: Promise<void> | null = null;
-
   /**
    * Node types that have structured content and cannot accept arbitrary merges
    * These nodes must maintain specific formatting (e.g., code fences, quote prefixes)
@@ -469,215 +451,25 @@
   }
 
   // ============================================================================
-  // LEGITIMATE $EFFECT.PRE: Content save watcher for new nodes
+  // Issue #653: ALL $effect blocks REMOVED from BaseNodeViewer
   // ============================================================================
-  // WHY THIS CAN'T BE ELIMINATED:
-  // - Must run BEFORE DOM updates ($effect.pre) to capture correct state
-  // - Watches derived state (visibleNodesFromStores) for new content
-  // - Coordinates with structural watcher to prevent FOREIGN KEY errors
-  // - Cannot be derived - performs side effects (database writes)
+  // Content persistence is now event-driven (no effects watching derived state):
+  //
+  // 1. Content changes: on:contentChanged → nodeManager.updateNodeContent()
+  //    → sharedNodeStore.updateNode() → PersistenceCoordinator (debounced)
+  //
+  // 2. New nodes (placeholder promotion): on:contentChanged → sharedNodeStore.setNode()
+  //    → PersistenceCoordinator (immediate for new nodes via isNewNode check)
+  //
+  // 3. Node deletions: handleCombineWithPrevious/handleDeleteNode
+  //    → nodeManager.combineNodes() → sharedNodeStore.deleteNode()
+  //
+  // Benefits of eliminating effects:
+  // - Simpler mental model: changes trigger persistence directly
+  // - No derived state watching (anti-pattern for side effects)
+  // - No need for lastSavedContent tracking (effects compared state changes)
+  // - No isLoadingInitialNodes guard (effects needed to skip initial load)
   // ============================================================================
-  $effect.pre(() => {
-    if (!nodeId) {
-      return;
-    }
-
-    // Skip if we're still loading initial nodes from database
-    if (isLoadingInitialNodes) {
-      return;
-    }
-
-    const nodes = visibleNodesFromStores;
-
-    for (const node of nodes) {
-      // Skip placeholder nodes
-      if (node.isPlaceholder) {
-        continue;
-      }
-
-      // Only save if content has changed since last save
-      const lastContent = lastSavedContent.get(node.id);
-      if (node.content.trim() && node.content !== lastContent) {
-        // Check if this is a brand new node (never saved before)
-        const isNewNode = lastContent === undefined;
-
-        if (isNewNode) {
-          // Save immediately without debounce - structural updates may need to reference this node
-          // First ensure ancestors are persisted, then save this node
-          const savePromise = (async () => {
-            // Check if component was destroyed before starting save
-            if (isDestroyed) return;
-
-            await ensureAncestorsPersisted(node.id);
-
-            // Check again after async operation
-            if (isDestroyed) return;
-
-            // Create/update node immediately (was saveNodeImmediately)
-            const fullNode: Node = {
-              id: node.id,
-              nodeType: node.nodeType,
-              content: node.content,
-              createdAt: node.createdAt || new Date().toISOString(),
-              modifiedAt: new Date().toISOString(),
-              version: node.version || 1, // Use existing version or default to 1 for new nodes
-              properties: node.properties || {},
-              mentions: node.mentions || []
-            };
-            sharedNodeStore.setNode(fullNode, VIEWER_SOURCE);
-          })();
-
-          // Clean up Map entry when save completes (success or failure)
-          savePromise.finally(() => {
-            pendingContentSavePromises.delete(node.id);
-            lastSavedContent.set(node.id, node.content);
-          });
-
-          pendingContentSavePromises.set(node.id, savePromise);
-        } else {
-          // Existing node - update content (triggers debounced persistence automatically)
-          if (!isDestroyed) {
-            sharedNodeStore.updateNode(
-              node.id,
-              { content: node.content, nodeType: node.nodeType },
-              VIEWER_SOURCE
-            );
-            lastSavedContent.set(node.id, node.content);
-          }
-        }
-      }
-    }
-  });
-
-  // ============================================================================
-  // LEGITIMATE $EFFECT: Node deletion detection via previous state tracking
-  // ============================================================================
-  // WHY THIS CAN'T BE ELIMINATED:
-  // - Needs to track previous state (previousNodeIds) to detect deletions
-  // - Cannot be derived - performs side effects (calls deleteNode API)
-  // - Deletion is inherently a side effect that requires coordination
-  // - Awaits structural updates before deletion to prevent CASCADE errors
-  // ============================================================================
-  // Track node IDs to detect deletions
-  // Use a regular variable, not $state, to avoid infinite loops
-  let previousNodeIds = new Set<string>();
-
-  $effect(() => {
-    if (!nodeId) return;
-
-    const currentNodeIds = new Set(visibleNodesFromStores.map((n) => n.id));
-
-    // Skip the first run (when previousNodeIds is empty)
-    if (previousNodeIds.size > 0) {
-      // Detect deleted nodes by comparing with previous state
-      const deletedNodeIds: string[] = [];
-      for (const prevId of previousNodeIds) {
-        if (!currentNodeIds.has(prevId) && !nodeManager.findNode(prevId)) {
-          deletedNodeIds.push(prevId);
-        }
-      }
-
-      // Delete nodes through the global write queue
-      // The queue ensures deletions happen after any pending structural updates
-      if (deletedNodeIds.length > 0) {
-        // Issue #575: Simplified - beforeSiblingId tracking removed
-        // Just clean up previousStructure entries for deleted nodes
-        for (const deletedId of deletedNodeIds) {
-          previousStructure.delete(deletedId);
-          persistedStructure.delete(deletedId);
-        }
-
-        (async () => {
-          // CRITICAL: Await structural updates to complete before deleting
-          // This ensures children are reassigned BEFORE parent deletion triggers CASCADE
-          if (pendingStructuralUpdatesPromise) {
-            try {
-              await Promise.race([
-                pendingStructuralUpdatesPromise,
-                new Promise((_, reject) =>
-                  setTimeout(
-                    () => reject(new Error('Timeout waiting for structural updates')),
-                    CONTENT_SAVE_TIMEOUT_MS
-                  )
-                )
-              ]);
-            } catch (error) {
-              console.warn(
-                '[BaseNodeViewer] Timeout or error waiting for structural updates:',
-                error
-              );
-            }
-          }
-
-          // Now safe to delete nodes - children have been reassigned
-          // Delegate to SharedNodeStore
-          for (const nodeId of deletedNodeIds) {
-            sharedNodeStore.deleteNode(nodeId, VIEWER_SOURCE);
-          }
-        })();
-      }
-    }
-
-    // Update previous state (mutate the Set instead of replacing it)
-    previousNodeIds.clear();
-    for (const id of currentNodeIds) {
-      previousNodeIds.add(id);
-    }
-  });
-
-  // ============================================================================
-  // LEGITIMATE $EFFECT.PRE: Structural change watcher for persistence
-  // ============================================================================
-  // WHY THIS CAN'T BE ELIMINATED:
-  // - Must run BEFORE DOM updates ($effect.pre) to track structure correctly
-  // - Coordinates with content watcher to prevent FOREIGN KEY errors
-  // - Tracks persisted vs in-memory structure to detect mismatches (Issue #479)
-  // - Cannot be derived - performs side effects (tracks state for persistence)
-  // - Simplified in Issue #575 - only tracks node presence (no sibling ordering)
-  // ============================================================================
-  // previousStructure is updated in three places (all necessary):
-  // 1. Deletion watcher: Cleans up deleted nodes
-  // 2. This watcher: Tracks nodes on first sight
-  // 3. This watcher: Tracks successfully persisted structural changes (source of truth)
-  // Issue #575: Simplified - tracks node presence for cleanup (no beforeSiblingId)
-  let previousStructure = new Set<string>();
-
-  // Track what structure was actually persisted to database (#479)
-  // Issue #575: Simplified - only tracks node presence
-  let persistedStructure = new Set<string>();
-
-  /**
-   * Issue #575: Simplified - just tracks node presence for cleanup
-   * Original function tracked beforeSiblingId changes
-   */
-  function trackStructureChange(nodeId: string): void {
-    previousStructure.add(nodeId);
-  }
-
-  // Issue #575: Simplified structural watcher - beforeSiblingId no longer tracked
-  // Sibling ordering is now handled by the backend's sibling_order column
-  $effect.pre(() => {
-    if (!nodeId) return;
-
-    const visibleNodes = visibleNodesFromStores;
-
-    // Track nodes for cleanup purposes only
-    for (const node of visibleNodes) {
-      trackStructureChange(node.id);
-      // Mark as persisted if it exists in database
-      if (!persistedStructure.has(node.id) && sharedNodeStore.isNodePersisted(node.id)) {
-        persistedStructure.add(node.id);
-      }
-    }
-
-    // Clean up tracking for nodes that no longer exist
-    const currentNodeIds = new Set(visibleNodes.map((n) => n.id));
-    for (const trackedNodeId of previousStructure) {
-      if (!currentNodeIds.has(trackedNodeId)) {
-        previousStructure.delete(trackedNodeId);
-      }
-    }
-  });
 
   /**
    * Helper function to promote a viewer-local placeholder to a real node
@@ -715,12 +507,6 @@
 
   async function loadChildrenForParent(nodeId: string, forceRefresh = false) {
     try {
-      // Set loading flag to prevent watchers from triggering during initial load
-      isLoadingInitialNodes = true;
-
-      // Clear content tracking BEFORE loading to prevent watcher from firing on stale data
-      lastSavedContent.clear();
-
       // OPTIMIZATION: loadChildrenTree fetches parent + children in ONE call
       // No need for separate getNode() call - eliminates redundant HTTP round-trip
 
@@ -749,31 +535,13 @@
         // No persisted children - create initial placeholder if needed
         // Note: We already checked cache/DB above, so if allNodes is empty, no persisted children exist
 
-        // Create initial placeholder only if we don't have a viewer placeholder already
-        if (!viewerPlaceholder) {
-          // No children at all - create initial placeholder
-          // Issue #479 Phase 1: Placeholder is completely viewer-local (NOT added to SharedNodeStore)
-          // It's rendered via nodesToRender derived state and promoted to real node when user adds content
-          const newPlaceholderId = globalThis.crypto.randomUUID();
-
-          // Store ID in state to keep in sync with reactive $effect
-          placeholderId = newPlaceholderId;
-
-          // Focus is handled by BaseNode's onMount when autoFocus=true
-          // See nodesToRender derived state which sets autoFocus for placeholder
-
-          // DON'T call initializeNodes() - keep placeholder completely viewer-local!
-          // It will be rendered by nodesToRender derived state (line 1475-1487)
-          // and promoted to real node when user adds content (line 1746-1772)
-        }
+        // No children at all - placeholder will be created automatically by viewerPlaceholder derived
+        // Issue #653: Removed manual ID creation - getOrCreatePlaceholderId() handles it lazily
+        // Focus is handled by BaseNode's onMount when autoFocus=true
+        // DON'T call initializeNodes() - keep placeholder completely viewer-local!
       } else {
-        // Real children exist - clear any viewer placeholder
-
-        // Track initial content of ALL loaded nodes BEFORE initializing
-        // This prevents the content watcher from thinking these are new nodes
-        allNodes.forEach((node) => lastSavedContent.set(node.id, node.content));
-
-        // Initialize with ALL nodes
+        // Real children exist - initialize with ALL nodes
+        // Issue #653: Removed lastSavedContent tracking - no longer needed without content watcher effect
         nodeManager.initializeNodes(allNodes, {
           expanded: true,
           autoFocus: false,
@@ -788,25 +556,7 @@
       NodeExpansionCoordinator.registerViewer(tabId, nodeManager);
     } catch (error) {
       console.error('[BaseNodeViewer] Failed to load children for parent:', nodeId, error);
-    } finally {
-      // Clear loading flag after nodes are initialized
-      isLoadingInitialNodes = false;
     }
-  }
-
-  /**
-   * Recursively ensure all placeholder ancestors are persisted before saving a node
-   * This handles the case where a user creates nested placeholder nodes, then fills in
-   * a child before filling in the parent.
-   *
-   * NOTE: Ancestor persistence now handled by PersistenceCoordinator dependencies.
-   * When a node is saved, coordinator automatically waits for parent dependencies.
-   * This function kept for backward compatibility but is now a no-op.
-   */
-  async function ensureAncestorsPersisted(_nodeId: string): Promise<void> {
-    // No-op: PersistenceCoordinator handles dependency ordering automatically
-    // via the dependencies array in persist() calls
-    return Promise.resolve();
   }
 
   // Focus handling function with proper cursor positioning using tree walker
@@ -831,64 +581,6 @@
       }
     }, 10);
   }
-
-  // OLD IMPLEMENTATION - REPLACED BY FOCUSMANAGER
-  // function requestNodeFocus(nodeId: string, position: number) {
-  //   // Find the target node
-  //   const node = nodeManager.findNode(nodeId);
-  //   if (!node) {
-  //     console.error(`Node ${nodeId} not found for focus request`);
-  //     return;
-  //   }
-  //
-  //   // Use DOM API to focus the node directly with cursor positioning
-  //   setTimeout(() => {
-  //     const nodeElement = document.querySelector(
-  //       `[data-node-id="${nodeId}"] [contenteditable]`
-  //     ) as HTMLElement;
-  //     if (nodeElement) {
-  //       nodeElement.focus();
-  //
-  //       // Set cursor position using tree walker (same approach as controller)
-  //       if (position >= 0) {
-  //         const selection = window.getSelection();
-  //         if (!selection) return;
-  //
-  //         // Use tree walker to find the correct text node and offset
-  //         const walker = document.createTreeWalker(nodeElement, NodeFilter.SHOW_TEXT, null);
-  //
-  //         let currentOffset = 0;
-  //         let currentNode;
-  //
-  //         while ((currentNode = walker.nextNode())) {
-  //           const nodeLength = currentNode.textContent?.length || 0;
-  //
-  //           if (currentOffset + nodeLength >= position) {
-  //             const range = document.createRange();
-  //             const offsetInNode = position - currentOffset;
-  //             range.setStart(currentNode, Math.min(offsetInNode, nodeLength));
-  //             range.setEnd(currentNode, Math.min(offsetInNode, nodeLength));
-  //
-  //             selection.removeAllRanges();
-  //             selection.addRange(range);
-  //             return;
-  //           }
-  //
-  //           currentOffset += nodeLength;
-  //         }
-  //
-  //         // If we didn't find the position, position at the end
-  //         const range = document.createRange();
-  //         range.selectNodeContents(nodeElement);
-  //         range.collapse(false);
-  //         selection.removeAllRanges();
-  //         selection.addRange(range);
-  //       }
-  //     } else {
-  //       console.error(`Could not find contenteditable element for node ${nodeId}`);
-  //     }
-  //   }, 10);
-  // }
 
   /**
    * Add appropriate formatting syntax to content based on node type
@@ -1469,10 +1161,6 @@
 
     // Set cancellation flag to prevent stale writes
     isDestroyed = true;
-
-    // Clear pending promise tracking to prevent memory leaks
-    pendingContentSavePromises.clear();
-    pendingStructuralUpdatesPromise = null;
   });
 </script>
 
@@ -1596,11 +1284,12 @@
                     // Without this, rapid typing can cause multiple setNode() calls with stale content.
 
                     // Clear placeholder ID so fresh one is created if needed later
-                    placeholderId = null;
+                    // Issue #653: Now using function instead of $state
+                    resetPlaceholderId();
 
                     // Clear promotion flag after Svelte's microtask queue flushes.
-                    // tick() ensures our synchronous state changes above (viewerPlaceholder=null,
-                    // placeholderId=null) have propagated through $derived computations before
+                    // tick() ensures our synchronous state changes above have propagated
+                    // through $derived computations before
                     // we allow new promotions. This is sufficient because the race condition
                     // was caused by stale state, not async operations.
                     tick().then(() => {
