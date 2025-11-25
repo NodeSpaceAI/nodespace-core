@@ -151,7 +151,7 @@ pub struct CreateNodeParams {
     pub content: String,
     /// Optional parent node ID (container/root will be auto-derived from parent chain)
     pub parent_id: Option<String>,
-    /// Optional sibling to insert before (if None, appends to end)
+    /// Optional sibling to insert after (if None, appends to end)
     pub insert_after_node_id: Option<String>,
     /// Additional node properties as JSON
     pub properties: Value,
@@ -533,7 +533,7 @@ where
         // Business Rule 1: Auto-derive container/root from parent chain
         // If node has a parent, traverse parent edges to find the root node
         // If node has NO parent, it IS the root (root_id = None)
-        let (final_parent_id, _final_root_id, final_sibling_id) = if params.parent_id.is_some() {
+        let (final_parent_id, _final_root_id, last_sibling_id) = if params.parent_id.is_some() {
             // Node has a parent - derive container from parent chain
             let resolved_container = self
                 .resolve_container(
@@ -618,13 +618,13 @@ where
         if let Some(parent_id) = final_parent_id {
             // Use create_parent_edge which preserves insert_after_node_id atomically
             self.node_service
-                .create_parent_edge(&created_id, &parent_id, final_sibling_id.as_deref())
+                .create_parent_edge(&created_id, &parent_id, last_sibling_id.as_deref())
                 .await?;
             tracing::debug!(
-                "Created parent edge: {} -> has_child -> {} (before_sibling: {:?})",
+                "Created parent edge: {} -> has_child -> {} (insert_after: {:?})",
                 parent_id,
                 created_id,
-                final_sibling_id
+                last_sibling_id
             );
         }
 

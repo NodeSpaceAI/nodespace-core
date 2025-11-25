@@ -44,6 +44,8 @@ export interface CreateNodeInput {
   properties?: Record<string, unknown>;
   mentions?: string[];
   parentId?: string | null;
+  /** Sibling node ID to insert after (null = insert at beginning of siblings) */
+  insertAfterNodeId?: string | null;
 }
 
 export interface UpdateNodeInput {
@@ -146,7 +148,8 @@ class TauriAdapter implements BackendAdapter {
       content: input.content,
       properties: input.properties ?? {},
       mentions: input.mentions ?? [],
-      parentId: (input as CreateNodeInput).parentId ?? null
+      parentId: (input as CreateNodeInput).parentId ?? null,
+      insertAfterNodeId: (input as CreateNodeInput).insertAfterNodeId ?? null
     };
     return invoke<string>('create_node', { node: nodeInput });
   }
@@ -354,6 +357,7 @@ class HttpAdapter implements BackendAdapter {
       properties: input.properties ?? {},
       mentions: input.mentions ?? [],
       parentId: (input as CreateNodeInput).parentId ?? null,
+      insertAfterNodeId: (input as CreateNodeInput).insertAfterNodeId ?? null,
       createdAt: now,
       modifiedAt: now,
       version: 1

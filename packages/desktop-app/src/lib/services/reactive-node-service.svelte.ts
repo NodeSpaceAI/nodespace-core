@@ -237,14 +237,21 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const shouldFocusNewNode = focusNewNode !== undefined ? focusNewNode : !insertAtBeginning;
     const isPlaceholder = initialContent.trim() === '' || /^#{1,6}\s*$/.test(initialContent.trim());
 
+    // Calculate insertAfterNodeId for backend ordering (Issue #657)
+    // - If insertAtBeginning: null (insert at start of siblings)
+    // - Otherwise: afterNodeId (insert after the reference node)
+    const insertAfterNodeId = insertAtBeginning ? null : afterNodeId;
+
     // Create Node with unified type system
     // NOTE: beforeSiblingId removed - backend uses fractional ordering on edges
-    const newNode: Node = {
+    // insertAfterNodeId is a creation hint passed to backend for correct sibling ordering
+    const newNode: Node & { insertAfterNodeId?: string | null } = {
       id: nodeId,
       nodeType: nodeType,
       content: initialContent,
       createdAt: new Date().toISOString(),
       parentId: newParentId,
+      insertAfterNodeId: insertAfterNodeId,
       modifiedAt: new Date().toISOString(),
       version: 1,
       properties: {},

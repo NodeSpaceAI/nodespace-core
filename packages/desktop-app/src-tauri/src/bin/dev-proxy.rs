@@ -600,9 +600,10 @@ async fn create_node(
     // when parent_id is provided, using NodeService::move_node() to create the
     // has_child graph edge in SurrealDB.
     tracing::debug!(
-        "create_node request: node_type={:?}, parent_id={:?}",
+        "create_node request: node_type={:?}, parent_id={:?}, insert_after_node_id={:?}",
         req.node_type,
-        req.parent_id
+        req.parent_id,
+        req.insert_after_node_id
     );
 
     use nodespace_core::operations::CreateNodeParams;

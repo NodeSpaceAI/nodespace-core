@@ -17,7 +17,10 @@ pub struct CreateNodeInput {
     pub content: String,
     pub parent_id: Option<String>,
     // root_id removed - backend auto-derives root from parent chain (Issue #533)
-    // before_sibling_id removed - backend uses fractional ordering on has_child edges (Issue #616)
+    /// Sibling node ID to insert after (None = insert at beginning of siblings)
+    /// Used for correct ordering when creating child nodes via Enter key
+    #[serde(default)]
+    pub insert_after_node_id: Option<String>,
     pub properties: serde_json::Value,
     #[serde(default)]
     pub embedding_vector: Option<Vec<u8>>,
@@ -141,8 +144,8 @@ pub async fn create_node(
             content: node.content,
             parent_id: node.parent_id,
             // root_id removed - backend auto-derives root from parent chain (Issue #533)
-            // before_sibling_id removed - backend uses fractional ordering on has_child edges (Issue #616)
-            insert_after_node_id: None,
+            // insert_after_node_id: Sibling to insert after for correct ordering (Issue #657)
+            insert_after_node_id: node.insert_after_node_id,
             properties: node.properties,
         })
         .await
