@@ -196,8 +196,75 @@ class SimplePersistenceCoordinator {
     return failed;
   }
 
+  /**
+   * Flush specific pending operations immediately and wait for completion.
+   *
+   * Unlike waitForPersistence which only waits for in-flight operations,
+   * this method also triggers debounced operations that haven't started yet.
+   *
+   * Use this when you need to ensure specific nodes are fully persisted
+   * before performing dependent operations (e.g., moveNode that references them).
+   *
+   * @param nodeIds - Node IDs to flush and wait for
+   * @param timeoutMs - Timeout in milliseconds (default 5000)
+   * @returns Set of node IDs that failed to persist
+   */
+  async flushAndWaitForNodes(nodeIds: string[], timeoutMs = 5000): Promise<Set<string>> {
+    const failed = new Set<string>();
+    const promises: Promise<void>[] = [];
+
+    for (const nodeId of nodeIds) {
+      const pending = this.pendingOperations.get(nodeId);
+      if (pending) {
+        // Clear the debounce timeout and execute immediately
+        clearTimeout(pending.timeoutId);
+
+        // Start the operation now (if it hasn't started yet)
+        pending.operation().then(
+          () => pending.resolve(),
+          (error) => pending.reject(error instanceof Error ? error : new Error(String(error)))
+        ).finally(() => {
+          this.pendingOperations.delete(nodeId);
+        });
+
+        // Wait for completion with timeout
+        promises.push(
+          Promise.race([
+            pending.promise,
+            new Promise<void>((_, reject) =>
+              setTimeout(() => reject(new Error('Timeout')), timeoutMs)
+            )
+          ]).catch(() => {
+            failed.add(nodeId);
+          })
+        );
+      }
+    }
+
+    await Promise.all(promises);
+    return failed;
+  }
+
   getMetrics(): { pendingOperations: number } {
     return { pendingOperations: this.pendingOperations.size };
+  }
+
+  /**
+   * Flush ALL pending operations immediately and wait for completion.
+   *
+   * This is more aggressive than flushAndWaitForNodes - it ensures the entire
+   * pending operation queue is cleared before proceeding. Use this for structural
+   * operations like moveNode that may depend on edges created by any pending save.
+   *
+   * @param timeoutMs - Timeout in milliseconds (default 5000)
+   * @returns Set of node IDs that failed to persist
+   */
+  async flushAll(timeoutMs = 5000): Promise<Set<string>> {
+    const allNodeIds = Array.from(this.pendingOperations.keys());
+    if (allNodeIds.length === 0) {
+      return new Set();
+    }
+    return this.flushAndWaitForNodes(allNodeIds, timeoutMs);
   }
 }
 
@@ -1290,6 +1357,28 @@ export class SharedNodeStore {
    */
   async waitForNodeSaves(nodeIds: string[], timeoutMs = 5000): Promise<Set<string>> {
     return PersistenceCoordinator.getInstance().waitForPersistence(nodeIds, timeoutMs);
+  }
+
+  /**
+   * Flush ALL pending saves and wait for completion.
+   *
+   * This ensures the entire pending operation queue is cleared before proceeding.
+   * Use this for structural operations like moveNode that may depend on edges
+   * created by any pending save.
+   *
+   * @param timeoutMs - Timeout in milliseconds (default 5000)
+   * @returns Set of node IDs that failed to save
+   */
+  async flushAllPendingSaves(timeoutMs = 5000): Promise<Set<string>> {
+    return PersistenceCoordinator.getInstance().flushAll(timeoutMs);
+  }
+
+  /**
+   * Get the current count of pending persistence operations.
+   * Useful for debugging race conditions.
+   */
+  getPendingOperationsCount(): number {
+    return PersistenceCoordinator.getInstance().getMetrics().pendingOperations;
   }
 
   /**
