@@ -740,13 +740,9 @@
     const element = textareaElement;
     if (element && controller) {
       const shouldFocus = autoFocus || isEditing;
-      // Only initialize if content is empty (first mount)
-      if (controller.getMarkdownContent() === '') {
-        controller.updateContent(content);
-      }
-      if (shouldFocus) {
-        setTimeout(() => controller?.focus(), 10);
-      }
+      // Initialize controller with content - this sets nodeTypeSetViaPattern flag
+      // for non-text nodes if content matches the pattern
+      controller.initialize(content, shouldFocus);
     }
   });
 

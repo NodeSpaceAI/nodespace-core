@@ -124,14 +124,14 @@ describe('Core Plugins Integration', () => {
 
   describe('Core Plugins Collection', () => {
     it('should export all core plugins in corePlugins array', () => {
-      expect(corePlugins).toHaveLength(10); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, user, document
+      expect(corePlugins).toHaveLength(8); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list
       expect(corePlugins).toContain(textNodePlugin);
       expect(corePlugins).toContain(headerNodePlugin);
       expect(corePlugins).toContain(taskNodePlugin);
       expect(corePlugins).toContain(aiChatNodePlugin);
       expect(corePlugins).toContain(dateNodePlugin);
-      expect(corePlugins).toContain(userNodePlugin);
-      expect(corePlugins).toContain(documentNodePlugin);
+      // Note: userNodePlugin and documentNodePlugin are defined but not yet registered
+      // They will be added when the user/document reference system is implemented
     });
 
     it('should have unique plugin IDs', () => {
@@ -146,7 +146,7 @@ describe('Core Plugins Integration', () => {
     it('should register all core plugins successfully', () => {
       registerCorePlugins(registry);
 
-      expect(registry.getAllPlugins()).toHaveLength(10); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, user, document
+      expect(registry.getAllPlugins()).toHaveLength(8); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list
 
       // Verify each core plugin is registered
       for (const plugin of corePlugins) {
@@ -161,10 +161,10 @@ describe('Core Plugins Integration', () => {
       expect(consoleSpy).toHaveBeenCalledWith(
         '[UnifiedPluginRegistry] Core plugins registered:',
         expect.objectContaining({
-          plugins: 10, // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, user, document
+          plugins: 8, // text, header, task, ai-chat, date, code-block, quote-block, ordered-list
           slashCommands: expect.any(Number),
           viewers: 1, // Only date has custom viewer - others use BaseNodeViewer (default)
-          references: 10 // all plugins have references
+          references: 8 // all plugins have references
         })
       );
     });
@@ -174,7 +174,7 @@ describe('Core Plugins Integration', () => {
 
       const stats = registry.getStats();
 
-      // text: 1, header: 3, task: 1, ai-chat: 1, code-block: 1, quote-block: 1, ordered-list: 1, date: 0, user: 0, document: 0 = 9 total
+      // text: 1, header: 3, task: 1, ai-chat: 1, code-block: 1, quote-block: 1, ordered-list: 1, date: 0 = 9 total
       expect(stats.slashCommandsCount).toBe(9);
     });
 
@@ -389,7 +389,7 @@ describe('Core Plugins Integration', () => {
     });
 
     it('should handle registry clearing', () => {
-      expect(registry.getAllPlugins()).toHaveLength(10); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, user, document
+      expect(registry.getAllPlugins()).toHaveLength(8); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list
 
       registry.clear();
 
@@ -439,8 +439,9 @@ describe('Core Plugins Integration', () => {
     it('should maintain all functionality from old NODE_REFERENCE_COMPONENTS', () => {
       registerCorePlugins(registry);
 
-      // Verify all original NODE_REFERENCE_COMPONENTS types have references
-      const expectedReferenceTypes = ['text', 'task', 'user', 'date', 'document', 'ai-chat'];
+      // Verify currently implemented reference types have references
+      // Note: 'user' and 'document' are not yet implemented - will be added when reference system is built
+      const expectedReferenceTypes = ['text', 'task', 'date', 'ai-chat', 'header', 'code-block', 'quote-block', 'ordered-list'];
 
       for (const referenceType of expectedReferenceTypes) {
         expect(registry.hasReferenceComponent(referenceType)).toBe(true);

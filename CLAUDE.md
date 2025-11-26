@@ -162,7 +162,7 @@ bun run gh:view <issue-number>
 - **Backend**: Rust with async/await, trait-based architecture
 - **Frontend**: Svelte 4.x with reactive state management
 - **Desktop**: Tauri 2.0 for native integration
-- **Database**: Turso embedded for unified storage and sync
+- **Database**: SurrealDB embedded with RocksDB backend
 - **AI**: mistral.rs with local models (planned)
 
 **Development Philosophy:**

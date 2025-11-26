@@ -8,9 +8,12 @@
 -->
 
 <script lang="ts">
+  import { createEventDispatcher } from 'svelte';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import { nodeData } from '$lib/stores/reactive-node-data.svelte';
   import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
+
+  const dispatch = createEventDispatcher();
 
   // Props
   let {
@@ -42,9 +45,12 @@
     allowMultiline: true
   };
 
-  // REFACTOR (Issue #316): No longer need createEventDispatcher
-  // Svelte automatically forwards on:* events from child components to parent
-  // when no handler is specified (event forwarding is a built-in Svelte feature)
+  // Handle nodeTypeChanged event and forward to parent
+  // Explicit dispatch is needed (vs automatic on: forwarding) because nodeTypeChanged
+  // carries detail data that must be preserved when bubbling up through TextNode
+  function handleNodeTypeChanged(e: CustomEvent) {
+    dispatch('nodeTypeChanged', e.detail);
+  }
 </script>
 
 <!-- REFACTOR (Issue #316): Removed $effect and internalContent state, using bind:content instead -->
@@ -62,7 +68,7 @@
   on:navigateArrow
   on:combineWithPrevious
   on:slashCommandSelected
-  on:nodeTypeChanged
+  on:nodeTypeChanged={handleNodeTypeChanged}
   on:deleteNode
   on:focus
   on:blur

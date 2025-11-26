@@ -28,6 +28,7 @@ import { NavigateUpCommand } from '$lib/commands/keyboard/navigate-up.command';
 import { NavigateDownCommand } from '$lib/commands/keyboard/navigate-down.command';
 import { FormatTextCommand } from '$lib/commands/keyboard/format-text.command';
 import { CursorPositioningService } from '$lib/services/cursor-positioning-service';
+import { focusManager } from '$lib/services/focus-manager.svelte';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { tabState } from '$lib/stores/navigation';
 import { get } from 'svelte/store';
@@ -130,6 +131,7 @@ export interface TextareaControllerState {
   getCurrentColumn(): number;
   getCurrentPixelOffset(): number;
   // Methods
+  initialize(content: string, autoFocus?: boolean): void;
   focus(): void;
   setCursorPosition(position: number): void;
   updateContent(content: string): void;
@@ -211,6 +213,14 @@ export class TextareaController {
       this.events = events;
       this.config = { allowMultiline: false, ...config };
 
+      // CRITICAL: Check if this controller is being created due to a type conversion
+      // If so, set the flag immediately BEFORE event listeners are attached
+      // This ensures input events processed before initialize() will see the correct flag
+      const isTypeConversion = focusManager.cursorPosition?.type === 'node-type-conversion';
+      if (isTypeConversion && this.nodeType !== 'text') {
+        this.nodeTypeSetViaPattern = true;
+      }
+
       (this.element as unknown as { _textareaController: TextareaController })._textareaController =
         this;
 
@@ -250,10 +260,24 @@ export class TextareaController {
 
       this.element.value = content;
 
-      if (this.nodeType !== 'text' && content.trim() !== '') {
-        const detection = pluginRegistry.detectPatternInContent(content);
-        if (detection && detection.config.targetNodeType === this.nodeType) {
+      // Check if this is a node type conversion in progress
+      // Node type conversions are signaled via focusManager.cursorPosition.type
+      const isTypeConversion = focusManager.cursorPosition?.type === 'node-type-conversion';
+
+      // Set nodeTypeSetViaPattern flag for non-text types
+      // This enables reversion to text type when the pattern is deleted
+      if (this.nodeType !== 'text') {
+        // If this component is being created due to a type conversion (via pattern detection),
+        // always set the flag - the node was created via pattern, so deleting the pattern
+        // should revert it back to text
+        if (isTypeConversion) {
           this.nodeTypeSetViaPattern = true;
+        } else {
+          // For non-conversion cases (e.g., page load), check if content matches pattern
+          const detection = pluginRegistry.detectPatternInContent(content);
+          if (detection && detection.config.targetNodeType === this.nodeType) {
+            this.nodeTypeSetViaPattern = true;
+          }
         }
       }
 
@@ -263,11 +287,15 @@ export class TextareaController {
           this.justCreated = false;
         }, 50);
 
-        cursorService.setCursorAtBeginningOfLine(this.element, 0, {
-          focus: true,
-          delay: 0,
-          skipSyntax: true
-        });
+        // If this is a type conversion, skip cursor positioning - let positionCursor action handle it
+        // This prevents the cursor from jumping to the beginning during type conversions
+        if (!isTypeConversion) {
+          cursorService.setCursorAtBeginningOfLine(this.element, 0, {
+            focus: true,
+            delay: 0,
+            skipSyntax: true
+          });
+        }
       }
 
       this.isInitialized = true;
@@ -653,6 +681,9 @@ export class TextareaController {
         const { config, match } = detection;
 
         if (this.nodeType === config.targetNodeType) {
+          // Node type already matches - just ensure the flag is set
+          // This enables reversion when the pattern is later deleted
+          this.nodeTypeSetViaPattern = true;
           return;
         }
 
@@ -970,6 +1001,10 @@ export function createTextareaController(
 
     forceUpdateContent(content: string): void {
       controller?.forceUpdateContent(content);
+    },
+
+    initialize(content: string, autoFocus?: boolean): void {
+      controller?.initialize(content, autoFocus);
     },
 
     adjustHeight(): void {

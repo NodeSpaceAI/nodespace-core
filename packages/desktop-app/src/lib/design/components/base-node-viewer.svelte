@@ -13,11 +13,8 @@
   import BaseNode from '$lib/design/components/base-node.svelte';
   import BacklinksPanel from '$lib/design/components/backlinks-panel.svelte';
   import SchemaPropertyForm from '$lib/components/property-forms/schema-property-form.svelte';
-  // Pre-import core node components for instant rendering (no async loading delay)
-  import TextNode from '$lib/components/text-node.svelte';
-  import HeaderNode from '$lib/design/components/header-node.svelte';
-  import TaskNode from '$lib/design/components/task-node.svelte';
-  import DateNode from '$lib/design/components/date-node.svelte';
+  // Plugin registry provides all node components dynamically
+  import { pluginRegistry } from '$lib/plugins/plugin-registry';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { sharedNodeStore } from '$lib/services/shared-node-store';
   import { focusManager } from '$lib/services/focus-manager.svelte';
@@ -530,6 +527,14 @@
         allNodes = await sharedNodeStore.loadChildrenTree(nodeId);
       }
 
+      // Preload components for any node types not already cached (event-driven, no effects)
+      const uniqueTypes = [...new Set(allNodes.map(n => n.nodeType))];
+      for (const nodeType of uniqueTypes) {
+        if (!(nodeType in loadedNodes)) {
+          loadNodeComponent(nodeType);
+        }
+      }
+
       // Check if we have any nodes at all (reuse allNodes - no redundant cache check needed)
       if (allNodes.length === 0) {
         // No persisted children - create initial placeholder if needed
@@ -719,8 +724,18 @@
     }
 
     // Set cursor position using FocusManager (single source of truth)
+    // For non-text node types that inherit their type (header, quote-block, ordered-list),
+    // use setEditingNodeFromTypeConversion to signal that:
+    // 1. The cursor should be positioned at newNodeCursorPosition (after the pattern syntax)
+    // 2. The nodeTypeSetViaPattern flag should be set (enables reversion to text on pattern deletion)
     if (newNodeCursorPosition !== undefined && !focusOriginalNode) {
-      focusManager.setEditingNode(newNodeId, paneId, newNodeCursorPosition);
+      if (nodeType !== 'text') {
+        // Non-text inherited nodes: Use type conversion signal so nodeTypeSetViaPattern gets set
+        focusManager.setEditingNodeFromTypeConversion(newNodeId, newNodeCursorPosition, paneId);
+      } else {
+        // Text nodes: Use regular editing node
+        focusManager.setEditingNode(newNodeId, paneId, newNodeCursorPosition);
+      }
     }
 
     // Handle focus direction based on focusOriginalNode parameter
@@ -1079,15 +1094,28 @@
 
   // Simple reactive access - let template handle reactivity directly
 
-  // Dynamic component loading - stable component mapping for nodes
-  // Pre-populate with core components for instant rendering (no async delay)
+  // Dynamic component loading - all components loaded via plugin registry
+  // Components are loaded on-demand and cached for subsequent renders
   // Proper Svelte 5 reactivity: use object instead of Map for reactive tracking
-  let loadedNodes = $state<Record<string, unknown>>({
-    text: TextNode,
-    header: HeaderNode,
-    task: TaskNode,
-    date: DateNode
-  });
+  let loadedNodes = $state<Record<string, unknown>>({});
+
+  /**
+   * Load a node component from the plugin registry if not already loaded
+   * Components are cached in loadedNodes for subsequent renders
+   */
+  async function loadNodeComponent(nodeType: string): Promise<void> {
+    // Skip if already loaded
+    if (nodeType in loadedNodes) return;
+
+    try {
+      const component = await pluginRegistry.getNodeComponent(nodeType);
+      if (component) {
+        loadedNodes = { ...loadedNodes, [nodeType]: component };
+      }
+    } catch (error) {
+      console.warn(`[BaseNodeViewer] Failed to load component for ${nodeType}:`, error);
+    }
+  }
 
   // Derive the list of nodes to render - either viewer placeholder or real children
   const nodesToRender = $derived(() => {
@@ -1142,9 +1170,9 @@
   // This eliminates redundant onMount callbacks while preserving all functionality
   // The cleanup function returned from onMount handles scroll listener removal on unmount
 
-  // Component loading: All core components are pre-imported at module level for instant rendering
-  // Unknown/future node types automatically fall back to BaseNode in the template
-  // No reactive loading needed - eliminates async delays and placeholder flashing
+  // Component loading: All components loaded dynamically via plugin registry
+  // Loading is triggered in loadChildrenForParent when node data arrives (event-driven, no effects)
+  // Components are cached in loadedNodes for subsequent renders
 
   // Clean up on component unmount and flush pending saves
   onDestroy(() => {
@@ -1224,7 +1252,7 @@
 
           <!-- Node viewer with stable component references - all nodes use plugin registry -->
           {#if node.nodeType in loadedNodes}
-            {#key node.id}
+            {#key `${node.id}-${node.nodeType}`}
               {@const NodeComponent = loadedNodes[node.nodeType] as typeof BaseNode}
               {@const nodeMetadata = extractNodeMetadata(node)}
               <NodeComponent
@@ -1304,7 +1332,7 @@
                   }
                   // Focus management handled by FocusManager (single source of truth)
                 }}
-                on:nodeTypeChanged={(
+                on:nodeTypeChanged={async (
                   e: CustomEvent<{
                     nodeType: string;
                     cleanedContent?: string;
@@ -1315,6 +1343,12 @@
                   const cleanedContent = e.detail.cleanedContent;
                   // Use cursor position from event (captured by TextareaController)
                   const cursorPosition = e.detail.cursorPosition ?? 0;
+
+                  // CRITICAL: Load component BEFORE updating node type
+                  // This ensures the correct component is available when the template re-renders
+                  if (!(newNodeType in loadedNodes)) {
+                    await loadNodeComponent(newNodeType);
+                  }
 
                   // CRITICAL: Set editing state BEFORE updating node type
                   // This ensures focus manager state is ready when the new component mounts
@@ -1329,11 +1363,18 @@
                   // Uses immediate persistence to ensure type change is saved right away
                   nodeManager.updateNodeType(node.id, newNodeType);
                 }}
-                on:slashCommandSelected={(
+                on:slashCommandSelected={async (
                   e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
                 ) => {
                   // Use cursor position from event (captured by TextareaController)
                   const cursorPosition = e.detail.cursorPosition ?? 0;
+                  const newNodeType = e.detail.nodeType;
+
+                  // CRITICAL: Load component BEFORE updating node type
+                  // This ensures the correct component is available when the template re-renders
+                  if (!(newNodeType in loadedNodes)) {
+                    await loadNodeComponent(newNodeType);
+                  }
 
                   // CRITICAL: Set editing state BEFORE updating node type
                   // This ensures focus manager state is ready when the new component mounts
@@ -1422,11 +1463,77 @@
                   // Update node content (placeholder flag is handled automatically)
                   nodeManager.updateNodeContent(node.id, content);
                 }}
-                on:slashCommandSelected={(
+                on:nodeTypeChanged={async (
+                  e: CustomEvent<{
+                    nodeType: string;
+                    cleanedContent?: string;
+                    cursorPosition?: number;
+                  }>
+                ) => {
+                  const newNodeType = e.detail.nodeType;
+                  const cleanedContent = e.detail.cleanedContent;
+                  // Use cursor position from event (captured by TextareaController)
+                  const cursorPosition = e.detail.cursorPosition ?? 0;
+
+                  // CRITICAL: Load component BEFORE updating node type
+                  // This ensures the correct component is available when the template re-renders
+                  if (!(newNodeType in loadedNodes)) {
+                    await loadNodeComponent(newNodeType);
+                  }
+
+                  // CRITICAL: Set editing state BEFORE updating node type
+                  // This ensures focus manager state is ready when the new component mounts
+                  focusManager.setEditingNodeFromTypeConversion(node.id, cursorPosition, paneId);
+
+                  // Handle placeholder nodes - promote them to real nodes with the new type
+                  if (
+                    node.isPlaceholder &&
+                    nodeId &&
+                    viewerPlaceholder &&
+                    node.id === viewerPlaceholder.id
+                  ) {
+                    // Promote placeholder to real node with the new type
+                    const promotedNode = promotePlaceholderToNode(viewerPlaceholder, nodeId, {
+                      content: cleanedContent ?? node.content ?? '',
+                      nodeType: newNodeType
+                    });
+
+                    // Add to store and trigger persistence
+                    sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
+
+                    // CRITICAL: Add parent-child edge to reactiveStructureTree immediately
+                    // This makes the promoted node visible in visibleNodesFromStores, which causes
+                    // shouldShowPlaceholder to become false, switching the binding from placeholder to real child.
+                    reactiveStructureTree.addChild({
+                      parentId: nodeId,
+                      childId: promotedNode.id,
+                      order: Date.now()
+                    });
+
+                    // CRITICAL: Clear viewerPlaceholder so template re-renders with promoted node
+                    resetPlaceholderId();
+                  } else {
+                    // Update content if cleanedContent is provided (e.g., from contentTemplate)
+                    if (cleanedContent !== undefined) {
+                      nodeManager.updateNodeContent(node.id, cleanedContent);
+                    }
+
+                    // Update node type through proper API (triggers component re-render)
+                    nodeManager.updateNodeType(node.id, newNodeType);
+                  }
+                }}
+                on:slashCommandSelected={async (
                   e: CustomEvent<{ command: string; nodeType: string; cursorPosition?: number }>
                 ) => {
                   // Use cursor position from event (captured by TextareaController)
                   const cursorPosition = e.detail.cursorPosition ?? 0;
+                  const newNodeType = e.detail.nodeType;
+
+                  // CRITICAL: Load component BEFORE updating node type
+                  // This ensures the correct component is available when the template re-renders
+                  if (!(newNodeType in loadedNodes)) {
+                    await loadNodeComponent(newNodeType);
+                  }
 
                   // CRITICAL: Set editing state BEFORE updating node type
                   // This ensures focus manager state is ready when the new component mounts

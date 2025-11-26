@@ -456,7 +456,8 @@ export const corePlugins = [
   codeBlockNodePlugin,
   quoteBlockNodePlugin,
   orderedListNodePlugin
-  // Note: userNodePlugin and documentNodePlugin reserved for future use
+  // Note: userNodePlugin and documentNodePlugin are defined but not registered
+  // They will be added when user/document reference system is implemented
 ];
 
 /**

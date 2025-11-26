@@ -185,12 +185,10 @@
    * Handle node type conversion to ordered-list
    */
   function handleNodeTypeChanged(event: CustomEvent) {
-    const detail = event.detail;
-
     // Just dispatch the event as-is
     // Pattern detection already handles keeping the "1. " prefix (cleanContent: false)
     // So we don't need to add it here - it's already in the content
-    dispatch('nodeTypeChanged', detail);
+    dispatch('nodeTypeChanged', event.detail);
   }
 
   /**
