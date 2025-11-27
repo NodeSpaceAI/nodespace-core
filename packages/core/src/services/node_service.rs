@@ -644,12 +644,13 @@ where
     }
 
     pub async fn create_node(&self, mut node: Node) -> Result<String, NodeServiceError> {
-        // INVARIANT: Date nodes MUST have node_type="date" AND content=id (enforced by validation).
-        // Auto-detect date nodes by ID format (YYYY-MM-DD) to prevent validation failures
-        // from incorrect client input. This maintains data integrity regardless of caller mistakes.
+        // Auto-detect date nodes by ID format (YYYY-MM-DD) to ensure correct node_type.
+        // This maintains data integrity regardless of caller mistakes.
+        // NOTE: Per Issue #670, date nodes can have custom content (not required to match ID).
+        // We only enforce the node_type, not the content.
         if is_date_node_id(&node.id) {
             node.node_type = "date".to_string();
-            node.content = node.id.clone(); // Content MUST match ID for validation
+            // Content is preserved - date nodes can have custom content like "Custom Date Content"
         }
 
         // Step 1: Core behavior validation (PROTECTED)
@@ -2710,15 +2711,15 @@ mod tests {
         let node = Node::new(
             "task".to_string(),
             "Implement NodeService".to_string(),
-            json!({"status": "IN_PROGRESS", "priority": "HIGH"}),
+            json!({"status": "in_progress", "priority": "high"}),
         );
 
         let id = service.create_node(node).await.unwrap();
         let retrieved = service.get_node(&id).await.unwrap().unwrap();
 
         assert_eq!(retrieved.node_type, "task");
-        assert_eq!(retrieved.properties["status"], "IN_PROGRESS");
-        assert_eq!(retrieved.properties["priority"], "HIGH");
+        assert_eq!(retrieved.properties["status"], "in_progress");
+        assert_eq!(retrieved.properties["priority"], "high");
     }
 
     #[tokio::test]
@@ -2772,7 +2773,7 @@ mod tests {
         let date_node = node.unwrap();
         assert_eq!(date_node.id, "2025-10-13");
         assert_eq!(date_node.node_type, "date");
-        assert_eq!(date_node.content, "2025-10-13"); // Content MUST match ID for validation
+        assert_eq!(date_node.content, "2025-10-13"); // Virtual date nodes default content to the date ID
                                                      // Note: Sibling ordering is now on has_child edge order field, not node.before_sibling_id
     }
 
@@ -2829,19 +2830,22 @@ mod tests {
     async fn test_persisted_date_takes_precedence_over_virtual() {
         let (service, _temp) = create_test_service().await;
 
-        // Create and persist a date node
+        // Create and persist a date node with custom content
+        // Note: Date nodes don't have a spoke table (Issue #670), so no custom properties
+        // They store everything in the content field
         let date_node = Node::new_with_id(
             "2025-10-13".to_string(),
             "date".to_string(),
-            "2025-10-13".to_string(),
-            json!({"custom": "property"}),
+            "Custom Date Content".to_string(),
+            json!({}), // No properties - date nodes use content only
         );
 
         service.create_node(date_node).await.unwrap();
 
-        // Get the node - should return persisted version with custom property
+        // Get the node - should return persisted version with custom content
         let retrieved = service.get_node("2025-10-13").await.unwrap().unwrap();
-        assert_eq!(retrieved.properties["custom"], "property");
+        assert_eq!(retrieved.content, "Custom Date Content");
+        assert_eq!(retrieved.node_type, "date");
     }
 
     #[tokio::test]
@@ -2888,7 +2892,7 @@ mod tests {
             .create_node(Node::new(
                 "task".to_string(),
                 "Task 1".to_string(),
-                json!({"status": "OPEN"}),
+                json!({"status": "open"}),
             ))
             .await
             .unwrap();
@@ -2918,7 +2922,7 @@ mod tests {
             Node::new(
                 "task".to_string(),
                 "Bulk Task".to_string(),
-                json!({"status": "OPEN"}),
+                json!({"status": "open"}),
             ),
         ];
 
@@ -3325,7 +3329,7 @@ mod tests {
                 "task-1".to_string(),
                 "task".to_string(),
                 "UniqueBasicFilter Task".to_string(),
-                json!({"status": "OPEN"}),
+                json!({"status": "open"}),
             );
             let task_id = service.create_node(task).await.unwrap();
 
@@ -3384,7 +3388,7 @@ mod tests {
                 "task-meeting".to_string(),
                 "task".to_string(),
                 "Schedule meeting".to_string(),
-                json!({"task": {"status": "OPEN"}}),
+                json!({"task": {"status": "open"}}),
             );
             let task_id = service.create_node(task).await.unwrap();
 
@@ -3445,7 +3449,7 @@ mod tests {
                 "task-mentions".to_string(),
                 "task".to_string(),
                 "Task with @target-node reference".to_string(),
-                json!({"task": {"status": "OPEN"}}),
+                json!({"task": {"status": "open"}}),
             );
             let task_id = service.create_node(task).await.unwrap();
             service.create_mention(&task_id, &target_id).await.unwrap();
@@ -3492,7 +3496,7 @@ mod tests {
                 "task-root".to_string(),
                 "task".to_string(),
                 "Root task".to_string(),
-                json!({"task": {"status": "OPEN"}}),
+                json!({"task": {"status": "open"}}),
             );
             let _root_task_id = service.create_node(root_task).await.unwrap();
 
@@ -3500,7 +3504,7 @@ mod tests {
                 "task-child".to_string(),
                 "task".to_string(),
                 "Child task".to_string(),
-                json!({"task": {"status": "OPEN"}}),
+                json!({"task": {"status": "open"}}),
             );
             service.create_node(child_task).await.unwrap();
 
@@ -3536,7 +3540,7 @@ mod tests {
             let task = Node::new(
                 "task".to_string(),
                 "UniqueDefaultTest Task".to_string(),
-                json!({"task": {"status": "OPEN"}}),
+                json!({"task": {"status": "open"}}),
             );
             service.create_node(task).await.unwrap();
 
@@ -3699,7 +3703,7 @@ mod tests {
                 "task-1".to_string(),
                 "task".to_string(),
                 "Review @target".to_string(),
-                json!({"status": "OPEN"}),
+                json!({"status": "open"}),
             );
             let task_id = service.create_node(task).await.unwrap();
 
@@ -3855,7 +3859,7 @@ mod tests {
                 "task-c3".to_string(),
                 "task".to_string(),
                 "From container 3".to_string(),
-                json!({"task": {"status": "OPEN"}}),
+                json!({"task": {"status": "open"}}),
             );
             let task_id = service.create_node(task).await.unwrap();
 

@@ -433,16 +433,17 @@ mod tests {
             is_core: false,
             version: 1,
             description: "Test schema".to_string(),
+            // Status values use lowercase format (Issue #670)
             fields: vec![SchemaField {
                 name: "status".to_string(),
                 field_type: "enum".to_string(),
                 protection: ProtectionLevel::Core,
-                core_values: Some(vec!["OPEN".to_string(), "DONE".to_string()]),
+                core_values: Some(vec!["open".to_string(), "done".to_string()]),
                 user_values: None,
                 indexed: true,
                 required: Some(true),
                 extensible: Some(true),
-                default: Some(json!("OPEN")),
+                default: Some(json!("open")),
                 description: Some("Task status".to_string()),
                 item_type: None,
                 fields: None,
@@ -637,11 +638,11 @@ mod tests {
         let (schema_service, node_service, _temp) = setup_test_service().await;
         create_test_schema(&node_service).await;
 
-        // Try to remove core enum value
+        // Try to remove core enum value (status uses lowercase format per Issue #670)
         let params = json!({
             "schema_id": "test_schema",
             "field_name": "status",
-            "value": "OPEN"
+            "value": "open"
         });
 
         let result = handle_remove_schema_enum_value(&schema_service, params).await;
@@ -666,7 +667,8 @@ mod tests {
 
         assert!(result["schema"].is_object());
         let schema = &result["schema"];
-        assert!(!schema["is_core"].as_bool().unwrap());
+        // Schema uses camelCase serialization (Issue #670)
+        assert!(!schema["isCore"].as_bool().unwrap());
         assert_eq!(schema["version"].as_u64().unwrap(), 1);
         assert!(schema["fields"].is_array());
         assert!(!schema["fields"].as_array().unwrap().is_empty());

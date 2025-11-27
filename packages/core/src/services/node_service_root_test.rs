@@ -244,7 +244,7 @@ mod disabled_embedding_tests {
         let task_root = Node::new(
             "task".to_string(),
             "Task as root".to_string(),
-            json!({"status": "OPEN"}),
+            json!({"status": "open"}),
         );
         let task_id = task_root.id.clone();
         service.create_node(task_root).await.unwrap();

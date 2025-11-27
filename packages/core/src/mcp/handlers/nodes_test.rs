@@ -413,6 +413,7 @@ mod occ_tests {
     }
 
     /// Verifies property-only updates increment version
+    /// Uses task node type since it has a spoke table for properties (hub-spoke architecture)
     #[tokio::test]
     async fn test_property_update_increments_version() {
         let (operations, _schema_service, _temp) = setup_test_operations().await.unwrap();
@@ -420,20 +421,20 @@ mod occ_tests {
         let node_id = operations
             .create_node(CreateNodeParams {
                 id: None,
-                node_type: "text".to_string(),
-                content: "Test".to_string(),
+                node_type: "task".to_string(),
+                content: "Test task".to_string(),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"status": "draft"}),
+                properties: json!({"status": "open"}),
             })
             .await
             .unwrap();
 
-        // Update properties only
+        // Update properties only (status goes to task spoke table)
         let params = json!({
             "node_id": node_id,
             "version": 1,
-            "properties": {"status": "published", "priority": "high"}
+            "properties": {"status": "done", "priority": "high"}
         });
 
         let result = handle_update_node(&operations, &_schema_service, params)
@@ -443,7 +444,7 @@ mod occ_tests {
 
         let updated = operations.get_node(&node_id).await.unwrap().unwrap();
         assert_eq!(updated.version, 2);
-        assert_eq!(updated.properties["status"], "published");
+        assert_eq!(updated.properties["status"], "done");
         assert_eq!(updated.properties["priority"], "high");
     }
 
@@ -1114,7 +1115,7 @@ mod integration_tests {
                 content: "- [ ] Task 1".to_string(),
                 parent_id: Some(root.clone()),
                 insert_after_node_id: None,
-                properties: json!({"task": {"status": "OPEN"}}),
+                properties: json!({"task": {"status": "open"}}),
             })
             .await
             .unwrap();
@@ -1126,7 +1127,7 @@ mod integration_tests {
                 content: "- [ ] Task 2".to_string(),
                 parent_id: Some(root.clone()),
                 insert_after_node_id: Some(node1.clone()),
-                properties: json!({"task": {"status": "OPEN"}}),
+                properties: json!({"task": {"status": "open"}}),
             })
             .await
             .unwrap();
@@ -1237,6 +1238,7 @@ mod integration_tests {
     }
 
     /// Verifies property-only updates without content changes
+    /// Uses task node type since it has a spoke table for properties (hub-spoke architecture)
     #[tokio::test]
     async fn test_update_nodes_batch_with_properties() {
         let (operations, schema_service, _temp_dir) = setup_test_operations().await.unwrap();
@@ -1244,19 +1246,19 @@ mod integration_tests {
         let node = operations
             .create_node(CreateNodeParams {
                 id: None,
-                node_type: "text".to_string(),
-                content: "Test".to_string(),
+                node_type: "task".to_string(),
+                content: "Test task".to_string(),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"priority": "low"}),
+                properties: json!({"status": "open", "priority": "low"}),
             })
             .await
             .unwrap();
 
-        // Update properties only
+        // Update properties only (goes to task spoke table)
         let params = json!({
             "updates": [
-                { "id": node, "properties": { "priority": "high", "status": "urgent" } }
+                { "id": node, "properties": { "priority": "high", "status": "done" } }
             ]
         });
 
@@ -1266,10 +1268,10 @@ mod integration_tests {
 
         assert_eq!(result["count"].as_u64().unwrap(), 1);
 
-        // Verify property update
+        // Verify property update in spoke table
         let updated = operations.get_node(&node).await.unwrap().unwrap();
         assert_eq!(updated.properties["priority"], "high");
-        assert_eq!(updated.properties["status"], "urgent");
+        assert_eq!(updated.properties["status"], "done");
     }
 
     // =========================================================================

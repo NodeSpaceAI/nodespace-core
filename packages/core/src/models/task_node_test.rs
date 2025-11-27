@@ -31,7 +31,8 @@ mod tests {
     fn test_status_getter_default() {
         let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let task = TaskNode::from_node(node).unwrap();
-        assert_eq!(task.status(), TaskStatus::Pending);
+        // Default status is Open (Issue #670)
+        assert_eq!(task.status(), TaskStatus::Open);
     }
 
     #[test]
@@ -42,8 +43,8 @@ mod tests {
             json!({"status": "invalid_status"}),
         );
         let task = TaskNode::from_node(node).unwrap();
-        // Should default to Pending on invalid status
-        assert_eq!(task.status(), TaskStatus::Pending);
+        // Should default to Open on invalid status (Issue #670)
+        assert_eq!(task.status(), TaskStatus::Open);
     }
 
     #[test]
@@ -51,10 +52,11 @@ mod tests {
         let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let mut task = TaskNode::from_node(node).unwrap();
 
-        task.set_status(TaskStatus::Completed);
+        task.set_status(TaskStatus::Done);
 
-        assert_eq!(task.status(), TaskStatus::Completed);
-        assert_eq!(task.as_node().properties["status"], "completed");
+        assert_eq!(task.status(), TaskStatus::Done);
+        // Status value uses lowercase format (Issue #670)
+        assert_eq!(task.as_node().properties["status"], "done");
     }
 
     #[test]
@@ -176,10 +178,11 @@ mod tests {
 
     #[test]
     fn test_into_node_preserves_data() {
+        // Status uses lowercase format (Issue #670)
         let original = Node::new(
             "task".to_string(),
             "Test task".to_string(),
-            json!({"status": "pending", "priority": 2}),
+            json!({"status": "open", "priority": 2}),
         );
         let original_id = original.id.clone();
 
@@ -189,16 +192,17 @@ mod tests {
         assert_eq!(converted_back.id, original_id);
         assert_eq!(converted_back.node_type, "task");
         assert_eq!(converted_back.content, "Test task");
-        assert_eq!(converted_back.properties["status"], "pending");
+        assert_eq!(converted_back.properties["status"], "open");
         assert_eq!(converted_back.properties["priority"], 2);
     }
 
     #[test]
     fn test_as_node_reference() {
+        // Status uses lowercase format (Issue #670)
         let node = Node::new(
             "task".to_string(),
             "Test".to_string(),
-            json!({"status": "completed"}),
+            json!({"status": "done"}),
         );
         let task = TaskNode::from_node(node).unwrap();
 
@@ -223,7 +227,8 @@ mod tests {
 
         assert_eq!(task.as_node().content, "Implement feature");
         assert_eq!(task.as_node().node_type, "task");
-        assert_eq!(task.status(), TaskStatus::Pending);
+        // Default status is Open (Issue #670)
+        assert_eq!(task.status(), TaskStatus::Open);
         assert_eq!(task.priority(), 2);
     }
 
@@ -262,18 +267,13 @@ mod tests {
 
     #[test]
     fn test_task_status_from_str() {
-        assert_eq!(
-            "pending".parse::<TaskStatus>().unwrap(),
-            TaskStatus::Pending
-        );
+        // Status values use lowercase format (Issue #670)
+        assert_eq!("open".parse::<TaskStatus>().unwrap(), TaskStatus::Open);
         assert_eq!(
             "in_progress".parse::<TaskStatus>().unwrap(),
             TaskStatus::InProgress
         );
-        assert_eq!(
-            "completed".parse::<TaskStatus>().unwrap(),
-            TaskStatus::Completed
-        );
+        assert_eq!("done".parse::<TaskStatus>().unwrap(), TaskStatus::Done);
         assert_eq!(
             "cancelled".parse::<TaskStatus>().unwrap(),
             TaskStatus::Cancelled
@@ -289,18 +289,20 @@ mod tests {
 
     #[test]
     fn test_task_status_as_str() {
-        assert_eq!(TaskStatus::Pending.as_str(), "pending");
+        // Status values use lowercase format (Issue #670)
+        assert_eq!(TaskStatus::Open.as_str(), "open");
         assert_eq!(TaskStatus::InProgress.as_str(), "in_progress");
-        assert_eq!(TaskStatus::Completed.as_str(), "completed");
+        assert_eq!(TaskStatus::Done.as_str(), "done");
         assert_eq!(TaskStatus::Cancelled.as_str(), "cancelled");
     }
 
     #[test]
     fn test_all_status_values() {
+        // Updated status values per Issue #670
         let statuses = vec![
-            TaskStatus::Pending,
+            TaskStatus::Open,
             TaskStatus::InProgress,
-            TaskStatus::Completed,
+            TaskStatus::Done,
             TaskStatus::Cancelled,
         ];
 

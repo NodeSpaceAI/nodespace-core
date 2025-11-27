@@ -26,12 +26,12 @@
 //!         "name": "status",
 //!         "type": "enum",
 //!         "protection": "core",
-//!         "core_values": ["OPEN", "IN_PROGRESS", "DONE"],
-//!         "user_values": ["BLOCKED"],
+//!         "core_values": ["open", "in_progress", "done"],
+//!         "user_values": ["blocked"],
 //!         "extensible": true,
 //!         "indexed": true,
 //!         "required": true,
-//!         "default": "OPEN"
+//!         "default": "open"
 //!       }
 //!     ]
 //!   }
@@ -95,7 +95,10 @@ pub enum ProtectionLevel {
 ///
 /// Supports various field types including primitives, enums, arrays, and objects.
 /// Enum fields can have protected core values and user-extensible values.
+///
+/// Uses camelCase serialization to match frontend TypeScript conventions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SchemaField {
     /// Field name (must be unique within schema)
     pub name: String,
@@ -157,7 +160,11 @@ pub struct SchemaField {
 /// Complete schema definition for an entity type
 ///
 /// Stored in the `properties` field of schema nodes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Uses camelCase serialization to match frontend TypeScript conventions.
+/// Default trait allows partial deserialization when some fields are missing.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct SchemaDefinition {
     /// Whether this is a core schema (shipped with NodeSpace)
     pub is_core: bool,
@@ -166,13 +173,21 @@ pub struct SchemaDefinition {
     ///
     /// Used for lazy migration: nodes track which version validated them,
     /// and are automatically upgraded when accessed if schema version is newer.
+    #[serde(default = "default_version")]
     pub version: u32,
 
     /// Human-readable description of this schema
+    #[serde(default)]
     pub description: String,
 
     /// List of fields in this schema
+    #[serde(default)]
     pub fields: Vec<SchemaField>,
+}
+
+/// Default version for schemas (1)
+fn default_version() -> u32 {
+    1
 }
 
 impl SchemaDefinition {
@@ -185,7 +200,7 @@ impl SchemaDefinition {
     /// ```ignore
     /// let schema = get_task_schema();
     /// let status_values = schema.get_enum_values("status");
-    /// // Returns: Some(["OPEN", "IN_PROGRESS", "DONE", "BLOCKED"])
+    /// // Returns: Some(["open", "in_progress", "done", "blocked"])
     /// ```
     pub fn get_enum_values(&self, field_name: &str) -> Option<Vec<String>> {
         let field = self.fields.iter().find(|f| f.name == field_name)?;
@@ -254,16 +269,17 @@ mod tests {
             version: 1,
             description: "Test schema".to_string(),
             fields: vec![
+                // Status values use lowercase format (Issue #670)
                 SchemaField {
                     name: "status".to_string(),
                     field_type: "enum".to_string(),
                     protection: ProtectionLevel::Core,
-                    core_values: Some(vec!["OPEN".to_string(), "DONE".to_string()]),
-                    user_values: Some(vec!["BLOCKED".to_string()]),
+                    core_values: Some(vec!["open".to_string(), "done".to_string()]),
+                    user_values: Some(vec!["blocked".to_string()]),
                     indexed: true,
                     required: Some(true),
                     extensible: Some(true),
-                    default: Some(json!("OPEN")),
+                    default: Some(json!("open")),
                     description: Some("Task status".to_string()),
                     item_type: None,
                     fields: None,
@@ -294,9 +310,10 @@ mod tests {
 
         let values = schema.get_enum_values("status").unwrap();
         assert_eq!(values.len(), 3);
-        assert!(values.contains(&"OPEN".to_string()));
-        assert!(values.contains(&"DONE".to_string()));
-        assert!(values.contains(&"BLOCKED".to_string()));
+        // Status values use lowercase format (Issue #670)
+        assert!(values.contains(&"open".to_string()));
+        assert!(values.contains(&"done".to_string()));
+        assert!(values.contains(&"blocked".to_string()));
 
         assert!(schema.get_enum_values("priority").is_none());
         assert!(schema.get_enum_values("nonexistent").is_none());
@@ -325,16 +342,22 @@ mod tests {
         let schema = create_test_schema();
         let json = serde_json::to_value(&schema).unwrap();
 
-        assert_eq!(json["is_core"], true);
+        // With #[serde(rename_all = "camelCase")], keys are serialized as camelCase
+        assert_eq!(json["isCore"], true);
         assert_eq!(json["version"], 1);
         assert_eq!(json["fields"][0]["name"], "status");
         assert_eq!(json["fields"][0]["protection"], "core");
+        // field_type serializes to "type" due to #[serde(rename = "type")]
+        assert_eq!(json["fields"][0]["type"], "enum");
+        // core_values serializes to coreValues
+        assert!(json["fields"][0]["coreValues"].is_array());
     }
 
     #[test]
     fn test_deserialization() {
+        // With #[serde(rename_all = "camelCase")], we expect camelCase keys in JSON
         let json = json!({
-            "is_core": true,
+            "isCore": true,
             "version": 2,
             "description": "Task schema",
             "fields": [
@@ -342,7 +365,7 @@ mod tests {
                     "name": "status",
                     "type": "enum",
                     "protection": "core",
-                    "core_values": ["OPEN", "DONE"],
+                    "coreValues": ["open", "done"],
                     "indexed": true
                 }
             ]
@@ -418,8 +441,9 @@ mod tests {
 
     #[test]
     fn test_nested_field_deserialization() {
+        // With #[serde(rename_all = "camelCase")], we expect camelCase keys in JSON
         let json = json!({
-            "is_core": false,
+            "isCore": false,
             "version": 1,
             "description": "Person with nested address",
             "fields": [
@@ -490,8 +514,10 @@ mod tests {
         let json = serde_json::to_value(&schema).unwrap();
         assert_eq!(json["fields"][0]["name"], "contacts");
         assert_eq!(json["fields"][0]["type"], "array");
-        assert_eq!(json["fields"][0]["item_type"], "object");
-        assert_eq!(json["fields"][0]["item_fields"][0]["name"], "email");
-        assert_eq!(json["fields"][0]["item_fields"][0]["indexed"], true);
+        // item_type serializes to itemType with camelCase
+        assert_eq!(json["fields"][0]["itemType"], "object");
+        // item_fields serializes to itemFields with camelCase
+        assert_eq!(json["fields"][0]["itemFields"][0]["name"], "email");
+        assert_eq!(json["fields"][0]["itemFields"][0]["indexed"], true);
     }
 }

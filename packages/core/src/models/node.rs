@@ -23,12 +23,12 @@
 //!     json!({}),
 //! );
 //!
-//! // Create a task node with properties
+//! // Create a task node with properties (status uses lowercase format per Issue #670)
 //! let task_node = Node::new(
 //!     "task".to_string(),
 //!     "Implement Pure JSON schema".to_string(),
 //!     json!({
-//!         "status": "IN_PROGRESS",
+//!         "status": "in_progress",
 //!         "priority": "high",
 //!         "due_date": "2025-01-10"
 //!     }),
@@ -381,10 +381,10 @@ where
 ///     ..Default::default()
 /// };
 ///
-/// // Update content and properties
+/// // Update content and properties (status uses lowercase format per Issue #670)
 /// let update = NodeUpdate {
 ///     content: Some("New content".to_string()),
-///     properties: Some(json!({"status": "DONE"})),
+///     properties: Some(json!({"status": "done"})),
 ///     ..Default::default()
 /// };
 /// ```
@@ -1218,19 +1218,20 @@ mod tests {
 
     #[test]
     fn test_task_node_with_properties() {
+        // Status/priority values use lowercase format (Issue #670)
         let task = Node::new(
             "task".to_string(),
             "Implement feature".to_string(),
             json!({
-                "status": "IN_PROGRESS",
+                "status": "in_progress",
                 "assignee": "person-123",
                 "due_date": "2025-01-10",
-                "priority": "HIGH"
+                "priority": "high"
             }),
         );
 
         assert_eq!(task.node_type, "task");
-        assert_eq!(task.properties["status"], "IN_PROGRESS");
-        assert_eq!(task.properties["priority"], "HIGH");
+        assert_eq!(task.properties["status"], "in_progress");
+        assert_eq!(task.properties["priority"], "high");
     }
 }

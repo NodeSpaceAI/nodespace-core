@@ -798,10 +798,14 @@ export class TextareaController {
           // Record pattern match for reversion capability
           this.patternState.recordPatternMatch(createPatternMatch(config, match), content);
         });
-      } else if (this.nodeType !== 'text') {
+      } else if (this.nodeType !== 'text' && this.patternState.canRevert) {
         // No pattern detected and node is not text - revert to text
         // This handles both pattern-detected and inherited nodes when syntax is deleted
         // e.g., "# Hello" -> "#Hello" (space deleted, no longer matches header pattern)
+        //
+        // IMPORTANT: Only revert if canRevert is true. Patterns with cleanContent: true
+        // (like tasks) intentionally remove their syntax, so they should NOT revert
+        // just because the pattern no longer matches.
         const cursorPosition = this.getCursorPosition();
 
         untrack(() => {

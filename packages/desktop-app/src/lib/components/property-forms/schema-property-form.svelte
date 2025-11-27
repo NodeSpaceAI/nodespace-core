@@ -278,11 +278,12 @@
     return `${value.year}-${String(value.month).padStart(2, '0')}-${String(value.day).padStart(2, '0')}`;
   }
 
-  // Format enum value for display (convert SCREAMING_SNAKE_CASE to Title Case)
+  // Format enum value for display (convert snake_case to Title Case)
+  // Handles lowercase values like "in_progress" → "In Progress" (Issue #670)
   function formatEnumLabel(value: string): string {
     return value
       .split('_')
-      .map((word) => word.charAt(0) + word.slice(1).toLowerCase())
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
       .join(' ');
   }
 

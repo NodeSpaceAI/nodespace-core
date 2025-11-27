@@ -116,10 +116,18 @@ export class PatternState {
    * Both 'pattern' and 'inherited' source nodes can revert when their
    * syntax is deleted (e.g., "# Hello" → "#Hello" reverts to text).
    * Only 'user' source nodes without a detected pattern cannot revert.
+   *
+   * EXCEPTION: Patterns with cleanContent: true cannot revert because
+   * the pattern syntax was intentionally removed from content (e.g., task
+   * nodes don't store "[ ]" in content - it's shown as an icon).
    */
   get canRevert(): boolean {
-    // Pattern source with detected pattern - standard reversion
+    // Pattern source with detected pattern - check if reversion is possible
     if (this._creationSource === 'pattern' && this._detectedPattern !== null) {
+      // Patterns with cleanContent: true cannot revert - syntax was intentionally removed
+      if (this._detectedPattern.pattern.cleanContent === true) {
+        return false;
+      }
       return true;
     }
     // Inherited source - can also revert (syntax deletion triggers type change)
@@ -145,9 +153,16 @@ export class PatternState {
    * Whether this node should watch for pattern deletion (to revert)
    *
    * Both 'pattern' and 'inherited' source nodes watch for reversion.
+   *
+   * EXCEPTION: Patterns with cleanContent: true don't watch for reversion
+   * because the pattern syntax was intentionally removed from content.
    */
   get shouldWatchForReversion(): boolean {
     if (this._creationSource === 'pattern' && this._detectedPattern !== null) {
+      // Patterns with cleanContent: true don't watch - syntax was intentionally removed
+      if (this._detectedPattern.pattern.cleanContent === true) {
+        return false;
+      }
       return true;
     }
     // Inherited nodes also watch - handled by detectNodeTypeConversion

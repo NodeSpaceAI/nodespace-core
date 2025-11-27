@@ -697,8 +697,8 @@ async fn create_node(
     let properties = match node_type {
         "task" => {
             // Task nodes require status field per schema
-            // Default to "OPEN" (schema default)
-            json!({"status": "OPEN"})
+            // Default to "open" (schema default, Issue #670)
+            json!({"status": "open"})
         }
         _ => json!({}),
     };

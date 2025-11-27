@@ -4,7 +4,7 @@
 --
 -- This schema implements a hub-and-spoke design where:
 -- 1. Hub (node table) - Universal metadata for ALL node types
--- 2. Spokes (task, date, schema tables) - Type-specific queryable data
+-- 2. Spokes (task, schema tables) - Type-specific queryable data
 -- 3. Record Links - Bidirectional pointers for 1-to-1 composition (NOT RELATE)
 -- 4. Graph Edges - has_child and mentions for node-to-node relationships
 --
@@ -23,8 +23,7 @@ DEFINE TABLE IF NOT EXISTS node SCHEMAFULL;
 -- Do NOT redefine it - let SurrealDB handle it natively as a Thing type
 DEFINE FIELD IF NOT EXISTS content ON TABLE node TYPE string DEFAULT "";
 DEFINE FIELD IF NOT EXISTS node_type ON TABLE node TYPE string ASSERT $value != NONE;
-DEFINE FIELD IF NOT EXISTS data ON TABLE node TYPE option<record>;  -- Record Link to spoke (task, date, schema, or NULL)
-DEFINE FIELD IF NOT EXISTS properties ON TABLE node FLEXIBLE TYPE option<object>;  -- Properties for types without spoke tables (text, date, etc.)
+DEFINE FIELD IF NOT EXISTS data ON TABLE node TYPE option<record>;  -- Record Link to spoke (task, schema, or NULL)
 DEFINE FIELD IF NOT EXISTS version ON TABLE node TYPE int DEFAULT 1 ASSERT $value >= 1;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE node TYPE datetime DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS modified_at ON TABLE node TYPE datetime DEFAULT time::now();
@@ -46,7 +45,8 @@ DEFINE TABLE IF NOT EXISTS task SCHEMALESS;
 DEFINE FIELD IF NOT EXISTS node ON TABLE task TYPE option<record>;  -- Reverse link to hub node
 
 -- Core task fields (indexed for queries)
-DEFINE FIELD IF NOT EXISTS status ON TABLE task TYPE string DEFAULT 'todo';
+-- Status uses lowercase canonical values: open, in_progress, done, cancelled (Issue #670)
+DEFINE FIELD IF NOT EXISTS status ON TABLE task TYPE string DEFAULT 'open';
 DEFINE FIELD IF NOT EXISTS priority ON TABLE task TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS due_date ON TABLE task TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS assignee ON TABLE task TYPE option<record>;
@@ -59,17 +59,8 @@ DEFINE INDEX IF NOT EXISTS idx_task_due_date ON TABLE task COLUMNS due_date;
 -- Note: SCHEMALESS allows undefined fields (flexible)
 
 -- ============================================================================
-
--- Date spoke: Timezone, holiday tracking
-DEFINE TABLE IF NOT EXISTS date SCHEMALESS;
-DEFINE FIELD IF NOT EXISTS node ON TABLE date TYPE option<record>;  -- Reverse link to hub node
-
--- Core date fields
-DEFINE FIELD IF NOT EXISTS timezone ON TABLE date TYPE string DEFAULT 'UTC';
-DEFINE FIELD IF NOT EXISTS is_holiday ON TABLE date TYPE bool DEFAULT false;
-
--- Note: SCHEMAFULL allows undefined fields by default (flexible)
-
+-- NOTE: Date spoke table removed (Issue #670) - date nodes store all data
+-- in the hub node table's content field, no need for separate spoke table.
 -- ============================================================================
 
 -- Schema spoke: Type definitions

@@ -1351,12 +1351,13 @@ mod tests {
                     name: "status".to_string(),
                     field_type: "enum".to_string(),
                     protection: ProtectionLevel::Core,
-                    core_values: Some(vec!["OPEN".to_string(), "DONE".to_string()]),
+                    // Status values use lowercase format (Issue #670)
+                    core_values: Some(vec!["open".to_string(), "done".to_string()]),
                     user_values: Some(vec![]),
                     indexed: true,
                     required: Some(true),
                     extensible: Some(true),
-                    default: Some(json!("OPEN")),
+                    default: Some(json!("open")),
                     description: Some("Widget status".to_string()),
                     item_type: None,
                     fields: None,
@@ -1704,8 +1705,9 @@ mod tests {
         let (service, _temp) = setup_test_service().await;
         let schema_id = create_test_schema(&service).await;
 
+        // Status uses lowercase format (Issue #670)
         let result = service
-            .remove_enum_value(&schema_id, "status", "OPEN")
+            .remove_enum_value(&schema_id, "status", "open")
             .await;
         assert!(result.is_err());
         assert!(result
@@ -1722,7 +1724,8 @@ mod tests {
         let node = Node::new(
             "test_widget".to_string(),
             "My widget".to_string(),
-            json!({"test_widget": {"status": "OPEN", "priority": 5}}),
+            // Status uses lowercase format (Issue #670)
+            json!({"test_widget": {"status": "open", "priority": 5}}),
         );
 
         let result = service.validate_node_against_schema(&node).await;
@@ -1840,10 +1843,11 @@ mod tests {
         let _schema_id = create_test_schema(&service).await;
 
         // Backward compatibility: flat properties format (old style)
+        // Status uses lowercase format (Issue #670)
         let node = Node::new(
             "test_widget".to_string(),
             "My widget".to_string(),
-            json!({"status": "DONE"}), // Flat format, not nested under "test_widget"
+            json!({"status": "done"}), // Flat format, not nested under "test_widget"
         );
 
         let result = service.validate_node_against_schema(&node).await;
@@ -2120,12 +2124,13 @@ mod tests {
     async fn test_map_field_type_enum() {
         let (service, _temp) = setup_test_service().await;
 
+        // Status uses lowercase format (Issue #670)
         let field = SchemaField {
             name: "status".to_string(),
             field_type: "enum".to_string(),
             protection: ProtectionLevel::Core,
-            core_values: Some(vec!["OPEN".to_string(), "DONE".to_string()]),
-            user_values: Some(vec!["BLOCKED".to_string()]),
+            core_values: Some(vec!["open".to_string(), "done".to_string()]),
+            user_values: Some(vec!["blocked".to_string()]),
             indexed: false,
             required: None,
             extensible: None,
@@ -2138,9 +2143,9 @@ mod tests {
 
         let db_type = service.map_field_type("enum", &field).unwrap();
         assert!(db_type.contains("ASSERT"));
-        assert!(db_type.contains("OPEN"));
-        assert!(db_type.contains("DONE"));
-        assert!(db_type.contains("BLOCKED"));
+        assert!(db_type.contains("open"));
+        assert!(db_type.contains("done"));
+        assert!(db_type.contains("blocked"));
     }
 
     #[tokio::test]

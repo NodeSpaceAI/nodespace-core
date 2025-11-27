@@ -13,12 +13,12 @@
 //! let node = Node::new(
 //!     "task".to_string(),
 //!     "Implement feature".to_string(),
-//!     json!({"status": "pending", "priority": 2}),
+//!     json!({"status": "open", "priority": 2}),
 //! );
 //! let task = TaskNode::from_node(node).unwrap();
 //!
 //! // Type-safe property access
-//! assert_eq!(task.status(), TaskStatus::Pending);
+//! assert_eq!(task.status(), TaskStatus::Open);
 //! assert_eq!(task.priority(), 2);
 //!
 //! // Create with builder
@@ -35,14 +35,19 @@ use std::str::FromStr;
 /// Task status enumeration
 ///
 /// Represents the lifecycle states of a task node.
+/// Values use lowercase format for consistency across all layers (Issue #670):
+/// - "open" - Not started (default)
+/// - "in_progress" - Currently being worked on
+/// - "done" - Finished
+/// - "cancelled" - Cancelled/abandoned
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskStatus {
     /// Task has not been started
-    Pending,
+    Open,
     /// Task is currently being worked on
     InProgress,
     /// Task has been finished
-    Completed,
+    Done,
     /// Task has been cancelled/abandoned
     Cancelled,
 }
@@ -52,9 +57,9 @@ impl FromStr for TaskStatus {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "pending" => Ok(Self::Pending),
+            "open" => Ok(Self::Open),
             "in_progress" => Ok(Self::InProgress),
-            "completed" => Ok(Self::Completed),
+            "done" => Ok(Self::Done),
             "cancelled" => Ok(Self::Cancelled),
             _ => Err(format!("Invalid task status: {}", s)),
         }
@@ -65,9 +70,9 @@ impl TaskStatus {
     /// Convert status to string representation
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Pending => "pending",
+            Self::Open => "open",
             Self::InProgress => "in_progress",
-            Self::Completed => "completed",
+            Self::Done => "done",
             Self::Cancelled => "cancelled",
         }
     }
@@ -87,12 +92,12 @@ impl TaskStatus {
 /// let node = Node::new(
 ///     "task".to_string(),
 ///     "Fix bug".to_string(),
-///     json!({"status": "pending"}),
+///     json!({"status": "open"}),
 /// );
 /// let mut task = TaskNode::from_node(node).unwrap();
 ///
-/// task.set_status(TaskStatus::Completed);
-/// assert_eq!(task.status(), TaskStatus::Completed);
+/// task.set_status(TaskStatus::Done);
+/// assert_eq!(task.status(), TaskStatus::Done);
 /// ```
 #[derive(Debug, Clone)]
 pub struct TaskNode {
@@ -151,14 +156,14 @@ impl TaskNode {
 
     /// Get the task's status
     ///
-    /// Returns `TaskStatus::Pending` if no status is set.
+    /// Returns `TaskStatus::Open` if no status is set.
     pub fn status(&self) -> TaskStatus {
         self.node
             .properties
             .get("status")
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse().ok())
-            .unwrap_or(TaskStatus::Pending)
+            .unwrap_or(TaskStatus::Open)
     }
 
     /// Set the task's status
@@ -295,8 +300,8 @@ impl TaskNodeBuilder {
     pub fn build(self) -> TaskNode {
         let mut properties = serde_json::Map::new();
 
-        // Set status (default to Pending if not specified)
-        let status = self.status.unwrap_or(TaskStatus::Pending);
+        // Set status (default to Open if not specified)
+        let status = self.status.unwrap_or(TaskStatus::Open);
         properties.insert("status".to_string(), json!(status.as_str()));
 
         // Set priority (default to 2 if not specified)

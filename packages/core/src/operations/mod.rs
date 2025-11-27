@@ -272,12 +272,13 @@ where
         }
 
         // Auto-create the date container
-        // IMPORTANT: Date node content MUST match the date ID for validation
-        // Use new_with_id to set both id and content to the date string
+        // Default content to the date ID when auto-creating.
+        // Per Issue #670, date nodes can have custom content (not required to match ID),
+        // but we use the date as default content for auto-created containers.
         let date_node = Node::new_with_id(
             node_id.to_string(), // ID is the date string (YYYY-MM-DD)
             "date".to_string(),
-            node_id.to_string(), // Content MUST match ID for validation
+            node_id.to_string(), // Default content to date (can be customized later)
             json!({}),           // Date nodes are always root-level containers
         );
 
