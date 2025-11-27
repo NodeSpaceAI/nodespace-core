@@ -317,16 +317,24 @@ export class TextareaController {
 
       this.element.value = content;
 
-      // Check if this is a node type conversion in progress
-      // Node type conversions are signaled via focusManager.cursorPosition.type
+      // Check if FocusManager has a pending cursor position
+      // Issue #669: ANY cursor position type should skip the default setCursorAtBeginningOfLine
+      // because the positionCursor action handles all cursor positioning cases.
+      // Previously only checked for 'node-type-conversion', but 'absolute', 'default', etc.
+      // also need to be handled by the action, not overridden here.
+      const hasPendingCursorPosition = focusManager.cursorPosition !== null;
       const isTypeConversion = focusManager.cursorPosition?.type === 'node-type-conversion';
 
       // Clear cursor position AFTER checking type
       // The positionCursor action will handle cursor positioning
       // This must happen here (not in the action) to avoid a race condition where
       // RAF runs before initialize() and clears the position before we can check it
-      if (isTypeConversion) {
-        focusManager.clearCursorPosition();
+      // Issue #669: Clear for ALL position types, not just node-type-conversion
+      if (hasPendingCursorPosition) {
+        // Use RAF to ensure positionCursor action has a chance to read and process the position
+        requestAnimationFrame(() => {
+          focusManager.clearCursorPosition();
+        });
       }
 
       // Initialize pattern state for non-text types (Issue #664)
@@ -350,9 +358,11 @@ export class TextareaController {
           this.justCreated = false;
         }, 50);
 
-        // If this is a type conversion, skip cursor positioning - let positionCursor action handle it
-        // This prevents the cursor from jumping to the beginning during type conversions
-        if (!isTypeConversion) {
+        // Issue #669: Skip cursor positioning here if FocusManager has a pending position
+        // The positionCursor action will handle ALL cursor positioning types
+        // This prevents the cursor from being positioned at 0 before the action can apply
+        // the correct position (e.g., 'absolute' position from Enter key node creation)
+        if (!hasPendingCursorPosition) {
           cursorService.setCursorAtBeginningOfLine(this.element, 0, {
             focus: true,
             delay: 0,
