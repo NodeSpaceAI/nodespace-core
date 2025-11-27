@@ -724,14 +724,13 @@
     }
 
     // Set cursor position using FocusManager (single source of truth)
-    // For non-text node types that inherit their type (header, quote-block, ordered-list),
-    // use setEditingNodeFromTypeConversion to signal that:
-    // 1. The cursor should be positioned at newNodeCursorPosition (after the pattern syntax)
-    // 2. The nodeTypeSetViaPattern flag should be set (enables reversion to text on pattern deletion)
+    // Issue #664: For inherited type nodes (Enter key on typed node), use setEditingNodeFromInheritedType
+    // which sets pattern state to 'inherited' (cannot revert to text).
+    // This is different from pattern-detected type conversions which CAN revert.
     if (newNodeCursorPosition !== undefined && !focusOriginalNode) {
       if (nodeType !== 'text') {
-        // Non-text inherited nodes: Use type conversion signal so nodeTypeSetViaPattern gets set
-        focusManager.setEditingNodeFromTypeConversion(newNodeId, newNodeCursorPosition, paneId);
+        // Non-text inherited nodes: Use inherited-type signal (pattern state = 'inherited', cannot revert)
+        focusManager.setEditingNodeFromInheritedType(newNodeId, newNodeCursorPosition, paneId);
       } else {
         // Text nodes: Use regular editing node
         focusManager.setEditingNode(newNodeId, paneId, newNodeCursorPosition);
@@ -1360,7 +1359,6 @@
                   }
 
                   // Update node type through proper API (triggers component re-render)
-                  // Uses immediate persistence to ensure type change is saved right away
                   nodeManager.updateNodeType(node.id, newNodeType);
                 }}
                 on:slashCommandSelected={async (

@@ -33,6 +33,12 @@ import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { tabState } from '$lib/stores/navigation';
 import { get } from 'svelte/store';
 import { untrack } from 'svelte';
+import {
+  PatternState,
+  type NodeCreationSource,
+  type PatternMatch
+} from '$lib/state/pattern-state.svelte';
+import type { PatternDetectionConfig } from '$lib/plugins/types';
 
 // Module-level command singletons - created once and reused
 const KEYBOARD_COMMANDS = {
@@ -165,6 +171,28 @@ let keyboardCommandsRegistered = false;
 const cursorService = CursorPositioningService.getInstance();
 const MAX_QUERY_LENGTH = 100;
 
+/**
+ * Create a PatternMatch object from a pattern detection config and match
+ * Extracted to eliminate duplicate code (DRY principle)
+ */
+function createPatternMatch(config: PatternDetectionConfig, match: RegExpMatchArray): PatternMatch {
+  const regex = typeof config.pattern === 'string'
+    ? new RegExp(config.pattern)
+    : config.pattern;
+
+  return {
+    pattern: {
+      regex,
+      nodeType: config.targetNodeType,
+      priority: config.priority ?? 10,
+      splittingStrategy: 'prefix-inheritance',
+      cursorPlacement: 'after-prefix'
+    },
+    match: match,
+    nodeType: config.targetNodeType
+  };
+}
+
 // TextareaController - Core implementation class
 // Can be used directly in tests with 'new TextareaController(...)'
 // Or used reactively via createTextareaController() factory in components
@@ -177,7 +205,11 @@ export class TextareaController {
     public events: TextareaControllerEvents;
 
     private isInitialized: boolean = false;
-    private nodeTypeSetViaPattern: boolean = false;
+    /**
+     * Pattern state machine - manages pattern detection lifecycle
+     * Replaces the old nodeTypeSetViaPattern boolean flag (Issue #664)
+     */
+    private patternState: PatternState;
     private lastKnownPixelOffset: number = 0;
     private measurementElement: HTMLSpanElement | null = null;
 
@@ -204,7 +236,15 @@ export class TextareaController {
       nodeType: string,
       paneId: string,
       events: TextareaControllerEvents,
-      config: TextareaControllerConfig = {}
+      config: TextareaControllerConfig = {},
+      /**
+       * Creation source for pattern state (Issue #664)
+       * - 'user': User created node (patterns can be detected)
+       * - 'pattern': Node created via pattern detection (can revert to text)
+       * - 'inherited': Node inherits type from parent (cannot revert)
+       * If not provided, inferred from focusManager for backward compatibility
+       */
+      creationSource?: NodeCreationSource
     ) {
       this.element = element;
       this.nodeId = nodeId;
@@ -213,13 +253,28 @@ export class TextareaController {
       this.events = events;
       this.config = { allowMultiline: false, ...config };
 
-      // CRITICAL: Check if this controller is being created due to a type conversion
-      // If so, set the flag immediately BEFORE event listeners are attached
-      // This ensures input events processed before initialize() will see the correct flag
-      const isTypeConversion = focusManager.cursorPosition?.type === 'node-type-conversion';
-      if (isTypeConversion && this.nodeType !== 'text') {
-        this.nodeTypeSetViaPattern = true;
+      // Initialize pattern state (Issue #664)
+      // If creationSource not provided, infer from focusManager for backward compatibility
+      const cursorType = focusManager.cursorPosition?.type;
+      const isTypeConversion = cursorType === 'node-type-conversion';
+      const isInheritedType = cursorType === 'inherited-type';
+
+      // Determine creation source:
+      // - 'inherited': Enter key on typed node (cannot revert)
+      // - 'pattern': Pattern detection conversion (can revert)
+      // - 'user': Default (patterns can be detected)
+      let effectiveSource: NodeCreationSource;
+      if (creationSource) {
+        effectiveSource = creationSource;
+      } else if (isInheritedType && nodeType !== 'text') {
+        effectiveSource = 'inherited';
+      } else if (isTypeConversion && nodeType !== 'text') {
+        effectiveSource = 'pattern';
+      } else {
+        effectiveSource = 'user';
       }
+
+      this.patternState = new PatternState(effectiveSource);
 
       (this.element as unknown as { _textareaController: TextareaController })._textareaController =
         this;
@@ -256,7 +311,9 @@ export class TextareaController {
     }
 
     public initialize(content: string, autoFocus: boolean = false): void {
-      if (this.isInitialized) return;
+      if (this.isInitialized) {
+        return;
+      }
 
       this.element.value = content;
 
@@ -264,19 +321,25 @@ export class TextareaController {
       // Node type conversions are signaled via focusManager.cursorPosition.type
       const isTypeConversion = focusManager.cursorPosition?.type === 'node-type-conversion';
 
-      // Set nodeTypeSetViaPattern flag for non-text types
+      // Clear cursor position AFTER checking type
+      // The positionCursor action will handle cursor positioning
+      // This must happen here (not in the action) to avoid a race condition where
+      // RAF runs before initialize() and clears the position before we can check it
+      if (isTypeConversion) {
+        focusManager.clearCursorPosition();
+      }
+
+      // Initialize pattern state for non-text types (Issue #664)
       // This enables reversion to text type when the pattern is deleted
       if (this.nodeType !== 'text') {
         // If this component is being created due to a type conversion (via pattern detection),
-        // always set the flag - the node was created via pattern, so deleting the pattern
-        // should revert it back to text
-        if (isTypeConversion) {
-          this.nodeTypeSetViaPattern = true;
-        } else {
+        // the patternState was already set to 'pattern' in constructor
+        if (!isTypeConversion) {
           // For non-conversion cases (e.g., page load), check if content matches pattern
           const detection = pluginRegistry.detectPatternInContent(content);
           if (detection && detection.config.targetNodeType === this.nodeType) {
-            this.nodeTypeSetViaPattern = true;
+            // Content matches pattern - enable reversion capability
+            this.patternState.setPatternExists(createPatternMatch(detection.config, detection.match));
           }
         }
       }
@@ -311,8 +374,18 @@ export class TextareaController {
         return;
       }
 
+      // Preserve cursor position when updating content from external source
+      // Setting element.value resets cursor to position 0
+      const cursorPosition = this.element.selectionStart;
+      const cursorEnd = this.element.selectionEnd;
+
       this.element.value = content;
       this.adjustHeight();
+
+      // Restore cursor position, clamping to new content length
+      const newPosition = Math.min(cursorPosition, content.length);
+      const newEnd = Math.min(cursorEnd, content.length);
+      this.element.setSelectionRange(newPosition, newEnd);
     }
 
     public forceUpdateContent(content: string): void {
@@ -675,15 +748,17 @@ export class TextareaController {
     }
 
     private detectNodeTypeConversion(content: string): void {
+      // All nodes should detect pattern changes - inherited nodes behave the same
+      // as pattern-detected nodes for reversion (user clarification)
       const detection = pluginRegistry.detectPatternInContent(content);
 
       if (detection) {
         const { config, match } = detection;
 
         if (this.nodeType === config.targetNodeType) {
-          // Node type already matches - just ensure the flag is set
+          // Node type already matches - record pattern for reversion capability
           // This enables reversion when the pattern is later deleted
-          this.nodeTypeSetViaPattern = true;
+          this.patternState.setPatternExists(createPatternMatch(config, match));
           return;
         }
 
@@ -710,9 +785,13 @@ export class TextareaController {
           });
 
           this.nodeType = config.targetNodeType;
-          this.nodeTypeSetViaPattern = true;
+          // Record pattern match for reversion capability
+          this.patternState.recordPatternMatch(createPatternMatch(config, match), content);
         });
-      } else if (this.nodeType !== 'text' && this.nodeTypeSetViaPattern) {
+      } else if (this.nodeType !== 'text') {
+        // No pattern detected and node is not text - revert to text
+        // This handles both pattern-detected and inherited nodes when syntax is deleted
+        // e.g., "# Hello" -> "#Hello" (space deleted, no longer matches header pattern)
         const cursorPosition = this.getCursorPosition();
 
         untrack(() => {
@@ -724,7 +803,8 @@ export class TextareaController {
           });
 
           this.nodeType = 'text';
-          this.nodeTypeSetViaPattern = false;
+          // Reset pattern state to user mode (enables future pattern detection)
+          this.patternState.resetToUser();
         });
       }
     }
@@ -856,6 +936,9 @@ export class TextareaController {
     }
   }
 
+// Re-export NodeCreationSource for use by components
+export type { NodeCreationSource } from '$lib/state/pattern-state.svelte';
+
 // Factory function for reactive controller with Svelte 5 runes
 export function createTextareaController(
   // Element getter for fine-grained reactivity
@@ -867,7 +950,16 @@ export function createTextareaController(
   getContent: () => string,
   getEditableConfig: () => TextareaControllerConfig,
   // Events and config
-  events: TextareaControllerEvents
+  events: TextareaControllerEvents,
+  /**
+   * Pattern state creation source (Issue #664)
+   * Controls how pattern detection behaves for this node:
+   * - 'user': User-created node, patterns can be detected and can revert
+   * - 'pattern': Created via pattern detection, can revert to text
+   * - 'inherited': Inherited type from parent (Enter key), cannot revert
+   * If not provided, inferred from focusManager for backward compatibility
+   */
+  creationSource?: NodeCreationSource
 ): TextareaControllerState {
   // Internal mutable state (using $state for Svelte 5 reactivity)
   let controller: TextareaController | null = null;
@@ -888,7 +980,8 @@ export function createTextareaController(
           nodeType,
           paneId,
           events,
-          editableConfig
+          editableConfig,
+          creationSource
         );
       } else if (!element && controller) {
         controller.destroy();

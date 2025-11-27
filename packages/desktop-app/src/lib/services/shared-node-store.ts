@@ -98,6 +98,7 @@ class SimplePersistenceCoordinator {
             }
           }
         }
+
         await operation();
         resolve();
       } catch (error) {
@@ -2083,7 +2084,17 @@ export class SharedNodeStore {
           if (isPersistedToDatabase) {
             // Get current version for optimistic concurrency control
             const currentVersion = finalNode.version ?? 1;
-            await tauriCommands.updateNode(nodeId, currentVersion, changes);
+
+            // CRITICAL: Capture updated node to get new version from backend
+            // This prevents version conflicts on subsequent updates
+            const updatedNodeFromBackend = await tauriCommands.updateNode(nodeId, currentVersion, changes);
+
+            // Update local node with backend version
+            const localNode = this.nodes.get(nodeId);
+            if (localNode && updatedNodeFromBackend) {
+              localNode.version = updatedNodeFromBackend.version;
+              this.nodes.set(nodeId, localNode);
+            }
           } else {
             // Try CREATE, but handle race condition where old path persisted first
             try {
@@ -2107,8 +2118,15 @@ export class SharedNodeStore {
                 // Race detected: Old debounced path persisted before batch started
                 // Update with batched changes to fix inconsistent state
                 const currentVersion = finalNode.version ?? 1;
-                await tauriCommands.updateNode(nodeId, currentVersion, changes);
+                const updatedNodeFromBackend = await tauriCommands.updateNode(nodeId, currentVersion, changes);
                 this.persistedNodeIds.add(nodeId);
+
+                // Update local node with backend version
+                const localNode = this.nodes.get(nodeId);
+                if (localNode && updatedNodeFromBackend) {
+                  localNode.version = updatedNodeFromBackend.version;
+                  this.nodes.set(nodeId, localNode);
+                }
               } else {
                 throw createError;
               }

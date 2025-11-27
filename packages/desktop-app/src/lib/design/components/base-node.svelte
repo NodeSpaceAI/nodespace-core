@@ -588,7 +588,8 @@
       // (Don't clear if focus has already moved to another node via arrow navigation)
       // CRITICAL: Don't clear if this is a node type conversion (component is re-mounting)
       untrack(() => {
-        const isNodeTypeConversion = focusManager.cursorPosition?.type === 'node-type-conversion';
+        const cursorType = focusManager.cursorPosition?.type;
+        const isNodeTypeConversion = cursorType === 'node-type-conversion' || cursorType === 'inherited-type';
         if (focusManager.editingNodeId === nodeId && !isNodeTypeConversion) {
           focusManager.clearEditing();
         }
@@ -736,13 +737,17 @@
   });
 
   // Watch for element initialization to call controller.initialize()
+  // CRITICAL: Use untrack for content to prevent re-running on content changes
+  // Content updates are handled by the factory's reactive effect in textarea-controller.svelte.ts
   $effect(() => {
     const element = textareaElement;
     if (element && controller) {
       const shouldFocus = autoFocus || isEditing;
       // Initialize controller with content - this sets nodeTypeSetViaPattern flag
       // for non-text nodes if content matches the pattern
-      controller.initialize(content, shouldFocus);
+      // Use untrack to read content without creating a dependency
+      const initialContent = untrack(() => content);
+      controller.initialize(initialContent, shouldFocus);
     }
   });
 

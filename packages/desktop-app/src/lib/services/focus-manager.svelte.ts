@@ -311,6 +311,29 @@ export const focusManager = {
   },
 
   /**
+   * Issue #664: Set which node is being edited for inherited type nodes
+   *
+   * Called when Enter key creates a new node that inherits its type from the parent.
+   * Unlike setEditingNodeFromTypeConversion, this sets cursor type to 'inherited-type'
+   * which signals TextareaController to use 'inherited' creation source (cannot revert).
+   *
+   * @param nodeId - The node to edit
+   * @param cursorPosition - Cursor position to restore after component switch
+   * @param paneId - The pane ID where the node is being edited
+   */
+  setEditingNodeFromInheritedType(nodeId: string, cursorPosition: number, paneId: string): void {
+    _editingNodeId = nodeId;
+    _editingPaneId = paneId;
+    _pendingCursorPosition = null;
+    _arrowNavDirection = null;
+    _arrowNavPixelOffset = null;
+    _nodeTypeConversionCursorPosition = null; // Not a type conversion
+
+    // Update new unified state - 'inherited-type' signals controller to use 'inherited' source
+    _cursorPosition = { type: 'inherited-type', position: cursorPosition };
+  },
+
+  /**
    * Clear editing state (no node is being edited)
    */
   clearEditing(): void {
