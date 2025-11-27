@@ -911,9 +911,16 @@ export class SharedNodeStore {
         // Issue #479: No placeholder checks - all real nodes should be persisted
 
         // Delegate to PersistenceCoordinator
-        // Sibling ordering is now managed via fractional position IDs in the backend
-        // No frontend foreign key dependency tracking needed for beforeSiblingId
+        // CRITICAL FIX: Track insertAfterNodeId as dependency to prevent race conditions
+        // When creating a node with insertAfterNodeId, the referenced node MUST exist in DB first
+        // Otherwise backend fails with "Node 'xyz' does not exist"
         const dependencies: Array<string | (() => Promise<void>)> = [];
+
+        // If this node references another node via insertAfterNodeId, wait for that node first
+        const insertAfterNodeId = (node as Node & { insertAfterNodeId?: string | null }).insertAfterNodeId;
+        if (insertAfterNodeId && !this.persistedNodeIds.has(insertAfterNodeId)) {
+          dependencies.push(insertAfterNodeId);
+        }
 
         // Issue #479: Always persist the full node including content
         // Real nodes (even with only syntax like "## ") must include content field for backend validation
@@ -966,13 +973,19 @@ export class SharedNodeStore {
                 }
               }
             } catch (dbError) {
-              const error = dbError instanceof Error ? dbError : new Error(String(dbError));
+              // Properly stringify Tauri errors which come as plain objects
+              const errorMessage = dbError instanceof Error
+                ? dbError.message
+                : typeof dbError === 'object' && dbError !== null
+                  ? JSON.stringify(dbError)
+                  : String(dbError);
+              const error = dbError instanceof Error ? dbError : new Error(errorMessage);
 
               // Suppress expected errors in in-memory test mode
               if (shouldLogDatabaseErrors()) {
                 console.error(
                   `[SharedNodeStore] Database write failed for node ${node.id}:`,
-                  error
+                  errorMessage
                 );
               }
 
