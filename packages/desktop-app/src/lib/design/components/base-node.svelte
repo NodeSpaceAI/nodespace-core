@@ -529,8 +529,8 @@
     });
   }
 
-  // Import markdown renderer for view mode
-  import { markdownToHtml } from '$lib/utils/marked-config';
+  // Import structured view mode renderer (avoids {@html} XSS warning)
+  import ViewModeRenderer from './view-mode-renderer.svelte';
 
   // Event dispatcher - aligned with NodeViewerEventDetails interface
   const dispatch = createEventDispatcher<{
@@ -751,60 +751,7 @@
     }
   });
 
-  // Update view mode rendering when content or editing state changes
-  $effect(() => {
-    if (!isEditing && viewElement) {
-      // Use displayContent if provided (for node types that strip syntax in blur mode), otherwise use content
-      let processedContent = displayContent ?? content;
-
-      // Check if markdown processing should be disabled (e.g., for code blocks)
-      const disableMarkdown = metadata?.disableMarkdown === true;
-
-      let html: string;
-
-      if (disableMarkdown) {
-        // Raw text mode - just convert newlines to <br>, no markdown processing
-        html = processedContent
-          .split('\n')
-          .map((line) => line || '') // Keep empty lines
-          .join('<br>');
-      } else {
-        // Normal markdown processing for text/header/task nodes
-        // IMPORTANT: Process blank lines BEFORE markdownToHtml
-        // marked.js with breaks:true converts all \n to <br>, losing the ability to detect \n\n
-        const BLANK_LINE_PLACEHOLDER = '___BLANK___';
-
-        // Replace consecutive newlines with placeholders
-        processedContent = processedContent.replace(/\n\n+/g, (match) => {
-          // Number of blank lines = (number of \n) - 1
-          // "\n\n" = 1 blank line, "\n\n\n" = 2 blank lines
-          const blankLineCount = match.length - 1;
-          return '\n' + BLANK_LINE_PLACEHOLDER.repeat(blankLineCount);
-        });
-
-        // Process markdown (converts \n to <br>, handles formatting)
-        html = markdownToHtml(processedContent);
-
-        // Replace placeholders with <br> tags for blank lines
-        html = html.replace(new RegExp(BLANK_LINE_PLACEHOLDER, 'g'), '<br>');
-      }
-
-      // Preserve leading newlines
-      const leadingNewlines = content.match(/^\n+/);
-      if (leadingNewlines) {
-        html = '<br>'.repeat(leadingNewlines[0].length) + html;
-      }
-
-      // Preserve trailing newlines
-      const trailingNewlines = content.match(/\n+$/);
-      if (trailingNewlines) {
-        html += '<br>'.repeat(trailingNewlines[0].length + 1);
-      }
-
-      viewElement.innerHTML = html;
-    }
-  });
-
+  // REMOVED: View mode rendering effect - now handled by viewHtml $derived
   // REMOVED: Content sync effect - now handled by reactive factory function
   // REMOVED: Config sync effect - now handled by reactive factory function
   // REMOVED: Dropdown state sync - controller manages this internally through event handlers
@@ -956,7 +903,11 @@
         }
       }}
       role="button"
-    ></div>
+    ><ViewModeRenderer
+        {content}
+        {displayContent}
+        disableMarkdown={metadata?.disableMarkdown === true}
+      /></div>
   {/if}
 </div>
 
