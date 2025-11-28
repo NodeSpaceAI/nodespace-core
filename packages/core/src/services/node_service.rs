@@ -251,17 +251,17 @@ fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, String> {
 /// use nodespace_core::db::SurrealStore;
 /// use nodespace_core::models::Node;
 /// use std::path::PathBuf;
+/// use std::sync::Arc;
 /// use serde_json::json;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let db = SurrealStore::new(PathBuf::from("./data/test.db")).await?;
+///     let db = Arc::new(SurrealStore::new(PathBuf::from("./data/test.db")).await?);
 ///     let service = NodeService::new(db)?;
 ///
 ///     let node = Node::new(
 ///         "text".to_string(),
 ///         "Hello World".to_string(),
-///         None,
 ///         json!({}),
 ///     );
 ///
@@ -358,15 +358,15 @@ where
     /// # use nodespace_core::db::SurrealStore;
     /// # use nodespace_core::models::Node;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # use serde_json::json;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// let node = Node::new(
     ///     "text".to_string(),
     ///     "My note".to_string(),
-    ///     None,
     ///     json!({}),
     /// );
     /// let id = service.create_node(node).await?;
@@ -747,9 +747,10 @@ where
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// // Create mention: "daily-note" mentions "project-planning"
     /// service.create_mention("daily-note-id", "project-planning-id").await?;
@@ -831,9 +832,10 @@ where
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// service.delete_mention("daily-note-id", "project-planning-id").await?;
     /// # Ok(())
@@ -868,9 +870,10 @@ where
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// if let Some(node) = service.get_node("node-id-123").await? {
     ///     println!("Found: {}", node.content);
@@ -938,9 +941,10 @@ where
     /// # use nodespace_core::db::SurrealStore;
     /// # use nodespace_core::models::NodeUpdate;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// let update = NodeUpdate::new()
     ///     .with_content("Updated content".to_string());
@@ -1079,7 +1083,16 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```no_run
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use nodespace_core::NodeUpdate;
+    /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(db)?;
     /// let rows = service.update_with_version_check(
     ///     "node-123",
     ///     5,  // Expected version
@@ -1090,6 +1103,8 @@ where
     ///     // Version conflict - node was modified by another client
     ///     // Caller should fetch current state and handle conflict
     /// }
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn update_with_version_check(
         &self,
@@ -1300,9 +1315,10 @@ where
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// service.delete_node("node-id-123").await?;
     /// # Ok(())
@@ -1347,12 +1363,22 @@ where
     /// # Example
     ///
     /// ```rust
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(db)?;
     /// let rows = service.delete_with_version_check("node-123", 5).await?;
     ///
     /// if rows == 0 {
     ///     // Either version conflict or node doesn't exist
     ///     // Caller should check if node still exists to distinguish
     /// }
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn delete_with_version_check(
         &self,
@@ -1388,9 +1414,10 @@ where
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// let children = service.get_children("parent-id").await?;
     /// println!("Found {} children", children.len());
@@ -1658,8 +1685,9 @@ where
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// // Fetch all nodes for a date page
     /// let nodes = service.get_nodes_by_root_id("2025-10-05").await?;
@@ -1697,15 +1725,16 @@ where
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// // Move node under new parent
     /// service.move_node("node-id", Some("new-parent-id"), None).await?;
     ///
     /// // Make node a root
-    /// service.move_node("node-id", None).await?;
+    /// service.move_node("node-id", None, None).await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -1801,9 +1830,10 @@ where
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// // Position node after sibling
     /// service.reorder_child("node-id", Some("sibling-id")).await?;
@@ -1922,9 +1952,10 @@ where
     /// # use nodespace_core::db::SurrealStore;
     /// # use nodespace_core::models::NodeFilter;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// let filter = NodeFilter::new()
     ///     .with_node_type("task".to_string())
@@ -1989,9 +2020,10 @@ where
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// // Query by ID
     /// let query = NodeQuery::by_id("node-123".to_string());
@@ -2003,10 +2035,6 @@ where
     ///
     /// // Full-text search
     /// let query = NodeQuery::content_contains("search term".to_string()).with_limit(10);
-    /// let nodes = service.query_nodes_simple(query).await?;
-    ///
-    /// // Filter-only query (return all containers and tasks)
-    /// let query = NodeQuery { include_containers_and_tasks: Some(true), ..Default::default() };
     /// let nodes = service.query_nodes_simple(query).await?;
     /// # Ok(())
     /// # }
@@ -2151,10 +2179,11 @@ where
     /// # use nodespace_core::db::SurrealStore;
     /// # use nodespace_core::models::Node;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # use serde_json::json;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// let nodes = vec![
     ///     Node::new("text".to_string(), "Note 1".to_string(), json!({})),
@@ -2210,9 +2239,10 @@ where
     /// # use nodespace_core::db::SurrealStore;
     /// # use nodespace_core::models::NodeUpdate;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// let updates = vec![
     ///     ("node-1".to_string(), NodeUpdate::new().with_content("Updated 1".to_string())),
@@ -2312,9 +2342,10 @@ where
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// let ids = vec!["node-1".to_string(), "node-2".to_string()];
     /// service.bulk_delete(ids).await?;
@@ -2485,9 +2516,10 @@ where
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// service.add_mention("node-123", "node-456").await?;
     /// # Ok(())
@@ -2551,9 +2583,10 @@ where
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// service.remove_mention("node-123", "node-456").await?;
     /// # Ok(())
@@ -2590,9 +2623,10 @@ where
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// let mentions = service.get_mentions("node-123").await?;
     /// # Ok(())
@@ -2621,9 +2655,10 @@ where
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// let backlinks = service.get_mentioned_by("node-456").await?;
     /// # Ok(())
@@ -2646,12 +2681,13 @@ where
     ///
     /// # Example
     /// ```no_run
-    /// # use nodespace_core::services::node_service::NodeService;
-    /// # use nodespace_core::services::database::DatabaseService;
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = SurrealStore::new(PathBuf::from("./test.db")).await?;
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(db)?;
     /// // If nodes A and B (both children of Container X) mention target node,
     /// // returns ['container-x-id'] (deduplicated)

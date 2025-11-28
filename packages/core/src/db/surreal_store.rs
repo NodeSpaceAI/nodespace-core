@@ -531,14 +531,23 @@ where
     /// # Example
     ///
     /// ```rust,no_run
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use nodespace_core::DomainEvent;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let store = SurrealStore::new(PathBuf::from("./data/test.db")).await?;
     /// let mut rx = store.subscribe_to_events();
     /// while let Ok(event) = rx.recv().await {
     ///     match event {
     ///         DomainEvent::NodeCreated(node) => println!("Node created: {}", node.id),
     ///         DomainEvent::NodeUpdated(node) => println!("Node updated: {}", node.id),
     ///         // ... handle other events
+    ///         _ => {}
     ///     }
     /// }
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn subscribe_to_events(&self) -> broadcast::Receiver<DomainEvent> {
         self.event_tx.subscribe()
