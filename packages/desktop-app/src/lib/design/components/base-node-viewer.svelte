@@ -22,6 +22,7 @@
   import { nodeData as reactiveNodeData } from '$lib/stores/reactive-node-data.svelte';
   import { structureTree as reactiveStructureTree } from '$lib/stores/reactive-structure-tree.svelte';
   import type { Node } from '$lib/types';
+  import type { CoreTaskStatus } from '$lib/types/task-node';
   import type { Snippet } from 'svelte';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
   import { getViewerId, saveScrollPosition, getScrollPosition } from '$lib/stores/scroll-state';
@@ -132,8 +133,10 @@
   });
 
   // Track the viewed node reactively for schema form display
-  // Derived from sharedNodeStore - always up-to-date with the store
-  const currentViewedNode = $derived(nodeId ? sharedNodeStore.getNode(nodeId) : null);
+  // Use $state for reactivity since sharedNodeStore is not a Svelte 5 $state store
+  // This gets updated after loadChildrenForParent completes
+  let viewedNodeCache = $state<Node | null>(null);
+  const currentViewedNode = $derived(viewedNodeCache ?? (nodeId ? sharedNodeStore.getNode(nodeId) : null));
 
   // Scroll position tracking
   // Reference to the scroll container element
@@ -284,7 +287,8 @@
         // After loading completes, initialize header content and update tab title
         const node = sharedNodeStore.getNode(nodeId);
         headerContent = node?.content || '';
-        // currentViewedNode is now $derived - no manual assignment needed
+        // Update viewedNodeCache to trigger reactivity for SchemaPropertyForm
+        viewedNodeCache = node ?? null;
 
         // Update tab title after node is loaded
         if (!shouldDisableTitleUpdates) {
@@ -388,6 +392,24 @@
 
     // Default: Return properties as-is
     return properties;
+  }
+
+  /**
+   * Maps UI task state to schema status value.
+   * UI uses: 'pending', 'inProgress', 'completed'
+   * Schema uses: 'open', 'in_progress', 'done', 'cancelled'
+   */
+  function mapNodeStateToSchemaStatus(state: string): CoreTaskStatus {
+    switch (state) {
+      case 'pending':
+        return 'open';
+      case 'inProgress':
+        return 'in_progress';
+      case 'completed':
+        return 'done';
+      default:
+        return 'open';
+    }
   }
 
   /**
@@ -1407,6 +1429,19 @@
                     // Add to store and trigger persistence
                     // Note: LIVE SELECT handles parent-child relationship via edge:created events
                     sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
+
+                    // CRITICAL: Add parent-child edge to reactiveStructureTree immediately
+                    // This makes the promoted node visible in visibleNodesFromStores, which causes
+                    // shouldShowPlaceholder to become false, switching the binding from placeholder to real child.
+                    // Backend will also create the edge when persisting, and SSE will confirm (no-op since already added).
+                    reactiveStructureTree.addChild({
+                      parentId: nodeId,
+                      childId: promotedNode.id,
+                      order: Date.now()
+                    });
+
+                    // Clear placeholder ID so fresh one is created if needed later
+                    resetPlaceholderId();
                   } else {
                     console.log('[BaseNodeViewer] Updating node type for real node');
                     // For real nodes, update node type with full persistence
@@ -1415,26 +1450,8 @@
                 }}
                 on:iconClick={handleIconClick}
                 on:taskStateChanged={(e) => {
-                  const { nodeId, state } = e.detail;
-
-                  // Map UI state to schema enum value
-                  let schemaStatus: string;
-                  switch (state) {
-                    case 'pending':
-                      schemaStatus = 'OPEN';
-                      break;
-                    case 'inProgress':
-                      schemaStatus = 'IN_PROGRESS';
-                      break;
-                    case 'completed':
-                      schemaStatus = 'DONE';
-                      break;
-                    default:
-                      schemaStatus = 'OPEN';
-                  }
-
-                  // Update using schema-aware helper (handles nested format correctly)
-                  updateSchemaField(nodeId, 'status', schemaStatus);
+                  const { nodeId: eventNodeId, state } = e.detail;
+                  updateSchemaField(eventNodeId, 'status', mapNodeStateToSchemaStatus(state));
                 }}
                 on:combineWithPrevious={handleCombineWithPrevious}
                 on:deleteNode={handleDeleteNode}
@@ -1566,6 +1583,19 @@
                     // Add to store and trigger persistence
                     // Note: LIVE SELECT handles parent-child relationship via edge:created events
                     sharedNodeStore.setNode(promotedNode, { type: 'viewer', viewerId }, false);
+
+                    // CRITICAL: Add parent-child edge to reactiveStructureTree immediately
+                    // This makes the promoted node visible in visibleNodesFromStores, which causes
+                    // shouldShowPlaceholder to become false, switching the binding from placeholder to real child.
+                    // Backend will also create the edge when persisting, and SSE will confirm (no-op since already added).
+                    reactiveStructureTree.addChild({
+                      parentId: nodeId,
+                      childId: promotedNode.id,
+                      order: Date.now()
+                    });
+
+                    // Clear placeholder ID so fresh one is created if needed later
+                    resetPlaceholderId();
                   } else {
                     console.log('[BaseNodeViewer] Updating node type for real node');
                     // For real nodes, update node type with full persistence
@@ -1574,26 +1604,8 @@
                 }}
                 on:iconClick={handleIconClick}
                 on:taskStateChanged={(e) => {
-                  const { nodeId, state } = e.detail;
-
-                  // Map UI state to schema enum value
-                  let schemaStatus: string;
-                  switch (state) {
-                    case 'pending':
-                      schemaStatus = 'OPEN';
-                      break;
-                    case 'inProgress':
-                      schemaStatus = 'IN_PROGRESS';
-                      break;
-                    case 'completed':
-                      schemaStatus = 'DONE';
-                      break;
-                    default:
-                      schemaStatus = 'OPEN';
-                  }
-
-                  // Update using schema-aware helper (handles nested format correctly)
-                  updateSchemaField(nodeId, 'status', schemaStatus);
+                  const { nodeId: eventNodeId, state } = e.detail;
+                  updateSchemaField(eventNodeId, 'status', mapNodeStateToSchemaStatus(state));
                 }}
                 on:combineWithPrevious={handleCombineWithPrevious}
                 on:deleteNode={handleDeleteNode}

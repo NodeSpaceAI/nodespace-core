@@ -2,7 +2,7 @@
  * ReactiveNodeData - Reactive Store for Node Content and Properties
  *
  * Maintains a reactive map of node data (content, properties, metadata) using Svelte 5 $state.
- * Subscribes to LIVE SELECT node events (node:created, node:updated, node:deleted)
+ * Subscribes to Tauri node events (node:created, node:updated, node:deleted)
  * and automatically keeps the data synchronized with debounced content updates.
  *
  * Features:
@@ -41,7 +41,7 @@ class ReactiveNodeData {
   private readonly CONTENT_DEBOUNCE_MS = 400; // Optimal typing batching
 
   /**
-   * Initialize the store with LIVE SELECT event subscriptions
+   * Initialize the store with Tauri event subscriptions
    * This should be called once during app startup
    */
   async initialize() {
@@ -50,7 +50,7 @@ class ReactiveNodeData {
     console.log('[ReactiveNodeData] Initializing...');
 
     try {
-      // Subscribe to LIVE SELECT node events
+      // Subscribe to Tauri node events
       await this.subscribeToEvents();
 
       this.initialized = true;
@@ -62,7 +62,7 @@ class ReactiveNodeData {
   }
 
   /**
-   * Subscribe to node CRUD events from LIVE SELECT
+   * Subscribe to node CRUD events from Tauri backend
    * @throws Error if critical event subscriptions fail
    */
   private async subscribeToEvents() {
@@ -266,7 +266,7 @@ class ReactiveNodeData {
   private addNode(nodeData: NodeEventData) {
     // Convert event data to Node format
     // Note: NodeEventData doesn't include all Node fields, but that's OK
-    // We'll have the minimal fields from LIVE SELECT
+    // We'll have the minimal fields from Tauri events
     const node: Node = {
       id: nodeData.id,
       nodeType: nodeData.nodeType,
@@ -282,7 +282,7 @@ class ReactiveNodeData {
   }
 
   /**
-   * Update node data from LIVE SELECT event
+   * Update node data from Tauri event
    * @private
    */
   private updateNodeData(nodeData: NodeEventData) {

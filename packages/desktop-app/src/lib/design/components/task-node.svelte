@@ -19,8 +19,9 @@
   import type { NodeState } from '$lib/design/icons/registry';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
-  import { nodeData } from '$lib/stores/reactive-node-data.svelte';
   import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
+  import { sharedNodeStore } from '$lib/services/shared-node-store';
+  import { isTaskNode, getTaskStatus, type TaskStatus } from '$lib/types/task-node';
 
   // Get paneId from context (set by PaneContent) - identifies which pane this node is in
   const sourcePaneId = getContext<string>('paneId') ?? DEFAULT_PANE_ID;
@@ -44,14 +45,14 @@
 
   const dispatch = createEventDispatcher();
 
-  // Use reactive stores directly instead of relying on props
-  // Components query the stores for current data and re-render automatically when data changes
-  let node = $derived(nodeData.getNode(nodeId));
+  // Use sharedNodeStore as single source of truth for cross-pane reactivity
+  // This ensures property changes (like status) from other panes are immediately reflected
+  let sharedNode = $derived(sharedNodeStore.getNode(nodeId));
   let childIds = $derived(structureTree.getChildren(nodeId));
 
-  // Derive props from stores with fallback to passed props for backward compatibility
-  let content = $derived(node?.content ?? propsContent);
-  let nodeType = $derived(node?.nodeType ?? propsNodeType);
+  // Derive props from sharedNodeStore with fallback to passed props for backward compatibility
+  let content = $derived(sharedNode?.content ?? propsContent);
+  let nodeType = $derived(sharedNode?.nodeType ?? propsNodeType);
   let children = $derived(childIds ?? propsChildren);
 
   // Track if user is actively typing (hide button during typing)
@@ -79,9 +80,32 @@
   // REFACTOR (Issue #316): Removed $effect for prop sync, will use bind:content instead
   // Replaced $effect with $derived.by() for task state detection
 
+  /**
+   * Map TaskStatus to NodeState for icon rendering
+   */
+  function taskStatusToNodeState(status: TaskStatus): NodeState {
+    switch (status) {
+      case 'in_progress':
+        return 'inProgress';
+      case 'done':
+      case 'cancelled':
+        return 'completed';
+      case 'open':
+      default:
+        return 'pending';
+    }
+  }
+
   // Task-specific state management using $derived.by() for reactive computation
-  // When content has task syntax, derive from content; otherwise use metadata
+  // Priority: 1) Schema status property, 2) Content task syntax, 3) Metadata, 4) Default
   let taskState = $derived.by(() => {
+    // First check schema properties using type-safe helpers (cross-pane reactive via sharedNodeStore)
+    if (sharedNode && isTaskNode(sharedNode)) {
+      const status = getTaskStatus(sharedNode);
+      return taskStatusToNodeState(status);
+    }
+
+    // Fall back to content-based task syntax
     const hasTaskSyntax = /^\s*-?\s*\[(x|X|~|o|\s)\]/i.test(content.trim());
     return hasTaskSyntax ? parseTaskState(content) : (metadata.taskState as NodeState) || 'pending';
   });

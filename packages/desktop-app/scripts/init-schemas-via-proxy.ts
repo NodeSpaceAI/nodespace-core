@@ -138,14 +138,15 @@ async function seedCoreSchemas(): Promise<void> {
     return;
   }
 
-  // Task schema
+  // Task schema - uses camelCase for JSON fields per naming conventions
+  // Status values are lowercase for consistency across all layers (Issue #670)
   console.log('  📝 Creating task schema...');
   await createSchemaNode({
     id: 'task',
     nodeType: 'schema',
     content: 'Task',
     properties: {
-      is_core: true,
+      isCore: true,
       version: 1,
       description: 'Task tracking schema',
       fields: [
@@ -153,27 +154,27 @@ async function seedCoreSchemas(): Promise<void> {
           name: 'status',
           type: 'enum',
           protection: 'core',
-          core_values: ['OPEN', 'IN_PROGRESS', 'DONE'],
-          user_values: [],
+          coreValues: ['open', 'in_progress', 'done', 'cancelled'],
+          userValues: [],
           indexed: true,
           required: true,
           extensible: true,
-          default: 'OPEN',
+          default: 'open',
           description: 'Task status'
         },
         {
           name: 'priority',
           type: 'enum',
           protection: 'user',
-          core_values: ['LOW', 'MEDIUM', 'HIGH'],
-          user_values: [],
+          coreValues: ['low', 'medium', 'high'],
+          userValues: [],
           indexed: true,
           required: false,
           extensible: true,
           description: 'Task priority'
         },
         {
-          name: 'due_date',
+          name: 'dueDate',
           type: 'date',
           protection: 'user',
           indexed: true,
@@ -181,7 +182,7 @@ async function seedCoreSchemas(): Promise<void> {
           description: 'Due date'
         },
         {
-          name: 'started_at',
+          name: 'startedAt',
           type: 'date',
           protection: 'user',
           indexed: false,
@@ -189,7 +190,7 @@ async function seedCoreSchemas(): Promise<void> {
           description: 'Started at'
         },
         {
-          name: 'completed_at',
+          name: 'completedAt',
           type: 'date',
           protection: 'user',
           indexed: false,
@@ -215,7 +216,7 @@ async function seedCoreSchemas(): Promise<void> {
     nodeType: 'schema',
     content: 'Date',
     properties: {
-      is_core: true,
+      isCore: true,
       version: 1,
       description: 'Date node schema',
       fields: []
@@ -229,7 +230,7 @@ async function seedCoreSchemas(): Promise<void> {
     nodeType: 'schema',
     content: 'Text',
     properties: {
-      is_core: true,
+      isCore: true,
       version: 1,
       description: 'Plain text content',
       fields: []
@@ -243,7 +244,7 @@ async function seedCoreSchemas(): Promise<void> {
     nodeType: 'schema',
     content: 'Header',
     properties: {
-      is_core: true,
+      isCore: true,
       version: 1,
       description: 'Markdown header (h1-h6)',
       fields: []
@@ -257,7 +258,7 @@ async function seedCoreSchemas(): Promise<void> {
     nodeType: 'schema',
     content: 'Code Block',
     properties: {
-      is_core: true,
+      isCore: true,
       version: 1,
       description: 'Code block with syntax highlighting',
       fields: []
@@ -271,7 +272,7 @@ async function seedCoreSchemas(): Promise<void> {
     nodeType: 'schema',
     content: 'Quote Block',
     properties: {
-      is_core: true,
+      isCore: true,
       version: 1,
       description: 'Blockquote for citations',
       fields: []
@@ -285,7 +286,7 @@ async function seedCoreSchemas(): Promise<void> {
     nodeType: 'schema',
     content: 'Ordered List',
     properties: {
-      is_core: true,
+      isCore: true,
       version: 1,
       description: 'Numbered list item',
       fields: []
