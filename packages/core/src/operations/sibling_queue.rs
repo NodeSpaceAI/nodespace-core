@@ -1,6 +1,6 @@
 //! Sibling operation queue with retry logic for optimistic concurrency control
 //!
-//! This module provides a wrapper around NodeOperations that handles version
+//! This module provides a wrapper around NodeService that handles version
 //! conflicts during sibling reordering operations by implementing automatic retry
 //! with exponential backoff.
 //!
@@ -14,11 +14,12 @@
 //! # Example
 //!
 //! ```rust
-//! use nodespace_core::operations::{NodeOperations, SiblingOperationQueue};
+//! use nodespace_core::operations::SiblingOperationQueue;
+//! use nodespace_core::services::NodeService;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! # let operations = todo!(); // NodeOperations instance
-//! let queue = SiblingOperationQueue::new(operations);
+//! # let node_service = todo!(); // NodeService instance
+//! let queue = SiblingOperationQueue::new(node_service);
 //!
 //! // Retry up to 3 times with exponential backoff (10ms, 20ms, 40ms)
 //! queue.reorder_with_retry(
@@ -30,23 +31,23 @@
 //! # }
 //! ```
 
-use crate::operations::{NodeOperationError, NodeOperations};
+use crate::services::{NodeService, NodeServiceError};
 use std::sync::Arc;
 use tokio::time::Duration;
 
 /// Queue for managing sibling operations with automatic retry on version conflicts
 ///
-/// This wrapper around NodeOperations provides retry logic specifically for
+/// This wrapper around NodeService provides retry logic specifically for
 /// reorder operations, which are most likely to encounter transient version conflicts.
 pub struct SiblingOperationQueue {
-    /// Underlying NodeOperations instance
-    operations: Arc<NodeOperations>,
+    /// Underlying NodeService instance
+    node_service: Arc<NodeService>,
 }
 
 impl SiblingOperationQueue {
-    /// Create a new SiblingOperationQueue wrapping the given NodeOperations
-    pub fn new(operations: Arc<NodeOperations>) -> Self {
-        Self { operations }
+    /// Create a new SiblingOperationQueue wrapping the given NodeService
+    pub fn new(node_service: Arc<NodeService>) -> Self {
+        Self { node_service }
     }
 
     /// Reorder a node with automatic retry on version conflicts
@@ -63,7 +64,7 @@ impl SiblingOperationQueue {
     ///
     /// # Retry Behavior
     ///
-    /// - **Retry on**: `NodeOperationError::VersionConflict` only
+    /// - **Retry on**: `NodeServiceError::VersionConflict` only
     /// - **Backoff**: Exponential (10ms, 20ms, 40ms, 80ms, ...)
     /// - **Fresh data**: Each retry fetches current node version
     /// - **Other errors**: Fail immediately without retry
@@ -71,16 +72,17 @@ impl SiblingOperationQueue {
     /// # Returns
     ///
     /// - `Ok(())` - Operation succeeded (possibly after retries)
-    /// - `Err(NodeOperationError::VersionConflict)` - Max retries exceeded
-    /// - `Err(NodeOperationError::*)` - Non-retriable error occurred
+    /// - `Err(NodeServiceError::VersionConflict)` - Max retries exceeded
+    /// - `Err(NodeServiceError::*)` - Non-retriable error occurred
     ///
     /// # Example
     ///
     /// ```rust
-    /// # use nodespace_core::operations::{NodeOperations, SiblingOperationQueue};
+    /// # use nodespace_core::operations::SiblingOperationQueue;
+    /// # use nodespace_core::services::NodeService;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let operations = todo!();
-    /// let queue = SiblingOperationQueue::new(operations);
+    /// # let node_service = todo!();
+    /// let queue = SiblingOperationQueue::new(node_service);
     ///
     /// // Retry up to 5 times (exponential backoff: 10ms, 20ms, 40ms, 80ms, 160ms)
     /// match queue.reorder_with_retry("node-id", Some("sibling-id"), 5).await {
@@ -95,21 +97,21 @@ impl SiblingOperationQueue {
         node_id: &str,
         insert_after_node_id: Option<&str>,
         max_retries: usize,
-    ) -> Result<(), NodeOperationError> {
+    ) -> Result<(), NodeServiceError> {
         let mut attempt = 0;
 
         loop {
             // Fetch fresh version for this attempt
             let node = self
-                .operations
+                .node_service
                 .get_node(node_id)
                 .await?
-                .ok_or_else(|| NodeOperationError::node_not_found(node_id.to_string()))?;
+                .ok_or_else(|| NodeServiceError::node_not_found(node_id.to_string()))?;
 
             // Attempt reorder with current version
             match self
-                .operations
-                .reorder_node(node_id, node.version, insert_after_node_id)
+                .node_service
+                .reorder_node_with_occ(node_id, node.version, insert_after_node_id)
                 .await
             {
                 // Success - return immediately
@@ -125,7 +127,7 @@ impl SiblingOperationQueue {
                 }
 
                 // Version conflict - retry if we haven't exceeded max_retries
-                Err(NodeOperationError::VersionConflict {
+                Err(NodeServiceError::VersionConflict {
                     node_id: ref conflict_node_id,
                     expected_version,
                     actual_version,
@@ -150,7 +152,7 @@ impl SiblingOperationQueue {
 
                 // Max retries exceeded or non-retriable error - fail
                 Err(e) => {
-                    if matches!(e, NodeOperationError::VersionConflict { .. }) {
+                    if matches!(e, NodeServiceError::VersionConflict { .. }) {
                         tracing::warn!(
                             "Max retries ({}) exceeded for node '{}' reorder operation",
                             max_retries,
@@ -169,31 +171,29 @@ mod tests {
     use super::*;
     use crate::db::SurrealStore;
     use crate::operations::CreateNodeParams;
-    use crate::services::NodeService;
     use serde_json::json;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tempfile::TempDir;
 
-    /// Helper to set up test operations
-    async fn setup_test_operations(
-    ) -> Result<(Arc<NodeOperations>, TempDir), Box<dyn std::error::Error>> {
+    /// Helper to set up test service
+    async fn setup_test_service() -> Result<(Arc<NodeService>, TempDir), Box<dyn std::error::Error>>
+    {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
 
         let store = Arc::new(SurrealStore::new(db_path).await?);
-        let node_service = NodeService::new(store)?;
-        let operations = Arc::new(NodeOperations::new(Arc::new(node_service)));
-        Ok((operations, temp_dir))
+        let node_service = Arc::new(NodeService::new(store)?);
+        Ok((node_service, temp_dir))
     }
 
     #[tokio::test]
     async fn test_reorder_with_retry_success_on_first_attempt() {
-        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
-        let queue = SiblingOperationQueue::new(operations.clone());
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
+        let queue = SiblingOperationQueue::new(node_service.clone());
 
         // Create parent container (date node ID is auto-generated from content)
-        let parent_id = operations
-            .create_node(CreateNodeParams {
+        let parent_id = node_service
+            .create_node_with_parent(CreateNodeParams {
                 id: None, // Auto-generated as "2025-01-01" from content
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
@@ -205,8 +205,8 @@ mod tests {
             .unwrap();
 
         // Create two sibling nodes: A → B
-        let node_a = operations
-            .create_node(CreateNodeParams {
+        let node_a_id = node_service
+            .create_node_with_parent(CreateNodeParams {
                 id: None, // Auto-generate UUID
                 node_type: "text".to_string(),
                 content: "Node A".to_string(),
@@ -217,39 +217,38 @@ mod tests {
             .await
             .unwrap();
 
-        let node_b = operations
-            .create_node(CreateNodeParams {
+        let node_b_id = node_service
+            .create_node_with_parent(CreateNodeParams {
                 id: None, // Auto-generate UUID
                 node_type: "text".to_string(),
                 content: "Node B".to_string(),
                 parent_id: Some(parent_id.clone()),
-                insert_after_node_id: Some(node_a.clone()),
+                insert_after_node_id: Some(node_a_id.clone()),
                 properties: json!({}),
             })
             .await
             .unwrap();
 
         // Reorder B to be before A (should succeed on first attempt)
-        let result = queue.reorder_with_retry(&node_b, None, 3).await;
+        let result = queue.reorder_with_retry(&node_b_id, None, 3).await;
         assert!(result.is_ok(), "Reorder should succeed on first attempt");
 
         // Verify new order via get_children (ordered by edge order field)
-        // Note: Sibling ordering is now on has_child edge order field, not node.before_sibling_id
-        let children = operations.get_children(&parent_id).await.unwrap();
+        let children = node_service.get_children(&parent_id).await.unwrap();
         assert_eq!(children.len(), 2);
         // After reorder, B should be first
-        assert_eq!(children[0].id, node_b, "B should be first");
-        assert_eq!(children[1].id, node_a, "A should be second");
+        assert_eq!(children[0].id, node_b_id, "B should be first");
+        assert_eq!(children[1].id, node_a_id, "A should be second");
     }
 
     #[tokio::test]
     async fn test_reorder_with_retry_handles_version_conflict() {
-        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
-        let queue = SiblingOperationQueue::new(operations.clone());
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
+        let queue = SiblingOperationQueue::new(node_service.clone());
 
         // Create parent container (date node ID is auto-generated from content)
-        let parent_id = operations
-            .create_node(CreateNodeParams {
+        let parent_id = node_service
+            .create_node_with_parent(CreateNodeParams {
                 id: None, // Auto-generated as "2025-01-01" from content
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
@@ -261,8 +260,8 @@ mod tests {
             .unwrap();
 
         // Create node
-        let node_id = operations
-            .create_node(CreateNodeParams {
+        let node_id = node_service
+            .create_node_with_parent(CreateNodeParams {
                 id: None, // Auto-generate UUID
                 node_type: "text".to_string(),
                 content: "Original content".to_string(),
@@ -275,15 +274,15 @@ mod tests {
 
         // Simulate concurrent modification by updating the node directly
         // This will increment its version, causing the reorder to conflict
-        let node = operations.get_node(&node_id).await.unwrap().unwrap();
-        operations
-            .update_node(
-                &node_id,
-                node.version,
-                Some("Modified content".to_string()),
-                None,
-                None,
-            )
+        let node = node_service.get_node(&node_id).await.unwrap().unwrap();
+        let update = crate::models::NodeUpdate {
+            content: Some("Modified content".to_string()),
+            node_type: None,
+            properties: None,
+            embedding_vector: None,
+        };
+        node_service
+            .update_node_with_occ(&node_id, node.version, update)
             .await
             .unwrap();
 
@@ -297,12 +296,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_reorder_with_retry_exponential_backoff() {
-        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
-        let queue = SiblingOperationQueue::new(operations.clone());
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
+        let queue = SiblingOperationQueue::new(node_service.clone());
 
         // Create parent container (date node ID is auto-generated from content)
-        let parent_id = operations
-            .create_node(CreateNodeParams {
+        let parent_id = node_service
+            .create_node_with_parent(CreateNodeParams {
                 id: None, // Auto-generated as "2025-01-01" from content
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
@@ -314,8 +313,8 @@ mod tests {
             .unwrap();
 
         // Create node
-        let node_id = operations
-            .create_node(CreateNodeParams {
+        let node_id = node_service
+            .create_node_with_parent(CreateNodeParams {
                 id: None, // Auto-generate UUID
                 node_type: "text".to_string(),
                 content: "Test".to_string(),
@@ -343,12 +342,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_reorder_with_retry_max_retries_exceeded() {
-        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
-        let queue = SiblingOperationQueue::new(operations.clone());
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
+        let queue = SiblingOperationQueue::new(node_service.clone());
 
         // Create parent container (date node ID is auto-generated from content)
-        let parent_id = operations
-            .create_node(CreateNodeParams {
+        let parent_id = node_service
+            .create_node_with_parent(CreateNodeParams {
                 id: None, // Auto-generated as "2025-01-01" from content
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
@@ -360,8 +359,8 @@ mod tests {
             .unwrap();
 
         // Create node
-        let node_id = operations
-            .create_node(CreateNodeParams {
+        let node_id = node_service
+            .create_node_with_parent(CreateNodeParams {
                 id: None, // Auto-generate UUID
                 node_type: "text".to_string(),
                 content: "Test".to_string(),
@@ -374,7 +373,7 @@ mod tests {
 
         // Simulate high-contention scenario by continuously updating the node
         // in a background task
-        let operations_clone = operations.clone();
+        let node_service_clone = node_service.clone();
         let node_id_clone = node_id.clone();
         let update_count = Arc::new(AtomicU64::new(0));
         let update_count_clone = update_count.clone();
@@ -382,19 +381,19 @@ mod tests {
         let update_task = tokio::spawn(async move {
             // Continuously update the node to create conflicts
             for i in 0..10 {
-                let node = operations_clone
+                let current_node = node_service_clone
                     .get_node(&node_id_clone)
                     .await
                     .unwrap()
                     .unwrap();
-                let _ = operations_clone
-                    .update_node(
-                        &node_id_clone,
-                        node.version,
-                        Some(format!("Update {}", i)),
-                        None,
-                        None,
-                    )
+                let update = crate::models::NodeUpdate {
+                    content: Some(format!("Update {}", i)),
+                    node_type: None,
+                    properties: None,
+                    embedding_vector: None,
+                };
+                let _ = node_service_clone
+                    .update_node_with_occ(&node_id_clone, current_node.version, update)
                     .await;
                 update_count_clone.fetch_add(1, Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -414,7 +413,7 @@ mod tests {
             Ok(_) => {
                 // Success is acceptable if timing was right
             }
-            Err(NodeOperationError::VersionConflict { .. }) => {
+            Err(NodeServiceError::VersionConflict { .. }) => {
                 // Expected failure due to max retries exceeded
             }
             Err(e) => {
@@ -425,15 +424,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_reorder_with_retry_nonexistent_node() {
-        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
-        let queue = SiblingOperationQueue::new(operations.clone());
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
+        let queue = SiblingOperationQueue::new(node_service.clone());
 
         // Try to reorder a node that doesn't exist
         let result = queue.reorder_with_retry("nonexistent-node", None, 3).await;
 
         // Should fail with NodeNotFound error (not retry version conflicts)
         assert!(
-            matches!(result, Err(NodeOperationError::NodeNotFound { .. })),
+            matches!(result, Err(NodeServiceError::NodeNotFound { .. })),
             "Should get NodeNotFound error, got: {:?}",
             result
         );
@@ -441,12 +440,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_reorder_with_retry_eventual_consistency() {
-        let (operations, _temp_dir) = setup_test_operations().await.unwrap();
-        let _queue = SiblingOperationQueue::new(operations.clone());
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
+        let _queue = SiblingOperationQueue::new(node_service.clone());
 
         // Create parent container (date node ID is auto-generated from content)
-        let parent_id = operations
-            .create_node(CreateNodeParams {
+        let parent_id = node_service
+            .create_node_with_parent(CreateNodeParams {
                 id: None, // Auto-generated as "2025-01-01" from content
                 node_type: "date".to_string(),
                 content: "2025-01-01".to_string(),
@@ -458,8 +457,8 @@ mod tests {
             .unwrap();
 
         // Create three nodes: A → B → C
-        let node_a = operations
-            .create_node(CreateNodeParams {
+        let node_a_id = node_service
+            .create_node_with_parent(CreateNodeParams {
                 id: None, // Auto-generate UUID
                 node_type: "text".to_string(),
                 content: "A".to_string(),
@@ -470,37 +469,37 @@ mod tests {
             .await
             .unwrap();
 
-        let node_b = operations
-            .create_node(CreateNodeParams {
+        let node_b_id = node_service
+            .create_node_with_parent(CreateNodeParams {
                 id: None, // Auto-generate UUID
                 node_type: "text".to_string(),
                 content: "B".to_string(),
                 parent_id: Some(parent_id.clone()),
-                insert_after_node_id: Some(node_a.clone()),
+                insert_after_node_id: Some(node_a_id.clone()),
                 properties: json!({}),
             })
             .await
             .unwrap();
 
-        let node_c = operations
-            .create_node(CreateNodeParams {
+        let node_c_id = node_service
+            .create_node_with_parent(CreateNodeParams {
                 id: None, // Auto-generate UUID
                 node_type: "text".to_string(),
                 content: "C".to_string(),
                 parent_id: Some(parent_id.clone()),
-                insert_after_node_id: Some(node_b.clone()),
+                insert_after_node_id: Some(node_b_id.clone()),
                 properties: json!({}),
             })
             .await
             .unwrap();
 
         // Simulate concurrent reorder operations
-        let queue_clone = SiblingOperationQueue::new(operations.clone());
+        let queue_clone = SiblingOperationQueue::new(node_service.clone());
 
         // Both operations attempt to reorder at the same time
         let task1 = {
-            let q = SiblingOperationQueue::new(operations.clone());
-            let c = node_c.clone();
+            let q = SiblingOperationQueue::new(node_service.clone());
+            let c = node_c_id.clone();
             tokio::spawn(async move {
                 // Move C to first position
                 q.reorder_with_retry(&c, None, 5).await
@@ -509,7 +508,7 @@ mod tests {
 
         let task2 = {
             let q = queue_clone;
-            let b = node_b.clone();
+            let b = node_b_id.clone();
             tokio::spawn(async move {
                 // Move B before A
                 q.reorder_with_retry(&b, None, 5).await
@@ -524,14 +523,13 @@ mod tests {
         assert!(result2.is_ok(), "Task 2 should succeed with retries");
 
         // Verify final state is consistent via get_children ordering
-        // Note: Sibling ordering is now on has_child edge order field, not node.before_sibling_id
-        let children = operations.get_children(&parent_id).await.unwrap();
+        let children = node_service.get_children(&parent_id).await.unwrap();
         assert_eq!(children.len(), 3, "Should have 3 children");
 
         // Verify all nodes are present (order may vary due to concurrent operations)
         let child_ids: Vec<_> = children.iter().map(|n| n.id.clone()).collect();
-        assert!(child_ids.contains(&node_a), "A should be present");
-        assert!(child_ids.contains(&node_b), "B should be present");
-        assert!(child_ids.contains(&node_c), "C should be present");
+        assert!(child_ids.contains(&node_a_id), "A should be present");
+        assert!(child_ids.contains(&node_b_id), "B should be present");
+        assert!(child_ids.contains(&node_c_id), "C should be present");
     }
 }

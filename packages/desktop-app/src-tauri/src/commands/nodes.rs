@@ -1,6 +1,9 @@
 //! Node CRUD operation commands for Text, Task, and Date nodes
+//!
+//! As of Issue #676, all commands route through NodeService directly.
+//! NodeOperations layer has been removed - NodeService contains all business logic.
 
-use nodespace_core::operations::{CreateNodeParams, NodeOperationError, NodeOperations};
+use nodespace_core::operations::CreateNodeParams;
 use nodespace_core::services::SchemaService;
 use nodespace_core::{
     EdgeRecord, Node, NodeQuery, NodeService, NodeServiceError, NodeUpdate, SurrealStore,
@@ -44,19 +47,18 @@ pub struct CommandError {
 
 impl From<NodeServiceError> for CommandError {
     fn from(err: NodeServiceError) -> Self {
+        // Map specific error types to appropriate codes
+        let code = match &err {
+            NodeServiceError::NodeNotFound { .. } => "NODE_NOT_FOUND",
+            NodeServiceError::VersionConflict { .. } => "VERSION_CONFLICT",
+            NodeServiceError::InvalidParent { .. } => "INVALID_PARENT",
+            NodeServiceError::CircularReference { .. } => "CIRCULAR_REFERENCE",
+            NodeServiceError::HierarchyViolation(_) => "HIERARCHY_VIOLATION",
+            _ => "NODE_SERVICE_ERROR",
+        };
         CommandError {
             message: format!("Node operation failed: {}", err),
-            code: "NODE_SERVICE_ERROR".to_string(),
-            details: Some(format!("{:?}", err)),
-        }
-    }
-}
-
-impl From<NodeOperationError> for CommandError {
-    fn from(err: NodeOperationError) -> Self {
-        CommandError {
-            message: format!("Node operation failed: {}", err),
-            code: "NODE_OPERATION_ERROR".to_string(),
+            code: code.to_string(),
             details: Some(format!("{:?}", err)),
         }
     }
@@ -99,11 +101,11 @@ async fn validate_node_type(
 
 /// Create a new node of any type with a registered schema
 ///
-/// Uses NodeOperations business logic layer to enforce data integrity rules.
+/// Routes through NodeService which contains all business logic (Issue #676).
 /// Node type must have a corresponding schema defined in the system.
 ///
 /// # Arguments
-/// * `operations` - NodeOperations instance from Tauri state
+/// * `service` - NodeService instance from Tauri state
 /// * `schema_service` - SchemaService instance for validating node type
 /// * `node` - Node data to create (node_type must have a schema)
 ///
@@ -129,16 +131,16 @@ async fn validate_node_type(
 /// ```
 #[tauri::command]
 pub async fn create_node(
-    operations: State<'_, NodeOperations>,
+    service: State<'_, NodeService>,
     schema_service: State<'_, SchemaService>,
     node: CreateNodeInput,
 ) -> Result<String, CommandError> {
     validate_node_type(&node.node_type, &schema_service).await?;
 
-    // Use NodeOperations to create node with business rule enforcement
+    // Use NodeService to create node with business rule enforcement
     // Pass frontend-generated ID so frontend can track node before persistence completes
-    operations
-        .create_node(CreateNodeParams {
+    service
+        .create_node_with_parent(CreateNodeParams {
             id: Some(node.id), // Frontend provides UUID for local state tracking
             node_type: node.node_type,
             content: node.content,
@@ -178,15 +180,12 @@ pub struct SaveNodeWithParentInput {
 
 /// Create a new root node (top-level node that can contain other nodes)
 ///
-/// Uses NodeOperations to create root node with business rule enforcement.
+/// Routes through NodeService which contains all business logic (Issue #676).
 /// Root nodes are top-level nodes that can contain other nodes (pages, topics, etc.).
 /// Node type must have a corresponding schema defined in the system.
-/// NodeOperations ensures they have:
-/// - parent_id = None
 ///
 /// # Arguments
-/// * `operations` - NodeOperations instance from Tauri state
-/// * `service` - NodeService for mention relationship creation
+/// * `service` - NodeService instance from Tauri state
 /// * `schema_service` - SchemaService instance for validating node type
 /// * `input` - Root node data
 ///
@@ -207,22 +206,20 @@ pub struct SaveNodeWithParentInput {
 /// ```
 #[tauri::command]
 pub async fn create_root_node(
-    operations: State<'_, NodeOperations>,
     service: State<'_, NodeService>,
     schema_service: State<'_, SchemaService>,
     input: CreateRootNodeInput,
 ) -> Result<String, CommandError> {
     validate_node_type(&input.node_type, &schema_service).await?;
 
-    // Create root node with NodeOperations (enforces root node rules)
-    let node_id = operations
-        .create_node(CreateNodeParams {
-            id: None, // Let NodeOperations generate ID for root nodes
+    // Create root node with NodeService (parent_id = None means root)
+    let node_id = service
+        .create_node_with_parent(CreateNodeParams {
+            id: None, // Let NodeService generate ID for root nodes
             node_type: input.node_type,
             content: input.content,
-            parent_id: None, // parent_id = None for root nodes
-            // root is derived from parent chain (Issue #533)
-            insert_after_node_id: None, // before_sibling_id = None for root nodes
+            parent_id: None,            // parent_id = None for root nodes
+            insert_after_node_id: None, // No sibling positioning for root nodes
             properties: input.properties,
         })
         .await?;
@@ -303,27 +300,29 @@ pub async fn get_node(
 
 /// Update an existing node
 ///
-/// Uses NodeOperations to enforce business rules during updates.
+/// Routes through NodeService which contains all business logic (Issue #676).
 ///
 /// # Arguments
-/// * `operations` - NodeOperations instance from Tauri state
+/// * `service` - NodeService instance from Tauri state
 /// * `id` - Unique identifier of the node to update
+/// * `version` - Expected version for optimistic concurrency control
 /// * `update` - Fields to update on the node
 ///
 /// # Returns
-/// * `Ok(())` - Update successful
+/// * `Ok(Node)` - Updated node with new version
 /// * `Err(CommandError)` - Error with details if update fails
 ///
 /// # Errors
 /// Returns error if:
 /// - Node with given ID doesn't exist
-/// - Business rule validation fails
+/// - Version conflict (concurrent modification)
 /// - Database operation fails
 ///
 /// # Example Frontend Usage
 /// ```typescript
 /// await invoke('update_node', {
 ///   id: 'node-123',
+///   version: 5,
 ///   update: {
 ///     content: 'Updated content',
 ///     properties: { priority: 1 }
@@ -332,115 +331,118 @@ pub async fn get_node(
 /// ```
 #[tauri::command]
 pub async fn update_node(
-    operations: State<'_, NodeOperations>,
+    service: State<'_, NodeService>,
     id: String,
     version: i64,
     update: NodeUpdate,
 ) -> Result<Node, CommandError> {
-    // Use update_node_with_hierarchy to handle both content AND hierarchy changes
-    // This orchestrates move_node(), reorder_node(), and content updates as needed
-    // IMPORTANT: Return the updated Node so frontend can refresh its local version
-    operations
-        .update_node_with_hierarchy(&id, version, update)
+    // Use update_node_with_occ for OCC-protected updates
+    // Returns the updated Node so frontend can refresh its local version
+    service
+        .update_node_with_occ(&id, version, update)
         .await
         .map_err(Into::into)
 }
 
-/// Delete a node by ID
+/// Delete a node by ID with cascade deletion
 ///
-/// Uses NodeOperations for consistent deletion logic.
+/// Routes through NodeService which contains all business logic (Issue #676).
+/// Cascades delete to all child nodes recursively.
 ///
 /// # Arguments
-/// * `operations` - NodeOperations instance from Tauri state
+/// * `service` - NodeService instance from Tauri state
 /// * `id` - Unique identifier of the node to delete
+/// * `version` - Expected version for optimistic concurrency control
 ///
 /// # Returns
-/// * `Ok(DeleteResult)` - Deletion result with cascaded node IDs
+/// * `Ok(DeleteResult)` - Deletion result (existed: true if node was deleted)
 /// * `Err(CommandError)` - Error with details if deletion fails
 ///
 /// # Errors
 /// Returns error if:
-/// - Node with given ID doesn't exist
+/// - Version conflict (concurrent modification)
 /// - Database operation fails
-/// - Node has dependencies that prevent deletion
 ///
 /// # Warning
-/// This operation is destructive and cannot be undone. Consider implementing
-/// soft deletes in the future if undo functionality is required.
+/// This operation is destructive and cannot be undone. Deletes all child nodes
+/// recursively.
 ///
 /// # Example Frontend Usage
 /// ```typescript
-/// const result = await invoke('delete_node', { id: 'node-123' });
-/// console.log(`Deleted ${result.deletedNodeIds.length} nodes`);
+/// const result = await invoke('delete_node', { id: 'node-123', version: 5 });
+/// console.log(`Node existed: ${result.existed}`);
 /// ```
 #[tauri::command]
 pub async fn delete_node(
-    operations: State<'_, NodeOperations>,
+    service: State<'_, NodeService>,
     id: String,
     version: i64,
 ) -> Result<nodespace_core::models::DeleteResult, CommandError> {
-    operations
-        .delete_node(&id, version)
+    service
+        .delete_node_with_occ(&id, version)
         .await
         .map_err(Into::into)
 }
 
-/// Atomically move a node to a new parent with new sibling position
+/// Atomically move a node to a new parent with new sibling position (with OCC)
 ///
 /// Performs a single database transaction that:
+/// - Validates version for optimistic concurrency control
 /// - Deletes the old parent-child edge
 /// - Updates the node's before_sibling_id field
 /// - Creates the new parent-child edge (if new parent specified)
+/// - Bumps the node version after successful move
 ///
 /// This ensures database consistency without race conditions.
 ///
 /// # Arguments
-/// * `store` - SurrealStore instance from Tauri state
+/// * `service` - NodeService instance from Tauri state
 /// * `node_id` - ID of the node to move
+/// * `version` - Expected version for OCC (prevents concurrent modification conflicts)
 /// * `new_parent_id` - New parent (None = root node)
-/// * `new_before_sibling_id` - New position in sibling chain
+/// * `insert_after_node_id` - New position in sibling chain
 ///
 /// # Returns
 /// * `Ok(())` - Move completed successfully
-/// * `Err(CommandError)` - Error if move validation fails
+/// * `Err(CommandError)` - Error if move validation fails or version conflict
 ///
 /// # Example Frontend Usage
 /// ```typescript
 /// await invoke('move_node', {
 ///   nodeId: 'node-123',
+///   version: 5,
 ///   newParentId: 'parent-456',
-///   newBeforeSiblingId: 'node-789'
+///   insertAfterNodeId: 'node-789'
 /// });
 /// ```
 #[tauri::command]
 pub async fn move_node(
     service: State<'_, NodeService>,
     node_id: String,
+    version: i64,
     new_parent_id: Option<String>,
     insert_after_node_id: Option<String>,
 ) -> Result<(), CommandError> {
     service
-        .move_node(
+        .move_node_with_occ(
             &node_id,
+            version,
             new_parent_id.as_deref(),
             insert_after_node_id.as_deref(),
         )
         .await
-        .map_err(|e| CommandError {
-            message: format!("Move failed: {}", e),
-            code: "MOVE_ERROR".to_string(),
-            details: Some(format!("{:?}", e)),
-        })
+        .map_err(Into::into)
 }
 
 /// Reorder a node by changing its sibling position
 ///
-/// Uses NodeOperations to calculate sibling positions and validate ordering.
+/// Routes through NodeService which contains all business logic (Issue #676).
 ///
 /// # Arguments
-/// * `operations` - NodeOperations instance from Tauri state
+/// * `service` - NodeService instance from Tauri state
 /// * `node_id` - ID of the node to reorder
-/// * `before_sibling_id` - Optional ID of sibling to place before (None = last position)
+/// * `version` - Expected version for optimistic concurrency control
+/// * `insert_after_node_id` - Optional ID of sibling to place after (None = first position)
 ///
 /// # Returns
 /// * `Ok(())` - Node reordered successfully
@@ -449,23 +451,23 @@ pub async fn move_node(
 /// # Errors
 /// Returns error if:
 /// - Node doesn't exist
-/// - insert_after_node_id node doesn't exist
-/// - Sibling is not in the same parent
+/// - Version conflict (concurrent modification)
+/// - Sibling doesn't exist
 /// - Root node cannot be reordered
 ///
 /// # Example Frontend Usage
 /// ```typescript
-/// await invoke('reorder_node', { nodeId: 'node-123', insertAfterNodeId: 'sibling-456' });
+/// await invoke('reorder_node', { nodeId: 'node-123', version: 5, insertAfterNodeId: 'sibling-456' });
 /// ```
 #[tauri::command]
 pub async fn reorder_node(
-    operations: State<'_, NodeOperations>,
+    service: State<'_, NodeService>,
     node_id: String,
     version: i64,
     insert_after_node_id: Option<String>,
 ) -> Result<(), CommandError> {
-    operations
-        .reorder_node(&node_id, version, insert_after_node_id.as_deref())
+    service
+        .reorder_node_with_occ(&node_id, version, insert_after_node_id.as_deref())
         .await
         .map_err(Into::into)
 }

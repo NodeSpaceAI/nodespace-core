@@ -98,7 +98,7 @@ export interface BackendAdapter {
   getChildren(parentId: string): Promise<Node[]>;
   getDescendants(rootNodeId: string): Promise<Node[]>;
   getChildrenTree(parentId: string): Promise<NodeWithChildren | null>;
-  moveNode(nodeId: string, newParentId: string | null, insertAfterNodeId: string | null): Promise<void>;
+  moveNode(nodeId: string, version: number, newParentId: string | null, insertAfterNodeId: string | null): Promise<void>;
   getAllEdges(): Promise<EdgeRecord[]>;
 
   // Mentions
@@ -202,11 +202,12 @@ class TauriAdapter implements BackendAdapter {
     return result as NodeWithChildren;
   }
 
-  async moveNode(nodeId: string, newParentId: string | null, insertAfterNodeId: string | null): Promise<void> {
+  async moveNode(nodeId: string, version: number, newParentId: string | null, insertAfterNodeId: string | null): Promise<void> {
     const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
     return invoke<void>('move_node', {
       nodeId,
+      version,
       newParentId,
       insertAfterNodeId
     });
@@ -427,11 +428,11 @@ class HttpAdapter implements BackendAdapter {
     return result as NodeWithChildren;
   }
 
-  async moveNode(nodeId: string, newParentId: string | null, insertAfterNodeId: string | null): Promise<void> {
+  async moveNode(nodeId: string, version: number, newParentId: string | null, insertAfterNodeId: string | null): Promise<void> {
     const response = await fetch(`${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/parent`, {
       method: 'POST',
       headers: this.getHeaders(),
-      body: JSON.stringify({ parentId: newParentId, insertAfterNodeId })
+      body: JSON.stringify({ version, parentId: newParentId, insertAfterNodeId })
     });
     await this.handleResponse<void>(response);
   }
@@ -599,7 +600,7 @@ class MockAdapter implements BackendAdapter {
   async getDescendants(_rootNodeId: string): Promise<Node[]> {
     return [];
   }
-  async moveNode(_nodeId: string, _newParentId: string | null, _insertAfterNodeId: string | null): Promise<void> {}
+  async moveNode(_nodeId: string, _version: number, _newParentId: string | null, _insertAfterNodeId: string | null): Promise<void> {}
   async getAllEdges(): Promise<EdgeRecord[]> {
     return [];
   }

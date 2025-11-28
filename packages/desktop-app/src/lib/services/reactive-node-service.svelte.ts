@@ -383,8 +383,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
             for (const child of children) {
               // Import moveNode dynamically to avoid circular dependency
               const { moveNode } = await import('$lib/services/tauri-commands');
-              // Move child to be under the new node in database
-              await moveNode(child.id, nodeId);
+              // Move child to be under the new node in database (with OCC)
+              await moveNode(child.id, child.version, nodeId, null);
               // Note: No need to call structureTree.moveInMemoryRelationship() again
               // It was already done synchronously above for instant UI update
             }
@@ -766,8 +766,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         // This prevents race conditions when user presses Enter then Tab rapidly
         await sharedNodeStore.waitForNodeSaves([nodeId]);
 
-        // Now safe to move the node
-        await moveNodeCommand(nodeId, targetParentId, null);
+        // Get fresh node data to ensure we have the latest version
+        const freshNode = sharedNodeStore.getNode(nodeId);
+        if (!freshNode) {
+          console.warn('[indentNode] Node no longer exists after waiting for save:', nodeId);
+          return;
+        }
+
+        // Now safe to move the node (with OCC)
+        await moveNodeCommand(nodeId, freshNode.version, targetParentId, null);
       } catch (error) {
         // Check if error is ignorable (unit test environment or unpersisted nodes)
         const isIgnorableError =
@@ -923,13 +930,23 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         // Ensures all node creations (and their edges) are persisted.
         await sharedNodeStore.flushAllPendingSaves();
 
-        // Now safe to move the node and its siblings
-        // When outdenting, insert after the old parent (so it appears right below it)
-        const backendPromises = [moveNodeCommand(nodeId, newParentId, oldParentId)];
+        // Get fresh node data to ensure we have the latest versions
+        const freshNode = sharedNodeStore.getNode(nodeId);
+        if (!freshNode) {
+          console.warn('[outdentNode] Node no longer exists after waiting for save:', nodeId);
+          return;
+        }
 
-        // Add sibling transfer backend calls
+        // Now safe to move the node and its siblings (with OCC)
+        // When outdenting, insert after the old parent (so it appears right below it)
+        const backendPromises = [moveNodeCommand(nodeId, freshNode.version, newParentId, oldParentId)];
+
+        // Add sibling transfer backend calls (get fresh versions for each)
         for (const siblingId of siblingsBelow) {
-          backendPromises.push(moveNodeCommand(siblingId, nodeId, null));
+          const freshSibling = sharedNodeStore.getNode(siblingId);
+          if (freshSibling) {
+            backendPromises.push(moveNodeCommand(siblingId, freshSibling.version, nodeId, null));
+          }
         }
 
         await Promise.all(backendPromises);
@@ -1049,10 +1066,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         ? (_uiState[newParentForChild]?.depth ?? 0) + 1
         : 0;
 
-      // Use moveNodeCommand to properly update the has_child edge in the backend
+      // Use moveNodeCommand to properly update the has_child edge in the backend (with OCC)
       // Insert after the node at the same depth to maintain visual order
       // Don't await - let PersistenceCoordinator handle sequencing via deletionDependencies
-      moveNodeCommand(child.id, newParentForChild, insertAfterNodeId).catch((error) => {
+      moveNodeCommand(child.id, child.version, newParentForChild, insertAfterNodeId).catch((error) => {
         console.error(`[promoteChildren] Failed to move child ${child.id} to parent ${newParentForChild}:`, error);
       });
 

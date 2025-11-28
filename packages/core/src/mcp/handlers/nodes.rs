@@ -1,46 +1,47 @@
 //! MCP Node CRUD Handlers
 //!
-//! Wraps NodeOperations for MCP protocol access.
+//! Wraps NodeService for MCP protocol access.
 //! Pure business logic - no Tauri dependencies.
+//!
+//! As of Issue #676, all handlers use NodeService directly instead of NodeOperations.
 
 use crate::mcp::types::MCPError;
 use crate::models::schema::ProtectionLevel;
-use crate::models::{NodeFilter, OrderBy};
-use crate::operations::{CreateNodeParams, NodeOperationError, NodeOperations};
-use crate::services::SchemaService;
+use crate::models::{NodeFilter, NodeUpdate, OrderBy};
+use crate::services::{NodeService, NodeServiceError, SchemaService};
 use chrono::NaiveDate;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// Convert NodeOperationError to MCPError with proper formatting
+/// Convert NodeServiceError to MCPError with proper formatting
 ///
-/// Special handling for VersionConflict errors: includes current node state
-/// in the error response for client-side merge.
-fn operation_error_to_mcp(error: NodeOperationError) -> MCPError {
+/// Special handling for VersionConflict errors to help client-side merge.
+fn service_error_to_mcp(error: NodeServiceError) -> MCPError {
     match error {
-        NodeOperationError::VersionConflict {
+        NodeServiceError::VersionConflict {
             node_id,
             expected_version,
             actual_version,
-            current_node,
-        } => {
-            // current_node is already available in the error as Box<Node>
-            let current_node_value = serde_json::to_value(&*current_node).ok();
-            MCPError::version_conflict(
-                node_id,
-                expected_version,
-                actual_version,
-                current_node_value,
-            )
+        } => MCPError::version_conflict(node_id, expected_version, actual_version, None),
+        NodeServiceError::NodeNotFound { id } => MCPError::node_not_found(&id),
+        NodeServiceError::ValidationFailed(e) => MCPError::validation_error(e.to_string()),
+        NodeServiceError::InvalidParent { parent_id } => {
+            MCPError::validation_error(format!("Invalid parent: {}", parent_id))
         }
-        NodeOperationError::NodeNotFound { node_id } => MCPError::node_not_found(&node_id),
-        NodeOperationError::InvalidOperation { reason } => MCPError::validation_error(reason),
-        NodeOperationError::DatabaseError(source) => {
-            MCPError::internal_error(format!("Database error: {}", source))
+        NodeServiceError::InvalidRoot { root_node_id } => {
+            MCPError::validation_error(format!("Invalid root: {}", root_node_id))
         }
-        // Handle any other error variants
-        _ => MCPError::internal_error(format!("Operation error: {}", error)),
+        NodeServiceError::CircularReference { context } => {
+            MCPError::validation_error(format!("Circular reference: {}", context))
+        }
+        NodeServiceError::HierarchyViolation(msg) => {
+            MCPError::validation_error(format!("Hierarchy violation: {}", msg))
+        }
+        NodeServiceError::DatabaseError(e) => {
+            MCPError::internal_error(format!("Database error: {}", e))
+        }
+        _ => MCPError::internal_error(format!("Service error: {}", error)),
     }
 }
 
@@ -196,17 +197,17 @@ pub struct TreeNode {
 
 /// Handle create_node MCP request
 pub async fn handle_create_node(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     let mcp_params: MCPCreateNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    // Create node via NodeOperations (enforces all business rules)
+    // Create node via NodeService (enforces all business rules)
     // Note: root_id is auto-derived from parent chain by backend
     // Note: Sibling ordering is now handled via has_child edge order field
-    let node_id = operations
-        .create_node(CreateNodeParams {
+    let node_id = node_service
+        .create_node_with_parent(crate::operations::CreateNodeParams {
             id: None, // MCP generates IDs server-side
             node_type: mcp_params.node_type.clone(),
             content: mcp_params.content,
@@ -226,13 +227,13 @@ pub async fn handle_create_node(
 
 /// Handle get_node MCP request
 pub async fn handle_get_node(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: GetNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    let node = operations
+    let node = node_service
         .get_node(&params.node_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?;
@@ -250,7 +251,7 @@ pub async fn handle_get_node(
 
 /// Handle update_node MCP request
 pub async fn handle_update_node(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     schema_service: &Arc<SchemaService>,
     params: Value,
 ) -> Result<Value, MCPError> {
@@ -260,7 +261,7 @@ pub async fn handle_update_node(
     // Validate schema changes if properties are being updated
     if let Some(ref new_properties) = params.properties {
         // Check if this node's type has a schema
-        if let Ok(Some(existing_node)) = operations.get_node(&params.node_id).await {
+        if let Ok(Some(existing_node)) = node_service.get_node(&params.node_id).await {
             if let Ok(schema) = schema_service.get_schema(&existing_node.node_type).await {
                 // Get old properties for comparison (with proper ownership)
                 let empty_map = serde_json::Map::new();
@@ -310,7 +311,7 @@ pub async fn handle_update_node(
         }
     }
 
-    // Update node via NodeOperations (enforces Rule 5: content updates only, no hierarchy changes)
+    // Update node via NodeService (enforces Rule 5: content updates only, no hierarchy changes)
     //
     // MCP update_node intentionally restricts certain fields for data integrity:
     // - parent_id: Use move_node operation for parent changes
@@ -320,17 +321,41 @@ pub async fn handle_update_node(
     //
     // Use MCP only for content/property updates. Use separate operations for structural changes.
 
+    // Build NodeUpdate from params
+    let update = NodeUpdate {
+        content: params.content,
+        node_type: params.node_type,
+        properties: params.properties,
+        embedding_vector: None, // Don't change embeddings via MCP update (auto-generated)
+    };
+
     // Version is now mandatory - no auto-fetch to prevent TOCTOU race conditions
-    let updated_node = operations
-        .update_node(
-            &params.node_id,
-            params.version,
-            params.content,
-            params.node_type,
-            params.properties,
-        )
+    let updated_node = match node_service
+        .update_node_with_occ(&params.node_id, params.version, update)
         .await
-        .map_err(operation_error_to_mcp)?;
+    {
+        Ok(node) => node,
+        Err(NodeServiceError::VersionConflict {
+            node_id,
+            expected_version,
+            actual_version,
+        }) => {
+            // Fetch current node state to include in error response for client-side merge
+            let current_node = node_service
+                .get_node(&node_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|n| serde_json::to_value(&n).ok());
+            return Err(MCPError::version_conflict(
+                node_id,
+                expected_version,
+                actual_version,
+                current_node,
+            ));
+        }
+        Err(e) => return Err(service_error_to_mcp(e)),
+    };
 
     Ok(json!({
         "node_id": params.node_id,
@@ -341,18 +366,18 @@ pub async fn handle_update_node(
 
 /// Handle delete_node MCP request
 pub async fn handle_delete_node(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: DeleteNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    // Delete node via NodeOperations
+    // Delete node via NodeService
     // Version is now mandatory - no auto-fetch to prevent TOCTOU race conditions
-    let result = operations
-        .delete_node(&params.node_id, params.version)
+    let result = node_service
+        .delete_node_with_occ(&params.node_id, params.version)
         .await
-        .map_err(operation_error_to_mcp)?;
+        .map_err(service_error_to_mcp)?;
 
     Ok(json!({
         "node_id": params.node_id,
@@ -363,7 +388,7 @@ pub async fn handle_delete_node(
 
 /// Handle query_nodes MCP request
 pub async fn handle_query_nodes(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: QueryNodesParams = serde_json::from_value(params)
@@ -401,8 +426,8 @@ pub async fn handle_query_nodes(
 
     filter = filter.with_order_by(OrderBy::CreatedDesc);
 
-    // Query nodes via NodeOperations
-    let nodes = operations
+    // Query nodes via NodeService
+    let nodes = node_service
         .query_nodes(filter)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to query nodes: {}", e)))?;
@@ -427,11 +452,11 @@ fn is_valid_date_format(s: &str) -> bool {
 
 /// Ensure parent node exists, auto-creating date nodes if needed
 async fn ensure_parent_exists(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     parent_id: &str,
 ) -> Result<(), MCPError> {
     // Check if parent already exists
-    if operations
+    if node_service
         .get_node(parent_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to check parent: {}", e)))?
@@ -443,8 +468,8 @@ async fn ensure_parent_exists(
     // If parent_id looks like a date (YYYY-MM-DD), auto-create date node
     if is_valid_date_format(parent_id) {
         // Try to create - date nodes use their content as ID
-        let _ = operations
-            .create_node(CreateNodeParams {
+        let _ = node_service
+            .create_node_with_parent(crate::operations::CreateNodeParams {
                 id: None, // MCP generates IDs server-side
                 node_type: "date".to_string(),
                 content: parent_id.to_string(),
@@ -471,13 +496,13 @@ async fn ensure_parent_exists(
 /// In graph-native architecture, children are already ordered by the `order` field
 /// on has_child edges (fractional ordering), so we just map them to ChildInfo.
 async fn get_children_ordered(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     parent_id: &str,
     include_content: bool,
 ) -> Result<Vec<ChildInfo>, MCPError> {
     // In graph-native architecture, get_children() returns children already sorted
     // by the `order` field on has_child edges (fractional ordering)
-    let children = operations
+    let children = node_service
         .get_children(parent_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to query children: {}", e)))?;
@@ -503,7 +528,7 @@ async fn get_children_ordered(
 
 /// Build tree node recursively
 fn build_tree_node<'a>(
-    operations: &'a Arc<NodeOperations>,
+    node_service: &'a Arc<NodeService>,
     node: crate::models::Node,
     depth: usize,
     max_depth: usize,
@@ -513,12 +538,12 @@ fn build_tree_node<'a>(
     Box::pin(async move {
         // Get children if we haven't reached max depth
         let children = if depth < max_depth {
-            let child_infos = get_children_ordered(operations, &node.id, false).await?;
+            let child_infos = get_children_ordered(node_service, &node.id, false).await?;
 
             let mut tree_children = Vec::new();
             for child_info in child_infos {
                 // Get full node data for each child
-                let child_node = operations
+                let child_node = node_service
                     .get_node(&child_info.node_id)
                     .await
                     .map_err(|e| {
@@ -533,7 +558,7 @@ fn build_tree_node<'a>(
 
                 // Recursively build child tree
                 let tree_child = build_tree_node(
-                    operations,
+                    node_service,
                     child_node,
                     depth + 1,
                     max_depth,
@@ -591,7 +616,7 @@ fn build_tree_node<'a>(
 
 /// Handle get_children MCP request
 pub async fn handle_get_children(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: GetChildrenParams = serde_json::from_value(params)
@@ -599,7 +624,7 @@ pub async fn handle_get_children(
 
     // Get children in order
     let children =
-        get_children_ordered(operations, &params.parent_id, params.include_content).await?;
+        get_children_ordered(node_service, &params.parent_id, params.include_content).await?;
 
     let child_count = children.len();
 
@@ -612,17 +637,17 @@ pub async fn handle_get_children(
 
 /// Handle insert_child_at_index MCP request
 pub async fn handle_insert_child_at_index(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: InsertChildAtIndexParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
     // 1. Ensure parent exists (auto-create if date format)
-    ensure_parent_exists(operations, &params.parent_id).await?;
+    ensure_parent_exists(node_service, &params.parent_id).await?;
 
     // 2. Get parent to verify it exists (hierarchy managed via edges)
-    let _parent = operations
+    let _parent = node_service
         .get_node(&params.parent_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to get parent: {}", e)))?
@@ -631,7 +656,7 @@ pub async fn handle_insert_child_at_index(
         })?;
 
     // 3. Get all siblings in order
-    let children_info = get_children_ordered(operations, &params.parent_id, false).await?;
+    let children_info = get_children_ordered(node_service, &params.parent_id, false).await?;
 
     // 4. Calculate insert_after_node_id based on index
     // API semantics: insert_after_node_id = the sibling to insert AFTER
@@ -659,8 +684,8 @@ pub async fn handle_insert_child_at_index(
 
     // 5. Create node using pointer-based operation
     // Note: container/root is auto-derived from parent chain by backend
-    let node_id = operations
-        .create_node(CreateNodeParams {
+    let node_id = node_service
+        .create_node_with_parent(crate::operations::CreateNodeParams {
             id: None, // MCP generates IDs server-side
             node_type: params.node_type.clone(),
             content: params.content,
@@ -675,15 +700,15 @@ pub async fn handle_insert_child_at_index(
     // We created at end, now move to beginning using reorder
     if needs_reorder_to_beginning {
         // Get the newly created node to get its version for OCC
-        let created_node = operations
+        let created_node = node_service
             .get_node(&node_id)
             .await
             .map_err(|e| MCPError::internal_error(format!("Failed to get created node: {}", e)))?
             .ok_or_else(|| MCPError::internal_error("Created node not found".to_string()))?;
 
         // Reorder to beginning (insert_after = None means first position)
-        operations
-            .reorder_node(&node_id, created_node.version, None)
+        node_service
+            .reorder_node_with_occ(&node_id, created_node.version, None)
             .await
             .map_err(|e| {
                 MCPError::internal_error(format!("Failed to reorder node to beginning: {}", e))
@@ -704,24 +729,25 @@ pub async fn handle_insert_child_at_index(
 
 /// Handle move_child_to_index MCP request
 pub async fn handle_move_child_to_index(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: MoveChildToIndexParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
     // 1. Verify the node exists
-    let _node = operations
+    let _node = node_service
         .get_node(&params.node_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?
         .ok_or_else(|| MCPError::invalid_params(format!("Node '{}' not found", params.node_id)))?;
 
     // Get parent using graph traversal
-    let parent_id = operations
-        .get_parent_id(&params.node_id)
+    let parent_id = node_service
+        .get_parent(&params.node_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to get parent: {}", e)))?
+        .map(|n| n.id)
         .ok_or_else(|| {
             MCPError::invalid_params(format!(
                 "Node '{}' has no parent (is a root node) - cannot reorder",
@@ -730,7 +756,7 @@ pub async fn handle_move_child_to_index(
         })?;
 
     // 2. Get all siblings in current order (excluding the node being moved)
-    let all_children = get_children_ordered(operations, &parent_id, false).await?;
+    let all_children = get_children_ordered(node_service, &parent_id, false).await?;
     let siblings: Vec<_> = all_children
         .into_iter()
         .filter(|c| c.node_id != params.node_id)
@@ -752,10 +778,10 @@ pub async fn handle_move_child_to_index(
     };
 
     // 4. Use reorder_node operation (which handles edge ordering)
-    operations
-        .reorder_node(&params.node_id, params.version, insert_after.as_deref())
+    node_service
+        .reorder_node_with_occ(&params.node_id, params.version, insert_after.as_deref())
         .await
-        .map_err(operation_error_to_mcp)?;
+        .map_err(service_error_to_mcp)?;
 
     Ok(json!({
         "node_id": params.node_id,
@@ -766,7 +792,7 @@ pub async fn handle_move_child_to_index(
 
 /// Handle get_child_at_index MCP request
 pub async fn handle_get_child_at_index(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: GetChildAtIndexParams = serde_json::from_value(params)
@@ -774,7 +800,7 @@ pub async fn handle_get_child_at_index(
 
     // Get all children in order
     let children =
-        get_children_ordered(operations, &params.parent_id, params.include_content).await?;
+        get_children_ordered(node_service, &params.parent_id, params.include_content).await?;
 
     // Get child at index
     let child = children.get(params.index).ok_or_else(|| {
@@ -796,7 +822,7 @@ pub async fn handle_get_child_at_index(
 
 /// Handle get_node_tree MCP request
 pub async fn handle_get_node_tree(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: GetNodeTreeParams = serde_json::from_value(params)
@@ -810,14 +836,14 @@ pub async fn handle_get_node_tree(
         )));
     }
 
-    let root = operations
+    let root = node_service
         .get_node(&params.node_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?
         .ok_or_else(|| MCPError::invalid_params(format!("Node '{}' not found", params.node_id)))?;
 
     let tree = build_tree_node(
-        operations,
+        node_service,
         root,
         0,
         params.max_depth,
@@ -863,7 +889,7 @@ pub struct BatchGetResult {
 /// // Returns all found nodes + list of IDs that don't exist
 /// ```
 pub async fn handle_get_nodes_batch(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     // Parse parameters
@@ -889,7 +915,7 @@ pub async fn handle_get_nodes_batch(
     let mut not_found = Vec::new();
 
     for node_id in params.node_ids {
-        match operations.get_node(&node_id).await {
+        match node_service.get_node(&node_id).await {
             Ok(Some(node)) => {
                 nodes.push(serde_json::to_value(&node).unwrap());
             }
@@ -960,7 +986,7 @@ pub struct BatchUpdateFailure {
 /// let result = handle_update_nodes_batch(&operations, &schema_service, params).await?;
 /// ```
 pub async fn handle_update_nodes_batch(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     schema_service: &Arc<SchemaService>,
     params: Value,
 ) -> Result<Value, MCPError> {
@@ -995,7 +1021,7 @@ pub async fn handle_update_nodes_batch(
                 tracing::warn!(
                     "OCC bypassed: version parameter not provided for batch update (race condition possible)"
                 );
-                match operations.get_node(&update.id).await {
+                match node_service.get_node(&update.id).await {
                     Ok(Some(node)) => node.version,
                     Ok(None) => {
                         failed.push(BatchUpdateFailure {
@@ -1006,7 +1032,7 @@ pub async fn handle_update_nodes_batch(
                     }
                     Err(e) => {
                         tracing::warn!("Failed to fetch node {} for version: {}", update.id, e);
-                        let mcp_error = operation_error_to_mcp(e);
+                        let mcp_error = service_error_to_mcp(e);
                         failed.push(BatchUpdateFailure {
                             id: update.id,
                             error: mcp_error.message,
@@ -1019,7 +1045,7 @@ pub async fn handle_update_nodes_batch(
 
         // Validate schema changes if properties are being updated
         if let Some(ref new_properties) = update.properties {
-            if let Ok(Some(existing_node)) = operations.get_node(&update.id).await {
+            if let Ok(Some(existing_node)) = node_service.get_node(&update.id).await {
                 if let Ok(schema) = schema_service.get_schema(&existing_node.node_type).await {
                     let empty_map = serde_json::Map::new();
                     let old_properties = existing_node.properties.as_object().unwrap_or(&empty_map);
@@ -1070,15 +1096,17 @@ pub async fn handle_update_nodes_batch(
             }
         }
 
-        // Apply update via NodeOperations (enforces all business rules)
-        match operations
-            .update_node(
-                &update.id,
-                version,
-                update.content,
-                update.node_type,
-                update.properties,
-            )
+        // Build NodeUpdate from batch update item
+        let node_update = NodeUpdate {
+            content: update.content,
+            node_type: update.node_type,
+            properties: update.properties,
+            embedding_vector: None, // Don't change embeddings via MCP batch update
+        };
+
+        // Apply update via NodeService (enforces all business rules)
+        match node_service
+            .update_node_with_occ(&update.id, version, node_update)
             .await
         {
             Ok(_) => {
@@ -1086,7 +1114,7 @@ pub async fn handle_update_nodes_batch(
             }
             Err(e) => {
                 tracing::warn!("Failed to update node {}: {}", update.id, e);
-                let mcp_error = operation_error_to_mcp(e);
+                let mcp_error = service_error_to_mcp(e);
                 failed.push(BatchUpdateFailure {
                     id: update.id,
                     error: mcp_error.message,

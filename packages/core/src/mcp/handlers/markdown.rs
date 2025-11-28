@@ -3,20 +3,22 @@
 //! Parses markdown content and creates hierarchical NodeSpace nodes.
 //! Preserves heading hierarchy and list indentation as parent-child relationships.
 //!
+//! As of Issue #676, all handlers use NodeService directly instead of NodeOperations.
+//!
 //! # Examples
 //!
 //! ```ignore
 //! use serde_json::json;
 //! use std::sync::Arc;
-//! use nodespace_core::operations::NodeOperations;
+//! use nodespace_core::services::NodeService;
 //! use nodespace_core::mcp::handlers::markdown::handle_create_nodes_from_markdown;
 //!
-//! async fn example(operations: Arc<NodeOperations>) -> Result<(), Box<dyn std::error::Error>> {
+//! async fn example(node_service: Arc<NodeService>) -> Result<(), Box<dyn std::error::Error>> {
 //!     let params = json!({
 //!         "markdown_content": "# My Document\n\n- Task 1\n- Task 2",
 //!         "container_title": "Imported Notes"
 //!     });
-//!     let result = handle_create_nodes_from_markdown(&operations, params).await?;
+//!     let result = handle_create_nodes_from_markdown(&node_service, params).await?;
 //!     println!("Created {} nodes", result["nodes_created"]);
 //!     Ok(())
 //! }
@@ -24,7 +26,8 @@
 
 use crate::mcp::types::MCPError;
 use crate::models::Node;
-use crate::operations::{CreateNodeParams, NodeOperations};
+use crate::operations::CreateNodeParams;
+use crate::services::NodeService;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -222,7 +225,7 @@ impl ParserContext {
 
 /// Handle create_nodes_from_markdown MCP request
 pub async fn handle_create_nodes_from_markdown(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: CreateNodesFromMarkdownParams = serde_json::from_value(params)
@@ -254,7 +257,7 @@ pub async fn handle_create_nodes_from_markdown(
         // (with root_id = None, which is required for root nodes)
         context.root_id = None;
 
-        parse_markdown(title, operations, &mut context).await?;
+        parse_markdown(title, node_service, &mut context).await?;
 
         // Validate that exactly one node was created and it's a valid container type
         if context.nodes.len() != 1 {
@@ -283,7 +286,7 @@ pub async fn handle_create_nodes_from_markdown(
     }
 
     // Parse the main markdown content
-    parse_markdown(&params.markdown_content, operations, &mut context).await?;
+    parse_markdown(&params.markdown_content, node_service, &mut context).await?;
 
     // Validate we didn't exceed max nodes
     if context.nodes.len() > MAX_NODES_PER_IMPORT {
@@ -427,7 +430,7 @@ fn detect_ordered_list(line: &str) -> Option<usize> {
 /// # Arguments
 ///
 /// * `markdown` - The markdown content to parse
-/// * `operations` - NodeOperations for creating nodes in the database
+/// * `node_service` - NodeService for creating nodes in the database
 /// * `context` - Parser context tracking hierarchy and node state
 ///
 /// # Returns
@@ -442,7 +445,7 @@ fn detect_ordered_list(line: &str) -> Option<usize> {
 /// 4. **Inline syntax preserved**: `**bold**`, `*italic*`, etc. kept intact
 async fn parse_markdown(
     markdown: &str,
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     context: &mut ParserContext,
 ) -> Result<(), MCPError> {
     // Track indentation-based hierarchy (node_id, indent_level)
@@ -641,7 +644,7 @@ async fn parse_markdown(
 
         // Create the node (always append to end with fractional ordering)
         let node_id = create_node(
-            operations,
+            node_service,
             node_type,
             &content,
             parent_id.clone(),
@@ -680,16 +683,16 @@ async fn parse_markdown(
     Ok(())
 }
 
-/// Create a node via NodeOperations
+/// Create a node via NodeService
 async fn create_node(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     node_type: &str,
     content: &str,
     parent_id: Option<String>,
     _root_node_id: Option<String>, // Deprecated - kept for backward compat but ignored (root auto-derived from parent)
     _before_sibling_id: Option<String>, // Deprecated - sibling ordering now handled by edge order field
 ) -> Result<String, MCPError> {
-    // Create node via NodeOperations (enforces all business rules)
+    // Create node via NodeService (enforces all business rules)
     // Note: container/root is now auto-derived from parent chain by backend
     // Note: sibling ordering is now handled via has_child edge order field
 
@@ -703,8 +706,8 @@ async fn create_node(
         _ => json!({}),
     };
 
-    operations
-        .create_node(CreateNodeParams {
+    node_service
+        .create_node_with_parent(CreateNodeParams {
             id: None, // MCP generates IDs server-side
             node_type: node_type.to_string(),
             content: content.to_string(),
@@ -777,7 +780,7 @@ fn default_max_depth() -> usize {
 /// - [ ] Review architecture
 /// ```
 pub async fn handle_get_markdown_from_node_id(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     // Parse parameters
@@ -785,7 +788,7 @@ pub async fn handle_get_markdown_from_node_id(
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
     // Fetch the root node first to validate it exists
-    let root_node = operations
+    let root_node = node_service
         .get_node(&params.node_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?
@@ -793,7 +796,7 @@ pub async fn handle_get_markdown_from_node_id(
 
     // Bulk fetch all descendant nodes using graph traversal
     // In graph-native architecture, we traverse the hierarchy recursively
-    let all_nodes = operations
+    let all_nodes = node_service
         .get_descendants(&root_node.id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to query container nodes: {}", e)))?;
@@ -823,7 +826,7 @@ pub async fn handle_get_markdown_from_node_id(
         // Get direct children using graph relationships
         // In graph-native architecture, get_children returns nodes already sorted
         // by the `order` field on has_child edges (fractional ordering)
-        let children = operations
+        let children = node_service
             .get_children(&root_node.id)
             .await
             .map_err(|e| MCPError::internal_error(format!("Failed to get children: {}", e)))?;
@@ -831,7 +834,7 @@ pub async fn handle_get_markdown_from_node_id(
         // Export each child and its descendants (children are already in correct order)
         for child in &children {
             export_node_hierarchy(
-                operations,
+                node_service,
                 child,
                 &mut markdown,
                 1, // Start at depth 1 (container is depth 0)
@@ -852,9 +855,9 @@ pub async fn handle_get_markdown_from_node_id(
 
 /// Recursively export node hierarchy to markdown
 ///
-/// Uses graph traversal via NodeOperations to get children in correct order
+/// Uses graph traversal via NodeService to get children in correct order
 fn export_node_hierarchy<'a>(
-    operations: &'a Arc<NodeOperations>,
+    node_service: &'a Arc<NodeService>,
     node: &Node,
     output: &'a mut String,
     current_depth: usize,
@@ -889,14 +892,14 @@ fn export_node_hierarchy<'a>(
         // Recursively export children (if enabled)
         if include_children {
             // Get children using graph traversal (already sorted by edge order)
-            let children = operations
+            let children = node_service
                 .get_children(&node_id)
                 .await
                 .map_err(|e| MCPError::internal_error(format!("Failed to get children: {}", e)))?;
 
             for child in &children {
                 export_node_hierarchy(
-                    operations,
+                    node_service,
                     child,
                     output,
                     current_depth + 1,
@@ -987,7 +990,7 @@ pub struct UpdateRootFromMarkdownParams {
 /// // Returns deletion_failures if any deletes failed
 /// ```
 pub async fn handle_update_root_from_markdown(
-    operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     // Parse parameters
@@ -1018,7 +1021,7 @@ pub async fn handle_update_root_from_markdown(
     }
 
     // Validate root node exists
-    let root_node = operations
+    let root_node = node_service
         .get_node(&root_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to get root node: {}", e)))?
@@ -1027,7 +1030,7 @@ pub async fn handle_update_root_from_markdown(
     // Get all existing descendants using graph traversal
     // This gets ALL nodes in the hierarchy, including nested children
     // Critical for proper cleanup of structures like: Root → Header → Tasks
-    let mut existing_children = operations
+    let mut existing_children = node_service
         .get_descendants(&root_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to get children: {}", e)))?;
@@ -1050,7 +1053,7 @@ pub async fn handle_update_root_from_markdown(
     for child in existing_children {
         // CRITICAL: Refetch current version before deletion since sibling chain updates
         // can increment versions as we delete. Using stale cached version will cause conflicts.
-        let current_node = match operations.get_node(&child.id).await {
+        let current_node = match node_service.get_node(&child.id).await {
             Ok(Some(node)) => node,
             Ok(None) => {
                 // Node already deleted (possible if recursive delete)
@@ -1067,8 +1070,8 @@ pub async fn handle_update_root_from_markdown(
             }
         };
 
-        match operations
-            .delete_node(&current_node.id, current_node.version)
+        match node_service
+            .delete_node_with_occ(&current_node.id, current_node.version)
             .await
         {
             Ok(_) => {
@@ -1091,7 +1094,7 @@ pub async fn handle_update_root_from_markdown(
         ParserContext::new_for_existing_container(root_id.clone(), root_node.content.clone());
 
     // Parse the new markdown content and create nodes
-    parse_markdown(&params.markdown, operations, &mut context).await?;
+    parse_markdown(&params.markdown, node_service, &mut context).await?;
 
     // Validate we didn't exceed max nodes
     if context.nodes.len() > MAX_NODES_PER_IMPORT {

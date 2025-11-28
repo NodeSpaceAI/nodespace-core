@@ -98,14 +98,20 @@ export async function getChildrenTree(parentId: string): Promise<NodeWithChildre
 }
 
 /**
- * Move a node to a new parent with new sibling position
+ * Move a node to a new parent with new sibling position (with OCC)
+ *
+ * @param nodeId - The node to move
+ * @param version - Expected version for optimistic concurrency control
+ * @param newParentId - New parent ID (null = make root node)
+ * @param insertAfterNodeId - Sibling to insert after (null = append at end)
  */
 export async function moveNode(
   nodeId: string,
+  version: number,
   newParentId: string | null,
   insertAfterNodeId?: string | null
 ): Promise<void> {
-  return backendAdapter.moveNode(nodeId, newParentId, insertAfterNodeId ?? null);
+  return backendAdapter.moveNode(nodeId, version, newParentId, insertAfterNodeId ?? null);
 }
 
 /**

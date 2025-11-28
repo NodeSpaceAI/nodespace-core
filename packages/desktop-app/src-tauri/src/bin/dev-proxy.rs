@@ -31,7 +31,7 @@ use nodespace_core::{
         schema::{ProtectionLevel, SchemaDefinition, SchemaField},
         Node, NodeFilter, NodeUpdate,
     },
-    operations::NodeOperations,
+    operations::CreateNodeParams,
     services::{NodeService, NodeServiceError, SchemaService},
 };
 use serde::{Deserialize, Serialize};
@@ -43,7 +43,6 @@ use tower_http::cors::CorsLayer;
 // Type alias for HTTP client types
 type HttpNodeService = NodeService<surrealdb::engine::remote::http::Client>;
 type HttpSchemaService = SchemaService<surrealdb::engine::remote::http::Client>;
-type HttpNodeOperations = NodeOperations<surrealdb::engine::remote::http::Client>;
 
 // ============================================================================
 // SSE Events for Browser Mode Real-Time Sync
@@ -106,11 +105,13 @@ pub enum SseEvent {
 }
 
 /// Application state shared across handlers
+///
+/// As of Issue #676, NodeOperations layer was merged into NodeService.
+/// All business logic now goes directly through NodeService.
 #[derive(Clone)]
 struct AppState {
     node_service: Arc<HttpNodeService>,
     schema_service: Arc<HttpSchemaService>,
-    operations: Arc<HttpNodeOperations>,
     /// Broadcast channel for SSE events to connected browser clients
     event_tx: broadcast::Sender<SseEvent>,
 }
@@ -393,10 +394,8 @@ async fn main() -> anyhow::Result<()> {
     let schema_service = Arc::new(SchemaService::new(node_service.clone()));
     println!("✅ SchemaService initialized");
 
-    // Initialize NodeOperations (orchestrates business rules and edge creation)
-    println!("🔧 Initializing NodeOperations...");
-    let operations = Arc::new(NodeOperations::new(node_service.clone()));
-    println!("✅ NodeOperations initialized");
+    // NOTE: NodeOperations layer was merged into NodeService (Issue #676)
+    // All business logic now goes directly through NodeService
 
     // Create broadcast channel for SSE events (capacity 100 messages)
     // Lagging receivers will skip missed messages rather than blocking senders
@@ -406,7 +405,6 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         node_service: node_service.clone(),
         schema_service,
-        operations,
         event_tx: event_tx.clone(),
     };
 
@@ -595,18 +593,14 @@ async fn create_node(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    // CRITICAL FIX (Issue #528): Use operations layer to handle edge creation
-    // The operations layer (NodeOperations::create_node) creates parent-child edges
-    // when parent_id is provided, using NodeService::move_node() to create the
-    // has_child graph edge in SurrealDB.
+    // Use NodeService directly to handle node creation and edge creation
+    // (Issue #676: NodeOperations merged into NodeService)
     tracing::debug!(
         "create_node request: node_type={:?}, parent_id={:?}, insert_after_node_id={:?}",
         req.node_type,
         req.parent_id,
         req.insert_after_node_id
     );
-
-    use nodespace_core::operations::CreateNodeParams;
 
     let params = CreateNodeParams {
         id: req.id,
@@ -618,12 +612,16 @@ async fn create_node(
     };
 
     let parent_id_clone = params.parent_id.clone();
-    let id = state.operations.create_node(params).await.map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ApiError::new("CREATE_FAILED", e.to_string())),
-        )
-    })?;
+    let id = state
+        .node_service
+        .create_node_with_parent(params)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError::new("CREATE_FAILED", e.to_string())),
+            )
+        })?;
 
     // Broadcast SSE event for the created node
     // Fetch the full node data for the event payload

@@ -8,25 +8,23 @@ mod tests {
     use crate::mcp::handlers::markdown::{
         handle_create_nodes_from_markdown, handle_update_root_from_markdown,
     };
-    use crate::operations::NodeOperations;
     use crate::services::NodeService;
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    async fn setup_test_service() -> (Arc<NodeOperations>, TempDir) {
+    async fn setup_test_service() -> (Arc<NodeService>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
 
         let store = Arc::new(SurrealStore::new(db_path).await.unwrap());
-        let service = NodeService::new(store).unwrap();
-        let operations = NodeOperations::new(Arc::new(service));
-        (Arc::new(operations), temp_dir)
+        let node_service = Arc::new(NodeService::new(store).unwrap());
+        (node_service, temp_dir)
     }
 
     #[tokio::test]
     async fn test_simple_markdown_with_headings() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"# Main Title
 ## Subtitle
@@ -37,7 +35,7 @@ Some content under subtitle."#;
             "container_title": "Test Document"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -60,7 +58,7 @@ Some content under subtitle."#;
 
     #[tokio::test]
     async fn test_heading_hierarchy() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"# H1
 ## H2 under H1
@@ -73,7 +71,7 @@ Text under second H2"#;
             "container_title": "Hierarchy Test"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -83,7 +81,7 @@ Text under second H2"#;
 
         // Get the container node (created from container_title)
         let root_id = result["root_id"].as_str().unwrap();
-        let container = operations.get_node(root_id).await.unwrap().unwrap();
+        let container = node_service.get_node(root_id).await.unwrap().unwrap();
 
         assert_eq!(container.content, "Hierarchy Test"); // Container from container_title
         assert_eq!(container.node_type, "text");
@@ -92,7 +90,7 @@ Text under second H2"#;
 
     #[tokio::test]
     async fn test_same_level_headers_are_siblings() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Test case from issue #350: Multiple H2s should be siblings, not nested
         let markdown = r#"# Main Title
@@ -109,7 +107,7 @@ Content under H3"#;
             "container_title": "# Container H1"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -118,47 +116,47 @@ Content under H3"#;
         let node_ids = result["node_ids"].as_array().unwrap();
 
         // Get all nodes
-        let container_h1 = operations
+        let container_h1 = node_service
             .get_node(node_ids[0].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let main_title = operations
+        let main_title = node_service
             .get_node(node_ids[1].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let first_h2 = operations
+        let first_h2 = node_service
             .get_node(node_ids[2].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let _text1 = operations
+        let _text1 = node_service
             .get_node(node_ids[3].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let second_h2 = operations
+        let second_h2 = node_service
             .get_node(node_ids[4].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let _text2 = operations
+        let _text2 = node_service
             .get_node(node_ids[5].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let third_h2 = operations
+        let third_h2 = node_service
             .get_node(node_ids[6].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let h3 = operations
+        let h3 = node_service
             .get_node(node_ids[7].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let _text3 = operations
+        let _text3 = node_service
             .get_node(node_ids[8].as_str().unwrap())
             .await
             .unwrap()
@@ -197,7 +195,7 @@ Content under H3"#;
 
     #[tokio::test]
     async fn test_complex_heading_transitions() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Test various heading level transitions
         let markdown = r#"# H1
@@ -214,54 +212,54 @@ Content under H3"#;
             "container_title": "Complex Test"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
         let node_ids = result["node_ids"].as_array().unwrap();
 
         // Get nodes we need to verify
-        let _container = operations
+        let _container = node_service
             .get_node(node_ids[0].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let _h1_first = operations
+        let _h1_first = node_service
             .get_node(node_ids[1].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let _h2_a = operations
+        let _h2_a = node_service
             .get_node(node_ids[2].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let _h3 = operations
+        let _h3 = node_service
             .get_node(node_ids[3].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let _h2_b = operations
+        let _h2_b = node_service
             .get_node(node_ids[4].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let _h4 = operations
+        let _h4 = node_service
             .get_node(node_ids[5].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let _h2_c = operations
+        let _h2_c = node_service
             .get_node(node_ids[6].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let _h1_second = operations
+        let _h1_second = node_service
             .get_node(node_ids[7].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let _h2_under_second = operations
+        let _h2_under_second = node_service
             .get_node(node_ids[8].as_str().unwrap())
             .await
             .unwrap()
@@ -292,7 +290,7 @@ Content under H3"#;
 
     #[tokio::test]
     async fn test_content_preservation() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"## Heading with hashtags
 - [ ] Task item
@@ -306,7 +304,7 @@ code block
             "container_title": "Content Test"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -317,7 +315,7 @@ code block
 
         // Skip container (first node)
         for node_id in node_ids.iter().skip(1) {
-            let node = operations
+            let node = node_service
                 .get_node(node_id.as_str().unwrap())
                 .await
                 .unwrap()
@@ -348,7 +346,7 @@ code block
 
     #[tokio::test]
     async fn test_nested_lists() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"- Item 1
   - Nested item 1.1
@@ -360,7 +358,7 @@ code block
             "container_title": "List Test"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -371,7 +369,7 @@ code block
 
     #[tokio::test]
     async fn test_task_list_with_checked_items() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"- [ ] Unchecked task
 - [x] Checked task
@@ -382,7 +380,7 @@ code block
             "container_title": "Task List"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -398,7 +396,7 @@ code block
 
         // Skip the first node (container from container_title)
         for node_id in node_ids.iter().skip(1) {
-            let node = operations
+            let node = node_service
                 .get_node(node_id.as_str().unwrap())
                 .await
                 .unwrap()
@@ -419,7 +417,7 @@ code block
 
     #[tokio::test]
     async fn test_code_block_with_language() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"```rust
 fn main() {
@@ -432,7 +430,7 @@ fn main() {
             "container_title": "Code Test"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -442,7 +440,7 @@ fn main() {
 
         // Verify code block node (second node, after container)
         let node_ids = result["node_ids"].as_array().unwrap();
-        let code_node = operations
+        let code_node = node_service
             .get_node(node_ids[1].as_str().unwrap())
             .await
             .unwrap()
@@ -457,7 +455,7 @@ fn main() {
 
     #[tokio::test]
     async fn test_code_block_without_language() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"```
 plain code
@@ -468,7 +466,7 @@ plain code
             "container_title": "Plain Code Test"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -478,7 +476,7 @@ plain code
 
         // Verify code block content (no language fence) - second node after container
         let node_ids = result["node_ids"].as_array().unwrap();
-        let code_node = operations
+        let code_node = node_service
             .get_node(node_ids[1].as_str().unwrap())
             .await
             .unwrap()
@@ -491,7 +489,7 @@ plain code
 
     #[tokio::test]
     async fn test_mixed_content() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"# Project Plan
 
@@ -514,7 +512,7 @@ Regular paragraph text."#;
             "container_title": "Mixed Content"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -527,14 +525,14 @@ Regular paragraph text."#;
 
     #[tokio::test]
     async fn test_empty_markdown() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let params = json!({
             "markdown_content": "",
             "container_title": "Empty Document"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params).await;
+        let result = handle_create_nodes_from_markdown(&node_service, params).await;
 
         // Empty markdown is now OK - container_title creates the container node
         // and empty markdown_content just means no child nodes
@@ -545,7 +543,7 @@ Regular paragraph text."#;
 
     #[tokio::test]
     async fn test_container_node_structure() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = "# Test";
 
@@ -554,12 +552,12 @@ Regular paragraph text."#;
             "container_title": "Container Test"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
         let root_id = result["root_id"].as_str().unwrap();
-        let container = operations.get_node(root_id).await.unwrap().unwrap();
+        let container = node_service.get_node(root_id).await.unwrap().unwrap();
 
         // Container should be a root node created from container_title
         assert_eq!(container.node_type, "text"); // "Container Test" is plain text
@@ -569,7 +567,7 @@ Regular paragraph text."#;
 
     #[tokio::test]
     async fn test_all_nodes_share_container() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"# Heading
 Text content
@@ -580,7 +578,7 @@ Text content
             "container_title": "Shared Container"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -589,7 +587,7 @@ Text content
 
         // Verify all non-container nodes are descendants of the container (via graph edges)
         for node_id in node_ids.iter().skip(1) {
-            let _node = operations
+            let _node = node_service
                 .get_node(node_id.as_str().unwrap())
                 .await
                 .unwrap()
@@ -601,20 +599,20 @@ Text content
 
     #[tokio::test]
     async fn test_invalid_params() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Missing container_title
         let params = json!({
             "markdown_content": "# Test"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params).await;
+        let result = handle_create_nodes_from_markdown(&node_service, params).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_inline_code_in_text() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = "This has `inline code` in it.";
 
@@ -623,7 +621,7 @@ Text content
             "container_title": "Inline Code Test"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -633,7 +631,7 @@ Text content
 
         // Find the text node (second node, after container)
         let node_ids = result["node_ids"].as_array().unwrap();
-        let text_node = operations
+        let text_node = node_service
             .get_node(node_ids[1].as_str().unwrap())
             .await
             .unwrap()
@@ -653,7 +651,7 @@ Text content
 
     #[tokio::test]
     async fn test_sibling_ordering() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"First paragraph
 
@@ -666,7 +664,7 @@ Third paragraph"#;
             "container_title": "Sibling Order Test"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -677,22 +675,22 @@ Third paragraph"#;
         let node_ids = result["node_ids"].as_array().unwrap();
 
         // Get all text nodes (container at 0, content nodes at 1-3)
-        let container = operations
+        let container = node_service
             .get_node(node_ids[0].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let first = operations
+        let first = node_service
             .get_node(node_ids[1].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let second = operations
+        let second = node_service
             .get_node(node_ids[2].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let third = operations
+        let third = node_service
             .get_node(node_ids[3].as_str().unwrap())
             .await
             .unwrap()
@@ -711,7 +709,7 @@ Third paragraph"#;
 
     #[tokio::test]
     async fn test_deep_heading_hierarchy() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"# H1
 ## H2
@@ -726,7 +724,7 @@ Text under H6"#;
             "container_title": "Deep Hierarchy Test"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -737,42 +735,42 @@ Text under H6"#;
         let node_ids = result["node_ids"].as_array().unwrap();
 
         // Verify all heading levels exist (container at 0, content starts at 1)
-        let container = operations
+        let container = node_service
             .get_node(node_ids[0].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let h1 = operations
+        let h1 = node_service
             .get_node(node_ids[1].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let h2 = operations
+        let h2 = node_service
             .get_node(node_ids[2].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let h3 = operations
+        let h3 = node_service
             .get_node(node_ids[3].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let h4 = operations
+        let h4 = node_service
             .get_node(node_ids[4].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let h5 = operations
+        let h5 = node_service
             .get_node(node_ids[5].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let h6 = operations
+        let h6 = node_service
             .get_node(node_ids[6].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
-        let _text = operations
+        let _text = node_service
             .get_node(node_ids[7].as_str().unwrap())
             .await
             .unwrap()
@@ -800,7 +798,7 @@ Text under H6"#;
 
     #[tokio::test]
     async fn test_input_size_validation() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Create markdown larger than MAX_MARKDOWN_SIZE (1MB)
         // Using a 10-byte string repeated 100,001 times = 1,000,010 bytes (just over 1MB)
@@ -811,7 +809,7 @@ Text under H6"#;
             "container_title": "Large Document"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params).await;
+        let result = handle_create_nodes_from_markdown(&node_service, params).await;
 
         // Should fail with size error
         assert!(result.is_err());
@@ -821,7 +819,7 @@ Text under H6"#;
 
     #[tokio::test]
     async fn test_nodes_metadata_in_response() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"# Header
 Text paragraph
@@ -832,7 +830,7 @@ Text paragraph
             "container_title": "Metadata Test"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -862,7 +860,7 @@ Text paragraph
 
     #[tokio::test]
     async fn test_get_markdown_simple() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Create test nodes via import
         let markdown = "# Hello World\n\n- Item 1";
@@ -871,7 +869,7 @@ Text paragraph
             "container_title": "Test"
         });
 
-        let import_result = handle_create_nodes_from_markdown(&operations, params)
+        let import_result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
         let root_id = import_result["root_id"].as_str().unwrap();
@@ -882,7 +880,7 @@ Text paragraph
             "include_children": true
         });
 
-        let result = handle_get_markdown_from_node_id(&operations, export_params)
+        let result = handle_get_markdown_from_node_id(&node_service, export_params)
             .await
             .unwrap();
         let exported_markdown = result["markdown"].as_str().unwrap();
@@ -905,7 +903,7 @@ Text paragraph
 
     #[tokio::test]
     async fn test_get_markdown_max_depth() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Create deep hierarchy
         let markdown = r#"# Root
@@ -918,7 +916,7 @@ Text paragraph
             "container_title": "Deep Hierarchy"
         });
 
-        let import_result = handle_create_nodes_from_markdown(&operations, params)
+        let import_result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
         let root_id = import_result["root_id"].as_str().unwrap();
@@ -930,7 +928,7 @@ Text paragraph
             "max_depth": 3
         });
 
-        let result = handle_get_markdown_from_node_id(&operations, export_params)
+        let result = handle_get_markdown_from_node_id(&node_service, export_params)
             .await
             .unwrap();
         let exported_markdown = result["markdown"].as_str().unwrap();
@@ -951,7 +949,7 @@ Text paragraph
 
     #[tokio::test]
     async fn test_get_markdown_no_children() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"# Root
 ## Child"#;
@@ -961,7 +959,7 @@ Text paragraph
             "container_title": "Test"
         });
 
-        let import_result = handle_create_nodes_from_markdown(&operations, params)
+        let import_result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
         let root_id = import_result["root_id"].as_str().unwrap();
@@ -972,7 +970,7 @@ Text paragraph
             "include_children": false
         });
 
-        let result = handle_get_markdown_from_node_id(&operations, export_params)
+        let result = handle_get_markdown_from_node_id(&node_service, export_params)
             .await
             .unwrap();
         let exported_markdown = result["markdown"].as_str().unwrap();
@@ -986,7 +984,7 @@ Text paragraph
 
     #[tokio::test]
     async fn test_roundtrip_import_export() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Original markdown
         let original = r#"# Heading
@@ -1001,7 +999,7 @@ Text paragraph
             "markdown_content": original,
             "container_title": "Test"
         });
-        let import_result = handle_create_nodes_from_markdown(&operations, import_params)
+        let import_result = handle_create_nodes_from_markdown(&node_service, import_params)
             .await
             .unwrap();
         let root_id = import_result["root_id"].as_str().unwrap();
@@ -1020,7 +1018,7 @@ Text paragraph
             "node_id": root_id,
             "include_children": true
         });
-        let export_result = handle_get_markdown_from_node_id(&operations, export_params)
+        let export_result = handle_get_markdown_from_node_id(&node_service, export_params)
             .await
             .unwrap();
         let exported = export_result["markdown"].as_str().unwrap();
@@ -1046,13 +1044,13 @@ Text paragraph
 
     #[tokio::test]
     async fn test_get_markdown_missing_node() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let export_params = json!({
             "node_id": "nonexistent-node-id"
         });
 
-        let result = handle_get_markdown_from_node_id(&operations, export_params).await;
+        let result = handle_get_markdown_from_node_id(&node_service, export_params).await;
 
         // Should return error for missing node
         assert!(result.is_err());
@@ -1062,20 +1060,20 @@ Text paragraph
 
     #[tokio::test]
     async fn test_get_markdown_invalid_params() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Missing node_id
         let export_params = json!({
             "include_children": true
         });
 
-        let result = handle_get_markdown_from_node_id(&operations, export_params).await;
+        let result = handle_get_markdown_from_node_id(&node_service, export_params).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_get_markdown_preserves_hierarchy() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"# Container
 
@@ -1091,7 +1089,7 @@ Text under section 1
             "container_title": "Hierarchy Test"
         });
 
-        let import_result = handle_create_nodes_from_markdown(&operations, import_params)
+        let import_result = handle_create_nodes_from_markdown(&node_service, import_params)
             .await
             .unwrap();
         let root_id = import_result["root_id"].as_str().unwrap();
@@ -1110,7 +1108,7 @@ Text under section 1
             "include_children": true
         });
 
-        let result = handle_get_markdown_from_node_id(&operations, export_params)
+        let result = handle_get_markdown_from_node_id(&node_service, export_params)
             .await
             .unwrap();
         let exported = result["markdown"].as_str().unwrap();
@@ -1137,7 +1135,7 @@ Text under section 1
 
     #[tokio::test]
     async fn test_bullet_with_link() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"Text paragraph
 - [Click here](https://example.com)
@@ -1148,7 +1146,7 @@ Text under section 1
             "container_title": "# Container"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
@@ -1161,7 +1159,7 @@ Text under section 1
 
         // Link should be stored as text (not incorrectly identified as a bullet)
         // The "- [link](url)" format should be preserved with the "- " prefix
-        let link_node = operations
+        let link_node = node_service
             .get_node(nodes[2]["id"].as_str().unwrap())
             .await
             .unwrap()
@@ -1172,7 +1170,7 @@ Text under section 1
         assert!(link_node.content.starts_with("- ["));
 
         // Regular bullet should have "- " stripped
-        let bullet_node = operations
+        let bullet_node = node_service
             .get_node(nodes[3]["id"].as_str().unwrap())
             .await
             .unwrap()
@@ -1188,7 +1186,7 @@ Text under section 1
 
     #[tokio::test]
     async fn test_ordered_list_false_positive() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // This should be ONE text node, not broken into ordered list
         let markdown = "This is step 1. The next step is step 2.";
@@ -1198,14 +1196,14 @@ Text under section 1
             "container_title": "# Container"
         });
 
-        let result = handle_create_nodes_from_markdown(&operations, params)
+        let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
         let nodes = result["nodes"].as_array().unwrap();
         assert_eq!(nodes.len(), 2); // Container + text (not broken into list)
 
-        let text_node = operations
+        let text_node = node_service
             .get_node(nodes[1]["id"].as_str().unwrap())
             .await
             .unwrap()
@@ -1218,7 +1216,7 @@ Text under section 1
     #[tokio::test]
     #[ignore = "Bullet roundtrip not implemented - bullets are stored as text nodes without marker"]
     async fn test_bullet_roundtrip() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Import
         let import_params = json!({
@@ -1226,7 +1224,7 @@ Text under section 1
             "container_title": "# Header"
         });
 
-        let import_result = handle_create_nodes_from_markdown(&operations, import_params)
+        let import_result = handle_create_nodes_from_markdown(&node_service, import_params)
             .await
             .unwrap();
 
@@ -1238,7 +1236,7 @@ Text under section 1
             "include_children": true
         });
 
-        let export_result = handle_get_markdown_from_node_id(&operations, export_params)
+        let export_result = handle_get_markdown_from_node_id(&node_service, export_params)
             .await
             .unwrap();
 
@@ -1258,7 +1256,7 @@ Text under section 1
 
     #[tokio::test]
     async fn test_get_markdown_with_code_blocks() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"# Code Example
 
@@ -1275,7 +1273,7 @@ Regular text after code."#;
             "container_title": "Code Test"
         });
 
-        let import_result = handle_create_nodes_from_markdown(&operations, import_params)
+        let import_result = handle_create_nodes_from_markdown(&node_service, import_params)
             .await
             .unwrap();
         let root_id = import_result["root_id"].as_str().unwrap();
@@ -1294,7 +1292,7 @@ Regular text after code."#;
             "include_children": true
         });
 
-        let result = handle_get_markdown_from_node_id(&operations, export_params)
+        let result = handle_get_markdown_from_node_id(&node_service, export_params)
             .await
             .unwrap();
         let exported = result["markdown"].as_str().unwrap();
@@ -1319,7 +1317,7 @@ Regular text after code."#;
 
     #[tokio::test]
     async fn test_update_root_from_markdown_basic() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Create root with some children
         let create_params = json!({
@@ -1327,7 +1325,7 @@ Regular text after code."#;
             "container_title": "# Test Container"
         });
 
-        let create_result = handle_create_nodes_from_markdown(&operations, create_params)
+        let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
             .await
             .unwrap();
         let root_id = create_result["root_id"].as_str().unwrap();
@@ -1338,7 +1336,7 @@ Regular text after code."#;
             "markdown": "- New item 1\n- New item 2\n- New item 3"
         });
 
-        let result = handle_update_root_from_markdown(&operations, update_params)
+        let result = handle_update_root_from_markdown(&node_service, update_params)
             .await
             .unwrap();
 
@@ -1349,7 +1347,7 @@ Regular text after code."#;
         assert_eq!(result["nodes_created"].as_u64().unwrap(), 3); // 3 new items
 
         // Verify new structure - get direct children via graph
-        let children = operations.get_children(root_id).await.unwrap();
+        let children = node_service.get_children(root_id).await.unwrap();
 
         // Verify all expected content is present (order not guaranteed since order_by not implemented yet)
         assert_eq!(children.len(), 3);
@@ -1370,7 +1368,7 @@ Regular text after code."#;
 
     #[tokio::test]
     async fn test_update_root_from_markdown_backward_compat_container_id() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Create root with some children
         let create_params = json!({
@@ -1378,7 +1376,7 @@ Regular text after code."#;
             "container_title": "# Test"
         });
 
-        let create_result = handle_create_nodes_from_markdown(&operations, create_params)
+        let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
             .await
             .unwrap();
         let root_id = create_result["root_id"].as_str().unwrap();
@@ -1389,7 +1387,7 @@ Regular text after code."#;
             "markdown": "- New item"
         });
 
-        let result = handle_update_root_from_markdown(&operations, update_params)
+        let result = handle_update_root_from_markdown(&node_service, update_params)
             .await
             .unwrap();
 
@@ -1400,7 +1398,7 @@ Regular text after code."#;
 
     #[tokio::test]
     async fn test_update_root_from_markdown_complex_structure() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Create root with simple structure
         let create_params = json!({
@@ -1408,7 +1406,7 @@ Regular text after code."#;
             "container_title": "# Document"
         });
 
-        let create_result = handle_create_nodes_from_markdown(&operations, create_params)
+        let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
             .await
             .unwrap();
         let root_id = create_result["root_id"].as_str().unwrap();
@@ -1419,7 +1417,7 @@ Regular text after code."#;
             "markdown": "## Phase 1\n- [ ] Task A\n- [ ] Task B\n\n## Phase 2\n- [ ] Task C"
         });
 
-        let result = handle_update_root_from_markdown(&operations, update_params)
+        let result = handle_update_root_from_markdown(&node_service, update_params)
             .await
             .unwrap();
 
@@ -1428,7 +1426,7 @@ Regular text after code."#;
 
         // Verify hierarchy was created
         // Structure: root -> headers -> tasks (nested)
-        let direct_children = operations.get_children(root_id).await.unwrap();
+        let direct_children = node_service.get_children(root_id).await.unwrap();
         assert_eq!(
             direct_children.len(),
             2,
@@ -1445,7 +1443,7 @@ Regular text after code."#;
         // Tasks are nested under headers - collect all grandchildren
         let mut all_tasks = Vec::new();
         for header in &headers {
-            let header_children = operations.get_children(&header.id).await.unwrap();
+            let header_children = node_service.get_children(&header.id).await.unwrap();
             for child in header_children {
                 if child.node_type == "task" {
                     all_tasks.push(child);
@@ -1461,14 +1459,14 @@ Regular text after code."#;
 
     #[tokio::test]
     async fn test_update_root_from_markdown_nonexistent_root() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         let params = json!({
             "root_id": "nonexistent-root-id",
             "markdown": "New content"
         });
 
-        let result = handle_update_root_from_markdown(&operations, params).await;
+        let result = handle_update_root_from_markdown(&node_service, params).await;
 
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -1477,14 +1475,14 @@ Regular text after code."#;
 
     #[tokio::test]
     async fn test_update_root_from_markdown_missing_id() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Missing both root_id and container_id
         let params = json!({
             "markdown": "New content"
         });
 
-        let result = handle_update_root_from_markdown(&operations, params).await;
+        let result = handle_update_root_from_markdown(&node_service, params).await;
 
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -1493,7 +1491,7 @@ Regular text after code."#;
 
     #[tokio::test]
     async fn test_update_root_from_markdown_empty_markdown() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Create root with children
         let create_params = json!({
@@ -1501,7 +1499,7 @@ Regular text after code."#;
             "container_title": "# Container"
         });
 
-        let create_result = handle_create_nodes_from_markdown(&operations, create_params)
+        let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
             .await
             .unwrap();
         let root_id = create_result["root_id"].as_str().unwrap();
@@ -1512,7 +1510,7 @@ Regular text after code."#;
             "markdown": ""
         });
 
-        let result = handle_update_root_from_markdown(&operations, update_params)
+        let result = handle_update_root_from_markdown(&node_service, update_params)
             .await
             .unwrap();
 
@@ -1520,14 +1518,14 @@ Regular text after code."#;
         assert_eq!(result["nodes_created"].as_u64().unwrap(), 0);
 
         // Verify no children remain
-        let children = operations.get_children(root_id).await.unwrap();
+        let children = node_service.get_children(root_id).await.unwrap();
 
         assert_eq!(children.len(), 0);
     }
 
     #[tokio::test]
     async fn test_update_root_from_markdown_exceeds_size_limit() {
-        let (operations, _temp_dir) = setup_test_service().await;
+        let (node_service, _temp_dir) = setup_test_service().await;
 
         // Create root
         let create_params = json!({
@@ -1535,7 +1533,7 @@ Regular text after code."#;
             "container_title": "# Container"
         });
 
-        let create_result = handle_create_nodes_from_markdown(&operations, create_params)
+        let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
             .await
             .unwrap();
         let root_id = create_result["root_id"].as_str().unwrap();
@@ -1547,7 +1545,7 @@ Regular text after code."#;
             "markdown": large_markdown
         });
 
-        let result = handle_update_root_from_markdown(&operations, update_params).await;
+        let result = handle_update_root_from_markdown(&node_service, update_params).await;
 
         assert!(result.is_err());
         let error = result.unwrap_err();

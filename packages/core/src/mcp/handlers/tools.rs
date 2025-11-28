@@ -3,11 +3,12 @@
 //! Implements MCP-compliant tools/list and tools/call methods.
 //! This module centralizes tool discovery and execution according to the
 //! MCP 2024-11-05 specification.
+//!
+//! As of Issue #676, all handlers use NodeService directly instead of NodeOperations.
 
 use crate::mcp::handlers::{markdown, natural_language_schema, nodes, schema, search};
 use crate::mcp::types::MCPError;
-use crate::operations::NodeOperations;
-use crate::services::{NodeEmbeddingService, SchemaService};
+use crate::services::{NodeEmbeddingService, NodeService, SchemaService};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -75,7 +76,7 @@ pub fn handle_tools_list(_params: Value) -> Result<Value, MCPError> {
 ///
 /// # Arguments
 ///
-/// * `node_operations` - Arc reference to NodeOperations for node operations
+/// * `node_service` - Arc reference to NodeService for node operations
 /// * `embedding_service` - Arc reference to NodeEmbeddingService for search
 /// * `schema_service` - Arc reference to SchemaService for schema validation
 /// * `params` - Request parameters containing `name` and `arguments`
@@ -84,7 +85,7 @@ pub fn handle_tools_list(_params: Value) -> Result<Value, MCPError> {
 ///
 /// Returns JSON result with content array and isError flag per MCP spec
 pub async fn handle_tools_call(
-    node_operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     embedding_service: &Arc<NodeEmbeddingService>,
     schema_service: &Arc<SchemaService>,
     params: Value,
@@ -100,35 +101,31 @@ pub async fn handle_tools_call(
     // Route to appropriate handler based on tool name
     let result = match tool_name {
         // Core Node CRUD
-        "create_node" => nodes::handle_create_node(node_operations, arguments).await,
-        "get_node" => nodes::handle_get_node(node_operations, arguments).await,
-        "update_node" => {
-            nodes::handle_update_node(node_operations, schema_service, arguments).await
-        }
-        "delete_node" => nodes::handle_delete_node(node_operations, arguments).await,
-        "query_nodes" => nodes::handle_query_nodes(node_operations, arguments).await,
+        "create_node" => nodes::handle_create_node(node_service, arguments).await,
+        "get_node" => nodes::handle_get_node(node_service, arguments).await,
+        "update_node" => nodes::handle_update_node(node_service, schema_service, arguments).await,
+        "delete_node" => nodes::handle_delete_node(node_service, arguments).await,
+        "query_nodes" => nodes::handle_query_nodes(node_service, arguments).await,
 
         // Hierarchy & Children (Index-Based Operations)
-        "get_children" => nodes::handle_get_children(node_operations, arguments).await,
-        "get_child_at_index" => nodes::handle_get_child_at_index(node_operations, arguments).await,
+        "get_children" => nodes::handle_get_children(node_service, arguments).await,
+        "get_child_at_index" => nodes::handle_get_child_at_index(node_service, arguments).await,
         "insert_child_at_index" => {
-            nodes::handle_insert_child_at_index(node_operations, arguments).await
+            nodes::handle_insert_child_at_index(node_service, arguments).await
         }
-        "move_child_to_index" => {
-            nodes::handle_move_child_to_index(node_operations, arguments).await
-        }
-        "get_node_tree" => nodes::handle_get_node_tree(node_operations, arguments).await,
+        "move_child_to_index" => nodes::handle_move_child_to_index(node_service, arguments).await,
+        "get_node_tree" => nodes::handle_get_node_tree(node_service, arguments).await,
 
         // Markdown Import/Export
         "create_nodes_from_markdown" => {
-            markdown::handle_create_nodes_from_markdown(node_operations, arguments).await
+            markdown::handle_create_nodes_from_markdown(node_service, arguments).await
         }
         "get_markdown_from_node_id" => {
-            markdown::handle_get_markdown_from_node_id(node_operations, arguments).await
+            markdown::handle_get_markdown_from_node_id(node_service, arguments).await
         }
         // New preferred tool name for root updates
         "update_root_from_markdown" => {
-            markdown::handle_update_root_from_markdown(node_operations, arguments).await
+            markdown::handle_update_root_from_markdown(node_service, arguments).await
         }
         // DEPRECATED: Use update_root_from_markdown instead
         // Kept for backward compatibility - logs deprecation warning
@@ -136,13 +133,13 @@ pub async fn handle_tools_call(
             tracing::warn!(
                 "Tool 'update_container_from_markdown' is deprecated. Use 'update_root_from_markdown' instead."
             );
-            markdown::handle_update_root_from_markdown(node_operations, arguments).await
+            markdown::handle_update_root_from_markdown(node_service, arguments).await
         }
 
         // Batch Operations
-        "get_nodes_batch" => nodes::handle_get_nodes_batch(node_operations, arguments).await,
+        "get_nodes_batch" => nodes::handle_get_nodes_batch(node_service, arguments).await,
         "update_nodes_batch" => {
-            nodes::handle_update_nodes_batch(node_operations, schema_service, arguments).await
+            nodes::handle_update_nodes_batch(node_service, schema_service, arguments).await
         }
 
         // Search
@@ -169,7 +166,7 @@ pub async fn handle_tools_call(
         }
         "create_entity_schema_from_description" => {
             natural_language_schema::handle_create_entity_schema_from_description(
-                node_operations,
+                node_service,
                 arguments,
             )
             .await

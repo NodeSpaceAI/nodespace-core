@@ -3,7 +3,6 @@
 //! Tests tools/list and tools/call methods for MCP spec compliance.
 
 use super::*;
-use crate::operations::NodeOperations;
 use crate::services::SchemaService;
 use serde_json::json;
 
@@ -128,7 +127,7 @@ mod async_integration_tests {
     use tempfile::TempDir;
 
     async fn setup_test_services() -> (
-        Arc<NodeOperations>,
+        Arc<NodeService>,
         Arc<NodeEmbeddingService>,
         Arc<SchemaService>,
         TempDir,
@@ -138,7 +137,6 @@ mod async_integration_tests {
 
         let store = Arc::new(SurrealStore::new(db_path).await.unwrap());
         let node_service = Arc::new(NodeService::new(store.clone()).unwrap());
-        let node_operations = Arc::new(NodeOperations::new(node_service.clone()));
 
         // Create NLP engine for embedding service
         let mut nlp_engine = EmbeddingService::new(EmbeddingConfig::default()).unwrap();
@@ -148,14 +146,14 @@ mod async_integration_tests {
         let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
 
         // Create SchemaService
-        let schema_service = Arc::new(SchemaService::new(node_service));
+        let schema_service = Arc::new(SchemaService::new(node_service.clone()));
 
-        (node_operations, embedding_service, schema_service, temp_dir)
+        (node_service, embedding_service, schema_service, temp_dir)
     }
 
     #[tokio::test]
     async fn test_tools_call_unknown_tool_returns_error() {
-        let (node_operations, embedding_service, schema_service, _temp_dir) =
+        let (node_service, embedding_service, schema_service, _temp_dir) =
             setup_test_services().await;
 
         let params = json!({
@@ -163,13 +161,8 @@ mod async_integration_tests {
             "arguments": {}
         });
 
-        let result = handle_tools_call(
-            &node_operations,
-            &embedding_service,
-            &schema_service,
-            params,
-        )
-        .await;
+        let result =
+            handle_tools_call(&node_service, &embedding_service, &schema_service, params).await;
 
         // Should return Err with invalid params error
         assert!(result.is_err());
@@ -180,20 +173,15 @@ mod async_integration_tests {
 
     #[tokio::test]
     async fn test_tools_call_missing_name_parameter() {
-        let (node_operations, embedding_service, schema_service, _temp_dir) =
+        let (node_service, embedding_service, schema_service, _temp_dir) =
             setup_test_services().await;
 
         let params = json!({
             "arguments": {"content": "test"}
         });
 
-        let result = handle_tools_call(
-            &node_operations,
-            &embedding_service,
-            &schema_service,
-            params,
-        )
-        .await;
+        let result =
+            handle_tools_call(&node_service, &embedding_service, &schema_service, params).await;
 
         // Should return Err with invalid params error
         assert!(result.is_err());
@@ -204,7 +192,7 @@ mod async_integration_tests {
 
     #[tokio::test]
     async fn test_tools_call_create_node_success() {
-        let (node_operations, embedding_service, schema_service, _temp_dir) =
+        let (node_service, embedding_service, schema_service, _temp_dir) =
             setup_test_services().await;
 
         let params = json!({
@@ -215,13 +203,8 @@ mod async_integration_tests {
             }
         });
 
-        let result = handle_tools_call(
-            &node_operations,
-            &embedding_service,
-            &schema_service,
-            params,
-        )
-        .await;
+        let result =
+            handle_tools_call(&node_service, &embedding_service, &schema_service, params).await;
 
         // Should return Ok with MCP spec-compliant response
         assert!(result.is_ok(), "tools/call should succeed");
@@ -251,7 +234,7 @@ mod async_integration_tests {
 
     #[tokio::test]
     async fn test_tools_call_get_node_not_found_returns_error_response() {
-        let (node_operations, embedding_service, schema_service, _temp_dir) =
+        let (node_service, embedding_service, schema_service, _temp_dir) =
             setup_test_services().await;
 
         let params = json!({
@@ -261,13 +244,8 @@ mod async_integration_tests {
             }
         });
 
-        let result = handle_tools_call(
-            &node_operations,
-            &embedding_service,
-            &schema_service,
-            params,
-        )
-        .await;
+        let result =
+            handle_tools_call(&node_service, &embedding_service, &schema_service, params).await;
 
         // Should return Ok with isError=true (per MCP spec, tool errors are not JSON-RPC errors)
         assert!(result.is_ok());
@@ -286,7 +264,7 @@ mod async_integration_tests {
 
     #[tokio::test]
     async fn test_tools_call_query_nodes_success() {
-        let (node_operations, embedding_service, schema_service, _temp_dir) =
+        let (node_service, embedding_service, schema_service, _temp_dir) =
             setup_test_services().await;
 
         // First create a node
@@ -298,7 +276,7 @@ mod async_integration_tests {
             }
         });
         handle_tools_call(
-            &node_operations,
+            &node_service,
             &embedding_service,
             &schema_service,
             create_params,
@@ -316,7 +294,7 @@ mod async_integration_tests {
         });
 
         let result = handle_tools_call(
-            &node_operations,
+            &node_service,
             &embedding_service,
             &schema_service,
             query_params,
@@ -339,7 +317,7 @@ mod async_integration_tests {
 
     #[tokio::test]
     async fn test_tools_call_with_missing_arguments_uses_default() {
-        let (node_operations, embedding_service, schema_service, _temp_dir) =
+        let (node_service, embedding_service, schema_service, _temp_dir) =
             setup_test_services().await;
 
         // Call without arguments field
@@ -347,13 +325,8 @@ mod async_integration_tests {
             "name": "query_nodes"
         });
 
-        let result = handle_tools_call(
-            &node_operations,
-            &embedding_service,
-            &schema_service,
-            params,
-        )
-        .await;
+        let result =
+            handle_tools_call(&node_service, &embedding_service, &schema_service, params).await;
 
         // Should work with default empty arguments
         assert!(result.is_ok());

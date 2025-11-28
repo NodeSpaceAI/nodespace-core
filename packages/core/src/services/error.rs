@@ -60,6 +60,14 @@ pub enum NodeServiceError {
     /// Query execution error
     #[error("Query failed: {0}")]
     QueryFailed(String),
+
+    /// Version conflict (optimistic concurrency control)
+    #[error("Version conflict for node {node_id}: expected version {expected_version}, found {actual_version}")]
+    VersionConflict {
+        node_id: String,
+        expected_version: i64,
+        actual_version: i64,
+    },
 }
 
 impl NodeServiceError {
@@ -121,5 +129,18 @@ impl NodeServiceError {
     /// Create a query failed error
     pub fn query_failed(msg: impl Into<String>) -> Self {
         Self::QueryFailed(msg.into())
+    }
+
+    /// Create a version conflict error
+    pub fn version_conflict(
+        node_id: impl Into<String>,
+        expected_version: i64,
+        actual_version: i64,
+    ) -> Self {
+        Self::VersionConflict {
+            node_id: node_id.into(),
+            expected_version,
+            actual_version,
+        }
     }
 }

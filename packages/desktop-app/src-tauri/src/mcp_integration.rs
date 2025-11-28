@@ -3,9 +3,11 @@
 //! Wraps core MCP protocol with Tauri-specific functionality (event emissions).
 //! This is the integration layer that connects the pure protocol (in nodespace-core)
 //! with the Tauri desktop application.
+//!
+//! As of Issue #676, NodeOperations layer was merged into NodeService.
+//! All MCP handlers now use NodeService directly.
 
 use nodespace_core::mcp;
-use nodespace_core::operations::NodeOperations;
 use nodespace_core::services::{NodeEmbeddingService, SchemaService};
 use nodespace_core::{Node, NodeService};
 use serde::Serialize;
@@ -67,15 +69,13 @@ pub async fn run_mcp_server_with_events(
         emit_event_for_method(&app, method, result);
     });
 
-    // Create NodeOperations from NodeService
-    let node_operations = Arc::new(NodeOperations::new(node_service.clone()));
-
     // Create SchemaService from NodeService
-    let schema_service = Arc::new(SchemaService::new(node_service));
+    let schema_service = Arc::new(SchemaService::new(node_service.clone()));
 
     // Create combined services struct for MCP
+    // (Issue #676: NodeOperations merged into NodeService, now use node_service directly)
     let services = mcp::server::McpServices {
-        node_operations,
+        node_service,
         embedding_service,
         schema_service,
     };

@@ -39,5 +39,5 @@ pub use models::{
     FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter,
     ValidationError,
 };
-pub use operations::{error::NodeOperationError, NodeOperations};
+pub use operations::CreateNodeParams;
 pub use services::{NodeService, NodeServiceError};

@@ -721,6 +721,202 @@ where
         Ok(node.id)
     }
 
+    /// Create a node with parent relationship in a single operation
+    ///
+    /// This is the primary node creation API that enforces all business rules:
+    /// 1. Auto-creates date containers (YYYY-MM-DD) if parent is a date ID
+    /// 2. Validates parent exists (if provided)
+    /// 3. Creates the node with proper validation
+    /// 4. Establishes parent-child edge with correct sibling ordering
+    ///
+    /// # Arguments
+    ///
+    /// * `params` - CreateNodeParams containing all node creation parameters
+    ///
+    /// # Returns
+    ///
+    /// The ID of the created node
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - Parent doesn't exist (and isn't a valid date format)
+    /// - Node validation fails
+    /// - Sibling doesn't exist or has different parent
+    /// - ID format is invalid (non-UUID for production nodes)
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use nodespace_core::operations::CreateNodeParams;
+    /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
+    /// # use serde_json::json;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(db)?;
+    /// // Create a child node under a date container
+    /// let id = service.create_node_with_parent(CreateNodeParams {
+    ///     id: None,
+    ///     node_type: "text".to_string(),
+    ///     content: "My note".to_string(),
+    ///     parent_id: Some("2025-01-15".to_string()),
+    ///     insert_after_node_id: None,
+    ///     properties: json!({}),
+    /// }).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn create_node_with_parent(
+        &self,
+        params: crate::operations::CreateNodeParams,
+    ) -> Result<String, NodeServiceError> {
+        // Step 1: Auto-create date container if parent is a date ID
+        if let Some(ref parent_id) = params.parent_id {
+            self.ensure_date_container_exists(parent_id).await?;
+        }
+
+        // Step 2: Validate parent exists (if provided)
+        if let Some(ref parent_id) = params.parent_id {
+            let parent_exists = self.node_exists(parent_id).await?;
+            if !parent_exists {
+                return Err(NodeServiceError::invalid_parent(parent_id));
+            }
+        }
+
+        // Step 3: Validate sibling exists and has same parent (if provided)
+        if let Some(ref sibling_id) = params.insert_after_node_id {
+            let _sibling = self
+                .get_node(sibling_id)
+                .await?
+                .ok_or_else(|| NodeServiceError::node_not_found(sibling_id))?;
+
+            // Verify sibling has same parent
+            let sibling_parent = self.get_parent(sibling_id).await?;
+            let sibling_parent_id = sibling_parent.as_ref().map(|p| p.id.as_str());
+
+            if sibling_parent_id != params.parent_id.as_deref() {
+                return Err(NodeServiceError::hierarchy_violation(format!(
+                    "Sibling '{}' has different parent than the node being created",
+                    sibling_id
+                )));
+            }
+        }
+
+        // Step 4: Generate or validate node ID
+        let node_id = if let Some(provided_id) = params.id {
+            // Validate ID format based on node type
+            if params.node_type == "date"
+                || params.node_type == "schema"
+                || provided_id.starts_with("test-")
+            {
+                // Date, schema, and test nodes can use their own ID format
+                provided_id
+            } else {
+                // Production nodes must use UUID format
+                uuid::Uuid::parse_str(&provided_id).map_err(|_| {
+                    NodeServiceError::invalid_update(format!(
+                        "Provided ID '{}' is not a valid UUID format (required for non-date/non-schema nodes)",
+                        provided_id
+                    ))
+                })?;
+                provided_id
+            }
+        } else if params.node_type == "date" {
+            params.content.clone()
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        };
+
+        // Step 5: Create the node
+        let node = Node {
+            id: node_id,
+            node_type: params.node_type,
+            content: params.content,
+            version: 1,
+            properties: params.properties,
+            mentions: vec![],
+            mentioned_by: vec![],
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            embedding_vector: None,
+        };
+
+        let created_id = self.create_node(node).await?;
+
+        // Step 6: Create parent edge if parent specified
+        if let Some(parent_id) = params.parent_id {
+            // Calculate sibling position: explicit sibling, or last child (append at end)
+            let final_insert_after = if params.insert_after_node_id.is_some() {
+                params.insert_after_node_id
+            } else {
+                // Find last child to append at end
+                let children = self.get_children(&parent_id).await?;
+                // Exclude the node we just created from the list
+                // Use next_back() instead of last() for DoubleEndedIterator efficiency
+                children
+                    .iter()
+                    .filter(|c| c.id != created_id)
+                    .next_back()
+                    .map(|c| c.id.clone())
+            };
+
+            self.create_parent_edge(&created_id, &parent_id, final_insert_after.as_deref())
+                .await?;
+        }
+
+        Ok(created_id)
+    }
+
+    /// Auto-create date container if it doesn't exist in the database
+    ///
+    /// Date nodes (YYYY-MM-DD format) are lazily created when children reference them.
+    /// This ensures date containers exist before child nodes are created under them.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - Potential date node ID to check/create
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if not a date or date container exists/was created
+    async fn ensure_date_container_exists(&self, node_id: &str) -> Result<(), NodeServiceError> {
+        // Check if this is a date format (YYYY-MM-DD)
+        if !is_date_node_id(node_id) {
+            return Ok(()); // Not a date, nothing to do
+        }
+
+        // Check if date container already exists IN THE DATABASE
+        // IMPORTANT: Call store.get_node() directly to bypass virtual date node logic
+        // in get_node(). The virtual date nodes are only for read operations,
+        // we need to check actual database state for auto-creation.
+        let exists = self
+            .store
+            .get_node(node_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(format!("Database error: {}", e)))?
+            .is_some();
+
+        if exists {
+            return Ok(()); // Already exists in database
+        }
+
+        // Auto-create the date container
+        let date_node = Node::new_with_id(
+            node_id.to_string(),
+            "date".to_string(),
+            node_id.to_string(), // Default content to date
+            serde_json::json!({}),
+        );
+
+        self.create_node(date_node).await?;
+
+        Ok(())
+    }
+
     /// Create a mention relationship between two existing nodes
     ///
     /// Adds an entry to the node_mentions table to track that one node mentions another.
@@ -1218,6 +1414,96 @@ where
         Ok(rows_affected as usize)
     }
 
+    /// Update a node with OCC and return the updated node
+    ///
+    /// This is the primary update API that:
+    /// 1. Validates update has changes
+    /// 2. Applies update with version check
+    /// 3. Returns detailed error on version conflict
+    /// 4. Returns the updated node on success
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The node ID to update
+    /// * `expected_version` - Version for optimistic concurrency control
+    /// * `update` - Fields to update
+    ///
+    /// # Returns
+    ///
+    /// The updated Node with new version number
+    ///
+    /// # Errors
+    ///
+    /// Returns error on:
+    /// - Empty update (no changes)
+    /// - Node not found
+    /// - Version conflict (with expected/actual versions)
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use nodespace_core::models::NodeUpdate;
+    /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(db)?;
+    /// let update = NodeUpdate::new().with_content("Updated content".to_string());
+    /// let updated = service.update_node_with_occ("node-id", 5, update).await?;
+    /// println!("New version: {}", updated.version);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn update_node_with_occ(
+        &self,
+        node_id: &str,
+        expected_version: i64,
+        update: NodeUpdate,
+    ) -> Result<Node, NodeServiceError> {
+        // Validate update has changes
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "Update contains no changes",
+            ));
+        }
+
+        // Verify node exists
+        let _current = self
+            .get_node(node_id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
+
+        // Apply update with version check
+        let rows_affected = self
+            .update_with_version_check(node_id, expected_version, update)
+            .await?;
+
+        // Handle version conflict
+        if rows_affected == 0 {
+            let current = self
+                .get_node(node_id)
+                .await?
+                .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
+
+            return Err(NodeServiceError::version_conflict(
+                node_id,
+                expected_version,
+                current.version,
+            ));
+        }
+
+        // Return updated node
+        let updated_node = self
+            .get_node(node_id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
+
+        Ok(updated_node)
+    }
+
     /// Sync mention relationships when node content changes
     ///
     /// Compares old vs new mentions and updates database:
@@ -1396,6 +1682,92 @@ where
             })
     }
 
+    /// Delete a node with cascade and optimistic concurrency control
+    ///
+    /// This is the primary delete API that:
+    /// 1. Verifies node exists
+    /// 2. Recursively deletes all children (cascade)
+    /// 3. Deletes the node with version check (OCC)
+    /// 4. Returns detailed error on version conflict
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The node ID to delete
+    /// * `expected_version` - Version for optimistic concurrency control
+    ///
+    /// # Returns
+    ///
+    /// `DeleteResult` indicating whether the node existed
+    ///
+    /// # Errors
+    ///
+    /// Returns error with current node state on version conflict,
+    /// or database errors on failure.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(db)?;
+    /// let result = service.delete_node_with_occ("node-id", 5).await?;
+    /// println!("Node existed: {}", result.existed);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn delete_node_with_occ(
+        &self,
+        node_id: &str,
+        expected_version: i64,
+    ) -> Result<crate::models::DeleteResult, NodeServiceError> {
+        // 1. Get the node being deleted (if it exists)
+        let _node = match self.get_node(node_id).await? {
+            Some(n) => n,
+            None => {
+                // Node doesn't exist - return false immediately (idempotent delete)
+                return Ok(crate::models::DeleteResult { existed: false });
+            }
+        };
+
+        // 2. Cascade delete all children recursively
+        let children = self.get_children(node_id).await?;
+        for child in children {
+            // Recursively call delete for each child using Box::pin to avoid infinite future size
+            Box::pin(self.delete_node_with_occ(&child.id, child.version)).await?;
+        }
+
+        // 3. Delete with version check (optimistic concurrency control)
+        let rows_affected = self
+            .delete_with_version_check(node_id, expected_version)
+            .await?;
+
+        // 4. Handle version conflict
+        if rows_affected == 0 {
+            // Node might have been deleted or modified by another client
+            match self.get_node(node_id).await? {
+                Some(current) => {
+                    // Node exists but version mismatch - return conflict error
+                    return Err(NodeServiceError::version_conflict(
+                        node_id,
+                        expected_version,
+                        current.version,
+                    ));
+                }
+                None => {
+                    // Node was already deleted by another client - idempotent
+                    return Ok(crate::models::DeleteResult { existed: false });
+                }
+            }
+        }
+
+        Ok(crate::models::DeleteResult { existed: true })
+    }
+
     /// Get children of a node
     ///
     /// Returns all direct children of the specified parent node.
@@ -1434,6 +1806,40 @@ where
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         Ok(children)
+    }
+
+    /// Get all descendants of a node (recursive children)
+    ///
+    /// Fetches all nodes in the subtree rooted at the specified node,
+    /// excluding the root node itself. Uses iterative breadth-first traversal.
+    ///
+    /// # Arguments
+    ///
+    /// * `root_id` - The root node ID to fetch descendants for
+    ///
+    /// # Returns
+    ///
+    /// `Vec<Node>` containing all descendant nodes (not including the root)
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::NodeService;
+    /// # async fn example(service: NodeService) -> Result<(), Box<dyn std::error::Error>> {
+    /// let descendants = service.get_descendants("parent-123").await?;
+    /// println!("Found {} descendants", descendants.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_descendants(&self, root_id: &str) -> Result<Vec<Node>, NodeServiceError> {
+        // Use store's breadth-first traversal implementation
+        let descendants = self
+            .store
+            .get_nodes_in_subtree(root_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        Ok(descendants)
     }
 
     /// Get a complete nested tree structure using efficient adjacency list strategy
@@ -1745,10 +2151,22 @@ where
         insert_after_node_id: Option<&str>,
     ) -> Result<(), NodeServiceError> {
         // Verify node exists
-        let _node = self
+        let node = self
             .get_node(node_id)
             .await?
             .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
+
+        // Date nodes are top-level containers and cannot be moved
+        // This prevents breaking document structure by moving date pages
+        // Note: We check node_type specifically, not just is_root_node(), because
+        // regular nodes without parents (e.g., newly created nodes being placed in hierarchy)
+        // should be allowed to be moved via this method.
+        if node.node_type == "date" {
+            return Err(NodeServiceError::hierarchy_violation(format!(
+                "Date node '{}' cannot be moved (it's a top-level container)",
+                node_id
+            )));
+        }
 
         // Verify new parent exists if provided
         if let Some(parent_id) = new_parent {
@@ -1771,6 +2189,180 @@ where
             .move_node(node_id, new_parent, insert_after_node_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+    }
+
+    /// Move a node to a new parent with OCC (Optimistic Concurrency Control)
+    ///
+    /// This method validates version before moving, preventing concurrent modifications
+    /// from silently overwriting each other. The node's version is bumped after a
+    /// successful move.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The node to move
+    /// * `expected_version` - The version the caller expects (for OCC)
+    /// * `new_parent` - The new parent ID (None to make it a root node)
+    /// * `insert_after_node_id` - Optional sibling to insert after (None = append at end)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - Node doesn't exist
+    /// - Version doesn't match (concurrent modification detected)
+    /// - New parent doesn't exist
+    /// - Move would create circular reference
+    /// - Node is a date container (cannot be moved)
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(db)?;
+    /// // Move node under new parent with version check
+    /// service.move_node_with_occ("node-id", 5, Some("new-parent-id"), None).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn move_node_with_occ(
+        &self,
+        node_id: &str,
+        expected_version: i64,
+        new_parent: Option<&str>,
+        insert_after_node_id: Option<&str>,
+    ) -> Result<(), NodeServiceError> {
+        // Get current node and verify version
+        let node = self
+            .get_node(node_id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
+
+        // Check version before proceeding
+        if node.version != expected_version {
+            return Err(NodeServiceError::version_conflict(
+                node_id,
+                expected_version,
+                node.version,
+            ));
+        }
+
+        // Date nodes are top-level containers and cannot be moved
+        if node.node_type == "date" {
+            return Err(NodeServiceError::hierarchy_violation(format!(
+                "Date node '{}' cannot be moved (it's a top-level container)",
+                node_id
+            )));
+        }
+
+        // Verify new parent exists if provided
+        if let Some(parent_id) = new_parent {
+            let parent_exists = self.node_exists(parent_id).await?;
+            if !parent_exists {
+                return Err(NodeServiceError::invalid_parent(parent_id));
+            }
+
+            // Check for circular reference - parent_id cannot be a descendant of node_id
+            if self.is_descendant(node_id, parent_id).await? {
+                return Err(NodeServiceError::circular_reference(format!(
+                    "Cannot move node {} under its descendant {}",
+                    node_id, parent_id
+                )));
+            }
+        }
+
+        // Perform the move
+        self.store
+            .move_node(node_id, new_parent, insert_after_node_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        // Bump the node's version to support OCC
+        // Even though we're only modifying edge relationships, we bump the node version
+        // so that concurrent move operations will fail with version conflict
+        self.update_node_with_version_bump(node_id, expected_version)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Reorder a node within its siblings with OCC
+    ///
+    /// This method validates version, prevents root reordering, and bumps
+    /// node version after reordering for OCC safety.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The node to reorder
+    /// * `expected_version` - Version for optimistic concurrency control
+    /// * `insert_after` - Sibling to position after (None = first position)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - Node not found
+    /// - Version mismatch
+    /// - Node is a root (roots cannot be reordered)
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(db)?;
+    /// // Reorder with version check
+    /// service.reorder_node_with_occ("node-id", 5, Some("sibling-id")).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn reorder_node_with_occ(
+        &self,
+        node_id: &str,
+        expected_version: i64,
+        insert_after: Option<&str>,
+    ) -> Result<(), NodeServiceError> {
+        // Get current node and verify version
+        let node = self
+            .get_node(node_id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
+
+        // Check version before proceeding
+        if node.version != expected_version {
+            return Err(NodeServiceError::version_conflict(
+                node_id,
+                expected_version,
+                node.version,
+            ));
+        }
+
+        // Root nodes cannot be reordered (they have no parent)
+        if self.is_root_node(node_id).await? {
+            return Err(NodeServiceError::hierarchy_violation(format!(
+                "Root node '{}' cannot be reordered (it has no parent)",
+                node_id
+            )));
+        }
+
+        // Use graph-native reordering
+        self.reorder_child(node_id, insert_after).await?;
+
+        // Bump the node's version to support OCC
+        // Even though we're only modifying edge ordering, we bump the node version
+        // so that concurrent reorder operations will fail with version conflict
+        self.update_node_with_version_bump(node_id, expected_version)
+            .await?;
+
+        Ok(())
     }
 
     /// Create parent-child edge atomically with sibling positioning
@@ -4502,6 +5094,293 @@ mod tests {
             let tree = service.get_children_tree("nonexistent-id").await.unwrap();
 
             assert!(tree.as_object().unwrap().is_empty());
+        }
+    }
+
+    /// Tests for move_node validation (Issue #676: NodeOperations merge)
+    mod move_node_validation_tests {
+        use super::*;
+
+        /// Test that date nodes (containers) cannot be moved
+        #[tokio::test]
+        async fn test_move_node_rejects_date_node() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a date node (container)
+            let date_node = Node::new_with_id(
+                "2025-01-03".to_string(),
+                "date".to_string(),
+                "2025-01-03".to_string(),
+                json!({}),
+            );
+            service.create_node(date_node).await.unwrap();
+
+            // Create a potential parent (also a date, which is fine for the test)
+            let parent_node = Node::new_with_id(
+                "2025-01-04".to_string(),
+                "date".to_string(),
+                "2025-01-04".to_string(),
+                json!({}),
+            );
+            service.create_node(parent_node).await.unwrap();
+
+            // Try to move the date node - should fail (date nodes are containers)
+            let result = service
+                .move_node("2025-01-03", Some("2025-01-04"), None)
+                .await;
+
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(
+                format!("{:?}", err).contains("cannot be moved"),
+                "Error should indicate date node cannot be moved: {:?}",
+                err
+            );
+        }
+
+        /// Test that circular references are prevented
+        #[tokio::test]
+        async fn test_move_node_prevents_circular_reference() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create hierarchy: Root -> A -> B -> C
+            // Root is needed so that A is not itself a root node
+            let root = Node::new("text".to_string(), "Root".to_string(), json!({}));
+            let root_id = service.create_node(root).await.unwrap();
+
+            let node_a = Node::new("text".to_string(), "A".to_string(), json!({}));
+            let node_a_id = service.create_node(node_a).await.unwrap();
+            service
+                .create_parent_edge(&node_a_id, &root_id, None)
+                .await
+                .unwrap();
+
+            let node_b = Node::new("text".to_string(), "B".to_string(), json!({}));
+            let node_b_id = service.create_node(node_b).await.unwrap();
+            service
+                .create_parent_edge(&node_b_id, &node_a_id, None)
+                .await
+                .unwrap();
+
+            let node_c = Node::new("text".to_string(), "C".to_string(), json!({}));
+            let node_c_id = service.create_node(node_c).await.unwrap();
+            service
+                .create_parent_edge(&node_c_id, &node_b_id, None)
+                .await
+                .unwrap();
+
+            // Try to move A under C - this would create: C -> A -> B -> C (circular!)
+            // A is not a root (it's under Root), so the root check passes, then circular check fires
+            let result = service.move_node(&node_a_id, Some(&node_c_id), None).await;
+
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(
+                format!("{:?}", err).contains("ircular"),
+                "Error should indicate circular reference: {:?}",
+                err
+            );
+        }
+
+        /// Test that non-root nodes can be moved
+        #[tokio::test]
+        async fn test_move_node_allows_non_root_node() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create parent and child
+            let parent1 = Node::new("text".to_string(), "Parent1".to_string(), json!({}));
+            let parent1_id = service.create_node(parent1).await.unwrap();
+
+            let parent2 = Node::new("text".to_string(), "Parent2".to_string(), json!({}));
+            let parent2_id = service.create_node(parent2).await.unwrap();
+
+            let child = Node::new("text".to_string(), "Child".to_string(), json!({}));
+            let child_id = service.create_node(child).await.unwrap();
+            service
+                .create_parent_edge(&child_id, &parent1_id, None)
+                .await
+                .unwrap();
+
+            // Move child from parent1 to parent2 - should succeed
+            let result = service.move_node(&child_id, Some(&parent2_id), None).await;
+            assert!(result.is_ok());
+
+            // Verify child is now under parent2
+            let new_parent = service.get_parent(&child_id).await.unwrap();
+            assert!(new_parent.is_some());
+            assert_eq!(new_parent.unwrap().id, parent2_id);
+        }
+    }
+
+    /// Tests for create_node_with_parent (Issue #676: NodeOperations merge)
+    mod create_node_with_parent_tests {
+        use super::*;
+        use crate::operations::CreateNodeParams;
+
+        /// Test that date containers are auto-created when referenced as parent
+        #[tokio::test]
+        async fn test_auto_creates_date_container() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a node with a date parent that doesn't exist yet
+            let params = CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "My note".to_string(),
+                parent_id: Some("2025-01-15".to_string()),
+                insert_after_node_id: None,
+                properties: json!({}),
+            };
+
+            let node_id = service.create_node_with_parent(params).await.unwrap();
+
+            // Verify the date container was auto-created
+            let date_node = service.get_node("2025-01-15").await.unwrap().unwrap();
+            assert_eq!(date_node.node_type, "date");
+            assert_eq!(date_node.content, "2025-01-15");
+
+            // Verify child is under the date container
+            let parent = service.get_parent(&node_id).await.unwrap().unwrap();
+            assert_eq!(parent.id, "2025-01-15");
+        }
+
+        /// Test that root nodes (no parent) are created correctly
+        #[tokio::test]
+        async fn test_create_root_node() {
+            let (service, _temp) = create_test_service().await;
+
+            let params = CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Root note".to_string(),
+                parent_id: None,
+                insert_after_node_id: None,
+                properties: json!({}),
+            };
+
+            let node_id = service.create_node_with_parent(params).await.unwrap();
+
+            // Verify it's a root node (no parent)
+            let parent = service.get_parent(&node_id).await.unwrap();
+            assert!(parent.is_none());
+
+            // Verify it's marked as root
+            assert!(service.is_root_node(&node_id).await.unwrap());
+        }
+
+        /// Test that provided UUID IDs are validated
+        #[tokio::test]
+        async fn test_validates_uuid_format() {
+            let (service, _temp) = create_test_service().await;
+
+            // Invalid UUID should be rejected for non-date/schema nodes
+            let params = CreateNodeParams {
+                id: Some("not-a-valid-uuid".to_string()),
+                node_type: "text".to_string(),
+                content: "Test".to_string(),
+                parent_id: None,
+                insert_after_node_id: None,
+                properties: json!({}),
+            };
+
+            let result = service.create_node_with_parent(params).await;
+            assert!(result.is_err());
+        }
+
+        /// Test that test- prefix IDs are allowed
+        #[tokio::test]
+        async fn test_allows_test_prefix_ids() {
+            let (service, _temp) = create_test_service().await;
+
+            let params = CreateNodeParams {
+                id: Some("test-my-node-123".to_string()),
+                node_type: "text".to_string(),
+                content: "Test node".to_string(),
+                parent_id: None,
+                insert_after_node_id: None,
+                properties: json!({}),
+            };
+
+            let node_id = service.create_node_with_parent(params).await.unwrap();
+            assert_eq!(node_id, "test-my-node-123");
+        }
+
+        /// Test sibling validation - sibling must have same parent
+        #[tokio::test]
+        async fn test_sibling_must_have_same_parent() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create two different parent nodes
+            let parent1 = Node::new("text".to_string(), "Parent1".to_string(), json!({}));
+            let parent1_id = service.create_node(parent1).await.unwrap();
+
+            let parent2 = Node::new("text".to_string(), "Parent2".to_string(), json!({}));
+            let parent2_id = service.create_node(parent2).await.unwrap();
+
+            // Create a child under parent1
+            let sibling = Node::new("text".to_string(), "Sibling".to_string(), json!({}));
+            let sibling_id = service.create_node(sibling).await.unwrap();
+            service
+                .create_parent_edge(&sibling_id, &parent1_id, None)
+                .await
+                .unwrap();
+
+            // Try to create a node under parent2 with sibling from parent1
+            let params = CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "New node".to_string(),
+                parent_id: Some(parent2_id),
+                insert_after_node_id: Some(sibling_id),
+                properties: json!({}),
+            };
+
+            let result = service.create_node_with_parent(params).await;
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(
+                format!("{:?}", err).contains("different parent"),
+                "Error should indicate sibling has different parent: {:?}",
+                err
+            );
+        }
+
+        /// Test that children are appended at end by default
+        #[tokio::test]
+        async fn test_appends_at_end_by_default() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create parent
+            let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
+            let parent_id = service.create_node(parent).await.unwrap();
+
+            // Create first child
+            let params1 = CreateNodeParams {
+                id: Some("test-child-1".to_string()),
+                node_type: "text".to_string(),
+                content: "Child 1".to_string(),
+                parent_id: Some(parent_id.clone()),
+                insert_after_node_id: None,
+                properties: json!({}),
+            };
+            service.create_node_with_parent(params1).await.unwrap();
+
+            // Create second child (should be appended after first)
+            let params2 = CreateNodeParams {
+                id: Some("test-child-2".to_string()),
+                node_type: "text".to_string(),
+                content: "Child 2".to_string(),
+                parent_id: Some(parent_id.clone()),
+                insert_after_node_id: None,
+                properties: json!({}),
+            };
+            service.create_node_with_parent(params2).await.unwrap();
+
+            // Verify order: Child 1, Child 2
+            let children = service.get_children(&parent_id).await.unwrap();
+            assert_eq!(children.len(), 2);
+            assert_eq!(children[0].content, "Child 1");
+            assert_eq!(children[1].content, "Child 2");
         }
     }
 }

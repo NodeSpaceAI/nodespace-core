@@ -1,7 +1,8 @@
 //! Database initialization and path management commands
+//!
+//! As of Issue #676, NodeOperations layer is removed - NodeService contains all business logic.
 
 use crate::commands::embeddings::EmbeddingState;
-use nodespace_core::operations::NodeOperations;
 use nodespace_core::services::{EmbeddingProcessor, NodeEmbeddingService, SchemaService};
 use nodespace_core::{NodeService, SurrealStore};
 use nodespace_nlp_engine::EmbeddingService;
@@ -58,8 +59,7 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     let node_service_arc = Arc::new(node_service);
     tracing::info!("✅ [init_services] NodeService initialized");
 
-    // Initialize NodeOperations business logic layer (wraps NodeService)
-    let node_operations = NodeOperations::new(node_service_arc.clone());
+    // NOTE: NodeOperations layer removed (Issue #676) - NodeService contains all business logic
 
     // Initialize schema service (wraps NodeService for schema operations)
     let schema_service = SchemaService::new(node_service_arc.clone());
@@ -91,7 +91,7 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     tracing::info!("🔧 [init_services] Registering services with Tauri app.manage()...");
     app.manage(store.clone());
     app.manage(node_service_arc.as_ref().clone());
-    app.manage(node_operations);
+    // NOTE: NodeOperations no longer managed (Issue #676) - commands use NodeService directly
     app.manage(schema_service);
     app.manage(EmbeddingState {
         service: embedding_service_arc,

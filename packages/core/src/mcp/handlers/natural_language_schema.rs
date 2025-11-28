@@ -2,10 +2,13 @@
 //!
 //! Converts natural language descriptions into schema definitions with intelligent
 //! field type inference and namespace enforcement.
+//!
+//! As of Issue #676, all handlers use NodeService directly instead of NodeOperations.
 
 use crate::mcp::types::MCPError;
 use crate::models::schema::{ProtectionLevel, SchemaDefinition, SchemaField};
-use crate::operations::{CreateNodeParams, NodeOperations};
+use crate::operations::CreateNodeParams;
+use crate::services::NodeService;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -97,7 +100,7 @@ struct InferredField {
 /// - `INVALID_PARAMS`: If description is empty or entity_name invalid
 /// - `INTERNAL_ERROR`: If schema creation fails
 pub async fn handle_create_entity_schema_from_description(
-    node_operations: &Arc<NodeOperations>,
+    node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: CreateEntitySchemaFromDescriptionParams = serde_json::from_value(params)
@@ -153,8 +156,8 @@ pub async fn handle_create_entity_schema_from_description(
     };
 
     // Store the schema node
-    node_operations
-        .create_node(schema_node_params)
+    node_service
+        .create_node_with_parent(schema_node_params)
         .await
         .map_err(|e| {
             MCPError::internal_error(format!(

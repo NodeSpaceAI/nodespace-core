@@ -5,10 +5,11 @@
 //! - HTTP: for GUI apps and Claude Code integration
 //!
 //! Both transports share the same request handler logic and optional callbacks.
+//!
+//! As of Issue #676, MCP handlers route through NodeService directly.
 
 use crate::mcp::types::{MCPError, MCPNotification, MCPRequest, MCPResponse};
-use crate::operations::NodeOperations;
-use crate::services::{NodeEmbeddingService, SchemaService};
+use crate::services::{NodeEmbeddingService, NodeService, SchemaService};
 use axum::{
     body::{Body, Bytes},
     extract::State,
@@ -35,8 +36,10 @@ pub enum McpTransport {
 }
 
 /// Combined services for MCP handlers
+///
+/// As of Issue #676, uses NodeService directly instead of NodeOperations.
 pub struct McpServices {
-    pub node_operations: Arc<NodeOperations>,
+    pub node_service: Arc<NodeService>,
     pub embedding_service: Arc<NodeEmbeddingService>,
     pub schema_service: Arc<SchemaService>,
 }
@@ -541,7 +544,7 @@ async fn handle_request(
         "tools/list" => crate::mcp::handlers::tools::handle_tools_list(request.params),
         "tools/call" => {
             crate::mcp::handlers::tools::handle_tools_call(
-                &services.node_operations,
+                &services.node_service,
                 &services.embedding_service,
                 &services.schema_service,
                 request.params,
@@ -675,14 +678,13 @@ mod tests {
 
         let store = Arc::new(SurrealStore::new(db_path).await.unwrap());
         let node_service = Arc::new(NodeService::new(store.clone()).unwrap());
-        let node_operations = Arc::new(NodeOperations::new(node_service.clone()));
         let nlp_engine =
             Arc::new(nodespace_nlp_engine::EmbeddingService::new(Default::default()).unwrap());
         let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
-        let schema_service = Arc::new(SchemaService::new(node_service));
+        let schema_service = Arc::new(SchemaService::new(node_service.clone()));
 
         McpServices {
-            node_operations,
+            node_service,
             embedding_service,
             schema_service,
         }
