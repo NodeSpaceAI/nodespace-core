@@ -1301,10 +1301,8 @@ where
         // For simplicity with libsql, we'll fetch the node, apply updates, and replace entirely
         let mut updated = existing.clone();
         let mut content_changed = false;
-        let mut node_type_changed = false;
 
         if let Some(node_type) = update.node_type {
-            node_type_changed = updated.node_type != node_type;
             updated.node_type = node_type;
         }
 
@@ -1340,26 +1338,24 @@ where
         // Step 1: Core behavior validation (PROTECTED)
         self.behaviors.validate_node(&updated)?;
 
-        // Step 1.5: Apply schema defaults and validate (if node type changed)
-        // Apply default values for missing fields when node type changes
+        // Step 1.5: Apply schema defaults and validate
+        // Apply default values for missing fields (lazy migration for old nodes)
         // Skip for schema nodes to avoid circular dependency
-        if node_type_changed && updated.node_type != "schema" {
+        if updated.node_type != "schema" {
             // Fetch schema once and reuse it for both operations
             if let Some(schema_json) = self.get_schema_for_type(&updated.node_type).await? {
                 // Parse schema definition
                 if let Ok(schema) =
                     serde_json::from_value::<crate::models::SchemaDefinition>(schema_json.clone())
                 {
-                    // Apply defaults for the new node type
+                    // Apply defaults for missing fields (lazy migration)
+                    // This ensures old nodes get required fields like 'status' on update
                     self.apply_schema_defaults_with_schema(&mut updated, &schema)?;
 
                     // Validate with the same schema
                     self.validate_node_with_schema(&updated, &schema)?;
                 }
             }
-        } else if updated.node_type != "schema" {
-            // Step 2: Schema validation only (node type didn't change)
-            self.validate_node_against_schema(&updated).await?;
         }
 
         // Update node via store
@@ -1503,9 +1499,19 @@ where
         // Step 1: Core behavior validation (PROTECTED)
         self.behaviors.validate_node(&updated)?;
 
-        // Step 2: Schema validation (USER-EXTENSIBLE)
+        // Step 2: Apply schema defaults and validate (USER-EXTENSIBLE)
+        // Apply default values for missing fields (lazy migration for old nodes)
         if updated.node_type != "schema" {
-            self.validate_node_against_schema(&updated).await?;
+            if let Some(schema_json) = self.get_schema_for_type(&updated.node_type).await? {
+                if let Ok(schema) =
+                    serde_json::from_value::<crate::models::SchemaDefinition>(schema_json.clone())
+                {
+                    // Apply defaults for missing fields (lazy migration)
+                    self.apply_schema_defaults_with_schema(&mut updated, &schema)?;
+                    // Validate with the same schema
+                    self.validate_node_with_schema(&updated, &schema)?;
+                }
+            }
         }
 
         // Create node update
