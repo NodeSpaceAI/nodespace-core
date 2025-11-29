@@ -46,9 +46,7 @@
 //! }
 //! ```
 
-use crate::db::events::{
-    DomainEvent, EdgeRelationship, HierarchyRelationship, MentionRelationship,
-};
+use crate::db::events::DomainEvent;
 use crate::db::fractional_ordering::FractionalOrderCalculator;
 use crate::models::schema::SchemaDefinition;
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate};
@@ -540,8 +538,8 @@ where
     /// let mut rx = store.subscribe_to_events();
     /// while let Ok(event) = rx.recv().await {
     ///     match event {
-    ///         DomainEvent::NodeCreated(node) => println!("Node created: {}", node.id),
-    ///         DomainEvent::NodeUpdated(node) => println!("Node updated: {}", node.id),
+    ///         DomainEvent::NodeCreated { node, .. } => println!("Node created: {}", node.id),
+    ///         DomainEvent::NodeUpdated { node, .. } => println!("Node updated: {}", node.id),
     ///         // ... handle other events
     ///         _ => {}
     ///     }
@@ -553,11 +551,8 @@ where
         self.event_tx.subscribe()
     }
 
-    /// Emit a domain event to all subscribers
-    fn emit_event(&self, event: DomainEvent) {
-        // Ignore error if no subscribers (expected in some tests)
-        let _ = self.event_tx.send(event);
-    }
+    // Note: emit_event method removed - domain events are now emitted at NodeService layer
+    // for client filtering support. See issue #665.
 
     /// Initialize database schema from schema.surql file (Issue #560)
     ///
@@ -978,9 +973,7 @@ where
 
         // Note: Parent-child relationships are now established separately via move_node()
         // This allows cleaner separation of node creation from hierarchy management
-
-        // Emit domain event
-        self.emit_event(DomainEvent::NodeCreated(node.clone()));
+        // Note: Domain events are now emitted at NodeService layer for client filtering
 
         // Return the created node directly
         Ok(node)
@@ -1210,15 +1203,7 @@ where
             .await?
             .ok_or_else(|| anyhow::anyhow!("Node not found after creation for '{}'", node_id))?;
 
-        // Emit domain events for observers
-        self.emit_event(DomainEvent::NodeCreated(node.clone()));
-        self.emit_event(DomainEvent::EdgeCreated(EdgeRelationship::Hierarchy(
-            HierarchyRelationship {
-                parent_id,
-                child_id: node_id,
-                order,
-            },
-        )));
+        // Note: Domain events are now emitted at NodeService layer for client filtering
 
         Ok(node)
     }
@@ -1446,8 +1431,7 @@ where
             .await?
             .ok_or_else(|| anyhow::anyhow!("Node not found after update"))?;
 
-        // Emit domain event
-        self.emit_event(DomainEvent::NodeUpdated(updated_node.clone()));
+        // Note: Domain events are now emitted at NodeService layer for client filtering
 
         Ok(updated_node)
     }
@@ -1618,8 +1602,7 @@ where
             .await?
             .ok_or_else(|| anyhow::anyhow!("Node not found after type switch for '{}'", node_id))?;
 
-        // Emit domain event for observers
-        self.emit_event(DomainEvent::NodeUpdated(node.clone()));
+        // Note: Domain events are now emitted at NodeService layer for client filtering
 
         Ok(node)
     }
@@ -1751,8 +1734,7 @@ where
             .await?
             .ok_or_else(|| anyhow::anyhow!("Node not found after update"))?;
 
-        // Emit domain event for observers
-        self.emit_event(DomainEvent::NodeUpdated(node.clone()));
+        // Note: Domain events are now emitted at NodeService layer for client filtering
 
         Ok(Some(node))
     }
@@ -1782,10 +1764,7 @@ where
             .await
             .context("Failed to delete node and relations")?;
 
-        // Emit domain event
-        self.emit_event(DomainEvent::NodeDeleted {
-            id: node.id.clone(),
-        });
+        // Note: Domain events are now emitted at NodeService layer for client filtering
 
         Ok(DeleteResult { existed: true })
     }
@@ -1869,8 +1848,7 @@ where
                 node_id, node_type
             ))?;
 
-        // Emit domain event for observers
-        self.emit_event(DomainEvent::NodeDeleted { id: node.id });
+        // Note: Domain events are now emitted at NodeService layer for client filtering
 
         Ok(DeleteResult { existed: true })
     }
@@ -2950,22 +2928,7 @@ where
                 node_id, new_parent_id
             ))?;
 
-        // Emit edge event after successful move
-        if let Some(parent_id) = &new_parent_id {
-            let relationship = HierarchyRelationship {
-                parent_id: parent_id.clone(),
-                child_id: node_id.clone(),
-                order: new_order,
-            };
-            self.emit_event(DomainEvent::EdgeUpdated(EdgeRelationship::Hierarchy(
-                relationship,
-            )));
-        } else {
-            // Moving to root (deleting parent edge)
-            self.emit_event(DomainEvent::EdgeDeleted {
-                id: format!("has_child:{}:*", node_id),
-            });
-        }
+        // Note: Domain events are now emitted at NodeService layer for client filtering
 
         Ok(())
     }
@@ -3018,15 +2981,7 @@ where
                 .await
                 .context("Failed to create mention")?;
 
-            // Emit edge created event for new mention
-            // Mentions are bidirectional references, not parent-child hierarchies
-            let relationship = MentionRelationship {
-                source_id: source_id.to_string(),
-                target_id: target_id.to_string(),
-            };
-            self.emit_event(DomainEvent::EdgeCreated(EdgeRelationship::Mention(
-                relationship,
-            )));
+            // Note: Domain events are now emitted at NodeService layer for client filtering
         }
 
         Ok(())
@@ -3044,10 +2999,7 @@ where
             .await
             .context("Failed to delete mention")?;
 
-        // Emit edge deleted event
-        self.emit_event(DomainEvent::EdgeDeleted {
-            id: format!("mentions:{}:{}", source_id, target_id),
-        });
+        // Note: Domain events are now emitted at NodeService layer for client filtering
 
         Ok(())
     }

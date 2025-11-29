@@ -53,25 +53,46 @@ pub enum EdgeRelationship {
 ///
 /// These events are emitted whenever data changes in the database.
 /// They represent domain-level changes, not database operations.
+///
+/// Each event includes an optional `source_client_id` to identify the originating client,
+/// allowing event subscribers to filter out their own events (prevent feedback loops).
 #[derive(Debug, Clone)]
 pub enum DomainEvent {
     /// A new node was created
-    NodeCreated(Node),
+    NodeCreated {
+        node: Node,
+        source_client_id: Option<String>,
+    },
 
     /// An existing node was updated
-    NodeUpdated(Node),
+    NodeUpdated {
+        node: Node,
+        source_client_id: Option<String>,
+    },
 
     /// A node was deleted
-    NodeDeleted { id: String },
+    NodeDeleted {
+        id: String,
+        source_client_id: Option<String>,
+    },
 
     /// A new edge relationship (hierarchy or mention) was created
-    EdgeCreated(EdgeRelationship),
+    EdgeCreated {
+        relationship: EdgeRelationship,
+        source_client_id: Option<String>,
+    },
 
     /// An existing edge relationship was updated
-    EdgeUpdated(EdgeRelationship),
+    EdgeUpdated {
+        relationship: EdgeRelationship,
+        source_client_id: Option<String>,
+    },
 
     /// An edge relationship was deleted
-    EdgeDeleted { id: String },
+    EdgeDeleted {
+        id: String,
+        source_client_id: Option<String>,
+    },
 }
 
 impl DomainEvent {
@@ -82,11 +103,11 @@ impl DomainEvent {
     #[allow(dead_code)]
     pub fn event_type(&self) -> &str {
         match self {
-            DomainEvent::NodeCreated(_) => "node:created",
-            DomainEvent::NodeUpdated(_) => "node:updated",
+            DomainEvent::NodeCreated { .. } => "node:created",
+            DomainEvent::NodeUpdated { .. } => "node:updated",
             DomainEvent::NodeDeleted { .. } => "node:deleted",
-            DomainEvent::EdgeCreated(_) => "edge:created",
-            DomainEvent::EdgeUpdated(_) => "edge:updated",
+            DomainEvent::EdgeCreated { .. } => "edge:created",
+            DomainEvent::EdgeUpdated { .. } => "edge:updated",
             DomainEvent::EdgeDeleted { .. } => "edge:deleted",
         }
     }

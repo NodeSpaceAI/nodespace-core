@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
 
+/// Client ID for Tauri frontend (used for event filtering - Issue #665)
+const TAURI_CLIENT_ID: &str = "tauri-main";
+
 /// Application state containing embedding service and processor
 pub struct EmbeddingState {
     pub service: Arc<NodeEmbeddingService>,
@@ -198,7 +201,8 @@ pub async fn search_roots(
     let threshold = params.threshold.map(|t| t as f64);
 
     // Execute search
-    let store = node_service.store();
+    let service_with_client = node_service.with_client(TAURI_CLIENT_ID);
+    let store = service_with_client.store();
     let results = store
         .search_by_embedding(&query_embedding, limit, threshold)
         .await
@@ -476,7 +480,8 @@ pub async fn get_stale_root_count(
 ) -> Result<usize, CommandError> {
     // Get store from NodeService to query stale embeddings
     // Note: This is a workaround - ideally we'd have a count method
-    let store = node_service.store();
+    let service_with_client = node_service.with_client(TAURI_CLIENT_ID);
+    let store = service_with_client.store();
     let stale_nodes = store
         .get_nodes_with_stale_embeddings(None)
         .await
@@ -523,7 +528,11 @@ pub async fn batch_generate_embeddings(
 
     for root_id in root_ids {
         // Get the node from the database
-        match node_service.get_node(&root_id).await {
+        match node_service
+            .with_client(TAURI_CLIENT_ID)
+            .get_node(&root_id)
+            .await
+        {
             Ok(Some(node)) => {
                 // Generate and store embedding
                 // Note: NodeEmbeddingService method still uses legacy name, will be updated in Phase 6

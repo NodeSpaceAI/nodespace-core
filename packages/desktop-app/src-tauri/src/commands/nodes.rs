@@ -11,6 +11,9 @@ use nodespace_core::{
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+/// Client ID for Tauri frontend (used for event filtering - Issue #665)
+const TAURI_CLIENT_ID: &str = "tauri-main";
+
 /// Input for creating a node - timestamps generated server-side
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,6 +143,7 @@ pub async fn create_node(
     // Use NodeService to create node with business rule enforcement
     // Pass frontend-generated ID so frontend can track node before persistence completes
     service
+        .with_client(TAURI_CLIENT_ID)
         .create_node_with_parent(CreateNodeParams {
             id: Some(node.id), // Frontend provides UUID for local state tracking
             node_type: node.node_type,
@@ -214,6 +218,7 @@ pub async fn create_root_node(
 
     // Create root node with NodeService (parent_id = None means root)
     let node_id = service
+        .with_client(TAURI_CLIENT_ID)
         .create_node_with_parent(CreateNodeParams {
             id: None, // Let NodeService generate ID for root nodes
             node_type: input.node_type,
@@ -227,6 +232,7 @@ pub async fn create_root_node(
     // If mentioned_by is provided, create mention relationship
     if let Some(mentioning_node_id) = input.mentioned_by {
         service
+            .with_client(TAURI_CLIENT_ID)
             .create_mention(&mentioning_node_id, &node_id)
             .await?;
     }
@@ -262,6 +268,7 @@ pub async fn create_node_mention(
     mentioned_node_id: String,
 ) -> Result<(), CommandError> {
     service
+        .with_client(TAURI_CLIENT_ID)
         .create_mention(&mentioning_node_id, &mentioned_node_id)
         .await
         .map_err(Into::into)
@@ -295,7 +302,11 @@ pub async fn get_node(
     service: State<'_, NodeService>,
     id: String,
 ) -> Result<Option<Node>, CommandError> {
-    service.get_node(&id).await.map_err(Into::into)
+    service
+        .with_client(TAURI_CLIENT_ID)
+        .get_node(&id)
+        .await
+        .map_err(Into::into)
 }
 
 /// Update an existing node
@@ -339,6 +350,7 @@ pub async fn update_node(
     // Use update_node_with_occ for OCC-protected updates
     // Returns the updated Node so frontend can refresh its local version
     service
+        .with_client(TAURI_CLIENT_ID)
         .update_node_with_occ(&id, version, update)
         .await
         .map_err(Into::into)
@@ -379,6 +391,7 @@ pub async fn delete_node(
     version: i64,
 ) -> Result<nodespace_core::models::DeleteResult, CommandError> {
     service
+        .with_client(TAURI_CLIENT_ID)
         .delete_node_with_occ(&id, version)
         .await
         .map_err(Into::into)
@@ -424,6 +437,7 @@ pub async fn move_node(
     insert_after_node_id: Option<String>,
 ) -> Result<(), CommandError> {
     service
+        .with_client(TAURI_CLIENT_ID)
         .move_node_with_occ(
             &node_id,
             version,
@@ -467,6 +481,7 @@ pub async fn reorder_node(
     insert_after_node_id: Option<String>,
 ) -> Result<(), CommandError> {
     service
+        .with_client(TAURI_CLIENT_ID)
         .reorder_node_with_occ(&node_id, version, insert_after_node_id.as_deref())
         .await
         .map_err(Into::into)
@@ -507,7 +522,11 @@ pub async fn get_children(
     service: State<'_, NodeService>,
     parent_id: String,
 ) -> Result<Vec<Node>, CommandError> {
-    service.get_children(&parent_id).await.map_err(Into::into)
+    service
+        .with_client(TAURI_CLIENT_ID)
+        .get_children(&parent_id)
+        .await
+        .map_err(Into::into)
 }
 
 /// Get a node with its entire subtree as a nested tree structure
@@ -585,7 +604,11 @@ pub async fn get_nodes_by_root_id(
     root_id: String,
 ) -> Result<Vec<Node>, CommandError> {
     // Phase 5 (Issue #511): Redirect to get_children (graph-native)
-    service.get_children(&root_id).await.map_err(Into::into)
+    service
+        .with_client(TAURI_CLIENT_ID)
+        .get_children(&root_id)
+        .await
+        .map_err(Into::into)
 }
 
 /// Query nodes with flexible filtering
@@ -634,7 +657,11 @@ pub async fn query_nodes_simple(
     service: State<'_, NodeService>,
     query: NodeQuery,
 ) -> Result<Vec<Node>, CommandError> {
-    service.query_nodes_simple(query).await.map_err(Into::into)
+    service
+        .with_client(TAURI_CLIENT_ID)
+        .query_nodes_simple(query)
+        .await
+        .map_err(Into::into)
 }
 
 /// Mention autocomplete query - specialized endpoint for @mention feature
@@ -744,6 +771,7 @@ pub async fn save_node_with_parent(
 
     // Use single-transaction upsert method (bypasses NodeOperations for transactional reasons)
     service
+        .with_client(TAURI_CLIENT_ID)
         .upsert_node_with_parent(
             &input.node_id,
             &input.content,
@@ -779,7 +807,11 @@ pub async fn get_outgoing_mentions(
     service: State<'_, NodeService>,
     node_id: String,
 ) -> Result<Vec<String>, CommandError> {
-    service.get_mentions(&node_id).await.map_err(Into::into)
+    service
+        .with_client(TAURI_CLIENT_ID)
+        .get_mentions(&node_id)
+        .await
+        .map_err(Into::into)
 }
 
 /// Get incoming mentions (nodes that mention this node - BACKLINKS)
@@ -806,7 +838,11 @@ pub async fn get_incoming_mentions(
     service: State<'_, NodeService>,
     node_id: String,
 ) -> Result<Vec<String>, CommandError> {
-    service.get_mentioned_by(&node_id).await.map_err(Into::into)
+    service
+        .with_client(TAURI_CLIENT_ID)
+        .get_mentioned_by(&node_id)
+        .await
+        .map_err(Into::into)
 }
 
 /// Get root nodes of nodes that mention the target node (backlinks at root level)
@@ -878,6 +914,7 @@ pub async fn delete_node_mention(
     mentioned_node_id: String,
 ) -> Result<(), CommandError> {
     service
+        .with_client(TAURI_CLIENT_ID)
         .remove_mention(&mentioning_node_id, &mentioned_node_id)
         .await
         .map_err(Into::into)

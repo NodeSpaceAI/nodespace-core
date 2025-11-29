@@ -108,17 +108,17 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
         // Don't fail database init if MCP fails - MCP is optional
     }
 
-    // DISABLED: Domain event forwarding causes feedback loops with optimistic UI updates
-    // The current architecture emits events from SurrealStore (data layer) without
-    // source_client_id tracking, so Tauri receives its own events back and corrupts state.
-    // See GitHub issue for rearchitecture plan: events should be emitted at NodeService
-    // layer with client_id awareness so subscribers can filter their own events.
-    // TODO: Re-enable after implementing source_client_id filtering (#665)
-    //
-    // if let Err(e) = crate::initialize_domain_event_forwarder(app.clone(), store.clone()) {
-    //     tracing::error!("❌ Failed to initialize domain event forwarder: {}", e);
-    // }
-    let _ = store; // Silence unused warning until re-enabled
+    // Initialize domain event forwarding with client filtering (#665)
+    // Events that originated from this Tauri client are filtered out to prevent feedback loops
+    let client_id = "tauri-main".to_string();
+    if let Err(e) =
+        crate::initialize_domain_event_forwarder(app.clone(), node_service_arc.clone(), client_id)
+    {
+        tracing::error!("❌ Failed to initialize domain event forwarder: {}", e);
+        // Don't fail database init if event forwarding fails - it's not critical
+    }
+
+    let _ = store; // Store still available for direct access if needed
 
     tracing::info!("✅ [init_services] Service initialization complete");
     Ok(())

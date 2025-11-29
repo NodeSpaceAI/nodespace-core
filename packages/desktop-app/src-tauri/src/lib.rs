@@ -30,23 +30,29 @@ mod tests;
 
 /// Initialize domain event forwarding service for real-time frontend synchronization
 ///
-/// Spawns background tasks that subscribe to domain events from SurrealStore.
+/// Spawns background tasks that subscribe to domain events from NodeService.
 /// When business logic emits domain events (node/edge created/updated/deleted),
 /// they are forwarded to the frontend via Tauri events to trigger UI updates,
 /// achieving real-time sync through event-driven architecture.
+///
+/// Events that originated from this Tauri client are filtered out (prevents feedback loop).
 pub fn initialize_domain_event_forwarder(
     app: tauri::AppHandle,
-    store: std::sync::Arc<nodespace_core::SurrealStore>,
+    node_service: std::sync::Arc<nodespace_core::NodeService>,
+    client_id: String,
 ) -> anyhow::Result<()> {
     use crate::services::DomainEventForwarder;
     use futures::FutureExt;
 
-    tracing::info!("🔧 Initializing domain event forwarding service...");
+    tracing::info!(
+        "🔧 Initializing domain event forwarding service (client_id: {})...",
+        client_id
+    );
 
     // Spawn domain event forwarding service background task
     tauri::async_runtime::spawn(async move {
         let result = std::panic::AssertUnwindSafe(async {
-            let forwarder = DomainEventForwarder::new(store, app);
+            let forwarder = DomainEventForwarder::new(node_service, app, client_id);
             forwarder.run().await
         })
         .catch_unwind()

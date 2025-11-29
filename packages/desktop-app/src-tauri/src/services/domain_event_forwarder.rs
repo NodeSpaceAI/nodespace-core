@@ -1,12 +1,11 @@
 use anyhow::Result;
 use nodespace_core::db::DomainEvent;
+use nodespace_core::NodeService;
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info};
-
-use nodespace_core::SurrealStore;
 
 /// Payload for deleted node/edge events
 #[derive(Serialize)]
@@ -16,33 +15,54 @@ struct DeletedPayload {
 
 /// Service for forwarding domain events to the Tauri frontend
 ///
-/// Subscribes to domain events from SurrealStore and forwards them to the Tauri frontend.
+/// Subscribes to domain events from NodeService and forwards them to the Tauri frontend,
+/// filtering out events that originated from this Tauri client (prevents feedback loops).
 /// Uses event-driven architecture with broadcast channels for efficient multi-subscriber support.
-/// This is a bridge between the business logic layer (SurrealStore) and the frontend UI.
+/// This is a bridge between the business logic layer (NodeService) and the frontend UI.
 pub struct DomainEventForwarder {
-    store: Arc<SurrealStore>,
+    node_service: Arc<NodeService>,
     app: AppHandle,
+    /// Client identifier for this Tauri window/instance
+    /// Used to filter out events where source_client_id matches (prevent feedback loop)
+    client_id: String,
 }
 
 impl DomainEventForwarder {
-    pub fn new(store: Arc<SurrealStore>, app: AppHandle) -> Self {
-        Self { store, app }
+    /// Create a new DomainEventForwarder
+    ///
+    /// # Arguments
+    ///
+    /// * `node_service` - NodeService instance to subscribe to events from
+    /// * `app` - Tauri AppHandle for emitting events to frontend
+    /// * `client_id` - Unique identifier for this Tauri client (e.g., "tauri-main")
+    pub fn new(node_service: Arc<NodeService>, app: AppHandle, client_id: String) -> Self {
+        Self {
+            node_service,
+            app,
+            client_id,
+        }
     }
 
     /// Start the domain event forwarding service
     ///
-    /// Subscribes to domain events from SurrealStore and forwards them
+    /// Subscribes to domain events from NodeService and forwards them
     /// to the Tauri frontend with the appropriate event names:
     /// - node:created, node:updated, node:deleted
     /// - edge:created, edge:updated, edge:deleted
+    ///
+    /// Filters out events where source_client_id matches this client's ID
+    /// to prevent feedback loops from the Tauri frontend receiving its own changes.
     pub async fn run(self) -> Result<()> {
-        info!("🔧 Starting domain event forwarding service");
+        info!(
+            "🔧 Starting domain event forwarding service (client_id: {})",
+            self.client_id
+        );
 
         // Emit initial status
         self.emit_status("connected", None);
 
-        // Subscribe to domain events from SurrealStore
-        let mut rx = self.store.subscribe_to_events();
+        // Subscribe to domain events from NodeService
+        let mut rx = self.node_service.subscribe_to_events();
 
         info!("✅ Event subscription established successfully");
 
@@ -69,36 +89,71 @@ impl DomainEventForwarder {
 
     /// Forward domain event to Tauri frontend
     ///
-    /// Converts domain events from SurrealStore to Tauri events with proper naming and payload.
+    /// Converts domain events from NodeService to Tauri events with proper naming and payload.
+    /// Filters out events that originated from this client (prevents feedback loop).
     fn forward_event(&self, event: &DomainEvent) {
+        // Extract source_client_id from the event
+        let source_client_id = match event {
+            DomainEvent::NodeCreated {
+                source_client_id, ..
+            } => source_client_id,
+            DomainEvent::NodeUpdated {
+                source_client_id, ..
+            } => source_client_id,
+            DomainEvent::NodeDeleted {
+                source_client_id, ..
+            } => source_client_id,
+            DomainEvent::EdgeCreated {
+                source_client_id, ..
+            } => source_client_id,
+            DomainEvent::EdgeUpdated {
+                source_client_id, ..
+            } => source_client_id,
+            DomainEvent::EdgeDeleted {
+                source_client_id, ..
+            } => source_client_id,
+        };
+
+        // Filter out events from this client (prevent feedback loop)
+        if let Some(event_client_id) = source_client_id {
+            if event_client_id == &self.client_id {
+                debug!(
+                    "Filtering out event from same client ({}): {:?}",
+                    self.client_id, event
+                );
+                return;
+            }
+        }
+
+        // Forward the event to the frontend
         match event {
-            DomainEvent::NodeCreated(node) => {
+            DomainEvent::NodeCreated { node, .. } => {
                 if let Err(e) = self.app.emit("node:created", node) {
                     error!("Failed to emit node:created: {}", e);
                 }
             }
-            DomainEvent::NodeUpdated(node) => {
+            DomainEvent::NodeUpdated { node, .. } => {
                 if let Err(e) = self.app.emit("node:updated", node) {
                     error!("Failed to emit node:updated: {}", e);
                 }
             }
-            DomainEvent::NodeDeleted { id } => {
+            DomainEvent::NodeDeleted { id, .. } => {
                 let payload = DeletedPayload { id: id.clone() };
                 if let Err(e) = self.app.emit("node:deleted", &payload) {
                     error!("Failed to emit node:deleted: {}", e);
                 }
             }
-            DomainEvent::EdgeCreated(relationship) => {
+            DomainEvent::EdgeCreated { relationship, .. } => {
                 if let Err(e) = self.app.emit("edge:created", relationship) {
                     error!("Failed to emit edge:created: {}", e);
                 }
             }
-            DomainEvent::EdgeUpdated(relationship) => {
+            DomainEvent::EdgeUpdated { relationship, .. } => {
                 if let Err(e) = self.app.emit("edge:updated", relationship) {
                     error!("Failed to emit edge:updated: {}", e);
                 }
             }
-            DomainEvent::EdgeDeleted { id } => {
+            DomainEvent::EdgeDeleted { id, .. } => {
                 let payload = DeletedPayload { id: id.clone() };
                 if let Err(e) = self.app.emit("edge:deleted", &payload) {
                     error!("Failed to emit edge:deleted: {}", e);
