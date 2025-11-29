@@ -21,7 +21,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { ContentProcessor } from './content-processor';
-import { SharedNodeStore } from './shared-node-store';
+import { SharedNodeStore } from './shared-node-store.svelte';
 import { getFocusManager } from './focus-manager.svelte';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import type { Node, NodeUIState } from '$lib/types';

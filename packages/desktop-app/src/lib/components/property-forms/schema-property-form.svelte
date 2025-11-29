@@ -24,7 +24,7 @@
   import { Calendar } from '$lib/components/ui/calendar';
   import { Input } from '$lib/components/ui/input';
   import { schemaService } from '$lib/services/schema-service';
-  import { sharedNodeStore } from '$lib/services/shared-node-store';
+  import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import type { SchemaDefinition, SchemaField } from '$lib/types/schema';
   import type { Node } from '$lib/types';
   import { parseDate, type DateValue } from '@internationalized/date';

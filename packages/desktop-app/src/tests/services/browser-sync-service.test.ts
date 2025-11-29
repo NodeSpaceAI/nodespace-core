@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { browserSyncService } from '$lib/services/browser-sync-service';
-import { SharedNodeStore, sharedNodeStore } from '$lib/services/shared-node-store';
+import { SharedNodeStore, sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import { getClientId } from '$lib/services/client-id';
 import type { SseEvent } from '$lib/types/sse-events';

@@ -33,7 +33,7 @@ import {
   createReactiveNodeService,
   type NodeManagerEvents
 } from '$lib/services/reactive-node-service.svelte';
-import { SharedNodeStore } from '$lib/services/shared-node-store';
+import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { createMockNodeManagerEvents, createTestNode } from '../helpers/test-helpers';
 
 describe('ReactiveNodeService Subscription Cleanup (Issue #640)', () => {

@@ -415,7 +415,7 @@ When backend is unavailable:
 - **Architecture Overview**: `/docs/architecture/development/hierarchy-reactivity-architecture-review.md`
 - **Event Types**: `/packages/desktop-app/src/lib/services/event-types.ts`
 - **Reactive Structure Tree**: `/packages/desktop-app/src/lib/stores/reactive-structure-tree.svelte.ts`
-- **Reactive Node Data**: `/packages/desktop-app/src/lib/stores/reactive-node-data.svelte.ts`
+- **Shared Node Store**: `/packages/desktop-app/src/lib/services/shared-node-store.svelte.ts`
 
 ## Questions & Support
 

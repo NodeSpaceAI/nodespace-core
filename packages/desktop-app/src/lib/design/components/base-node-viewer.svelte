@@ -16,10 +16,9 @@
   // Plugin registry provides all node components dynamically
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
-  import { sharedNodeStore } from '$lib/services/shared-node-store';
+  import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { focusManager } from '$lib/services/focus-manager.svelte';
   import { NodeExpansionCoordinator } from '$lib/services/node-expansion-coordinator';
-  import { nodeData as reactiveNodeData } from '$lib/stores/reactive-node-data.svelte';
   import { structureTree as reactiveStructureTree } from '$lib/stores/reactive-structure-tree.svelte';
   import type { Node } from '$lib/types';
   import type { CoreTaskStatus } from '$lib/types/task-node';
@@ -133,10 +132,8 @@
   });
 
   // Track the viewed node reactively for schema form display
-  // Use $state for reactivity since sharedNodeStore is not a Svelte 5 $state store
-  // This gets updated after loadChildrenForParent completes
-  let viewedNodeCache = $state<Node | null>(null);
-  const currentViewedNode = $derived(viewedNodeCache ?? (nodeId ? sharedNodeStore.getNode(nodeId) : null));
+  // Issue #679: Now uses $derived directly since sharedNodeStore.nodes is $state
+  const currentViewedNode = $derived(nodeId ? sharedNodeStore.getNode(nodeId) : null);
 
   // Scroll position tracking
   // Reference to the scroll container element
@@ -181,11 +178,8 @@
       }
 
       for (const id of childIds) {
-        // TRANSITION PERIOD (Issue #580): Try reactive store first, fall back to sharedNodeStore
-        let node = reactiveNodeData.getNode(id);
-        if (!node) {
-          node = sharedNodeStore.getNode(id);
-        }
+        // Issue #679: sharedNodeStore is now single source of truth (consolidated from nodeData)
+        const node = sharedNodeStore.getNode(id);
         if (!node) continue;
 
         // Get children IDs for this node
@@ -287,8 +281,8 @@
         // After loading completes, initialize header content and update tab title
         const node = sharedNodeStore.getNode(nodeId);
         headerContent = node?.content || '';
-        // Update viewedNodeCache to trigger reactivity for SchemaPropertyForm
-        viewedNodeCache = node ?? null;
+        // Issue #679: No longer need viewedNodeCache workaround
+        // sharedNodeStore.nodes is now $state, so currentViewedNode $derived updates automatically
 
         // Update tab title after node is loaded
         if (!shouldDisableTitleUpdates) {

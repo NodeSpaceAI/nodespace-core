@@ -4,7 +4,7 @@
   import AppShell from '$lib/components/layout/app-shell.svelte';
   import { initializeSchemaPluginSystem } from '$lib/plugins/schema-plugin-loader';
   import { initializeTauriSyncListeners } from '$lib/services/tauri-sync-listener';
-  import { sharedNodeStore } from '$lib/services/shared-node-store';
+  import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { initializeApp } from '$lib/services/app-initialization';
 
   let isInitialized = false;

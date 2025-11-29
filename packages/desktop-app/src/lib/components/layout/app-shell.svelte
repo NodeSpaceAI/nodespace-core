@@ -11,7 +11,7 @@
   import { registerCorePlugins } from '$lib/plugins/core-plugins';
   import { pluginRegistry } from '$lib/plugins/index';
   import { toggleTheme } from '$lib/design/theme';
-  import { SharedNodeStore } from '$lib/services/shared-node-store';
+  import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { browserSyncService } from '$lib/services/browser-sync-service';
   import { MCP_EVENTS } from '$lib/constants';
   import type { Node } from '$lib/types';

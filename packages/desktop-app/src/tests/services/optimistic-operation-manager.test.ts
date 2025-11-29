@@ -15,7 +15,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { optimisticOperationManager } from '$lib/services/optimistic-operation-manager.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
-import { nodeData } from '$lib/stores/reactive-node-data.svelte';
+import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import * as tauriEvent from '@tauri-apps/api/event';
 
 // Mock Tauri emit
@@ -30,7 +30,7 @@ describe('OptimisticOperationManager', () => {
 
     // Reset stores to clean state
     structureTree.children = new Map();
-    nodeData.nodes = new Map();
+    sharedNodeStore.__resetForTesting();
   });
 
   afterEach(() => {
@@ -222,13 +222,13 @@ describe('OptimisticOperationManager', () => {
         properties: {}
       };
 
-      nodeData.nodes.set('node-1', testNode);
+      sharedNodeStore.nodes.set('node-1', testNode);
 
       const optimisticUpdate = () => {
-        const node = nodeData.nodes.get('node-1');
+        const node = sharedNodeStore.nodes.get('node-1');
         if (node) {
           node.content = 'modified content';
-          nodeData.nodes.set('node-1', node);
+          sharedNodeStore.nodes.set('node-1', node);
         }
       };
 
@@ -250,7 +250,7 @@ describe('OptimisticOperationManager', () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       // Assert - Content should be rolled back to original
-      const rolledBackNode = nodeData.nodes.get('node-1');
+      const rolledBackNode = sharedNodeStore.nodes.get('node-1');
       expect(rolledBackNode?.content).toBe('original content');
     });
 
@@ -266,13 +266,13 @@ describe('OptimisticOperationManager', () => {
         properties: {}
       };
 
-      nodeData.nodes.set('node-1', testNode);
+      sharedNodeStore.nodes.set('node-1', testNode);
 
       const optimisticUpdate = () => {
-        const node = nodeData.nodes.get('node-1');
+        const node = sharedNodeStore.nodes.get('node-1');
         if (node) {
           node.content = 'modified content';
-          nodeData.nodes.set('node-1', node);
+          sharedNodeStore.nodes.set('node-1', node);
         }
 
         structureTree.__testOnly_addChild({
@@ -301,7 +301,7 @@ describe('OptimisticOperationManager', () => {
 
       // Assert - Structure should be rolled back, but data should remain modified
       expect(structureTree.getChildren('parent')).toEqual([]);
-      const nodeAfterRollback = nodeData.nodes.get('node-1');
+      const nodeAfterRollback = sharedNodeStore.nodes.get('node-1');
       expect(nodeAfterRollback?.content).toBe('modified content'); // Data not rolled back!
     });
   });
@@ -649,7 +649,7 @@ describe('OptimisticOperationManager', () => {
           order: 1.0
         });
 
-        nodeData.nodes.set('node-1', {
+        sharedNodeStore.nodes.set('node-1', {
           id: 'node-1',
           nodeType: 'text',
           content: 'new content',
@@ -679,7 +679,7 @@ describe('OptimisticOperationManager', () => {
 
       // Assert
       expect(structureTree.getChildren('parent')).toEqual([]); // Structure rolled back
-      expect(nodeData.nodes.get('node-1')?.content).toBe('new content'); // Data preserved
+      expect(sharedNodeStore.nodes.get('node-1')?.content).toBe('new content'); // Data preserved
     });
   });
 });

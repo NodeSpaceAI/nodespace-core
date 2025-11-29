@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { get } from 'svelte/store';
 import { getNavigationService } from '$lib/services/navigation-service';
 import { tabState, resetTabState, DEFAULT_PANE_ID } from '$lib/stores/navigation';
-import { sharedNodeStore } from '$lib/services/shared-node-store';
+import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import type { Node } from '$lib/types';
 
 describe('NavigationService - navigateToNodeInOtherPane', () => {

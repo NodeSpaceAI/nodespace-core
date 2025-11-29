@@ -20,7 +20,7 @@
   import { getNavigationService } from '$lib/services/navigation-service';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
   import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
-  import { sharedNodeStore } from '$lib/services/shared-node-store';
+  import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { isTaskNode, getTaskStatus, type TaskStatus } from '$lib/types/task-node';
 
   // Get paneId from context (set by PaneContent) - identifies which pane this node is in

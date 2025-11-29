@@ -8,7 +8,7 @@
  * All functions in this module now throw or return stub values.
  */
 
-import { sharedNodeStore } from '$lib/services/shared-node-store';
+import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { tmpdir } from 'node:os';

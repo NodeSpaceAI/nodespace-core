@@ -22,7 +22,7 @@
 
 import { emit } from '@tauri-apps/api/event';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
-import { nodeData } from '$lib/stores/reactive-node-data.svelte';
+import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import type { PersistenceFailedEvent } from '$lib/types/event-types';
 import type { Node } from '$lib/types';
 
@@ -152,7 +152,7 @@ class OptimisticOperationManager {
   private takeSnapshot(includeData: boolean): OperationSnapshot {
     const snapshot: OperationSnapshot = {
       structure: structureTree.snapshot(),
-      data: includeData ? nodeData.snapshot() : new Map(),
+      data: includeData ? sharedNodeStore.snapshot() : new Map(),
       timestamp: Date.now()
     };
 
@@ -174,7 +174,7 @@ class OptimisticOperationManager {
 
     // Restore data if snapshot included it
     if (includeData) {
-      nodeData.restore(snapshot.data);
+      sharedNodeStore.restore(snapshot.data);
     }
 
     log('[OptimisticOperationManager] Rollback complete');

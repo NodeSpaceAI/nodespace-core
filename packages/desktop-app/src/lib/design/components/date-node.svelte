@@ -12,7 +12,7 @@
   import BaseNode from '$lib/design/components/base-node.svelte';
   import Icon from '$lib/design/icons/icon.svelte';
   import type { NodeComponentProps } from '$lib/types/node-viewers.js';
-  import { nodeData } from '$lib/stores/reactive-node-data.svelte';
+  import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 
   // Props following the NodeComponentProps interface (for individual node components)
@@ -26,9 +26,10 @@
 
   const dispatch = createEventDispatcher();
 
-  // Use reactive stores directly instead of relying on props
-  // Components query the stores for current data and re-render automatically when data changes
-  let node = $derived(nodeData.getNode(nodeId));
+  // Use sharedNodeStore as single source of truth for cross-pane reactivity
+  // This ensures content changes from other panes are immediately reflected
+  // Issue #679: Migrated from nodeData (which was never receiving updates)
+  let node = $derived(sharedNodeStore.getNode(nodeId));
   let childIds = $derived(structureTree.getChildren(nodeId));
 
   // Derive props from stores with fallback to passed props for backward compatibility

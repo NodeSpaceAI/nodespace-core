@@ -4,7 +4,7 @@
  * Defines the event data structures used for real-time synchronization
  * via Tauri LIVE SELECT polling. These types are consumed by:
  * - tauri-sync-listener.ts (event bridging)
- * - reactive-node-data.svelte.ts (node state)
+ * - shared-node-store.svelte.ts (node state)
  * - reactive-structure-tree.svelte.ts (hierarchy state)
  */
 

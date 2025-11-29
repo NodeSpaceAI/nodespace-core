@@ -349,12 +349,17 @@ interface ActiveBatch {
 
 /**
  * SharedNodeStore - Reactive singleton store for node data
+ *
+ * Uses Svelte 5 $state for the nodes Map to provide automatic reactivity.
+ * Components using $derived(sharedNodeStore.getNode(nodeId)) will re-render
+ * when nodes are added, updated, or removed.
  */
 export class SharedNodeStore {
   private static instance: SharedNodeStore | null = null;
 
-  // Core state - using plain Map (reactivity provided by ReactiveNodeService adapter)
-  private nodes = new Map<string, Node>();
+  // Core state - using Svelte 5 $state for automatic reactivity
+  // This enables $derived() to properly re-run when nodes change
+  nodes = $state(new Map<string, Node>());
 
   // Track which nodes have been persisted to database
   // Avoids querying database on every update to check existence
@@ -2164,6 +2169,46 @@ export class SharedNodeStore {
         dependencies: dependencies.length > 0 ? dependencies : undefined
       }
     );
+  }
+
+  // ========================================================================
+  // Snapshot/Restore for Optimistic Rollback
+  // ========================================================================
+
+  /**
+   * Take a snapshot of all nodes for optimistic rollback
+   *
+   * Creates a deep copy of the current node state that can be restored
+   * if a backend operation fails. Used by OptimisticOperationManager.
+   *
+   * @returns Deep copy of all nodes as a Map
+   */
+  snapshot(): Map<string, Node> {
+    const snapshotMap = new Map<string, Node>();
+    for (const [nodeId, node] of this.nodes) {
+      // Deep copy each node to prevent reference mutations
+      snapshotMap.set(nodeId, { ...node });
+    }
+    return snapshotMap;
+  }
+
+  /**
+   * Restore all nodes from a snapshot (rollback on error)
+   *
+   * Replaces the current node state with the snapshot state.
+   * Used by OptimisticOperationManager when backend operations fail.
+   *
+   * @param snapshotMap - Previously captured snapshot to restore
+   */
+  restore(snapshotMap: Map<string, Node>): void {
+    // Clear current nodes and restore from snapshot
+    this.nodes.clear();
+    for (const [nodeId, node] of snapshotMap) {
+      this.nodes.set(nodeId, node);
+    }
+
+    // Notify all subscribers about the restore
+    this.notifyAllSubscribers();
   }
 
   // ========================================================================

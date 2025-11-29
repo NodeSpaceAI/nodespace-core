@@ -22,7 +22,7 @@ import {
   createPane,
   setActivePane
 } from '$lib/stores/navigation';
-import { sharedNodeStore } from './shared-node-store';
+import { sharedNodeStore } from './shared-node-store.svelte';
 import { get } from 'svelte/store';
 import type { Node } from '$lib/types';
 import { formatDateTitle } from '$lib/utils/date-formatting';

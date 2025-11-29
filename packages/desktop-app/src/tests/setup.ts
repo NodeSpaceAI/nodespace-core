@@ -4,7 +4,7 @@
  */
 import { vi, beforeEach, afterEach } from 'vitest';
 import '@testing-library/jest-dom';
-import { sharedNodeStore } from '$lib/services/shared-node-store';
+import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 
 // Note: PersistenceCoordinator removed in Issue #558
 // SimplePersistenceCoordinator is now inline in shared-node-store.ts

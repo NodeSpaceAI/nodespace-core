@@ -17,7 +17,7 @@
 
 /* global EventSource, MessageEvent */
 
-import { sharedNodeStore } from './shared-node-store';
+import { sharedNodeStore } from './shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import { getClientId } from './client-id';
 import type { SseEvent } from '$lib/types/sse-events';
