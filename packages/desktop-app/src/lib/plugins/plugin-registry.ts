@@ -16,6 +16,7 @@ import type {
   NodeReferenceComponent,
   SlashCommandDefinition,
   PatternDetectionConfig,
+  PatternDetectionResult,
   RegistryStats,
   PluginLifecycleEvents
 } from './types';
@@ -297,13 +298,42 @@ export class PluginRegistry {
   /**
    * Get all pattern detection configs from enabled plugins
    * Used by TextareaController to detect node type conversions
+   *
+   * Issue #667: Now derives configs from plugin.pattern (new architecture)
+   * for backward compatibility with existing code that uses PatternDetectionConfig
    */
   getAllPatternDetectionConfigs(): PatternDetectionConfig[] {
     const patterns: PatternDetectionConfig[] = [];
 
     for (const [pluginId, plugin] of this.plugins.entries()) {
-      if (this.enabledPlugins.has(pluginId) && plugin.config.patternDetection) {
+      if (!this.enabledPlugins.has(pluginId)) continue;
+
+      // Legacy: check config.patternDetection
+      if (plugin.config.patternDetection) {
         patterns.push(...plugin.config.patternDetection);
+      }
+
+      // New: derive PatternDetectionConfig from plugin.pattern (Issue #667)
+      if (plugin.pattern) {
+        // Get slash command for additional config (desiredCursorPosition)
+        const slashCommand = plugin.config.slashCommands.find(
+          cmd => cmd.nodeType === pluginId
+        );
+
+        const derivedConfig: PatternDetectionConfig = {
+          pattern: plugin.pattern.detect,
+          targetNodeType: pluginId,
+          cleanContent: !plugin.pattern.canRevert, // canRevert=true means cleanContent=false
+          extractMetadata: plugin.pattern.extractMetadata,
+          priority: 10, // Default priority
+          desiredCursorPosition: slashCommand?.desiredCursorPosition,
+          // Only include contentTemplate if desiredCursorPosition is set
+          // This indicates auto-completion behavior (e.g., code-block's closing fence)
+          contentTemplate: slashCommand?.desiredCursorPosition !== undefined
+            ? slashCommand.contentTemplate
+            : undefined
+        };
+        patterns.push(derivedConfig);
       }
     }
 
@@ -312,30 +342,66 @@ export class PluginRegistry {
   }
 
   /**
-   * Detect node type from content using registered patterns
-   * Returns the pattern config and match result if a pattern is detected
+   * Detect node type from content using plugin-owned patterns
+   * Returns the plugin and match result if a pattern is detected
+   *
+   * Issue #667: Uses plugin.pattern instead of legacy patternDetection arrays
    *
    * @param content - The content to check for patterns
-   * @returns Object with pattern config, match result, and extracted metadata, or null if no pattern matches
+   * @returns PatternDetectionResult with plugin, pattern config, match result, and metadata, or null if no pattern matches
    */
-  detectPatternInContent(content: string): {
-    config: PatternDetectionConfig;
-    match: RegExpMatchArray;
-    metadata: Record<string, unknown>;
-  } | null {
-    const patterns = this.getAllPatternDetectionConfigs();
+  detectPatternInContent(content: string): PatternDetectionResult | null {
+    // Default priority for pattern detection (consistent with getAllPatternDetectionConfigs)
+    const DEFAULT_PATTERN_PRIORITY = 10;
 
-    for (const config of patterns) {
-      // Convert string pattern to RegExp if needed
-      const pattern =
-        typeof config.pattern === 'string' ? new RegExp(config.pattern) : config.pattern;
+    // Get all plugins with patterns, sorted by explicit priority (higher = checked first)
+    // Uses the same priority system as getAllPatternDetectionConfigs for consistency
+    const pluginsWithPatterns = Array.from(this.plugins.values())
+      .filter(p => this.enabledPlugins.has(p.id) && p.pattern)
+      .sort((a, b) => {
+        // Use explicit priority from slash command config, fallback to default
+        const aSlashCmd = a.config.slashCommands.find(cmd => cmd.nodeType === a.id);
+        const bSlashCmd = b.config.slashCommands.find(cmd => cmd.nodeType === b.id);
+        const aPriority = aSlashCmd?.priority ?? DEFAULT_PATTERN_PRIORITY;
+        const bPriority = bSlashCmd?.priority ?? DEFAULT_PATTERN_PRIORITY;
+        return bPriority - aPriority;
+      });
 
-      const match = content.match(pattern);
+    for (const plugin of pluginsWithPatterns) {
+      const pattern = plugin.pattern!;
+      const match = content.match(pattern.detect);
+
       if (match) {
         // Extract metadata if extractor function is provided
-        const metadata = config.extractMetadata ? config.extractMetadata(match) : {};
+        const metadata = pattern.extractMetadata ? pattern.extractMetadata(match) : {};
 
-        return { config, match, metadata };
+        // Get slash command for additional config (desiredCursorPosition)
+        // NOTE: contentTemplate is NOT used for pattern detection when canRevert is true
+        // because we want to preserve the user's typed content for bidirectional conversion
+        const slashCommand = plugin.config.slashCommands.find(
+          cmd => cmd.nodeType === plugin.id
+        );
+
+        // Create backward-compatible PatternDetectionConfig
+        // NOTE: contentTemplate is only included if desiredCursorPosition is set,
+        // indicating auto-completion behavior (e.g., code-block's closing fence).
+        // Headers don't have desiredCursorPosition in slash commands, so their
+        // content is preserved during pattern detection.
+        const config: PatternDetectionConfig = {
+          pattern: pattern.detect,
+          targetNodeType: plugin.id,
+          cleanContent: !pattern.canRevert, // canRevert=true means cleanContent=false
+          extractMetadata: pattern.extractMetadata,
+          priority: 10,
+          desiredCursorPosition: slashCommand?.desiredCursorPosition,
+          // Only include contentTemplate if desiredCursorPosition is set
+          // This indicates auto-completion behavior (e.g., code-block's closing fence)
+          contentTemplate: slashCommand?.desiredCursorPosition !== undefined
+            ? slashCommand.contentTemplate
+            : undefined
+        };
+
+        return { plugin, config, match, metadata };
       }
     }
 

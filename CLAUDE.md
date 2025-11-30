@@ -49,7 +49,16 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 > 1. **Check git status**: `git status` - commit any pending changes first
 > 2. **Pull latest changes**: `git fetch origin && git pull origin main` - ensure you're working from the latest codebase
 > 3. **Run test baseline**: `bun run test & bun run rust:test & wait` - run frontend AND backend tests in parallel
-> 4. **Document baseline**: Add comment to issue with baseline test status (frontend: X pass/Y fail, backend: X pass/Y fail)
+> 4. **Document baseline**: Add comment to issue with baseline test status
+>    ```bash
+>    # ✅ CORRECT - pass comment text as direct argument
+>    bun run gh:comment <number> "Frontend: X passed, Rust: Y passed"
+>
+>    # ❌ WRONG - do NOT pipe to gh:comment (it doesn't read stdin)
+>    echo "text" | bun run gh:comment <number>
+>    ```
+>    - ⚠️ **WAIT for complete test output** - look for "Test Files X passed" summary line
+>    - ⚠️ **Verify final "Duration" line is visible** - if missing, output was truncated
 > 5. **Determine branching strategy**: Check parent issue for specified approach (single branch vs. individual branches)
 > 6. **Create/switch to branch**: Based on strategy - either `git checkout -b feature/issue-<number>-brief-description` OR switch to existing parent issue branch
 > 7. **Assign issue**: `bun run gh:assign <number> "@me"`
@@ -611,7 +620,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - [ ] Checked git status and committed any pending changes
 - [ ] **Pulled latest changes** (`git fetch origin && git pull origin main`)
 - [ ] **Recorded test baseline** (`bun run test & bun run rust:test & wait` - frontend AND backend counts)
-- [ ] **Documented baseline in issue** (commented with test status and specific failures)
+- [ ] **Documented baseline in issue** using `bun run gh:comment <N> "Frontend: X passed, Rust: Y passed"` (NOT piped via echo)
 - [ ] Determined branching strategy from parent issue (single branch vs. individual branches)
 - [ ] Created/switched to appropriate branch based on strategy
 - [ ] Assigned issue to self (`bun run gh:assign <number> "@me"`)

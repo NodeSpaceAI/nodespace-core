@@ -51,11 +51,11 @@ describe('QuoteBlockNode Plugin', () => {
     });
 
     it('should have pattern detection configured', () => {
-      const patterns = pluginRegistry.getAllPatternDetectionConfigs();
-      const quotePattern = patterns.find((p) => p.targetNodeType === 'quote-block');
+      const plugin = pluginRegistry.getPlugin('quote-block');
 
-      expect(quotePattern).toBeDefined();
-      expect(quotePattern?.cleanContent).toBe(false); // Keep > prefix in content
+      expect(plugin?.pattern).toBeDefined();
+      expect(plugin?.pattern?.canRevert).toBe(true); // Can revert when > deleted
+      expect(plugin?.pattern?.detect).toBeDefined(); // Has detect pattern
     });
 
     it('should have node component configured for lazy loading', () => {

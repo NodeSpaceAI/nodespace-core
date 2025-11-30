@@ -944,7 +944,9 @@ where
             let field_value = node_props.and_then(|props| props.get(&field.name));
 
             // Check required fields
-            if field.required.unwrap_or(false) && field_value.is_none() {
+            // Allow missing required fields if they have a default value defined
+            // (defaults should have been applied before validation, but this provides safety)
+            if field.required.unwrap_or(false) && field_value.is_none() && field.default.is_none() {
                 return Err(NodeServiceError::invalid_update(format!(
                     "Required field '{}' is missing from {} node",
                     field.name, node.node_type
@@ -1792,22 +1794,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validate_node_against_schema_required_field_missing() {
+    async fn test_validate_node_against_schema_required_field_missing_with_no_default() {
         let (service, _temp) = setup_test_service().await;
-        let _schema_id = create_test_schema(&service).await;
 
-        // Node missing required field (status is required in test schema)
+        // Create a schema with a required field that has NO default
+        let schema = SchemaDefinition {
+            is_core: false,
+            version: 1,
+            description: "Test schema with required field without default".to_string(),
+            fields: vec![SchemaField {
+                name: "required_field".to_string(),
+                field_type: "string".to_string(),
+                protection: ProtectionLevel::Core,
+                core_values: None,
+                user_values: None,
+                indexed: false,
+                required: Some(true),
+                extensible: None,
+                default: None, // NO DEFAULT - missing field should fail
+                description: Some("Required field without default".to_string()),
+                item_type: None,
+                fields: None,
+                item_fields: None,
+            }],
+        };
+
+        let schema_node = Node {
+            id: "test_required".to_string(),
+            node_type: "schema".to_string(),
+            content: "Test Required".to_string(),
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties: serde_json::to_value(&schema).unwrap(),
+            embedding_vector: None,
+            mentions: Vec::new(),
+            mentioned_by: Vec::new(),
+        };
+
+        service.node_service.create_node(schema_node).await.unwrap();
+
+        // Node missing required field (no default available)
         let node = Node::new(
-            "test_widget".to_string(),
-            "My widget".to_string(),
-            json!({"test_widget": {"priority": 5}}), // Missing required "status" field
+            "test_required".to_string(),
+            "My node".to_string(),
+            json!({"test_required": {"other_field": "value"}}), // Missing required "required_field"
         );
 
         let result = service.validate_node_against_schema(&node).await;
-        assert!(result.is_err(), "Missing required field should fail");
+        assert!(
+            result.is_err(),
+            "Missing required field without default should fail"
+        );
         assert!(
             result.unwrap_err().to_string().contains("Required field"),
             "Error should mention required field"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_node_against_schema_required_field_missing_with_default_ok() {
+        let (service, _temp) = setup_test_service().await;
+        let _schema_id = create_test_schema(&service).await;
+
+        // Node missing required field (status) but it has a default in schema
+        let node = Node::new(
+            "test_widget".to_string(),
+            "My widget".to_string(),
+            json!({"test_widget": {"priority": 5}}), // Missing "status" but has default "open"
+        );
+
+        let result = service.validate_node_against_schema(&node).await;
+        assert!(
+            result.is_ok(),
+            "Missing required field WITH default should pass validation (default will be applied)"
         );
     }
 

@@ -29,8 +29,9 @@ describe('HeaderNode Pattern Detection', () => {
 
       const headerPlugin = registry.getPlugin('header');
       expect(headerPlugin).toBeDefined();
-      expect(headerPlugin?.config.patternDetection).toBeDefined();
-      expect(headerPlugin?.config.patternDetection).toHaveLength(1);
+      // Issue #667: Pattern now lives on plugin.pattern (new architecture)
+      expect(headerPlugin?.pattern).toBeDefined();
+      expect(headerPlugin?.pattern?.detect).toBeDefined();
     });
 
     it('should have correct pattern regex for h1-h6 detection', () => {

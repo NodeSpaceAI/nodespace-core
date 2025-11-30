@@ -82,34 +82,38 @@ describe('OrderedListNode Plugin', () => {
       }
     });
 
-    it('should preserve content with cleanContent: false', () => {
+    it('should preserve content with cleanContent: false (canRevert: true)', () => {
       const plugin = pluginRegistry.getPlugin('ordered-list');
-      const pattern = plugin?.config.patternDetection?.[0];
 
-      // The critical setting - content MUST be preserved for round-trip consistency
-      expect(pattern?.cleanContent).toBe(false);
+      // Issue #667: Pattern now lives on plugin.pattern (new architecture)
+      // canRevert: true means cleanContent: false (content preserved for reversion)
+      expect(plugin?.pattern?.canRevert).toBe(true);
     });
 
     it('should NOT use contentTemplate in pattern detection', () => {
+      // Pattern detection preserves user's content - no template replacement
+      // contentTemplate is only used by slash commands for initial content
       const plugin = pluginRegistry.getPlugin('ordered-list');
-      const pattern = plugin?.config.patternDetection?.[0];
 
-      // Pattern detection should not have contentTemplate
-      // (cleanContent: false means keep user's content as-is)
-      expect(pattern?.contentTemplate).toBeUndefined();
+      // Verify plugin.pattern exists (new architecture) and has detect regex
+      expect(plugin?.pattern?.detect).toBeDefined();
+      // canRevert: true means content is preserved (no template replacement)
+      expect(plugin?.pattern?.canRevert).toBe(true);
     });
 
     it('should have correct cursor positioning in pattern detection', () => {
-      const plugin = pluginRegistry.getPlugin('ordered-list');
-      const pattern = plugin?.config.patternDetection?.[0];
+      // Issue #667: Cursor positioning comes from slash command config
+      const patterns = pluginRegistry.getAllPatternDetectionConfigs();
+      const pattern = patterns.find((p) => p.targetNodeType === 'ordered-list');
 
       // Cursor should be at position 3 (after "1. ")
       expect(pattern?.desiredCursorPosition).toBe(3);
     });
 
     it('should have correct pattern priority', () => {
-      const plugin = pluginRegistry.getPlugin('ordered-list');
-      const pattern = plugin?.config.patternDetection?.[0];
+      // Issue #667: Priority is derived from plugin.pattern
+      const patterns = pluginRegistry.getAllPatternDetectionConfigs();
+      const pattern = patterns.find((p) => p.targetNodeType === 'ordered-list');
 
       expect(pattern?.priority).toBe(10);
     });
@@ -120,8 +124,9 @@ describe('OrderedListNode Plugin', () => {
       const commands = pluginRegistry.getAllSlashCommands();
       const slashCommand = commands.find((c) => c.id === 'ordered-list');
 
-      const plugin = pluginRegistry.getPlugin('ordered-list');
-      const patternDetection = plugin?.config.patternDetection?.[0];
+      // Issue #667: Pattern config derived from plugin.pattern via getAllPatternDetectionConfigs
+      const patterns = pluginRegistry.getAllPatternDetectionConfigs();
+      const patternDetection = patterns.find((p) => p.targetNodeType === 'ordered-list');
 
       // Both should position cursor at same location
       expect(slashCommand?.desiredCursorPosition).toBe(patternDetection?.desiredCursorPosition);
@@ -134,13 +139,12 @@ describe('OrderedListNode Plugin', () => {
 
     it('should have pattern detection extract metadata', () => {
       const plugin = pluginRegistry.getPlugin('ordered-list');
-      const pattern = plugin?.config.patternDetection?.[0];
 
-      // extractMetadata should exist (even if it returns empty object)
-      expect(pattern?.extractMetadata).toBeDefined();
+      // Issue #667: extractMetadata now lives on plugin.pattern
+      expect(plugin?.pattern?.extractMetadata).toBeDefined();
 
       // For ordered lists, metadata should be empty (no complex parsing needed)
-      const metadata = pattern?.extractMetadata?.([] as unknown as RegExpMatchArray);
+      const metadata = plugin?.pattern?.extractMetadata?.([] as unknown as RegExpMatchArray);
       expect(metadata).toEqual({});
     });
   });
@@ -179,17 +183,16 @@ describe('OrderedListNode Plugin', () => {
 
     it('should have correct pattern regex', () => {
       const plugin = pluginRegistry.getPlugin('ordered-list');
-      const pattern = plugin?.config.patternDetection?.[0];
 
-      // Pattern should match "1. " with space
-      expect(pattern?.pattern).toEqual(/^1\.\s/);
+      // Issue #667: Pattern regex now lives on plugin.pattern.detect
+      const regex = plugin?.pattern?.detect;
+      expect(regex).toEqual(/^1\.\s/);
 
       // Test regex directly
-      const regex = pattern?.pattern as RegExp;
-      expect(regex.test('1. ')).toBe(true);
-      expect(regex.test('1. test')).toBe(true);
-      expect(regex.test('1.test')).toBe(false); // No space
-      expect(regex.test('2. test')).toBe(false); // Different number
+      expect(regex?.test('1. ')).toBe(true);
+      expect(regex?.test('1. test')).toBe(true);
+      expect(regex?.test('1.test')).toBe(false); // No space
+      expect(regex?.test('2. test')).toBe(false); // Different number
     });
   });
 });

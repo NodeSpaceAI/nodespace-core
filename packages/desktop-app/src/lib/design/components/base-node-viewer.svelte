@@ -133,7 +133,13 @@
 
   // Track the viewed node reactively for schema form display
   // Issue #679: Now uses $derived directly since sharedNodeStore.nodes is $state
-  const currentViewedNode = $derived(nodeId ? sharedNodeStore.getNode(nodeId) : null);
+  // IMPORTANT: Reference nodeManager._updateTrigger to establish reactivity on Map changes
+  // (Svelte 5 $state(Map) doesn't track Map.get() calls automatically)
+  const currentViewedNode = $derived.by(() => {
+    // Establish reactive dependency on node changes
+    void nodeManager._updateTrigger;
+    return nodeId ? sharedNodeStore.getNode(nodeId) : null;
+  });
 
   // Scroll position tracking
   // Reference to the scroll container element

@@ -21,6 +21,7 @@
  */
 
 import type { PatternTemplate } from '$lib/patterns/types';
+import type { PluginDefinition } from '$lib/plugins/types';
 
 /**
  * How a node was created, which determines pattern detection behavior
@@ -31,7 +32,8 @@ export type NodeCreationSource =
   | 'inherited'; // Inherited from parent (Enter on header → header) - can also revert
 
 /**
- * Information about a detected pattern match
+ * Information about a detected pattern match (LEGACY - for backward compatibility)
+ * @deprecated Use PluginDefinition directly - will be removed when legacy pattern system is phased out
  */
 export interface PatternMatch {
   /** The pattern template that matched */
@@ -74,21 +76,32 @@ export class PatternState {
   private _creationSource = $state<NodeCreationSource>('user');
 
   /**
-   * The pattern that was detected (if any)
+   * The pattern that was detected (if any) - LEGACY
    * Only set when source is 'pattern'
+   * @deprecated Use _plugin instead for new plugin-owned patterns
    */
   private _detectedPattern = $state<PatternMatch | null>(null);
+
+  /**
+   * The plugin that owns this node's pattern behavior (Issue #667)
+   * Replaces scattered pattern logic with plugin-owned definitions
+   */
+  private _plugin = $state<PluginDefinition | null>(null);
 
   /**
    * Create a new PatternState with explicit creation source
    *
    * @param source - How the node was created
-   * @param initialPattern - If source is 'pattern', the pattern that triggered creation
+   * @param initialPattern - If source is 'pattern', the pattern that triggered creation (LEGACY)
+   * @param plugin - The plugin that owns the pattern behavior (NEW - Issue #667)
    */
-  constructor(source: NodeCreationSource, initialPattern?: PatternMatch) {
+  constructor(source: NodeCreationSource, initialPattern?: PatternMatch, plugin?: PluginDefinition) {
     this._creationSource = source;
     if (source === 'pattern' && initialPattern) {
       this._detectedPattern = initialPattern;
+    }
+    if (plugin) {
+      this._plugin = plugin;
     }
   }
 
@@ -113,16 +126,21 @@ export class PatternState {
   /**
    * Whether this node can revert to text type
    *
+   * Issue #667: Now uses plugin-owned pattern.canRevert instead of hardcoded logic.
+   *
    * Both 'pattern' and 'inherited' source nodes can revert when their
    * syntax is deleted (e.g., "# Hello" → "#Hello" reverts to text).
    * Only 'user' source nodes without a detected pattern cannot revert.
-   *
-   * EXCEPTION: Patterns with cleanContent: true cannot revert because
-   * the pattern syntax was intentionally removed from content (e.g., task
-   * nodes don't store "[ ]" in content - it's shown as an icon).
    */
   get canRevert(): boolean {
-    // Pattern source with detected pattern - check if reversion is possible
+    // NEW (Issue #667): Use plugin-owned pattern behavior
+    // Both 'pattern' and 'inherited' source nodes respect the plugin's canRevert setting
+    if (this._plugin?.pattern) {
+      const source = this._creationSource;
+      return (source === 'pattern' || source === 'inherited') && this._plugin.pattern.canRevert === true;
+    }
+
+    // LEGACY: Fall back to old PatternTemplate behavior for backward compatibility
     if (this._creationSource === 'pattern' && this._detectedPattern !== null) {
       // Patterns with cleanContent: true cannot revert - syntax was intentionally removed
       if (this._detectedPattern.pattern.cleanContent === true) {
@@ -130,11 +148,13 @@ export class PatternState {
       }
       return true;
     }
-    // Inherited source - can also revert (syntax deletion triggers type change)
+
+    // Inherited source (legacy path) - can also revert (syntax deletion triggers type change)
     // The pattern detection in detectNodeTypeConversion handles this
     if (this._creationSource === 'inherited') {
       return true;
     }
+
     return false;
   }
 
@@ -177,17 +197,31 @@ export class PatternState {
   // ============================================================================
 
   /**
-   * Record that a pattern was detected and matched
+   * Record that a pattern was detected and matched (LEGACY)
    *
    * Called when pattern detection finds a match and converts the node type.
    * Changes source to 'pattern' and stores the pattern info for reversion.
    *
    * @param pattern - The pattern that matched
    * @param _content - The content at the time of match (unused, kept for API compatibility)
+   * @deprecated Use recordPluginPatternMatch instead
    */
   recordPatternMatch(pattern: PatternMatch, _content: string): void {
     this._creationSource = 'pattern';
     this._detectedPattern = pattern;
+  }
+
+  /**
+   * Record that a plugin pattern was detected and matched (Issue #667)
+   *
+   * Called when pattern detection finds a match and converts the node type.
+   * Changes source to 'pattern' and stores the plugin for reversion.
+   *
+   * @param plugin - The plugin whose pattern matched
+   */
+  recordPluginPatternMatch(plugin: PluginDefinition): void {
+    this._creationSource = 'pattern';
+    this._plugin = plugin;
   }
 
   /**
@@ -213,6 +247,8 @@ export class PatternState {
   /**
    * Attempt to revert node type to text
    *
+   * Issue #667: Now uses plugin-owned pattern.revert instead of checking if detect pattern still matches.
+   *
    * Called when content no longer matches the detected pattern.
    * Only succeeds if source is 'pattern' (has reversion capability).
    *
@@ -222,6 +258,17 @@ export class PatternState {
   attemptRevert(currentContent: string): boolean {
     if (!this.canRevert) return false;
 
+    // NEW (Issue #667): Use plugin-owned revert pattern
+    if (this._plugin?.pattern?.revert) {
+      // Check if content matches the revert pattern (e.g., "# " → "#" triggers reversion)
+      if (this._plugin.pattern.revert.test(currentContent)) {
+        this.resetToUser();
+        return true;
+      }
+      return false;
+    }
+
+    // LEGACY: Fall back to checking if detect pattern still matches
     // Check if pattern was deleted (content no longer matches)
     if (this.patternStillMatches(currentContent)) {
       return false; // Pattern still present, no reversion
@@ -244,13 +291,14 @@ export class PatternState {
   }
 
   /**
-   * Mark the node type as existing via pattern
+   * Mark the node type as existing via pattern (LEGACY)
    *
    * Called when initializing a controller for a node whose content
    * matches its pattern (e.g., loading a header node with "# " content).
    * This enables reversion if the pattern is later deleted.
    *
    * @param pattern - The pattern that matches the current content
+   * @deprecated Use setPluginPatternExists instead
    */
   setPatternExists(pattern: PatternMatch): void {
     // For 'user' source, upgrade to 'pattern' for reversion capability
@@ -262,6 +310,27 @@ export class PatternState {
     // (inherited nodes can now also revert)
     else if (this._creationSource === 'inherited') {
       this._detectedPattern = pattern;
+    }
+  }
+
+  /**
+   * Mark the node type as existing via plugin pattern (Issue #667)
+   *
+   * Called when initializing a controller for a node whose content
+   * matches its pattern (e.g., loading a header node with "# " content).
+   * This enables reversion if the pattern is later deleted.
+   *
+   * @param plugin - The plugin whose pattern matches the current content
+   */
+  setPluginPatternExists(plugin: PluginDefinition): void {
+    // For 'user' source, upgrade to 'pattern' for reversion capability
+    if (this._creationSource === 'user') {
+      this._creationSource = 'pattern';
+      this._plugin = plugin;
+    }
+    // For 'inherited' source, just store the plugin for reversion detection
+    else if (this._creationSource === 'inherited') {
+      this._plugin = plugin;
     }
   }
 

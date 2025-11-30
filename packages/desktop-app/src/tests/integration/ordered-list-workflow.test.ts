@@ -26,19 +26,18 @@ describe('OrderedListNode Workflow', () => {
 
     it('should preserve "1. " prefix during conversion (cleanContent: false)', () => {
       const plugin = pluginRegistry.getPlugin('ordered-list');
-      const pattern = plugin?.config.patternDetection?.[0];
 
-      // This is critical - content must be preserved for round-trip consistency
-      expect(pattern?.cleanContent).toBe(false);
+      // Issue #667: canRevert: true means cleanContent: false (content preserved)
+      expect(plugin?.pattern?.canRevert).toBe(true);
 
-      // With cleanContent: false, the pattern is NOT removed from content
+      // With canRevert: true, the pattern is NOT removed from content
       // Content stays as "1. First item" in database
-      expect(pattern?.cleanContent).toBeFalsy();
     });
 
     it('should position cursor after "1. " prefix (position 3)', () => {
-      const plugin = pluginRegistry.getPlugin('ordered-list');
-      const pattern = plugin?.config.patternDetection?.[0];
+      // Issue #667: Cursor positioning comes from slash command config
+      const patterns = pluginRegistry.getAllPatternDetectionConfigs();
+      const pattern = patterns.find((p) => p.targetNodeType === 'ordered-list');
 
       // User types "1. " and expects cursor after the prefix
       expect(pattern?.desiredCursorPosition).toBe(3);
@@ -50,12 +49,10 @@ describe('OrderedListNode Workflow', () => {
 
     it('should NOT replace content with template in pattern detection', () => {
       const plugin = pluginRegistry.getPlugin('ordered-list');
-      const pattern = plugin?.config.patternDetection?.[0];
 
-      // cleanContent: false means keep the user's content
-      // No contentTemplate in pattern detection (unlike slash commands)
-      expect(pattern?.contentTemplate).toBeUndefined();
-      expect(pattern?.cleanContent).toBe(false);
+      // Issue #667: canRevert: true means content is preserved (no template replacement)
+      expect(plugin?.pattern?.canRevert).toBe(true);
+      // contentTemplate is only used by slash commands for initial content
     });
   });
 
@@ -114,12 +111,12 @@ describe('OrderedListNode Workflow', () => {
 
     it('should convert to text node if content no longer starts with "1."', () => {
       const plugin = pluginRegistry.getPlugin('ordered-list');
-      const pattern = plugin?.config.patternDetection?.[0];
 
+      // Issue #667: Pattern regex now lives on plugin.pattern.detect
       // If user deletes the "1. " prefix, the node should convert to text
       // This logic is in OrderedListNode component's handleCreateNewNode
       // Here we verify the pattern is defined for the conversion
-      expect(pattern?.pattern).toEqual(/^1\.\s/);
+      expect(plugin?.pattern?.detect).toEqual(/^1\.\s/);
     });
   });
 
@@ -236,10 +233,10 @@ describe('OrderedListNode Workflow', () => {
   describe('Content Preservation', () => {
     it('should preserve "1. " prefix in database storage', () => {
       const plugin = pluginRegistry.getPlugin('ordered-list');
-      const pattern = plugin?.config.patternDetection?.[0];
 
+      // Issue #667: canRevert: true means cleanContent: false (content preserved)
       // Round-trip consistency: Save "1. Item" → Load → Show as "1. Item" in edit
-      expect(pattern?.cleanContent).toBe(false);
+      expect(plugin?.pattern?.canRevert).toBe(true);
     });
 
     it('should support multiline with proper prefix handling', () => {
@@ -273,11 +270,11 @@ describe('OrderedListNode Workflow', () => {
 
     it('should convert to text by removing "1. " prefix on backspace', () => {
       const plugin = pluginRegistry.getPlugin('ordered-list');
-      const pattern = plugin?.config.patternDetection?.[0];
 
+      // Issue #667: Pattern regex now lives on plugin.pattern.detect
       // If pattern no longer matches (no "1. " at start), should convert to text
       // Component strips the prefix when converting
-      expect(pattern?.pattern).toEqual(/^1\.\s/);
+      expect(plugin?.pattern?.detect).toEqual(/^1\.\s/);
     });
 
     it('should not merge into ordered lists from other node types', () => {
