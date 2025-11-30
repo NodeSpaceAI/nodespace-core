@@ -224,12 +224,9 @@ pub fn run() {
             commands::nodes::get_incoming_mentions,
             commands::nodes::get_mentioning_roots,
             commands::nodes::delete_node_mention,
+            // Schema read commands (Issue #690 - mutation commands removed, not used by UI)
             commands::schemas::get_all_schemas,
             commands::schemas::get_schema_definition,
-            commands::schemas::add_schema_field,
-            commands::schemas::remove_schema_field,
-            commands::schemas::extend_schema_enum,
-            commands::schemas::remove_schema_enum_value,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

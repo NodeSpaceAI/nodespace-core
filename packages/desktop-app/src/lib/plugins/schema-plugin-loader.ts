@@ -39,9 +39,9 @@
  */
 
 import type { PluginDefinition } from './types';
-import type { SchemaDefinition } from '$lib/types/schema';
 import { pluginRegistry } from './plugin-registry';
-import { schemaService } from '$lib/services/schema-service';
+import { backendAdapter } from '$lib/services/backend-adapter';
+import { type SchemaNode, isSchemaNode } from '$lib/types/schema-node';
 
 /**
  * Plugin priority constants
@@ -90,41 +90,42 @@ function humanizeSchemaId(id: string): string {
 }
 
 /**
- * Convert a schema definition into a plugin definition
+ * Convert a schema node into a plugin definition
  *
  * Creates a minimal plugin that registers the custom entity as a slash command
  * and uses the generic CustomEntityNode component for rendering.
  *
- * @param schema - Schema definition to convert
- * @param schemaId - ID of the schema (used as plugin ID)
+ * @param schema - Schema node to convert
  * @returns Plugin definition ready for registration
  *
  * @example
  * ```typescript
- * const schema = await schemaService.getSchema('invoice');
- * const plugin = createPluginFromSchema(schema, 'invoice');
- * // plugin.id === 'invoice'
- * // plugin.config.slashCommands[0].name === 'Invoice'
+ * const schemaNode = await backendAdapter.getSchema('invoice');
+ * if (isSchemaNode(schemaNode)) {
+ *   const plugin = createPluginFromSchema(schemaNode);
+ * }
  * ```
  */
-export function createPluginFromSchema(
-  schema: SchemaDefinition,
-  schemaId: string
-): PluginDefinition {
+export function createPluginFromSchema(schema: SchemaNode): PluginDefinition {
+  const schemaId = schema.id;
+  // Access typed fields directly (no helpers needed)
+  const description = schema.description;
+  const version = schema.schemaVersion;
+
   // Extract display name from schema description or humanize schema ID as fallback
-  const displayName = schema.description || humanizeSchemaId(schemaId);
+  const displayName = description || humanizeSchemaId(schemaId);
 
   return {
     id: schemaId,
     name: displayName,
-    description: schema.description || `Create ${displayName}`,
-    version: `${schema.version}.0.0`, // Use schema version as plugin version
+    description: description || `Create ${displayName}`,
+    version: `${version}.0.0`, // Use schema version as plugin version
     config: {
       slashCommands: [
         {
           id: schemaId,
           name: displayName,
-          description: schema.description || `Create ${displayName}`,
+          description: description || `Create ${displayName}`,
           contentTemplate: '',
           nodeType: schemaId,
           priority: PLUGIN_PRIORITIES.CUSTOM_ENTITY
@@ -145,7 +146,7 @@ export function createPluginFromSchema(
 /**
  * Register a schema as a plugin immediately
  *
- * Fetches the schema definition and registers it as a plugin. Core types
+ * Fetches the schema node and registers it as a plugin. Core types
  * are skipped since they're already registered in core-plugins.ts.
  *
  * @param schemaId - ID of the schema to register
@@ -160,12 +161,17 @@ export function createPluginFromSchema(
  */
 export async function registerSchemaPlugin(schemaId: string): Promise<void> {
   try {
-    const schema = await schemaService.getSchema(schemaId);
+    const node = await backendAdapter.getSchema(schemaId);
+
+    // Verify it's a schema node
+    if (!isSchemaNode(node)) {
+      console.warn(`[SchemaPluginLoader] Node ${schemaId} is not a schema node`);
+      return;
+    }
 
     // Don't register core types (already registered in core-plugins.ts)
-    // Defensive: Handle both camelCase and snake_case for type safety across boundaries
-    const isCoreType = schema.isCore || (schema as { is_core?: boolean }).is_core;
-    if (isCoreType) {
+    // Access typed field directly (no helper needed)
+    if (node.isCore) {
       console.debug(
         `[SchemaPluginLoader] Skipping core type registration: ${schemaId}`
       );
@@ -180,7 +186,7 @@ export async function registerSchemaPlugin(schemaId: string): Promise<void> {
       return;
     }
 
-    const plugin = createPluginFromSchema(schema, schemaId);
+    const plugin = createPluginFromSchema(node);
     pluginRegistry.register(plugin);
 
     console.log(
@@ -225,7 +231,7 @@ export function unregisterSchemaPlugin(schemaId: string): void {
 /**
  * Register all existing custom entity schemas on app startup
  *
- * Queries the schema service for all schemas and registers non-core types
+ * Queries for all schema nodes and registers non-core types
  * as plugins. This ensures existing custom entities are available on launch.
  *
  * Note: This function is not directly exported, but is used internally by
@@ -244,16 +250,17 @@ async function _registerExistingSchemas(): Promise<void> {
   try {
     console.log('[SchemaPluginLoader] Registering existing custom entity schemas...');
 
-    const schemas = await schemaService.getAllSchemas();
+    const nodes = await backendAdapter.getAllSchemas();
 
-    // Defensive: Handle both camelCase and snake_case for type safety across boundaries
-    const customSchemas = schemas.filter(
-      (schema) => !schema.isCore && !(schema as { is_core?: boolean }).is_core
+    // Filter to schema nodes that are not core types
+    // Access typed field directly (no helper needed)
+    const customSchemas = nodes.filter(
+      (node) => isSchemaNode(node) && !node.isCore
     );
 
     // Parallelize registration for better performance
     await Promise.all(
-      customSchemas.map((schema) => registerSchemaPlugin(schema.id))
+      customSchemas.map((node) => registerSchemaPlugin(node.id))
     );
 
     console.log(
@@ -306,13 +313,14 @@ export async function initializeSchemaPluginSystem(): Promise<InitializationResu
     console.log('[SchemaPluginLoader] Initializing schema plugin system...');
 
     // Register existing custom entity schemas on startup
-    const schemas = await schemaService.getAllSchemas();
-    const customSchemas = schemas.filter(
-      (schema) => !schema.isCore && !(schema as { is_core?: boolean }).is_core
+    const nodes = await backendAdapter.getAllSchemas();
+    // Access typed field directly (no helper needed)
+    const customSchemas = nodes.filter(
+      (node) => isSchemaNode(node) && !node.isCore
     );
 
     await Promise.all(
-      customSchemas.map((schema) => registerSchemaPlugin(schema.id))
+      customSchemas.map((node) => registerSchemaPlugin(node.id))
     );
 
     // TODO: Add Tauri event listeners for schema:created and schema:deleted

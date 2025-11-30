@@ -15,56 +15,50 @@
 //! ```json
 //! {
 //!   "id": "task",
-//!   "node_type": "schema",
+//!   "nodeType": "schema",
 //!   "content": "Task",
-//!   "properties": {
-//!     "is_core": true,
-//!     "version": 2,
-//!     "description": "Task tracking schema",
-//!     "fields": [
-//!       {
-//!         "name": "status",
-//!         "type": "enum",
-//!         "protection": "core",
-//!         "core_values": ["open", "in_progress", "done"],
-//!         "user_values": ["blocked"],
-//!         "extensible": true,
-//!         "indexed": true,
-//!         "required": true,
-//!         "default": "open"
-//!       }
-//!     ]
-//!   }
+//!   "isCore": true,
+//!   "schemaVersion": 2,
+//!   "description": "Task tracking schema",
+//!   "fields": [
+//!     {
+//!       "name": "status",
+//!       "type": "enum",
+//!       "protection": "core",
+//!       "coreValues": [
+//!         { "value": "open", "label": "Open" },
+//!         { "value": "in_progress", "label": "In Progress" },
+//!         { "value": "done", "label": "Done" }
+//!       ],
+//!       "userValues": [
+//!         { "value": "blocked", "label": "Blocked" }
+//!       ],
+//!       "extensible": true,
+//!       "indexed": true,
+//!       "required": true,
+//!       "default": "open"
+//!     }
+//!   ]
 //! }
 //! ```
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
-/// Simpler field definition for schema creation (user input)
+/// A single enum value with its display label
 ///
-/// This is a simplified structure used when creating new schemas via MCP or API.
-/// It gets converted to `SchemaField` internally with proper defaults.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FieldDefinition {
-    /// Field name
-    pub name: String,
-
-    /// Field type (e.g., "string", "number", "person", "project", etc.)
-    #[serde(rename = "type")]
-    pub field_type: String,
-
-    /// Whether this field is required
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required: Option<bool>,
-
-    /// Default value for the field
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<serde_json::Value>,
-
-    /// For nested objects, the structure definition
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub schema: Option<HashMap<String, serde_json::Value>>,
+/// Used for enum fields to provide both the stored value and a human-readable label.
+/// Array order determines display order in UI dropdowns.
+///
+/// ## Example
+/// ```json
+/// { "value": "in_progress", "label": "In Progress" }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnumValue {
+    /// The actual value stored in the database
+    pub value: String,
+    /// Human-readable display label for UI/MCP clients
+    pub label: String,
 }
 
 /// Protection level for schema fields
@@ -72,7 +66,7 @@ pub struct FieldDefinition {
 /// Determines whether a field can be modified or deleted by users.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum ProtectionLevel {
+pub enum SchemaProtectionLevel {
     /// Core fields that cannot be modified or deleted
     ///
     /// These are fields that UI components or core functionality depend on.
@@ -108,15 +102,17 @@ pub struct SchemaField {
     pub field_type: String,
 
     /// Protection level determining mutability
-    pub protection: ProtectionLevel,
+    pub protection: SchemaProtectionLevel,
 
     /// Protected enum values (cannot be removed) - enum fields only
+    /// Array order determines display order in UI.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub core_values: Option<Vec<String>>,
+    pub core_values: Option<Vec<EnumValue>>,
 
     /// User-extensible enum values (can be added/removed) - enum fields only
+    /// These appear after core_values in display order.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub user_values: Option<Vec<String>>,
+    pub user_values: Option<Vec<EnumValue>>,
 
     /// Whether this field should be indexed for faster queries
     pub indexed: bool,
@@ -157,318 +153,175 @@ pub struct SchemaField {
     pub item_fields: Option<Vec<SchemaField>>,
 }
 
-/// Complete schema definition for an entity type
-///
-/// Stored in the `properties` field of schema nodes.
-///
-/// Uses camelCase serialization to match frontend TypeScript conventions.
-/// Default trait allows partial deserialization when some fields are missing.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
-pub struct SchemaDefinition {
-    /// Whether this is a core schema (shipped with NodeSpace)
-    pub is_core: bool,
-
-    /// Schema version number (increments on any change)
-    ///
-    /// Used for lazy migration: nodes track which version validated them,
-    /// and are automatically upgraded when accessed if schema version is newer.
-    #[serde(default = "default_version")]
-    pub version: u32,
-
-    /// Human-readable description of this schema
-    #[serde(default)]
-    pub description: String,
-
-    /// List of fields in this schema
-    #[serde(default)]
-    pub fields: Vec<SchemaField>,
-}
-
-/// Default version for schemas (1)
-fn default_version() -> u32 {
-    1
-}
-
-impl SchemaDefinition {
-    /// Get all valid values for an enum field (core + user values combined)
-    ///
-    /// Returns `None` if the field doesn't exist or isn't an enum.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let schema = get_task_schema();
-    /// let status_values = schema.get_enum_values("status");
-    /// // Returns: Some(["open", "in_progress", "done", "blocked"])
-    /// ```
-    pub fn get_enum_values(&self, field_name: &str) -> Option<Vec<String>> {
-        let field = self.fields.iter().find(|f| f.name == field_name)?;
-
-        // Only return values for enum fields
-        if field.field_type != "enum" {
-            return None;
-        }
-
-        let mut values = Vec::new();
-        if let Some(core_vals) = &field.core_values {
-            values.extend(core_vals.clone());
-        }
-        if let Some(user_vals) = &field.user_values {
-            values.extend(user_vals.clone());
-        }
-
-        Some(values)
-    }
-
-    /// Check if a field can be deleted based on its protection level
-    ///
-    /// Only `User` protected fields can be deleted.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let schema = get_task_schema();
-    /// assert!(!schema.can_delete_field("status"));  // Core field
-    /// assert!(schema.can_delete_field("priority"));  // User field
-    /// ```
-    pub fn can_delete_field(&self, field_name: &str) -> bool {
-        if let Some(field) = self.fields.iter().find(|f| f.name == field_name) {
-            field.protection == ProtectionLevel::User
-        } else {
-            false
-        }
-    }
-
-    /// Check if a field can be modified based on its protection level
-    ///
-    /// Only `User` protected fields can be modified (type changes, etc.).
-    /// Core/System fields are immutable.
-    pub fn can_modify_field(&self, field_name: &str) -> bool {
-        if let Some(field) = self.fields.iter().find(|f| f.name == field_name) {
-            field.protection == ProtectionLevel::User
-        } else {
-            false
-        }
-    }
-
-    /// Get a field by name
-    pub fn get_field(&self, field_name: &str) -> Option<&SchemaField> {
-        self.fields.iter().find(|f| f.name == field_name)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    fn create_test_schema() -> SchemaDefinition {
-        SchemaDefinition {
-            is_core: true,
-            version: 1,
-            description: "Test schema".to_string(),
-            fields: vec![
-                // Status values use lowercase format (Issue #670)
-                SchemaField {
-                    name: "status".to_string(),
-                    field_type: "enum".to_string(),
-                    protection: ProtectionLevel::Core,
-                    core_values: Some(vec!["open".to_string(), "done".to_string()]),
-                    user_values: Some(vec!["blocked".to_string()]),
-                    indexed: true,
-                    required: Some(true),
-                    extensible: Some(true),
-                    default: Some(json!("open")),
-                    description: Some("Task status".to_string()),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
+    fn create_test_field() -> SchemaField {
+        SchemaField {
+            name: "status".to_string(),
+            field_type: "enum".to_string(),
+            protection: SchemaProtectionLevel::Core,
+            core_values: Some(vec![
+                EnumValue {
+                    value: "open".to_string(),
+                    label: "Open".to_string(),
                 },
+                EnumValue {
+                    value: "done".to_string(),
+                    label: "Done".to_string(),
+                },
+            ]),
+            user_values: Some(vec![EnumValue {
+                value: "blocked".to_string(),
+                label: "Blocked".to_string(),
+            }]),
+            indexed: true,
+            required: Some(true),
+            extensible: Some(true),
+            default: Some(json!("open")),
+            description: Some("Task status".to_string()),
+            item_type: None,
+            fields: None,
+            item_fields: None,
+        }
+    }
+
+    #[test]
+    fn test_schema_field_serialization() {
+        let field = create_test_field();
+        let json = serde_json::to_value(&field).unwrap();
+
+        assert_eq!(json["name"], "status");
+        assert_eq!(json["protection"], "core");
+        // field_type serializes to "type" due to #[serde(rename = "type")]
+        assert_eq!(json["type"], "enum");
+        // core_values serializes to coreValues
+        assert!(json["coreValues"].is_array());
+        assert_eq!(json["indexed"], true);
+    }
+
+    #[test]
+    fn test_schema_field_deserialization() {
+        let json = json!({
+            "name": "status",
+            "type": "enum",
+            "protection": "core",
+            "coreValues": [
+                { "value": "open", "label": "Open" },
+                { "value": "done", "label": "Done" }
+            ],
+            "indexed": true
+        });
+
+        let field: SchemaField = serde_json::from_value(json).unwrap();
+        assert_eq!(field.name, "status");
+        assert_eq!(field.field_type, "enum");
+        assert_eq!(field.protection, SchemaProtectionLevel::Core);
+        assert!(field.indexed);
+
+        let core_values = field.core_values.unwrap();
+        assert_eq!(core_values.len(), 2);
+        assert_eq!(core_values[0].value, "open");
+        assert_eq!(core_values[0].label, "Open");
+    }
+
+    #[test]
+    fn test_protection_level_serialization() {
+        assert_eq!(
+            serde_json::to_value(&SchemaProtectionLevel::Core).unwrap(),
+            "core"
+        );
+        assert_eq!(
+            serde_json::to_value(&SchemaProtectionLevel::User).unwrap(),
+            "user"
+        );
+        assert_eq!(
+            serde_json::to_value(&SchemaProtectionLevel::System).unwrap(),
+            "system"
+        );
+    }
+
+    #[test]
+    fn test_nested_field_serialization() {
+        let address_field = SchemaField {
+            name: "address".to_string(),
+            field_type: "object".to_string(),
+            protection: SchemaProtectionLevel::User,
+            core_values: None,
+            user_values: None,
+            indexed: false,
+            required: Some(false),
+            extensible: None,
+            default: None,
+            description: Some("Address information".to_string()),
+            item_type: None,
+            fields: Some(vec![
                 SchemaField {
-                    name: "priority".to_string(),
-                    field_type: "number".to_string(),
-                    protection: ProtectionLevel::User,
+                    name: "street".to_string(),
+                    field_type: "string".to_string(),
+                    protection: SchemaProtectionLevel::User,
                     core_values: None,
                     user_values: None,
                     indexed: false,
                     required: Some(false),
                     extensible: None,
-                    default: Some(json!(0)),
-                    description: Some("Task priority".to_string()),
+                    default: None,
+                    description: Some("Street address".to_string()),
                     item_type: None,
                     fields: None,
                     item_fields: None,
                 },
-            ],
-        }
+                SchemaField {
+                    name: "city".to_string(),
+                    field_type: "string".to_string(),
+                    protection: SchemaProtectionLevel::User,
+                    core_values: None,
+                    user_values: None,
+                    indexed: true,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("City".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+            ]),
+            item_fields: None,
+        };
+
+        let json = serde_json::to_value(&address_field).unwrap();
+        assert_eq!(json["name"], "address");
+        assert_eq!(json["type"], "object");
+        assert_eq!(json["fields"][0]["name"], "street");
+        assert_eq!(json["fields"][1]["name"], "city");
+        assert_eq!(json["fields"][1]["indexed"], true);
     }
 
     #[test]
-    fn test_get_enum_values() {
-        let schema = create_test_schema();
-
-        let values = schema.get_enum_values("status").unwrap();
-        assert_eq!(values.len(), 3);
-        // Status values use lowercase format (Issue #670)
-        assert!(values.contains(&"open".to_string()));
-        assert!(values.contains(&"done".to_string()));
-        assert!(values.contains(&"blocked".to_string()));
-
-        assert!(schema.get_enum_values("priority").is_none());
-        assert!(schema.get_enum_values("nonexistent").is_none());
-    }
-
-    #[test]
-    fn test_can_delete_field() {
-        let schema = create_test_schema();
-
-        assert!(!schema.can_delete_field("status")); // Core field
-        assert!(schema.can_delete_field("priority")); // User field
-        assert!(!schema.can_delete_field("nonexistent")); // Doesn't exist
-    }
-
-    #[test]
-    fn test_can_modify_field() {
-        let schema = create_test_schema();
-
-        assert!(!schema.can_modify_field("status")); // Core field
-        assert!(schema.can_modify_field("priority")); // User field
-        assert!(!schema.can_modify_field("nonexistent")); // Doesn't exist
-    }
-
-    #[test]
-    fn test_serialization() {
-        let schema = create_test_schema();
-        let json = serde_json::to_value(&schema).unwrap();
-
-        // With #[serde(rename_all = "camelCase")], keys are serialized as camelCase
-        assert_eq!(json["isCore"], true);
-        assert_eq!(json["version"], 1);
-        assert_eq!(json["fields"][0]["name"], "status");
-        assert_eq!(json["fields"][0]["protection"], "core");
-        // field_type serializes to "type" due to #[serde(rename = "type")]
-        assert_eq!(json["fields"][0]["type"], "enum");
-        // core_values serializes to coreValues
-        assert!(json["fields"][0]["coreValues"].is_array());
-    }
-
-    #[test]
-    fn test_deserialization() {
-        // With #[serde(rename_all = "camelCase")], we expect camelCase keys in JSON
+    fn test_nested_field_deserialization() {
         let json = json!({
-            "isCore": true,
-            "version": 2,
-            "description": "Task schema",
+            "name": "address",
+            "type": "object",
+            "protection": "user",
+            "indexed": false,
             "fields": [
                 {
-                    "name": "status",
-                    "type": "enum",
-                    "protection": "core",
-                    "coreValues": ["open", "done"],
+                    "name": "city",
+                    "type": "string",
+                    "protection": "user",
                     "indexed": true
                 }
             ]
         });
 
-        let schema: SchemaDefinition = serde_json::from_value(json).unwrap();
-        assert_eq!(schema.version, 2);
-        assert_eq!(schema.fields.len(), 1);
-        assert_eq!(schema.fields[0].protection, ProtectionLevel::Core);
-    }
+        let field: SchemaField = serde_json::from_value(json).unwrap();
+        assert_eq!(field.name, "address");
+        assert_eq!(field.field_type, "object");
 
-    #[test]
-    fn test_nested_field_serialization() {
-        let nested_schema = SchemaDefinition {
-            is_core: false,
-            version: 1,
-            description: "Person with nested address".to_string(),
-            fields: vec![SchemaField {
-                name: "address".to_string(),
-                field_type: "object".to_string(),
-                protection: ProtectionLevel::User,
-                core_values: None,
-                user_values: None,
-                indexed: false,
-                required: Some(false),
-                extensible: None,
-                default: None,
-                description: Some("Address information".to_string()),
-                item_type: None,
-                fields: Some(vec![
-                    SchemaField {
-                        name: "street".to_string(),
-                        field_type: "string".to_string(),
-                        protection: ProtectionLevel::User,
-                        core_values: None,
-                        user_values: None,
-                        indexed: false,
-                        required: Some(false),
-                        extensible: None,
-                        default: None,
-                        description: Some("Street address".to_string()),
-                        item_type: None,
-                        fields: None,
-                        item_fields: None,
-                    },
-                    SchemaField {
-                        name: "city".to_string(),
-                        field_type: "string".to_string(),
-                        protection: ProtectionLevel::User,
-                        core_values: None,
-                        user_values: None,
-                        indexed: true,
-                        required: Some(false),
-                        extensible: None,
-                        default: None,
-                        description: Some("City".to_string()),
-                        item_type: None,
-                        fields: None,
-                        item_fields: None,
-                    },
-                ]),
-                item_fields: None,
-            }],
-        };
-
-        let json = serde_json::to_value(&nested_schema).unwrap();
-        assert_eq!(json["fields"][0]["name"], "address");
-        assert_eq!(json["fields"][0]["type"], "object");
-        assert_eq!(json["fields"][0]["fields"][0]["name"], "street");
-        assert_eq!(json["fields"][0]["fields"][1]["name"], "city");
-        assert_eq!(json["fields"][0]["fields"][1]["indexed"], true);
-    }
-
-    #[test]
-    fn test_nested_field_deserialization() {
-        // With #[serde(rename_all = "camelCase")], we expect camelCase keys in JSON
-        let json = json!({
-            "isCore": false,
-            "version": 1,
-            "description": "Person with nested address",
-            "fields": [
-                {
-                    "name": "address",
-                    "type": "object",
-                    "protection": "user",
-                    "indexed": false,
-                    "fields": [
-                        {
-                            "name": "city",
-                            "type": "string",
-                            "protection": "user",
-                            "indexed": true
-                        }
-                    ]
-                }
-            ]
-        });
-
-        let schema: SchemaDefinition = serde_json::from_value(json).unwrap();
-        assert_eq!(schema.fields.len(), 1);
-        assert_eq!(schema.fields[0].name, "address");
-
-        let nested_fields = schema.fields[0].fields.as_ref().unwrap();
+        let nested_fields = field.fields.as_ref().unwrap();
         assert_eq!(nested_fields.len(), 1);
         assert_eq!(nested_fields[0].name, "city");
         assert!(nested_fields[0].indexed);
@@ -476,48 +329,43 @@ mod tests {
 
     #[test]
     fn test_array_of_objects_serialization() {
-        let schema = SchemaDefinition {
-            is_core: false,
-            version: 1,
-            description: "Person with contacts array".to_string(),
-            fields: vec![SchemaField {
-                name: "contacts".to_string(),
-                field_type: "array".to_string(),
-                protection: ProtectionLevel::User,
+        let contacts_field = SchemaField {
+            name: "contacts".to_string(),
+            field_type: "array".to_string(),
+            protection: SchemaProtectionLevel::User,
+            core_values: None,
+            user_values: None,
+            indexed: false,
+            required: Some(false),
+            extensible: None,
+            default: None,
+            description: Some("Contact list".to_string()),
+            item_type: Some("object".to_string()),
+            fields: None,
+            item_fields: Some(vec![SchemaField {
+                name: "email".to_string(),
+                field_type: "string".to_string(),
+                protection: SchemaProtectionLevel::User,
                 core_values: None,
                 user_values: None,
-                indexed: false,
+                indexed: true,
                 required: Some(false),
                 extensible: None,
                 default: None,
-                description: Some("Contact list".to_string()),
-                item_type: Some("object".to_string()),
+                description: Some("Email address".to_string()),
+                item_type: None,
                 fields: None,
-                item_fields: Some(vec![SchemaField {
-                    name: "email".to_string(),
-                    field_type: "string".to_string(),
-                    protection: ProtectionLevel::User,
-                    core_values: None,
-                    user_values: None,
-                    indexed: true,
-                    required: Some(false),
-                    extensible: None,
-                    default: None,
-                    description: Some("Email address".to_string()),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                }]),
-            }],
+                item_fields: None,
+            }]),
         };
 
-        let json = serde_json::to_value(&schema).unwrap();
-        assert_eq!(json["fields"][0]["name"], "contacts");
-        assert_eq!(json["fields"][0]["type"], "array");
+        let json = serde_json::to_value(&contacts_field).unwrap();
+        assert_eq!(json["name"], "contacts");
+        assert_eq!(json["type"], "array");
         // item_type serializes to itemType with camelCase
-        assert_eq!(json["fields"][0]["itemType"], "object");
+        assert_eq!(json["itemType"], "object");
         // item_fields serializes to itemFields with camelCase
-        assert_eq!(json["fields"][0]["itemFields"][0]["name"], "email");
-        assert_eq!(json["fields"][0]["itemFields"][0]["indexed"], true);
+        assert_eq!(json["itemFields"][0]["name"], "email");
+        assert_eq!(json["itemFields"][0]["indexed"], true);
     }
 }

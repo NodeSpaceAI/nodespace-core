@@ -22,6 +22,21 @@
 //!   → TaskNode.status is a TaskStatus enum field
 //! ```
 //!
+//! # Serialization
+//!
+//! When serialized (for Tauri/HTTP responses), outputs a flat structure with typed fields:
+//! ```json
+//! {
+//!   "id": "task-123",
+//!   "nodeType": "task",
+//!   "content": "Implement feature",
+//!   "status": "open",
+//!   "priority": 2,
+//!   "dueDate": null,
+//!   "assigneeId": null
+//! }
+//! ```
+//!
 //! # Examples
 //!
 //! ```rust
@@ -148,6 +163,17 @@ impl<'de> Deserialize<'de> for TaskStatus {
 ///     node.created_at AS created_at,
 ///     node.modified_at AS modified_at
 /// FROM task:`some-id`;
+/// ```
+///
+/// When serialized (for Tauri/HTTP responses), outputs a flat structure with typed fields:
+/// ```json
+/// {
+///   "id": "task-123",
+///   "nodeType": "task",
+///   "content": "Fix bug",
+///   "status": "done",
+///   "priority": 2
+/// }
 /// ```
 ///
 /// # Examples

@@ -104,12 +104,8 @@ fn test_all_expected_tools_present() {
         "update_container_from_markdown",
         // Search
         "search_containers",
-        // Schema management
-        "add_schema_field",
-        "remove_schema_field",
-        "extend_schema_enum",
-        "remove_schema_enum_value",
-        "get_schema_definition",
+        // Schema creation (natural language) - Issue #690: schema-specific tools removed
+        "create_entity_schema_from_description",
     ];
 
     for expected_tool in &expected_tools {
@@ -120,8 +116,9 @@ fn test_all_expected_tools_present() {
         );
     }
 
-    // Verify we have exactly 24 tools (16 original + 6 schema management + 2 new search/markdown)
-    assert_eq!(tools.len(), 24, "Expected exactly 24 tools");
+    // Verify we have exactly 19 tools
+    // (Original 18 core tools + 1 schema creation; 5 schema-specific handlers removed per #690)
+    assert_eq!(tools.len(), 19, "Expected exactly 19 tools");
 }
 
 #[test]

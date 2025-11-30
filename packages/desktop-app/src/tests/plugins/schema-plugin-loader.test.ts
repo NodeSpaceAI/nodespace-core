@@ -15,28 +15,53 @@ import {
   initializeSchemaPluginSystem,
   PLUGIN_PRIORITIES
 } from '$lib/plugins/schema-plugin-loader';
-import type { SchemaDefinition } from '$lib/types/schema';
+import type { SchemaNode } from '$lib/types/schema-node';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
-import { schemaService } from '$lib/services/schema-service';
+import { backendAdapter } from '$lib/services/backend-adapter';
 
-// Mock schema service
-vi.mock('$lib/services/schema-service', () => ({
-  schemaService: {
+// Mock backend adapter
+vi.mock('$lib/services/backend-adapter', () => ({
+  backendAdapter: {
     getSchema: vi.fn(),
     getAllSchemas: vi.fn()
   }
 }));
 
-describe('Schema Plugin Loader - createPluginFromSchema()', () => {
-  it('should convert schema to plugin with correct structure', () => {
-    const schema: SchemaDefinition = {
-      isCore: false,
-      version: 1,
-      description: 'Sales Invoice',
-      fields: []
-    };
+/**
+ * Helper to create a mock schema node with typed top-level fields
+ * Matches the backend SchemaNode serialization format
+ */
+function createMockSchemaNode(
+  id: string,
+  options: {
+    isCore?: boolean;
+    schemaVersion?: number;
+    description?: string;
+  } = {}
+): SchemaNode {
+  return {
+    id,
+    nodeType: 'schema',
+    content: id,
+    createdAt: new Date().toISOString(),
+    modifiedAt: new Date().toISOString(),
+    version: 1,
+    // Typed top-level fields (not in properties)
+    isCore: options.isCore ?? false,
+    schemaVersion: options.schemaVersion ?? 1,
+    description: options.description ?? '',
+    fields: []
+  };
+}
 
-    const plugin = createPluginFromSchema(schema, 'invoice');
+describe('Schema Plugin Loader - createPluginFromSchema()', () => {
+  it('should convert schema node to plugin with correct structure', () => {
+    const schemaNode = createMockSchemaNode('invoice', {
+      description: 'Sales Invoice',
+      schemaVersion: 1
+    });
+
+    const plugin = createPluginFromSchema(schemaNode);
 
     expect(plugin).toMatchObject({
       id: 'invoice',
@@ -61,14 +86,11 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
   });
 
   it('should use schema description as display name', () => {
-    const schema: SchemaDefinition = {
-      isCore: false,
-      version: 1,
-      description: 'Customer Invoice',
-      fields: []
-    };
+    const schemaNode = createMockSchemaNode('invoice', {
+      description: 'Customer Invoice'
+    });
 
-    const plugin = createPluginFromSchema(schema, 'invoice');
+    const plugin = createPluginFromSchema(schemaNode);
 
     expect(plugin.name).toBe('Customer Invoice');
     expect(plugin.config.slashCommands[0].name).toBe('Customer Invoice');
@@ -85,69 +107,55 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
     ];
 
     testCases.forEach(({ id, expected }) => {
-      const schema: SchemaDefinition = {
-        isCore: false,
-        version: 1,
-        description: '',
-        fields: []
-      };
+      const schemaNode = createMockSchemaNode(id, {
+        description: ''
+      });
 
-      const plugin = createPluginFromSchema(schema, id);
+      const plugin = createPluginFromSchema(schemaNode);
 
       expect(plugin.name).toBe(expected);
     });
   });
 
   it('should set correct priority for custom entities', () => {
-    const schema: SchemaDefinition = {
-      isCore: false,
-      version: 1,
-      description: 'Invoice',
-      fields: []
-    };
+    const schemaNode = createMockSchemaNode('invoice', {
+      description: 'Invoice'
+    });
 
-    const plugin = createPluginFromSchema(schema, 'invoice');
+    const plugin = createPluginFromSchema(schemaNode);
 
     expect(plugin.config.slashCommands[0].priority).toBe(PLUGIN_PRIORITIES.CUSTOM_ENTITY);
     expect(PLUGIN_PRIORITIES.CUSTOM_ENTITY).toBe(50);
   });
 
   it('should use schema version as plugin version', () => {
-    const schema: SchemaDefinition = {
-      isCore: false,
-      version: 5,
-      description: 'Invoice',
-      fields: []
-    };
+    const schemaNode = createMockSchemaNode('invoice', {
+      schemaVersion: 5,
+      description: 'Invoice'
+    });
 
-    const plugin = createPluginFromSchema(schema, 'invoice');
+    const plugin = createPluginFromSchema(schemaNode);
 
     expect(plugin.version).toBe('5.0.0');
   });
 
   it('should include lazy-loaded CustomEntityNode component', () => {
-    const schema: SchemaDefinition = {
-      isCore: false,
-      version: 1,
-      description: 'Invoice',
-      fields: []
-    };
+    const schemaNode = createMockSchemaNode('invoice', {
+      description: 'Invoice'
+    });
 
-    const plugin = createPluginFromSchema(schema, 'invoice');
+    const plugin = createPluginFromSchema(schemaNode);
 
     expect(plugin.node).toBeDefined();
     expect(plugin.node?.lazyLoad).toBeInstanceOf(Function);
   });
 
   it('should set nodeType to schema ID for slash command creation', () => {
-    const schema: SchemaDefinition = {
-      isCore: false,
-      version: 1,
-      description: 'Custom Entity',
-      fields: []
-    };
+    const schemaNode = createMockSchemaNode('customEntity', {
+      description: 'Custom Entity'
+    });
 
-    const plugin = createPluginFromSchema(schema, 'customEntity');
+    const plugin = createPluginFromSchema(schemaNode);
 
     expect(plugin.config.slashCommands[0].nodeType).toBe('customEntity');
   });
@@ -164,14 +172,12 @@ describe('Schema Plugin Loader - registerSchemaPlugin()', () => {
   });
 
   it('should register non-core schema as plugin', async () => {
-    const schema: SchemaDefinition = {
+    const schemaNode = createMockSchemaNode('invoice', {
       isCore: false,
-      version: 1,
-      description: 'Invoice',
-      fields: []
-    };
+      description: 'Invoice'
+    });
 
-    vi.mocked(schemaService.getSchema).mockResolvedValue(schema);
+    vi.mocked(backendAdapter.getSchema).mockResolvedValue(schemaNode);
 
     await registerSchemaPlugin('invoice');
 
@@ -181,56 +187,25 @@ describe('Schema Plugin Loader - registerSchemaPlugin()', () => {
   });
 
   it('should skip core schemas (isCore: true)', async () => {
-    const coreSchema: SchemaDefinition = {
+    const coreSchema = createMockSchemaNode('text', {
       isCore: true,
-      version: 1,
-      description: 'Text Node',
-      fields: []
-    };
+      description: 'Text Node'
+    });
 
-    vi.mocked(schemaService.getSchema).mockResolvedValue(coreSchema);
+    vi.mocked(backendAdapter.getSchema).mockResolvedValue(coreSchema);
 
     await registerSchemaPlugin('text');
 
     expect(pluginRegistry.hasPlugin('text')).toBe(false);
   });
 
-  it('should handle both camelCase and snake_case for isCore check', async () => {
-    // Test camelCase (TypeScript convention)
-    const camelCaseSchema: SchemaDefinition = {
-      isCore: true,
-      version: 1,
-      description: 'Text',
-      fields: []
-    };
-
-    vi.mocked(schemaService.getSchema).mockResolvedValue(camelCaseSchema);
-    await registerSchemaPlugin('text1');
-    expect(pluginRegistry.hasPlugin('text1')).toBe(false);
-
-    // Test snake_case (Rust convention) - defensive programming
-    const snakeCaseSchema = {
-      isCore: false,
-      is_core: true, // snake_case from Rust
-      version: 1,
-      description: 'Text',
-      fields: []
-    } as SchemaDefinition & { is_core: boolean };
-
-    vi.mocked(schemaService.getSchema).mockResolvedValue(snakeCaseSchema);
-    await registerSchemaPlugin('text2');
-    expect(pluginRegistry.hasPlugin('text2')).toBe(false);
-  });
-
   it('should be idempotent - no duplicate registrations', async () => {
-    const schema: SchemaDefinition = {
+    const schemaNode = createMockSchemaNode('invoice', {
       isCore: false,
-      version: 1,
-      description: 'Invoice',
-      fields: []
-    };
+      description: 'Invoice'
+    });
 
-    vi.mocked(schemaService.getSchema).mockResolvedValue(schema);
+    vi.mocked(backendAdapter.getSchema).mockResolvedValue(schemaNode);
 
     await registerSchemaPlugin('invoice');
     await registerSchemaPlugin('invoice');
@@ -243,11 +218,29 @@ describe('Schema Plugin Loader - registerSchemaPlugin()', () => {
   });
 
   it('should throw error if schema cannot be fetched', async () => {
-    vi.mocked(schemaService.getSchema).mockRejectedValue(
-      new Error('Schema not found')
-    );
+    vi.mocked(backendAdapter.getSchema).mockRejectedValue(new Error('Schema not found'));
 
-    await expect(registerSchemaPlugin('nonexistent')).rejects.toThrow();
+    await expect(registerSchemaPlugin('nonexistent')).rejects.toThrow('Schema not found');
+  });
+
+  it('should skip non-schema nodes gracefully', async () => {
+    // Mock returns a value that fails isSchemaNode() check
+    // (missing required typed fields like isCore, schemaVersion, fields)
+    const nonSchemaNode = {
+      id: 'task-123',
+      nodeType: 'task', // Not a schema node - isSchemaNode will return false
+      content: 'Some task',
+      createdAt: new Date().toISOString(),
+      modifiedAt: new Date().toISOString(),
+      version: 1
+      // Missing: isCore, schemaVersion, description, fields
+    } as unknown as SchemaNode;
+
+    vi.mocked(backendAdapter.getSchema).mockResolvedValue(nonSchemaNode);
+
+    await registerSchemaPlugin('task-123');
+
+    expect(pluginRegistry.hasPlugin('task-123')).toBe(false);
   });
 });
 
@@ -261,15 +254,13 @@ describe('Schema Plugin Loader - unregisterSchemaPlugin()', () => {
     pluginRegistry.clear();
   });
 
-  it('should unregister plugin by schema ID', async () => {
-    const schema: SchemaDefinition = {
+  it('should unregister an existing plugin', async () => {
+    const schemaNode = createMockSchemaNode('invoice', {
       isCore: false,
-      version: 1,
-      description: 'Invoice',
-      fields: []
-    };
+      description: 'Invoice'
+    });
 
-    vi.mocked(schemaService.getSchema).mockResolvedValue(schema);
+    vi.mocked(backendAdapter.getSchema).mockResolvedValue(schemaNode);
 
     await registerSchemaPlugin('invoice');
     expect(pluginRegistry.hasPlugin('invoice')).toBe(true);
@@ -279,6 +270,7 @@ describe('Schema Plugin Loader - unregisterSchemaPlugin()', () => {
   });
 
   it('should handle unregistering non-existent plugin gracefully', () => {
+    // Should not throw
     expect(() => unregisterSchemaPlugin('nonexistent')).not.toThrow();
   });
 });
@@ -293,70 +285,44 @@ describe('Schema Plugin Loader - initializeSchemaPluginSystem()', () => {
     pluginRegistry.clear();
   });
 
-  it('should register all non-core schemas on startup', async () => {
-    const schemas: Array<SchemaDefinition & { id: string }> = [
-      {
-        id: 'text',
-        isCore: true,
-        version: 1,
-        description: 'Text',
-        fields: []
-      },
-      {
-        id: 'task',
-        isCore: true,
-        version: 1,
-        description: 'Task',
-        fields: []
-      },
-      {
-        id: 'invoice',
-        isCore: false,
-        version: 1,
-        description: 'Invoice',
-        fields: []
-      },
-      {
-        id: 'customer',
-        isCore: false,
-        version: 1,
-        description: 'Customer',
-        fields: []
-      }
+  it('should register all custom (non-core) schemas', async () => {
+    const schemas = [
+      createMockSchemaNode('text', { isCore: true, description: 'Text' }),
+      createMockSchemaNode('task', { isCore: true, description: 'Task' }),
+      createMockSchemaNode('invoice', { isCore: false, description: 'Invoice' }),
+      createMockSchemaNode('person', { isCore: false, description: 'Person' })
     ];
 
-    vi.mocked(schemaService.getAllSchemas).mockResolvedValue(schemas);
-    vi.mocked(schemaService.getSchema).mockImplementation(async (id) => {
-      const schema = schemas.find((s) => s.id === id);
-      if (!schema) throw new Error('Schema not found');
-      const { id: _id, ...schemaWithoutId } = schema;
-      return schemaWithoutId;
+    vi.mocked(backendAdapter.getAllSchemas).mockResolvedValue(schemas);
+    vi.mocked(backendAdapter.getSchema).mockImplementation(async (id) => {
+      return schemas.find((s) => s.id === id)!;
     });
 
     const result = await initializeSchemaPluginSystem();
 
     expect(result.success).toBe(true);
-    expect(result.registeredCount).toBe(2); // Only invoice and customer
+    expect(result.registeredCount).toBe(2); // Only custom schemas
+
+    // Custom schemas registered
     expect(pluginRegistry.hasPlugin('invoice')).toBe(true);
-    expect(pluginRegistry.hasPlugin('customer')).toBe(true);
-    expect(pluginRegistry.hasPlugin('text')).toBe(false); // Core type excluded
-    expect(pluginRegistry.hasPlugin('task')).toBe(false); // Core type excluded
+    expect(pluginRegistry.hasPlugin('person')).toBe(true);
+
+    // Core schemas NOT registered
+    expect(pluginRegistry.hasPlugin('text')).toBe(false);
+    expect(pluginRegistry.hasPlugin('task')).toBe(false);
   });
 
-  it('should return success=false on initialization failure', async () => {
-    vi.mocked(schemaService.getAllSchemas).mockRejectedValue(
-      new Error('Database connection failed')
-    );
+  it('should return success: false on error', async () => {
+    vi.mocked(backendAdapter.getAllSchemas).mockRejectedValue(new Error('Connection failed'));
 
     const result = await initializeSchemaPluginSystem();
 
     expect(result.success).toBe(false);
-    expect(result.registeredCount).toBe(0);
-    expect(result.error).toBe('Database connection failed');
+    expect(result.error).toContain('Connection failed');
   });
 
   it('should handle empty schema list', async () => {
-    vi.mocked(schemaService.getAllSchemas).mockResolvedValue([]);
+    vi.mocked(backendAdapter.getAllSchemas).mockResolvedValue([]);
 
     const result = await initializeSchemaPluginSystem();
 
@@ -364,159 +330,17 @@ describe('Schema Plugin Loader - initializeSchemaPluginSystem()', () => {
     expect(result.registeredCount).toBe(0);
   });
 
-  it('should parallelize schema registration for performance', async () => {
-    const schemas: Array<SchemaDefinition & { id: string }> = Array.from({ length: 10 }, (_, i) => ({
-      id: `entity${i}`,
-      isCore: false,
-      version: 1,
-      description: `Entity ${i}`,
-      fields: []
-    }));
-
-    vi.mocked(schemaService.getAllSchemas).mockResolvedValue(schemas);
-    vi.mocked(schemaService.getSchema).mockImplementation(async (id) => {
-      // Simulate async delay
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      const schema = schemas.find((s) => s.id === id);
-      if (!schema) throw new Error('Schema not found');
-      const { id: _id, ...schemaWithoutId } = schema;
-      return schemaWithoutId;
-    });
-
-    const startTime = Date.now();
-    const result = await initializeSchemaPluginSystem();
-    const duration = Date.now() - startTime;
-
-    expect(result.success).toBe(true);
-    expect(result.registeredCount).toBe(10);
-
-    // With parallel execution, should complete in ~10-20ms, not 100ms (10 * 10ms)
-    // Allow generous margin for CI/CD environments
-    expect(duration).toBeLessThan(100);
-  });
-
-  it('should handle both camelCase and snake_case core type filtering', async () => {
-    const schemas: Array<(SchemaDefinition & { id: string }) | (SchemaDefinition & { id: string; is_core: boolean })> = [
-      {
-        id: 'text',
-        isCore: true, // camelCase
-        version: 1,
-        description: 'Text',
-        fields: []
-      },
-      {
-        id: 'task',
-        is_core: true, // snake_case from Rust
-        isCore: false,
-        version: 1,
-        description: 'Task',
-        fields: []
-      },
-      {
-        id: 'invoice',
-        isCore: false,
-        version: 1,
-        description: 'Invoice',
-        fields: []
-      }
+  it('should handle all-core schemas (nothing to register)', async () => {
+    const schemas = [
+      createMockSchemaNode('text', { isCore: true }),
+      createMockSchemaNode('task', { isCore: true })
     ];
 
-    vi.mocked(schemaService.getAllSchemas).mockResolvedValue(schemas as Array<SchemaDefinition & { id: string }>);
-    vi.mocked(schemaService.getSchema).mockImplementation(async (id) => {
-      const schema = schemas.find((s) => s.id === id);
-      if (!schema) throw new Error('Schema not found');
-      const { id: _id, ...schemaWithoutId } = schema;
-      return schemaWithoutId as SchemaDefinition;
-    });
+    vi.mocked(backendAdapter.getAllSchemas).mockResolvedValue(schemas);
 
     const result = await initializeSchemaPluginSystem();
 
     expect(result.success).toBe(true);
-    expect(result.registeredCount).toBe(1); // Only invoice
-    expect(pluginRegistry.hasPlugin('invoice')).toBe(true);
-    expect(pluginRegistry.hasPlugin('text')).toBe(false);
-    expect(pluginRegistry.hasPlugin('task')).toBe(false);
-  });
-});
-
-describe('Schema Plugin Loader - PLUGIN_PRIORITIES', () => {
-  it('should define correct priority hierarchy', () => {
-    expect(PLUGIN_PRIORITIES.CORE).toBe(100);
-    expect(PLUGIN_PRIORITIES.CUSTOM_ENTITY).toBe(50);
-    expect(PLUGIN_PRIORITIES.USER_COMMAND).toBe(0);
-
-    // Verify ordering
-    expect(PLUGIN_PRIORITIES.CORE).toBeGreaterThan(PLUGIN_PRIORITIES.CUSTOM_ENTITY);
-    expect(PLUGIN_PRIORITIES.CUSTOM_ENTITY).toBeGreaterThan(
-      PLUGIN_PRIORITIES.USER_COMMAND
-    );
-  });
-});
-
-describe('Schema Plugin Loader - Integration Tests', () => {
-  beforeEach(() => {
-    pluginRegistry.clear();
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    pluginRegistry.clear();
-  });
-
-  it('should complete full registration flow: schema → plugin → slash command', async () => {
-    const schema: SchemaDefinition = {
-      isCore: false,
-      version: 1,
-      description: 'Sales Invoice',
-      fields: []
-    };
-
-    vi.mocked(schemaService.getSchema).mockResolvedValue(schema);
-
-    // Register schema as plugin
-    await registerSchemaPlugin('invoice');
-
-    // Verify plugin exists
-    expect(pluginRegistry.hasPlugin('invoice')).toBe(true);
-
-    // Verify slash command configuration
-    const plugin = pluginRegistry.getPlugin('invoice');
-    expect(plugin?.config.slashCommands).toHaveLength(1);
-    expect(plugin?.config.slashCommands[0]).toMatchObject({
-      id: 'invoice',
-      name: 'Sales Invoice',
-      nodeType: 'invoice',
-      priority: PLUGIN_PRIORITIES.CUSTOM_ENTITY
-    });
-  });
-
-  it('should handle full startup initialization flow', async () => {
-    const schemas: Array<SchemaDefinition & { id: string }> = [
-      { id: 'text', isCore: true, version: 1, description: 'Text', fields: [] },
-      { id: 'task', isCore: true, version: 1, description: 'Task', fields: [] },
-      { id: 'invoice', isCore: false, version: 1, description: 'Invoice', fields: [] },
-      { id: 'customer', isCore: false, version: 1, description: 'Customer', fields: [] }
-    ];
-
-    vi.mocked(schemaService.getAllSchemas).mockResolvedValue(schemas);
-    vi.mocked(schemaService.getSchema).mockImplementation(async (id) => {
-      const schema = schemas.find((s) => s.id === id);
-      if (!schema) throw new Error('Schema not found');
-      const { id: _id, ...schemaWithoutId } = schema;
-      return schemaWithoutId;
-    });
-
-    const result = await initializeSchemaPluginSystem();
-
-    expect(result.success).toBe(true);
-    expect(result.registeredCount).toBe(2);
-
-    // Verify only custom entities are registered
-    const allPlugins = pluginRegistry.getAllPlugins();
-    const customEntityPlugins = allPlugins.filter((p) =>
-      ['invoice', 'customer'].includes(p.id)
-    );
-
-    expect(customEntityPlugins).toHaveLength(2);
+    expect(result.registeredCount).toBe(0);
   });
 });

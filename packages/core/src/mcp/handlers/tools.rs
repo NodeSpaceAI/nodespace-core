@@ -5,10 +5,11 @@
 //! MCP 2024-11-05 specification.
 //!
 //! As of Issue #676, all handlers use NodeService directly instead of NodeOperations.
+//! As of Issue #690, SchemaService was removed - schema nodes use generic CRUD.
 
-use crate::mcp::handlers::{markdown, natural_language_schema, nodes, schema, search};
+use crate::mcp::handlers::{markdown, natural_language_schema, nodes, search};
 use crate::mcp::types::MCPError;
-use crate::services::{NodeEmbeddingService, NodeService, SchemaService};
+use crate::services::{NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -78,7 +79,6 @@ pub fn handle_tools_list(_params: Value) -> Result<Value, MCPError> {
 ///
 /// * `node_service` - Arc reference to NodeService for node operations
 /// * `embedding_service` - Arc reference to NodeEmbeddingService for search
-/// * `schema_service` - Arc reference to SchemaService for schema validation
 /// * `params` - Request parameters containing `name` and `arguments`
 ///
 /// # Returns
@@ -87,7 +87,6 @@ pub fn handle_tools_list(_params: Value) -> Result<Value, MCPError> {
 pub async fn handle_tools_call(
     node_service: &Arc<NodeService>,
     embedding_service: &Arc<NodeEmbeddingService>,
-    schema_service: &Arc<SchemaService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     // Extract tool name from params
@@ -103,7 +102,7 @@ pub async fn handle_tools_call(
         // Core Node CRUD
         "create_node" => nodes::handle_create_node(node_service, arguments).await,
         "get_node" => nodes::handle_get_node(node_service, arguments).await,
-        "update_node" => nodes::handle_update_node(node_service, schema_service, arguments).await,
+        "update_node" => nodes::handle_update_node(node_service, arguments).await,
         "delete_node" => nodes::handle_delete_node(node_service, arguments).await,
         "query_nodes" => nodes::handle_query_nodes(node_service, arguments).await,
 
@@ -138,9 +137,7 @@ pub async fn handle_tools_call(
 
         // Batch Operations
         "get_nodes_batch" => nodes::handle_get_nodes_batch(node_service, arguments).await,
-        "update_nodes_batch" => {
-            nodes::handle_update_nodes_batch(node_service, schema_service, arguments).await
-        }
+        "update_nodes_batch" => nodes::handle_update_nodes_batch(node_service, arguments).await,
 
         // Search
         // New preferred tool name for root search
@@ -152,18 +149,7 @@ pub async fn handle_tools_call(
             search::handle_search_roots(embedding_service, arguments)
         }
 
-        // Schema Management
-        "add_schema_field" => schema::handle_add_schema_field(schema_service, arguments).await,
-        "remove_schema_field" => {
-            schema::handle_remove_schema_field(schema_service, arguments).await
-        }
-        "extend_schema_enum" => schema::handle_extend_schema_enum(schema_service, arguments).await,
-        "remove_schema_enum_value" => {
-            schema::handle_remove_schema_enum_value(schema_service, arguments).await
-        }
-        "get_schema_definition" => {
-            schema::handle_get_schema_definition(schema_service, arguments).await
-        }
+        // Schema creation from natural language (uses generic node creation)
         "create_entity_schema_from_description" => {
             natural_language_schema::handle_create_entity_schema_from_description(
                 node_service,
@@ -637,134 +623,9 @@ fn get_tool_schemas() -> Value {
                 "required": ["query"]
             }
         },
-        {
-            "name": "add_schema_field",
-            "description": "Add a new user-protected field to an existing schema. The schema version will be incremented automatically. Only user-protected fields can be added via MCP.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "schema_id": {
-                        "type": "string",
-                        "description": "ID of the schema to modify (matches node_type, e.g. 'task', 'person')"
-                    },
-                    "field_name": {
-                        "type": "string",
-                        "description": "Name of the new field"
-                    },
-                    "field_type": {
-                        "type": "string",
-                        "enum": ["string", "number", "boolean", "enum", "array", "object"],
-                        "description": "Type of the field"
-                    },
-                    "indexed": {
-                        "type": "boolean",
-                        "description": "Whether to index this field for search (default: false)",
-                        "default": false
-                    },
-                    "required": {
-                        "type": "boolean",
-                        "description": "Whether this field is required (optional)"
-                    },
-                    "default": {
-                        "description": "Default value for the field (optional)"
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Field description (optional)"
-                    },
-                    "item_type": {
-                        "type": "string",
-                        "description": "For array fields, the type of items in the array (optional)"
-                    },
-                    "enum_values": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "For enum fields, the allowed values (added to user_values, optional)"
-                    },
-                    "extensible": {
-                        "type": "boolean",
-                        "description": "For enum fields, whether users can add more values later (optional)"
-                    }
-                },
-                "required": ["schema_id", "field_name", "field_type"]
-            }
-        },
-        {
-            "name": "remove_schema_field",
-            "description": "Remove a user-protected field from an existing schema. Core and system fields cannot be removed. The schema version will be incremented automatically.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "schema_id": {
-                        "type": "string",
-                        "description": "ID of the schema to modify"
-                    },
-                    "field_name": {
-                        "type": "string",
-                        "description": "Name of the field to remove (must be user-protected)"
-                    }
-                },
-                "required": ["schema_id", "field_name"]
-            }
-        },
-        {
-            "name": "extend_schema_enum",
-            "description": "Add a new value to an enum field's user_values list. The enum field must be marked as extensible. Core enum values cannot be modified. The schema version will be incremented automatically.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "schema_id": {
-                        "type": "string",
-                        "description": "ID of the schema to modify"
-                    },
-                    "field_name": {
-                        "type": "string",
-                        "description": "Name of the enum field to extend"
-                    },
-                    "value": {
-                        "type": "string",
-                        "description": "New value to add to user_values (will not duplicate if already exists)"
-                    }
-                },
-                "required": ["schema_id", "field_name", "value"]
-            }
-        },
-        {
-            "name": "remove_schema_enum_value",
-            "description": "Remove a value from an enum field's user_values list. Core enum values cannot be removed (protection enforcement). The schema version will be incremented automatically.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "schema_id": {
-                        "type": "string",
-                        "description": "ID of the schema to modify"
-                    },
-                    "field_name": {
-                        "type": "string",
-                        "description": "Name of the enum field"
-                    },
-                    "value": {
-                        "type": "string",
-                        "description": "Value to remove from user_values (must not be a core value)"
-                    }
-                },
-                "required": ["schema_id", "field_name", "value"]
-            }
-        },
-        {
-            "name": "get_schema_definition",
-            "description": "Retrieve the complete schema definition for a given schema ID. Returns the parsed schema with all fields, protection levels, enum values, and metadata.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "schema_id": {
-                        "type": "string",
-                        "description": "ID of the schema to retrieve (e.g. 'task', 'person')"
-                    }
-                },
-                "required": ["schema_id"]
-            }
-        },
+        // Schema-specific tools removed per Issue #690
+        // Use generic CRUD (create_node, update_node, query_nodes) for schema management
+        // Schema nodes have node_type="schema" and can be queried with query_nodes({filters: [{field: "node_type", op: "eq", value: "schema"}]})
         {
             "name": "create_entity_schema_from_description",
             "description": "Create a custom entity schema from a natural language description. Intelligently infers field types (string, number, date, enum, boolean, array) and automatically enforces namespace prefixes for user-defined properties. Ideal for rapid prototyping and user-driven schema creation.",

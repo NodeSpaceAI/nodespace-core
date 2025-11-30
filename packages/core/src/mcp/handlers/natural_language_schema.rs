@@ -6,7 +6,7 @@
 //! As of Issue #676, all handlers use NodeService directly instead of NodeOperations.
 
 use crate::mcp::types::MCPError;
-use crate::models::schema::{ProtectionLevel, SchemaDefinition, SchemaField};
+use crate::models::schema::{EnumValue, SchemaField, SchemaProtectionLevel};
 use crate::services::{CreateNodeParams, NodeService};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -55,13 +55,18 @@ pub struct AdditionalConstraints {
 
 /// Output from schema creation
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateEntitySchemaOutput {
     /// ID for the generated schema (snake_case of entity name)
     pub schema_id: String,
-    /// Full schema definition
-    pub schema_definition: SchemaDefinition,
+    /// Whether this is a core schema
+    pub is_core: bool,
+    /// Schema version
+    pub version: u32,
+    /// Schema description
+    pub description: String,
     /// List of created fields
-    pub created_fields: Vec<SchemaField>,
+    pub fields: Vec<SchemaField>,
     /// Optional warnings about ambiguous descriptions
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
@@ -135,13 +140,14 @@ pub async fn handle_create_entity_schema_from_description(
     // Generate schema ID
     let schema_id = normalize_schema_id(&params.entity_name);
 
-    // Create schema definition
-    let schema_definition = SchemaDefinition {
-        is_core: false,
-        version: 1,
-        description: format!("Auto-generated schema for {}", params.entity_name),
-        fields: namespaced_fields.clone(),
-    };
+    // Schema properties (flat structure matching SchemaNode)
+    let description = format!("Auto-generated schema for {}", params.entity_name);
+    let properties = serde_json::json!({
+        "isCore": false,
+        "version": 1,
+        "description": &description,
+        "fields": &namespaced_fields
+    });
 
     // Create schema node params
     let schema_node_params = CreateNodeParams {
@@ -150,8 +156,7 @@ pub async fn handle_create_entity_schema_from_description(
         content: params.entity_name.clone(),
         parent_id: None,
         insert_after_node_id: None,
-        properties: serde_json::to_value(&schema_definition)
-            .map_err(|e| MCPError::internal_error(format!("Failed to serialize schema: {}", e)))?,
+        properties,
     };
 
     // Store the schema node
@@ -167,8 +172,10 @@ pub async fn handle_create_entity_schema_from_description(
 
     let output = CreateEntitySchemaOutput {
         schema_id: schema_id.clone(),
-        schema_definition,
-        created_fields: namespaced_fields,
+        is_core: false,
+        version: 1,
+        description,
+        fields: namespaced_fields,
         warnings: if warnings.is_empty() {
             None
         } else {
@@ -318,6 +325,24 @@ fn normalize_field_name(name: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("_")
+}
+
+/// Convert a value string to title case for display label
+/// e.g., "in_progress" -> "In Progress", "DRAFT" -> "Draft"
+fn to_title_case(s: &str) -> String {
+    s.replace('_', " ")
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => {
+                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Infer field type from description
@@ -509,12 +534,20 @@ fn normalize_and_namespace_fields(inferred_fields: Vec<InferredField>) -> Vec<Sc
             // Apply custom: namespace prefix to all user fields
             let namespaced_name = format!("custom:{}", field_name);
 
+            // Convert string enum values to EnumValue with auto-generated labels
+            let user_values = inferred.enum_values.as_ref().map(|values| {
+                values.iter().map(|v| EnumValue {
+                    value: v.clone(),
+                    label: to_title_case(v),
+                }).collect()
+            });
+
             SchemaField {
                 name: namespaced_name,
                 field_type: inferred.field_type.clone(),
-                protection: ProtectionLevel::User,
+                protection: SchemaProtectionLevel::User,
                 core_values: None,
-                user_values: inferred.enum_values.clone(),
+                user_values,
                 indexed: false, // Not indexed by default
                 required: Some(inferred.required),
                 extensible: Some(inferred.field_type == "enum"), // Enums are extensible by default

@@ -23,15 +23,8 @@
 /* global fetch, crypto */
 
 import type { Node, NodeWithChildren } from '$lib/types';
+import type { SchemaNode } from '$lib/types/schema-node';
 import { getClientId } from './client-id';
-import type {
-  SchemaDefinition,
-  AddFieldConfig,
-  AddFieldResult,
-  RemoveFieldResult,
-  ExtendEnumResult,
-  RemoveEnumValueResult
-} from '$lib/types/schema';
 
 // ============================================================================
 // Types
@@ -114,13 +107,10 @@ export interface BackendAdapter {
   // Composite operations
   createContainerNode(input: CreateContainerInput): Promise<string>;
 
-  // Schema operations
-  getAllSchemas(): Promise<Array<SchemaDefinition & { id: string }>>;
-  getSchema(schemaId: string): Promise<SchemaDefinition>;
-  addSchemaField(schemaId: string, config: AddFieldConfig): Promise<AddFieldResult>;
-  removeSchemaField(schemaId: string, fieldName: string): Promise<RemoveFieldResult>;
-  extendSchemaEnum(schemaId: string, fieldName: string, newValues: string[]): Promise<ExtendEnumResult>;
-  removeSchemaEnumValue(schemaId: string, fieldName: string, value: string): Promise<RemoveEnumValueResult>;
+  // Schema operations (read-only - mutation commands removed in Issue #690)
+  // Returns SchemaNode with typed top-level fields (isCore, schemaVersion, description, fields)
+  getAllSchemas(): Promise<SchemaNode[]>;
+  getSchema(schemaId: string): Promise<SchemaNode>;
 }
 
 // ============================================================================
@@ -271,34 +261,14 @@ class TauriAdapter implements BackendAdapter {
     });
   }
 
-  async getAllSchemas(): Promise<Array<SchemaDefinition & { id: string }>> {
+  async getAllSchemas(): Promise<SchemaNode[]> {
     const invoke = await this.getInvoke();
-    return invoke<Array<SchemaDefinition & { id: string }>>('get_all_schemas');
+    return invoke<SchemaNode[]>('get_all_schemas');
   }
 
-  async getSchema(schemaId: string): Promise<SchemaDefinition> {
+  async getSchema(schemaId: string): Promise<SchemaNode> {
     const invoke = await this.getInvoke();
-    return invoke<SchemaDefinition>('get_schema', { schemaId });
-  }
-
-  async addSchemaField(schemaId: string, config: AddFieldConfig): Promise<AddFieldResult> {
-    const invoke = await this.getInvoke();
-    return invoke<AddFieldResult>('add_schema_field', { schemaId, config });
-  }
-
-  async removeSchemaField(schemaId: string, fieldName: string): Promise<RemoveFieldResult> {
-    const invoke = await this.getInvoke();
-    return invoke<RemoveFieldResult>('remove_schema_field', { schemaId, fieldName });
-  }
-
-  async extendSchemaEnum(schemaId: string, fieldName: string, newValues: string[]): Promise<ExtendEnumResult> {
-    const invoke = await this.getInvoke();
-    return invoke<ExtendEnumResult>('extend_schema_enum', { schemaId, fieldName, newValues });
-  }
-
-  async removeSchemaEnumValue(schemaId: string, fieldName: string, value: string): Promise<RemoveEnumValueResult> {
-    const invoke = await this.getInvoke();
-    return invoke<RemoveEnumValueResult>('remove_schema_enum_value', { schemaId, fieldName, value });
+    return invoke<SchemaNode>('get_schema_definition', { schemaId });
   }
 }
 
@@ -494,58 +464,14 @@ class HttpAdapter implements BackendAdapter {
     });
   }
 
-  async getAllSchemas(): Promise<Array<SchemaDefinition & { id: string }>> {
+  async getAllSchemas(): Promise<SchemaNode[]> {
     const response = await fetch(`${this.baseUrl}/api/schemas`);
-    return await this.handleResponse<Array<SchemaDefinition & { id: string }>>(response);
+    return this.handleResponse<SchemaNode[]>(response);
   }
 
-  async getSchema(schemaId: string): Promise<SchemaDefinition> {
+  async getSchema(schemaId: string): Promise<SchemaNode> {
     const response = await fetch(`${this.baseUrl}/api/schemas/${encodeURIComponent(schemaId)}`);
-    return await this.handleResponse<SchemaDefinition>(response);
-  }
-
-  async addSchemaField(schemaId: string, config: AddFieldConfig): Promise<AddFieldResult> {
-    const response = await fetch(`${this.baseUrl}/api/schemas/${encodeURIComponent(schemaId)}/fields`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(config)
-    });
-    return await this.handleResponse<AddFieldResult>(response);
-  }
-
-  async removeSchemaField(schemaId: string, fieldName: string): Promise<RemoveFieldResult> {
-    const response = await fetch(
-      `${this.baseUrl}/api/schemas/${encodeURIComponent(schemaId)}/fields/${encodeURIComponent(fieldName)}`,
-      { method: 'DELETE' }
-    );
-    return await this.handleResponse<RemoveFieldResult>(response);
-  }
-
-  async extendSchemaEnum(schemaId: string, fieldName: string, newValues: string[]): Promise<ExtendEnumResult> {
-    // Add values one by one (API takes single value)
-    // Dev-proxy route: /api/schemas/:id/fields/:name/enum
-    let result: ExtendEnumResult = { schemaId, newVersion: 0, success: true };
-    for (const value of newValues) {
-      const response = await fetch(
-        `${this.baseUrl}/api/schemas/${encodeURIComponent(schemaId)}/fields/${encodeURIComponent(fieldName)}/enum`,
-        {
-          method: 'POST',
-          headers: this.getHeaders(),
-          body: JSON.stringify({ value })
-        }
-      );
-      result = await this.handleResponse<ExtendEnumResult>(response);
-    }
-    return result;
-  }
-
-  async removeSchemaEnumValue(schemaId: string, fieldName: string, value: string): Promise<RemoveEnumValueResult> {
-    // Dev-proxy route: /api/schemas/:id/fields/:name/enum/:value
-    const response = await fetch(
-      `${this.baseUrl}/api/schemas/${encodeURIComponent(schemaId)}/fields/${encodeURIComponent(fieldName)}/enum/${encodeURIComponent(value)}`,
-      { method: 'DELETE' }
-    );
-    return await this.handleResponse<RemoveEnumValueResult>(response);
+    return this.handleResponse<SchemaNode>(response);
   }
 }
 
@@ -609,23 +535,24 @@ class MockAdapter implements BackendAdapter {
   async createContainerNode(_input: CreateContainerInput): Promise<string> {
     return 'mock-container-id';
   }
-  async getAllSchemas(): Promise<Array<SchemaDefinition & { id: string }>> {
+  async getAllSchemas(): Promise<SchemaNode[]> {
     return [];
   }
-  async getSchema(_schemaId: string): Promise<SchemaDefinition> {
-    return { version: 1, isCore: false, description: '', fields: [] };
-  }
-  async addSchemaField(_schemaId: string, _config: AddFieldConfig): Promise<AddFieldResult> {
-    return { schemaId: _schemaId, newVersion: 2, success: true };
-  }
-  async removeSchemaField(_schemaId: string, _fieldName: string): Promise<RemoveFieldResult> {
-    return { schemaId: _schemaId, newVersion: 2, success: true };
-  }
-  async extendSchemaEnum(_schemaId: string, _fieldName: string, _newValues: string[]): Promise<ExtendEnumResult> {
-    return { schemaId: _schemaId, newVersion: 2, success: true };
-  }
-  async removeSchemaEnumValue(_schemaId: string, _fieldName: string, _value: string): Promise<RemoveEnumValueResult> {
-    return { schemaId: _schemaId, newVersion: 2, success: true };
+  async getSchema(schemaId: string): Promise<SchemaNode> {
+    // Return a mock schema node with typed top-level fields
+    return {
+      id: schemaId,
+      nodeType: 'schema',
+      content: schemaId,
+      createdAt: new Date().toISOString(),
+      modifiedAt: new Date().toISOString(),
+      version: 1,
+      // Typed schema fields at top level (not in properties)
+      isCore: false,
+      schemaVersion: 1,
+      description: '',
+      fields: []
+    };
   }
 }
 

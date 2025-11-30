@@ -1,9 +1,10 @@
 //! Database initialization and path management commands
 //!
 //! As of Issue #676, NodeOperations layer is removed - NodeService contains all business logic.
+//! As of Issue #690, SchemaService is removed - schema operations use NodeService directly.
 
 use crate::commands::embeddings::EmbeddingState;
-use nodespace_core::services::{EmbeddingProcessor, NodeEmbeddingService, SchemaService};
+use nodespace_core::services::{EmbeddingProcessor, NodeEmbeddingService};
 use nodespace_core::{NodeService, SurrealStore};
 use nodespace_nlp_engine::EmbeddingService;
 use std::path::PathBuf;
@@ -60,9 +61,7 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     tracing::info!("✅ [init_services] NodeService initialized");
 
     // NOTE: NodeOperations layer removed (Issue #676) - NodeService contains all business logic
-
-    // Initialize schema service (wraps NodeService for schema operations)
-    let schema_service = SchemaService::new(node_service_arc.clone());
+    // NOTE: SchemaService removed (Issue #690) - schema operations use NodeService directly
 
     // Initialize NLP engine for embeddings
     tracing::info!("🔧 [init_services] Initializing NLP engine...");
@@ -91,8 +90,8 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     tracing::info!("🔧 [init_services] Registering services with Tauri app.manage()...");
     app.manage(store.clone());
     app.manage(node_service_arc.as_ref().clone());
-    // NOTE: NodeOperations no longer managed (Issue #676) - commands use NodeService directly
-    app.manage(schema_service);
+    // NOTE: NodeOperations removed (Issue #676) - commands use NodeService directly
+    // NOTE: SchemaService removed (Issue #690) - schema commands use NodeService directly
     app.manage(EmbeddingState {
         service: embedding_service_arc,
         processor: processor_arc.clone(),

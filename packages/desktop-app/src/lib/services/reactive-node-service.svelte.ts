@@ -28,7 +28,8 @@ import type { Node, NodeUIState } from '$lib/types';
 import { createDefaultUIState } from '$lib/types';
 import type { UpdateSource } from '$lib/types/update-protocol';
 import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
-import { schemaService } from './schema-service';
+// Schema defaults extraction removed in Issue #690 simplification
+// TODO: Re-add schema defaults if needed via backendAdapter.getSchema() + SchemaNodeHelpers
 import { moveNode as moveNodeCommand } from './tauri-commands';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 
@@ -507,33 +508,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Some backends may not support updating nodeType alone
     const updatePayload: Partial<Node> = { nodeType, content: node.content };
 
-    // Issue #427: Apply schema defaults when converting node types
-    // Extract defaults from the new node type's schema and merge with existing properties
-    // Using synchronous extractDefaults() which uses the schema cache for immediate results
-    try {
-      const schemaDefaults = schemaService.extractDefaults(nodeType);
-
-      // Only update properties if there are defaults to apply
-      if (Object.keys(schemaDefaults).length > 0) {
-        // Deep merge defaults with existing properties (don't overwrite user data)
-        // For each namespace (e.g., 'task'), merge the nested objects
-        const mergedProperties = { ...node.properties };
-
-        for (const [namespace, defaultFields] of Object.entries(schemaDefaults)) {
-          if (typeof defaultFields === 'object' && defaultFields !== null) {
-            mergedProperties[namespace] = {
-              ...(defaultFields as Record<string, unknown>),
-              ...(node.properties[namespace] as Record<string, unknown> | undefined)
-            };
-          }
-        }
-
-        updatePayload.properties = mergedProperties;
-      }
-    } catch (error) {
-      // If schema extraction fails, just proceed without defaults (graceful degradation)
-      console.warn(`[updateNodeType] Failed to extract schema defaults for ${nodeType}:`, error);
-    }
+    // Note: Schema defaults extraction was removed in Issue #690 simplification
+    // The backend handles defaults via SchemaNode if needed
 
     // Skip conflict detection for nodeType changes - they are always intentional conversions
     sharedNodeStore.updateNode(nodeId, updatePayload, viewerSource, {

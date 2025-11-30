@@ -45,15 +45,15 @@
 <script lang="ts">
   import BaseNode from './base-node.svelte';
   import SchemaPropertyForm from '$lib/components/property-forms/schema-property-form.svelte';
-  import { schemaService } from '$lib/services/schema-service';
+  import { backendAdapter } from '$lib/services/backend-adapter';
   import type { NodeComponentProps } from '$lib/types/node-viewers';
-  import type { SchemaDefinition } from '$lib/types/schema';
+  import { type SchemaNode, isSchemaNode } from '$lib/types/schema-node';
 
   // Component props match NodeComponentProps interface
   let { nodeId, nodeType, content, children }: NodeComponentProps = $props();
 
   // Schema state
-  let schema = $state<SchemaDefinition | null>(null);
+  let schema = $state<SchemaNode | null>(null);
   let schemaError = $state<string | null>(null);
   let isLoadingSchema = $state(true);
 
@@ -66,8 +66,13 @@
       schemaError = null;
 
       try {
-        const loadedSchema = await schemaService.getSchema(nodeType);
-        schema = loadedSchema;
+        const schemaNode = await backendAdapter.getSchema(nodeType);
+        if (isSchemaNode(schemaNode)) {
+          schema = schemaNode;
+        } else {
+          schemaError = `Invalid schema for type: ${nodeType}`;
+          schema = null;
+        }
       } catch (error) {
         console.error(`[CustomEntityNode] Failed to load schema for ${nodeType}:`, error);
         schemaError = error instanceof Error ? error.message : 'Failed to load schema';
@@ -80,11 +85,14 @@
     loadSchema();
   });
 
+  // Get schema description directly from typed field
+  const schemaDescription = $derived(schema?.description ?? '');
+
   // Get custom icon from schema metadata (if available)
-  // Note: Custom icon support would require extending SchemaDefinition with metadata
+  // Note: Custom icon support would require extending SchemaNode with metadata
   // For now, we use emoji in the schema description (e.g., "💰 Invoice")
-  const customIcon = $derived(extractIconFromDescription(schema?.description || ''));
-  const entityName = $derived(schema?.description || nodeType);
+  const customIcon = $derived(extractIconFromDescription(schemaDescription));
+  const entityName = $derived(schemaDescription || nodeType);
   const showEntityHeader = $derived(true); // Always show entity header for custom entities
 
   // Extract emoji icon from description if present (e.g., "💰 Invoice" → "💰")

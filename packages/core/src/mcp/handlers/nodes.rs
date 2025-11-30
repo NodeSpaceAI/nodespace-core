@@ -6,9 +6,8 @@
 //! As of Issue #676, all handlers use NodeService directly instead of NodeOperations.
 
 use crate::mcp::types::MCPError;
-use crate::models::schema::ProtectionLevel;
 use crate::models::{Node, NodeFilter, NodeUpdate, OrderBy};
-use crate::services::{NodeService, NodeServiceError, SchemaService};
+use crate::services::{NodeService, NodeServiceError};
 use chrono::NaiveDate;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -263,68 +262,18 @@ pub async fn handle_get_node(
 }
 
 /// Handle update_node MCP request
+///
+/// Schema validation is handled by NodeService::validate_node_against_schema(),
+/// which validates enum values and required fields. No SchemaService needed.
 pub async fn handle_update_node(
     node_service: &Arc<NodeService>,
-    schema_service: &Arc<SchemaService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     let params: UpdateNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    // Validate schema changes if properties are being updated
-    if let Some(ref new_properties) = params.properties {
-        // Check if this node's type has a schema
-        if let Ok(Some(existing_node)) = node_service.get_node(&params.node_id).await {
-            if let Ok(schema) = schema_service.get_schema(&existing_node.node_type).await {
-                // Get old properties for comparison (with proper ownership)
-                let empty_map = serde_json::Map::new();
-                let old_properties = existing_node.properties.as_object().unwrap_or(&empty_map);
-                let new_props_obj = new_properties.as_object().ok_or_else(|| {
-                    MCPError::invalid_params("properties must be an object".to_string())
-                })?;
-
-                // Check for core field deletions
-                for field in &schema.fields {
-                    if field.protection == ProtectionLevel::Core {
-                        let old_has_field = old_properties.contains_key(&field.name);
-                        let new_has_field = new_props_obj.contains_key(&field.name);
-
-                        if old_has_field && !new_has_field {
-                            return Err(MCPError::invalid_params(format!(
-                                "Cannot delete core field '{}' from schema '{}'",
-                                field.name, existing_node.node_type
-                            )));
-                        }
-                    }
-                }
-
-                // Check for core field type changes (detect by checking if new value type differs from schema type)
-                // This is a basic check - full type validation would require more complex logic
-                for field in &schema.fields {
-                    if field.protection == ProtectionLevel::Core {
-                        if let Some(new_value) = new_props_obj.get(&field.name) {
-                            // Basic type validation: ensure enum fields only have allowed values
-                            if field.field_type == "enum" {
-                                if let Some(value_str) = new_value.as_str() {
-                                    let allowed_values =
-                                        schema.get_enum_values(&field.name).unwrap_or_default();
-                                    if !allowed_values.contains(&value_str.to_string()) {
-                                        // Check if it's trying to set a value that's not in core or user values
-                                        return Err(MCPError::invalid_params(format!(
-                                            "Invalid enum value '{}' for field '{}'. Allowed values: {:?}",
-                                            value_str, field.name, allowed_values
-                                        )));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     // Update node via NodeService (enforces Rule 5: content updates only, no hierarchy changes)
+    // NodeService.update_node_with_occ validates against schema automatically
     //
     // MCP update_node intentionally restricts certain fields for data integrity:
     // - parent_id: Use move_node operation for parent changes
@@ -995,6 +944,9 @@ pub struct BatchUpdateFailure {
 /// Applies updates sequentially. If some updates fail,
 /// returns both successful and failed update IDs for client handling.
 ///
+/// Schema validation is handled by NodeService::validate_node_against_schema(),
+/// which validates enum values and required fields. No SchemaService needed.
+///
 /// # Example
 ///
 /// ```ignore
@@ -1004,11 +956,10 @@ pub struct BatchUpdateFailure {
 ///         { "id": "task-2", "properties": { "priority": "high" } }
 ///     ]
 /// });
-/// let result = handle_update_nodes_batch(&operations, &schema_service, params).await?;
+/// let result = handle_update_nodes_batch(&node_service, params).await?;
 /// ```
 pub async fn handle_update_nodes_batch(
     node_service: &Arc<NodeService>,
-    schema_service: &Arc<SchemaService>,
     params: Value,
 ) -> Result<Value, MCPError> {
     // Parse parameters
@@ -1064,60 +1015,8 @@ pub async fn handle_update_nodes_batch(
             }
         };
 
-        // Validate schema changes if properties are being updated
-        if let Some(ref new_properties) = update.properties {
-            if let Ok(Some(existing_node)) = node_service.get_node(&update.id).await {
-                if let Ok(schema) = schema_service.get_schema(&existing_node.node_type).await {
-                    let empty_map = serde_json::Map::new();
-                    let old_properties = existing_node.properties.as_object().unwrap_or(&empty_map);
-
-                    if let Some(new_props_obj) = new_properties.as_object() {
-                        // Check for core field deletions
-                        for field in &schema.fields {
-                            if field.protection == ProtectionLevel::Core {
-                                let old_has_field = old_properties.contains_key(&field.name);
-                                let new_has_field = new_props_obj.contains_key(&field.name);
-
-                                if old_has_field && !new_has_field {
-                                    failed.push(BatchUpdateFailure {
-                                        id: update.id.clone(),
-                                        error: format!(
-                                            "Cannot delete core field '{}' from schema '{}'",
-                                            field.name, existing_node.node_type
-                                        ),
-                                    });
-                                    continue;
-                                }
-                            }
-
-                            // Validate enum values
-                            if field.protection == ProtectionLevel::Core
-                                && field.field_type == "enum"
-                            {
-                                if let Some(new_value) = new_props_obj.get(&field.name) {
-                                    if let Some(value_str) = new_value.as_str() {
-                                        let allowed_values =
-                                            schema.get_enum_values(&field.name).unwrap_or_default();
-                                        if !allowed_values.contains(&value_str.to_string()) {
-                                            failed.push(BatchUpdateFailure {
-                                                id: update.id.clone(),
-                                                error: format!(
-                                                    "Invalid enum value '{}' for field '{}'. Allowed values: {:?}",
-                                                    value_str, field.name, allowed_values
-                                                ),
-                                            });
-                                            continue;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         // Build NodeUpdate from batch update item
+        // NodeService.update_node_with_occ validates against schema automatically
         let node_update = NodeUpdate {
             content: update.content,
             node_type: update.node_type,

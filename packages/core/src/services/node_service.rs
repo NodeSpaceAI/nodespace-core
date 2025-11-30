@@ -562,6 +562,8 @@ where
     /// Queries the schema node directly from the database.
     /// Schema nodes are stored with id = node_type and node_type = "schema".
     ///
+    /// This method replaces the need for SchemaService.get_schema() (Issue #690).
+    ///
     /// # Arguments
     ///
     /// * `node_type` - The type of node to get the schema for (e.g., "task", "person")
@@ -571,7 +573,7 @@ where
     /// * `Ok(Some(value))` - Schema definition as JSON value if found
     /// * `Ok(None)` - No schema found for this node type
     /// * `Err` - Database error
-    async fn get_schema_for_type(
+    pub async fn get_schema_for_type(
         &self,
         node_type: &str,
     ) -> Result<Option<serde_json::Value>, NodeServiceError> {
@@ -612,22 +614,21 @@ where
             None => return Ok(()), // No schema = no validation needed
         };
 
-        // Parse schema definition
+        // Parse schema fields from properties
         // If parsing fails (e.g., old schema format), skip schema validation gracefully
-        let schema: crate::models::SchemaDefinition = match serde_json::from_value(schema_json) {
-            Ok(s) => s,
-            Err(_) => {
-                // Schema exists but can't be parsed - skip schema validation
-                // This handles backward compatibility with old schema formats
-                return Ok(());
-            }
+        let fields: Vec<crate::models::SchemaField> = match schema_json.get("fields") {
+            Some(fields_json) => match serde_json::from_value(fields_json.clone()) {
+                Ok(f) => f,
+                Err(_) => return Ok(()), // Can't parse fields - skip validation
+            },
+            None => return Ok(()), // No fields defined - skip validation
         };
 
-        // Use the helper function to validate with the parsed schema
-        self.validate_node_with_schema(node, &schema)
+        // Use the helper function to validate with the parsed fields
+        self.validate_node_with_fields(node, &fields)
     }
 
-    /// Apply schema default values to missing fields using a pre-loaded schema
+    /// Apply schema default values to missing fields using pre-loaded fields
     ///
     /// For each field in the schema that has a default value, if the field is missing
     /// from the node's properties, add it with the default value.
@@ -635,16 +636,16 @@ where
     /// # Arguments
     ///
     /// * `node` - Mutable reference to the node to apply defaults to
-    /// * `schema` - Pre-loaded schema definition to use
+    /// * `fields` - Pre-loaded schema fields to use
     ///
     /// # Returns
     ///
     /// * `Ok(())` - Defaults applied successfully
     /// * `Err` - Error applying defaults
-    fn apply_schema_defaults_with_schema(
+    fn apply_schema_defaults_with_fields(
         &self,
         node: &mut Node,
-        schema: &crate::models::SchemaDefinition,
+        fields: &[crate::models::SchemaField],
     ) -> Result<(), NodeServiceError> {
         // Ensure properties is an object
         if !node.properties.is_object() {
@@ -655,7 +656,7 @@ where
         let props_obj = node.properties.as_object_mut().unwrap();
 
         // Apply defaults for missing fields
-        for field in &schema.fields {
+        for field in fields {
             // Check if field is missing
             if !props_obj.contains_key(&field.name) {
                 // Apply default value if one is defined
@@ -668,21 +669,21 @@ where
         Ok(())
     }
 
-    /// Validate a node against a pre-loaded schema definition
+    /// Validate a node against pre-loaded schema fields
     ///
     /// # Arguments
     ///
     /// * `node` - The node to validate
-    /// * `schema` - Pre-loaded schema definition to validate against
+    /// * `fields` - Pre-loaded schema fields to validate against
     ///
     /// # Returns
     ///
     /// * `Ok(())` - Validation passed
     /// * `Err` - Validation failed
-    fn validate_node_with_schema(
+    fn validate_node_with_fields(
         &self,
         node: &Node,
-        schema: &crate::models::SchemaDefinition,
+        fields: &[crate::models::SchemaField],
     ) -> Result<(), NodeServiceError> {
         // Get properties for this node type (supports both flat and nested formats)
         let node_props = node
@@ -692,7 +693,7 @@ where
             .and_then(|p| p.as_object());
 
         // Validate each field in the schema
-        for field in &schema.fields {
+        for field in fields {
             let field_value = node_props.and_then(|props| props.get(&field.name));
 
             // Check required fields
@@ -710,14 +711,26 @@ where
                 if let Some(value) = field_value {
                     if let Some(value_str) = value.as_str() {
                         // Get all valid enum values (core + user)
-                        let valid_values = schema.get_enum_values(&field.name).unwrap_or_default();
+                        let mut valid_values = Vec::new();
+                        if let Some(core_vals) = &field.core_values {
+                            valid_values.extend(core_vals.clone());
+                        }
+                        if let Some(user_vals) = &field.user_values {
+                            valid_values.extend(user_vals.clone());
+                        }
 
-                        if !valid_values.contains(&value_str.to_string()) {
+                        // Check if the value matches any EnumValue.value
+                        let is_valid = valid_values.iter().any(|ev| ev.value == value_str);
+                        if !is_valid {
+                            let valid_labels: Vec<_> = valid_values
+                                .iter()
+                                .map(|ev| format!("{} ({})", ev.label, ev.value))
+                                .collect();
                             return Err(NodeServiceError::invalid_update(format!(
                                 "Invalid value '{}' for enum field '{}'. Valid values: {}",
                                 value_str,
                                 field.name,
-                                valid_values.join(", ")
+                                valid_labels.join(", ")
                             )));
                         }
                     } else if !value.is_null() {
@@ -854,15 +867,17 @@ where
         if node.node_type != "schema" {
             // Fetch schema once and reuse it for both operations
             if let Some(schema_json) = self.get_schema_for_type(&node.node_type).await? {
-                // Parse schema definition
-                if let Ok(schema) =
-                    serde_json::from_value::<crate::models::SchemaDefinition>(schema_json.clone())
-                {
-                    // Apply defaults from schema fields only
-                    self.apply_schema_defaults_with_schema(&mut node, &schema)?;
+                // Parse schema fields
+                if let Some(fields_json) = schema_json.get("fields") {
+                    if let Ok(fields) = serde_json::from_value::<Vec<crate::models::SchemaField>>(
+                        fields_json.clone(),
+                    ) {
+                        // Apply defaults from schema fields only
+                        self.apply_schema_defaults_with_fields(&mut node, &fields)?;
 
-                    // Validate with the same schema
-                    self.validate_node_with_schema(&node, &schema)?;
+                        // Validate with the same fields
+                        self.validate_node_with_fields(&node, &fields)?;
+                    }
                 }
             }
             // If no schema exists, that's fine - just don't add any defaults
@@ -1325,7 +1340,7 @@ where
     }
 
     // ========================================================================
-    // Strongly-Typed Node Retrieval (Issue #673)
+    // Strongly-Typed Node Retrieval
     // ========================================================================
 
     /// Get a task node with strong typing using single-query pattern
@@ -1514,15 +1529,17 @@ where
         if node_type_changed && updated.node_type != "schema" {
             // Fetch schema once and reuse it for both operations
             if let Some(schema_json) = self.get_schema_for_type(&updated.node_type).await? {
-                // Parse schema definition
-                if let Ok(schema) =
-                    serde_json::from_value::<crate::models::SchemaDefinition>(schema_json.clone())
-                {
-                    // Apply defaults for the new node type
-                    self.apply_schema_defaults_with_schema(&mut updated, &schema)?;
+                // Parse schema fields
+                if let Some(fields_json) = schema_json.get("fields") {
+                    if let Ok(fields) = serde_json::from_value::<Vec<crate::models::SchemaField>>(
+                        fields_json.clone(),
+                    ) {
+                        // Apply defaults for the new node type
+                        self.apply_schema_defaults_with_fields(&mut updated, &fields)?;
 
-                    // Validate with the same schema
-                    self.validate_node_with_schema(&updated, &schema)?;
+                        // Validate with the same fields
+                        self.validate_node_with_fields(&updated, &fields)?;
+                    }
                 }
             }
         } else if updated.node_type != "schema" {
@@ -1542,10 +1559,36 @@ where
             },
         };
 
-        self.store
-            .update_node(id, node_update)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        // For schema nodes, use atomic update with DDL generation (Issue #690)
+        // This ensures schema node data AND SurrealDB table definitions change atomically
+        if updated.node_type == "schema" {
+            // Parse schema fields from properties
+            let fields: Vec<crate::models::SchemaField> = updated
+                .properties
+                .get("fields")
+                .and_then(|f| serde_json::from_value(f.clone()).ok())
+                .unwrap_or_default();
+
+            // Generate DDL statements for the schema
+            // The schema node ID is the table name (e.g., "task", "person")
+            let table_manager =
+                crate::services::schema_table_manager::SchemaTableManager::new(self.store.clone());
+            let ddl_statements = table_manager.generate_ddl_statements(id, &fields)?;
+
+            // Execute atomic update: node + DDL in one transaction
+            self.store
+                .update_schema_node_atomic(id, node_update, ddl_statements)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+            tracing::info!("Atomically updated schema node '{}' with DDL sync", id);
+        } else {
+            // Regular node update
+            self.store
+                .update_node(id, node_update)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        }
 
         // Emit NodeUpdated event (Phase 2 of Issue #665)
         self.emit_event(DomainEvent::NodeUpdated {

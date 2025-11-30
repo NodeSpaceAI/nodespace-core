@@ -11,23 +11,51 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { schemaService } from '$lib/services/schema-service';
-import type { SchemaDefinition } from '$lib/types/schema';
+import { backendAdapter } from '$lib/services/backend-adapter';
+import { type SchemaNode, isSchemaNode } from '$lib/types/schema-node';
 
-// Mock schema service
-vi.mock('$lib/services/schema-service', () => ({
-  schemaService: {
+// Mock backend adapter
+vi.mock('$lib/services/backend-adapter', () => ({
+  backendAdapter: {
     getSchema: vi.fn()
   }
 }));
 
 /**
+ * Helper to create a mock schema node with typed top-level fields
+ * Matches the backend SchemaNode serialization format
+ */
+function createMockSchemaNode(
+  id: string,
+  options: {
+    isCore?: boolean;
+    schemaVersion?: number;
+    description?: string;
+  } = {}
+): SchemaNode {
+  return {
+    id,
+    nodeType: 'schema',
+    content: id,
+    createdAt: new Date().toISOString(),
+    modifiedAt: new Date().toISOString(),
+    version: 1,
+    // Typed top-level fields (not in properties)
+    isCore: options.isCore ?? false,
+    schemaVersion: options.schemaVersion ?? 1,
+    description: options.description ?? '',
+    fields: []
+  };
+}
+
+/**
  * Test logic for entity name
  * Uses schema description if available, otherwise falls back to nodeType
  */
-function getEntityName(schema: SchemaDefinition | null, nodeType: string): string {
-  if (schema && schema.description) {
-    return schema.description;
+function getEntityName(schema: SchemaNode | null, nodeType: string): string {
+  if (schema) {
+    // Access typed field directly (no helper needed)
+    if (schema.description) return schema.description;
   }
   return nodeType;
 }
@@ -53,35 +81,24 @@ describe('CustomEntityNode Logic', () => {
 
   describe('Schema Loading', () => {
     it('should call getSchema with correct nodeType', async () => {
-      const mockSchema: SchemaDefinition = {
-        isCore: false,
-        version: 1,
-        description: 'Invoice Entity',
-        fields: [
-          {
-            name: 'amount',
-            type: 'number',
-            protection: 'user',
-            indexed: false,
-            description: 'Invoice Amount'
-          }
-        ]
-      };
+      const mockSchemaNode = createMockSchemaNode('invoice', {
+        description: 'Invoice Entity'
+      });
 
-      vi.mocked(schemaService.getSchema).mockResolvedValue(mockSchema);
+      vi.mocked(backendAdapter.getSchema).mockResolvedValue(mockSchemaNode);
 
       // Simulate what the component does in $effect
-      const loadedSchema = await schemaService.getSchema('invoice');
+      const node = await backendAdapter.getSchema('invoice');
 
-      expect(schemaService.getSchema).toHaveBeenCalledWith('invoice');
-      expect(loadedSchema).toEqual(mockSchema);
+      expect(backendAdapter.getSchema).toHaveBeenCalledWith('invoice');
+      expect(isSchemaNode(node)).toBe(true);
     });
 
     it('should handle schema loading errors gracefully', async () => {
-      vi.mocked(schemaService.getSchema).mockRejectedValue(new Error('Schema not found'));
+      vi.mocked(backendAdapter.getSchema).mockRejectedValue(new Error('Schema not found'));
 
       try {
-        await schemaService.getSchema('nonexistent');
+        await backendAdapter.getSchema('nonexistent');
         expect.fail('Should have thrown');
       } catch (error) {
         expect((error as Error).message).toContain('Schema not found');
@@ -90,10 +107,10 @@ describe('CustomEntityNode Logic', () => {
     });
 
     it('should handle network errors in schema loading', async () => {
-      vi.mocked(schemaService.getSchema).mockRejectedValue(new Error('Network error'));
+      vi.mocked(backendAdapter.getSchema).mockRejectedValue(new Error('Network error'));
 
       try {
-        await schemaService.getSchema('invoice');
+        await backendAdapter.getSchema('invoice');
         expect.fail('Should have thrown');
       } catch (error) {
         expect((error as Error).message).toContain('Network error');
@@ -104,18 +121,15 @@ describe('CustomEntityNode Logic', () => {
 
   describe('Entity Header Display', () => {
     it('should always show entity header when schema exists', () => {
-      const schema: SchemaDefinition = {
-        isCore: false,
-        version: 1,
-        description: 'Invoice',
-        fields: []
-      };
+      const schemaNode = createMockSchemaNode('invoice', {
+        description: 'Invoice'
+      }) as SchemaNode;
 
       // CustomEntityNode always shows header for custom entities
-      expect(getEntityName(schema, 'invoice')).toBe('Invoice');
+      expect(getEntityName(schemaNode, 'invoice')).toBe('Invoice');
     });
 
-    it('should not show entity header when schema is null', () => {
+    it('should fall back to nodeType when schema is null', () => {
       // When schema is null, component is loading
       expect(getEntityName(null, 'invoice')).toBe('invoice');
     });
@@ -123,25 +137,19 @@ describe('CustomEntityNode Logic', () => {
 
   describe('Entity Name Display', () => {
     it('should use schema description as entity name', () => {
-      const schema: SchemaDefinition = {
-        isCore: false,
-        version: 1,
-        description: 'Sales Invoice',
-        fields: []
-      };
+      const schemaNode = createMockSchemaNode('invoice', {
+        description: 'Sales Invoice'
+      }) as SchemaNode;
 
-      expect(getEntityName(schema, 'invoice')).toBe('Sales Invoice');
+      expect(getEntityName(schemaNode, 'invoice')).toBe('Sales Invoice');
     });
 
     it('should fall back to nodeType when schema description is missing', () => {
-      const schema: SchemaDefinition = {
-        isCore: false,
-        version: 1,
-        description: '',
-        fields: []
-      };
+      const schemaNode = createMockSchemaNode('invoice', {
+        description: ''
+      }) as SchemaNode;
 
-      expect(getEntityName(schema, 'invoice')).toBe('invoice');
+      expect(getEntityName(schemaNode, 'invoice')).toBe('invoice');
     });
 
     it('should use nodeType when schema is null', () => {
@@ -149,7 +157,7 @@ describe('CustomEntityNode Logic', () => {
     });
 
     it('should use nodeType when schema is undefined', () => {
-      const schema = undefined as unknown as SchemaDefinition | null;
+      const schema = undefined as unknown as SchemaNode | null;
       expect(getEntityName(schema, 'person')).toBe('person');
     });
   });
@@ -216,7 +224,11 @@ describe('CustomEntityNode Logic', () => {
     it('should distinguish between loading and error states', async () => {
       const states = {
         loading: { isLoading: true, schema: null, error: null },
-        loaded: { isLoading: false, schema: { isCore: false, version: 1 }, error: null },
+        loaded: {
+          isLoading: false,
+          schema: createMockSchemaNode('invoice') as SchemaNode,
+          error: null
+        },
         error: { isLoading: false, schema: null, error: 'Failed to load' }
       };
 
@@ -261,22 +273,21 @@ describe('CustomEntityNode Logic', () => {
 
   describe('Schema Integration', () => {
     it('should use description field for entity naming', () => {
-      const schema: SchemaDefinition = {
-        isCore: false,
-        version: 1,
-        description: '💰 Invoice Management',
-        fields: []
-      };
+      const schemaNode = createMockSchemaNode('invoice', {
+        description: '💰 Invoice Management'
+      });
 
-      expect(getEntityName(schema, 'invoice')).toBe('💰 Invoice Management');
-      expect(extractIconFromDescription(schema.description)).toBe('💰');
+      expect(getEntityName(schemaNode, 'invoice')).toBe('💰 Invoice Management');
+      // Access typed field directly
+      expect(extractIconFromDescription(schemaNode.description)).toBe('💰');
     });
 
     it('should handle schema with fields array', () => {
-      const schema: SchemaDefinition = {
-        isCore: false,
-        version: 1,
-        description: 'Invoice',
+      // Create schema with fields
+      const schemaNode: SchemaNode = {
+        ...createMockSchemaNode('invoice', {
+          description: 'Invoice'
+        }),
         fields: [
           {
             name: 'amount',
@@ -287,56 +298,48 @@ describe('CustomEntityNode Logic', () => {
         ]
       };
 
-      expect(schema.fields.length).toBe(1);
-      expect(schema.fields[0].name).toBe('amount');
+      // Access typed field directly (not in properties)
+      expect(schemaNode.fields.length).toBe(1);
+      expect(schemaNode.fields[0].name).toBe('amount');
     });
   });
 
-  describe('Schema Caching', () => {
-    it('should request schema only once per nodeType', async () => {
-      const mockSchema: SchemaDefinition = {
-        isCore: false,
-        version: 1,
-        description: 'Invoice',
-        fields: []
-      };
+  describe('Schema Loading Behavior', () => {
+    it('should request schema for each nodeType', async () => {
+      const mockSchemaNode = createMockSchemaNode('invoice', {
+        description: 'Invoice'
+      });
 
-      vi.mocked(schemaService.getSchema).mockResolvedValue(mockSchema);
+      vi.mocked(backendAdapter.getSchema).mockResolvedValue(mockSchemaNode);
 
       // First call
-      await schemaService.getSchema('invoice');
+      await backendAdapter.getSchema('invoice');
       // Second call with same nodeType
-      await schemaService.getSchema('invoice');
+      await backendAdapter.getSchema('invoice');
 
-      // Note: Component reloads on effect, but schemaService handles caching
-      // This test verifies the interface works correctly
-      expect(schemaService.getSchema).toHaveBeenCalledWith('invoice');
+      // Both calls should go through (no caching at adapter level)
+      expect(backendAdapter.getSchema).toHaveBeenCalledTimes(2);
+      expect(backendAdapter.getSchema).toHaveBeenCalledWith('invoice');
     });
 
     it('should request different schemas for different nodeTypes', async () => {
-      const invoiceSchema: SchemaDefinition = {
-        isCore: false,
-        version: 1,
-        description: 'Invoice',
-        fields: []
-      };
+      const invoiceSchema = createMockSchemaNode('invoice', {
+        description: 'Invoice'
+      });
 
-      const personSchema: SchemaDefinition = {
-        isCore: false,
-        version: 1,
-        description: 'Person',
-        fields: []
-      };
+      const personSchema = createMockSchemaNode('person', {
+        description: 'Person'
+      });
 
-      vi.mocked(schemaService.getSchema)
+      vi.mocked(backendAdapter.getSchema)
         .mockResolvedValueOnce(invoiceSchema)
         .mockResolvedValueOnce(personSchema);
 
-      await schemaService.getSchema('invoice');
-      await schemaService.getSchema('person');
+      await backendAdapter.getSchema('invoice');
+      await backendAdapter.getSchema('person');
 
-      expect(schemaService.getSchema).toHaveBeenCalledWith('invoice');
-      expect(schemaService.getSchema).toHaveBeenCalledWith('person');
+      expect(backendAdapter.getSchema).toHaveBeenCalledWith('invoice');
+      expect(backendAdapter.getSchema).toHaveBeenCalledWith('person');
     });
   });
 });

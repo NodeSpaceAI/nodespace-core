@@ -14,7 +14,7 @@
 //!
 //! - [`models`] - Data structures (Node, Task, Person, etc.)
 //! - [`behaviors`] - Node type system and trait-based behaviors
-//! - [`services`] - Business services (NodeService, SchemaService, etc.)
+//! - [`services`] - Business services (NodeService, SchemaTableManager, etc.)
 //! - [`db`] - Database layer with SurrealDB integration
 //! - [`mcp`] - MCP stdio server for AI agent integration
 
@@ -34,7 +34,7 @@ pub use db::{
     MentionRelationship, SurrealStore,
 };
 pub use models::{
-    FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter,
-    ValidationError,
+    FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter, SchemaNode,
+    TaskNode, TaskStatus, ValidationError,
 };
 pub use services::{CreateNodeParams, NodeService, NodeServiceError};

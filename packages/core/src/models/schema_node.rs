@@ -3,17 +3,16 @@
 //! Provides direct deserialization from spoke table with hub data via record link,
 //! eliminating the intermediate JSON `properties` step for true compile-time type safety.
 //!
-//! # Architecture (Issue #673)
+//! # Architecture
 //!
 //! **Query Pattern:**
 //! ```sql
 //! SELECT
-//!     id,
+//!     record::id(id) AS id,
 //!     is_core,
 //!     version AS schema_version,
 //!     description,
 //!     fields,
-//!     node.id AS node_id,
 //!     node.content AS content,
 //!     node.version AS version,
 //!     node.created_at AS created_at,
@@ -27,15 +26,16 @@
 //! use nodespace_core::models::SchemaNode;
 //!
 //! // Direct field access (no JSON parsing)
-//! // let schema = service.get_schema_node("task").await?;
-//! // assert_eq!(schema.is_core, true);
-//! // assert!(!schema.fields.is_empty());
+//! // let mut schema = service.get_schema_node("task").await?.unwrap();
+//! // schema.fields.push(new_field);
+//! // schema.schema_version += 1;
+//! // store.update_schema_node(schema).await?;
 //! ```
 
-use crate::models::{Node, SchemaDefinition, SchemaField, ValidationError};
+use crate::models::schema::{EnumValue, SchemaField, SchemaProtectionLevel};
+use crate::models::{Node, ValidationError};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 /// Strongly-typed schema node with direct field access
 ///
@@ -43,22 +43,8 @@ use serde_json::json;
 /// Combines hub metadata (id, content, timestamps) with spoke-specific
 /// schema definition fields (is_core, fields, description).
 ///
-/// # Query Pattern
-///
-/// ```sql
-/// SELECT
-///     id,
-///     is_core,
-///     version AS schema_version,
-///     description,
-///     fields,
-///     node.id AS node_id,
-///     node.content AS content,
-///     node.version AS version,
-///     node.created_at AS created_at,
-///     node.modified_at AS modified_at
-/// FROM schema:`task`;
-/// ```
+/// Fields are public for direct mutation. After modifying, persist via
+/// `store.update_schema_node(schema)`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaNode {
@@ -126,9 +112,32 @@ impl SchemaNode {
             )));
         }
 
-        // Try to deserialize properties as SchemaDefinition
-        let schema_def: SchemaDefinition =
-            serde_json::from_value(node.properties.clone()).unwrap_or_default();
+        // Extract fields from properties JSON
+        let is_core = node
+            .properties
+            .get("isCore")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let schema_version = node
+            .properties
+            .get("version")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or(1);
+
+        let description = node
+            .properties
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+
+        let fields: Vec<SchemaField> = node
+            .properties
+            .get("fields")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
 
         Ok(Self {
             id: node.id,
@@ -136,25 +145,23 @@ impl SchemaNode {
             version: node.version,
             created_at: node.created_at,
             modified_at: node.modified_at,
-            is_core: schema_def.is_core,
-            schema_version: schema_def.version,
-            description: schema_def.description,
-            fields: schema_def.fields,
+            is_core,
+            schema_version,
+            description,
+            fields,
         })
     }
 
-    /// Convert to universal Node (for backward compatibility with existing APIs)
+    /// Convert to universal Node (for compatibility with existing APIs)
     ///
     /// This creates a Node with properties populated from the strongly-typed fields.
     pub fn into_node(self) -> Node {
-        let schema_def = SchemaDefinition {
-            is_core: self.is_core,
-            version: self.schema_version,
-            description: self.description,
-            fields: self.fields,
-        };
-
-        let properties = serde_json::to_value(&schema_def).unwrap_or_else(|_| json!({}));
+        let properties = serde_json::json!({
+            "isCore": self.is_core,
+            "version": self.schema_version,
+            "description": self.description,
+            "fields": self.fields,
+        });
 
         Node {
             id: self.id,
@@ -170,62 +177,93 @@ impl SchemaNode {
         }
     }
 
-    /// Get a reference as Node (creates a temporary Node for compatibility)
-    pub fn as_node(&self) -> Node {
-        self.clone().into_node()
-    }
-
-    /// Convert to SchemaDefinition (for compatibility with existing schema APIs)
-    pub fn into_definition(self) -> SchemaDefinition {
-        SchemaDefinition {
-            is_core: self.is_core,
-            version: self.schema_version,
-            description: self.description,
-            fields: self.fields,
-        }
-    }
-
-    /// Get as SchemaDefinition reference (creates temporary for compatibility)
-    pub fn as_definition(&self) -> SchemaDefinition {
-        SchemaDefinition {
-            is_core: self.is_core,
-            version: self.schema_version,
-            description: self.description.clone(),
-            fields: self.fields.clone(),
-        }
-    }
-
-    /// Get all valid values for an enum field (delegates to SchemaDefinition)
-    pub fn get_enum_values(&self, field_name: &str) -> Option<Vec<String>> {
-        self.as_definition().get_enum_values(field_name)
-    }
-
-    /// Check if a field can be deleted (delegates to SchemaDefinition)
-    pub fn can_delete_field(&self, field_name: &str) -> bool {
-        self.as_definition().can_delete_field(field_name)
-    }
-
-    /// Check if a field can be modified (delegates to SchemaDefinition)
-    pub fn can_modify_field(&self, field_name: &str) -> bool {
-        self.as_definition().can_modify_field(field_name)
-    }
-
     /// Get a field by name
-    pub fn get_field(&self, field_name: &str) -> Option<&SchemaField> {
-        self.fields.iter().find(|f| f.name == field_name)
+    pub fn get_field(&self, name: &str) -> Option<&SchemaField> {
+        self.fields.iter().find(|f| f.name == name)
+    }
+
+    /// Get a mutable field by name
+    pub fn get_field_mut(&mut self, name: &str) -> Option<&mut SchemaField> {
+        self.fields.iter_mut().find(|f| f.name == name)
+    }
+
+    /// Get all valid values for an enum field (core + user values combined)
+    ///
+    /// Returns `None` if the field doesn't exist or isn't an enum.
+    /// Returns `EnumValue` structs with both value and label.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let schema = store.get_schema_node("task").await?.unwrap();
+    /// let status_values = schema.get_enum_values("status");
+    /// // Returns: Some([EnumValue { value: "open", label: "Open" }, ...])
+    /// ```
+    pub fn get_enum_values(&self, field_name: &str) -> Option<Vec<EnumValue>> {
+        let field = self.get_field(field_name)?;
+
+        // Only return values for enum fields
+        if field.field_type != "enum" {
+            return None;
+        }
+
+        let mut values = Vec::new();
+        if let Some(core_vals) = &field.core_values {
+            values.extend(core_vals.clone());
+        }
+        if let Some(user_vals) = &field.user_values {
+            values.extend(user_vals.clone());
+        }
+
+        Some(values)
+    }
+
+    /// Get all valid value strings for an enum field (for validation)
+    ///
+    /// Returns only the value strings, not the labels. Use this for validation
+    /// when checking if a value is valid for an enum field. For UI display where
+    /// you need both values and labels, use [`get_enum_values`] instead.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let valid_values = schema.get_enum_value_strings("status");
+    /// // Returns: Some(["open", "in_progress", "done", "blocked"])
+    /// ```
+    pub fn get_enum_value_strings(&self, field_name: &str) -> Option<Vec<String>> {
+        self.get_enum_values(field_name)
+            .map(|values| values.into_iter().map(|v| v.value).collect())
+    }
+
+    /// Check if a field can be deleted based on its protection level
+    ///
+    /// Only `User` protected fields can be deleted.
+    pub fn can_delete_field(&self, field_name: &str) -> bool {
+        self.get_field(field_name)
+            .map(|f| f.protection == SchemaProtectionLevel::User)
+            .unwrap_or(false)
+    }
+
+    /// Check if a field can be modified based on its protection level
+    ///
+    /// Only `User` protected fields can be modified (type changes, etc.).
+    /// Core/System fields are immutable.
+    pub fn can_modify_field(&self, field_name: &str) -> bool {
+        self.get_field(field_name)
+            .map(|f| f.protection == SchemaProtectionLevel::User)
+            .unwrap_or(false)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::schema::SchemaProtectionLevel;
     use serde_json::json;
 
     fn create_test_schema_node() -> Node {
-        Node::new_with_id(
-            "task".to_string(),
+        Node::new(
             "schema".to_string(),
-            "Task".to_string(),
+            "task".to_string(),
             json!({
                 "isCore": true,
                 "version": 2,
@@ -235,12 +273,11 @@ mod tests {
                         "name": "status",
                         "type": "enum",
                         "protection": "core",
-                        "coreValues": ["open", "in_progress", "done"],
-                        "userValues": ["blocked"],
-                        "indexed": true,
-                        "required": true,
-                        "extensible": true,
-                        "default": "open"
+                        "coreValues": [
+                            { "value": "open", "label": "Open" },
+                            { "value": "done", "label": "Done" }
+                        ],
+                        "indexed": true
                     }
                 ]
             }),
@@ -252,7 +289,7 @@ mod tests {
         let node = create_test_schema_node();
         assert!(SchemaNode::from_node(node).is_ok());
 
-        let wrong_type = Node::new("text".to_string(), "Test".to_string(), json!({}));
+        let wrong_type = Node::new("task".to_string(), "Test".to_string(), json!({}));
         let result = SchemaNode::from_node(wrong_type);
         assert!(result.is_err());
         assert!(result
@@ -266,8 +303,6 @@ mod tests {
         let node = create_test_schema_node();
         let schema = SchemaNode::from_node(node).unwrap();
 
-        assert_eq!(schema.id, "task");
-        assert_eq!(schema.content, "Task");
         assert!(schema.is_core);
         assert_eq!(schema.schema_version, 2);
         assert_eq!(schema.description, "Task tracking schema");
@@ -285,7 +320,7 @@ mod tests {
 
         assert_eq!(converted.id, original_id);
         assert_eq!(converted.node_type, "schema");
-        assert_eq!(converted.content, "Task");
+        assert_eq!(converted.content, "task");
     }
 
     #[test]
@@ -302,17 +337,65 @@ mod tests {
     }
 
     #[test]
+    fn test_direct_field_mutation() {
+        let node = create_test_schema_node();
+        let mut schema = SchemaNode::from_node(node).unwrap();
+
+        // Direct field mutation
+        schema.description = "Updated description".to_string();
+        schema.schema_version += 1;
+
+        assert_eq!(schema.description, "Updated description");
+        assert_eq!(schema.schema_version, 3);
+    }
+
+    #[test]
+    fn test_add_field_via_push() {
+        let node = create_test_schema_node();
+        let mut schema = SchemaNode::from_node(node).unwrap();
+
+        let new_field = SchemaField {
+            name: "priority".to_string(),
+            field_type: "number".to_string(),
+            protection: SchemaProtectionLevel::User,
+            core_values: None,
+            user_values: None,
+            indexed: false,
+            required: Some(false),
+            extensible: None,
+            default: Some(json!(0)),
+            description: Some("Priority level".to_string()),
+            item_type: None,
+            fields: None,
+            item_fields: None,
+        };
+
+        schema.fields.push(new_field);
+        assert_eq!(schema.fields.len(), 2);
+        assert!(schema.get_field("priority").is_some());
+    }
+
+    #[test]
     fn test_get_enum_values() {
         let node = create_test_schema_node();
         let schema = SchemaNode::from_node(node).unwrap();
 
-        let values = schema.get_enum_values("status");
-        assert!(values.is_some());
-        let values = values.unwrap();
-        assert!(values.contains(&"open".to_string()));
-        assert!(values.contains(&"in_progress".to_string()));
-        assert!(values.contains(&"done".to_string()));
-        assert!(values.contains(&"blocked".to_string()));
+        let values = schema.get_enum_values("status").unwrap();
+        assert_eq!(values.len(), 2);
+        assert!(values.iter().any(|v| v.value == "open"));
+        assert!(values.iter().any(|v| v.value == "done"));
+        // Verify labels are present
+        assert!(values.iter().any(|v| v.label == "Open"));
+        assert!(values.iter().any(|v| v.label == "Done"));
+
+        // Test the string-only helper
+        let value_strings = schema.get_enum_value_strings("status").unwrap();
+        assert_eq!(value_strings.len(), 2);
+        assert!(value_strings.contains(&"open".to_string()));
+        assert!(value_strings.contains(&"done".to_string()));
+
+        // Non-enum field should return None
+        assert!(schema.get_enum_values("nonexistent").is_none());
     }
 
     #[test]
@@ -320,9 +403,9 @@ mod tests {
         let node = create_test_schema_node();
         let schema = SchemaNode::from_node(node).unwrap();
 
-        // Core fields cannot be deleted
+        // Core field cannot be deleted
         assert!(!schema.can_delete_field("status"));
-        // Non-existent fields cannot be deleted
+        // Non-existent field returns false
         assert!(!schema.can_delete_field("nonexistent"));
     }
 
@@ -331,17 +414,16 @@ mod tests {
         let node = create_test_schema_node();
         let schema = SchemaNode::from_node(node).unwrap();
 
-        // Uses camelCase for JSON (matching Node struct convention)
+        // Uses camelCase for JSON
         let json = serde_json::to_value(&schema).unwrap();
-        assert_eq!(json["id"], "task");
-        assert_eq!(json["content"], "Task");
         assert_eq!(json["isCore"], true);
         assert_eq!(json["schemaVersion"], 2);
+        assert_eq!(json["description"], "Task tracking schema");
     }
 
     #[test]
     fn test_serde_deserialization() {
-        // Uses camelCase for JSON (matching Node struct convention)
+        // Direct deserialization (simulates spoke table query result)
         let json = json!({
             "id": "test-schema",
             "content": "Test Schema",
@@ -361,17 +443,5 @@ mod tests {
         assert_eq!(schema.schema_version, 1);
         assert_eq!(schema.description, "A test schema");
         assert!(schema.fields.is_empty());
-    }
-
-    #[test]
-    fn test_into_definition() {
-        let node = create_test_schema_node();
-        let schema = SchemaNode::from_node(node).unwrap();
-        let definition = schema.into_definition();
-
-        assert!(definition.is_core);
-        assert_eq!(definition.version, 2);
-        assert_eq!(definition.description, "Task tracking schema");
-        assert_eq!(definition.fields.len(), 1);
     }
 }

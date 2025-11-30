@@ -9,8 +9,10 @@
 //! The behavior system enables extensibility while maintaining type safety
 //! and consistent validation across all node operations.
 
+use crate::models::schema::SchemaField;
 use crate::models::{Node, SchemaNode, TaskNode, ValidationError as NodeValidationError};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 use thiserror::Error;
 
@@ -878,18 +880,61 @@ impl NodeBehavior for DateNodeBehavior {
 /// Schema nodes store entity type definitions using the Pure JSON schema-as-node pattern.
 /// By convention, schema nodes have `id = type_name` and `node_type = "schema"`.
 ///
-/// Schema nodes are validated minimally - they just need non-empty content and valid
-/// properties JSON. The SchemaService handles detailed schema validation.
+/// Validation includes:
+/// - Non-empty content (schema name)
+/// - Properties must be valid JSON object
+/// - Field names must be unique (alphanumeric and underscores only)
+/// - Enum fields must have at least one value defined (in core_values or user_values)
 ///
-/// # Strongly-Typed Validation (Issue #673)
+/// # Strongly-Typed Validation
 ///
 /// This behavior supports both generic Node validation (via `validate()`) and
 /// strongly-typed SchemaNode validation (via `validate_schema_node()`). The generic
 /// validation internally converts to SchemaNode for type-safe validation.
 pub struct SchemaNodeBehavior;
 
+/// Validate a single schema field (standalone function for recursive validation)
+fn validate_schema_field(field: &SchemaField) -> Result<(), NodeValidationError> {
+    // Validate field name characters (alphanumeric and underscores only)
+    if !field.name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Err(NodeValidationError::InvalidProperties(format!(
+            "Invalid field name '{}': must contain only alphanumeric characters and underscores",
+            field.name
+        )));
+    }
+
+    // Enum fields must have at least one value defined
+    if field.field_type == "enum" {
+        let has_values = field.core_values.as_ref().is_some_and(|v| !v.is_empty())
+            || field.user_values.as_ref().is_some_and(|v| !v.is_empty());
+
+        if !has_values {
+            return Err(NodeValidationError::InvalidProperties(format!(
+                "Enum field '{}' must have at least one value defined (in core_values or user_values)",
+                field.name
+            )));
+        }
+    }
+
+    // Recursively validate nested fields
+    if let Some(ref nested_fields) = field.fields {
+        for nested_field in nested_fields {
+            validate_schema_field(nested_field)?;
+        }
+    }
+
+    // Recursively validate item fields (for array of objects)
+    if let Some(ref item_fields) = field.item_fields {
+        for item_field in item_fields {
+            validate_schema_field(item_field)?;
+        }
+    }
+
+    Ok(())
+}
+
 impl SchemaNodeBehavior {
-    /// Validate a strongly-typed SchemaNode directly (Issue #673)
+    /// Validate a strongly-typed SchemaNode directly
     ///
     /// This method provides compile-time type safety by validating SchemaNode
     /// fields directly rather than parsing from JSON properties. Use this
@@ -901,20 +946,11 @@ impl SchemaNodeBehavior {
     ///
     /// # Errors
     ///
-    /// Returns `ValidationError` if validation fails. Currently validates:
+    /// Returns `ValidationError` if validation fails. Validates:
     /// - Content (schema name) is non-empty
     /// - Schema version is positive
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use nodespace_core::behaviors::SchemaNodeBehavior;
-    /// use nodespace_core::models::SchemaNode;
-    ///
-    /// let behavior = SchemaNodeBehavior;
-    /// // Assuming you have a SchemaNode from the database...
-    /// // assert!(behavior.validate_schema_node(&schema).is_ok());
-    /// ```
+    /// - Field names are unique and valid
+    /// - Enum fields have at least one value
     pub fn validate_schema_node(&self, schema: &SchemaNode) -> Result<(), NodeValidationError> {
         // Validate non-empty content (schema name)
         if is_empty_or_whitespace(&schema.content) {
@@ -930,8 +966,18 @@ impl SchemaNodeBehavior {
             ));
         }
 
-        // Fields validation is handled by SchemaDefinition/SchemaService
-        // We just do basic structural validation here
+        // Validate field name uniqueness
+        let field_names: HashSet<_> = schema.fields.iter().map(|f| &f.name).collect();
+        if field_names.len() != schema.fields.len() {
+            return Err(NodeValidationError::InvalidProperties(
+                "Schema contains duplicate field names".to_string(),
+            ));
+        }
+
+        // Validate each field
+        for field in &schema.fields {
+            validate_schema_field(field)?;
+        }
 
         Ok(())
     }
@@ -943,7 +989,7 @@ impl NodeBehavior for SchemaNodeBehavior {
     }
 
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // Issue #673: Convert to strongly-typed SchemaNode and validate
+        // Convert to strongly-typed SchemaNode and validate
         // This provides type-safe validation with direct field access
         match SchemaNode::from_node(node.clone()) {
             Ok(schema) => self.validate_schema_node(&schema),
@@ -961,7 +1007,7 @@ impl NodeBehavior for SchemaNodeBehavior {
                     ));
                 }
 
-                // Properties should be valid JSON object (detailed validation is in SchemaService)
+                // Properties should be valid JSON object
                 if !node.properties.is_object() {
                     return Err(NodeValidationError::InvalidProperties(
                         "Schema properties must be a JSON object".to_string(),
@@ -1992,7 +2038,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Strongly-Typed Validation Tests (Issue #673)
+    // Strongly-Typed Validation Tests
     // =========================================================================
 
     #[test]
@@ -2057,8 +2103,7 @@ mod tests {
         let behavior = SchemaNodeBehavior;
 
         // Create a valid schema node via from_node
-        let valid_node = Node::new_with_id(
-            "task".to_string(),
+        let valid_node = Node::new(
             "schema".to_string(),
             "Task".to_string(),
             json!({
@@ -2072,8 +2117,7 @@ mod tests {
         assert!(behavior.validate_schema_node(&schema).is_ok());
 
         // Invalid: empty content
-        let empty_content_node = Node::new_with_id(
-            "empty".to_string(),
+        let empty_content_node = Node::new(
             "schema".to_string(),
             "".to_string(),
             json!({
@@ -2090,8 +2134,7 @@ mod tests {
         );
 
         // Invalid: whitespace-only content
-        let whitespace_node = Node::new_with_id(
-            "whitespace".to_string(),
+        let whitespace_node = Node::new(
             "schema".to_string(),
             "   ".to_string(),
             json!({
@@ -2107,6 +2150,321 @@ mod tests {
             "Schema with whitespace-only content should be rejected"
         );
     }
+
+    // =========================================================================
+    // SchemaNodeBehavior Validation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_schema_node_validates_field_uniqueness() {
+        let behavior = SchemaNodeBehavior;
+
+        // Schema with duplicate field names should fail
+        let duplicate_fields_node = Node::new(
+            "schema".to_string(),
+            "custom_type".to_string(),
+            json!({
+                "isCore": false,
+                "version": 1,
+                "fields": [
+                    {
+                        "name": "field1",
+                        "type": "text",
+                        "protection": "user",
+                        "indexed": false
+                    },
+                    {
+                        "name": "field1",
+                        "type": "number",
+                        "protection": "user",
+                        "indexed": false
+                    }
+                ]
+            }),
+        );
+
+        let result = behavior.validate(&duplicate_fields_node);
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(NodeValidationError::InvalidProperties(ref msg))
+                if msg.contains("duplicate field names")
+        ));
+    }
+
+    #[test]
+    fn test_schema_node_enum_requires_values() {
+        let behavior = SchemaNodeBehavior;
+
+        // Enum field without any values should fail
+        let enum_no_values_node = Node::new(
+            "schema".to_string(),
+            "custom_type".to_string(),
+            json!({
+                "isCore": false,
+                "version": 1,
+                "fields": [
+                    {
+                        "name": "status",
+                        "type": "enum",
+                        "protection": "user",
+                        "indexed": false
+                    }
+                ]
+            }),
+        );
+
+        let result = behavior.validate(&enum_no_values_node);
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(NodeValidationError::InvalidProperties(ref msg))
+                if msg.contains("Enum field") && msg.contains("must have at least one value")
+        ));
+
+        // Enum with core_values should pass
+        let enum_core_values_node = Node::new(
+            "schema".to_string(),
+            "task".to_string(),
+            json!({
+                "isCore": true,
+                "version": 1,
+                "fields": [
+                    {
+                        "name": "status",
+                        "type": "enum",
+                        "protection": "core",
+                        "coreValues": [
+                            { "value": "open", "label": "Open" },
+                            { "value": "in_progress", "label": "In Progress" },
+                            { "value": "done", "label": "Done" }
+                        ],
+                        "indexed": false
+                    }
+                ]
+            }),
+        );
+        assert!(behavior.validate(&enum_core_values_node).is_ok());
+
+        // Enum with user_values should pass
+        let enum_user_values_node = Node::new(
+            "schema".to_string(),
+            "custom_type".to_string(),
+            json!({
+                "isCore": false,
+                "version": 1,
+                "fields": [
+                    {
+                        "name": "priority",
+                        "type": "enum",
+                        "protection": "user",
+                        "userValues": [
+                            { "value": "low", "label": "Low" },
+                            { "value": "medium", "label": "Medium" },
+                            { "value": "high", "label": "High" }
+                        ],
+                        "indexed": false
+                    }
+                ]
+            }),
+        );
+        assert!(behavior.validate(&enum_user_values_node).is_ok());
+
+        // Enum with empty arrays should fail
+        let enum_empty_arrays_node = Node::new(
+            "schema".to_string(),
+            "custom_type".to_string(),
+            json!({
+                "isCore": false,
+                "version": 1,
+                "fields": [
+                    {
+                        "name": "status",
+                        "type": "enum",
+                        "protection": "user",
+                        "coreValues": [],
+                        "userValues": [],
+                        "indexed": false
+                    }
+                ]
+            }),
+        );
+        let result = behavior.validate(&enum_empty_arrays_node);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_schema_node_valid_schema_passes() {
+        let behavior = SchemaNodeBehavior;
+
+        // Comprehensive valid schema with multiple field types
+        let valid_schema_node = Node::new(
+            "schema".to_string(),
+            "project".to_string(),
+            json!({
+                "isCore": false,
+                "version": 1,
+                "description": "Project management schema",
+                "fields": [
+                    {
+                        "name": "name",
+                        "type": "text",
+                        "protection": "user",
+                        "required": true,
+                        "indexed": false
+                    },
+                    {
+                        "name": "status",
+                        "type": "enum",
+                        "protection": "user",
+                        "coreValues": [
+                            { "value": "active", "label": "Active" },
+                            { "value": "archived", "label": "Archived" }
+                        ],
+                        "userValues": [
+                            { "value": "on_hold", "label": "On Hold" }
+                        ],
+                        "indexed": false
+                    },
+                    {
+                        "name": "budget",
+                        "type": "number",
+                        "protection": "user",
+                        "indexed": false
+                    },
+                    {
+                        "name": "department",
+                        "type": "text",
+                        "protection": "user",
+                        "indexed": false
+                    },
+                    {
+                        "name": "external_id",
+                        "type": "text",
+                        "protection": "system",
+                        "indexed": false
+                    }
+                ]
+            }),
+        );
+
+        let result = behavior.validate(&valid_schema_node);
+        assert!(
+            result.is_ok(),
+            "Valid schema should pass validation: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_schema_node_nested_field_validation() {
+        let behavior = SchemaNodeBehavior;
+
+        // Valid nested fields
+        let valid_nested_node = Node::new(
+            "schema".to_string(),
+            "custom_type".to_string(),
+            json!({
+                "isCore": false,
+                "version": 1,
+                "fields": [
+                    {
+                        "name": "metadata",
+                        "type": "object",
+                        "protection": "user",
+                        "indexed": false,
+                        "fields": [
+                            {
+                                "name": "author",
+                                "type": "text",
+                                "protection": "user",
+                                "indexed": false
+                            },
+                            {
+                                "name": "created_at",
+                                "type": "date",
+                                "protection": "user",
+                                "indexed": false
+                            }
+                        ]
+                    }
+                ]
+            }),
+        );
+        assert!(behavior.validate(&valid_nested_node).is_ok());
+
+        // Valid item_fields (array of objects)
+        let valid_item_fields_node = Node::new(
+            "schema".to_string(),
+            "custom_type".to_string(),
+            json!({
+                "isCore": false,
+                "version": 1,
+                "fields": [
+                    {
+                        "name": "tags",
+                        "type": "array",
+                        "protection": "user",
+                        "indexed": false,
+                        "itemType": "object",
+                        "itemFields": [
+                            {
+                                "name": "label",
+                                "type": "text",
+                                "protection": "user",
+                                "indexed": false
+                            },
+                            {
+                                "name": "color",
+                                "type": "text",
+                                "protection": "user",
+                                "indexed": false
+                            }
+                        ]
+                    }
+                ]
+            }),
+        );
+        assert!(behavior.validate(&valid_item_fields_node).is_ok());
+
+        // Nested enum validation - enum in nested field must have values
+        let nested_enum_no_values_node = Node::new(
+            "schema".to_string(),
+            "custom_type".to_string(),
+            json!({
+                "isCore": false,
+                "version": 1,
+                "fields": [
+                    {
+                        "name": "config",
+                        "type": "object",
+                        "protection": "user",
+                        "indexed": false,
+                        "fields": [
+                            {
+                                "name": "mode",
+                                "type": "enum",
+                                "protection": "user",
+                                "indexed": false
+                            }
+                        ]
+                    }
+                ]
+            }),
+        );
+
+        let result = behavior.validate(&nested_enum_no_values_node);
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(NodeValidationError::InvalidProperties(ref msg))
+                if msg.contains("Enum field") && msg.contains("must have at least one value")
+        ));
+    }
+
+    // =========================================================================
+    // TaskNode from_node Format Tests
+    // =========================================================================
 
     #[test]
     fn test_task_node_from_node_nested_format() {

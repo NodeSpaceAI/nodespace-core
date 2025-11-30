@@ -621,6 +621,7 @@ where
             modified_at: now,
             // Schema uses camelCase to match frontend TypeScript conventions (Issue #670)
             // Status values are lowercase for consistency across all layers
+            // EnumValue format: { value, label } for display in UI/MCP clients
             properties: json!({
                 "isCore": true,
                 "version": 1,
@@ -630,7 +631,12 @@ where
                         "name": "status",
                         "type": "enum",
                         "protection": "core",
-                        "coreValues": ["open", "in_progress", "done", "cancelled"],
+                        "coreValues": [
+                            { "value": "open", "label": "Open" },
+                            { "value": "in_progress", "label": "In Progress" },
+                            { "value": "done", "label": "Done" },
+                            { "value": "cancelled", "label": "Cancelled" }
+                        ],
                         "userValues": [],
                         "indexed": true,
                         "required": true,
@@ -642,7 +648,11 @@ where
                         "name": "priority",
                         "type": "enum",
                         "protection": "user",
-                        "coreValues": ["low", "medium", "high"],
+                        "coreValues": [
+                            { "value": "low", "label": "Low" },
+                            { "value": "medium", "label": "Medium" },
+                            { "value": "high", "label": "High" }
+                        ],
                         "userValues": [],
                         "indexed": true,
                         "required": false,
@@ -1425,6 +1435,134 @@ where
             .ok_or_else(|| anyhow::anyhow!("Node not found after update"))?;
 
         // Note: Domain events are now emitted at NodeService layer for client filtering
+
+        Ok(updated_node)
+    }
+
+    /// Update a schema node and execute DDL statements atomically
+    ///
+    /// When a schema node is updated, both the node data AND the corresponding
+    /// SurrealDB table definitions must change together. This method ensures
+    /// atomicity by wrapping both operations in a single transaction.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The schema node ID (also the table name, e.g., "person", "task")
+    /// * `update` - The node update to apply
+    /// * `ddl_statements` - DDL statements to execute (DEFINE TABLE, DEFINE FIELD, etc.)
+    ///
+    /// # Returns
+    ///
+    /// The updated schema node
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - Node not found
+    /// - DDL execution fails
+    /// - Transaction fails
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use nodespace_core::NodeUpdate;
+    /// # async fn example(store: &SurrealStore) -> anyhow::Result<()> {
+    /// let ddl = vec![
+    ///     "DEFINE TABLE IF NOT EXISTS person SCHEMAFULL;".to_string(),
+    ///     "DEFINE FIELD IF NOT EXISTS name ON person TYPE string;".to_string(),
+    /// ];
+    /// let update = NodeUpdate::new().with_properties(serde_json::json!({"schema": "..."}));
+    /// store.update_schema_node_atomic("person", update, ddl).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn update_schema_node_atomic(
+        &self,
+        id: &str,
+        update: NodeUpdate,
+        ddl_statements: Vec<String>,
+    ) -> Result<Node> {
+        // Fetch current node to verify it exists and get current state
+        let current = self
+            .get_node(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Schema node not found: {}", id))?;
+
+        // Prepare updated values
+        let updated_content = update.content.unwrap_or(current.content);
+        let updated_node_type = update.node_type.unwrap_or(current.node_type.clone());
+        let embedding_f32 = update.embedding_vector.flatten();
+
+        // Merge properties if they're being updated
+        let properties_update = if let Some(ref updated_props) = update.properties {
+            let mut merged_props = current.properties.as_object().cloned().unwrap_or_default();
+            if let Some(new_props) = updated_props.as_object() {
+                for (key, value) in new_props {
+                    merged_props.insert(key.clone(), value.clone());
+                }
+            }
+            serde_json::Value::Object(merged_props)
+        } else {
+            current.properties.clone()
+        };
+
+        // Build the atomic transaction query
+        // This wraps: node update + spoke table update + all DDL statements in one transaction
+        let mut transaction_parts = vec!["BEGIN TRANSACTION;".to_string()];
+
+        // Add node update statement (updates the hub node table)
+        transaction_parts.push(
+            r#"UPDATE type::thing('node', $id) SET
+                content = $content,
+                node_type = $node_type,
+                modified_at = time::now(),
+                version = version + 1,
+                embedding_vector = $embedding_vector,
+                properties = $properties;"#
+                .to_string(),
+        );
+
+        // CRITICAL: Also update the spoke table (schema:id) where properties are actually read from
+        // get_node() reads properties from the spoke table for types in TYPES_WITH_SPOKE_TABLES
+        transaction_parts
+            .push(r#"UPSERT type::thing('schema', $id) MERGE $properties;"#.to_string());
+
+        // Ensure data link exists
+        transaction_parts.push(
+            r#"UPDATE type::thing('node', $id) SET data = type::thing('schema', $id);"#.to_string(),
+        );
+
+        // Add all DDL statements
+        for ddl in ddl_statements {
+            transaction_parts.push(ddl);
+        }
+
+        transaction_parts.push("COMMIT TRANSACTION;".to_string());
+        let transaction_query = transaction_parts.join("\n");
+
+        // Execute the atomic transaction
+        self.db
+            .query(&transaction_query)
+            .bind(("id", id.to_string()))
+            .bind(("content", updated_content))
+            .bind(("node_type", updated_node_type))
+            .bind(("embedding_vector", embedding_f32))
+            .bind(("properties", properties_update.clone()))
+            .await
+            .context("Failed to execute atomic schema update transaction")?;
+
+        // Fetch and return updated node
+        let updated_node = self
+            .get_node(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Schema node not found after atomic update"))?;
+
+        tracing::info!(
+            "Atomically updated schema node '{}' with {} DDL statements",
+            id,
+            transaction_parts.len() - 3 // Exclude BEGIN, UPDATE, COMMIT
+        );
 
         Ok(updated_node)
     }
@@ -3754,40 +3892,36 @@ mod tests {
 
     #[tokio::test]
     async fn test_schema_operations() -> Result<()> {
-        use crate::models::schema::{ProtectionLevel, SchemaDefinition, SchemaField};
+        use crate::models::schema::{SchemaField, SchemaProtectionLevel};
 
         let (store, _temp_dir) = create_test_store().await?;
 
-        // Create a proper SchemaDefinition with fields containing ProtectionLevel enum
+        // Create schema properties with fields containing SchemaProtectionLevel enum
         // This tests that enums are stored and retrieved correctly without stringification
-        let schema_def = SchemaDefinition {
-            is_core: false,
-            version: 1,
-            description: "Test task schema".to_string(),
-            // Status values use lowercase format (Issue #670)
-            fields: vec![SchemaField {
-                name: "status".to_string(),
-                field_type: "enum".to_string(),
-                protection: ProtectionLevel::Core,
-                core_values: Some(vec![
-                    "open".to_string(),
-                    "in_progress".to_string(),
-                    "done".to_string(),
-                ]),
-                user_values: None,
-                indexed: true,
-                required: Some(true),
-                extensible: Some(true),
-                default: Some(serde_json::json!("open")),
-                description: Some("Task status".to_string()),
-                item_type: None,
-                fields: None,
-                item_fields: None,
-            }],
-        };
+        let schema_props = serde_json::json!({
+            "isCore": false,
+            "version": 1,
+            "description": "Test task schema",
+            "fields": [
+                {
+                    "name": "status",
+                    "type": "enum",
+                    "protection": "core",
+                    "coreValues": [
+                        { "value": "open", "label": "Open" },
+                        { "value": "in_progress", "label": "In Progress" },
+                        { "value": "done", "label": "Done" }
+                    ],
+                    "indexed": true,
+                    "required": true,
+                    "extensible": true,
+                    "default": "open",
+                    "description": "Task status"
+                }
+            ]
+        });
 
-        let schema = serde_json::to_value(&schema_def)?;
-        store.update_schema("task", &schema).await?;
+        store.update_schema("task", &schema_props).await?;
 
         // Fetch and verify the schema was stored correctly
         let fetched = store.get_schema("task").await?;
@@ -3795,14 +3929,16 @@ mod tests {
 
         let fetched_value = fetched.unwrap();
 
-        // Verify the schema was stored and retrieved correctly with enum handling
-        let retrieved_schema: SchemaDefinition = serde_json::from_value(fetched_value)?;
-        assert_eq!(retrieved_schema.version, 1);
-        assert_eq!(retrieved_schema.description, "Test task schema");
-        assert_eq!(retrieved_schema.fields.len(), 1);
-        assert_eq!(retrieved_schema.fields[0].name, "status");
-        // Key assertion: ProtectionLevel enum correctly deserialized
-        assert_eq!(retrieved_schema.fields[0].protection, ProtectionLevel::Core);
+        // Verify the schema was stored and retrieved correctly
+        assert_eq!(fetched_value["version"], 1);
+        assert_eq!(fetched_value["description"], "Test task schema");
+
+        // Parse and verify fields with SchemaProtectionLevel
+        let fields: Vec<SchemaField> = serde_json::from_value(fetched_value["fields"].clone())?;
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "status");
+        // Key assertion: SchemaProtectionLevel enum correctly deserialized
+        assert_eq!(fields[0].protection, SchemaProtectionLevel::Core);
 
         Ok(())
     }

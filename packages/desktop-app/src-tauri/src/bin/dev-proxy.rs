@@ -27,12 +27,9 @@ use axum::{
 use futures::stream::Stream;
 use nodespace_core::{
     db::HttpStore,
-    models::{
-        self,
-        schema::{ProtectionLevel, SchemaDefinition, SchemaField},
-        Node, NodeFilter, NodeUpdate,
-    },
-    services::{CreateNodeParams, NodeService, NodeServiceError, SchemaService},
+    models,
+    models::{Node, NodeFilter, NodeUpdate, SchemaNode},
+    services::{CreateNodeParams, NodeService, NodeServiceError},
 };
 use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -42,7 +39,7 @@ use tower_http::cors::CorsLayer;
 
 // Type alias for HTTP client types
 type HttpNodeService = NodeService<surrealdb::engine::remote::http::Client>;
-type HttpSchemaService = SchemaService<surrealdb::engine::remote::http::Client>;
+// NOTE: SchemaService removed (Issue #690) - schema operations use NodeService directly
 
 // ============================================================================
 // SSE Events for Browser Mode Real-Time Sync
@@ -107,11 +104,11 @@ pub enum SseEvent {
 /// Application state shared across handlers
 ///
 /// As of Issue #676, NodeOperations layer was merged into NodeService.
+/// As of Issue #690, SchemaService removed - schema operations use NodeService directly.
 /// All business logic now goes directly through NodeService.
 #[derive(Clone)]
 struct AppState {
     node_service: Arc<HttpNodeService>,
-    schema_service: Arc<HttpSchemaService>,
     /// Broadcast channel for SSE events to connected browser clients
     event_tx: broadcast::Sender<SseEvent>,
 }
@@ -149,23 +146,12 @@ impl ApiError {
     }
 }
 
-/// Result of schema field mutation operations
-///
-/// Matches Tauri's SchemaFieldResult to ensure consistent responses
-/// between HTTP and Tauri entry points.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SchemaFieldResult {
-    /// ID of the modified schema
-    pub schema_id: String,
-    /// New schema version after the operation
-    pub new_version: i32,
-}
+// NOTE: SchemaFieldResult and ApiSchemaResult removed (Issue #690)
+// Schema mutation operations not used by UI
 
 /// Standard result types for HTTP handlers
 type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ApiError>)>;
 type ApiStatusResult = Result<StatusCode, (StatusCode, Json<ApiError>)>;
-type ApiSchemaResult = Result<Json<SchemaFieldResult>, (StatusCode, Json<ApiError>)>;
 
 /// Convert a Node to its strongly-typed JSON representation (Issue #673)
 ///
@@ -224,27 +210,8 @@ struct MentionAutocompleteRequest {
     pub limit: Option<i64>,
 }
 
-/// Add schema field request
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AddSchemaFieldRequest {
-    pub name: String,
-    pub field_type: String,
-    pub indexed: bool,
-    pub required: Option<bool>,
-    pub default: Option<serde_json::Value>,
-    pub description: Option<String>,
-    pub item_type: Option<String>,
-    pub enum_values: Option<Vec<String>>,
-    pub extensible: Option<bool>,
-}
-
-/// Extend enum field request
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ExtendEnumRequest {
-    pub value: String,
-}
+// NOTE: AddSchemaFieldRequest and ExtendEnumRequest removed (Issue #690)
+// Schema mutation operations not used by UI
 
 // === Error Mapping Helpers ===
 
@@ -280,32 +247,7 @@ fn map_node_service_error(err: NodeServiceError) -> (StatusCode, Json<ApiError>)
     )
 }
 
-/// Maps NodeServiceError to HTTP status code and structured ApiError for schema operations
-///
-/// Provides more specific error codes for schema-related operations.
-fn map_schema_error(err: NodeServiceError) -> (StatusCode, Json<ApiError>) {
-    let error_str = err.to_string();
-
-    let (status, code) = if error_str.contains("not found") {
-        (StatusCode::NOT_FOUND, "SCHEMA_NOT_FOUND")
-    } else if error_str.contains("already exists") {
-        (StatusCode::BAD_REQUEST, "FIELD_ALREADY_EXISTS")
-    } else if error_str.contains("validation") || error_str.contains("protected") {
-        (StatusCode::BAD_REQUEST, "VALIDATION_ERROR")
-    } else if error_str.contains("version") || error_str.contains("conflict") {
-        (StatusCode::CONFLICT, "VERSION_CONFLICT")
-    } else {
-        (StatusCode::INTERNAL_SERVER_ERROR, "SCHEMA_SERVICE_ERROR")
-    };
-
-    (
-        status,
-        Json(ApiError::new(
-            code,
-            format!("Schema operation failed: {}", error_str),
-        )),
-    )
-}
+// NOTE: map_schema_error removed (Issue #690) - schema operations use map_node_service_error
 
 /// Create node request for POST /api/nodes endpoint
 ///
@@ -409,13 +351,8 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Initialize SchemaService
-    println!("🔖 Initializing SchemaService...");
-    let schema_service = Arc::new(SchemaService::new(node_service.clone()));
-    println!("✅ SchemaService initialized");
-
     // NOTE: NodeOperations layer was merged into NodeService (Issue #676)
-    // All business logic now goes directly through NodeService
+    // NOTE: SchemaService removed (Issue #690) - schema operations use NodeService directly
 
     // Create broadcast channel for SSE events (capacity 100 messages)
     // Lagging receivers will skip missed messages rather than blocking senders
@@ -424,7 +361,6 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         node_service: node_service.clone(),
-        schema_service,
         event_tx: event_tx.clone(),
     };
 
@@ -463,19 +399,9 @@ async fn main() -> anyhow::Result<()> {
             "/api/nodes/:id/mentions/roots",
             get(get_mentioning_containers),
         )
-        // Schema endpoints
+        // Schema endpoints (read-only - mutation endpoints removed Issue #690, not used by UI)
         .route("/api/schemas", get(get_all_schemas))
         .route("/api/schemas/:id", get(get_schema))
-        .route("/api/schemas/:id/fields", post(add_schema_field))
-        .route("/api/schemas/:id/fields/:name", delete(remove_schema_field))
-        .route(
-            "/api/schemas/:id/fields/:name/enum",
-            post(extend_schema_enum),
-        )
-        .route(
-            "/api/schemas/:id/fields/:name/enum/:value",
-            delete(remove_schema_enum_value),
-        )
         .with_state(state)
         .layer(CorsLayer::permissive()); // Allow CORS from frontend (localhost:5173)
 
@@ -1012,11 +938,13 @@ async fn get_mentioning_containers(
     Ok(Json(container_ids))
 }
 
-/// Get all schema definitions
+/// Get all schema definitions with typed fields
 ///
 /// Retrieves all schema definitions stored in the database. This endpoint
 /// is used by the frontend SchemaPluginLoader to auto-register custom entity
 /// plugins on application startup.
+///
+/// Returns SchemaNode[] with typed top-level fields (isCore, schemaVersion, description, fields).
 ///
 /// # HTTP Endpoint
 /// ```text
@@ -1028,14 +956,12 @@ async fn get_mentioning_containers(
 /// [
 ///   {
 ///     "id": "task",
+///     "nodeType": "schema",
 ///     "content": "Task",
 ///     "version": 1,
-///     "fields": [...]
-///   },
-///   {
-///     "id": "date",
-///     "content": "Date",
-///     "version": 1,
+///     "isCore": true,
+///     "schemaVersion": 1,
+///     "description": "Task schema",
 ///     "fields": [...]
 ///   }
 /// ]
@@ -1043,30 +969,31 @@ async fn get_mentioning_containers(
 ///
 /// # Errors
 /// - `500 INTERNAL SERVER ERROR`: Database error
-///
-/// # Implementation Note
-/// Returns schemas as SchemaDefinition objects (not tuples). The frontend
-/// expects an array of schema objects with `id` and other properties.
-async fn get_all_schemas(State(state): State<AppState>) -> ApiResult<Vec<SchemaDefinition>> {
-    let schemas = state
-        .schema_service
-        .get_all_schemas()
+async fn get_all_schemas(State(state): State<AppState>) -> ApiResult<Vec<SchemaNode>> {
+    // Query all schema nodes via NodeService
+    let query = nodespace_core::NodeQuery {
+        node_type: Some("schema".to_string()),
+        ..Default::default()
+    };
+    let nodes = state
+        .node_service
+        .query_nodes_simple(query)
         .await
-        .map_err(map_schema_error)?;
+        .map_err(map_node_service_error)?;
 
-    // Convert Vec<(String, SchemaDefinition)> to Vec<SchemaDefinition>
-    // The tuple format is internal to SchemaService; the HTTP API returns objects
-    let schema_list: Vec<SchemaDefinition> =
-        schemas.into_iter().map(|(_id, schema)| schema).collect();
+    // Convert to SchemaNode for typed serialization
+    let schema_nodes: Vec<SchemaNode> = nodes
+        .into_iter()
+        .filter_map(|node| SchemaNode::from_node(node).ok())
+        .collect();
 
-    Ok(Json(schema_list))
+    Ok(Json(schema_nodes))
 }
 
-/// Get schema definition by schema ID
+/// Get schema by ID with typed fields
 ///
-/// Retrieves the complete schema definition including all fields,
-/// protection levels, and metadata. Uses SchemaService for proper
-/// schema validation and retrieval.
+/// Retrieves the complete schema including all fields, protection levels,
+/// and metadata. Returns SchemaNode with typed top-level fields.
 ///
 /// # HTTP Endpoint
 /// ```text
@@ -1077,22 +1004,7 @@ async fn get_all_schemas(State(state): State<AppState>) -> ApiResult<Vec<SchemaD
 /// - `id`: Schema ID (e.g., "task", "person", "project")
 ///
 /// # Response (200 OK)
-/// ```json
-/// {
-///   "id": "task",
-///   "name": "Task",
-///   "version": 1,
-///   "fields": [
-///     {
-///       "name": "status",
-///       "fieldType": "enum",
-///       "protection": "core",
-///       "coreValues": ["todo", "in_progress", "done"],
-///       "indexed": true
-///     }
-///   ]
-/// }
-/// ```
+/// Returns SchemaNode with typed fields (isCore, schemaVersion, description, fields).
 ///
 /// # Errors
 /// - `404 NOT FOUND`: Schema doesn't exist
@@ -1100,267 +1012,26 @@ async fn get_all_schemas(State(state): State<AppState>) -> ApiResult<Vec<SchemaD
 async fn get_schema(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> ApiResult<SchemaDefinition> {
-    let schema = state
-        .schema_service
-        .get_schema(&id)
+) -> ApiResult<SchemaNode> {
+    let schema_node = state
+        .node_service
+        .get_schema_node(&id)
         .await
-        .map_err(map_schema_error)?;
+        .map_err(map_node_service_error)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError::new(
+                    "SCHEMA_NOT_FOUND",
+                    format!("Schema '{}' not found", id),
+                )),
+            )
+        })?;
 
-    Ok(Json(schema))
+    // Return SchemaNode directly - custom Serialize impl outputs typed fields
+    Ok(Json(schema_node))
 }
 
-/// Add a new field to a schema
-///
-/// Creates a new user-protected field in the specified schema. Only user
-/// fields can be added through this endpoint - core and system fields
-/// require schema definition changes.
-///
-/// The schema version is automatically incremented on success, and the
-/// new version is returned in the response (matching Tauri behavior).
-///
-/// # HTTP Endpoint
-/// ```text
-/// POST /api/schemas/:id/fields
-/// Content-Type: application/json
-/// ```
-///
-/// # Parameters
-/// - `id`: Schema ID to modify (e.g., "task", "person")
-///
-/// # Request Body
-/// ```json
-/// {
-///   "name": "custom:priority",
-///   "fieldType": "number",
-///   "indexed": false,
-///   "required": false,
-///   "default": 0,
-///   "description": "Task priority level"
-/// }
-/// ```
-///
-/// # Response (200 OK)
-/// ```json
-/// {
-///   "schemaId": "task",
-///   "newVersion": 2
-/// }
-/// ```
-///
-/// # Errors
-/// - `404 NOT FOUND`: Schema doesn't exist
-/// - `400 BAD REQUEST`: Field already exists, validation error, or protection violation
-/// - `500 INTERNAL SERVER ERROR`: Database error
-///
-/// # Field Naming
-/// User fields MUST use namespace prefixes (e.g., `custom:`, `org:`, `plugin:`)
-/// to prevent conflicts with future core fields.
-async fn add_schema_field(
-    State(state): State<AppState>,
-    Path(schema_id): Path<String>,
-    Json(request): Json<AddSchemaFieldRequest>,
-) -> ApiSchemaResult {
-    // Build SchemaField from request
-    let field = SchemaField {
-        name: request.name,
-        field_type: request.field_type,
-        protection: ProtectionLevel::User, // Only user fields can be added
-        core_values: None,                 // User fields don't have core values
-        user_values: request.enum_values,
-        indexed: request.indexed,
-        required: request.required,
-        extensible: request.extensible,
-        default: request.default,
-        description: request.description,
-        item_type: request.item_type,
-        fields: None,      // Nested fields not supported via this API yet
-        item_fields: None, // Array of objects not supported via this API yet
-    };
-
-    // Add field to schema
-    state
-        .schema_service
-        .add_field(&schema_id, field)
-        .await
-        .map_err(map_schema_error)?;
-
-    // Get updated schema to return new version (matches Tauri behavior)
-    let updated_schema = state
-        .schema_service
-        .get_schema(&schema_id)
-        .await
-        .map_err(map_schema_error)?;
-
-    Ok(Json(SchemaFieldResult {
-        schema_id,
-        new_version: updated_schema.version as i32,
-    }))
-}
-
-/// Remove a field from a schema
-///
-/// Removes a user-protected field from the specified schema. Core and
-/// system fields cannot be removed through this endpoint.
-///
-/// The schema version is automatically incremented on success.
-///
-/// # HTTP Endpoint
-/// ```text
-/// DELETE /api/schemas/:id/fields/:name
-/// ```
-///
-/// # Parameters
-/// - `id`: Schema ID (e.g., "task")
-/// - `name`: Field name to remove (e.g., "custom:priority")
-///
-/// # Response (200 OK)
-/// ```json
-/// {
-///   "schemaId": "task",
-///   "newVersion": 3
-/// }
-/// ```
-///
-/// # Errors
-/// - `404 NOT FOUND`: Schema or field doesn't exist
-/// - `400 BAD REQUEST`: Cannot remove core/system field (protection violation)
-/// - `500 INTERNAL SERVER ERROR`: Database error
-async fn remove_schema_field(
-    State(state): State<AppState>,
-    Path((schema_id, field_name)): Path<(String, String)>,
-) -> ApiSchemaResult {
-    // Remove field from schema
-    state
-        .schema_service
-        .remove_field(&schema_id, &field_name)
-        .await
-        .map_err(map_schema_error)?;
-
-    // Get updated schema to return new version (matches Tauri behavior)
-    let updated_schema = state
-        .schema_service
-        .get_schema(&schema_id)
-        .await
-        .map_err(map_schema_error)?;
-
-    Ok(Json(SchemaFieldResult {
-        schema_id,
-        new_version: updated_schema.version as i32,
-    }))
-}
-
-/// Extend an enum field with a new user value
-///
-/// Adds a new user value to an extensible enum field. Only works on
-/// fields with `extensible: true` and adds to `userValues` array
-/// (core values cannot be modified).
-///
-/// The schema version is automatically incremented on success.
-///
-/// # HTTP Endpoint
-/// ```text
-/// POST /api/schemas/:id/fields/:name/enum
-/// Content-Type: application/json
-/// ```
-///
-/// # Parameters
-/// - `id`: Schema ID (e.g., "task")
-/// - `name`: Enum field name (e.g., "status")
-///
-/// # Request Body
-/// ```json
-/// {
-///   "value": "blocked"
-/// }
-/// ```
-///
-/// # Response (200 OK)
-/// ```json
-/// {
-///   "schemaId": "task",
-///   "newVersion": 4
-/// }
-/// ```
-///
-/// # Errors
-/// - `404 NOT FOUND`: Schema or field doesn't exist
-/// - `400 BAD REQUEST`: Field is not an enum, not extensible, or value already exists
-/// - `500 INTERNAL SERVER ERROR`: Database error
-async fn extend_schema_enum(
-    State(state): State<AppState>,
-    Path((schema_id, field_name)): Path<(String, String)>,
-    Json(request): Json<ExtendEnumRequest>,
-) -> ApiSchemaResult {
-    // Extend enum field with new user value
-    state
-        .schema_service
-        .extend_enum_field(&schema_id, &field_name, request.value)
-        .await
-        .map_err(map_schema_error)?;
-
-    // Get updated schema to return new version (matches Tauri behavior)
-    let updated_schema = state
-        .schema_service
-        .get_schema(&schema_id)
-        .await
-        .map_err(map_schema_error)?;
-
-    Ok(Json(SchemaFieldResult {
-        schema_id,
-        new_version: updated_schema.version as i32,
-    }))
-}
-
-/// Remove a user value from an enum field
-///
-/// Removes a user value from an enum field's `userValues` array. Core
-/// values cannot be removed through this endpoint.
-///
-/// The schema version is automatically incremented on success.
-///
-/// # HTTP Endpoint
-/// ```text
-/// DELETE /api/schemas/:id/fields/:name/enum/:value
-/// ```
-///
-/// # Parameters
-/// - `id`: Schema ID (e.g., "task")
-/// - `name`: Enum field name (e.g., "status")
-/// - `value`: Value to remove (e.g., "blocked")
-///
-/// # Response (200 OK)
-/// ```json
-/// {
-///   "schemaId": "task",
-///   "newVersion": 5
-/// }
-/// ```
-///
-/// # Errors
-/// - `404 NOT FOUND`: Schema, field, or value doesn't exist
-/// - `400 BAD REQUEST`: Cannot remove core value (protection violation)
-/// - `500 INTERNAL SERVER ERROR`: Database error
-async fn remove_schema_enum_value(
-    State(state): State<AppState>,
-    Path((schema_id, field_name, value)): Path<(String, String, String)>,
-) -> ApiSchemaResult {
-    // Remove user value from enum field
-    state
-        .schema_service
-        .remove_enum_value(&schema_id, &field_name, &value)
-        .await
-        .map_err(map_schema_error)?;
-
-    // Get updated schema to return new version (matches Tauri behavior)
-    let updated_schema = state
-        .schema_service
-        .get_schema(&schema_id)
-        .await
-        .map_err(map_schema_error)?;
-
-    Ok(Json(SchemaFieldResult {
-        schema_id,
-        new_version: updated_schema.version as i32,
-    }))
-}
+// NOTE: Schema mutation functions (add_schema_field, remove_schema_field,
+// extend_schema_enum, remove_schema_enum_value) removed in Issue #690.
+// These were not used by any UI components.

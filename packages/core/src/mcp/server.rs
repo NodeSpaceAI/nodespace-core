@@ -9,7 +9,7 @@
 //! As of Issue #676, MCP handlers route through NodeService directly.
 
 use crate::mcp::types::{MCPError, MCPNotification, MCPRequest, MCPResponse};
-use crate::services::{NodeEmbeddingService, NodeService, SchemaService};
+use crate::services::{NodeEmbeddingService, NodeService};
 use axum::{
     body::{Body, Bytes},
     extract::State,
@@ -38,10 +38,10 @@ pub enum McpTransport {
 /// Combined services for MCP handlers
 ///
 /// As of Issue #676, uses NodeService directly instead of NodeOperations.
+/// As of Issue #690, SchemaService removed - schema nodes use generic CRUD.
 pub struct McpServices {
     pub node_service: Arc<NodeService>,
     pub embedding_service: Arc<NodeEmbeddingService>,
-    pub schema_service: Arc<SchemaService>,
 }
 
 /// Server state tracking initialization status
@@ -546,7 +546,6 @@ async fn handle_request(
             crate::mcp::handlers::tools::handle_tools_call(
                 &services.node_service,
                 &services.embedding_service,
-                &services.schema_service,
                 request.params,
             )
             .await
@@ -681,12 +680,10 @@ mod tests {
         let nlp_engine =
             Arc::new(nodespace_nlp_engine::EmbeddingService::new(Default::default()).unwrap());
         let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
-        let schema_service = Arc::new(SchemaService::new(node_service.clone()));
 
         McpServices {
             node_service,
             embedding_service,
-            schema_service,
         }
     }
 

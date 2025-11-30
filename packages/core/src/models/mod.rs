@@ -10,11 +10,11 @@
 
 mod node;
 pub mod schema;
-mod schema_node;
 pub mod time;
 
 // Type-safe node wrappers
 mod date_node;
+mod schema_node;
 mod task_node;
 mod text_node;
 
@@ -53,7 +53,7 @@ pub use node::{
 };
 pub use ordered_list_node::{OrderedListNode, OrderedListValidationError};
 pub use quote_block_node::{QuoteBlockNode, QuoteBlockValidationError};
-pub use schema::{ProtectionLevel, SchemaDefinition, SchemaField};
+pub use schema::{SchemaField, SchemaProtectionLevel};
 pub use time::{SystemTimeProvider, TimeProvider};
 
 // Export type-safe wrappers

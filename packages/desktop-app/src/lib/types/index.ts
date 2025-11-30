@@ -18,6 +18,11 @@ export { isQuoteBlockNode, QuoteBlockNodeHelpers } from './quote-block-node';
 export type { OrderedListNode } from './ordered-list-node';
 export { isOrderedListNode, OrderedListNodeHelpers } from './ordered-list-node';
 
+export type { SchemaNode, SchemaField, ProtectionLevel, EnumValue } from './schema-node';
+// Only isSchemaNode remains - type guard for runtime checking
+// All other properties are typed top-level fields accessed directly (e.g., node.isCore, node.fields)
+export { isSchemaNode } from './schema-node';
+
 // Error types
 export type { CommandError } from './errors';
 export { isCommandError, toError, DatabaseInitializationError, NodeOperationError } from './errors';

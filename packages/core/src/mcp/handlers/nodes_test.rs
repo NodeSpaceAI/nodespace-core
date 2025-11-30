@@ -137,29 +137,30 @@ mod tests {
 #[cfg(test)]
 mod occ_tests {
     use crate::db::SurrealStore;
-    use crate::mcp::handlers::nodes::{handle_delete_node, handle_update_node};
+    use crate::mcp::handlers::nodes::handle_delete_node;
+    #[allow(unused_imports)]
+    use crate::mcp::handlers::nodes::handle_update_node;
     use crate::mcp::types::{INVALID_PARAMS, VERSION_CONFLICT};
-    use crate::services::{CreateNodeParams, SchemaService};
+    use crate::services::CreateNodeParams;
     use crate::NodeService;
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    async fn setup_test_service(
-    ) -> Result<(Arc<NodeService>, Arc<SchemaService>, TempDir), Box<dyn std::error::Error>> {
+    async fn setup_test_service() -> Result<(Arc<NodeService>, TempDir), Box<dyn std::error::Error>>
+    {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
 
         let store = Arc::new(SurrealStore::new(db_path).await?);
         let node_service = Arc::new(NodeService::new(store)?);
-        let schema_service = Arc::new(SchemaService::new(node_service.clone()));
-        Ok((node_service, schema_service, temp_dir))
+        Ok((node_service, temp_dir))
     }
 
     /// Verifies nodes are created with version 1
     #[tokio::test]
     async fn test_node_created_with_version_1() {
-        let (node_service, _schema_service, _temp) = setup_test_service().await.unwrap();
+        let (node_service, _temp) = setup_test_service().await.unwrap();
 
         let node_id = node_service
             .create_node_with_parent(CreateNodeParams {
@@ -180,7 +181,7 @@ mod occ_tests {
     /// Verifies version increments on successful update
     #[tokio::test]
     async fn test_version_increments_on_update() {
-        let (node_service, _schema_service, _temp) = setup_test_service().await.unwrap();
+        let (node_service, _temp) = setup_test_service().await.unwrap();
 
         let node_id = node_service
             .create_node_with_parent(CreateNodeParams {
@@ -201,9 +202,7 @@ mod occ_tests {
             "content": "Updated once"
         });
 
-        let result = handle_update_node(&node_service, &_schema_service, params)
-            .await
-            .unwrap();
+        let result = handle_update_node(&node_service, params).await.unwrap();
         assert_eq!(result["version"], 2);
 
         // Second update: version 2 → 3
@@ -213,16 +212,14 @@ mod occ_tests {
             "content": "Updated twice"
         });
 
-        let result2 = handle_update_node(&node_service, &_schema_service, params2)
-            .await
-            .unwrap();
+        let result2 = handle_update_node(&node_service, params2).await.unwrap();
         assert_eq!(result2["version"], 3);
     }
 
     /// Verifies concurrent update detection via version conflict
     #[tokio::test]
     async fn test_concurrent_update_version_conflict() {
-        let (node_service, _schema_service, _temp) = setup_test_service().await.unwrap();
+        let (node_service, _temp) = setup_test_service().await.unwrap();
 
         // Create node (version=1)
         let node_id = node_service
@@ -243,9 +240,7 @@ mod occ_tests {
             "version": 1,
             "content": "Client 1 update"
         });
-        handle_update_node(&node_service, &_schema_service, params1)
-            .await
-            .unwrap();
+        handle_update_node(&node_service, params1).await.unwrap();
 
         // Client 2 tries to update with stale version (still thinks version=1)
         let params2 = json!({
@@ -254,7 +249,7 @@ mod occ_tests {
             "content": "Client 2 conflicting update"
         });
 
-        let result = handle_update_node(&node_service, &_schema_service, params2).await;
+        let result = handle_update_node(&node_service, params2).await;
 
         // Should fail with VersionConflict error
         assert!(result.is_err());
@@ -266,7 +261,7 @@ mod occ_tests {
     /// Verifies conflict error includes current node state
     #[tokio::test]
     async fn test_version_conflict_includes_current_node() {
-        let (node_service, _schema_service, _temp) = setup_test_service().await.unwrap();
+        let (node_service, _temp) = setup_test_service().await.unwrap();
 
         let node_id = node_service
             .create_node_with_parent(CreateNodeParams {
@@ -286,9 +281,7 @@ mod occ_tests {
             "version": 1,
             "content": "First update"
         });
-        handle_update_node(&node_service, &_schema_service, params1)
-            .await
-            .unwrap();
+        handle_update_node(&node_service, params1).await.unwrap();
 
         // Try to update with stale version
         let params2 = json!({
@@ -297,7 +290,7 @@ mod occ_tests {
             "content": "Conflicting update"
         });
 
-        let result = handle_update_node(&node_service, &_schema_service, params2).await;
+        let result = handle_update_node(&node_service, params2).await;
         assert!(result.is_err());
 
         let error = result.unwrap_err();
@@ -316,7 +309,7 @@ mod occ_tests {
     /// Verifies delete operation checks version
     #[tokio::test]
     async fn test_delete_with_version_check() {
-        let (node_service, _schema_service, _temp) = setup_test_service().await.unwrap();
+        let (node_service, _temp) = setup_test_service().await.unwrap();
 
         let node_id = node_service
             .create_node_with_parent(CreateNodeParams {
@@ -336,7 +329,7 @@ mod occ_tests {
             "version": 1,
             "content": "Modified"
         });
-        handle_update_node(&node_service, &_schema_service, update_params)
+        handle_update_node(&node_service, update_params)
             .await
             .unwrap();
 
@@ -371,7 +364,7 @@ mod occ_tests {
     /// Verifies rapid sequential updates maintain version integrity
     #[tokio::test]
     async fn test_rapid_sequential_updates() {
-        let (node_service, _schema_service, _temp) = setup_test_service().await.unwrap();
+        let (node_service, _temp) = setup_test_service().await.unwrap();
 
         let node_id = node_service
             .create_node_with_parent(CreateNodeParams {
@@ -394,9 +387,7 @@ mod occ_tests {
                 "content": format!("Update {}", i + 1)
             });
 
-            let result = handle_update_node(&node_service, &_schema_service, params)
-                .await
-                .unwrap();
+            let result = handle_update_node(&node_service, params).await.unwrap();
             current_version = result["version"].as_i64().unwrap();
             assert_eq!(current_version, (i + 2) as i64);
         }
@@ -413,7 +404,7 @@ mod occ_tests {
     /// Uses task node type since it has a spoke table for properties (hub-spoke architecture)
     #[tokio::test]
     async fn test_property_update_increments_version() {
-        let (node_service, _schema_service, _temp) = setup_test_service().await.unwrap();
+        let (node_service, _temp) = setup_test_service().await.unwrap();
 
         let node_id = node_service
             .create_node_with_parent(CreateNodeParams {
@@ -434,9 +425,7 @@ mod occ_tests {
             "properties": {"status": "done", "priority": "high"}
         });
 
-        let result = handle_update_node(&node_service, &_schema_service, params)
-            .await
-            .unwrap();
+        let result = handle_update_node(&node_service, params).await.unwrap();
         assert_eq!(result["version"], 2);
 
         let updated = node_service.get_node(&node_id).await.unwrap().unwrap();
@@ -448,7 +437,7 @@ mod occ_tests {
     /// Verifies update FAILS when version parameter is missing (prevents TOCTOU race conditions)
     #[tokio::test]
     async fn test_update_without_version_parameter() {
-        let (node_service, _schema_service, _temp) = setup_test_service().await.unwrap();
+        let (node_service, _temp) = setup_test_service().await.unwrap();
 
         let node_id = node_service
             .create_node_with_parent(CreateNodeParams {
@@ -468,7 +457,7 @@ mod occ_tests {
             "content": "Updated without version"
         });
 
-        let result = handle_update_node(&node_service, &_schema_service, params).await;
+        let result = handle_update_node(&node_service, params).await;
 
         // Should fail with invalid_params error
         assert!(result.is_err());
@@ -496,26 +485,25 @@ mod integration_tests {
         handle_update_nodes_batch,
     };
     use crate::models::NodeUpdate;
-    use crate::services::{CreateNodeParams, SchemaService};
+    use crate::services::CreateNodeParams;
     use crate::NodeService;
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    async fn setup_test_service(
-    ) -> Result<(Arc<NodeService>, Arc<SchemaService>, TempDir), Box<dyn std::error::Error>> {
+    async fn setup_test_service() -> Result<(Arc<NodeService>, TempDir), Box<dyn std::error::Error>>
+    {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
 
         let store = Arc::new(SurrealStore::new(db_path).await?);
         let node_service = Arc::new(NodeService::new(store)?);
-        let schema_service = Arc::new(SchemaService::new(node_service.clone()));
-        Ok((node_service, schema_service, temp_dir))
+        Ok((node_service, temp_dir))
     }
 
     #[tokio::test]
     async fn test_insert_child_at_index_with_date_auto_creation() {
-        let (node_service, _schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         // Insert child with date parent (should auto-create date node)
         let params = json!({
@@ -550,7 +538,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_insert_child_at_index_with_invalid_date_format() {
-        let (node_service, _schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         // Try to insert with invalid date format (should fail)
         let params = json!({
@@ -571,7 +559,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_insert_child_at_index_with_non_date_invalid_parent() {
-        let (node_service, _schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         // Try to insert with non-existent non-date parent
         let params = json!({
@@ -592,7 +580,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_move_child_to_index_beyond_sibling_count() {
-        let (node_service, _schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         // Create date root
         let date = node_service
@@ -684,7 +672,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_get_node_tree_with_max_depth_1() {
-        let (node_service, _schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         // Create date root
         let date = node_service
@@ -769,7 +757,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_get_child_at_index_out_of_bounds() {
-        let (node_service, _schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         // Create date root
         let date = node_service
@@ -828,7 +816,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_get_children_ordered_with_multiple_insertions() {
-        let (node_service, _schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         // Create date root
         let date = node_service
@@ -910,7 +898,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_get_node_tree_max_depth_validation() {
-        let (node_service, _schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         // Create a simple node
         let node = node_service
@@ -965,7 +953,7 @@ mod integration_tests {
     /// Verifies successful batch retrieval of multiple nodes
     #[tokio::test]
     async fn test_get_nodes_batch_success() {
-        let (node_service, _schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         // Create test nodes
         let node1 = node_service
@@ -1021,7 +1009,7 @@ mod integration_tests {
     /// Verifies get_nodes_batch returns partial results when some nodes don't exist
     #[tokio::test]
     async fn test_get_nodes_batch_with_not_found() {
-        let (node_service, _schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         let node1 = node_service
             .create_node_with_parent(CreateNodeParams {
@@ -1053,7 +1041,7 @@ mod integration_tests {
     /// Verifies validation rejects empty node_ids array
     #[tokio::test]
     async fn test_get_nodes_batch_empty_input() {
-        let (node_service, _schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         let params = json!({
             "node_ids": []
@@ -1069,7 +1057,7 @@ mod integration_tests {
     /// Verifies batch size limit enforcement (max 100 nodes)
     #[tokio::test]
     async fn test_get_nodes_batch_exceeds_limit() {
-        let (node_service, _schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         // Create array with 101 IDs (exceeds limit of 100)
         let node_ids: Vec<String> = (0..101).map(|i| format!("node-{}", i)).collect();
@@ -1088,7 +1076,7 @@ mod integration_tests {
     /// Verifies successful batch update of multiple nodes
     #[tokio::test]
     async fn test_update_nodes_batch_success() {
-        let (node_service, schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         // Create a root first
         let root = node_service
@@ -1135,7 +1123,7 @@ mod integration_tests {
             ]
         });
 
-        let result = handle_update_nodes_batch(&node_service, &schema_service, params)
+        let result = handle_update_nodes_batch(&node_service, params)
             .await
             .unwrap();
 
@@ -1153,7 +1141,7 @@ mod integration_tests {
     /// Verifies partial success handling with detailed failure reporting
     #[tokio::test]
     async fn test_update_nodes_batch_partial_failure() {
-        let (node_service, schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         let node1 = node_service
             .create_node_with_parent(CreateNodeParams {
@@ -1175,7 +1163,7 @@ mod integration_tests {
             ]
         });
 
-        let result = handle_update_nodes_batch(&node_service, &schema_service, params)
+        let result = handle_update_nodes_batch(&node_service, params)
             .await
             .unwrap();
 
@@ -1193,13 +1181,13 @@ mod integration_tests {
     /// Verifies validation rejects empty updates array
     #[tokio::test]
     async fn test_update_nodes_batch_empty_input() {
-        let (node_service, schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         let params = json!({
             "updates": []
         });
 
-        let result = handle_update_nodes_batch(&node_service, &schema_service, params).await;
+        let result = handle_update_nodes_batch(&node_service, params).await;
 
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -1209,7 +1197,7 @@ mod integration_tests {
     /// Verifies batch size limit enforcement (max 100 updates)
     #[tokio::test]
     async fn test_update_nodes_batch_exceeds_limit() {
-        let (node_service, schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         // Create array with 101 updates (exceeds limit of 100)
         let updates: Vec<serde_json::Value> = (0..101)
@@ -1225,7 +1213,7 @@ mod integration_tests {
             "updates": updates
         });
 
-        let result = handle_update_nodes_batch(&node_service, &schema_service, params).await;
+        let result = handle_update_nodes_batch(&node_service, params).await;
 
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -1236,7 +1224,7 @@ mod integration_tests {
     /// Uses task node type since it has a spoke table for properties (hub-spoke architecture)
     #[tokio::test]
     async fn test_update_nodes_batch_with_properties() {
-        let (node_service, schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         let node = node_service
             .create_node_with_parent(CreateNodeParams {
@@ -1257,7 +1245,7 @@ mod integration_tests {
             ]
         });
 
-        let result = handle_update_nodes_batch(&node_service, &schema_service, params)
+        let result = handle_update_nodes_batch(&node_service, params)
             .await
             .unwrap();
 
@@ -1283,7 +1271,7 @@ mod integration_tests {
     async fn benchmark_get_nodes_batch() {
         use std::time::Instant;
 
-        let (node_service, _schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         // Create 50 test nodes
         let mut node_ids = Vec::new();
@@ -1346,7 +1334,7 @@ mod integration_tests {
     async fn benchmark_update_nodes_batch() {
         use std::time::Instant;
 
-        let (node_service, schema_service, _temp_dir) = setup_test_service().await.unwrap();
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
         // Create a root
         let root = node_service
@@ -1431,7 +1419,7 @@ mod integration_tests {
         let params = json!({
             "updates": updates
         });
-        let _result = handle_update_nodes_batch(&node_service, &schema_service, params)
+        let _result = handle_update_nodes_batch(&node_service, params)
             .await
             .unwrap();
         let duration_batch = start_batch.elapsed();
@@ -1459,7 +1447,7 @@ mod integration_tests {
     /// This test validates the performance acceptance criterion
     #[tokio::test]
     async fn test_occ_performance_overhead() {
-        let (node_service, _schema_service, _temp) = setup_test_service().await.unwrap();
+        let (node_service, _temp) = setup_test_service().await.unwrap();
 
         // Create a test node
         let node_id = node_service
