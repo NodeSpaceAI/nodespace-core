@@ -45,16 +45,13 @@
   const NEWLINE_LENGTH = 1; // \n character
   const QUOTE_PREFIX_LENGTH = 2; // "> " prefix
 
-  // Internal reactive state - sync with content prop changes
+  // Internal reactive state - initialized from content prop
+  // Note: Content updates flow through handleContentChange event, not prop sync
+  // External changes are rare (only from parent re-renders) and handled by component remount
   let internalContent = $state(content);
 
   // Track if we just added prefixes (for cursor adjustment)
   let pendingCursorAdjustment = $state<number | null>(null);
-
-  // Sync internalContent when content prop changes externally
-  $effect(() => {
-    internalContent = content;
-  });
 
   // Quote blocks use multiline editing (Shift+Enter for new lines with auto > prefix)
   // Prevent merging into quote-blocks (structured content can't accept arbitrary merges)

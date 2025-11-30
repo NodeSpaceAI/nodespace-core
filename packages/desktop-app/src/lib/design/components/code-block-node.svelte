@@ -69,13 +69,10 @@
 
   const dispatch = createEventDispatcher();
 
-  // Internal reactive state - sync with content prop changes
+  // Internal reactive state - initialized from content prop
+  // Note: Content updates flow through handleContentChange event, not prop sync
+  // External changes are rare (only from parent re-renders) and handled by component remount
   let internalContent = $state(content);
-
-  // Sync internalContent when content prop changes externally
-  $effect(() => {
-    internalContent = content;
-  });
 
   // Parse language from opening fence (```language or just ```)
   let language = $state<string>(parseLanguage(content));
