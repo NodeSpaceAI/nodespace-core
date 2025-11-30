@@ -17,18 +17,18 @@
 <script lang="ts">
   import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import Icon from '$lib/design/icons/icon.svelte';
-  import { getDateTabTitle } from '$lib/stores/navigation.js';
-  import { parseDateString, formatDateISO, normalizeDate } from '$lib/utils/date-formatting';
+  import { parseDateString, formatDateISO, normalizeDate, formatDateTitle } from '$lib/utils/date-formatting';
 
   // Props using Svelte 5 runes mode - unified NodeViewerProps interface
+  // onTitleChange called from event handlers (not effects) to update tab title
   let {
     nodeId,
-    onTitleChange,
-    onNodeIdChange
+    onNodeIdChange,
+    onTitleChange
   }: {
     nodeId: string;
-    onTitleChange?: (_title: string) => void;
     onNodeIdChange?: (_nodeId: string) => void;
+    onTitleChange?: (_title: string) => void;
   } = $props();
 
   // Parse date from nodeId prop (format: YYYY-MM-DD)
@@ -53,19 +53,10 @@
   // Derive current date ID from currentDate (using local timezone, not UTC)
   const currentDateId = $derived(formatDateISO(currentDate));
 
-  // Derive the tab title from current date
-  const tabTitle = $derived(getDateTabTitle(currentDate));
-
-  // Notify parent when title changes
-  // Title is recomputed on page load by TabPersistence.migrate()
-  $effect(() => {
-    onTitleChange?.(tabTitle);
-  });
-
   /**
    * Navigate to previous or next day
-   * Frontend-architect recommendation: Call parent callback directly
-   * Parent updates nodeId prop which flows back down as $derived
+   * Calls onNodeIdChange to update content, and onTitleChange to update tab title
+   * Both are event-driven (not effect-driven) - no $effect anti-pattern
    */
   function navigateDate(direction: 'prev' | 'next') {
     const newDate = new Date(currentDate);
@@ -74,10 +65,13 @@
     } else {
       newDate.setDate(newDate.getDate() + 1);
     }
-    const newNodeId = formatDateISO(normalizeDate(newDate));
+    const normalizedDate = normalizeDate(newDate);
+    const newNodeId = formatDateISO(normalizedDate);
 
-    // Call parent callback directly - parent will update nodeId prop
+    // Update content (nodeId) and tab title via parent callbacks
+    // This is event-driven, not effect-driven - proper pattern
     onNodeIdChange?.(newNodeId);
+    onTitleChange?.(formatDateTitle(normalizedDate));
   }
 
   /**
