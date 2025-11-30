@@ -139,8 +139,7 @@ mod occ_tests {
     use crate::db::SurrealStore;
     use crate::mcp::handlers::nodes::{handle_delete_node, handle_update_node};
     use crate::mcp::types::{INVALID_PARAMS, VERSION_CONFLICT};
-    use crate::operations::CreateNodeParams;
-    use crate::services::SchemaService;
+    use crate::services::{CreateNodeParams, SchemaService};
     use crate::NodeService;
     use serde_json::json;
     use std::sync::Arc;
@@ -497,8 +496,7 @@ mod integration_tests {
         handle_update_nodes_batch,
     };
     use crate::models::NodeUpdate;
-    use crate::operations::CreateNodeParams;
-    use crate::services::SchemaService;
+    use crate::services::{CreateNodeParams, SchemaService};
     use crate::NodeService;
     use serde_json::json;
     use std::sync::Arc;

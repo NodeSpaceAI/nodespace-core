@@ -15,7 +15,6 @@
 //! - [`models`] - Data structures (Node, Task, Person, etc.)
 //! - [`behaviors`] - Node type system and trait-based behaviors
 //! - [`services`] - Business services (NodeService, SchemaService, etc.)
-//! - [`operations`] - Business logic layer enforcing data integrity rules
 //! - [`db`] - Database layer with SurrealDB integration
 //! - [`mcp`] - MCP stdio server for AI agent integration
 
@@ -23,7 +22,6 @@ pub mod behaviors;
 pub mod db;
 pub mod mcp;
 pub mod models;
-pub mod operations;
 pub mod services;
 
 // Re-exports
@@ -39,5 +37,4 @@ pub use models::{
     FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter,
     ValidationError,
 };
-pub use operations::CreateNodeParams;
-pub use services::{NodeService, NodeServiceError};
+pub use services::{CreateNodeParams, NodeService, NodeServiceError};

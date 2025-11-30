@@ -3,11 +3,8 @@
 //! As of Issue #676, all commands route through NodeService directly.
 //! NodeOperations layer has been removed - NodeService contains all business logic.
 
-use nodespace_core::operations::CreateNodeParams;
-use nodespace_core::services::SchemaService;
-use nodespace_core::{
-    EdgeRecord, Node, NodeQuery, NodeService, NodeServiceError, NodeUpdate, SurrealStore,
-};
+use nodespace_core::services::{CreateNodeParams, SchemaService};
+use nodespace_core::{Node, NodeQuery, NodeService, NodeServiceError, NodeUpdate};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -918,21 +915,6 @@ pub async fn delete_node_mention(
         .remove_mention(&mentioning_node_id, &mentioned_node_id)
         .await
         .map_err(Into::into)
-}
-
-/// Retrieves all has_child edges from the database
-///
-/// Used for bulk-loading the tree structure on startup rather than waiting
-/// for incremental LIVE SELECT events to populate the tree.
-#[tauri::command]
-pub async fn get_all_edges(
-    store: State<'_, SurrealStore>,
-) -> Result<Vec<EdgeRecord>, CommandError> {
-    store.get_all_edges().await.map_err(|e| CommandError {
-        message: format!("Failed to fetch edges: {}", e),
-        code: "GET_EDGES_FAILED".to_string(),
-        details: Some(format!("{:?}", e)),
-    })
 }
 
 #[cfg(test)]

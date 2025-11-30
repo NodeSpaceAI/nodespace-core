@@ -1,8 +1,10 @@
 /**
- * Event Types for LIVE SELECT and Internal Events
+ * Event Types for Domain Events
  *
  * Defines the event data structures used for real-time synchronization
- * via Tauri LIVE SELECT polling. These types are consumed by:
+ * via domain events. The backend emits domain events from NodeService,
+ * which are forwarded to the frontend via Tauri events (desktop) or
+ * SSE (browser dev mode). These types are consumed by:
  * - tauri-sync-listener.ts (event bridging)
  * - shared-node-store.svelte.ts (node state)
  * - reactive-structure-tree.svelte.ts (hierarchy state)
@@ -13,7 +15,7 @@
 // ============================================================================
 
 /**
- * Node event data from LIVE SELECT
+ * Node event data from domain events
  * Contains minimal fields for real-time sync
  */
 export interface NodeEventData {
@@ -29,7 +31,7 @@ export interface NodeEventData {
 // ============================================================================
 
 /**
- * Hierarchy relationship event data from LIVE SELECT
+ * Hierarchy relationship event data from domain events
  * Represents parent-child relationships in the node tree
  *
  * Backend converts SurrealDB edge format to this type at the
@@ -46,7 +48,7 @@ export interface HierarchyRelationship {
 // ============================================================================
 
 /**
- * Mention relationship event data from LIVE SELECT
+ * Mention relationship event data from domain events
  * Represents bidirectional references between nodes
  *
  * Unlike hierarchies, mentions are not parent-child relationships
@@ -62,7 +64,7 @@ export interface MentionRelationship {
 // ============================================================================
 
 /**
- * Edge relationship event data from LIVE SELECT
+ * Edge relationship event data from domain events
  * Internally-tagged union type representing different relationship types
  *
  * Rust uses #[serde(tag = "type")] which produces an internally-tagged format

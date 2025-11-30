@@ -1,8 +1,9 @@
 /**
- * Tauri LIVE SELECT Event Listener
+ * Tauri Domain Event Listener
  *
  * Listens for real-time synchronization events emitted from the Rust backend
- * via SurrealDB LIVE SELECT subscriptions.
+ * via domain events. The backend's DomainEventForwarder service subscribes
+ * to NodeService domain events and forwards them to the frontend via Tauri events.
  *
  * Note: This module provides debug logging for sync events. The actual event
  * handling is done directly by:

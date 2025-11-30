@@ -207,7 +207,7 @@ pub async fn handle_create_node(
     // Note: root_id is auto-derived from parent chain by backend
     // Note: Sibling ordering is now handled via has_child edge order field
     let node_id = node_service
-        .create_node_with_parent(crate::operations::CreateNodeParams {
+        .create_node_with_parent(crate::services::CreateNodeParams {
             id: None, // MCP generates IDs server-side
             node_type: mcp_params.node_type.clone(),
             content: mcp_params.content,
@@ -469,7 +469,7 @@ async fn ensure_parent_exists(
     if is_valid_date_format(parent_id) {
         // Try to create - date nodes use their content as ID
         let _ = node_service
-            .create_node_with_parent(crate::operations::CreateNodeParams {
+            .create_node_with_parent(crate::services::CreateNodeParams {
                 id: None, // MCP generates IDs server-side
                 node_type: "date".to_string(),
                 content: parent_id.to_string(),
@@ -685,7 +685,7 @@ pub async fn handle_insert_child_at_index(
     // 5. Create node using pointer-based operation
     // Note: container/root is auto-derived from parent chain by backend
     let node_id = node_service
-        .create_node_with_parent(crate::operations::CreateNodeParams {
+        .create_node_with_parent(crate::services::CreateNodeParams {
             id: None, // MCP generates IDs server-side
             node_type: params.node_type.clone(),
             content: params.content,

@@ -8,8 +8,8 @@ import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
  * to mock. Instead, we test the core logic directly by calling the internal
  * methods through the public API.
  *
- * In real usage, the store listens to Tauri events from LIVE SELECT and
- * processes them through these same code paths.
+ * In real usage, the store is updated via direct method calls from services
+ * that handle domain events forwarded from the backend.
  */
 
 describe('ReactiveStructureTree', () => {

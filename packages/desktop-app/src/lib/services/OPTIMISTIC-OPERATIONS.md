@@ -2,15 +2,15 @@
 
 ## Overview
 
-The `OptimisticOperationManager` implements the **fire-and-forget with rollback** pattern for structural operations in NodeSpace. This enables instant perceived latency (<10ms) while ensuring consistency through backend confirmation via LIVE SELECT.
+The `OptimisticOperationManager` implements the **fire-and-forget with rollback** pattern for structural operations in NodeSpace. This enables instant perceived latency (<10ms) while ensuring consistency through backend confirmation via domain events.
 
 ## Architecture Pattern
 
 ```typescript
 1. Take snapshot of current state (structure + optionally data)
 2. Apply optimistic change immediately (UI updates instantly)
-3. Fire backend operation (don't await - let LIVE SELECT confirm)
-4. On success: LIVE SELECT confirms change (UI already updated)
+3. Fire backend operation (don't await - let domain events confirm)
+4. On success: domain events confirms change (UI already updated)
 5. On error: Rollback to snapshot + emit error event for UI notification
 ```
 
@@ -40,7 +40,7 @@ async function indentNode(nodeId: string, newParentId: string) {
     // Step 2: Backend operation (fire-and-forget)
     async () => {
       await backend.moveNode(nodeId, newParentId);
-      // LIVE SELECT will confirm success automatically
+      // domain events will confirm success automatically
     },
 
     // Step 3: Operation metadata
@@ -268,7 +268,7 @@ await optimisticOperationManager.executeStructuralChange(
 | Aspect | Measurement | Notes |
 |--------|-------------|-------|
 | Perceived Latency | <10ms | Optimistic update is synchronous |
-| Backend Confirmation | 50-100ms | LIVE SELECT confirmation delay |
+| Backend Confirmation | 50-100ms | domain events confirmation delay |
 | Rollback Time | <5ms | Snapshot restore is fast (Map assignment) |
 | Snapshot Memory | ~100-200 bytes per node | Structure info only (node ID + order) |
 | Full Data Snapshot | ~1-2KB per node | Include all node data |

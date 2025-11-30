@@ -3,12 +3,12 @@
  *
  * Implements optimistic UI updates for structural operations with automatic
  * rollback on failure. This enables instant perceived latency (<10ms) while
- * ensuring consistency through backend confirmation via LIVE SELECT.
+ * ensuring consistency through backend confirmation via domain events.
  *
  * Architecture:
  * 1. Take snapshot of current state (structure + data)
  * 2. Apply optimistic change immediately (UI updates instantly)
- * 3. Fire backend operation (don't await - let LIVE SELECT confirm)
+ * 3. Fire backend operation (don't await - let domain events confirm)
  * 4. On error: Rollback to snapshot + emit error event for UI notification
  *
  * Features:
@@ -76,7 +76,7 @@ class OptimisticOperationManager {
    * 1. Take snapshot (structure + optionally data)
    * 2. Execute optimistic update (UI changes immediately)
    * 3. Fire backend operation (async, don't await)
-   * 4. Backend success → LIVE SELECT confirms change (UI already updated)
+   * 4. Backend success → domain events confirms change (UI already updated)
    * 5. Backend failure → Rollback to snapshot + emit error event
    *
    * @param optimisticUpdate - Function that updates local state immediately
@@ -127,9 +127,9 @@ class OptimisticOperationManager {
 
       log(`[OptimisticOperationManager] Optimistic update applied: ${description}`);
 
-      // Step 3: Fire backend operation (don't await - let LIVE SELECT confirm)
+      // Step 3: Fire backend operation (don't await - let domain events confirm)
       // We intentionally don't await here so the UI feels instant
-      // LIVE SELECT will confirm success and sync state across clients
+      // domain events will confirm success and sync state across clients
       backendOperation().catch((error) => {
         // Backend failed - rollback and notify
         this.handleBackendFailure(error, snapshot, description, affectedNodes);
@@ -331,7 +331,7 @@ class OptimisticOperationManager {
         `[OptimisticOperationManager] Batch optimistic updates applied: ${batchDescription}`
       );
 
-      // Fire all backend operations (don't await - let LIVE SELECT confirm)
+      // Fire all backend operations (don't await - let domain events confirm)
       // Use Promise.allSettled to capture all failures for better diagnostics
       Promise.allSettled(operations.map((op) => op.backendOperation())).then(
         (results) => {

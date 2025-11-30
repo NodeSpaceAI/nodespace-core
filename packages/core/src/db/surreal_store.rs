@@ -2504,7 +2504,7 @@ where
             .await
             .context("Failed to fetch subtree edges")?;
 
-        // Use Thing type for SurrealDB record IDs (consistent with get_all_edges)
+        // Use Thing type for SurrealDB record IDs
         #[derive(serde::Deserialize)]
         struct EdgeRow {
             id: Thing,
@@ -2519,7 +2519,7 @@ where
             .take(0)
             .context("Failed to extract subtree edges from response")?;
 
-        // Extract string IDs from Thing types (consistent with get_all_edges)
+        // Extract string IDs from Thing types
         Ok(edges
             .into_iter()
             .map(|e| {
@@ -3517,82 +3517,6 @@ where
         Ok(created_nodes)
     }
 
-    /// Retrieves all has_child edges sorted by parent and order
-    ///
-    /// Returns a vector of all edges in the database, useful for bulk-loading
-    /// the tree structure on startup.
-    ///
-    /// # Returns
-    ///
-    /// A vector of edge records with `id`, `in` (parent), `out` (child), and `order` fields.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use nodespace_core::db::SurrealStore;
-    /// # use std::path::PathBuf;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let store = SurrealStore::new(PathBuf::from("./data/surreal.db")).await?;
-    /// // Load all edges to populate the tree on startup
-    /// let edges = store.get_all_edges().await?;
-    /// for edge in edges {
-    ///     println!("Edge: {} -> {}", edge.in_node, edge.out_node);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn get_all_edges(&self) -> Result<Vec<EdgeRecord>> {
-        // SurrealDB returns Thing types for id, in, out fields on relation tables
-        // We need to deserialize as Thing and extract the string ID
-        #[derive(Deserialize)]
-        struct EdgeOut {
-            id: Thing,
-            #[serde(rename = "in")]
-            in_node: Thing,
-            out: Thing,
-            order: f64,
-        }
-
-        let mut response = self
-            .db
-            .query("SELECT id, in, out, order FROM has_child ORDER BY `in`, `order` ASC;")
-            .await
-            .context("Failed to query all edges")?;
-
-        let edges: Vec<EdgeOut> = response.take(0).context("Failed to extract edges")?;
-
-        // Extract string IDs from Thing types
-        let result = edges
-            .into_iter()
-            .map(|edge| {
-                let id_str = match &edge.id.id {
-                    Id::String(s) => s.clone(),
-                    Id::Number(n) => n.to_string(),
-                    _ => edge.id.to_string(),
-                };
-                let in_str = match &edge.in_node.id {
-                    Id::String(s) => s.clone(),
-                    Id::Number(n) => n.to_string(),
-                    _ => edge.in_node.to_string(),
-                };
-                let out_str = match &edge.out.id {
-                    Id::String(s) => s.clone(),
-                    Id::Number(n) => n.to_string(),
-                    _ => edge.out.to_string(),
-                };
-                EdgeRecord {
-                    id: id_str,
-                    in_node: in_str,
-                    out_node: out_str,
-                    order: edge.order,
-                }
-            })
-            .collect();
-
-        Ok(result)
-    }
-
     pub fn close(&self) -> Result<()> {
         // SurrealDB handles cleanup automatically on drop
         Ok(())
@@ -4437,62 +4361,6 @@ mod tests {
                 .map(|d| d.as_millis())
                 .collect::<Vec<_>>()
         );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_get_all_edges_bulk_load() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-
-        // Create a parent node
-        let parent = store
-            .create_node(Node::new(
-                "text".to_string(),
-                "Parent".to_string(),
-                json!({}),
-            ))
-            .await?;
-
-        // Create multiple child nodes
-        let child1 = store
-            .create_child_node_atomic(&parent.id, "text", "Child 1", json!({}))
-            .await?;
-
-        let child2 = store
-            .create_child_node_atomic(&parent.id, "text", "Child 2", json!({}))
-            .await?;
-
-        let child3 = store
-            .create_child_node_atomic(&parent.id, "text", "Child 3", json!({}))
-            .await?;
-
-        // Fetch all edges using get_all_edges
-        let edges = store.get_all_edges().await?;
-
-        // Verify we got the edges
-        assert!(!edges.is_empty(), "Should have retrieved edges");
-
-        // Verify serialization: edges should use 'in' and 'out' field names
-        // This validates that the #[serde(rename)] attributes work correctly
-        let parent_edges: Vec<_> = edges.iter().filter(|e| e.in_node == parent.id).collect();
-
-        assert_eq!(parent_edges.len(), 3, "Should have 3 children for parent");
-
-        // Verify edges are sorted by order
-        let mut orders: Vec<f64> = parent_edges.iter().map(|e| e.order).collect();
-        let sorted_orders = orders.clone();
-        orders.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert_eq!(
-            orders, sorted_orders,
-            "Edges should be sorted by order field"
-        );
-
-        // Verify edge fields map correctly to child IDs
-        let child_ids: Vec<_> = parent_edges.iter().map(|e| e.out_node.clone()).collect();
-        assert!(child_ids.contains(&child1.id), "Should contain child1 ID");
-        assert!(child_ids.contains(&child2.id), "Should contain child2 ID");
-        assert!(child_ids.contains(&child3.id), "Should contain child3 ID");
 
         Ok(())
     }

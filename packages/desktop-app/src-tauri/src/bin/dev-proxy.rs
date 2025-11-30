@@ -31,8 +31,7 @@ use nodespace_core::{
         schema::{ProtectionLevel, SchemaDefinition, SchemaField},
         Node, NodeFilter, NodeUpdate,
     },
-    operations::CreateNodeParams,
-    services::{NodeService, NodeServiceError, SchemaService},
+    services::{CreateNodeParams, NodeService, NodeServiceError, SchemaService},
 };
 use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -491,7 +490,7 @@ async fn health_check() -> &'static str {
 ///
 /// Browser clients connect to this endpoint to receive real-time updates when
 /// database changes occur. This is the browser-mode equivalent of Tauri's
-/// LIVE SELECT event subscription.
+/// domain event subscription.
 ///
 /// # Protocol
 /// - Server-Sent Events (SSE) - one-way server→client stream

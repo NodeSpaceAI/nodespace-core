@@ -27,5 +27,5 @@ pub use embedding_processor::EmbeddingProcessor;
 pub use embedding_service::{NodeEmbeddingService, EMBEDDING_DIMENSION};
 pub use error::NodeServiceError;
 pub use migration_registry::{MigrationRegistry, MigrationTransform};
-pub use node_service::NodeService;
+pub use node_service::{CreateNodeParams, NodeService};
 pub use schema_service::SchemaService;

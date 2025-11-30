@@ -366,7 +366,7 @@ export class SharedNodeStore {
   private persistedNodeIds = new Set<string>();
 
   // NOTE: childrenCache and parentsCache REMOVED (Issue #557)
-  // Hierarchy is now managed by ReactiveStructureTree (LIVE SELECT events)
+  // Hierarchy is now managed by ReactiveStructureTree (domain events)
   // Use structureTree.getChildren() and structureTree.getParent() instead
 
   // Subscriptions for change notifications
@@ -534,7 +534,7 @@ export class SharedNodeStore {
   /**
    * Get parent nodes for a given node (synchronous, ReactiveStructureTree-based)
    *
-   * Delegates to ReactiveStructureTree which maintains hierarchy via LIVE SELECT events.
+   * Delegates to ReactiveStructureTree which maintains hierarchy via domain events.
    *
    * NOTE: In graph-native architecture, a node can have multiple parents via different edge types.
    * Currently this method returns the parent from the primary hierarchy only.
@@ -1205,7 +1205,7 @@ export class SharedNodeStore {
         this.setNode(node, databaseSource); // skipPersistence removed - database source handles it
 
         // CRITICAL FIX: Register parent-child edge in structureTree for browser mode
-        // In Tauri mode, LIVE SELECT events populate structureTree automatically.
+        // In Tauri mode, domain events populate structureTree automatically.
         // In browser mode (HTTP adapter), we must register edges manually here.
         // Use index as order since backend returns children in sorted order.
         structureTree.addInMemoryRelationship(parentId, node.id, i + 1);
@@ -1229,7 +1229,7 @@ export class SharedNodeStore {
    * It recursively flattens all nodes into the store and registers ALL parent-child
    * edges in the structureTree, enabling proper expand/collapse for nested hierarchies.
    *
-   * CRITICAL FOR BROWSER MODE: In Tauri mode, LIVE SELECT events populate the
+   * CRITICAL FOR BROWSER MODE: In Tauri mode, domain events populate the
    * structureTree automatically. In browser mode (HTTP adapter), we must load
    * the entire tree upfront and register edges manually.
    *

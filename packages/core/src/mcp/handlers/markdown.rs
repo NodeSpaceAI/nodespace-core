@@ -26,8 +26,7 @@
 
 use crate::mcp::types::MCPError;
 use crate::models::Node;
-use crate::operations::CreateNodeParams;
-use crate::services::NodeService;
+use crate::services::{CreateNodeParams, NodeService};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;

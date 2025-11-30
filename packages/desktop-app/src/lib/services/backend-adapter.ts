@@ -99,7 +99,6 @@ export interface BackendAdapter {
   getDescendants(rootNodeId: string): Promise<Node[]>;
   getChildrenTree(parentId: string): Promise<NodeWithChildren | null>;
   moveNode(nodeId: string, version: number, newParentId: string | null, insertAfterNodeId: string | null): Promise<void>;
-  getAllEdges(): Promise<EdgeRecord[]>;
 
   // Mentions
   createMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void>;
@@ -211,11 +210,6 @@ class TauriAdapter implements BackendAdapter {
       newParentId,
       insertAfterNodeId
     });
-  }
-
-  async getAllEdges(): Promise<EdgeRecord[]> {
-    const invoke = await this.getInvoke();
-    return invoke<EdgeRecord[]>('get_all_edges', {});
   }
 
   async createMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
@@ -437,12 +431,6 @@ class HttpAdapter implements BackendAdapter {
     await this.handleResponse<void>(response);
   }
 
-  async getAllEdges(): Promise<EdgeRecord[]> {
-    // Not directly exposed via dev-proxy - return empty for browser mode
-    // Structure is managed via LIVE SELECT in Tauri mode
-    return [];
-  }
-
   async createMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}/api/mentions`, {
       method: 'POST',
@@ -601,9 +589,6 @@ class MockAdapter implements BackendAdapter {
     return [];
   }
   async moveNode(_nodeId: string, _version: number, _newParentId: string | null, _insertAfterNodeId: string | null): Promise<void> {}
-  async getAllEdges(): Promise<EdgeRecord[]> {
-    return [];
-  }
   async createMention(_mentioningNodeId: string, _mentionedNodeId: string): Promise<void> {}
   async deleteMention(_mentioningNodeId: string, _mentionedNodeId: string): Promise<void> {}
   async getOutgoingMentions(_nodeId: string): Promise<string[]> {

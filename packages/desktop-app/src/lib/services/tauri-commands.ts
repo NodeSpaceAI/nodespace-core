@@ -114,13 +114,6 @@ export async function moveNode(
   return backendAdapter.moveNode(nodeId, version, newParentId, insertAfterNodeId ?? null);
 }
 
-/**
- * Get all edges (for bulk tree loading)
- */
-export async function getAllEdges(): Promise<EdgeRecord[]> {
-  return backendAdapter.getAllEdges();
-}
-
 // ============================================================================
 // Mention Commands
 // ============================================================================

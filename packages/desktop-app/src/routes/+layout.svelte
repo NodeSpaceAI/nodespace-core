@@ -36,7 +36,7 @@
         console.error('[App Layout] Schema plugin initialization failed:', error);
       }
 
-      // Step 3: Initialize Tauri LIVE SELECT event listeners for real-time synchronization
+      // Step 3: Initialize Tauri domain event listeners for real-time synchronization
       try {
         await initializeTauriSyncListeners();
       } catch (error) {

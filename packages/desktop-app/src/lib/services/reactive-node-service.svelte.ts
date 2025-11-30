@@ -306,8 +306,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // CRITICAL FIX: Register parent-child edge in ReactiveStructureTree immediately
     // This makes the new node visible in visibleNodesFromStores for instant UI feedback
-    // In Tauri mode, LIVE SELECT events will also fire but addChild handles duplicates gracefully
-    // In browser mode, this is the only way the tree gets updated (no LIVE SELECT)
+    // In Tauri mode, domain events will also fire but addChild handles duplicates gracefully
+    // In browser mode, this is the only way the tree gets updated (no domain events)
     if (newParentId) {
       // Calculate order: insert right after afterNodeId in the sibling list
       const childrenWithOrder = structureTree.getChildrenWithOrder(newParentId);
@@ -610,7 +610,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (!node) return;
 
     // Note: Expensive operations (persistence, embeddings, reference propagation)
-    // are now handled via LIVE SELECT and backend polling
+    // are now handled via domain events and backend polling
     debouncedOperations.delete(nodeId);
   }
 
@@ -733,7 +733,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     setExpanded(targetParentId, true);
 
-    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
+    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via domain events
     // Sibling positioning removed (Issue #557) - Backend handles ordering via fractional IDs
 
     // Update local state and notify (BEFORE backend call for instant UI response)
@@ -747,7 +747,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     );
 
     // CRITICAL FIX: Update ReactiveStructureTree for browser mode
-    // In Tauri mode, LIVE SELECT events update the tree, but in browser mode we must do it manually
+    // In Tauri mode, domain events update the tree, but in browser mode we must do it manually
     structureTree.moveInMemoryRelationship(currentParentId, targetParentId, nodeId);
 
     events.hierarchyChanged();
@@ -789,7 +789,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           // Non-ignorable error: rollback optimistic update
           _uiState[nodeId] = originalUIState;
           _rootNodeIds = originalRootNodeIds;
-          // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles rollback via LIVE SELECT
+          // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles rollback via domain events
           updateDescendantDepths(nodeId);
           if (currentParentId) {
             structureTree.moveInMemoryRelationship(targetParentId, currentParentId, nodeId);
@@ -853,7 +853,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       ];
     }
 
-    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
+    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via domain events
 
     // Update local state and transfer siblings (BEFORE backend for instant UI)
     // Update node's parentId to move it to the new parent
@@ -1130,7 +1130,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // NOTE: Sibling chain management removed - backend handles ordering via fractional ordering
 
     // CRITICAL: Update children cache to remove this node from its parent
-    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
+    // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via domain events
 
     sharedNodeStore.deleteNode(nodeId, viewerSource);
     delete _uiState[nodeId];
@@ -1472,7 +1472,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         nodesByParent.get(parentKey)!.push(node.id);
       }
 
-      // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via LIVE SELECT events
+      // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via domain events
 
       // Second pass: Compute depths and identify roots
       // NOTE: Now using backend queries to determine which nodes are children

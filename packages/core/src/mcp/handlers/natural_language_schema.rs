@@ -7,8 +7,7 @@
 
 use crate::mcp::types::MCPError;
 use crate::models::schema::{ProtectionLevel, SchemaDefinition, SchemaField};
-use crate::operations::CreateNodeParams;
-use crate::services::NodeService;
+use crate::services::{CreateNodeParams, NodeService};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;

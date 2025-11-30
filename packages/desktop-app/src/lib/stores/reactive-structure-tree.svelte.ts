@@ -2,20 +2,16 @@
  * ReactiveStructureTree - Reactive Store for Node Hierarchy
  *
  * Maintains a reactive map of parent→children relationships using Svelte 5 $state.
- * Subscribes to domain events (edge:created, edge:updated, edge:deleted)
- * and automatically keeps the tree synchronized and sorted.
+ * Tree updates are managed via explicit method calls from components and services
+ * (addChild, removeChild, moveInMemoryRelationship, batchAddRelationships).
  *
  * Features:
  * - Svelte 5 $state for automatic UI reactivity
  * - Binary search insertion to maintain sorted children
  * - Snapshot/restore for optimistic rollback
- * - Real-time synchronization via domain events
  */
 
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import type { UnlistenFn } from '@tauri-apps/api/event';
-import type { HierarchyRelationship, EdgeRelationship } from '$lib/types/event-types';
+import type { HierarchyRelationship } from '$lib/types/event-types';
 
 interface ChildInfo {
   nodeId: string;
@@ -26,124 +22,6 @@ class ReactiveStructureTree {
   // Reactive map using Svelte 5 $state.raw() - Map mutations trigger reactivity automatically
   // Using $state.raw() instead of $state() allows direct Map mutations to be tracked
   children = $state.raw(new Map<string, ChildInfo[]>());
-  private unlisteners: UnlistenFn[] = [];
-  private initialized = false;
-
-  /**
-   * Initialize the tree with bulk load and domain event subscriptions
-   * This should be called once during app startup
-   */
-  async initialize() {
-    if (this.initialized) return;
-
-    console.log('[ReactiveStructureTree] Initializing...');
-
-    try {
-      // Bulk load existing edges from backend before subscribing to events
-      // This ensures the tree is populated with existing hierarchy on startup
-      const initialEdges = await invoke<HierarchyRelationship[]>('get_all_edges');
-      this.buildTree(initialEdges);
-      console.log('[ReactiveStructureTree] Bulk loaded', initialEdges.length, 'edges');
-
-      // Subscribe to domain events for real-time updates
-      await this.subscribeToEvents();
-
-      this.initialized = true;
-      console.log('[ReactiveStructureTree] Initialization complete');
-    } catch (error) {
-      console.error('[ReactiveStructureTree] Initialization failed:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Build tree from bulk relationship data
-   * Called during initialization to populate the tree with existing relationships
-   * @private
-   */
-  private buildTree(relationships: HierarchyRelationship[]) {
-    const tree = new Map<string, ChildInfo[]>();
-
-    for (const rel of relationships) {
-      if (!tree.has(rel.parentId)) {
-        tree.set(rel.parentId, []);
-      }
-      tree.get(rel.parentId)!.push({
-        nodeId: rel.childId,
-        order: rel.order
-      });
-    }
-
-    // Sort all children arrays by order
-    for (const [_parentId, children] of tree) {
-      children.sort((a, b) => a.order - b.order);
-    }
-
-    this.children = tree;
-  }
-
-  /**
-   * Subscribe to domain events for edge CRUD operations
-   * @throws Error if critical event subscriptions fail
-   */
-  private async subscribeToEvents() {
-    try {
-      // Edge created event
-      const unlistenCreated = await listen<EdgeRelationship>('edge:created', (event) => {
-        // Serde internally-tagged format: fields are merged at top level
-        if (event.payload.type === 'hierarchy') {
-          // TypeScript narrows to HierarchyEdge, fields are directly on payload
-          console.log('[ReactiveStructureTree] Hierarchy relationship created:', event.payload);
-          this.addChild(event.payload);
-        } else if (event.payload.type === 'mention') {
-          // Mentions don't affect the tree structure, just log for debugging
-          console.log('[ReactiveStructureTree] Mention created (ignored):', event.payload);
-        }
-      });
-      this.unlisteners.push(unlistenCreated);
-    } catch (error) {
-      console.error('[ReactiveStructureTree] Failed to subscribe to edge:created', error);
-      throw new Error('Failed to subscribe to critical structure events: edge:created');
-    }
-
-    try {
-      // Edge deleted event
-      const unlistenDeleted = await listen<EdgeRelationship>('edge:deleted', (event) => {
-        // Serde internally-tagged format: fields are merged at top level
-        if (event.payload.type === 'hierarchy') {
-          // TypeScript narrows to HierarchyEdge, fields are directly on payload
-          console.log('[ReactiveStructureTree] Hierarchy relationship deleted:', event.payload);
-          this.removeChild(event.payload);
-        } else if (event.payload.type === 'mention') {
-          // Mentions don't affect the tree structure, just log for debugging
-          console.log('[ReactiveStructureTree] Mention deleted (ignored):', event.payload);
-        }
-      });
-      this.unlisteners.push(unlistenDeleted);
-    } catch (error) {
-      console.error('[ReactiveStructureTree] Failed to subscribe to edge:deleted', error);
-      throw new Error('Failed to subscribe to critical structure events: edge:deleted');
-    }
-
-    try {
-      // Edge updated event (for order changes during rebalancing)
-      const unlistenUpdated = await listen<EdgeRelationship>('edge:updated', (event) => {
-        // Serde internally-tagged format: fields are merged at top level
-        if (event.payload.type === 'hierarchy') {
-          // TypeScript narrows to HierarchyEdge, fields are directly on payload
-          console.log('[ReactiveStructureTree] Hierarchy relationship updated:', event.payload);
-          this.updateChildOrder(event.payload);
-        } else if (event.payload.type === 'mention') {
-          // Mentions don't affect the tree structure, just log for debugging
-          console.log('[ReactiveStructureTree] Mention updated (ignored):', event.payload);
-        }
-      });
-      this.unlisteners.push(unlistenUpdated);
-    } catch (error) {
-      console.error('[ReactiveStructureTree] Failed to subscribe to edge:updated', error);
-      throw new Error('Failed to subscribe to critical structure events: edge:updated');
-    }
-  }
 
   /**
    * Get ordered child IDs for a parent (reactive)
@@ -264,15 +142,6 @@ class ReactiveStructureTree {
   }
 
   /**
-   * Update child order (rare - only during rebalancing)
-   */
-  private updateChildOrder(rel: HierarchyRelationship) {
-    // Remove and re-add to update order
-    this.removeChild(rel);
-    this.addChild(rel);
-  }
-
-  /**
    * Binary search to find insertion position to maintain sort by order
    * @param children - sorted array of ChildInfo
    * @param order - order value to insert
@@ -314,17 +183,6 @@ class ReactiveStructureTree {
   }
 
   /**
-   * Cleanup event listeners
-   */
-  async destroy() {
-    for (const unlisten of this.unlisteners) {
-      unlisten();
-    }
-    this.unlisteners = [];
-    this.initialized = false;
-  }
-
-  /**
    * Manually register an in-memory parent-child relationship (for placeholder promotion)
    *
    * Use this when creating parent-child relationships for nodes that haven't
@@ -358,7 +216,7 @@ class ReactiveStructureTree {
 
   /**
    * Move a child from one parent to another in-memory (for browser dev mode)
-   * This is necessary because LIVE SELECT events don't fire in browser mode.
+   * This is necessary because domain events don't fire automatically in browser mode.
    *
    * @param oldParentId - The current parent ID (null if root)
    * @param newParentId - The new parent ID

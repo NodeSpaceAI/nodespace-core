@@ -3,7 +3,7 @@
  *
  * These tests simulate MCP server behavior to validate the architecture
  * is ready for MCP integration (Issue #112). Tests use SharedNodeStore
- * directly with LIVE SELECT architecture for real-time sync.
+ * directly with domain events architecture for real-time sync.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
