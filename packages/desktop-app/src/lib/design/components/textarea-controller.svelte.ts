@@ -1,20 +1,27 @@
 /**
  * TextareaController (Svelte 5 Reactive Version)
  *
- * Converted from class to reactive factory function using Svelte 5 runes.
- * Props are passed as getter functions for automatic reactivity.
+ * Architecture: Hybrid imperative/reactive design
+ * - TextareaController CLASS: Pure TypeScript, works in tests without Svelte context
+ * - createTextareaController FACTORY: Wraps class with reactive effects for components
  *
- * Key improvements:
- * - Content sync: Automatic via reactive prop getters (eliminates 2 $effect blocks)
- * - Dropdown state: Reactive properties (eliminates 2 $effect blocks)
- * - Single source of truth: Textarea value is still canonical
- * - Pure TypeScript class logic preserved: All business logic unchanged
+ * Key Design Decisions (Issue #695):
+ * - Dual usage: Class can be instantiated directly in tests, or via factory in components
+ * - Content sync effect: KEPT - necessary for external content changes (SSE, undo/redo)
+ * - Config sync effect: ELIMINATED - controller stores getter, reads on-demand
+ * - Early-returns in updateContent() prevent unnecessary DOM operations
  *
- * Migration Pattern:
+ * Effect Elimination Strategy:
+ * - Config: Controller stores getConfig getter, reads via this.config getter
+ *   Tests pass simple functions: () => ({ allowMultiline: true })
+ * - Content: Effect kept because external changes need to sync to textarea DOM
+ *   The early-return (if textarea.value === content) makes it efficient
+ *
+ * Migration Pattern (from original class-based controller):
  * - Element passed via callback for fine-grained reactivity
- * - Props passed as getters for auto-tracking
+ * - Config passed as getter (no effect needed)
+ * - Content synced via effect (external changes)
  * - Internal state uses $state for Svelte 5 reactivity
- * - Effects only for true side-effects (event listeners, cleanup)
  */
 
 import type { TriggerContext } from '$lib/services/content-processor';
@@ -177,7 +184,12 @@ export class TextareaController {
     private nodeId: string;
     private nodeType: string;
     private paneId: string;
-    private config: TextareaControllerConfig;
+    /**
+     * Config getter - reads current config on-demand (Issue #695)
+     * Eliminates the need for config sync $effect by reading from getter
+     * Tests can pass simple functions: () => ({ allowMultiline: true })
+     */
+    private getConfig: () => TextareaControllerConfig;
     public events: TextareaControllerEvents;
 
     private isInitialized: boolean = false;
@@ -212,7 +224,12 @@ export class TextareaController {
       nodeType: string,
       paneId: string,
       events: TextareaControllerEvents,
-      config: TextareaControllerConfig = {},
+      /**
+       * Config getter - reads current config on-demand (Issue #695)
+       * Pass a function that returns the config object
+       * Factory passes reactive getter, tests pass simple functions
+       */
+      getConfig: () => TextareaControllerConfig = () => ({}),
       /**
        * Creation source for pattern state (Issue #664)
        * - 'user': User created node (patterns can be detected)
@@ -227,7 +244,8 @@ export class TextareaController {
       this.nodeType = nodeType;
       this.paneId = paneId;
       this.events = events;
-      this.config = { allowMultiline: false, ...config };
+      // Store config getter - reads on-demand instead of via $effect (Issue #695)
+      this.getConfig = getConfig;
 
       // Initialize pattern state (Issue #664)
       // If creationSource not provided, infer from focusManager for backward compatibility
@@ -259,6 +277,14 @@ export class TextareaController {
       this.setupEventListeners();
     }
 
+    /**
+     * Config getter - reads from getConfig() on-demand (Issue #695)
+     * This eliminates the config sync $effect by reading reactively
+     */
+    private get config(): TextareaControllerConfig {
+      return { allowMultiline: false, ...this.getConfig() };
+    }
+
     private registerKeyboardCommands(): void {
       if (keyboardCommandsRegistered) {
         return;
@@ -282,9 +308,10 @@ export class TextareaController {
       keyboardCommandsRegistered = true;
     }
 
-    public updateConfig(config: Partial<TextareaControllerConfig>): void {
-      this.config = { ...this.config, ...config };
-    }
+    // NOTE: updateConfig() REMOVED (Issue #695)
+    // Config is now read on-demand via the config getter, which calls getConfig()
+    // The $effect that previously synced config changes is eliminated
+    // Config updates now automatically reflect when getConfig() returns new values
 
     public initialize(content: string, autoFocus: boolean = false): void {
       if (this.isInitialized) {
@@ -959,17 +986,18 @@ export function createTextareaController(
     const nodeId = getNodeId();
     const nodeType = getNodeType();
     const paneId = getPaneId();
-    const editableConfig = getEditableConfig();
 
     untrack(() => {
       if (element && !controller) {
+        // Pass getEditableConfig directly - controller stores getter and reads on-demand
+        // This eliminates the need for config sync $effect (Issue #695)
         controller = new TextareaController(
           element,
           nodeId,
           nodeType,
           paneId,
           events,
-          editableConfig,
+          getEditableConfig,
           creationSource
         );
       } else if (!element && controller) {
@@ -979,7 +1007,34 @@ export function createTextareaController(
     });
   });
 
-  // Reactive content sync - replaces manual $effect in base-node.svelte
+  // ============================================================================
+  // Content Sync Effect - JUSTIFIED AS NECESSARY (Issue #695)
+  // ============================================================================
+  //
+  // WHY THIS EFFECT IS REQUIRED:
+  // The TextareaController is a vanilla TypeScript class that doesn't inherently
+  // react to prop changes. This effect bridges Svelte's reactive system with
+  // the imperative controller by syncing external content changes.
+  //
+  // WHEN THIS RUNS:
+  // - External content changes (database sync via SSE, undo/redo operations)
+  // - Parent component programmatic updates
+  // - Initial prop hydration
+  //
+  // PERFORMANCE CONSIDERATIONS:
+  // - Early-return in updateContent() when textarea value matches prop prevents
+  //   unnecessary DOM operations during user typing
+  // - The overhead is minimal: just a function call and string comparison
+  //
+  // ALTERNATIVE CONSIDERED (Issue #695):
+  // Making the controller read directly from getters instead of caching values
+  // would eliminate this effect BUT would:
+  // 1. Break test isolation (controller would require reactive context)
+  // 2. Make the controller tightly coupled to Svelte's reactivity
+  // 3. Prevent direct instantiation in tests with 'new TextareaController(...)'
+  //
+  // CONCLUSION: Keep effect - necessary for external sync, minimal overhead
+  // ============================================================================
   $effect(() => {
     const content = getContent();
     if (controller && content !== undefined) {
@@ -987,13 +1042,20 @@ export function createTextareaController(
     }
   });
 
-  // Reactive config sync - replaces manual $effect in base-node.svelte
-  $effect(() => {
-    const config = getEditableConfig();
-    if (controller && config) {
-      controller.updateConfig(config);
-    }
-  });
+  // ============================================================================
+  // Config Sync Effect - ELIMINATED (Issue #695)
+  // ============================================================================
+  //
+  // PREVIOUS APPROACH: $effect synced config changes via updateConfig()
+  //
+  // NEW APPROACH: Controller stores getConfig getter and reads on-demand
+  // via the private `config` getter property. No effect needed.
+  //
+  // BENEFITS:
+  // - One fewer $effect in the codebase (reduces effect-related bugs)
+  // - Config is read when needed, not pushed on every change
+  // - Tests can pass simple functions: () => ({ allowMultiline: true })
+  // ============================================================================
 
   // Cleanup on destroy
   $effect.pre(() => {

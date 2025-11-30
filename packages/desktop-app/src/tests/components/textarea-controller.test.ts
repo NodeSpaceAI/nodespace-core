@@ -525,16 +525,14 @@ describe('TextareaController', () => {
       // Replace the navigateArrow handler with our spy
       mockEvents.navigateArrow = navigateArrowSpy;
 
-      // Create controller with multiline enabled
+      // Create controller with multiline enabled (config as getter - Issue #695)
       controller = new TextareaController(
         element,
         'test-node',
         'text',
         DEFAULT_PANE_ID,
         mockEvents,
-        {
-          allowMultiline: true
-        }
+        () => ({ allowMultiline: true })
       );
     });
 
@@ -604,16 +602,14 @@ describe('TextareaController', () => {
         controller.destroy();
       }
 
-      // Create controller with multiline enabled
+      // Create controller with multiline enabled (config as getter - Issue #695)
       controller = new TextareaController(
         element,
         'test-node',
         'text',
         DEFAULT_PANE_ID,
         mockEvents,
-        {
-          allowMultiline: true
-        }
+        () => ({ allowMultiline: true })
       );
     });
 
@@ -646,16 +642,14 @@ describe('TextareaController', () => {
         controller.destroy();
       }
 
-      // Create controller with multiline disabled
+      // Create controller with multiline disabled (config as getter - Issue #695)
       controller = new TextareaController(
         element,
         'task-node',
         'task',
         DEFAULT_PANE_ID,
         mockEvents,
-        {
-          allowMultiline: false
-        }
+        () => ({ allowMultiline: false })
       );
     });
 
@@ -990,16 +984,35 @@ describe('TextareaController', () => {
     });
   });
 
-  describe('Config updates', () => {
-    it('should update config dynamically', () => {
+  describe('Config getter pattern (Issue #695)', () => {
+    it('should read config through getter on-demand', () => {
+      // Destroy default controller
+      if (controller) {
+        controller.destroy();
+      }
+
+      // Create mutable config that the getter will read
+      let currentConfig = { allowMultiline: false };
+      const getConfig = () => currentConfig;
+
+      controller = new TextareaController(
+        element,
+        'test-node',
+        'text',
+        DEFAULT_PANE_ID,
+        mockEvents,
+        getConfig
+      );
+
       controller.initialize('test', true);
 
       // Initially single-line
       expect(controller['config'].allowMultiline).toBe(false);
 
-      // Update to multiline
-      controller.updateConfig({ allowMultiline: true });
+      // Update the external config (simulates reactive state change)
+      currentConfig = { allowMultiline: true };
 
+      // Controller reads config on-demand, so it sees the new value
       expect(controller['config'].allowMultiline).toBe(true);
     });
   });
