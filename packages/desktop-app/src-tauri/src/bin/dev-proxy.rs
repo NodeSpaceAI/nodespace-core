@@ -28,6 +28,7 @@ use futures::stream::Stream;
 use nodespace_core::{
     db::HttpStore,
     models::{
+        self,
         schema::{ProtectionLevel, SchemaDefinition, SchemaField},
         Node, NodeFilter, NodeUpdate,
     },
@@ -165,6 +166,26 @@ struct SchemaFieldResult {
 type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ApiError>)>;
 type ApiStatusResult = Result<StatusCode, (StatusCode, Json<ApiError>)>;
 type ApiSchemaResult = Result<Json<SchemaFieldResult>, (StatusCode, Json<ApiError>)>;
+
+/// Convert a Node to its strongly-typed JSON representation (Issue #673)
+///
+/// Delegates to the canonical `models::node_to_typed_value` and maps errors to ApiError.
+fn node_to_typed_value(node: Node) -> Result<serde_json::Value, ApiError> {
+    models::node_to_typed_value(node).map_err(|e| ApiError {
+        message: e.clone(),
+        code: "CONVERSION_ERROR".to_string(),
+        details: Some(e),
+    })
+}
+
+/// Convert a list of Nodes to their strongly-typed JSON representations (Issue #673)
+fn nodes_to_typed_values(nodes: Vec<Node>) -> Result<Vec<serde_json::Value>, ApiError> {
+    models::nodes_to_typed_values(nodes).map_err(|e| ApiError {
+        message: e.clone(),
+        code: "CONVERSION_ERROR".to_string(),
+        details: Some(e),
+    })
+}
 
 /// Update node request with OCC version
 #[derive(Debug, Deserialize)]
@@ -649,7 +670,7 @@ async fn create_node(
 async fn get_node(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> ApiResult<Option<Node>> {
+) -> ApiResult<Option<serde_json::Value>> {
     // ⭐ This call includes ALL business logic:
     // - Virtual date node creation (YYYY-MM-DD format)
     // - populate_mentions() (backlinks)
@@ -661,7 +682,14 @@ async fn get_node(
         .await
         .map_err(map_node_service_error)?;
 
-    Ok(Json(node))
+    match node {
+        Some(n) => {
+            let typed =
+                node_to_typed_value(n).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(e)))?;
+            Ok(Json(Some(typed)))
+        }
+        None => Ok(Json(None)),
+    }
 }
 
 async fn update_node(
@@ -669,7 +697,7 @@ async fn update_node(
     headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(request): Json<UpdateNodeRequest>,
-) -> ApiResult<Node> {
+) -> ApiResult<serde_json::Value> {
     // Extract client ID for SSE filtering
     let client_id = headers
         .get("x-client-id")
@@ -722,7 +750,9 @@ async fn update_node(
     });
     tracing::debug!("SSE: NodeUpdated event sent for node {}", id);
 
-    Ok(Json(updated_node))
+    let typed = node_to_typed_value(updated_node)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(e)))?;
+    Ok(Json(typed))
 }
 
 async fn delete_node(
@@ -853,14 +883,16 @@ async fn set_parent(
 async fn get_children(
     State(state): State<AppState>,
     Path(parent_id): Path<String>,
-) -> ApiResult<Vec<Node>> {
+) -> ApiResult<Vec<serde_json::Value>> {
     let children = state
         .node_service
         .get_children(&parent_id)
         .await
         .map_err(map_node_service_error)?;
 
-    Ok(Json(children))
+    let typed = nodes_to_typed_values(children)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(e)))?;
+    Ok(Json(typed))
 }
 
 async fn get_children_tree(
@@ -879,14 +911,16 @@ async fn get_children_tree(
 async fn query_nodes(
     State(state): State<AppState>,
     Json(filter): Json<NodeFilter>,
-) -> ApiResult<Vec<Node>> {
+) -> ApiResult<Vec<serde_json::Value>> {
     let nodes = state
         .node_service
         .query_nodes(filter)
         .await
         .map_err(map_node_service_error)?;
 
-    Ok(Json(nodes))
+    let typed =
+        nodes_to_typed_values(nodes).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(e)))?;
+    Ok(Json(typed))
 }
 
 async fn create_mention(

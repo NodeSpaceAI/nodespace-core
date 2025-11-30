@@ -1324,6 +1324,100 @@ where
         }
     }
 
+    // ========================================================================
+    // Strongly-Typed Node Retrieval (Issue #673)
+    // ========================================================================
+
+    /// Get a task node with strong typing using single-query pattern
+    ///
+    /// Provides direct deserialization from the spoke table with hub data via
+    /// record link. Returns strongly-typed `TaskNode` instead of generic `Node`.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The task node ID
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(TaskNode))` - Task found with strongly-typed fields
+    /// * `Ok(None)` - Task not found
+    /// * `Err(_)` - Service error
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(db)?;
+    /// if let Some(task) = service.get_task_node("my-task-id").await? {
+    ///     // Direct field access - no JSON parsing
+    ///     println!("Status: {:?}", task.status);
+    ///     println!("Content: {}", task.content);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_task_node(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::models::TaskNode>, NodeServiceError> {
+        self.store.get_task_node(id).await.map_err(|e| {
+            NodeServiceError::DatabaseError(crate::db::DatabaseError::SqlExecutionError {
+                context: format!("Failed to get task node '{}': {}", id, e),
+            })
+        })
+    }
+
+    /// Get a schema node with strong typing using single-query pattern
+    ///
+    /// Provides direct deserialization from the spoke table with hub data via
+    /// record link. Returns strongly-typed `SchemaNode` instead of generic `Node`.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The schema node ID (e.g., "task", "date")
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(SchemaNode))` - Schema found with strongly-typed fields
+    /// * `Ok(None)` - Schema not found
+    /// * `Err(_)` - Service error
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use std::path::PathBuf;
+    /// # use std::sync::Arc;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(db)?;
+    /// if let Some(schema) = service.get_schema_node("task").await? {
+    ///     // Direct field access - no JSON parsing
+    ///     println!("Is core: {}", schema.is_core);
+    ///     println!("Fields: {:?}", schema.fields.len());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_schema_node(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::models::SchemaNode>, NodeServiceError> {
+        self.store.get_schema_node(id).await.map_err(|e| {
+            NodeServiceError::DatabaseError(crate::db::DatabaseError::SqlExecutionError {
+                context: format!("Failed to get schema node '{}': {}", id, e),
+            })
+        })
+    }
+
     /// Update a node
     ///
     /// Performs a partial update using the NodeUpdate struct. Only provided fields

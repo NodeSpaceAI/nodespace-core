@@ -7,12 +7,24 @@
 
 use crate::mcp::types::MCPError;
 use crate::models::schema::ProtectionLevel;
-use crate::models::{NodeFilter, NodeUpdate, OrderBy};
+use crate::models::{Node, NodeFilter, NodeUpdate, OrderBy};
 use crate::services::{NodeService, NodeServiceError, SchemaService};
 use chrono::NaiveDate;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
+
+/// Convert a Node to its strongly-typed JSON representation
+///
+/// Delegates to the canonical `models::node_to_typed_value` and maps errors to MCPError.
+fn node_to_typed_value(node: Node) -> Result<Value, MCPError> {
+    crate::models::node_to_typed_value(node).map_err(MCPError::internal_error)
+}
+
+/// Convert a list of Nodes to their strongly-typed JSON representations
+fn nodes_to_typed_values(nodes: Vec<Node>) -> Result<Vec<Value>, MCPError> {
+    crate::models::nodes_to_typed_values(nodes).map_err(MCPError::internal_error)
+}
 
 /// Convert NodeServiceError to MCPError with proper formatting
 ///
@@ -226,6 +238,12 @@ pub async fn handle_create_node(
 }
 
 /// Handle get_node MCP request
+///
+/// Returns strongly-typed structs for types with spoke tables (task, schema),
+/// and generic Node for simple types (text, header, etc.).
+///
+/// This provides compile-time type safety for complex types while maintaining
+/// flexibility for simple content-only types.
 pub async fn handle_get_node(
     node_service: &Arc<NodeService>,
     params: Value,
@@ -233,20 +251,15 @@ pub async fn handle_get_node(
     let params: GetNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
+    // Fetch the node (get_node already fetches spoke data for task/schema types)
     let node = node_service
         .get_node(&params.node_id)
         .await
-        .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?;
+        .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?
+        .ok_or_else(|| MCPError::node_not_found(&params.node_id))?;
 
-    match node {
-        Some(node) => {
-            let value = serde_json::to_value(node).map_err(|e| {
-                MCPError::internal_error(format!("Failed to serialize node: {}", e))
-            })?;
-            Ok(value)
-        }
-        None => Err(MCPError::node_not_found(&params.node_id)),
-    }
+    // Convert to strongly-typed JSON representation
+    node_to_typed_value(node)
 }
 
 /// Handle update_node MCP request
@@ -432,12 +445,13 @@ pub async fn handle_query_nodes(
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to query nodes: {}", e)))?;
 
-    let value = serde_json::to_value(&nodes)
-        .map_err(|e| MCPError::internal_error(format!("Failed to serialize nodes: {}", e)))?;
+    // Convert nodes to strongly-typed JSON representations
+    let count = nodes.len();
+    let typed_nodes = nodes_to_typed_values(nodes)?;
 
     Ok(json!({
-        "nodes": value,
-        "count": nodes.len()
+        "nodes": typed_nodes,
+        "count": count
     }))
 }
 
@@ -910,14 +924,21 @@ pub async fn handle_get_nodes_batch(
         )));
     }
 
-    // Fetch all nodes
+    // Fetch all nodes and convert to typed representations
     let mut nodes = Vec::new();
     let mut not_found = Vec::new();
 
     for node_id in params.node_ids {
         match node_service.get_node(&node_id).await {
             Ok(Some(node)) => {
-                nodes.push(serde_json::to_value(&node).unwrap());
+                // Convert to strongly-typed JSON representation
+                match node_to_typed_value(node) {
+                    Ok(typed_value) => nodes.push(typed_value),
+                    Err(e) => {
+                        tracing::warn!("Error converting node {}: {}", node_id, e.message);
+                        not_found.push(node_id);
+                    }
+                }
             }
             Ok(None) => {
                 not_found.push(node_id);

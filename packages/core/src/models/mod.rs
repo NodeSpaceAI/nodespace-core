@@ -10,6 +10,7 @@
 
 mod node;
 pub mod schema;
+mod schema_node;
 pub mod time;
 
 // Type-safe node wrappers
@@ -57,5 +58,43 @@ pub use time::{SystemTimeProvider, TimeProvider};
 
 // Export type-safe wrappers
 pub use date_node::DateNode;
+pub use schema_node::SchemaNode;
 pub use task_node::{TaskNode, TaskStatus};
 pub use text_node::TextNode;
+
+/// Convert a Node to its strongly-typed JSON representation (Issue #673)
+///
+/// For types with spoke tables (task, schema), converts to the typed struct
+/// which provides proper field structure. For simple types, returns the generic Node.
+///
+/// This is the canonical implementation - all entry points (MCP, Tauri, HTTP)
+/// should use this function and map the error to their own error type.
+///
+/// # Example
+///
+/// ```ignore
+/// // In MCP handler
+/// node_to_typed_value(node).map_err(MCPError::internal_error)?
+///
+/// // In Tauri command
+/// node_to_typed_value(node).map_err(|e| CommandError { message: e, ... })?
+/// ```
+pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
+    match node.node_type.as_str() {
+        "task" => {
+            let task = TaskNode::from_node(node).map_err(|e| e.to_string())?;
+            serde_json::to_value(task)
+        }
+        "schema" => {
+            let schema = SchemaNode::from_node(node).map_err(|e| e.to_string())?;
+            serde_json::to_value(schema)
+        }
+        _ => serde_json::to_value(node),
+    }
+    .map_err(|e| format!("Failed to serialize node: {}", e))
+}
+
+/// Convert a list of Nodes to their strongly-typed JSON representations (Issue #673)
+pub fn nodes_to_typed_values(nodes: Vec<Node>) -> Result<Vec<serde_json::Value>, String> {
+    nodes.into_iter().map(node_to_typed_value).collect()
+}

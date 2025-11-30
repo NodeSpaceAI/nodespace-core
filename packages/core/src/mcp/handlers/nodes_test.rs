@@ -1547,3 +1547,186 @@ mod integration_tests {
         );
     }
 }
+
+// =========================================================================
+// Strongly-Typed Node Response Tests (Issue #673)
+// =========================================================================
+
+#[cfg(test)]
+mod typed_response_tests {
+    use crate::db::SurrealStore;
+    use crate::mcp::handlers::nodes::{
+        handle_get_node, handle_get_nodes_batch, handle_query_nodes,
+    };
+    use crate::services::CreateNodeParams;
+    use crate::NodeService;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn setup_test_service() -> Result<(Arc<NodeService>, TempDir), Box<dyn std::error::Error>>
+    {
+        let temp_dir = TempDir::new()?;
+        let db_path = temp_dir.path().join("test.db");
+
+        let store = Arc::new(SurrealStore::new(db_path).await?);
+        let node_service = Arc::new(NodeService::new(store)?);
+        Ok((node_service, temp_dir))
+    }
+
+    /// Verifies get_node returns TaskNode struct for task types
+    /// TaskNode should have direct fields (status, priority) instead of properties
+    #[tokio::test]
+    async fn test_get_node_returns_typed_task_node() {
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
+
+        // Create a task node (priority is a string enum, not integer)
+        let node_id = node_service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Test task".to_string(),
+                parent_id: None,
+                insert_after_node_id: None,
+                properties: json!({"status": "open", "priority": "high"}),
+            })
+            .await
+            .unwrap();
+
+        // Get the node via MCP handler
+        let params = json!({ "node_id": node_id });
+        let result = handle_get_node(&node_service, params).await.unwrap();
+
+        // Verify TaskNode structure: direct fields instead of properties
+        assert_eq!(result["id"], node_id);
+        assert_eq!(result["content"], "Test task");
+        assert_eq!(result["status"], "open"); // Direct field, not properties.status
+
+        // TaskNode should NOT have a properties field (spoke fields are direct)
+        assert!(result.get("properties").is_none() || result["properties"].is_null());
+    }
+
+    /// Verifies get_node returns generic Node for simple types (text, header, etc.)
+    #[tokio::test]
+    async fn test_get_node_returns_generic_node_for_text() {
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
+
+        // Create a text node (no spoke table, uses generic Node)
+        let node_id = node_service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Hello world".to_string(),
+                parent_id: None,
+                insert_after_node_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Get the node via MCP handler
+        let params = json!({ "node_id": node_id });
+        let result = handle_get_node(&node_service, params).await.unwrap();
+
+        // Verify generic Node structure
+        // Note: Node uses camelCase serialization (nodeType, not node_type)
+        assert_eq!(result["id"], node_id);
+        assert_eq!(result["content"], "Hello world");
+        assert_eq!(result["nodeType"], "text");
+
+        // Generic Node has properties field (even if empty)
+        assert!(result.get("properties").is_some());
+    }
+
+    /// Verifies query_nodes returns mixed typed/generic nodes
+    #[tokio::test]
+    async fn test_query_nodes_returns_typed_and_generic_nodes() {
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
+
+        // Create a task node
+        let task_id = node_service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Task node".to_string(),
+                parent_id: None,
+                insert_after_node_id: None,
+                properties: json!({"status": "done"}),
+            })
+            .await
+            .unwrap();
+
+        // Create a text node
+        let _text_id = node_service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Text node".to_string(),
+                parent_id: None,
+                insert_after_node_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Query all task nodes
+        let params = json!({ "node_type": "task" });
+        let result = handle_query_nodes(&node_service, params).await.unwrap();
+
+        let nodes = result["nodes"].as_array().unwrap();
+        assert!(!nodes.is_empty());
+
+        // Find the task node and verify typed structure
+        let task_node = nodes.iter().find(|n| n["id"] == task_id).unwrap();
+        assert_eq!(task_node["status"], "done"); // Direct field on TaskNode
+    }
+
+    /// Verifies get_nodes_batch returns typed structs for task nodes
+    #[tokio::test]
+    async fn test_get_nodes_batch_returns_typed_nodes() {
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
+
+        // Create multiple nodes of different types (priority is string enum)
+        let task_id = node_service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Batch task".to_string(),
+                parent_id: None,
+                insert_after_node_id: None,
+                properties: json!({"status": "in_progress", "priority": "medium"}),
+            })
+            .await
+            .unwrap();
+
+        let text_id = node_service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Batch text".to_string(),
+                parent_id: None,
+                insert_after_node_id: None,
+                properties: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Batch get both nodes
+        let params = json!({ "node_ids": [task_id.clone(), text_id.clone()] });
+        let result = handle_get_nodes_batch(&node_service, params).await.unwrap();
+
+        let nodes = result["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2);
+
+        // Find and verify task node structure
+        let task_node = nodes.iter().find(|n| n["id"] == task_id).unwrap();
+        assert_eq!(task_node["status"], "in_progress"); // Direct TaskNode field
+        assert!(task_node.get("properties").is_none() || task_node["properties"].is_null());
+
+        // Find and verify text node structure (generic Node)
+        // Note: Node uses camelCase serialization (nodeType, not node_type)
+        let text_node = nodes.iter().find(|n| n["id"] == text_id).unwrap();
+        assert_eq!(text_node["nodeType"], "text");
+        assert!(text_node.get("properties").is_some()); // Generic Node has properties
+    }
+}

@@ -1,34 +1,46 @@
-//! Type-Safe TaskNode Wrapper
+//! Strongly-Typed TaskNode
 //!
-//! Provides ergonomic, compile-time type-safe access to task node properties
-//! while maintaining the universal Node storage model.
+//! Provides direct deserialization from spoke table with hub data via record link,
+//! eliminating the intermediate JSON `properties` step for true compile-time type safety.
+//!
+//! # Architecture (Issue #673)
+//!
+//! **Old Pattern (Weak Typing):**
+//! ```text
+//! DB spoke (task.status)
+//!   → Query hub, then query spoke
+//!   → Hydrate into Node.properties as JSON
+//!   → TaskNode wraps Node
+//!   → TaskNode.status() reads from node.properties["status"]
+//! ```
+//!
+//! **New Pattern (Strong Typing):**
+//! ```text
+//! DB spoke (task.status + task.node.* for hub fields)
+//!   → Single query with record link
+//!   → Deserialize directly to TaskNode struct
+//!   → TaskNode.status is a TaskStatus enum field
+//! ```
 //!
 //! # Examples
 //!
 //! ```rust
-//! use nodespace_core::models::{Node, TaskNode, TaskStatus};
-//! use serde_json::json;
+//! use nodespace_core::models::{TaskNode, TaskStatus};
 //!
-//! // Create from existing node
-//! let node = Node::new(
-//!     "task".to_string(),
-//!     "Implement feature".to_string(),
-//!     json!({"status": "open", "priority": 2}),
-//! );
-//! let task = TaskNode::from_node(node).unwrap();
-//!
-//! // Type-safe property access
-//! assert_eq!(task.status(), TaskStatus::Open);
-//! assert_eq!(task.priority(), 2);
-//!
-//! // Create with builder
+//! // Create with builder (for new tasks)
 //! let task = TaskNode::builder("Write tests".to_string())
 //!     .with_status(TaskStatus::InProgress)
 //!     .with_priority(3)
 //!     .build();
+//!
+//! // Direct field access (no JSON parsing)
+//! assert_eq!(task.status, TaskStatus::InProgress);
+//! assert_eq!(task.priority, Some(3));
 //! ```
 
 use crate::models::{Node, ValidationError};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::str::FromStr;
 
@@ -40,9 +52,14 @@ use std::str::FromStr;
 /// - "in_progress" - Currently being worked on
 /// - "done" - Finished
 /// - "cancelled" - Cancelled/abandoned
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// - User-defined statuses via schema extension (e.g., "blocked", "review")
+///
+/// Core statuses are strongly typed; user-defined statuses use `User(String)`.
+/// This aligns with the schema system's `core_values` / `user_values` model.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TaskStatus {
     /// Task has not been started
+    #[default]
     Open,
     /// Task is currently being worked on
     InProgress,
@@ -50,6 +67,8 @@ pub enum TaskStatus {
     Done,
     /// Task has been cancelled/abandoned
     Cancelled,
+    /// User-defined status (extended via schema)
+    User(String),
 }
 
 impl FromStr for TaskStatus {
@@ -61,65 +80,153 @@ impl FromStr for TaskStatus {
             "in_progress" => Ok(Self::InProgress),
             "done" => Ok(Self::Done),
             "cancelled" => Ok(Self::Cancelled),
-            _ => Err(format!("Invalid task status: {}", s)),
+            // Any other value is treated as user-defined
+            other => Ok(Self::User(other.to_string())),
         }
     }
 }
 
 impl TaskStatus {
     /// Convert status to string representation
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             Self::Open => "open",
             Self::InProgress => "in_progress",
             Self::Done => "done",
             Self::Cancelled => "cancelled",
+            Self::User(s) => s.as_str(),
         }
+    }
+
+    /// Check if this is a core (built-in) status
+    pub fn is_core(&self) -> bool {
+        !matches!(self, Self::User(_))
+    }
+
+    /// Check if this is a user-defined status
+    pub fn is_user_defined(&self) -> bool {
+        matches!(self, Self::User(_))
     }
 }
 
-/// Type-safe wrapper for task nodes
+impl Serialize for TaskStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for TaskStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self::from_str(&s).unwrap()) // from_str never fails now
+    }
+}
+
+/// Strongly-typed task node with direct field access
 ///
-/// Provides ergonomic access to task-specific properties while maintaining
-/// the universal Node storage model underneath.
+/// Deserializes directly from spoke table with hub data via record link.
+/// All fields are strongly typed - no JSON intermediary.
+///
+/// # Query Pattern
+///
+/// ```sql
+/// SELECT
+///     id,
+///     status,
+///     priority,
+///     due_date,
+///     assignee,
+///     node.id AS node_id,
+///     node.content AS content,
+///     node.version AS version,
+///     node.created_at AS created_at,
+///     node.modified_at AS modified_at
+/// FROM task:`some-id`;
+/// ```
 ///
 /// # Examples
 ///
 /// ```rust
-/// use nodespace_core::models::{Node, TaskNode, TaskStatus};
-/// use serde_json::json;
+/// use nodespace_core::models::{TaskNode, TaskStatus};
 ///
-/// let node = Node::new(
-///     "task".to_string(),
-///     "Fix bug".to_string(),
-///     json!({"status": "open"}),
-/// );
-/// let mut task = TaskNode::from_node(node).unwrap();
+/// let task = TaskNode::builder("Fix bug".to_string())
+///     .with_status(TaskStatus::Done)
+///     .build();
 ///
-/// task.set_status(TaskStatus::Done);
-/// assert_eq!(task.status(), TaskStatus::Done);
+/// // Direct field access
+/// assert_eq!(task.status, TaskStatus::Done);
+/// assert_eq!(task.content, "Fix bug");
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskNode {
-    node: Node,
+    // ========================================================================
+    // Hub fields (from task.node.* via record link)
+    // ========================================================================
+    /// Unique identifier (matches hub node ID)
+    pub id: String,
+
+    /// Primary content/text of the task
+    pub content: String,
+
+    /// Optimistic concurrency control version
+    #[serde(default = "default_version")]
+    pub version: i64,
+
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+
+    /// Last modification timestamp
+    pub modified_at: DateTime<Utc>,
+
+    // ========================================================================
+    // Spoke fields (direct from task table)
+    // ========================================================================
+    /// Task status (strongly typed enum)
+    #[serde(default)]
+    pub status: TaskStatus,
+
+    /// Task priority (1 = highest, 4 = lowest)
+    #[serde(default)]
+    pub priority: Option<i32>,
+
+    /// Due date for the task
+    #[serde(default)]
+    pub due_date: Option<DateTime<Utc>>,
+
+    /// Assignee node ID
+    #[serde(default)]
+    pub assignee: Option<String>,
+}
+
+fn default_version() -> i64 {
+    1
 }
 
 impl TaskNode {
-    /// Create a TaskNode from an existing Node
+    /// Default priority value (medium priority)
+    pub const DEFAULT_PRIORITY: i32 = 2;
+
+    /// Create a TaskNode from an existing Node (for backward compatibility)
+    ///
+    /// This converts the JSON properties pattern to strongly-typed fields.
+    /// Prefer using `get_task_node()` from NodeService for direct deserialization.
+    ///
+    /// # Property Formats
+    ///
+    /// Supports both property formats (Issue #397):
+    /// - New nested format: `properties.task.status`
+    /// - Old flat format: `properties.status` (deprecated, for backward compat)
     ///
     /// # Errors
     ///
     /// Returns `ValidationError::InvalidNodeType` if the node type is not "task".
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use nodespace_core::models::{Node, TaskNode};
-    /// use serde_json::json;
-    ///
-    /// let node = Node::new("task".to_string(), "Test".to_string(), json!({}));
-    /// let task = TaskNode::from_node(node).unwrap();
-    /// ```
     pub fn from_node(node: Node) -> Result<Self, ValidationError> {
         if node.node_type != "task" {
             return Err(ValidationError::InvalidNodeType(format!(
@@ -127,138 +234,168 @@ impl TaskNode {
                 node.node_type
             )));
         }
-        Ok(Self { node })
+
+        // Try new nested format first, fall back to old flat format (Issue #397)
+        let task_props = node
+            .properties
+            .get("task")
+            .and_then(|v| v.as_object())
+            .map(|obj| serde_json::Value::Object(obj.clone()));
+        let props = task_props.as_ref().unwrap_or(&node.properties);
+
+        // Extract status from properties
+        let status = props
+            .get("status")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_default();
+
+        // Extract priority from properties (supports both integer and string "high"/"medium"/"low")
+        let priority = props.get("priority").and_then(|v| {
+            if let Some(n) = v.as_i64() {
+                Some(n as i32)
+            } else if let Some(s) = v.as_str() {
+                // Convert string priority to integer (for backward compat with schema format)
+                match s {
+                    "urgent" | "highest" => Some(1),
+                    "high" => Some(2),
+                    "medium" | "normal" => Some(3),
+                    "low" | "lowest" => Some(4),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        });
+
+        // Extract due_date from properties (try parsing as DateTime)
+        let due_date = props
+            .get("due_date")
+            .and_then(|v| v.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
+
+        // Extract assignee from properties
+        // Note: Supports both "assignee_id" (legacy) and "assignee" (canonical) field names.
+        // The struct field is `assignee`, and `into_node()` serializes as "assignee".
+        // We read both for backward compatibility with any older data using "assignee_id".
+        let assignee = props
+            .get("assignee_id")
+            .or_else(|| props.get("assignee"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(Self {
+            id: node.id,
+            content: node.content,
+            version: node.version,
+            created_at: node.created_at,
+            modified_at: node.modified_at,
+            status,
+            priority,
+            due_date,
+            assignee,
+        })
     }
 
     /// Create a builder for a new TaskNode with the given content
-    ///
-    /// Returns a builder for setting additional properties.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use nodespace_core::models::{TaskNode, TaskStatus};
-    ///
-    /// let task = TaskNode::builder("Write tests".to_string())
-    ///     .with_status(TaskStatus::InProgress)
-    ///     .with_priority(3)
-    ///     .build();
-    /// ```
     pub fn builder(content: String) -> TaskNodeBuilder {
         TaskNodeBuilder {
             content,
             status: None,
             priority: None,
             due_date: None,
-            assignee_id: None,
+            assignee: None,
         }
     }
 
-    /// Get the task's status
+    /// Convert to universal Node (for backward compatibility with existing APIs)
     ///
-    /// Returns `TaskStatus::Open` if no status is set.
+    /// This creates a Node with properties populated from the strongly-typed fields.
+    pub fn into_node(self) -> Node {
+        let mut properties = serde_json::Map::new();
+        properties.insert("status".to_string(), json!(self.status.as_str()));
+
+        if let Some(priority) = self.priority {
+            properties.insert("priority".to_string(), json!(priority));
+        }
+
+        if let Some(due_date) = self.due_date {
+            properties.insert("due_date".to_string(), json!(due_date.to_rfc3339()));
+        }
+
+        if let Some(assignee) = self.assignee {
+            properties.insert("assignee".to_string(), json!(assignee));
+        }
+
+        Node {
+            id: self.id,
+            node_type: "task".to_string(),
+            content: self.content,
+            version: self.version,
+            created_at: self.created_at,
+            modified_at: self.modified_at,
+            properties: json!(properties),
+            embedding_vector: None,
+            mentions: Vec::new(),
+            mentioned_by: Vec::new(),
+        }
+    }
+
+    /// Get a reference as Node (creates a temporary Node for compatibility)
+    ///
+    /// Note: This is less efficient than direct field access. Prefer using
+    /// the strongly-typed fields directly when possible.
+    pub fn as_node(&self) -> Node {
+        self.clone().into_node()
+    }
+
+    // ========================================================================
+    // Convenience methods for backward compatibility
+    // ========================================================================
+
+    /// Get the task's status (for API compatibility)
     pub fn status(&self) -> TaskStatus {
-        self.node
-            .properties
-            .get("status")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(TaskStatus::Open)
+        self.status.clone()
     }
 
     /// Set the task's status
     pub fn set_status(&mut self, status: TaskStatus) {
-        if let Some(obj) = self.node.properties.as_object_mut() {
-            obj.insert("status".to_string(), json!(status.as_str()));
-        }
+        self.status = status;
+        self.modified_at = Utc::now();
     }
 
-    /// Default priority value (medium priority)
-    const DEFAULT_PRIORITY: i32 = 2;
-
     /// Get the task's priority
-    ///
-    /// Returns `2` (medium priority) if no priority is set.
-    /// Valid range is typically 1 (highest) to 4 (lowest).
     pub fn priority(&self) -> i32 {
-        self.node
-            .properties
-            .get("priority")
-            .and_then(|v| v.as_i64())
-            .map(|v| v as i32)
-            .unwrap_or(Self::DEFAULT_PRIORITY)
+        self.priority.unwrap_or(Self::DEFAULT_PRIORITY)
     }
 
     /// Set the task's priority
-    ///
-    /// Valid range is typically 1 (highest) to 4 (lowest).
     pub fn set_priority(&mut self, priority: i32) {
-        if let Some(obj) = self.node.properties.as_object_mut() {
-            obj.insert("priority".to_string(), json!(priority));
-        }
+        self.priority = Some(priority);
+        self.modified_at = Utc::now();
     }
 
-    /// Get the task's due date
-    ///
-    /// Returns `None` if no due date is set.
+    /// Get the task's due date as string (for API compatibility)
     pub fn due_date(&self) -> Option<String> {
-        self.node
-            .properties
-            .get("due_date")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+        self.due_date.map(|dt| dt.to_rfc3339())
     }
 
     /// Set the task's due date
-    ///
-    /// Pass `None` to clear the due date.
-    pub fn set_due_date(&mut self, due_date: Option<String>) {
-        if let Some(obj) = self.node.properties.as_object_mut() {
-            if let Some(date) = due_date {
-                obj.insert("due_date".to_string(), json!(date));
-            } else {
-                obj.remove("due_date");
-            }
-        }
+    pub fn set_due_date(&mut self, due_date: Option<DateTime<Utc>>) {
+        self.due_date = due_date;
+        self.modified_at = Utc::now();
     }
 
-    /// Get the task's assignee ID
-    ///
-    /// Returns `None` if no assignee is set.
+    /// Get the task's assignee ID (for API compatibility)
     pub fn assignee_id(&self) -> Option<String> {
-        self.node
-            .properties
-            .get("assignee_id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+        self.assignee.clone()
     }
 
     /// Set the task's assignee ID
-    ///
-    /// Pass `None` to clear the assignee.
     pub fn set_assignee_id(&mut self, assignee_id: Option<String>) {
-        if let Some(obj) = self.node.properties.as_object_mut() {
-            if let Some(id) = assignee_id {
-                obj.insert("assignee_id".to_string(), json!(id));
-            } else {
-                obj.remove("assignee_id");
-            }
-        }
-    }
-
-    /// Get a reference to the underlying Node
-    pub fn as_node(&self) -> &Node {
-        &self.node
-    }
-
-    /// Get a mutable reference to the underlying Node
-    pub fn as_node_mut(&mut self) -> &mut Node {
-        &mut self.node
-    }
-
-    /// Convert back to universal Node (consumes wrapper)
-    pub fn into_node(self) -> Node {
-        self.node
+        self.assignee = assignee_id;
+        self.modified_at = Utc::now();
     }
 }
 
@@ -267,8 +404,8 @@ pub struct TaskNodeBuilder {
     content: String,
     status: Option<TaskStatus>,
     priority: Option<i32>,
-    due_date: Option<String>,
-    assignee_id: Option<String>,
+    due_date: Option<DateTime<Utc>>,
+    assignee: Option<String>,
 }
 
 impl TaskNodeBuilder {
@@ -285,40 +422,40 @@ impl TaskNodeBuilder {
     }
 
     /// Set the task due date
-    pub fn with_due_date(mut self, due_date: String) -> Self {
+    pub fn with_due_date(mut self, due_date: DateTime<Utc>) -> Self {
         self.due_date = Some(due_date);
         self
     }
 
+    /// Set the task due date from string (for convenience)
+    pub fn with_due_date_str(mut self, due_date: &str) -> Self {
+        if let Ok(dt) = DateTime::parse_from_rfc3339(due_date) {
+            self.due_date = Some(dt.with_timezone(&Utc));
+        }
+        self
+    }
+
     /// Set the task assignee
-    pub fn with_assignee_id(mut self, assignee_id: String) -> Self {
-        self.assignee_id = Some(assignee_id);
+    pub fn with_assignee(mut self, assignee: String) -> Self {
+        self.assignee = Some(assignee);
         self
     }
 
     /// Build the TaskNode
     pub fn build(self) -> TaskNode {
-        let mut properties = serde_json::Map::new();
+        let now = Utc::now();
+        let id = uuid::Uuid::new_v4().to_string();
 
-        // Set status (default to Open if not specified)
-        let status = self.status.unwrap_or(TaskStatus::Open);
-        properties.insert("status".to_string(), json!(status.as_str()));
-
-        // Set priority (default to 2 if not specified)
-        let priority = self.priority.unwrap_or(TaskNode::DEFAULT_PRIORITY);
-        properties.insert("priority".to_string(), json!(priority));
-
-        // Set optional fields
-        if let Some(due_date) = self.due_date {
-            properties.insert("due_date".to_string(), json!(due_date));
+        TaskNode {
+            id,
+            content: self.content,
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            status: self.status.unwrap_or_default(),
+            priority: self.priority,
+            due_date: self.due_date,
+            assignee: self.assignee,
         }
-
-        if let Some(assignee_id) = self.assignee_id {
-            properties.insert("assignee_id".to_string(), json!(assignee_id));
-        }
-
-        let node = Node::new("task".to_string(), self.content, json!(properties));
-
-        TaskNode { node }
     }
 }
