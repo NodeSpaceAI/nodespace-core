@@ -12,6 +12,7 @@
 
 import type { PluginDefinition, NodeReferenceComponent } from './types';
 import type { PatternTemplate } from '../patterns/types';
+import type { CoreTaskStatus } from '../types/task-node';
 import { PatternRegistry } from '../patterns/registry';
 import BaseNodeReference from '../components/base-node-reference.svelte';
 
@@ -146,6 +147,37 @@ export const taskNodePlugin: PluginDefinition = {
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
+  },
+  // Type-specific metadata extraction (Issue #698)
+  extractMetadata: (node: { nodeType: string; properties?: Record<string, unknown> }) => {
+    const properties = node.properties || {};
+    const taskProps = properties[node.nodeType] as Record<string, unknown> | undefined;
+    const status = taskProps?.status || properties.status; // Support both nested and flat formats
+
+    // Map task status to NodeState expected by TaskNode
+    let taskState: 'pending' | 'inProgress' | 'completed' = 'pending';
+    if (status === 'IN_PROGRESS' || status === 'in_progress') {
+      taskState = 'inProgress';
+    } else if (status === 'DONE' || status === 'done') {
+      taskState = 'completed';
+    } else if (status === 'OPEN' || status === 'open') {
+      taskState = 'pending';
+    }
+
+    return { taskState, ...properties };
+  },
+  // Type-specific state mapping (Issue #698)
+  mapStateToSchema: (state: string, _fieldName: string): CoreTaskStatus => {
+    switch (state) {
+      case 'pending':
+        return 'open';
+      case 'inProgress':
+        return 'in_progress';
+      case 'completed':
+        return 'done';
+      default:
+        return 'open';
+    }
   }
 };
 
@@ -239,7 +271,9 @@ export const codeBlockNodePlugin: PluginDefinition = {
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
-  }
+  },
+  // Structured content - cannot accept arbitrary merges (Issue #698)
+  acceptsContentMerge: false
 };
 
 export const quoteBlockNodePlugin: PluginDefinition = {
@@ -280,7 +314,9 @@ export const quoteBlockNodePlugin: PluginDefinition = {
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
-  }
+  },
+  // Structured content - cannot accept arbitrary merges (Issue #698)
+  acceptsContentMerge: false
 };
 
 export const orderedListNodePlugin: PluginDefinition = {

@@ -168,6 +168,45 @@ export interface PluginDefinition {
   node?: NodeRegistration; // Individual node component (TaskNode, TextNode, etc.)
   viewer?: ViewerRegistration; // Rich viewer component (TaskNodeViewer, DateNodeViewer, etc.)
   reference?: ReferenceRegistration;
+
+  /**
+   * Extract and transform node properties into component-compatible metadata
+   * Used to handle type-specific property transformations without hardcoding in BaseNodeViewer
+   *
+   * Example: Task nodes transform properties.task.status → metadata.taskState
+   *
+   * @param node - Node with properties from database
+   * @returns Metadata object compatible with node component expectations
+   * @example
+   * // Task node example:
+   * extractMetadata({ nodeType: 'task', properties: { task: { status: 'IN_PROGRESS' } } })
+   * // Returns: { taskState: 'inProgress', task: { status: 'IN_PROGRESS' } }
+   */
+  extractMetadata?: (node: {
+    nodeType: string;
+    properties?: Record<string, unknown>;
+  }) => Record<string, unknown>;
+
+  /**
+   * Maps UI state to schema property value
+   * Used for type-specific state transformations (e.g., task state cycling)
+   *
+   * Example: Task nodes map 'pending' → 'open', 'inProgress' → 'in_progress', 'completed' → 'done'
+   *
+   * @param state - UI state value
+   * @param fieldName - Schema field name
+   * @returns Schema-compatible property value
+   */
+  mapStateToSchema?: (state: string, fieldName: string) => unknown;
+
+  /**
+   * Whether this node type accepts content merges from adjacent nodes
+   * Used to protect structured content nodes (e.g., code-block, quote-block)
+   *
+   * Default: true (most nodes accept merges)
+   * Set to false for nodes that must maintain specific formatting
+   */
+  acceptsContentMerge?: boolean;
 }
 
 // Registry statistics for debugging

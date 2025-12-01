@@ -21,7 +21,6 @@
   import { NodeExpansionCoordinator } from '$lib/services/node-expansion-coordinator';
   import { structureTree as reactiveStructureTree } from '$lib/stores/reactive-structure-tree.svelte';
   import type { Node } from '$lib/types';
-  import type { CoreTaskStatus } from '$lib/types/task-node';
   import type { Snippet } from 'svelte';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
   import { getViewerId, saveScrollPosition, getScrollPosition } from '$lib/stores/scroll-state';
@@ -342,26 +341,8 @@
   }
 
   /**
-   * Node types that have structured content and cannot accept arbitrary merges
-   * These nodes must maintain specific formatting (e.g., code fences, quote prefixes)
-   */
-  const STRUCTURED_NODE_TYPES = ['code-block', 'quote-block'] as const;
-
-  /**
-   * Check if a node type is a structured node that cannot accept arbitrary merges
-   * @param nodeType - The node type to check
-   * @returns true if the node type is structured and cannot accept merges
-   */
-  function isStructuredNode(nodeType: string): boolean {
-    return STRUCTURED_NODE_TYPES.includes(nodeType as (typeof STRUCTURED_NODE_TYPES)[number]);
-  }
-
-  /**
    * Extract and transform node properties into component-compatible metadata
-   *
-   * Handles the mismatch between database property storage and component metadata expectations:
-   * - Task nodes: Maps properties.task.status → metadata.taskState (for icon rendering)
-   * - Other nodes: Returns properties as-is for future extension
+   * Delegates to plugin registry for type-specific transformations (Issue #698)
    *
    * @param node - Node with properties from database
    * @returns Metadata object compatible with node component expectations
@@ -370,46 +351,7 @@
     nodeType: string;
     properties?: Record<string, unknown>;
   }): Record<string, unknown> {
-    const properties = node.properties || {};
-
-    // Task nodes: Map schema status to taskState for icon rendering
-    if (node.nodeType === 'task') {
-      const taskProps = properties[node.nodeType] as Record<string, unknown> | undefined;
-      const status = taskProps?.status || properties.status; // Support both nested and flat formats
-
-      // Map task status to NodeState expected by TaskNode
-      let taskState: 'pending' | 'inProgress' | 'completed' = 'pending';
-      if (status === 'IN_PROGRESS') {
-        taskState = 'inProgress';
-      } else if (status === 'DONE') {
-        taskState = 'completed';
-      } else if (status === 'OPEN') {
-        taskState = 'pending';
-      }
-
-      return { taskState, ...properties };
-    }
-
-    // Default: Return properties as-is
-    return properties;
-  }
-
-  /**
-   * Maps UI task state to schema status value.
-   * UI uses: 'pending', 'inProgress', 'completed'
-   * Schema uses: 'open', 'in_progress', 'done', 'cancelled'
-   */
-  function mapNodeStateToSchemaStatus(state: string): CoreTaskStatus {
-    switch (state) {
-      case 'pending':
-        return 'open';
-      case 'inProgress':
-        return 'in_progress';
-      case 'completed':
-        return 'done';
-      default:
-        return 'open';
-    }
+    return pluginRegistry.extractNodeMetadata(node);
   }
 
   /**
@@ -1037,7 +979,7 @@
 
       // Prevent merging into structured nodes (code-block, quote-block)
       // These nodes have specific formatting that can't accept arbitrary content
-      if (isStructuredNode(previousNode.nodeType)) {
+      if (!pluginRegistry.acceptsContentMerge(previousNode.nodeType)) {
         return; // Silently prevent merge - user can still delete current node if empty
       }
 
@@ -1087,7 +1029,7 @@
 
       // Prevent merging into structured nodes (code-block, quote-block)
       // These nodes have specific formatting that can't accept arbitrary content
-      if (isStructuredNode(previousNode.nodeType)) {
+      if (!pluginRegistry.acceptsContentMerge(previousNode.nodeType)) {
         // Block the action entirely - don't delete, don't merge, don't focus
         // User must manually delete the node (e.g., Cmd+Backspace) or add content first
         return;
@@ -1457,7 +1399,7 @@
                 on:iconClick={handleIconClick}
                 on:taskStateChanged={(e) => {
                   const { nodeId: eventNodeId, state } = e.detail;
-                  updateSchemaField(eventNodeId, 'status', mapNodeStateToSchemaStatus(state));
+                  updateSchemaField(eventNodeId, 'status', pluginRegistry.mapStateToSchema(node.nodeType, state, 'status'));
                 }}
                 on:combineWithPrevious={handleCombineWithPrevious}
                 on:deleteNode={handleDeleteNode}
@@ -1677,7 +1619,7 @@
                 on:iconClick={handleIconClick}
                 on:taskStateChanged={(e) => {
                   const { nodeId: eventNodeId, state } = e.detail;
-                  updateSchemaField(eventNodeId, 'status', mapNodeStateToSchemaStatus(state));
+                  updateSchemaField(eventNodeId, 'status', pluginRegistry.mapStateToSchema(node.nodeType, state, 'status'));
                 }}
                 on:combineWithPrevious={handleCombineWithPrevious}
                 on:deleteNode={handleDeleteNode}

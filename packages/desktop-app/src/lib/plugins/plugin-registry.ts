@@ -409,6 +409,68 @@ export class PluginRegistry {
   }
 
   /**
+   * Extract metadata for a node using its plugin's extractMetadata function
+   * Falls back to returning properties as-is if plugin doesn't define extractMetadata
+   *
+   * Issue #698: Type-agnostic BaseNodeViewer refactoring
+   *
+   * @param node - Node with properties from database
+   * @returns Metadata object compatible with node component expectations
+   */
+  extractNodeMetadata(node: {
+    nodeType: string;
+    properties?: Record<string, unknown>;
+  }): Record<string, unknown> {
+    const plugin = this.plugins.get(node.nodeType);
+    if (plugin && this.enabledPlugins.has(node.nodeType) && plugin.extractMetadata) {
+      return plugin.extractMetadata(node);
+    }
+    // Default: Return properties as-is
+    return node.properties || {};
+  }
+
+  /**
+   * Map UI state to schema property value using plugin's mapStateToSchema function
+   * Falls back to returning state as-is if plugin doesn't define mapStateToSchema
+   *
+   * Issue #698: Type-agnostic BaseNodeViewer refactoring
+   *
+   * @param nodeType - Node type to get mapping for
+   * @param state - UI state value
+   * @param fieldName - Schema field name
+   * @returns Schema-compatible property value
+   * @example
+   * // Task node example:
+   * mapStateToSchema('task', 'pending', 'status') // Returns: 'open'
+   * mapStateToSchema('task', 'inProgress', 'status') // Returns: 'in_progress'
+   */
+  mapStateToSchema<T = unknown>(nodeType: string, state: string, fieldName: string): T {
+    const plugin = this.plugins.get(nodeType);
+    if (plugin && this.enabledPlugins.has(nodeType) && plugin.mapStateToSchema) {
+      return plugin.mapStateToSchema(state, fieldName) as T;
+    }
+    // Default: Return state as-is
+    return state as T;
+  }
+
+  /**
+   * Check if a node type accepts content merges from adjacent nodes
+   * Returns true by default if plugin not found or acceptsContentMerge not specified
+   *
+   * Issue #698: Type-agnostic BaseNodeViewer refactoring
+   *
+   * @param nodeType - Node type to check
+   * @returns true if node type accepts content merges, false otherwise
+   */
+  acceptsContentMerge(nodeType: string): boolean {
+    const plugin = this.plugins.get(nodeType);
+    if (!plugin || !this.enabledPlugins.has(nodeType)) {
+      return true; // Default to true for unknown or disabled plugins
+    }
+    return plugin.acceptsContentMerge ?? true; // Default to true if not specified
+  }
+
+  /**
    * Get registry statistics for debugging
    */
   getStats(): RegistryStats {
