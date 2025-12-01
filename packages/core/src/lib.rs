@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 //! NodeSpace Core Business Logic Layer
 //!
 //! This crate provides the core data management, node operations, and service orchestration

@@ -104,8 +104,16 @@ fn test_all_expected_tools_present() {
         "update_container_from_markdown",
         // Search
         "search_containers",
-        // Schema creation (natural language) - Issue #690: schema-specific tools removed
-        "create_entity_schema_from_description",
+        // Schema creation - Issue #703: renamed and extended with relationships
+        "create_schema",
+        // Relationship CRUD - Issue #703
+        "create_relationship",
+        "delete_relationship",
+        "get_related_nodes",
+        // NLP Discovery API - Issue #703
+        "get_relationship_graph",
+        "get_inbound_relationships",
+        "get_all_schemas",
     ];
 
     for expected_tool in &expected_tools {
@@ -116,9 +124,9 @@ fn test_all_expected_tools_present() {
         );
     }
 
-    // Verify we have exactly 19 tools
-    // (Original 18 core tools + 1 schema creation; 5 schema-specific handlers removed per #690)
-    assert_eq!(tools.len(), 19, "Expected exactly 19 tools");
+    // Verify we have exactly 25 tools
+    // (19 previous + 6 relationship/NLP discovery tools from Issue #703)
+    assert_eq!(tools.len(), 25, "Expected exactly 25 tools");
 }
 
 #[test]

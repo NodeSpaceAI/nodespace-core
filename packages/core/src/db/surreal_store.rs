@@ -1420,7 +1420,8 @@ where
                 is_core: $is_core,
                 version: $schema_version,
                 description: $description,
-                fields: $fields
+                fields: $fields,
+                relationships: $relationships
             }};"#,
             node.id
         ));
@@ -1449,6 +1450,11 @@ where
             .get("fields")
             .cloned()
             .unwrap_or(serde_json::json!([]));
+        let relationships = node
+            .properties
+            .get("relationships")
+            .cloned()
+            .unwrap_or(serde_json::json!([]));
 
         // Execute atomic transaction
         self.db
@@ -1460,6 +1466,7 @@ where
             .bind(("schema_version", schema_version))
             .bind(("description", description.to_string()))
             .bind(("fields", fields))
+            .bind(("relationships", relationships))
             .await
             .context("Failed to execute atomic schema creation transaction")?;
 
@@ -3798,6 +3805,7 @@ where
                 version AS schemaVersion,
                 description,
                 fields,
+                relationships,
                 node.content AS content,
                 node.version AS version,
                 node.created_at AS createdAt,
@@ -3818,6 +3826,61 @@ where
             .context("Failed to deserialize SchemaNode")?;
 
         Ok(schemas.into_iter().next())
+    }
+
+    /// Get all schema nodes from the database
+    ///
+    /// Returns all schema definitions including their fields and relationships.
+    /// Used by NLP discovery API to build relationship caches.
+    ///
+    /// # Returns
+    ///
+    /// Vector of all schema nodes, ordered by ID.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use nodespace_core::db::SurrealStore;
+    /// # use std::path::PathBuf;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let store = SurrealStore::new(PathBuf::from("./data/surreal.db")).await?;
+    /// let schemas = store.get_all_schemas().await?;
+    /// for schema in schemas {
+    ///     println!("{}: {} fields, {} relationships",
+    ///         schema.id, schema.fields.len(), schema.relationships.len());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_all_schemas(&self) -> Result<Vec<crate::models::SchemaNode>> {
+        let query = r#"
+            SELECT
+                record::id(id) AS id,
+                is_core,
+                version AS schema_version,
+                description,
+                fields,
+                relationships,
+                node.content AS content,
+                node.version AS version,
+                node.created_at AS created_at,
+                node.modified_at AS modified_at
+            FROM schema
+            ORDER BY id;
+        "#;
+
+        let mut response = self
+            .db
+            .query(query)
+            .await
+            .context("Failed to query all schema nodes")?;
+
+        let schemas: Vec<crate::models::SchemaNode> = response
+            .take(0)
+            .context("Failed to deserialize SchemaNodes")?;
+
+        Ok(schemas)
     }
 }
 

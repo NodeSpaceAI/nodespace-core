@@ -168,6 +168,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     item_fields: None,
                 },
             ],
+            relationships: vec![],
         },
         // Text schema - plain text content (no extra fields)
         SchemaNode {
@@ -180,6 +181,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             schema_version: 1,
             description: "Plain text content".to_string(),
             fields: vec![],
+            relationships: vec![],
         },
         // Date schema - daily note containers (no extra fields)
         SchemaNode {
@@ -192,6 +194,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             schema_version: 1,
             description: "Date node schema".to_string(),
             fields: vec![],
+            relationships: vec![],
         },
         // Header schema - markdown headers (no extra fields)
         SchemaNode {
@@ -204,6 +207,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             schema_version: 1,
             description: "Markdown header (h1-h6)".to_string(),
             fields: vec![],
+            relationships: vec![],
         },
         // Code block schema - code with syntax highlighting (no extra fields)
         SchemaNode {
@@ -216,6 +220,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             schema_version: 1,
             description: "Code block with syntax highlighting".to_string(),
             fields: vec![],
+            relationships: vec![],
         },
         // Quote block schema - blockquotes (no extra fields)
         SchemaNode {
@@ -228,6 +233,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             schema_version: 1,
             description: "Blockquote for citations".to_string(),
             fields: vec![],
+            relationships: vec![],
         },
         // Ordered list schema - numbered list items (no extra fields)
         SchemaNode {
@@ -240,6 +246,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             schema_version: 1,
             description: "Numbered list item".to_string(),
             fields: vec![],
+            relationships: vec![],
         },
     ]
 }

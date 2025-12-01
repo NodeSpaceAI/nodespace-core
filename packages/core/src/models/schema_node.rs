@@ -32,7 +32,7 @@
 //! // store.update_schema_node(schema).await?;
 //! ```
 
-use crate::models::schema::{EnumValue, SchemaField, SchemaProtectionLevel};
+use crate::models::schema::{EnumValue, SchemaField, SchemaProtectionLevel, SchemaRelationship};
 use crate::models::{Node, ValidationError};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -85,6 +85,13 @@ pub struct SchemaNode {
     /// List of fields in this schema
     #[serde(default)]
     pub fields: Vec<SchemaField>,
+
+    /// List of relationships to other node types
+    ///
+    /// Relationships define edges to other schemas. Edge tables are automatically
+    /// created when the schema is saved. See [`SchemaRelationship`] for details.
+    #[serde(default)]
+    pub relationships: Vec<SchemaRelationship>,
 }
 
 fn default_version() -> i64 {
@@ -139,6 +146,12 @@ impl SchemaNode {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
+        let relationships: Vec<SchemaRelationship> = node
+            .properties
+            .get("relationships")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
         Ok(Self {
             id: node.id,
             content: node.content,
@@ -149,6 +162,7 @@ impl SchemaNode {
             schema_version,
             description,
             fields,
+            relationships,
         })
     }
 
@@ -161,6 +175,7 @@ impl SchemaNode {
             "version": self.schema_version,
             "description": self.description,
             "fields": self.fields,
+            "relationships": self.relationships,
         });
 
         Node {
@@ -251,6 +266,33 @@ impl SchemaNode {
         self.get_field(field_name)
             .map(|f| f.protection == SchemaProtectionLevel::User)
             .unwrap_or(false)
+    }
+
+    // ========================================================================
+    // Relationship helpers
+    // ========================================================================
+
+    /// Get a relationship by name
+    pub fn get_relationship(&self, name: &str) -> Option<&SchemaRelationship> {
+        self.relationships.iter().find(|r| r.name == name)
+    }
+
+    /// Get a mutable relationship by name
+    pub fn get_relationship_mut(&mut self, name: &str) -> Option<&mut SchemaRelationship> {
+        self.relationships.iter_mut().find(|r| r.name == name)
+    }
+
+    /// Check if this schema has any relationships defined
+    pub fn has_relationships(&self) -> bool {
+        !self.relationships.is_empty()
+    }
+
+    /// Get all relationships targeting a specific node type
+    pub fn get_relationships_to(&self, target_type: &str) -> Vec<&SchemaRelationship> {
+        self.relationships
+            .iter()
+            .filter(|r| r.target_type == target_type)
+            .collect()
     }
 }
 

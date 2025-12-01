@@ -1,9 +1,8 @@
-//! Natural Language Schema Generation
+//! Schema MCP Handlers
 //!
-//! Converts natural language descriptions into schema definitions with intelligent
-//! field type inference and namespace enforcement.
-//!
-//! As of Issue #676, all handlers use NodeService directly instead of NodeOperations.
+//! Provides the `create_schema` tool for creating custom schemas with fields and relationships.
+//! Supports both explicit field/relationship definitions and natural language descriptions
+//! with intelligent type inference.
 
 use crate::mcp::types::MCPError;
 use crate::models::schema::{EnumValue, SchemaField, SchemaProtectionLevel};
@@ -27,14 +26,21 @@ const RESERVED_CORE_PROPERTIES: &[&str] = &[
     "due",
 ];
 
-/// Input parameters for create_entity_schema_from_description
+/// Input parameters for create_schema
 #[derive(Debug, Deserialize)]
-pub struct CreateEntitySchemaFromDescriptionParams {
-    /// Entity name (e.g., "Invoice", "Customer")
-    pub entity_name: String,
-    /// Natural language description of entity fields
-    pub description: String,
-    /// Optional additional constraints for explicit type hints
+pub struct CreateSchemaParams {
+    /// Schema name (e.g., "Invoice", "Customer")
+    pub name: String,
+    /// Natural language description of entity fields (optional if fields provided directly)
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Optional explicit field definitions (takes precedence over description parsing)
+    #[serde(default)]
+    pub fields: Option<Vec<SchemaField>>,
+    /// Optional relationship definitions
+    #[serde(default)]
+    pub relationships: Option<Vec<crate::models::schema::SchemaRelationship>>,
+    /// Optional additional constraints for explicit type hints (used with description)
     #[serde(default)]
     pub additional_constraints: Option<AdditionalConstraints>,
 }
@@ -56,8 +62,8 @@ pub struct AdditionalConstraints {
 /// Output from schema creation
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateEntitySchemaOutput {
-    /// ID for the generated schema (snake_case of entity name)
+pub struct CreateSchemaOutput {
+    /// ID for the generated schema (snake_case of name)
     pub schema_id: String,
     /// Whether this is a core schema
     pub is_core: bool,
@@ -67,6 +73,9 @@ pub struct CreateEntitySchemaOutput {
     pub description: String,
     /// List of created fields
     pub fields: Vec<SchemaField>,
+    /// List of created relationships
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub relationships: Vec<crate::models::schema::SchemaRelationship>,
     /// Optional warnings about ambiguous descriptions
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
@@ -82,78 +91,89 @@ struct InferredField {
     warnings: Vec<String>,
 }
 
-/// Create entity schema from natural language description
+/// Create a custom schema with fields and relationships
 ///
-/// # MCP Tool Description
-/// Convert a natural language description of entity fields into a complete schema definition
-/// with intelligent type inference. Automatically enforces namespace prefixes for user-defined
-/// fields to prevent conflicts with future core properties.
+/// # MCP Tool: create_schema
+///
+/// Creates a new schema definition with optional fields and relationships.
+/// Fields can be provided explicitly or inferred from a natural language description.
+/// Automatically enforces namespace prefixes for user-defined fields.
 ///
 /// # Parameters
-/// - `entity_name`: Name of the entity (e.g., "Invoice", "Customer")
-/// - `description`: Natural language description of fields
-/// - `additional_constraints`: Optional explicit type hints and enum values
+/// - `name`: Schema name (e.g., "Invoice", "Customer")
+/// - `description`: Optional natural language description of fields
+/// - `fields`: Optional explicit field definitions (takes precedence over description)
+/// - `relationships`: Optional relationship definitions to other schemas
+/// - `additional_constraints`: Optional type hints for description parsing
 ///
 /// # Returns
 /// - `schema_id`: Generated schema ID (snake_case)
-/// - `schema_definition`: Complete schema with all fields
-/// - `created_fields`: List of inferred fields
+/// - `fields`: List of created fields
+/// - `relationships`: List of created relationships
 /// - `warnings`: Any ambiguities or assumptions made
 ///
 /// # Errors
-/// - `INVALID_PARAMS`: If description is empty or entity_name invalid
+/// - `INVALID_PARAMS`: If name is empty or both description and fields are missing
 /// - `INTERNAL_ERROR`: If schema creation fails
-pub async fn handle_create_entity_schema_from_description(
+pub async fn handle_create_schema(
     node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MCPError> {
-    let params: CreateEntitySchemaFromDescriptionParams = serde_json::from_value(params)
+    let params: CreateSchemaParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    if params.entity_name.trim().is_empty() {
-        return Err(MCPError::invalid_params(
-            "entity_name cannot be empty".to_string(),
-        ));
+    if params.name.trim().is_empty() {
+        return Err(MCPError::invalid_params("name cannot be empty".to_string()));
     }
 
-    if params.description.trim().is_empty() {
-        return Err(MCPError::invalid_params(
-            "description cannot be empty".to_string(),
-        ));
-    }
+    // Determine fields: explicit fields take precedence, otherwise parse description
+    let (namespaced_fields, warnings) = if let Some(explicit_fields) = params.fields {
+        // Use explicit fields directly (already properly typed by caller)
+        (explicit_fields, Vec::new())
+    } else if let Some(ref description) = params.description {
+        if description.trim().is_empty() {
+            return Err(MCPError::invalid_params(
+                "Either 'fields' or non-empty 'description' must be provided".to_string(),
+            ));
+        }
+        // Parse natural language and infer fields
+        let inferred_fields = parse_field_descriptions(description);
+        let fields = apply_constraints(inferred_fields, params.additional_constraints);
+        let warnings = fields
+            .iter()
+            .flat_map(|f| f.warnings.clone())
+            .collect::<Vec<_>>();
+        let namespaced = normalize_and_namespace_fields(fields);
+        (namespaced, warnings)
+    } else {
+        // No fields and no description - create schema with empty fields
+        (Vec::new(), Vec::new())
+    };
 
-    // Parse natural language and infer fields
-    let inferred_fields = parse_field_descriptions(&params.description);
-
-    // Apply additional constraints
-    let fields = apply_constraints(inferred_fields, params.additional_constraints);
-
-    // Normalize field names to snake_case and apply namespace prefixes
-    let namespaced_fields = normalize_and_namespace_fields(fields.clone());
-
-    // Collect warnings
-    let warnings = fields
-        .iter()
-        .flat_map(|f| f.warnings.clone())
-        .collect::<Vec<_>>();
+    // Get relationships (default to empty)
+    let relationships = params.relationships.unwrap_or_default();
 
     // Generate schema ID
-    let schema_id = normalize_schema_id(&params.entity_name);
+    let schema_id = normalize_schema_id(&params.name);
 
     // Schema properties (flat structure matching SchemaNode)
-    let description = format!("Auto-generated schema for {}", params.entity_name);
+    let description_text = params
+        .description
+        .clone()
+        .unwrap_or_else(|| format!("Schema for {}", params.name));
     let properties = serde_json::json!({
         "isCore": false,
         "version": 1,
-        "description": &description,
-        "fields": &namespaced_fields
+        "description": &description_text,
+        "fields": &namespaced_fields,
+        "relationships": &relationships
     });
 
     // Create schema node params
     let schema_node_params = CreateNodeParams {
         id: Some(schema_id.clone()),
         node_type: "schema".to_string(),
-        content: params.entity_name.clone(),
+        content: params.name.clone(),
         parent_id: None,
         insert_after_node_id: None,
         properties,
@@ -170,12 +190,13 @@ pub async fn handle_create_entity_schema_from_description(
             ))
         })?;
 
-    let output = CreateEntitySchemaOutput {
+    let output = CreateSchemaOutput {
         schema_id: schema_id.clone(),
         is_core: false,
         version: 1,
-        description,
+        description: description_text,
         fields: namespaced_fields,
+        relationships,
         warnings: if warnings.is_empty() {
             None
         } else {

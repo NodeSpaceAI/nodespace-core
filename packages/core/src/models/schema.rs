@@ -38,9 +38,34 @@
 //!       "required": true,
 //!       "default": "open"
 //!     }
+//!   ],
+//!   "relationships": [
+//!     {
+//!       "name": "assigned_to",
+//!       "targetType": "person",
+//!       "direction": "out",
+//!       "cardinality": "many",
+//!       "reverseName": "tasks",
+//!       "reverseCardinality": "many",
+//!       "edgeFields": [
+//!         { "name": "role", "type": "string" }
+//!       ]
+//!     }
 //!   ]
 //! }
 //! ```
+//!
+//! ## Relationships
+//!
+//! Schemas can define relationships to other node types. Relationships are stored
+//! in edge tables (not spoke fields) and support:
+//!
+//! - **Edge-only storage**: No spoke table fields, edge table is single source of truth
+//! - **Bidirectional querying**: Both directions query the same edge table
+//! - **Edge fields**: Custom properties on the relationship itself
+//! - **Cardinality**: "one" or "many" constraints (enforced at application level)
+//!
+//! See [`docs/architecture/data/schema-relational-fields.md`] for complete details.
 
 use serde::{Deserialize, Serialize};
 
@@ -151,6 +176,169 @@ pub struct SchemaField {
     /// Example: contacts array where each item has name, email, phone fields.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item_fields: Option<Vec<SchemaField>>,
+}
+
+/// A field stored on an edge (relationship) between nodes
+///
+/// Edge fields are simpler than schema fields - they don't support:
+/// - Protection levels (all edge fields are user-defined)
+/// - Nested types (edge fields use primitives only)
+/// - Enum extension (no coreValues/userValues)
+///
+/// Edge fields live/die with the relationship definition.
+///
+/// ## Example
+/// ```json
+/// {
+///   "name": "role",
+///   "type": "string",
+///   "indexed": true,
+///   "required": false,
+///   "description": "The role of this assignment"
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EdgeField {
+    /// Field name (must be unique within the edge)
+    pub name: String,
+
+    /// Field type: "string" | "number" | "boolean" | "date" | "record"
+    #[serde(rename = "type")]
+    pub field_type: String,
+
+    /// Whether to create an index on this field
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indexed: Option<bool>,
+
+    /// Whether this field is required for new edges
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+
+    /// Default value for new edges
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<serde_json::Value>,
+
+    /// Target type for record fields (e.g., "person")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_type: Option<String>,
+
+    /// Human-readable description (for NLP)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Definition of a relationship between node types
+///
+/// Relationships create edge tables in SurrealDB. Both directions of a
+/// relationship query the same edge table. Cardinality constraints are
+/// enforced at the application level during relationship creation.
+///
+/// ## Edge Table Naming
+/// Edge tables are named: `{source_type}_{relationship_name}_{target_type}`
+/// Example: `invoice_billed_to_customer`
+///
+/// ## Example
+/// ```json
+/// {
+///   "name": "billed_to",
+///   "targetType": "customer",
+///   "direction": "out",
+///   "cardinality": "one",
+///   "required": true,
+///   "reverseName": "invoices",
+///   "reverseCardinality": "many",
+///   "edgeFields": [
+///     { "name": "billing_date", "type": "date", "required": true },
+///     { "name": "payment_terms", "type": "string" }
+///   ]
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaRelationship {
+    /// Relationship name (e.g., "billed_to", "assigned_to")
+    ///
+    /// Must start with a letter and contain only alphanumeric characters,
+    /// underscores, and hyphens. Reserved names: has_child, mentions, node, data
+    pub name: String,
+
+    /// Target node type (e.g., "customer", "person")
+    pub target_type: String,
+
+    /// Direction: "out" (this->target) or "in" (target->this)
+    ///
+    /// Most relationships use "out" direction. The "in" direction is for
+    /// cases where the relationship is conceptually owned by the target.
+    pub direction: RelationshipDirection,
+
+    /// Cardinality: "one" or "many"
+    ///
+    /// Enforced at application level when creating edges.
+    /// - "one": Only one edge allowed from source to any target
+    /// - "many": Multiple edges allowed from source to different targets
+    pub cardinality: RelationshipCardinality,
+
+    /// Whether this relationship is required for new nodes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+
+    /// Suggested reverse relationship name (for NLP discovery)
+    ///
+    /// This does NOT mutate the target schema. It's metadata for NLP to
+    /// understand how to describe the relationship from the target's perspective.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reverse_name: Option<String>,
+
+    /// Reverse cardinality (from target's perspective)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reverse_cardinality: Option<RelationshipCardinality>,
+
+    /// Auto-computed edge table name (can be overridden)
+    ///
+    /// If not specified, computed as: `{source_type}_{name}_{target_type}`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edge_table: Option<String>,
+
+    /// Fields stored on the edge itself
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edge_fields: Option<Vec<EdgeField>>,
+
+    /// Human-readable description (for NLP)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl SchemaRelationship {
+    /// Compute the edge table name for this relationship
+    ///
+    /// Returns the explicit `edge_table` if set, otherwise computes it as:
+    /// `{source_type}_{relationship_name}_{target_type}`
+    pub fn compute_edge_table_name(&self, source_type: &str) -> String {
+        self.edge_table
+            .clone()
+            .unwrap_or_else(|| format!("{}_{}_{}", source_type, self.name, self.target_type))
+    }
+}
+
+/// Direction of a relationship
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RelationshipDirection {
+    /// Outgoing relationship: this node -> target node
+    Out,
+    /// Incoming relationship: target node -> this node
+    In,
+}
+
+/// Cardinality constraint for relationships
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RelationshipCardinality {
+    /// Only one edge allowed (e.g., invoice can only be billed to ONE customer)
+    One,
+    /// Multiple edges allowed (e.g., task can be assigned to MANY people)
+    Many,
 }
 
 #[cfg(test)]
@@ -367,5 +555,325 @@ mod tests {
         // item_fields serializes to itemFields with camelCase
         assert_eq!(json["itemFields"][0]["name"], "email");
         assert_eq!(json["itemFields"][0]["indexed"], true);
+    }
+
+    // =========================================================================
+    // EdgeField Tests
+    // =========================================================================
+
+    #[test]
+    fn test_edge_field_serialization() {
+        let field = EdgeField {
+            name: "role".to_string(),
+            field_type: "string".to_string(),
+            indexed: Some(true),
+            required: Some(false),
+            default: Some(json!("member")),
+            target_type: None,
+            description: Some("Assignment role".to_string()),
+        };
+
+        let json = serde_json::to_value(&field).unwrap();
+        assert_eq!(json["name"], "role");
+        assert_eq!(json["type"], "string");
+        assert_eq!(json["indexed"], true);
+        assert_eq!(json["required"], false);
+        assert_eq!(json["default"], "member");
+        assert_eq!(json["description"], "Assignment role");
+        // target_type should be absent (skip_serializing_if = None)
+        assert!(json.get("targetType").is_none());
+    }
+
+    #[test]
+    fn test_edge_field_deserialization() {
+        let json = json!({
+            "name": "billing_date",
+            "type": "date",
+            "required": true,
+            "indexed": true
+        });
+
+        let field: EdgeField = serde_json::from_value(json).unwrap();
+        assert_eq!(field.name, "billing_date");
+        assert_eq!(field.field_type, "date");
+        assert_eq!(field.required, Some(true));
+        assert_eq!(field.indexed, Some(true));
+        assert!(field.default.is_none());
+        assert!(field.target_type.is_none());
+        assert!(field.description.is_none());
+    }
+
+    #[test]
+    fn test_edge_field_with_record_type() {
+        let field = EdgeField {
+            name: "approved_by".to_string(),
+            field_type: "record".to_string(),
+            indexed: Some(true),
+            required: None,
+            default: None,
+            target_type: Some("person".to_string()),
+            description: Some("Who approved this".to_string()),
+        };
+
+        let json = serde_json::to_value(&field).unwrap();
+        assert_eq!(json["type"], "record");
+        assert_eq!(json["targetType"], "person");
+    }
+
+    #[test]
+    fn test_edge_field_minimal() {
+        // Test minimal edge field (only required fields)
+        let json = json!({
+            "name": "simple",
+            "type": "string"
+        });
+
+        let field: EdgeField = serde_json::from_value(json).unwrap();
+        assert_eq!(field.name, "simple");
+        assert_eq!(field.field_type, "string");
+        assert!(field.indexed.is_none());
+        assert!(field.required.is_none());
+        assert!(field.default.is_none());
+    }
+
+    // =========================================================================
+    // RelationshipDirection Tests
+    // =========================================================================
+
+    #[test]
+    fn test_relationship_direction_serialization() {
+        assert_eq!(
+            serde_json::to_value(&RelationshipDirection::Out).unwrap(),
+            "out"
+        );
+        assert_eq!(
+            serde_json::to_value(&RelationshipDirection::In).unwrap(),
+            "in"
+        );
+    }
+
+    #[test]
+    fn test_relationship_direction_deserialization() {
+        let out: RelationshipDirection = serde_json::from_value(json!("out")).unwrap();
+        assert_eq!(out, RelationshipDirection::Out);
+
+        let r#in: RelationshipDirection = serde_json::from_value(json!("in")).unwrap();
+        assert_eq!(r#in, RelationshipDirection::In);
+    }
+
+    // =========================================================================
+    // RelationshipCardinality Tests
+    // =========================================================================
+
+    #[test]
+    fn test_relationship_cardinality_serialization() {
+        assert_eq!(
+            serde_json::to_value(&RelationshipCardinality::One).unwrap(),
+            "one"
+        );
+        assert_eq!(
+            serde_json::to_value(&RelationshipCardinality::Many).unwrap(),
+            "many"
+        );
+    }
+
+    #[test]
+    fn test_relationship_cardinality_deserialization() {
+        let one: RelationshipCardinality = serde_json::from_value(json!("one")).unwrap();
+        assert_eq!(one, RelationshipCardinality::One);
+
+        let many: RelationshipCardinality = serde_json::from_value(json!("many")).unwrap();
+        assert_eq!(many, RelationshipCardinality::Many);
+    }
+
+    // =========================================================================
+    // SchemaRelationship Tests
+    // =========================================================================
+
+    #[test]
+    fn test_schema_relationship_serialization() {
+        let relationship = SchemaRelationship {
+            name: "billed_to".to_string(),
+            target_type: "customer".to_string(),
+            direction: RelationshipDirection::Out,
+            cardinality: RelationshipCardinality::One,
+            required: Some(true),
+            reverse_name: Some("invoices".to_string()),
+            reverse_cardinality: Some(RelationshipCardinality::Many),
+            edge_table: None,
+            edge_fields: Some(vec![
+                EdgeField {
+                    name: "billing_date".to_string(),
+                    field_type: "date".to_string(),
+                    indexed: Some(true),
+                    required: Some(true),
+                    default: None,
+                    target_type: None,
+                    description: None,
+                },
+                EdgeField {
+                    name: "payment_terms".to_string(),
+                    field_type: "string".to_string(),
+                    indexed: None,
+                    required: None,
+                    default: Some(json!("net-30")),
+                    target_type: None,
+                    description: None,
+                },
+            ]),
+            description: Some("Customer this invoice is billed to".to_string()),
+        };
+
+        let json = serde_json::to_value(&relationship).unwrap();
+
+        assert_eq!(json["name"], "billed_to");
+        assert_eq!(json["targetType"], "customer");
+        assert_eq!(json["direction"], "out");
+        assert_eq!(json["cardinality"], "one");
+        assert_eq!(json["required"], true);
+        assert_eq!(json["reverseName"], "invoices");
+        assert_eq!(json["reverseCardinality"], "many");
+        assert!(json.get("edgeTable").is_none()); // Not set, should be absent
+        assert_eq!(json["edgeFields"].as_array().unwrap().len(), 2);
+        assert_eq!(json["edgeFields"][0]["name"], "billing_date");
+        assert_eq!(json["edgeFields"][1]["default"], "net-30");
+    }
+
+    #[test]
+    fn test_schema_relationship_deserialization() {
+        let json = json!({
+            "name": "assigned_to",
+            "targetType": "person",
+            "direction": "out",
+            "cardinality": "many",
+            "reverseName": "tasks",
+            "reverseCardinality": "many",
+            "edgeFields": [
+                {
+                    "name": "role",
+                    "type": "string",
+                    "indexed": true
+                },
+                {
+                    "name": "assigned_at",
+                    "type": "date",
+                    "required": true
+                }
+            ]
+        });
+
+        let relationship: SchemaRelationship = serde_json::from_value(json).unwrap();
+
+        assert_eq!(relationship.name, "assigned_to");
+        assert_eq!(relationship.target_type, "person");
+        assert_eq!(relationship.direction, RelationshipDirection::Out);
+        assert_eq!(relationship.cardinality, RelationshipCardinality::Many);
+        assert_eq!(relationship.reverse_name, Some("tasks".to_string()));
+        assert_eq!(
+            relationship.reverse_cardinality,
+            Some(RelationshipCardinality::Many)
+        );
+        assert!(relationship.required.is_none());
+        assert!(relationship.edge_table.is_none());
+
+        let edge_fields = relationship.edge_fields.unwrap();
+        assert_eq!(edge_fields.len(), 2);
+        assert_eq!(edge_fields[0].name, "role");
+        assert_eq!(edge_fields[1].name, "assigned_at");
+    }
+
+    #[test]
+    fn test_schema_relationship_minimal() {
+        // Test minimal relationship (only required fields)
+        let json = json!({
+            "name": "parent_of",
+            "targetType": "document",
+            "direction": "out",
+            "cardinality": "many"
+        });
+
+        let relationship: SchemaRelationship = serde_json::from_value(json).unwrap();
+
+        assert_eq!(relationship.name, "parent_of");
+        assert_eq!(relationship.target_type, "document");
+        assert_eq!(relationship.direction, RelationshipDirection::Out);
+        assert_eq!(relationship.cardinality, RelationshipCardinality::Many);
+        assert!(relationship.required.is_none());
+        assert!(relationship.reverse_name.is_none());
+        assert!(relationship.reverse_cardinality.is_none());
+        assert!(relationship.edge_table.is_none());
+        assert!(relationship.edge_fields.is_none());
+        assert!(relationship.description.is_none());
+    }
+
+    #[test]
+    fn test_schema_relationship_with_custom_edge_table() {
+        let relationship = SchemaRelationship {
+            name: "collaborates_with".to_string(),
+            target_type: "person".to_string(),
+            direction: RelationshipDirection::Out,
+            cardinality: RelationshipCardinality::Many,
+            required: None,
+            reverse_name: None,
+            reverse_cardinality: None,
+            edge_table: Some("collaborations".to_string()),
+            edge_fields: None,
+            description: None,
+        };
+
+        let json = serde_json::to_value(&relationship).unwrap();
+        assert_eq!(json["edgeTable"], "collaborations");
+    }
+
+    #[test]
+    fn test_compute_edge_table_name_auto() {
+        let relationship = SchemaRelationship {
+            name: "billed_to".to_string(),
+            target_type: "customer".to_string(),
+            direction: RelationshipDirection::Out,
+            cardinality: RelationshipCardinality::One,
+            required: None,
+            reverse_name: None,
+            reverse_cardinality: None,
+            edge_table: None,
+            edge_fields: None,
+            description: None,
+        };
+
+        let edge_table = relationship.compute_edge_table_name("invoice");
+        assert_eq!(edge_table, "invoice_billed_to_customer");
+    }
+
+    #[test]
+    fn test_compute_edge_table_name_explicit() {
+        let relationship = SchemaRelationship {
+            name: "assigned_to".to_string(),
+            target_type: "person".to_string(),
+            direction: RelationshipDirection::Out,
+            cardinality: RelationshipCardinality::Many,
+            required: None,
+            reverse_name: None,
+            reverse_cardinality: None,
+            edge_table: Some("assignments".to_string()),
+            edge_fields: None,
+            description: None,
+        };
+
+        let edge_table = relationship.compute_edge_table_name("task");
+        assert_eq!(edge_table, "assignments"); // Uses explicit name, ignores source_type
+    }
+
+    #[test]
+    fn test_schema_relationship_incoming_direction() {
+        // Test "in" direction (less common but valid)
+        let json = json!({
+            "name": "owned_by",
+            "targetType": "organization",
+            "direction": "in",
+            "cardinality": "one"
+        });
+
+        let relationship: SchemaRelationship = serde_json::from_value(json).unwrap();
+        assert_eq!(relationship.direction, RelationshipDirection::In);
     }
 }

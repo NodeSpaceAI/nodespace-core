@@ -72,6 +72,12 @@ DEFINE FIELD IF NOT EXISTS description ON TABLE schema TYPE string DEFAULT "";
 -- queryability and proper enum handling (see issue #587)
 DEFINE FIELD IF NOT EXISTS fields ON TABLE schema FLEXIBLE TYPE option<array> DEFAULT [];
 
+-- Relationships array: stores SchemaRelationship objects for user-defined relationships
+-- Each relationship generates an edge table at runtime (see Issue #703)
+-- Structural relationships (has_child, mentions) remain hardcoded in this file
+-- Note: Using FLEXIBLE to allow nested edgeFields without strict constraints
+DEFINE FIELD IF NOT EXISTS relationships ON TABLE schema FLEXIBLE TYPE option<array> DEFAULT [];
+
 -- ============================================================================
 -- GRAPH RELATIONS (SCHEMAFULL - Node-to-node relationships)
 -- ============================================================================

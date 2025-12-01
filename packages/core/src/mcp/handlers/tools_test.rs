@@ -18,9 +18,9 @@ fn test_tools_list_returns_all_schemas() {
 
     let tools = response["tools"].as_array().unwrap();
 
-    // Verify all 19 tools are present
-    // (Original core tools + 1 schema creation tool; removed 5 schema-specific handlers per #690)
-    assert_eq!(tools.len(), 19);
+    // Verify all 25 tools are present
+    // (19 previous + 6 relationship/NLP discovery tools from Issue #703)
+    assert_eq!(tools.len(), 25);
 
     // Verify tool names
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -53,8 +53,18 @@ fn test_tools_list_returns_all_schemas() {
     assert!(tool_names.contains(&"search_containers"));
     assert!(tool_names.contains(&"search_roots"));
 
-    // Schema creation (natural language) - kept
-    assert!(tool_names.contains(&"create_entity_schema_from_description"));
+    // Schema creation - renamed from create_entity_schema_from_description
+    assert!(tool_names.contains(&"create_schema"));
+
+    // Relationship CRUD - Issue #703
+    assert!(tool_names.contains(&"create_relationship"));
+    assert!(tool_names.contains(&"delete_relationship"));
+    assert!(tool_names.contains(&"get_related_nodes"));
+
+    // NLP Discovery API - Issue #703
+    assert!(tool_names.contains(&"get_relationship_graph"));
+    assert!(tool_names.contains(&"get_inbound_relationships"));
+    assert!(tool_names.contains(&"get_all_schemas"));
 
     // Verify removed tools are NOT present (Issue #690)
     assert!(!tool_names.contains(&"get_schema_definition"));

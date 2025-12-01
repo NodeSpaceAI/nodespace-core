@@ -7,7 +7,7 @@
 //! As of Issue #676, all handlers use NodeService directly instead of NodeOperations.
 //! As of Issue #690, SchemaService was removed - schema nodes use generic CRUD.
 
-use crate::mcp::handlers::{markdown, natural_language_schema, nodes, search};
+use crate::mcp::handlers::{markdown, nodes, relationships, schema, search};
 use crate::mcp::types::MCPError;
 use crate::services::{NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
@@ -149,14 +149,28 @@ pub async fn handle_tools_call(
             search::handle_search_roots(embedding_service, arguments)
         }
 
-        // Schema creation from natural language (uses generic node creation)
-        "create_entity_schema_from_description" => {
-            natural_language_schema::handle_create_entity_schema_from_description(
-                node_service,
-                arguments,
-            )
-            .await
+        // Schema creation (uses generic node creation)
+        "create_schema" => schema::handle_create_schema(node_service, arguments).await,
+
+        // Relationship CRUD (Issue #703)
+        "create_relationship" => {
+            relationships::handle_create_relationship(node_service, arguments).await
         }
+        "delete_relationship" => {
+            relationships::handle_delete_relationship(node_service, arguments).await
+        }
+        "get_related_nodes" => {
+            relationships::handle_get_related_nodes(node_service, arguments).await
+        }
+
+        // NLP Discovery API (Issue #703)
+        "get_relationship_graph" => {
+            relationships::handle_get_relationship_graph(node_service, arguments).await
+        }
+        "get_inbound_relationships" => {
+            relationships::handle_get_inbound_relationships(node_service, arguments).await
+        }
+        "get_all_schemas" => relationships::handle_get_all_schemas(node_service, arguments).await,
 
         _ => {
             return Err(MCPError::invalid_params(format!(
@@ -623,26 +637,68 @@ fn get_tool_schemas() -> Value {
                 "required": ["query"]
             }
         },
-        // Schema-specific tools removed per Issue #690
-        // Use generic CRUD (create_node, update_node, query_nodes) for schema management
-        // Schema nodes have node_type="schema" and can be queried with query_nodes({filters: [{field: "node_type", op: "eq", value: "schema"}]})
+        // Schema creation tool
         {
-            "name": "create_entity_schema_from_description",
-            "description": "Create a custom entity schema from a natural language description. Intelligently infers field types (string, number, date, enum, boolean, array) and automatically enforces namespace prefixes for user-defined properties. Ideal for rapid prototyping and user-driven schema creation.",
+            "name": "create_schema",
+            "description": "Create a custom schema with fields and relationships. Fields can be provided explicitly or inferred from a natural language description. Relationships define edges to other node types.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "entity_name": {
+                    "name": {
                         "type": "string",
-                        "description": "Name of the entity (e.g., 'Invoice', 'Customer', 'Project')"
+                        "description": "Schema name (e.g., 'Invoice', 'Customer', 'Project')"
                     },
                     "description": {
                         "type": "string",
-                        "description": "Natural language description of the entity fields. Example: 'invoice number (required), amount in USD, status (draft/sent/paid), due date, and optional notes'"
+                        "description": "Optional natural language description of fields. Example: 'invoice number (required), amount in USD, status (draft/sent/paid)'. Used if 'fields' not provided."
+                    },
+                    "fields": {
+                        "type": "array",
+                        "description": "Optional explicit field definitions. Takes precedence over description parsing.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "type": {"type": "string", "enum": ["string", "number", "boolean", "date", "enum", "array", "object"]},
+                                "required": {"type": "boolean"},
+                                "indexed": {"type": "boolean"},
+                                "description": {"type": "string"}
+                            },
+                            "required": ["name", "type"]
+                        }
+                    },
+                    "relationships": {
+                        "type": "array",
+                        "description": "Optional relationship definitions to other schemas",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "Relationship name (e.g., 'billed_to', 'assigned_to')"},
+                                "targetType": {"type": "string", "description": "Target schema ID (e.g., 'customer', 'person')"},
+                                "direction": {"type": "string", "enum": ["out", "in"], "default": "out"},
+                                "cardinality": {"type": "string", "enum": ["one", "many"], "default": "one"},
+                                "required": {"type": "boolean", "default": false},
+                                "reverseName": {"type": "string", "description": "Optional name for reverse lookups (e.g., 'invoices')"},
+                                "reverseCardinality": {"type": "string", "enum": ["one", "many"]},
+                                "edgeFields": {
+                                    "type": "array",
+                                    "description": "Optional fields stored on the edge",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": {"type": "string"},
+                                            "type": {"type": "string"},
+                                            "required": {"type": "boolean"}
+                                        }
+                                    }
+                                }
+                            },
+                            "required": ["name", "targetType"]
+                        }
                     },
                     "additional_constraints": {
                         "type": "object",
-                        "description": "Optional constraints to override or refine inferred types",
+                        "description": "Optional constraints for description parsing (only used when description provided)",
                         "properties": {
                             "required_fields": {
                                 "type": "array",
@@ -651,12 +707,117 @@ fn get_tool_schemas() -> Value {
                             },
                             "enum_values": {
                                 "type": "object",
-                                "description": "Map of field names to their enum values. Example: {\"status\": [\"DRAFT\", \"SENT\", \"PAID\"]}"
+                                "description": "Map of field names to their enum values"
                             }
                         }
                     }
                 },
-                "required": ["entity_name", "description"]
+                "required": ["name"]
+            }
+        },
+        // Relationship CRUD tools (Issue #703)
+        {
+            "name": "create_relationship",
+            "description": "Create a relationship between two nodes. The relationship must be defined in the source node's schema. Edge data can include field values defined in the relationship's edgeFields.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source_id": {
+                        "type": "string",
+                        "description": "ID of the source node"
+                    },
+                    "relationship_name": {
+                        "type": "string",
+                        "description": "Name of the relationship (must be defined in source node's schema)"
+                    },
+                    "target_id": {
+                        "type": "string",
+                        "description": "ID of the target node"
+                    },
+                    "edge_data": {
+                        "type": "object",
+                        "description": "Optional edge field values (JSON object)"
+                    }
+                },
+                "required": ["source_id", "relationship_name", "target_id"]
+            }
+        },
+        {
+            "name": "delete_relationship",
+            "description": "Delete a relationship between two nodes. This is idempotent - succeeds even if the edge doesn't exist.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source_id": {
+                        "type": "string",
+                        "description": "ID of the source node"
+                    },
+                    "relationship_name": {
+                        "type": "string",
+                        "description": "Name of the relationship"
+                    },
+                    "target_id": {
+                        "type": "string",
+                        "description": "ID of the target node"
+                    }
+                },
+                "required": ["source_id", "relationship_name", "target_id"]
+            }
+        },
+        {
+            "name": "get_related_nodes",
+            "description": "Get all nodes connected via a specific relationship. Supports both forward ('out') and reverse ('in') directions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_id": {
+                        "type": "string",
+                        "description": "ID of the node to get relationships for"
+                    },
+                    "relationship_name": {
+                        "type": "string",
+                        "description": "Name of the relationship"
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["out", "in"],
+                        "description": "Direction to traverse: 'out' for forward, 'in' for reverse (default: 'out')"
+                    }
+                },
+                "required": ["node_id", "relationship_name"]
+            }
+        },
+        // NLP Discovery tools (Issue #703)
+        {
+            "name": "get_relationship_graph",
+            "description": "Get a summary of all relationships defined in schemas. Returns the complete relationship graph for understanding the data model structure.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        },
+        {
+            "name": "get_inbound_relationships",
+            "description": "Discover all relationships from other schemas that point TO a specific node type. Useful for understanding reverse relationships without mutating target schemas.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target_type": {
+                        "type": "string",
+                        "description": "The node type to find inbound relationships for (e.g., 'customer', 'person')"
+                    }
+                },
+                "required": ["target_type"]
+            }
+        },
+        {
+            "name": "get_all_schemas",
+            "description": "Get all schema definitions including their fields and relationships. This is the primary entry point for understanding the complete data model.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
             }
         }
     ])
