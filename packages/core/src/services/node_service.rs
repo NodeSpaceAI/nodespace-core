@@ -913,11 +913,40 @@ where
 
         // NOTE: root_id filtering removed - hierarchy now managed via edges
 
-        // Create node via store
-        self.store
-            .create_node(node.clone())
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to insert node: {}", e)))?;
+        // For schema nodes, use atomic creation with DDL generation (Issue #691)
+        // This ensures schema node data AND spoke table DDL are created together atomically
+        if node.node_type == "schema" {
+            // Parse schema fields from properties
+            let fields: Vec<crate::models::SchemaField> = node
+                .properties
+                .get("fields")
+                .and_then(|f| serde_json::from_value(f.clone()).ok())
+                .unwrap_or_default();
+
+            // Generate DDL statements for the schema (if it has fields)
+            // The schema node ID is the table name (e.g., "task", "person")
+            let ddl_statements = if !fields.is_empty() {
+                let table_manager = crate::services::schema_table_manager::SchemaTableManager::new(
+                    self.store.clone(),
+                );
+                table_manager.generate_ddl_statements(&node.id, &fields)?
+            } else {
+                vec![]
+            };
+
+            // Execute atomic create: schema node + DDL in one transaction
+            self.store
+                .create_schema_node_atomic(node.clone(), ddl_statements)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+            tracing::info!("Atomically created schema node '{}' with DDL sync", node.id);
+        } else {
+            // Regular node creation
+            self.store.create_node(node.clone()).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to insert node: {}", e))
+            })?;
+        }
 
         // Emit NodeCreated event (Phase 2 of Issue #665)
         // source_client_id will be added in Phase 3

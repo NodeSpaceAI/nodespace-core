@@ -87,54 +87,12 @@ pub struct EdgeRecord {
     pub order: f64,
 }
 
-/// Types that require type-specific tables for storing properties
-///
-/// - `task`: Has spoke table with indexed fields (status, priority, due_date, assignee)
-/// - `schema`: Has spoke table with schema definition fields (is_core, fields, version)
-///
-/// Other types (text, date, header, code_block, quote_block, ordered_list) store
-/// all data in the universal `node` table's `content` field with no spoke table.
-///
-/// Note: Renamed from TYPES_WITH_SPOKE_TABLES (Issue #670) to clarify this refers to
-/// spoke tables in the hub-and-spoke architecture, not just "having properties".
-const TYPES_WITH_SPOKE_TABLES: &[&str] = &["task", "schema"];
-
-/// All valid node types that can be used in SurrealDB queries
-/// Used to validate node_type parameters and prevent SQL injection
-const VALID_NODE_TYPES: &[&str] = &[
-    "text",
-    "date",
-    "header",
-    "code_block",
-    "quote_block",
-    "ordered_list",
-    "task",
-    "schema",
-];
-
-/// Validates a node type against the whitelist of valid types
-///
-/// This prevents SQL injection attacks where malicious node_type values could
-/// alter query semantics. All node_type parameters used in dynamic queries
-/// must be validated with this function before use.
-///
-/// # Arguments
-/// * `node_type` - The node type string to validate
-///
-/// # Returns
-/// * `Ok(())` if the node_type is in the valid types list
-/// * `Err(...)` if the node_type is not recognized
-fn validate_node_type(node_type: &str) -> Result<()> {
-    if VALID_NODE_TYPES.contains(&node_type) {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!(
-            "Invalid node type: '{}'. Valid types are: {}",
-            node_type,
-            VALID_NODE_TYPES.join(", ")
-        ))
-    }
-}
+// REMOVED: TYPES_WITH_SPOKE_TABLES constant (Issue #691)
+// REMOVED: VALID_NODE_TYPES constant and validate_node_type() function (Issue #691)
+//
+// Both spoke table requirements and valid node types are now derived from
+// schema definitions at runtime. See SurrealStore::build_schema_caches(),
+// has_spoke_table(), and validate_node_type() methods.
 
 /// Internal struct matching SurrealDB's schema
 ///
@@ -370,6 +328,23 @@ where
     db: Arc<Surreal<C>>,
     /// Broadcast channel for domain events (128 subscriber capacity)
     event_tx: broadcast::Sender<DomainEvent>,
+    /// Cache of node types that have spoke tables (derived from schema definitions)
+    ///
+    /// A type needs a spoke table if:
+    /// 1. It's the `schema` type (structural, always has spoke table)
+    /// 2. Its schema node has `fields.len() > 0`
+    ///
+    /// Populated during initialization after seeding schemas.
+    /// Replaces the hardcoded TYPES_WITH_SPOKE_TABLES constant (Issue #691).
+    types_with_spoke_tables: std::collections::HashSet<String>,
+    /// Cache of all valid node types (derived from schema definitions)
+    ///
+    /// Contains all schema IDs from the database, used for validating
+    /// node_type parameters in queries to prevent SQL injection.
+    ///
+    /// Populated during initialization after seeding schemas.
+    /// Replaces the hardcoded VALID_NODE_TYPES constant (Issue #691).
+    valid_node_types: std::collections::HashSet<String>,
 }
 
 /// Type alias for embedded RocksDB store
@@ -421,16 +396,24 @@ impl SurrealStore<Db> {
 
         let db = Arc::new(db);
 
-        // Initialize schema (create tables)
+        // Initialize schema (create tables from schema.surql)
         Self::initialize_schema(&db).await?;
 
-        // Seed core schemas (create schema nodes)
+        // Seed core schemas (create schema nodes and sync spoke table DDL)
         Self::seed_core_schemas(&db).await?;
+
+        // Build schema caches from definitions (Issue #691)
+        let (types_with_spoke_tables, valid_node_types) = Self::build_schema_caches(&db).await?;
 
         // Initialize broadcast channel for domain events
         let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
 
-        Ok(Self { db, event_tx })
+        Ok(Self {
+            db,
+            event_tx,
+            types_with_spoke_tables,
+            valid_node_types,
+        })
     }
 }
 
@@ -500,12 +483,21 @@ impl SurrealStore<Client> {
         // Even in HTTP mode, we need to ensure schema exists for fresh databases
         Self::initialize_schema(&db).await?;
 
+        // Build schema caches from definitions (Issue #691)
+        // In HTTP mode, schemas should already be seeded by the server
+        let (types_with_spoke_tables, valid_node_types) = Self::build_schema_caches(&db).await?;
+
         tracing::info!("✅ Connected to SurrealDB HTTP server");
 
         // Initialize broadcast channel for domain events
         let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
 
-        Ok(Self { db, event_tx })
+        Ok(Self {
+            db,
+            event_tx,
+            types_with_spoke_tables,
+            valid_node_types,
+        })
     }
 }
 
@@ -554,6 +546,106 @@ where
     // Note: emit_event method removed - domain events are now emitted at NodeService layer
     // for client filtering support. See issue #665.
 
+    /// Check if a node type has a spoke table
+    ///
+    /// A type needs a spoke table if:
+    /// 1. It's the `schema` type (structural, DDL in schema.surql)
+    /// 2. Its schema node has fields defined
+    ///
+    /// This replaces the hardcoded TYPES_WITH_SPOKE_TABLES constant (Issue #691).
+    #[inline]
+    pub fn has_spoke_table(&self, node_type: &str) -> bool {
+        self.types_with_spoke_tables.contains(node_type)
+    }
+
+    /// Validates a node type against the schema-derived whitelist
+    ///
+    /// This prevents SQL injection attacks where malicious node_type values could
+    /// alter query semantics. All node_type parameters used in dynamic queries
+    /// must be validated with this method before use.
+    ///
+    /// Replaces the hardcoded VALID_NODE_TYPES constant (Issue #691).
+    ///
+    /// # Arguments
+    /// * `node_type` - The node type string to validate
+    ///
+    /// # Returns
+    /// * `Ok(())` if the node_type exists as a schema in the database
+    /// * `Err(...)` if the node_type is not recognized
+    fn validate_node_type(&self, node_type: &str) -> Result<()> {
+        if self.valid_node_types.contains(node_type) {
+            Ok(())
+        } else {
+            let valid_types: Vec<&String> = self.valid_node_types.iter().collect();
+            Err(anyhow::anyhow!(
+                "Invalid node type: '{}'. Valid types are: {:?}",
+                node_type,
+                valid_types
+            ))
+        }
+    }
+
+    /// Build both schema caches from database schema definitions
+    ///
+    /// Returns:
+    /// - `types_with_spoke_tables`: Types that have spoke tables (schema type + types with fields)
+    /// - `valid_node_types`: All valid node types (all schema IDs)
+    ///
+    /// The `schema` type is always included in spoke tables (structural).
+    /// Called during initialization after seeding schemas.
+    async fn build_schema_caches(
+        db: &Arc<Surreal<C>>,
+    ) -> Result<(
+        std::collections::HashSet<String>,
+        std::collections::HashSet<String>,
+    )> {
+        let mut spoke_tables = std::collections::HashSet::new();
+        let mut valid_types = std::collections::HashSet::new();
+
+        // Schema type always has a spoke table (structural, defined in schema.surql)
+        // and is always a valid type
+        spoke_tables.insert("schema".to_string());
+        valid_types.insert("schema".to_string());
+
+        // Query all schema nodes to get all valid types and which have fields
+        // Schema nodes have node_type = "schema" and id = the type name (e.g., "task", "text")
+        let query = r#"
+            SELECT id, fields FROM schema;
+        "#;
+
+        let mut response = db
+            .query(query)
+            .await
+            .context("Failed to query schema nodes for caches")?;
+
+        // Parse results - each row has id (the type name) and fields
+        #[derive(serde::Deserialize)]
+        struct SchemaRow {
+            id: surrealdb::sql::Thing,
+            fields: Vec<serde_json::Value>,
+        }
+
+        let rows: Vec<SchemaRow> = response.take(0).unwrap_or_default();
+
+        for row in rows {
+            // Extract type name from Thing id (e.g., schema:task -> task)
+            let type_name = match &row.id.id {
+                surrealdb::sql::Id::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+
+            // All schema IDs are valid node types
+            valid_types.insert(type_name.clone());
+
+            // Types with fields need spoke tables
+            if !row.fields.is_empty() {
+                spoke_tables.insert(type_name);
+            }
+        }
+
+        Ok((spoke_tables, valid_types))
+    }
+
     /// Initialize database schema from schema.surql file (Issue #560)
     ///
     /// Creates SCHEMAFULL tables with FLEXIBLE fields for user extensions.
@@ -580,8 +672,11 @@ where
     ///
     /// Creates schema nodes (node_type = "schema") with schema definitions
     /// stored in properties. Checks for existing schemas to be idempotent.
+    ///
+    /// Uses `get_core_schemas()` from `models::core_schemas` which returns
+    /// `Vec<SchemaNode>` - the existing strongly-typed schema wrapper.
     async fn seed_core_schemas(db: &Arc<Surreal<Db>>) -> Result<()> {
-        use serde_json::json;
+        use crate::models::core_schemas::get_core_schemas;
 
         // Check if schemas already exist by trying to get one
         // If any schema exists, assume all are seeded (they're created atomically)
@@ -603,221 +698,54 @@ where
         tracing::info!("🌱 Seeding core schemas...");
 
         // Create temporary SurrealStore to use create_node method
+        // Bootstrap cache with "schema" since we're creating schema nodes
         let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
+        let mut bootstrap_spoke_cache = std::collections::HashSet::new();
+        let mut bootstrap_valid_cache = std::collections::HashSet::new();
+        bootstrap_spoke_cache.insert("schema".to_string());
+        bootstrap_valid_cache.insert("schema".to_string());
         let store = SurrealStore::<Db> {
             db: Arc::clone(db),
             event_tx,
+            types_with_spoke_tables: bootstrap_spoke_cache,
+            valid_node_types: bootstrap_valid_cache,
         };
 
-        let now = Utc::now();
+        // Get core schemas as SchemaNode instances
+        let core_schemas = get_core_schemas();
 
-        // Task schema
-        let task_node = Node {
-            id: "task".to_string(),
-            node_type: "schema".to_string(),
-            content: "Task".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
-            // Schema uses camelCase to match frontend TypeScript conventions (Issue #670)
-            // Status values are lowercase for consistency across all layers
-            // EnumValue format: { value, label } for display in UI/MCP clients
-            properties: json!({
-                "isCore": true,
-                "version": 1,
-                "description": "Task tracking schema",
-                "fields": [
-                    {
-                        "name": "status",
-                        "type": "enum",
-                        "protection": "core",
-                        "coreValues": [
-                            { "value": "open", "label": "Open" },
-                            { "value": "in_progress", "label": "In Progress" },
-                            { "value": "done", "label": "Done" },
-                            { "value": "cancelled", "label": "Cancelled" }
-                        ],
-                        "userValues": [],
-                        "indexed": true,
-                        "required": true,
-                        "extensible": true,
-                        "default": "open",
-                        "description": "Task status"
-                    },
-                    {
-                        "name": "priority",
-                        "type": "enum",
-                        "protection": "user",
-                        "coreValues": [
-                            { "value": "low", "label": "Low" },
-                            { "value": "medium", "label": "Medium" },
-                            { "value": "high", "label": "High" }
-                        ],
-                        "userValues": [],
-                        "indexed": true,
-                        "required": false,
-                        "extensible": true,
-                        "description": "Task priority"
-                    },
-                    {
-                        "name": "due_date",
-                        "type": "date",
-                        "protection": "user",
-                        "indexed": true,
-                        "required": false,
-                        "description": "Due date"
-                    },
-                    {
-                        "name": "started_at",
-                        "type": "date",
-                        "protection": "user",
-                        "indexed": false,
-                        "required": false,
-                        "description": "Started at"
-                    },
-                    {
-                        "name": "completed_at",
-                        "type": "date",
-                        "protection": "user",
-                        "indexed": false,
-                        "required": false,
-                        "description": "Completed at"
-                    },
-                    {
-                        "name": "assignee",
-                        "type": "text",
-                        "protection": "user",
-                        "indexed": true,
-                        "required": false,
-                        "description": "Assignee"
-                    }
-                ]
-            }),
-            embedding_vector: None,
-            mentions: vec![],
-            mentioned_by: vec![],
-        };
-        store.create_node(task_node).await?;
+        // Wrap store in Arc for SchemaTableManager (for DDL generation)
+        let store_arc = Arc::new(store);
+        let table_manager =
+            crate::services::schema_table_manager::SchemaTableManager::new(store_arc.clone());
 
-        // Date schema
-        let date_node = Node {
-            id: "date".to_string(),
-            node_type: "schema".to_string(),
-            content: "Date".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
-            properties: json!({
-                "isCore": true,
-                "version": 1,
-                "description": "Date node schema",
-                "fields": []
-            }),
-            embedding_vector: None,
-            mentions: vec![],
-            mentioned_by: vec![],
-        };
-        store.create_node(date_node).await?;
+        // For each schema: atomically create schema node + spoke table DDL
+        // This ensures schema definition and table structure are created together
+        for schema in &core_schemas {
+            let schema_id = schema.id.clone();
+            let node = schema.clone().into_node();
 
-        // Text schema
-        let text_node = Node {
-            id: "text".to_string(),
-            node_type: "schema".to_string(),
-            content: "Text".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
-            properties: json!({
-                "isCore": true,
-                "version": 1,
-                "description": "Plain text content",
-                "fields": []
-            }),
-            embedding_vector: None,
-            mentions: vec![],
-            mentioned_by: vec![],
-        };
-        store.create_node(text_node).await?;
+            // Generate DDL statements for schemas with fields
+            // Simple schemas (text, date, etc.) have no fields, so no DDL generated
+            let ddl_statements = if !schema.fields.is_empty() {
+                table_manager
+                    .generate_ddl_statements(&schema_id, &schema.fields)
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to generate DDL for '{}': {}", schema_id, e)
+                    })?
+            } else {
+                vec![]
+            };
 
-        // Header schema
-        let header_node = Node {
-            id: "header".to_string(),
-            node_type: "schema".to_string(),
-            content: "Header".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
-            properties: json!({
-                "isCore": true,
-                "version": 1,
-                "description": "Markdown header (h1-h6)",
-                "fields": []
-            }),
-            embedding_vector: None,
-            mentions: vec![],
-            mentioned_by: vec![],
-        };
-        store.create_node(header_node).await?;
-
-        // Code block schema
-        let code_block_node = Node {
-            id: "code-block".to_string(),
-            node_type: "schema".to_string(),
-            content: "Code Block".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
-            properties: json!({
-                "isCore": true,
-                "version": 1,
-                "description": "Code block with syntax highlighting",
-                "fields": []
-            }),
-            embedding_vector: None,
-            mentions: vec![],
-            mentioned_by: vec![],
-        };
-        store.create_node(code_block_node).await?;
-
-        // Quote block schema
-        let quote_block_node = Node {
-            id: "quote-block".to_string(),
-            node_type: "schema".to_string(),
-            content: "Quote Block".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
-            properties: json!({
-                "isCore": true,
-                "version": 1,
-                "description": "Blockquote for citations",
-                "fields": []
-            }),
-            embedding_vector: None,
-            mentions: vec![],
-            mentioned_by: vec![],
-        };
-        store.create_node(quote_block_node).await?;
-
-        // Ordered list schema
-        let ordered_list_node = Node {
-            id: "ordered-list".to_string(),
-            node_type: "schema".to_string(),
-            content: "Ordered List".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
-            properties: json!({
-                "isCore": true,
-                "version": 1,
-                "description": "Numbered list item",
-                "fields": []
-            }),
-            embedding_vector: None,
-            mentions: vec![],
-            mentioned_by: vec![],
-        };
-        store.create_node(ordered_list_node).await?;
+            // Atomically create schema node + execute DDL
+            // For schemas with fields (e.g., task), this creates:
+            //   1. Schema node in hub (node table)
+            //   2. Schema entry in spoke (schema table)
+            //   3. Spoke table for that type (e.g., task table) via DDL
+            store_arc
+                .create_schema_node_atomic(node, ddl_statements)
+                .await?;
+        }
 
         tracing::info!("✅ Core schemas seeded successfully");
 
@@ -860,7 +788,7 @@ where
             .as_object()
             .unwrap_or(&serde_json::Map::new())
             .is_empty();
-        let should_create_spoke = TYPES_WITH_SPOKE_TABLES.contains(&node.node_type.as_str());
+        let should_create_spoke = self.has_spoke_table(&node.node_type);
         let props_with_schema = node.properties.as_object().cloned().unwrap_or_default();
 
         // Create hub node using simpler table:id syntax
@@ -948,17 +876,19 @@ where
                 query_builder = query_builder.bind((key, value));
             }
 
-            let _spoke_response = query_builder
+            let mut spoke_response = query_builder
                 .await
                 .context("Failed to create spoke record")?;
 
-            // DO NOT try to consume the response - it contains Thing types (record IDs)
-            // which cannot deserialize to serde_json::Value. The query execution itself
-            // succeeding (no error from .await) means the record was created.
+            // Consume the response to ensure it's fully executed
+            // Use Option to handle Thing deserialization issues gracefully
+            let _: Result<Vec<Option<serde_json::Value>>, _> = spoke_response.take(0);
 
-            // Note: Verification query removed - CREATE over HTTP client may have
-            // read-after-write timing issues, but data IS persisted. We trust the
-            // CREATE query succeeded if it didn't return an error.
+            // Verify spoke record was created
+            let verify_spoke = format!("SELECT * FROM {}:`{}` LIMIT 1;", node.node_type, node.id);
+            let mut verify_response = self.db.query(&verify_spoke).await?;
+            let _verify_results: Vec<serde_json::Value> =
+                verify_response.take(0).unwrap_or_default();
 
             // Set bidirectional links: hub -> spoke and spoke -> hub
             let link_query = format!(
@@ -1034,7 +964,7 @@ where
         use uuid::Uuid;
 
         // Validate node type to prevent SQL injection
-        validate_node_type(node_type)?;
+        self.validate_node_type(node_type)?;
 
         // Generate node ID and convert parameters to owned strings for 'static lifetime
         let node_id = Uuid::new_v4().to_string();
@@ -1080,7 +1010,7 @@ where
 
         // Prepare properties for type-specific tables
         let props_with_schema = properties.as_object().cloned().unwrap_or_default();
-        let has_type_table = TYPES_WITH_SPOKE_TABLES.contains(&node_type.as_str());
+        let has_type_table = self.has_spoke_table(&node_type);
 
         // Prepare spoke properties WITHOUT the node field (we'll set it in the query using a Thing binding)
         // This is because JSON objects can't represent SurrealDB Record Links properly
@@ -1243,7 +1173,8 @@ where
         let node_type = hub["node_type"].as_str().unwrap_or("text").to_string();
 
         // Query 2: Get spoke data if this type has a spoke table
-        let properties = if TYPES_WITH_SPOKE_TABLES.contains(&node_type.as_str()) {
+        let has_spoke = self.has_spoke_table(&node_type);
+        let properties = if has_spoke {
             let spoke_query = format!(
                 "SELECT * OMIT id, node FROM {table}:`{id}` LIMIT 1;",
                 table = node_type,
@@ -1259,7 +1190,7 @@ where
             spoke_results
                 .into_iter()
                 .next()
-                .unwrap_or(serde_json::json!({}))
+                .unwrap_or_else(|| serde_json::json!({}))
         } else {
             hub.get("properties")
                 .cloned()
@@ -1401,7 +1332,7 @@ where
 
         // If properties were provided and node type has type-specific table, update it there too
         if let Some(updated_props) = update.properties {
-            if TYPES_WITH_SPOKE_TABLES.contains(&updated_node_type.as_str()) {
+            if self.has_spoke_table(&updated_node_type) {
                 // UPSERT with MERGE to preserve existing spoke data on type reconversions
                 // Scenario: text→task creates task:uuid, task→text preserves it, text→task reconnects
                 // MERGE ensures old task properties (priority, due_date) aren't lost on reconversion
@@ -1477,6 +1408,104 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    pub async fn create_schema_node_atomic(
+        &self,
+        node: Node,
+        ddl_statements: Vec<String>,
+    ) -> Result<Node> {
+        // Validate this is a schema node
+        if node.node_type != "schema" {
+            return Err(anyhow::anyhow!(
+                "create_schema_node_atomic only accepts schema nodes, got '{}'",
+                node.node_type
+            ));
+        }
+
+        // Build atomic transaction: DDL FIRST, then CREATE node + CREATE spoke
+        // DDL must come before CREATE so the spoke table exists when we create schema entries
+        let mut transaction_parts = vec!["BEGIN TRANSACTION;".to_string()];
+
+        // Add all DDL statements FIRST (for the type this schema defines, e.g., task spoke table)
+        for ddl in &ddl_statements {
+            transaction_parts.push(ddl.clone());
+        }
+
+        // Create hub node
+        transaction_parts.push(format!(
+            r#"CREATE node:`{}` CONTENT {{
+                node_type: $node_type,
+                content: $content,
+                version: 1,
+                created_at: time::now(),
+                modified_at: time::now(),
+                embedding_vector: [],
+                embedding_stale: false,
+                mentions: [],
+                mentioned_by: [],
+                data: type::thing('schema', $id)
+            }};"#,
+            node.id
+        ));
+
+        // Create spoke record (schema table entry)
+        transaction_parts.push(format!(
+            r#"CREATE schema:`{}` CONTENT {{
+                node: type::thing('node', $id),
+                is_core: $is_core,
+                version: $schema_version,
+                description: $description,
+                fields: $fields
+            }};"#,
+            node.id
+        ));
+
+        transaction_parts.push("COMMIT TRANSACTION;".to_string());
+        let transaction_query = transaction_parts.join("\n");
+
+        // Extract schema-specific properties
+        let is_core = node
+            .properties
+            .get("isCore")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let schema_version = node
+            .properties
+            .get("version")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(1);
+        let description = node
+            .properties
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let fields = node
+            .properties
+            .get("fields")
+            .cloned()
+            .unwrap_or(serde_json::json!([]));
+
+        // Execute atomic transaction
+        self.db
+            .query(&transaction_query)
+            .bind(("id", node.id.clone()))
+            .bind(("node_type", node.node_type.clone()))
+            .bind(("content", node.content.clone()))
+            .bind(("is_core", is_core))
+            .bind(("schema_version", schema_version))
+            .bind(("description", description.to_string()))
+            .bind(("fields", fields))
+            .await
+            .context("Failed to execute atomic schema creation transaction")?;
+
+        // Fetch and return the created node
+        let created_node = self
+            .get_node(&node.id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Schema node not found after creation"))?;
+
+        Ok(created_node)
+    }
+
     pub async fn update_schema_node_atomic(
         &self,
         id: &str,
@@ -1524,7 +1553,7 @@ where
         );
 
         // CRITICAL: Also update the spoke table (schema:id) where properties are actually read from
-        // get_node() reads properties from the spoke table for types in TYPES_WITH_SPOKE_TABLES
+        // get_node() reads properties from the spoke table for types with spoke tables
         transaction_parts
             .push(r#"UPSERT type::thing('schema', $id) MERGE $properties;"#.to_string());
 
@@ -1623,7 +1652,7 @@ where
         new_properties: Value,
     ) -> Result<Node> {
         // Validate new_type to prevent SQL injection
-        validate_node_type(new_type)?;
+        self.validate_node_type(new_type)?;
 
         // Convert parameters to owned strings for 'static lifetime
         let node_id = node_id.to_string();
@@ -1639,13 +1668,13 @@ where
 
         // Build variants update: preserve old type, add new type
         // variants map format: {"task": "task:uuid", "text": null, ...}
-        let old_type_record = if TYPES_WITH_SPOKE_TABLES.contains(&old_type.as_str()) {
+        let old_type_record = if self.has_spoke_table(&old_type) {
             format!("{}:{}", old_type, node_id)
         } else {
             "null".to_string()
         };
 
-        let new_type_record = if TYPES_WITH_SPOKE_TABLES.contains(&new_type.as_str()) {
+        let new_type_record = if self.has_spoke_table(&new_type) {
             format!("{}:{}", new_type, node_id)
         } else {
             "null".to_string()
@@ -1654,7 +1683,7 @@ where
         // Prepare properties
         // Note: Schema properties stored directly - enums handled via strong typing on read
         let props_with_schema = new_properties.as_object().cloned().unwrap_or_default();
-        let has_new_type_table = TYPES_WITH_SPOKE_TABLES.contains(&new_type.as_str());
+        let has_new_type_table = self.has_spoke_table(&new_type);
 
         // Build atomic transaction using Thing parameters
         // Note: Field names use snake_case (node_type, modified_at) to match hub schema
@@ -1837,7 +1866,7 @@ where
 
         // Update spoke table if properties were provided and node type has spoke table
         if let Some(props) = updated_properties {
-            if TYPES_WITH_SPOKE_TABLES.contains(&updated_node_type.as_str()) {
+            if self.has_spoke_table(&updated_node_type) {
                 // UPSERT with MERGE to preserve existing spoke data
                 self.db
                     .query("UPSERT type::thing($table, $id) MERGE $properties;")
@@ -2118,7 +2147,7 @@ where
         // Group nodes by type for batch fetching
         let mut nodes_by_type: HashMap<String, Vec<String>> = HashMap::new();
         for node in &nodes {
-            if TYPES_WITH_SPOKE_TABLES.contains(&node.node_type.as_str()) {
+            if self.has_spoke_table(&node.node_type) {
                 nodes_by_type
                     .entry(node.node_type.clone())
                     .or_default()
@@ -2241,7 +2270,7 @@ where
         // Group nodes by type for batch fetching
         let mut nodes_by_type: HashMap<String, Vec<String>> = HashMap::new();
         for node in &nodes {
-            if TYPES_WITH_SPOKE_TABLES.contains(&node.node_type.as_str()) {
+            if self.has_spoke_table(&node.node_type) {
                 nodes_by_type
                     .entry(node.node_type.clone())
                     .or_default()
@@ -2314,7 +2343,7 @@ where
         let mut node: Node = nodes.into_iter().next().unwrap().into();
 
         // Fetch properties if this node type has them
-        if TYPES_WITH_SPOKE_TABLES.contains(&node.node_type.as_str()) {
+        if self.has_spoke_table(&node.node_type) {
             if let Ok(props_map) =
                 batch_fetch_properties(&self.db, &node.node_type, &[node.id.clone()]).await
             {
@@ -4220,7 +4249,6 @@ mod tests {
         // Reason: Test takes ~10 minutes total (10K node creation + search)
         // The search itself is fast (~9.5s), but setup is slow
         if std::env::var("RUN_LONG_TESTS").unwrap_or_default() != "1" {
-            eprintln!("Skipping 10K performance test (set RUN_LONG_TESTS=1 to run)");
             return Ok(());
         }
 

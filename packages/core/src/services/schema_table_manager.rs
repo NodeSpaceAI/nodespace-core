@@ -121,7 +121,8 @@ where
 
         let mut statements = Vec::new();
 
-        // Use SCHEMAFULL for all types
+        // Use SCHEMAFULL with FLEXIBLE fields to allow user extensions
+        // This enforces defined fields while accepting additional properties
         let table_mode = "SCHEMAFULL";
 
         // DEFINE TABLE statement
@@ -130,7 +131,13 @@ where
             type_name, table_mode
         ));
 
-        // Generate field definitions
+        // Define reverse link to hub node (required for hub-spoke architecture)
+        statements.push(format!(
+            "DEFINE FIELD IF NOT EXISTS node ON TABLE {} TYPE option<record>;",
+            type_name
+        ));
+
+        // Generate field definitions from schema
         for field in fields {
             self.generate_field_ddl(type_name, field, None, &mut statements)?;
         }
@@ -184,9 +191,10 @@ where
             field_path.clone()
         };
 
-        // Add DEFINE FIELD statement
+        // Add DEFINE FIELD statement with FLEXIBLE to allow extra properties
+        // FLEXIBLE allows the field to accept any valid JSON value beyond the base type
         statements.push(format!(
-            "DEFINE FIELD IF NOT EXISTS {} ON {} TYPE {};",
+            "DEFINE FIELD IF NOT EXISTS {} ON TABLE {} FLEXIBLE TYPE {};",
             quoted_field, table, db_type
         ));
 
@@ -201,7 +209,7 @@ where
                     .replace(':', "_")
             );
             statements.push(format!(
-                "DEFINE INDEX IF NOT EXISTS {} ON {} FIELDS {};",
+                "DEFINE INDEX IF NOT EXISTS {} ON TABLE {} COLUMNS {};",
                 index_name, table, quoted_field
             ));
         }
@@ -267,8 +275,8 @@ where
             )));
         }
 
-        // Use SCHEMAFULL for all types (core and user-defined)
-        // SCHEMAFULL with FLEXIBLE fields allows enforcing core fields while accepting user-defined fields
+        // Use SCHEMAFULL with FLEXIBLE fields to allow user extensions
+        // This enforces defined fields while accepting additional properties
         let table_mode = "SCHEMAFULL";
 
         // Get database connection
@@ -290,7 +298,20 @@ where
 
         tracing::info!("Synced table '{}' with mode {}", type_name, table_mode);
 
-        // Define all fields recursively
+        // Define reverse link to hub node (required for hub-spoke architecture)
+        let node_field_query = format!(
+            "DEFINE FIELD IF NOT EXISTS node ON TABLE {} TYPE option<record>;",
+            type_name
+        );
+        let mut response = db.query(&node_field_query).await.map_err(|e| {
+            NodeServiceError::DatabaseError(crate::db::DatabaseError::OperationError(format!(
+                "Failed to define node field on table '{}': {}",
+                type_name, e
+            )))
+        })?;
+        let _: Result<Vec<serde_json::Value>, _> = response.take(0);
+
+        // Define all fields recursively from schema
         for field in fields {
             self.define_field(type_name, field, None).await?;
         }
@@ -436,40 +457,11 @@ where
         schema_type: &str,
         field: &SchemaField,
     ) -> Result<String, NodeServiceError> {
-        let db_type = match schema_type {
-            "string" | "text" => "string".to_string(),
+        let base_type = match schema_type {
+            "string" | "text" | "enum" => "string".to_string(),
             "number" => "number".to_string(),
             "boolean" => "bool".to_string(),
             "date" => "datetime".to_string(),
-            "enum" => {
-                // Build ASSERT clause with all valid enum values
-                let all_values = {
-                    let mut values = Vec::new();
-                    if let Some(ref core_vals) = field.core_values {
-                        values.extend(core_vals.clone());
-                    }
-                    if let Some(ref user_vals) = field.user_values {
-                        values.extend(user_vals.clone());
-                    }
-                    values
-                };
-
-                if all_values.is_empty() {
-                    return Err(NodeServiceError::invalid_update(format!(
-                        "Enum field '{}' has no values defined",
-                        field.name
-                    )));
-                }
-
-                // Extract just the value strings for DDL (not labels)
-                let values_list = all_values
-                    .iter()
-                    .map(|ev| format!("'{}'", ev.value))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-
-                format!("string ASSERT $value IN [{}]", values_list)
-            }
             "array" => {
                 if let Some(ref item_type) = field.item_type {
                     if item_type == "object" {
@@ -489,6 +481,26 @@ where
                     schema_type
                 )))
             }
+        };
+
+        // Wrap in option<> unless required
+        // Required fields have defaults, optional fields are nullable
+        let db_type = if field.required.unwrap_or(false) {
+            // Required fields need DEFAULT value
+            if let Some(ref default) = field.default {
+                let default_val = match default {
+                    serde_json::Value::String(s) => format!("'{}'", s),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    _ => "''".to_string(),
+                };
+                format!("{} DEFAULT {}", base_type, default_val)
+            } else {
+                base_type
+            }
+        } else {
+            // Optional fields are nullable
+            format!("option<{}>", base_type)
         };
 
         Ok(db_type)

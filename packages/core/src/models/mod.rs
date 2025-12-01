@@ -4,10 +4,12 @@
 //!
 //! - `Node` - Universal node model for all content types
 //! - Type-safe wrappers (TaskNode, TextNode, DateNode, CodeBlockNode, QuoteBlockNode, OrderedListNode) for ergonomic access
+//! - Core schema definitions for built-in node types
 //!
 //! All entities use the Pure JSON schema approach with data stored in the
 //! `properties` field of the universal `nodes` table.
 
+pub mod core_schemas;
 mod node;
 pub mod schema;
 pub mod time;
