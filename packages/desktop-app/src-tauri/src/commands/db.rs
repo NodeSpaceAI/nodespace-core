@@ -44,7 +44,7 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     // Initialize SurrealDB store
     eprintln!("🔧 [init_services] Initializing SurrealDB store...");
     tracing::info!("🔧 [init_services] Initializing SurrealDB store...");
-    let store = Arc::new(SurrealStore::new(db_path).await.map_err(|e| {
+    let mut store = Arc::new(SurrealStore::new(db_path).await.map_err(|e| {
         let msg = format!("Failed to initialize database: {}", e);
         eprintln!("❌ [init_services] {}", msg);
         msg
@@ -53,8 +53,10 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     tracing::info!("✅ [init_services] SurrealDB store initialized");
 
     // Initialize node service with SurrealStore
+    // NodeService::new() takes &mut Arc to enable cache updates during seeding (Issue #704)
     tracing::info!("🔧 [init_services] Initializing NodeService...");
-    let node_service = NodeService::new(store.clone())
+    let node_service = NodeService::new(&mut store)
+        .await
         .map_err(|e| format!("Failed to initialize node service: {}", e))?;
 
     let node_service_arc = Arc::new(node_service);

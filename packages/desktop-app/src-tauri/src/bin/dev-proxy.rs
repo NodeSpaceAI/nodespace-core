@@ -320,7 +320,7 @@ async fn main() -> anyhow::Result<()> {
     // Connect to SurrealDB HTTP server (must be running on port 8000)
     // IMPORTANT: Uses HTTP client mode, NOT embedded RocksDB
     println!("📡 Connecting to SurrealDB HTTP server on port 8000...");
-    let store =
+    let mut store =
         match HttpStore::new_http("127.0.0.1:8000", "nodespace", "nodespace", "root", "root").await
         {
             Ok(s) => {
@@ -339,8 +339,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize NodeService with all business logic
     // NodeService has ALL the logic (virtual dates, schema backfill, etc.)
+    // NodeService::new() takes &mut Arc to enable cache updates during seeding (Issue #704)
     println!("🧠 Initializing NodeService...");
-    let node_service = match NodeService::new(Arc::clone(&store)) {
+    let node_service = match NodeService::new(&mut store).await {
         Ok(s) => {
             println!("✅ NodeService initialized");
             Arc::new(s)

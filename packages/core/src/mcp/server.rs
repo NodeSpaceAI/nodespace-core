@@ -675,8 +675,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
 
-        let store = Arc::new(SurrealStore::new(db_path).await.unwrap());
-        let node_service = Arc::new(NodeService::new(store.clone()).unwrap());
+        let mut store = Arc::new(SurrealStore::new(db_path).await.unwrap());
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
         let nlp_engine =
             Arc::new(nodespace_nlp_engine::EmbeddingService::new(Default::default()).unwrap());
         let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));

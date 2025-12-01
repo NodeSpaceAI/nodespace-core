@@ -29,8 +29,8 @@ mod disabled_embedding_tests {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
 
-        let store = Arc::new(SurrealStore::new(db_path).await.unwrap());
-        let node_service = Arc::new(NodeService::new(store.clone()).unwrap());
+        let mut store = Arc::new(SurrealStore::new(db_path).await.unwrap());
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
 
         (node_service, store, temp_dir)
     }

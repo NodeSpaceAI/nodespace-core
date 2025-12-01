@@ -152,8 +152,8 @@ mod occ_tests {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
 
-        let store = Arc::new(SurrealStore::new(db_path).await?);
-        let node_service = Arc::new(NodeService::new(store)?);
+        let mut store = Arc::new(SurrealStore::new(db_path).await?);
+        let node_service = Arc::new(NodeService::new(&mut store).await?);
         Ok((node_service, temp_dir))
     }
 
@@ -496,8 +496,8 @@ mod integration_tests {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
 
-        let store = Arc::new(SurrealStore::new(db_path).await?);
-        let node_service = Arc::new(NodeService::new(store)?);
+        let mut store = Arc::new(SurrealStore::new(db_path).await?);
+        let node_service = Arc::new(NodeService::new(&mut store).await?);
         Ok((node_service, temp_dir))
     }
 
@@ -1557,8 +1557,8 @@ mod typed_response_tests {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
 
-        let store = Arc::new(SurrealStore::new(db_path).await?);
-        let node_service = Arc::new(NodeService::new(store)?);
+        let mut store = Arc::new(SurrealStore::new(db_path).await?);
+        let node_service = Arc::new(NodeService::new(&mut store).await?);
         Ok((node_service, temp_dir))
     }
 

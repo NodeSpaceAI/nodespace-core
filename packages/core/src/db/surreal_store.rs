@@ -334,7 +334,11 @@ where
     /// 1. It's the `schema` type (structural, always has spoke table)
     /// 2. Its schema node has `fields.len() > 0`
     ///
-    /// Populated during initialization after seeding schemas.
+    /// **Cache Population Strategy (Issue #704):**
+    /// - **First launch (fresh DB)**: NodeService seeds schemas and populates cache incrementally
+    ///   via `add_to_schema_cache()` - no database re-query needed
+    /// - **Subsequent launches**: `build_schema_caches()` queries existing schema records once at startup
+    ///
     /// Replaces the hardcoded TYPES_WITH_SPOKE_TABLES constant (Issue #691).
     types_with_spoke_tables: std::collections::HashSet<String>,
     /// Cache of all valid node types (derived from schema definitions)
@@ -342,7 +346,11 @@ where
     /// Contains all schema IDs from the database, used for validating
     /// node_type parameters in queries to prevent SQL injection.
     ///
-    /// Populated during initialization after seeding schemas.
+    /// **Cache Population Strategy (Issue #704):**
+    /// - **First launch (fresh DB)**: NodeService seeds schemas and populates cache incrementally
+    ///   via `add_to_schema_cache()` - no database re-query needed
+    /// - **Subsequent launches**: `build_schema_caches()` queries existing schema records once at startup
+    ///
     /// Replaces the hardcoded VALID_NODE_TYPES constant (Issue #691).
     valid_node_types: std::collections::HashSet<String>,
 }
@@ -397,10 +405,8 @@ impl SurrealStore<Db> {
         let db = Arc::new(db);
 
         // Initialize schema (create tables from schema.surql)
+        // Note: Schema nodes are seeded by NodeService, not here (Issue #704)
         Self::initialize_schema(&db).await?;
-
-        // Seed core schemas (create schema nodes and sync spoke table DDL)
-        Self::seed_core_schemas(&db).await?;
 
         // Build schema caches from definitions (Issue #691)
         let (types_with_spoke_tables, valid_node_types) = Self::build_schema_caches(&db).await?;
@@ -481,10 +487,10 @@ impl SurrealStore<Client> {
 
         // Initialize schema tables (idempotent - uses IF NOT EXISTS)
         // Even in HTTP mode, we need to ensure schema exists for fresh databases
+        // Note: Schema nodes are seeded by NodeService, not here (Issue #704)
         Self::initialize_schema(&db).await?;
 
         // Build schema caches from definitions (Issue #691)
-        // In HTTP mode, schemas should already be seeded by the server
         let (types_with_spoke_tables, valid_node_types) = Self::build_schema_caches(&db).await?;
 
         tracing::info!("✅ Connected to SurrealDB HTTP server");
@@ -587,12 +593,25 @@ where
 
     /// Build both schema caches from database schema definitions
     ///
-    /// Returns:
-    /// - `types_with_spoke_tables`: Types that have spoke tables (schema type + types with fields)
+    /// Queries the `schema` spoke table to determine which node types exist and which
+    /// have spoke tables (based on whether they have fields defined).
+    ///
+    /// # Returns
+    ///
+    /// - `types_with_spoke_tables`: Types that have spoke tables (schema + types with fields)
     /// - `valid_node_types`: All valid node types (all schema IDs)
     ///
-    /// The `schema` type is always included in spoke tables (structural).
-    /// Called during initialization after seeding schemas.
+    /// # Cache Population Strategy (Issue #704)
+    ///
+    /// **First launch (fresh database):**
+    /// - Called during `SurrealStore::new()` but returns empty results (no schema records yet)
+    /// - Cache starts with only {"schema"} (hardcoded)
+    /// - NodeService then seeds schemas and populates cache via `add_to_schema_cache()`
+    ///
+    /// **Subsequent launches (existing database):**
+    /// - Called during `SurrealStore::new()` and returns all existing schema records
+    /// - Cache fully populated in one query: {"schema", "task", "text", "date", ...}
+    /// - No further cache updates needed
     async fn build_schema_caches(
         db: &Arc<Surreal<C>>,
     ) -> Result<(
@@ -668,90 +687,6 @@ where
         Ok(())
     }
 
-    /// Seed core schema definitions as nodes
-    ///
-    /// Creates schema nodes (node_type = "schema") with schema definitions
-    /// stored in properties. Checks for existing schemas to be idempotent.
-    ///
-    /// Uses `get_core_schemas()` from `models::core_schemas` which returns
-    /// `Vec<SchemaNode>` - the existing strongly-typed schema wrapper.
-    async fn seed_core_schemas(db: &Arc<Surreal<Db>>) -> Result<()> {
-        use crate::models::core_schemas::get_core_schemas;
-
-        // Check if schemas already exist by trying to get one
-        // If any schema exists, assume all are seeded (they're created atomically)
-        // Use record ID for schema lookup
-        let task_exists = db
-            .query("SELECT * FROM type::thing('node', 'task') LIMIT 1")
-            .await
-            .context("Failed to check for existing schemas")?
-            .take::<Option<SurrealNode>>(0)
-            .ok()
-            .flatten()
-            .is_some();
-
-        if task_exists {
-            tracing::info!("✅ Core schemas already seeded");
-            return Ok(());
-        }
-
-        tracing::info!("🌱 Seeding core schemas...");
-
-        // Create temporary SurrealStore to use create_node method
-        // Bootstrap cache with "schema" since we're creating schema nodes
-        let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
-        let mut bootstrap_spoke_cache = std::collections::HashSet::new();
-        let mut bootstrap_valid_cache = std::collections::HashSet::new();
-        bootstrap_spoke_cache.insert("schema".to_string());
-        bootstrap_valid_cache.insert("schema".to_string());
-        let store = SurrealStore::<Db> {
-            db: Arc::clone(db),
-            event_tx,
-            types_with_spoke_tables: bootstrap_spoke_cache,
-            valid_node_types: bootstrap_valid_cache,
-        };
-
-        // Get core schemas as SchemaNode instances
-        let core_schemas = get_core_schemas();
-
-        // Wrap store in Arc for SchemaTableManager (for DDL generation)
-        let store_arc = Arc::new(store);
-        let table_manager =
-            crate::services::schema_table_manager::SchemaTableManager::new(store_arc.clone());
-
-        // For each schema: atomically create schema node + spoke table DDL
-        // This ensures schema definition and table structure are created together
-        for schema in &core_schemas {
-            let schema_id = schema.id.clone();
-            let node = schema.clone().into_node();
-
-            // Generate DDL statements for schemas with fields
-            // Simple schemas (text, date, etc.) have no fields, so no DDL generated
-            let ddl_statements = if !schema.fields.is_empty() {
-                table_manager
-                    .generate_ddl_statements(&schema_id, &schema.fields)
-                    .map_err(|e| {
-                        anyhow::anyhow!("Failed to generate DDL for '{}': {}", schema_id, e)
-                    })?
-            } else {
-                vec![]
-            };
-
-            // Atomically create schema node + execute DDL
-            // For schemas with fields (e.g., task), this creates:
-            //   1. Schema node in hub (node table)
-            //   2. Schema entry in spoke (schema table)
-            //   3. Spoke table for that type (e.g., task table) via DDL
-            store_arc
-                .create_schema_node_atomic(node, ddl_statements)
-                .await?;
-        }
-
-        tracing::info!("✅ Core schemas seeded successfully");
-
-        Ok(())
-    }
-
     /// Parse SurrealDB Record ID into (table, uuid) components
     ///
     /// # Arguments
@@ -771,6 +706,37 @@ where
             ));
         }
         Ok((parts[0].to_string(), parts[1].to_string()))
+    }
+
+    /// Add a node type to schema caches (called during schema seeding)
+    ///
+    /// When NodeService seeds schema records on first launch, it populates the caches
+    /// incrementally as each schema is created. This avoids re-querying the database
+    /// after seeding - we already have the schema data in memory.
+    ///
+    /// # Arguments
+    ///
+    /// * `type_name` - The node type (e.g., "task", "text", "date")
+    /// * `has_fields` - Whether this type has fields (determines if spoke table exists)
+    ///
+    /// # Cache Population Strategy (Issue #704)
+    ///
+    /// **First launch (fresh database):**
+    /// ```text
+    /// for schema in core_schemas {
+    ///     create_schema_node_atomic(schema);
+    ///     add_to_schema_cache(schema.id, !schema.fields.is_empty()); // ✅ No DB query
+    /// }
+    /// ```
+    ///
+    /// **Subsequent launches:**
+    /// - Caches already populated by `build_schema_caches()` during `SurrealStore::new()`
+    /// - This method is not called
+    pub(crate) fn add_to_schema_cache(&mut self, type_name: String, has_fields: bool) {
+        self.valid_node_types.insert(type_name.clone());
+        if has_fields {
+            self.types_with_spoke_tables.insert(type_name);
+        }
     }
 }
 
@@ -3696,17 +3662,19 @@ where
     ///
     /// # Query Pattern
     ///
+    /// Column aliases use camelCase to match TaskNode's `#[serde(rename_all = "camelCase")]`:
+    ///
     /// ```sql
     /// SELECT
     ///     record::id(id) AS id,
     ///     status,
     ///     priority,
-    ///     due_date,
+    ///     due_date AS dueDate,
     ///     assignee,
     ///     node.content AS content,
     ///     node.version AS version,
-    ///     node.created_at AS created_at,
-    ///     node.modified_at AS modified_at
+    ///     node.created_at AS createdAt,
+    ///     node.modified_at AS modifiedAt
     /// FROM task:`some-id`;
     /// ```
     ///
@@ -3738,19 +3706,20 @@ where
     /// ```
     pub async fn get_task_node(&self, id: &str) -> Result<Option<crate::models::TaskNode>> {
         // Single query: spoke fields + hub fields via record link
-        // Use record::id() to extract the string ID from the Thing type
+        // Note: Column aliases use camelCase to match TaskNode's #[serde(rename_all = "camelCase")]
+        // Database stores snake_case, but serde expects camelCase for deserialization
         let query = format!(
             r#"
             SELECT
                 record::id(id) AS id,
                 status,
                 priority,
-                due_date,
+                due_date AS dueDate,
                 assignee,
                 node.content AS content,
                 node.version AS version,
-                node.created_at AS created_at,
-                node.modified_at AS modified_at
+                node.created_at AS createdAt,
+                node.modified_at AS modifiedAt
             FROM task:`{}`;
             "#,
             id
@@ -3775,17 +3744,19 @@ where
     ///
     /// # Query Pattern
     ///
+    /// Column aliases use camelCase to match SchemaNode's `#[serde(rename_all = "camelCase")]`:
+    ///
     /// ```sql
     /// SELECT
     ///     record::id(id) AS id,
-    ///     is_core,
-    ///     version AS schema_version,
+    ///     is_core AS isCore,
+    ///     version AS schemaVersion,
     ///     description,
     ///     fields,
     ///     node.content AS content,
     ///     node.version AS version,
-    ///     node.created_at AS created_at,
-    ///     node.modified_at AS modified_at
+    ///     node.created_at AS createdAt,
+    ///     node.modified_at AS modifiedAt
     /// FROM schema:`task`;
     /// ```
     ///
@@ -3817,19 +3788,20 @@ where
     /// ```
     pub async fn get_schema_node(&self, id: &str) -> Result<Option<crate::models::SchemaNode>> {
         // Single query: spoke fields + hub fields via record link
-        // Note: spoke `version` is aliased to `schema_version` to avoid collision with hub version
+        // Note: Column aliases use camelCase to match SchemaNode's #[serde(rename_all = "camelCase")]
+        // Database stores snake_case, but serde expects camelCase for deserialization
         let query = format!(
             r#"
             SELECT
                 record::id(id) AS id,
-                is_core,
-                version AS schema_version,
+                is_core AS isCore,
+                version AS schemaVersion,
                 description,
                 fields,
                 node.content AS content,
                 node.version AS version,
-                node.created_at AS created_at,
-                node.modified_at AS modified_at
+                node.created_at AS createdAt,
+                node.modified_at AS modifiedAt
             FROM schema:`{}`;
             "#,
             id
@@ -3855,11 +3827,26 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    async fn create_test_store() -> Result<(SurrealStore, TempDir)> {
+    /// Test helper to create a SurrealStore with schemas seeded
+    ///
+    /// Since schema seeding moved to NodeService (Issue #704), we use NodeService
+    /// to seed schemas. The new() method now takes &mut Arc to update caches
+    /// incrementally during seeding - no rebuild needed.
+    async fn create_test_store() -> Result<(Arc<SurrealStore>, TempDir)> {
+        use crate::services::NodeService;
+
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test_surreal.db");
-        let store = SurrealStore::new(db_path).await?;
-        Ok((store, temp_dir))
+        let mut store_arc = Arc::new(SurrealStore::new(db_path).await?);
+
+        // Seed schemas via NodeService (Issue #704)
+        // NodeService::new() takes &mut Arc to update caches incrementally during seeding
+        let _ = NodeService::new(&mut store_arc)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to initialize NodeService: {}", e))?;
+
+        // Caches are now populated by NodeService::new() - no rebuild needed!
+        Ok((store_arc, temp_dir))
     }
 
     #[tokio::test]

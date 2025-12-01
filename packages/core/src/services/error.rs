@@ -68,6 +68,10 @@ pub enum NodeServiceError {
         expected_version: i64,
         actual_version: i64,
     },
+
+    /// Service initialization failed
+    #[error("Initialization error: {0}")]
+    InitializationError(String),
 }
 
 impl NodeServiceError {
@@ -142,5 +146,10 @@ impl NodeServiceError {
             expected_version,
             actual_version,
         }
+    }
+
+    /// Create an initialization error
+    pub fn initialization_error(msg: impl Into<String>) -> Self {
+        Self::InitializationError(msg.into())
     }
 }

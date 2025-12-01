@@ -7,12 +7,11 @@
  *
  * ## Serialized Structure
  *
- * The backend returns SchemaNode with typed fields:
+ * The backend /api/schemas/:id endpoint returns SchemaNode with typed fields:
  * ```json
  * {
  *   "id": "task",
- *   "nodeType": "schema",
- *   "content": "task",
+ *   "content": "Task",
  *   "createdAt": "2025-01-01T00:00:00Z",
  *   "modifiedAt": "2025-01-01T00:00:00Z",
  *   "version": 1,
@@ -22,6 +21,8 @@
  *   "fields": [...]
  * }
  * ```
+ *
+ * Note: nodeType is NOT included in the response - it's implicit (always "schema").
  *
  * @example
  * ```typescript
@@ -99,13 +100,17 @@ export interface SchemaField {
  *
  * This matches the Rust SchemaNode custom Serialize output.
  * Schema-specific fields are at the top level, NOT in properties.
+ *
+ * **Important**: The `nodeType` field is optional because the /api/schemas/:id
+ * endpoint may omit it (it's implicit - always "schema" for this endpoint).
+ * Use `isSchemaNode()` for runtime validation which handles both cases.
  */
 export interface SchemaNode {
   /** Unique identifier (same as schema type, e.g., "task", "person") */
   id: string;
 
-  /** Always "schema" for schema nodes */
-  nodeType: 'schema';
+  /** Always "schema" for schema nodes. Optional - may be omitted in API responses where it's implicit. */
+  nodeType?: 'schema';
 
   /** Schema name (same as id) */
   content: string;
@@ -138,6 +143,8 @@ export interface SchemaNode {
  * Type guard to check if a value is a SchemaNode
  *
  * Checks for the presence of schema-specific typed fields.
+ * Note: Does NOT check nodeType because the /api/schemas/:id endpoint
+ * returns SchemaNode without the nodeType field (it's implicit).
  *
  * @param value - Value to check
  * @returns True if value is a SchemaNode
@@ -145,8 +152,8 @@ export interface SchemaNode {
 export function isSchemaNode(value: unknown): value is SchemaNode {
   if (!value || typeof value !== 'object') return false;
   const node = value as Record<string, unknown>;
+  // Check for schema-specific fields (nodeType is implicit from endpoint)
   return (
-    node.nodeType === 'schema' &&
     typeof node.isCore === 'boolean' &&
     typeof node.schemaVersion === 'number' &&
     Array.isArray(node.fields)

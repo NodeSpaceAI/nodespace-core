@@ -26,8 +26,8 @@ mod event_emission_tests {
     async fn create_test_service() -> Result<(NodeService, TempDir)> {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
-        let store = SurrealStore::new(db_path).await?;
-        let service = NodeService::new(Arc::new(store))?;
+        let mut store = Arc::new(SurrealStore::new(db_path).await?);
+        let service = NodeService::new(&mut store).await?;
         Ok((service, temp_dir))
     }
 

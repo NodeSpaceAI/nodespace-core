@@ -17,8 +17,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
 
-        let store = Arc::new(SurrealStore::new(db_path).await.unwrap());
-        let node_service = Arc::new(NodeService::new(store).unwrap());
+        let mut store = Arc::new(SurrealStore::new(db_path).await.unwrap());
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
         (node_service, temp_dir)
     }
 
