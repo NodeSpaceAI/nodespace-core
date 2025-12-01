@@ -174,11 +174,7 @@ export interface UpdateOptions {
    * - 'debounced': Use normal debounced persistence (default for user edits)
    * - false: Skip persistence (for in-memory/temporary updates)
    * - true: Trigger persistence with auto-determined mode (structural=immediate, content=debounced)
-   * - undefined: Use auto-determined persistence based on source type (legacy default)
-   *
-   * The difference between `true` and `undefined`:
-   * - `true`: Explicitly request persistence with auto mode selection
-   * - `undefined`: Defer to legacy source.type-based behavior (Phase 1 backward compatibility)
+   * - undefined: Use auto-determined persistence based on source type (default behavior)
    *
    * @example
    * // Explicit immediate persistence (instead of using 'external' source)

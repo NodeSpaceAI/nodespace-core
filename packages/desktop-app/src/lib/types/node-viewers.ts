@@ -19,7 +19,7 @@ export interface NodeViewerProps {
 }
 
 /**
- * Legacy interface for individual node components (TaskNode, TextNode, etc.)
+ * Props interface for individual node components (TaskNode, TextNode, etc.)
  * These wrap BaseNode and are used WITHIN BaseNodeViewer
  */
 export interface NodeComponentProps {

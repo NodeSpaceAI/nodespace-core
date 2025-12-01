@@ -25,9 +25,6 @@ import type { Node } from './node';
  */
 export interface QuoteBlockNode extends Node {
   nodeType: 'quote-block';
-  properties: {
-    [key: string]: unknown;
-  };
 }
 
 /**
@@ -63,14 +60,12 @@ export const QuoteBlockNodeHelpers = {
    * Create a new quote block node with specified content
    *
    * @param content - The quoted text content
-   * @param parentId - Optional parent node ID
    * @returns New quote block node
    *
    * @example
    * ```typescript
    * const quote = QuoteBlockNodeHelpers.createQuoteBlock(
-   *   'To be or not to be, that is the question.',
-   *   'parent-123'
+   *   'To be or not to be, that is the question.'
    * );
    * ```
    */

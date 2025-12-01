@@ -1,5 +1,8 @@
 /**
  * Tests for CodeBlock Node Type-Safe Wrapper
+ *
+ * Note: Language is now derived from code fence syntax in content (e.g., ```python)
+ * rather than stored as a property. This matches the Rust backend behavior.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -17,11 +20,11 @@ describe('CodeBlockNode Type Guard', () => {
     const codeBlockNode: Node = {
       id: 'test-1',
       nodeType: 'code-block',
-      content: 'const x = 1;',
+      content: '```javascript\nconst x = 1;\n```',
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      properties: { language: 'javascript' }
+      properties: {}
     };
 
     expect(isCodeBlockNode(codeBlockNode)).toBe(true);
@@ -43,25 +46,25 @@ describe('CodeBlockNode Type Guard', () => {
 });
 
 describe('getLanguage', () => {
-  it('returns language from properties', () => {
+  it('returns language from code fence syntax in content', () => {
     const node: CodeBlockNode = {
       id: 'test-3',
       nodeType: 'code-block',
-      content: 'print("hello")',
+      content: '```python\nprint("hello")\n```',
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      properties: { language: 'python' }
+      properties: {}
     };
 
     expect(getLanguage(node)).toBe('python');
   });
 
-  it('returns plaintext when language is missing', () => {
+  it('returns plaintext when language is missing in code fence', () => {
     const node: CodeBlockNode = {
       id: 'test-4',
       nodeType: 'code-block',
-      content: 'some code',
+      content: '```\nsome code\n```',
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
@@ -71,41 +74,55 @@ describe('getLanguage', () => {
     expect(getLanguage(node)).toBe('plaintext');
   });
 
-  it('returns plaintext when language is not a string', () => {
+  it('returns plaintext when no code fence exists', () => {
     const node: CodeBlockNode = {
       id: 'test-5',
       nodeType: 'code-block',
-      content: 'some code',
+      content: 'some code without fences',
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      properties: { language: 123 } as unknown as CodeBlockNode['properties']
+      properties: {}
     };
 
     expect(getLanguage(node)).toBe('plaintext');
   });
 
-  it('returns plaintext when language is empty string', () => {
+  it('handles empty content', () => {
     const node: CodeBlockNode = {
       id: 'test-6',
       nodeType: 'code-block',
-      content: 'some code',
+      content: '',
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      properties: { language: '' }
+      properties: {}
     };
 
     expect(getLanguage(node)).toBe('plaintext');
+  });
+
+  it('extracts language case-insensitively and normalizes to lowercase', () => {
+    const node: CodeBlockNode = {
+      id: 'test-7',
+      nodeType: 'code-block',
+      content: '```JavaScript\ncode here\n```',
+      createdAt: new Date().toISOString(),
+      modifiedAt: new Date().toISOString(),
+      version: 1,
+      properties: {}
+    };
+
+    expect(getLanguage(node)).toBe('javascript');
   });
 });
 
 describe('setLanguage', () => {
-  it('sets language property immutably', () => {
+  it('sets language in code fence immutably', () => {
     const original: CodeBlockNode = {
       id: 'test-7',
       nodeType: 'code-block',
-      content: 'fn main() {}',
+      content: '```\nfn main() {}\n```',
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
@@ -116,39 +133,41 @@ describe('setLanguage', () => {
 
     // Original unchanged
     expect(getLanguage(original)).toBe('plaintext');
+    expect(original.content).toBe('```\nfn main() {}\n```');
 
     // Updated has new language
     expect(getLanguage(updated)).toBe('rust');
+    expect(updated.content).toBe('```rust\nfn main() {}\n```');
     expect(updated.id).toBe(original.id);
-    expect(updated.content).toBe(original.content);
   });
 
   it('overwrites existing language', () => {
     const original: CodeBlockNode = {
       id: 'test-8',
       nodeType: 'code-block',
-      content: 'code',
+      content: '```javascript\ncode\n```',
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      properties: { language: 'javascript' }
+      properties: {}
     };
 
     const updated = setLanguage(original, 'typescript');
 
     expect(getLanguage(original)).toBe('javascript');
     expect(getLanguage(updated)).toBe('typescript');
+    expect(updated.content).toBe('```typescript\ncode\n```');
   });
 
   it('preserves other properties', () => {
     const original: CodeBlockNode = {
       id: 'test-9',
       nodeType: 'code-block',
-      content: 'code',
+      content: '```javascript\ncode\n```',
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      properties: { language: 'javascript', customProp: 'value' }
+      properties: { customProp: 'value' }
     };
 
     const updated = setLanguage(original, 'typescript');
@@ -223,11 +242,11 @@ describe('Integration', () => {
     const node: Node = {
       id: 'test-10',
       nodeType: 'code-block',
-      content: 'SELECT * FROM users;',
+      content: '```sql\nSELECT * FROM users;\n```',
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      properties: { language: 'sql' }
+      properties: {}
     };
 
     if (isCodeBlockNode(node)) {
@@ -248,10 +267,10 @@ describe('Integration', () => {
 
   it('handles various code block scenarios', () => {
     const scenarios = [
-      { language: 'rust', content: 'fn main() {}', expected: 'Rust' },
-      { language: 'python', content: 'print("hello")', expected: 'Python' },
-      { language: 'bash', content: '#!/bin/bash\necho "test"', expected: 'Bash' },
-      { language: 'json', content: '{"key": "value"}', expected: 'JSON' }
+      { language: 'rust', content: '```rust\nfn main() {}\n```', expected: 'Rust' },
+      { language: 'python', content: '```python\nprint("hello")\n```', expected: 'Python' },
+      { language: 'bash', content: '```bash\n#!/bin/bash\necho "test"\n```', expected: 'Bash' },
+      { language: 'json', content: '```json\n{"key": "value"}\n```', expected: 'JSON' }
     ];
 
     scenarios.forEach(({ language, content, expected }) => {
@@ -259,10 +278,10 @@ describe('Integration', () => {
         id: `test-${language}`,
         nodeType: 'code-block',
         content,
-          createdAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
         version: 1,
-        properties: { language }
+        properties: {}
       };
 
       expect(getLanguage(node)).toBe(language);

@@ -26,13 +26,10 @@ import type { Node } from './node';
  * CodeBlock node interface extending base Node
  *
  * Represents a code block with syntax highlighting support.
+ * Note: language is derived from content (code fence syntax), not stored in properties.
  */
 export interface CodeBlockNode extends Node {
   nodeType: 'code-block';
-  properties: {
-    language?: string;
-    [key: string]: unknown;
-  };
 }
 
 /**
@@ -56,6 +53,9 @@ export function isCodeBlockNode(node: Node): node is CodeBlockNode {
 /**
  * Get the programming language for syntax highlighting
  *
+ * Parses the language from the code fence syntax in content (e.g., ```typescript).
+ * The language is derived from content, not stored as a property.
+ *
  * @param node - Code block node
  * @returns Language identifier (defaults to "plaintext")
  *
@@ -66,11 +66,11 @@ export function isCodeBlockNode(node: Node): node is CodeBlockNode {
  * ```
  */
 export function getLanguage(node: CodeBlockNode): string {
-  if (typeof node.properties === 'object' && node.properties !== null) {
-    const language = node.properties.language;
-    if (typeof language === 'string' && language.length > 0) {
-      return language;
-    }
+  // Parse language from code fence syntax: ```language
+  // Supports c++, c#, objective-c, and other languages with special characters
+  const match = node.content.match(/^```([\w\-+#]+)?/);
+  if (match && match[1]) {
+    return match[1].toLowerCase();
   }
   return 'plaintext';
 }
@@ -78,26 +78,25 @@ export function getLanguage(node: CodeBlockNode): string {
 /**
  * Set the programming language for syntax highlighting (immutable)
  *
- * Returns a new node with the updated language property.
+ * Returns a new node with the updated language in the code fence syntax.
  * Original node is not modified.
  *
  * @param node - Code block node
  * @param language - Language identifier (e.g., "rust", "typescript", "python")
- * @returns New node with updated language
+ * @returns New node with updated language in content
  *
  * @example
  * ```typescript
  * const updated = setLanguage(codeBlockNode, 'typescript');
- * // original node unchanged, updated has new language
+ * // original node unchanged, updated has new language in code fence
  * ```
  */
 export function setLanguage(node: CodeBlockNode, language: string): CodeBlockNode {
+  // Update language in code fence syntax: ```language
+  const newContent = node.content.replace(/^```\w*/, '```' + language);
   return {
     ...node,
-    properties: {
-      ...node.properties,
-      language
-    }
+    content: newContent
   };
 }
 
