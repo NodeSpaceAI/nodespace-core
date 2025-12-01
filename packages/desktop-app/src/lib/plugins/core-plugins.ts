@@ -12,8 +12,9 @@
 
 import type { PluginDefinition, NodeReferenceComponent } from './types';
 import type { PatternTemplate } from '../patterns/types';
-import type { CoreTaskStatus } from '../types/task-node';
+import type { CoreTaskStatus, TaskNodeUpdate } from '../types/task-node';
 import { PatternRegistry } from '../patterns/registry';
+import { backendAdapter } from '../services/backend-adapter';
 import BaseNodeReference from '../components/base-node-reference.svelte';
 
 // Core plugins for built-in node types
@@ -178,6 +179,31 @@ export const taskNodePlugin: PluginDefinition = {
       default:
         return 'open';
     }
+  },
+
+  // Type-specific updater for spoke table fields (Issue #709)
+  // Routes to updateTaskNode() instead of generic updateNode()
+  updater: {
+    update: async (id: string, version: number, changes: Record<string, unknown>) => {
+      // Convert changes to TaskNodeUpdate format
+      // The caller provides type-safe changes, we map to the backend format
+      const update: TaskNodeUpdate = {};
+      if ('status' in changes && changes.status !== undefined) update.status = changes.status as TaskNodeUpdate['status'];
+      if ('priority' in changes) update.priority = changes.priority as TaskNodeUpdate['priority'];
+      if ('dueDate' in changes) update.dueDate = changes.dueDate as TaskNodeUpdate['dueDate'];
+      if ('assignee' in changes) update.assignee = changes.assignee as TaskNodeUpdate['assignee'];
+      if ('content' in changes && changes.content !== undefined) update.content = changes.content as string;
+
+      // Returns TaskNode which has hub fields but not properties (flat structure)
+      // Cast to Node for interface compatibility - sharedNodeStore will handle appropriately
+      const result = await backendAdapter.updateTaskNode(id, version, update);
+      return result as unknown as import('../types').Node;
+    }
+  },
+
+  // Type-specific schema form for spoke fields (Issue #709)
+  schemaForm: {
+    lazyLoad: () => import('../components/property-forms/task-schema-form.svelte')
   }
 };
 

@@ -37,14 +37,16 @@ export type TaskStatus = CoreTaskStatus | string;
 
 /**
  * Core task priority values (user-extensible)
- * Note: Rust backend uses integer priority (1-4), but string format is also supported
+ * Rust backend now uses string enum format (Issue #709)
  */
 export type CoreTaskPriority = 'low' | 'medium' | 'high';
 
 /**
- * Task priority - supports both integer (1-4) and string formats
+ * Task priority - string enum format
+ * Core values: 'low', 'medium', 'high'
+ * User-defined values allowed via schema extension
  */
-export type TaskPriority = CoreTaskPriority | string | number;
+export type TaskPriority = CoreTaskPriority | string;
 
 /**
  * TaskNode - Flat structure matching Rust backend serialization
@@ -59,7 +61,7 @@ export type TaskPriority = CoreTaskPriority | string | number;
  *   "createdAt": "2025-01-01T00:00:00Z",
  *   "modifiedAt": "2025-01-01T00:00:00Z",
  *   "status": "open",
- *   "priority": 2,
+ *   "priority": "medium",
  *   "dueDate": null,
  *   "assignee": null
  * }
@@ -93,6 +95,9 @@ export function isTaskNode(node: Node | TaskNode): node is TaskNode {
 
 /**
  * Get the task status
+ *
+ * TaskNode has flat structure with `status` at top level (from backend serialization).
+ * See TaskNode interface documentation for structure details.
  *
  * @param node - Task node
  * @returns Task status (defaults to "open")
@@ -188,6 +193,46 @@ export function setTaskAssignee(node: TaskNode, assignee: string | undefined): T
 }
 
 /**
+ * Partial update structure for task nodes
+ *
+ * Supports updating task-specific spoke fields (status, priority, dueDate, assignee)
+ * and hub fields (content). All fields are optional - only include fields to update.
+ *
+ * This interface matches the Rust `TaskNodeUpdate` struct for type-safe CRUD operations.
+ *
+ * @example
+ * ```typescript
+ * // Update only status
+ * const update: TaskNodeUpdate = { status: 'in_progress' };
+ *
+ * // Update status and clear due date
+ * const update: TaskNodeUpdate = {
+ *   status: 'done',
+ *   dueDate: null  // Explicitly clear the field
+ * };
+ *
+ * // Update content (hub field)
+ * const update: TaskNodeUpdate = { content: 'Updated task description' };
+ * ```
+ */
+export interface TaskNodeUpdate {
+  /** Update task status (spoke field) */
+  status?: TaskStatus;
+
+  /** Update task priority (spoke field) - null to clear */
+  priority?: TaskPriority | null;
+
+  /** Update due date (spoke field) - null to clear */
+  dueDate?: string | null;
+
+  /** Update assignee (spoke field) - null to clear */
+  assignee?: string | null;
+
+  /** Update content (hub field) */
+  content?: string;
+}
+
+/**
  * Helper namespace for task node operations
  */
 export const TaskNodeHelpers = {
@@ -262,17 +307,6 @@ export const TaskNodeHelpers = {
    * Get display-friendly priority name
    */
   getPriorityDisplayName(priority: TaskPriority): string {
-    // Handle numeric priorities
-    if (typeof priority === 'number') {
-      const numericLabels: Record<number, string> = {
-        1: 'Urgent',
-        2: 'High',
-        3: 'Medium',
-        4: 'Low'
-      };
-      return numericLabels[priority] || `Priority ${priority}`;
-    }
-
     const coreDisplayNames: Record<CoreTaskPriority, string> = {
       low: 'Low',
       medium: 'Medium',

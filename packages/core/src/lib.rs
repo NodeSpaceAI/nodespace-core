@@ -36,6 +36,6 @@ pub use db::{
 };
 pub use models::{
     FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter, SchemaNode,
-    TaskNode, TaskStatus, ValidationError,
+    TaskNode, TaskNodeUpdate, TaskStatus, ValidationError,
 };
 pub use services::{CreateNodeParams, NodeService, NodeServiceError};

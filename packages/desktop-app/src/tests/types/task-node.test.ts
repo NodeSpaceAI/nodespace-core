@@ -133,7 +133,7 @@ describe('getTaskPriority', () => {
     expect(getTaskPriority(node)).toBeUndefined();
   });
 
-  it('handles numeric priority', () => {
+  it('handles string priority', () => {
     const node: TaskNode = {
       id: 'test-8',
       nodeType: 'task',
@@ -142,10 +142,10 @@ describe('getTaskPriority', () => {
       modifiedAt: new Date().toISOString(),
       version: 1,
       status: 'open',
-      priority: 2
+      priority: 'medium'
     };
 
-    expect(getTaskPriority(node)).toBe(2);
+    expect(getTaskPriority(node)).toBe('medium');
   });
 });
 
@@ -419,7 +419,7 @@ describe('TaskNodeHelpers', () => {
 
     it('rejects non-core priorities', () => {
       expect(TaskNodeHelpers.isCorePriority('critical')).toBe(false);
-      expect(TaskNodeHelpers.isCorePriority(1)).toBe(false);
+      expect(TaskNodeHelpers.isCorePriority('urgent')).toBe(false);
     });
   });
 
@@ -446,15 +446,10 @@ describe('TaskNodeHelpers', () => {
       expect(TaskNodeHelpers.getPriorityDisplayName('high')).toBe('High');
     });
 
-    it('returns display names for numeric priorities', () => {
-      expect(TaskNodeHelpers.getPriorityDisplayName(1)).toBe('Urgent');
-      expect(TaskNodeHelpers.getPriorityDisplayName(2)).toBe('High');
-      expect(TaskNodeHelpers.getPriorityDisplayName(3)).toBe('Medium');
-      expect(TaskNodeHelpers.getPriorityDisplayName(4)).toBe('Low');
-    });
-
-    it('handles unknown numeric priority', () => {
-      expect(TaskNodeHelpers.getPriorityDisplayName(5)).toBe('Priority 5');
+    it('formats user-defined priorities', () => {
+      expect(TaskNodeHelpers.getPriorityDisplayName('critical')).toBe('Critical');
+      expect(TaskNodeHelpers.getPriorityDisplayName('urgent')).toBe('Urgent');
+      expect(TaskNodeHelpers.getPriorityDisplayName('very_high')).toBe('Very High');
     });
   });
 

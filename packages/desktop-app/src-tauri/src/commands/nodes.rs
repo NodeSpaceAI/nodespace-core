@@ -917,6 +917,59 @@ pub async fn get_mentioning_roots(
         .map_err(Into::into)
 }
 
+/// Update a task node with type-safe spoke field updates
+///
+/// Provides end-to-end type safety for task updates by routing through
+/// the type-specific update path that directly modifies the spoke table.
+///
+/// # Arguments
+/// * `service` - Node service instance from Tauri state
+/// * `id` - Unique identifier of the task node to update
+/// * `version` - Expected version for optimistic concurrency control
+/// * `update` - TaskNodeUpdate with fields to update (status, priority, dueDate, assignee, content)
+///
+/// # Returns
+/// * `Ok(TaskNode)` - Updated task node with new version
+/// * `Err(CommandError)` - Error with details if update fails
+///
+/// # Errors
+/// Returns error if:
+/// - Task node with given ID doesn't exist
+/// - Version conflict (concurrent modification)
+/// - Update payload is empty (no fields to update)
+/// - Database operation fails
+///
+/// # Example Frontend Usage
+/// ```typescript
+/// import type { TaskNodeUpdate, TaskStatus } from '$lib/types';
+///
+/// const update: TaskNodeUpdate = { status: 'in_progress' };
+/// const task = await invoke('update_task_node', {
+///   id: 'task-123',
+///   version: 5,
+///   update
+/// });
+/// console.log(`Updated task status: ${task.status}, new version: ${task.version}`);
+/// ```
+#[tauri::command]
+pub async fn update_task_node(
+    service: State<'_, NodeService>,
+    id: String,
+    version: i64,
+    update: models::TaskNodeUpdate,
+) -> Result<Value, CommandError> {
+    let task = service
+        .update_task_node(&id, version, update)
+        .await
+        .map_err(CommandError::from)?;
+
+    serde_json::to_value(task).map_err(|e| CommandError {
+        message: format!("Failed to serialize task node: {}", e),
+        code: "SERIALIZATION_ERROR".to_string(),
+        details: None,
+    })
+}
+
 /// Delete a mention relationship between two nodes
 ///
 /// Removes the record that one node mentions another.

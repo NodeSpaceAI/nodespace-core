@@ -224,6 +224,7 @@ pub fn run() {
             commands::nodes::get_incoming_mentions,
             commands::nodes::get_mentioning_roots,
             commands::nodes::delete_node_mention,
+            commands::nodes::update_task_node,
             // Schema read commands (Issue #690 - mutation commands removed, not used by UI)
             commands::schemas::get_all_schemas,
             commands::schemas::get_schema_definition,

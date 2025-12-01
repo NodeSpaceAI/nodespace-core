@@ -22,7 +22,7 @@
 
 /* global fetch, crypto */
 
-import type { Node, NodeWithChildren } from '$lib/types';
+import type { Node, NodeWithChildren, TaskNode, TaskNodeUpdate } from '$lib/types';
 import type { SchemaNode } from '$lib/types/schema-node';
 import { getClientId } from './client-id';
 
@@ -85,6 +85,7 @@ export interface BackendAdapter {
   createNode(input: CreateNodeInput | Node): Promise<string>;
   getNode(id: string): Promise<Node | null>;
   updateNode(id: string, version: number, update: UpdateNodeInput): Promise<Node>;
+  updateTaskNode(id: string, version: number, update: TaskNodeUpdate): Promise<TaskNode>;
   deleteNode(id: string, version: number): Promise<DeleteResult>;
 
   // Hierarchy
@@ -151,6 +152,11 @@ class TauriAdapter implements BackendAdapter {
   async updateNode(id: string, version: number, update: UpdateNodeInput): Promise<Node> {
     const invoke = await this.getInvoke();
     return invoke<Node>('update_node', { id, version, update });
+  }
+
+  async updateTaskNode(id: string, version: number, update: TaskNodeUpdate): Promise<TaskNode> {
+    const invoke = await this.getInvoke();
+    return invoke<TaskNode>('update_task_node', { id, version, update });
   }
 
   async deleteNode(id: string, version: number): Promise<DeleteResult> {
@@ -352,6 +358,15 @@ class HttpAdapter implements BackendAdapter {
     return await this.handleResponse<Node>(response);
   }
 
+  async updateTaskNode(id: string, version: number, update: TaskNodeUpdate): Promise<TaskNode> {
+    const response = await fetch(`${this.baseUrl}/api/tasks/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ ...update, version })
+    });
+    return await this.handleResponse<TaskNode>(response);
+  }
+
   async deleteNode(id: string, version: number): Promise<DeleteResult> {
     const response = await fetch(`${this.baseUrl}/api/nodes/${encodeURIComponent(id)}`, {
       method: 'DELETE',
@@ -488,6 +503,9 @@ class MockAdapter implements BackendAdapter {
   }
   async updateNode(_id: string, _version: number, _update: UpdateNodeInput): Promise<Node> {
     return {} as Node;
+  }
+  async updateTaskNode(_id: string, _version: number, _update: TaskNodeUpdate): Promise<TaskNode> {
+    return {} as TaskNode;
   }
   async deleteNode(id: string, _version: number): Promise<DeleteResult> {
     return { deletedId: id, deletedChildCount: 0 };

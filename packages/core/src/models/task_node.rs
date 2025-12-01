@@ -31,7 +31,7 @@
 //!   "nodeType": "task",
 //!   "content": "Implement feature",
 //!   "status": "open",
-//!   "priority": 2,
+//!   "priority": "medium",
 //!   "dueDate": null,
 //!   "assigneeId": null
 //! }
@@ -40,17 +40,17 @@
 //! # Examples
 //!
 //! ```rust
-//! use nodespace_core::models::{TaskNode, TaskStatus};
+//! use nodespace_core::models::{TaskNode, TaskStatus, TaskPriority};
 //!
 //! // Create with builder (for new tasks)
 //! let task = TaskNode::builder("Write tests".to_string())
 //!     .with_status(TaskStatus::InProgress)
-//!     .with_priority(3)
+//!     .with_priority(TaskPriority::High)
 //!     .build();
 //!
 //! // Direct field access (no JSON parsing)
 //! assert_eq!(task.status, TaskStatus::InProgress);
-//! assert_eq!(task.priority, Some(3));
+//! assert_eq!(task.priority, Some(TaskPriority::High));
 //! ```
 
 use crate::models::{Node, ValidationError};
@@ -143,6 +143,85 @@ impl<'de> Deserialize<'de> for TaskStatus {
     }
 }
 
+/// Task priority enumeration
+///
+/// Represents the priority levels of a task node.
+/// Values use lowercase format for consistency across all layers:
+/// - "low" - Low priority
+/// - "medium" - Medium priority (default)
+/// - "high" - High priority
+/// - User-defined priorities via schema extension (e.g., "critical", "urgent")
+///
+/// Core priorities are strongly typed; user-defined priorities use `User(String)`.
+/// This aligns with the schema system's `core_values` / `user_values` model.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum TaskPriority {
+    /// Low priority
+    Low,
+    /// Medium priority (default)
+    #[default]
+    Medium,
+    /// High priority
+    High,
+    /// User-defined priority (extended via schema)
+    User(String),
+}
+
+impl FromStr for TaskPriority {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            // Any other value is treated as user-defined
+            other => Ok(Self::User(other.to_string())),
+        }
+    }
+}
+
+impl TaskPriority {
+    /// Convert priority to string representation
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::User(s) => s.as_str(),
+        }
+    }
+
+    /// Check if this is a core (built-in) priority
+    pub fn is_core(&self) -> bool {
+        !matches!(self, Self::User(_))
+    }
+
+    /// Check if this is a user-defined priority
+    pub fn is_user_defined(&self) -> bool {
+        matches!(self, Self::User(_))
+    }
+}
+
+impl Serialize for TaskPriority {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for TaskPriority {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self::from_str(&s).unwrap()) // from_str never fails now
+    }
+}
+
 /// Strongly-typed task node with direct field access
 ///
 /// Deserializes directly from spoke table with hub data via record link.
@@ -172,7 +251,7 @@ impl<'de> Deserialize<'de> for TaskStatus {
 ///   "nodeType": "task",
 ///   "content": "Fix bug",
 ///   "status": "done",
-///   "priority": 2
+///   "priority": "medium"
 /// }
 /// ```
 ///
@@ -218,9 +297,9 @@ pub struct TaskNode {
     #[serde(default)]
     pub status: TaskStatus,
 
-    /// Task priority (1 = highest, 4 = lowest)
+    /// Task priority (strongly typed enum: low, medium, high)
     #[serde(default)]
-    pub priority: Option<i32>,
+    pub priority: Option<TaskPriority>,
 
     /// Due date for the task
     #[serde(default)]
@@ -236,8 +315,8 @@ fn default_version() -> i64 {
 }
 
 impl TaskNode {
-    /// Default priority value (medium priority)
-    pub const DEFAULT_PRIORITY: i32 = 2;
+    /// Default priority value
+    pub const DEFAULT_PRIORITY: TaskPriority = TaskPriority::Medium;
 
     /// Create a TaskNode from an existing Node (for backward compatibility)
     ///
@@ -276,23 +355,11 @@ impl TaskNode {
             .and_then(|s| s.parse().ok())
             .unwrap_or_default();
 
-        // Extract priority from properties (supports both integer and string "high"/"medium"/"low")
-        let priority = props.get("priority").and_then(|v| {
-            if let Some(n) = v.as_i64() {
-                Some(n as i32)
-            } else if let Some(s) = v.as_str() {
-                // Convert string priority to integer (for backward compat with schema format)
-                match s {
-                    "urgent" | "highest" => Some(1),
-                    "high" => Some(2),
-                    "medium" | "normal" => Some(3),
-                    "low" | "lowest" => Some(4),
-                    _ => None,
-                }
-            } else {
-                None
-            }
-        });
+        // Extract priority from properties (string enum format)
+        let priority = props
+            .get("priority")
+            .and_then(|v| v.as_str())
+            .map(|s| TaskPriority::from_str(s).unwrap_or_default());
 
         // Extract due_date from properties (try parsing as DateTime)
         let due_date = props
@@ -391,13 +458,13 @@ impl TaskNode {
         self.modified_at = Utc::now();
     }
 
-    /// Get the task's priority
-    pub fn priority(&self) -> i32 {
-        self.priority.unwrap_or(Self::DEFAULT_PRIORITY)
+    /// Get the task's priority as TaskPriority enum
+    pub fn get_priority(&self) -> TaskPriority {
+        self.priority.clone().unwrap_or(Self::DEFAULT_PRIORITY)
     }
 
     /// Set the task's priority
-    pub fn set_priority(&mut self, priority: i32) {
+    pub fn set_priority(&mut self, priority: TaskPriority) {
         self.priority = Some(priority);
         self.modified_at = Utc::now();
     }
@@ -429,7 +496,7 @@ impl TaskNode {
 pub struct TaskNodeBuilder {
     content: String,
     status: Option<TaskStatus>,
-    priority: Option<i32>,
+    priority: Option<TaskPriority>,
     due_date: Option<DateTime<Utc>>,
     assignee: Option<String>,
 }
@@ -442,7 +509,7 @@ impl TaskNodeBuilder {
     }
 
     /// Set the task priority
-    pub fn with_priority(mut self, priority: i32) -> Self {
+    pub fn with_priority(mut self, priority: TaskPriority) -> Self {
         self.priority = Some(priority);
         self
     }
@@ -483,5 +550,122 @@ impl TaskNodeBuilder {
             due_date: self.due_date,
             assignee: self.assignee,
         }
+    }
+}
+
+/// Partial update structure for task nodes
+///
+/// Supports updating task-specific spoke fields (status, priority, due_date, assignee)
+/// as well as hub fields (content). Uses Option for each field to enable partial updates.
+///
+/// # Double-Option Pattern
+///
+/// Some fields use double-Option to distinguish between:
+/// - `None` - Don't change this field
+/// - `Some(None)` - Set the field to NULL
+/// - `Some(Some(value))` - Set to specific value
+///
+/// # Examples
+///
+/// ```rust
+/// use nodespace_core::models::{TaskNodeUpdate, TaskStatus};
+///
+/// // Update only status
+/// let update = TaskNodeUpdate::new().with_status(TaskStatus::InProgress);
+///
+/// // Update status and clear due date
+/// let update = TaskNodeUpdate::new()
+///     .with_status(TaskStatus::Done)
+///     .with_due_date(None);  // Clears the due date
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskNodeUpdate {
+    /// Update task status (spoke field)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<TaskStatus>,
+
+    /// Update task priority (spoke field)
+    /// - `None` - Don't change
+    /// - `Some(None)` - Clear priority
+    /// - `Some(Some(p))` - Set to priority p (low, medium, high, or user-defined)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Option<TaskPriority>>,
+
+    /// Update due date (spoke field)
+    /// - `None` - Don't change
+    /// - `Some(None)` - Clear due date
+    /// - `Some(Some(dt))` - Set to specific date
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub due_date: Option<Option<DateTime<Utc>>>,
+
+    /// Update assignee (spoke field)
+    /// - `None` - Don't change
+    /// - `Some(None)` - Clear assignee
+    /// - `Some(Some(id))` - Set to specific assignee
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<Option<String>>,
+
+    /// Update content (hub field)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+impl TaskNodeUpdate {
+    /// Create a new empty update
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set status update
+    pub fn with_status(mut self, status: TaskStatus) -> Self {
+        self.status = Some(status);
+        self
+    }
+
+    /// Set priority update (Some(value) to set, None to clear)
+    pub fn with_priority(mut self, priority: Option<TaskPriority>) -> Self {
+        self.priority = Some(priority);
+        self
+    }
+
+    /// Set due date update (Some(value) to set, None to clear)
+    pub fn with_due_date(mut self, due_date: Option<DateTime<Utc>>) -> Self {
+        self.due_date = Some(due_date);
+        self
+    }
+
+    /// Set assignee update (Some(value) to set, None to clear)
+    pub fn with_assignee(mut self, assignee: Option<String>) -> Self {
+        self.assignee = Some(assignee);
+        self
+    }
+
+    /// Set content update
+    pub fn with_content(mut self, content: String) -> Self {
+        self.content = Some(content);
+        self
+    }
+
+    /// Check if the update contains any changes
+    pub fn is_empty(&self) -> bool {
+        self.status.is_none()
+            && self.priority.is_none()
+            && self.due_date.is_none()
+            && self.assignee.is_none()
+            && self.content.is_none()
+    }
+
+    /// Check if this update contains spoke fields (requires spoke table update)
+    pub fn has_spoke_fields(&self) -> bool {
+        self.status.is_some()
+            || self.priority.is_some()
+            || self.due_date.is_some()
+            || self.assignee.is_some()
+    }
+
+    /// Check if this update contains hub fields (requires hub table update)
+    pub fn has_hub_fields(&self) -> bool {
+        self.content.is_some()
     }
 }

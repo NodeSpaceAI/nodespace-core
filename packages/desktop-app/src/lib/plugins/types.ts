@@ -8,6 +8,7 @@
 import type { SvelteComponent, Component } from 'svelte';
 import type { NodeViewerProps, NodeComponentProps } from '../types/node-viewers';
 import type { PatternTemplate } from '../patterns/types';
+import type { Node } from '../types';
 
 // Base component types - match existing nodeViewers.ts definitions
 export type NodeViewerComponent = Component<NodeViewerProps>; // Page-level viewers (DateNodeViewer, BaseNodeViewer)
@@ -30,6 +31,42 @@ export interface ViewerRegistration {
 export interface ReferenceRegistration {
   component: NodeReferenceComponent;
   priority?: number;
+}
+
+/**
+ * Schema form component type
+ * Used for type-specific property editing forms (TaskSchemaForm, DateSchemaForm, etc.)
+ */
+export type SchemaFormComponent = Component<{ nodeId: string }>;
+
+/**
+ * Schema form registration for type-specific property forms
+ * Allows lazy loading of schema form components
+ */
+export interface SchemaFormRegistration {
+  component?: SchemaFormComponent;
+  lazyLoad?: () => Promise<{ default: SchemaFormComponent }>;
+  priority?: number;
+}
+
+/**
+ * Type-specific node updater interface
+ * Provides type-safe update operations for nodes with spoke tables
+ *
+ * The changes parameter accepts Record<string, unknown> at the interface level,
+ * but implementations can use more specific types internally.
+ * Type safety is enforced at the call site (e.g., TaskSchemaForm uses TaskNodeUpdate).
+ */
+export interface NodeUpdater {
+  /**
+   * Update a node with type-specific changes
+   *
+   * @param id - Node ID
+   * @param version - Expected version for OCC
+   * @param changes - Changes to apply (type-specific fields like status, priority, etc.)
+   * @returns Updated node
+   */
+  update: (id: string, version: number, changes: Record<string, unknown>) => Promise<Node>;
 }
 
 /**
@@ -168,6 +205,37 @@ export interface PluginDefinition {
   node?: NodeRegistration; // Individual node component (TaskNode, TextNode, etc.)
   viewer?: ViewerRegistration; // Rich viewer component (TaskNodeViewer, DateNodeViewer, etc.)
   reference?: ReferenceRegistration;
+
+  /**
+   * Type-specific schema form for editing spoke table fields (Issue #709)
+   *
+   * Core node types with spoke tables (task, date, entity) should provide
+   * hardcoded schema forms for full TypeScript type safety.
+   *
+   * User-defined types fall back to the generic SchemaPropertyForm.
+   *
+   * @example
+   * schemaForm: {
+   *   lazyLoad: () => import('../components/property-forms/task-schema-form.svelte')
+   * }
+   */
+  schemaForm?: SchemaFormRegistration;
+
+  /**
+   * Type-specific updater for spoke table fields (Issue #709)
+   *
+   * Provides type-safe update operations that route to the correct
+   * backend method (e.g., updateTaskNode instead of generic updateNode).
+   *
+   * When defined, sharedNodeStore.updateNode() will use this updater
+   * instead of the generic properties-based update.
+   *
+   * @example
+   * updater: {
+   *   update: async (id, version, changes) => backendAdapter.updateTaskNode(id, version, changes)
+   * }
+   */
+  updater?: NodeUpdater;
 
   /**
    * Extract and transform node properties into component-compatible metadata

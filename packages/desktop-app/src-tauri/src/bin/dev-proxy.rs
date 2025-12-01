@@ -28,7 +28,7 @@ use futures::stream::Stream;
 use nodespace_core::{
     db::HttpStore,
     models,
-    models::{Node, NodeFilter, NodeUpdate, SchemaNode},
+    models::{Node, NodeFilter, NodeUpdate, SchemaNode, TaskNode, TaskNodeUpdate},
     services::{CreateNodeParams, NodeService, NodeServiceError},
 };
 use serde::{Deserialize, Serialize};
@@ -183,6 +183,19 @@ struct UpdateNodeRequest {
     /// Fields to update
     #[serde(flatten)]
     pub update: NodeUpdate,
+}
+
+/// Update task node request with OCC version (Issue #709)
+///
+/// Type-safe update for task nodes with spoke-level field validation.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateTaskNodeRequest {
+    /// Expected version for optimistic concurrency control
+    pub version: i64,
+    /// Fields to update (status, priority, content, etc.)
+    #[serde(flatten)]
+    pub update: TaskNodeUpdate,
 }
 
 /// Delete node request with OCC version
@@ -378,6 +391,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/nodes/:id", get(get_node))
         .route("/api/nodes/:id", patch(update_node))
         .route("/api/nodes/:id", delete(delete_node))
+        // Type-safe CRUD endpoints (Issue #709)
+        .route("/api/tasks/:id", patch(update_task_node))
         // Hierarchy endpoints
         .route("/api/nodes/:id/parent", post(set_parent))
         // Query endpoints
@@ -680,6 +695,72 @@ async fn update_node(
     let typed = node_to_typed_value(updated_node)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(e)))?;
     Ok(Json(typed))
+}
+
+/// Update a task node with type-safe spoke fields (Issue #709)
+///
+/// This endpoint provides type-safe updates for task nodes, with proper
+/// validation of spoke-level fields (status, priority) and OCC version checking.
+///
+/// # HTTP Endpoint
+/// ```text
+/// PATCH /api/tasks/:id
+/// ```
+///
+/// # Request Body
+/// ```json
+/// {
+///   "version": 1,
+///   "status": "done",
+///   "priority": "high",
+///   "content": "Updated task content"
+/// }
+/// ```
+///
+/// # Response (200 OK)
+/// Returns the updated TaskNode with typed fields.
+///
+/// # Errors
+/// - `404 NOT FOUND`: Task doesn't exist or isn't a task type
+/// - `409 CONFLICT`: Version mismatch (OCC failure)
+/// - `500 INTERNAL SERVER ERROR`: Database error
+async fn update_task_node(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<UpdateTaskNodeRequest>,
+) -> ApiResult<TaskNode> {
+    // Extract client ID for SSE filtering
+    let client_id = headers
+        .get("x-client-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    tracing::debug!(
+        "update_task_node: id={}, version={}, update={:?}",
+        id,
+        request.version,
+        request.update
+    );
+
+    // Use type-safe task node update
+    let updated_task = state
+        .node_service
+        .update_task_node(&id, request.version, request.update)
+        .await
+        .map_err(map_node_service_error)?;
+
+    // Broadcast SSE event for the updated node
+    // Convert TaskNode to Node for the SSE event
+    let node_for_event = updated_task.clone().into_node();
+    let _ = state.event_tx.send(SseEvent::NodeUpdated {
+        node_id: id.clone(),
+        node_data: node_for_event,
+        client_id,
+    });
+    tracing::debug!("SSE: NodeUpdated event sent for task node {}", id);
+
+    Ok(Json(updated_task))
 }
 
 async fn delete_node(

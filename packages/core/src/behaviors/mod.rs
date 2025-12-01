@@ -486,36 +486,30 @@ impl TaskNodeBehavior {
     ///
     /// Returns `ValidationError` if validation fails. Currently validates:
     /// - Status is a valid enum value (enforced by TaskStatus type)
-    /// - Priority is in valid range if present (1-4)
+    /// - Priority is a valid enum value (enforced by TaskPriority type)
     ///
     /// # Examples
     ///
     /// ```rust
     /// use nodespace_core::behaviors::TaskNodeBehavior;
-    /// use nodespace_core::models::{TaskNode, TaskStatus};
+    /// use nodespace_core::models::{TaskNode, TaskStatus, TaskPriority};
     ///
     /// let behavior = TaskNodeBehavior;
     /// let task = TaskNode::builder("Fix bug".to_string())
     ///     .with_status(TaskStatus::InProgress)
-    ///     .with_priority(2)
+    ///     .with_priority(TaskPriority::Medium)
     ///     .build();
     ///
     /// assert!(behavior.validate_task_node(&task).is_ok());
     /// ```
-    pub fn validate_task_node(&self, task: &TaskNode) -> Result<(), NodeValidationError> {
+    pub fn validate_task_node(&self, _task: &TaskNode) -> Result<(), NodeValidationError> {
         // Status is already type-safe via TaskStatus enum - no validation needed
         // The Rust type system guarantees it's a valid status value
-
-        // Validate priority range if present (1 = highest, 4 = lowest)
-        if let Some(priority) = task.priority {
-            if !(1..=4).contains(&priority) {
-                return Err(NodeValidationError::InvalidProperties(format!(
-                    "Priority must be between 1 and 4, got {}",
-                    priority
-                )));
-            }
-        }
-
+        //
+        // Priority is already type-safe via TaskPriority enum - no validation needed
+        // Core values (low, medium, high) are enforced by the enum
+        // User-defined values (TaskPriority::User) are allowed by schema extension
+        //
         // Note: Empty content is allowed for tasks - users can add description later
         // Note: Due date validation (if present, must be valid DateTime) is enforced by type
 
@@ -1515,10 +1509,11 @@ mod tests {
         );
         assert!(behavior.validate(&complete_node).is_ok());
 
-        // Valid task with integer priority (1-4 range)
+        // Valid task with legacy integer priority (converted to string enum)
+        // Legacy integer format: 1 = high, 2 = medium, 3-4 = low
         let integer_priority_node = Node::new(
             "task".to_string(),
-            "Task with integer priority".to_string(),
+            "Task with legacy integer priority".to_string(),
             json!({"task": {"status": "open", "priority": 2}}),
         );
         assert!(behavior.validate(&integer_priority_node).is_ok());
@@ -1528,69 +1523,52 @@ mod tests {
         empty_content_node.content = String::new();
         assert!(behavior.validate(&empty_content_node).is_ok());
 
-        // NOTE: Status value validation (e.g., "OPEN" vs "INVALID_STATUS") will be handled
-        // by the schema system in the future. Currently we only validate type correctness
-        // (string vs number, etc.)
+        // NOTE: Status value validation (e.g., "open" vs custom) is handled by TaskStatus enum.
+        // Unknown status values become TaskStatus::User(value) for schema extensibility.
 
-        // Invalid: status not a string (new format) - falls back to fallback validation
-        // which checks that status is a string
+        // Invalid status type (number instead of string) falls back gracefully
         let bad_status_type = Node::new(
             "task".to_string(),
             "Task".to_string(),
             json!({"task": {"status": 123}}), // number instead of string
         );
-        // Note: TaskNode::from_node() ignores invalid status and uses default
-        // So this won't fail strongly-typed validation - it will just use Open status
-        // But we want consistent behavior, so it passes validation
+        // Note: TaskNode::from_node() ignores invalid status and uses default (Open)
+        // This is graceful degradation - it passes validation
         assert!(behavior.validate(&bad_status_type).is_ok());
 
-        // Invalid: priority out of range (Issue #673 strongly-typed validation)
-        let bad_priority_range = Node::new(
+        // Priority is now a string enum (low, medium, high) with user-extensibility
+        // Legacy integers are converted: 1=high, 2=medium, 3+=low
+        // All values pass validation - unknown values become TaskPriority::User(value)
+        let priority_low = Node::new(
             "task".to_string(),
             "Task".to_string(),
-            json!({"task": {"priority": 123}}), // out of 1-4 range
+            json!({"task": {"priority": "low"}}),
+        );
+        assert!(behavior.validate(&priority_low).is_ok());
+
+        let priority_medium = Node::new(
+            "task".to_string(),
+            "Task".to_string(),
+            json!({"task": {"priority": "medium"}}),
+        );
+        assert!(behavior.validate(&priority_medium).is_ok());
+
+        let priority_high = Node::new(
+            "task".to_string(),
+            "Task".to_string(),
+            json!({"task": {"priority": "high"}}),
+        );
+        assert!(behavior.validate(&priority_high).is_ok());
+
+        // User-defined priority values are allowed (schema extensibility)
+        let priority_custom = Node::new(
+            "task".to_string(),
+            "Task".to_string(),
+            json!({"task": {"priority": "critical"}}),
         );
         assert!(
-            behavior.validate(&bad_priority_range).is_err(),
-            "Priority 123 should be rejected (out of 1-4 range)"
-        );
-
-        // Valid: priority at boundary (1 = highest)
-        let boundary_priority_1 = Node::new(
-            "task".to_string(),
-            "Task".to_string(),
-            json!({"task": {"priority": 1}}),
-        );
-        assert!(behavior.validate(&boundary_priority_1).is_ok());
-
-        // Valid: priority at boundary (4 = lowest)
-        let boundary_priority_4 = Node::new(
-            "task".to_string(),
-            "Task".to_string(),
-            json!({"task": {"priority": 4}}),
-        );
-        assert!(behavior.validate(&boundary_priority_4).is_ok());
-
-        // Invalid: priority = 0 (below range)
-        let priority_zero = Node::new(
-            "task".to_string(),
-            "Task".to_string(),
-            json!({"task": {"priority": 0}}),
-        );
-        assert!(
-            behavior.validate(&priority_zero).is_err(),
-            "Priority 0 should be rejected (below 1-4 range)"
-        );
-
-        // Invalid: priority = 5 (above range)
-        let priority_five = Node::new(
-            "task".to_string(),
-            "Task".to_string(),
-            json!({"task": {"priority": 5}}),
-        );
-        assert!(
-            behavior.validate(&priority_five).is_err(),
-            "Priority 5 should be rejected (above 1-4 range)"
+            behavior.validate(&priority_custom).is_ok(),
+            "User-defined priority values should be allowed for schema extensibility"
         );
     }
 
@@ -2043,7 +2021,7 @@ mod tests {
 
     #[test]
     fn test_task_node_behavior_validate_task_node() {
-        use crate::models::{TaskNode, TaskStatus};
+        use crate::models::{TaskNode, TaskPriority, TaskStatus};
 
         let behavior = TaskNodeBehavior;
 
@@ -2057,38 +2035,25 @@ mod tests {
             .build();
         assert!(behavior.validate_task_node(&task_in_progress).is_ok());
 
-        // Valid task with priority in range (1-4)
+        // Valid task with priority (now a string enum)
         let task_with_priority = TaskNode::builder("High priority task".to_string())
-            .with_priority(1)
+            .with_priority(TaskPriority::High)
             .build();
         assert!(behavior.validate_task_node(&task_with_priority).is_ok());
 
-        // Valid task at priority boundary (4)
+        // Valid task with low priority
         let task_low_priority = TaskNode::builder("Low priority".to_string())
-            .with_priority(4)
+            .with_priority(TaskPriority::Low)
             .build();
         assert!(behavior.validate_task_node(&task_low_priority).is_ok());
 
-        // Invalid: priority out of range (too high)
-        let mut bad_priority = TaskNode::builder("Bad priority".to_string()).build();
-        bad_priority.priority = Some(5);
+        // User-defined priority values are allowed (schema extensibility)
+        let task_custom_priority = TaskNode::builder("Custom priority".to_string())
+            .with_priority(TaskPriority::User("critical".to_string()))
+            .build();
         assert!(
-            behavior.validate_task_node(&bad_priority).is_err(),
-            "Priority 5 should be rejected"
-        );
-
-        // Invalid: priority out of range (too low)
-        bad_priority.priority = Some(0);
-        assert!(
-            behavior.validate_task_node(&bad_priority).is_err(),
-            "Priority 0 should be rejected"
-        );
-
-        // Invalid: priority negative
-        bad_priority.priority = Some(-1);
-        assert!(
-            behavior.validate_task_node(&bad_priority).is_err(),
-            "Negative priority should be rejected"
+            behavior.validate_task_node(&task_custom_priority).is_ok(),
+            "User-defined priority values should be allowed"
         );
 
         // Valid: empty content (allowed for tasks)
@@ -2468,16 +2433,17 @@ mod tests {
 
     #[test]
     fn test_task_node_from_node_nested_format() {
-        use crate::models::TaskNode;
+        use crate::models::{TaskNode, TaskPriority};
 
         // Test that TaskNode::from_node handles nested format (Issue #397)
+        // Priority now uses string enum format
         let nested_node = Node::new(
             "task".to_string(),
             "Nested format task".to_string(),
             json!({
                 "task": {
                     "status": "in_progress",
-                    "priority": 2
+                    "priority": "medium"
                 }
             }),
         );
@@ -2485,34 +2451,34 @@ mod tests {
         let task = TaskNode::from_node(nested_node).unwrap();
         assert_eq!(task.content, "Nested format task");
         assert_eq!(task.status.as_str(), "in_progress");
-        assert_eq!(task.priority, Some(2));
+        assert_eq!(task.priority, Some(TaskPriority::Medium));
     }
 
     #[test]
     fn test_task_node_from_node_flat_format() {
-        use crate::models::TaskNode;
+        use crate::models::{TaskNode, TaskPriority};
 
-        // Test backward compat with old flat format
+        // Test flat format (old property structure, but string priority)
         let flat_node = Node::new(
             "task".to_string(),
             "Flat format task".to_string(),
             json!({
                 "status": "done",
-                "priority": 3
+                "priority": "low"
             }),
         );
 
         let task = TaskNode::from_node(flat_node).unwrap();
         assert_eq!(task.content, "Flat format task");
         assert_eq!(task.status.as_str(), "done");
-        assert_eq!(task.priority, Some(3));
+        assert_eq!(task.priority, Some(TaskPriority::Low));
     }
 
     #[test]
     fn test_task_node_from_node_string_priority() {
-        use crate::models::TaskNode;
+        use crate::models::{TaskNode, TaskPriority};
 
-        // Test string priority conversion
+        // Test string priority - now the canonical format
         let string_priority_node = Node::new(
             "task".to_string(),
             "High priority task".to_string(),
@@ -2525,23 +2491,28 @@ mod tests {
         );
 
         let task = TaskNode::from_node(string_priority_node).unwrap();
-        assert_eq!(task.priority, Some(2), "high should convert to 2");
+        assert_eq!(task.priority, Some(TaskPriority::High));
 
-        // Test other string priorities
-        let urgent_node = Node::new(
-            "task".to_string(),
-            "Urgent".to_string(),
-            json!({"priority": "urgent"}),
-        );
-        let urgent_task = TaskNode::from_node(urgent_node).unwrap();
-        assert_eq!(urgent_task.priority, Some(1), "urgent should convert to 1");
-
+        // Test core string priorities
         let low_node = Node::new(
             "task".to_string(),
             "Low".to_string(),
             json!({"priority": "low"}),
         );
         let low_task = TaskNode::from_node(low_node).unwrap();
-        assert_eq!(low_task.priority, Some(4), "low should convert to 4");
+        assert_eq!(low_task.priority, Some(TaskPriority::Low));
+
+        // Test user-defined priority (schema extensibility)
+        let urgent_node = Node::new(
+            "task".to_string(),
+            "Urgent".to_string(),
+            json!({"priority": "urgent"}),
+        );
+        let urgent_task = TaskNode::from_node(urgent_node).unwrap();
+        assert_eq!(
+            urgent_task.priority,
+            Some(TaskPriority::User("urgent".to_string())),
+            "Unknown priorities become User-defined"
+        );
     }
 }

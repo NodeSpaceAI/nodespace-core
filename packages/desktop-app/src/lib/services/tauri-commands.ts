@@ -66,6 +66,25 @@ export async function updateNode(
 }
 
 /**
+ * Update a task node with type-safe spoke field updates
+ *
+ * Use this for task-specific updates (status, priority, dueDate, assignee).
+ * Routes through the type-specific update path that directly modifies the spoke table.
+ *
+ * @param id - Task node ID
+ * @param version - Expected version for OCC
+ * @param update - TaskNodeUpdate with fields to update
+ * @returns Updated TaskNode with new version
+ */
+export async function updateTaskNode(
+  id: string,
+  version: number,
+  update: import('$lib/types').TaskNodeUpdate
+): Promise<import('$lib/types').TaskNode> {
+  return backendAdapter.updateTaskNode(id, version, update);
+}
+
+/**
  * Delete a node by ID
  */
 export async function deleteNode(id: string, version: number): Promise<DeleteResult> {

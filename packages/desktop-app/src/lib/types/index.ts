@@ -35,7 +35,14 @@ export type { OrderedListNode } from './ordered-list-node';
 export { isOrderedListNode, OrderedListNodeHelpers } from './ordered-list-node';
 
 // Type-safe node wrappers - Spoke table types (flat structure matching Rust serialization)
-export type { TaskNode, TaskStatus, TaskPriority, CoreTaskStatus, CoreTaskPriority } from './task-node';
+export type {
+  TaskNode,
+  TaskNodeUpdate,
+  TaskStatus,
+  TaskPriority,
+  CoreTaskStatus,
+  CoreTaskPriority
+} from './task-node';
 export {
   isTaskNode,
   getTaskStatus,

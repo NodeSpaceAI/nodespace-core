@@ -15,6 +15,7 @@
   import SchemaPropertyForm from '$lib/components/property-forms/schema-property-form.svelte';
   // Plugin registry provides all node components dynamically
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
+  import type { SchemaFormComponent } from '$lib/plugins/types';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { focusManager } from '$lib/services/focus-manager.svelte';
@@ -289,6 +290,12 @@
         // Issue #679: No longer need viewedNodeCache workaround
         // sharedNodeStore.nodes is now $state, so currentViewedNode $derived updates automatically
 
+        // Issue #709: Preload type-specific schema form for viewed node if available
+        // This triggers lazy loading of TaskSchemaForm, DateSchemaForm, etc.
+        if (node?.nodeType) {
+          loadSchemaFormComponent(node.nodeType);
+        }
+
         // Update tab title after node is loaded
         if (!shouldDisableTitleUpdates) {
           updateTabTitle(headerContent);
@@ -357,10 +364,10 @@
   /**
    * Update a schema field value for a node (schema-aware property update)
    *
-   * Follows the same nested format pattern as schema-property-form.svelte:
-   * - Builds nested structure: properties[nodeType][fieldName] = value
-   * - Handles auto-migration from flat to nested format
-   * - Calls sharedNodeStore.updateNode() to persist
+   * For task nodes (Issue #709): Routes through type-safe update path that
+   * directly modifies spoke table fields (status, priority, dueDate, assignee).
+   *
+   * For other nodes: Uses generic update path via properties JSON.
    *
    * @param targetNodeId - Node ID to update
    * @param fieldName - Schema field name (e.g., 'status', 'due_date')
@@ -370,6 +377,24 @@
     const targetNode = sharedNodeStore.getNode(targetNodeId);
     if (!targetNode) return;
 
+    // Issue #709: Route task node spoke field updates through type-safe path
+    if (targetNode.nodeType === 'task') {
+      // Map field names to TaskNodeUpdate structure
+      // The spoke fields are: status, priority, dueDate, assignee
+      const taskSpokeFields = ['status', 'priority', 'due_date', 'dueDate', 'assignee'];
+
+      if (taskSpokeFields.includes(fieldName)) {
+        // Use type-safe task node update
+        sharedNodeStore.updateTaskNode(
+          targetNodeId,
+          { [fieldName === 'due_date' ? 'dueDate' : fieldName]: value },
+          { type: 'viewer', viewerId: viewerId }
+        );
+        return;
+      }
+    }
+
+    // Fallback: Generic update path via properties JSON
     // Build nested namespace (properties[nodeType][fieldName])
     const typeNamespace = targetNode.properties?.[targetNode.nodeType];
     const isOldFormat = !typeNamespace || typeof typeNamespace !== 'object';
@@ -1080,6 +1105,45 @@
     }
   }
 
+  // Issue #709: Type-specific schema forms loaded via plugin registry
+  // Core types (task, date, entity) use hardcoded forms for compile-time type safety
+  // User-defined types fall back to generic SchemaPropertyForm
+  let loadedSchemaForms = $state<Record<string, unknown>>({});
+
+  /**
+   * Load a schema form component from the plugin registry if not already loaded
+   * Returns true if type-specific form exists, false if should use generic fallback
+   * Components are cached in loadedSchemaForms for subsequent renders
+   */
+  async function loadSchemaFormComponent(nodeType: string): Promise<boolean> {
+    // Skip if already loaded (check for both component and explicit null)
+    if (nodeType in loadedSchemaForms) {
+      return loadedSchemaForms[nodeType] !== null;
+    }
+
+    // Check if plugin has a schema form registered
+    if (!pluginRegistry.hasSchemaForm(nodeType)) {
+      // Mark as null to indicate we checked and there's no type-specific form
+      loadedSchemaForms = { ...loadedSchemaForms, [nodeType]: null };
+      return false;
+    }
+
+    try {
+      const component = await pluginRegistry.getSchemaForm(nodeType);
+      if (component) {
+        loadedSchemaForms = { ...loadedSchemaForms, [nodeType]: component };
+        return true;
+      }
+      // Mark as null if loading failed
+      loadedSchemaForms = { ...loadedSchemaForms, [nodeType]: null };
+      return false;
+    } catch (error) {
+      console.warn(`[BaseNodeViewer] Failed to load schema form for ${nodeType}:`, error);
+      loadedSchemaForms = { ...loadedSchemaForms, [nodeType]: null };
+      return false;
+    }
+  }
+
   // Derive the list of nodes to render - either viewer placeholder or real children
   const nodesToRender = $derived(() => {
     const realChildren = visibleNodesFromStores;
@@ -1180,8 +1244,17 @@
   <!-- Scrollable Node Content Area (children structure) -->
   <div class="node-content-area" bind:this={scrollContainer}>
     <!-- Schema-Driven Properties Panel - appears after header, before children -->
+    <!-- Issue #709: Type-specific schema forms use plugin registry for smart dispatch -->
+    <!-- Core types (task, date) use hardcoded forms; user-defined types use generic SchemaPropertyForm -->
     {#if currentViewedNode && nodeId}
-      <SchemaPropertyForm {nodeId} nodeType={currentViewedNode.nodeType} />
+      {#if currentViewedNode.nodeType in loadedSchemaForms && loadedSchemaForms[currentViewedNode.nodeType]}
+        <!-- Type-specific schema form (TaskSchemaForm, etc.) -->
+        {@const TypedSchemaForm = loadedSchemaForms[currentViewedNode.nodeType] as SchemaFormComponent}
+        <TypedSchemaForm {nodeId} />
+      {:else}
+        <!-- Generic schema form for user-defined types -->
+        <SchemaPropertyForm {nodeId} nodeType={currentViewedNode.nodeType} />
+      {/if}
     {/if}
 
     {#each nodesToRender() as node (node.id)}

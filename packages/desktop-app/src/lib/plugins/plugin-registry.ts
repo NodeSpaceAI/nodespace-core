@@ -18,7 +18,9 @@ import type {
   PatternDetectionConfig,
   PatternDetectionResult,
   RegistryStats,
-  PluginLifecycleEvents
+  PluginLifecycleEvents,
+  SchemaFormComponent,
+  NodeUpdater
 } from './types';
 
 export class PluginRegistry {
@@ -26,6 +28,8 @@ export class PluginRegistry {
   private loadedViewers = new Map<string, NodeViewerComponent>();
   private loadedNodes = new Map<string, NodeComponent>();
   private loadedReferences = new Map<string, NodeReferenceComponent>();
+  private loadedSchemaForms = new Map<string, SchemaFormComponent>();
+  private updaterCache = new Map<string, NodeUpdater | null>();
   private enabledPlugins = new Set<string>();
   private lifecycleEvents: PluginLifecycleEvents = {};
 
@@ -57,6 +61,8 @@ export class PluginRegistry {
     this.loadedViewers.delete(pluginId);
     this.loadedNodes.delete(pluginId);
     this.loadedReferences.delete(pluginId);
+    this.loadedSchemaForms.delete(pluginId);
+    this.updaterCache.delete(pluginId);
 
     this.lifecycleEvents.onUnregister?.(pluginId);
   }
@@ -76,6 +82,9 @@ export class PluginRegistry {
       this.enabledPlugins.delete(pluginId);
       this.lifecycleEvents.onDisable?.(pluginId);
     }
+
+    // Clear updater cache for this plugin to ensure enabled state is respected
+    this.updaterCache.delete(pluginId);
   }
 
   /**
@@ -494,6 +503,99 @@ export class PluginRegistry {
     this.loadedViewers.clear();
     this.loadedNodes.clear();
     this.loadedReferences.clear();
+    this.loadedSchemaForms.clear();
+    this.updaterCache.clear();
+  }
+
+  // ============================================================================
+  // Type-Safe CRUD Support (Issue #709)
+  // ============================================================================
+
+  /**
+   * Get a schema form component for a node type
+   * Returns null if no schema form is registered (fallback to SchemaPropertyForm)
+   *
+   * @param nodeType - Node type to get schema form for
+   * @returns Schema form component or null
+   */
+  async getSchemaForm(nodeType: string): Promise<SchemaFormComponent | null> {
+    // Check if already loaded
+    if (this.loadedSchemaForms.has(nodeType)) {
+      return this.loadedSchemaForms.get(nodeType)!;
+    }
+
+    const plugin = this.plugins.get(nodeType);
+    if (!plugin || !this.enabledPlugins.has(nodeType) || !plugin.schemaForm) {
+      return null; // No schema form available
+    }
+
+    const registration = plugin.schemaForm;
+
+    // Load component if lazy loading
+    if (registration.lazyLoad) {
+      try {
+        const module = await registration.lazyLoad();
+        this.loadedSchemaForms.set(nodeType, module.default);
+        return module.default;
+      } catch (error) {
+        console.warn(`Failed to lazy load schema form for ${nodeType}:`, error);
+        return null;
+      }
+    }
+
+    // Use direct component reference
+    if (registration.component) {
+      this.loadedSchemaForms.set(nodeType, registration.component);
+      return registration.component;
+    }
+
+    return null;
+  }
+
+  /**
+   * Check if a schema form is available for a node type
+   *
+   * @param nodeType - Node type to check
+   * @returns true if a schema form is registered
+   */
+  hasSchemaForm(nodeType: string): boolean {
+    const plugin = this.plugins.get(nodeType);
+    return !!(plugin && this.enabledPlugins.has(nodeType) && plugin.schemaForm);
+  }
+
+  /**
+   * Get type-specific node updater for a node type
+   * Returns null if no updater is registered (fallback to generic updateNode)
+   *
+   * Uses caching for O(1) lookup after first access per type.
+   *
+   * @param nodeType - Node type to get updater for
+   * @returns Node updater or null
+   */
+  getNodeUpdater(nodeType: string): NodeUpdater | null {
+    // Check cache first (includes negative caching with null)
+    if (this.updaterCache.has(nodeType)) {
+      return this.updaterCache.get(nodeType) ?? null;
+    }
+
+    const plugin = this.plugins.get(nodeType);
+    const updater = plugin && this.enabledPlugins.has(nodeType) ? plugin.updater : null;
+
+    // Cache the result (including null for negative caching)
+    this.updaterCache.set(nodeType, updater ?? null);
+
+    return updater ?? null;
+  }
+
+  /**
+   * Check if a type-specific updater is available for a node type
+   *
+   * @param nodeType - Node type to check
+   * @returns true if an updater is registered
+   */
+  hasNodeUpdater(nodeType: string): boolean {
+    const plugin = this.plugins.get(nodeType);
+    return !!(plugin && this.enabledPlugins.has(nodeType) && plugin.updater);
   }
 }
 

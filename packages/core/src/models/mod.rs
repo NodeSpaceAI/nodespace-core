@@ -61,7 +61,7 @@ pub use time::{SystemTimeProvider, TimeProvider};
 // Export type-safe wrappers
 pub use date_node::DateNode;
 pub use schema_node::SchemaNode;
-pub use task_node::{TaskNode, TaskStatus};
+pub use task_node::{TaskNode, TaskNodeUpdate, TaskPriority, TaskStatus};
 pub use text_node::TextNode;
 
 /// Convert a Node to its strongly-typed JSON representation (Issue #673)

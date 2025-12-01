@@ -12,12 +12,18 @@ import { PluginRegistry } from '$lib/plugins/plugin-registry';
 import type {
   PluginDefinition,
   NodeViewerComponent,
-  NodeReferenceComponent
+  NodeReferenceComponent,
+  NodeUpdater
 } from '$lib/plugins/types';
 
 // Mock Svelte component for testing
 const MockViewerComponent = vi.fn() as unknown as NodeViewerComponent;
 const MockReferenceComponent = vi.fn() as unknown as NodeReferenceComponent;
+
+// Mock node updater for testing
+const MockNodeUpdater: NodeUpdater = {
+  update: vi.fn().mockResolvedValue({ id: 'test', nodeType: 'task', content: 'updated' })
+};
 
 describe('PluginRegistry - Core Functionality', () => {
   let registry: PluginRegistry;
@@ -770,6 +776,169 @@ describe('PluginRegistry - Core Functionality', () => {
       registry.setEnabled('disabled-plugin', false);
 
       expect(registry.canHaveChildren('disabled-plugin')).toBe(true);
+    });
+  });
+
+  describe('Node Updater Management (Issue #709)', () => {
+    it('should return updater for plugin with registered updater', () => {
+      const plugin: PluginDefinition = {
+        id: 'task',
+        name: 'Task Node',
+        description: 'Task node with type-specific updater',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        updater: MockNodeUpdater
+      };
+
+      registry.register(plugin);
+
+      const updater = registry.getNodeUpdater('task');
+      expect(updater).toBe(MockNodeUpdater);
+    });
+
+    it('should return null for plugin without updater', () => {
+      const plugin: PluginDefinition = {
+        id: 'text',
+        name: 'Text Node',
+        description: 'Text node without type-specific updater',
+        version: '1.0.0',
+        config: { slashCommands: [] }
+      };
+
+      registry.register(plugin);
+
+      const updater = registry.getNodeUpdater('text');
+      expect(updater).toBeNull();
+    });
+
+    it('should return null for non-existent plugin', () => {
+      const updater = registry.getNodeUpdater('non-existent');
+      expect(updater).toBeNull();
+    });
+
+    it('should return null for disabled plugin updater', () => {
+      const plugin: PluginDefinition = {
+        id: 'disabled-task',
+        name: 'Disabled Task',
+        description: 'Task that will be disabled',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        updater: MockNodeUpdater
+      };
+
+      registry.register(plugin);
+      registry.setEnabled('disabled-task', false);
+
+      const updater = registry.getNodeUpdater('disabled-task');
+      expect(updater).toBeNull();
+    });
+
+    it('should cache updater lookups', () => {
+      const plugin: PluginDefinition = {
+        id: 'cached-task',
+        name: 'Cached Task',
+        description: 'Task for cache testing',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        updater: MockNodeUpdater
+      };
+
+      registry.register(plugin);
+
+      // First call
+      const updater1 = registry.getNodeUpdater('cached-task');
+      // Second call should use cache
+      const updater2 = registry.getNodeUpdater('cached-task');
+
+      expect(updater1).toBe(updater2);
+      expect(updater1).toBe(MockNodeUpdater);
+    });
+
+    it('should use negative caching for plugins without updater', () => {
+      const plugin: PluginDefinition = {
+        id: 'no-updater',
+        name: 'No Updater',
+        description: 'Plugin without updater',
+        version: '1.0.0',
+        config: { slashCommands: [] }
+      };
+
+      registry.register(plugin);
+
+      // First call
+      const updater1 = registry.getNodeUpdater('no-updater');
+      // Second call should use negative cache
+      const updater2 = registry.getNodeUpdater('no-updater');
+
+      expect(updater1).toBeNull();
+      expect(updater2).toBeNull();
+    });
+
+    it('should check if updater exists with hasNodeUpdater', () => {
+      const pluginWithUpdater: PluginDefinition = {
+        id: 'with-updater',
+        name: 'With Updater',
+        description: 'Plugin with updater',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        updater: MockNodeUpdater
+      };
+
+      const pluginWithoutUpdater: PluginDefinition = {
+        id: 'without-updater',
+        name: 'Without Updater',
+        description: 'Plugin without updater',
+        version: '1.0.0',
+        config: { slashCommands: [] }
+      };
+
+      registry.register(pluginWithUpdater);
+      registry.register(pluginWithoutUpdater);
+
+      expect(registry.hasNodeUpdater('with-updater')).toBe(true);
+      expect(registry.hasNodeUpdater('without-updater')).toBe(false);
+      expect(registry.hasNodeUpdater('non-existent')).toBe(false);
+    });
+
+    it('should return false for disabled plugin in hasNodeUpdater', () => {
+      const plugin: PluginDefinition = {
+        id: 'disabled-has-updater',
+        name: 'Disabled Has Updater',
+        description: 'Plugin that will be disabled',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        updater: MockNodeUpdater
+      };
+
+      registry.register(plugin);
+      expect(registry.hasNodeUpdater('disabled-has-updater')).toBe(true);
+
+      registry.setEnabled('disabled-has-updater', false);
+      expect(registry.hasNodeUpdater('disabled-has-updater')).toBe(false);
+    });
+
+    it('should clear updater cache when plugin is disabled', () => {
+      const plugin: PluginDefinition = {
+        id: 'cache-clear-test',
+        name: 'Cache Clear Test',
+        description: 'Test cache clearing on disable',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        updater: MockNodeUpdater
+      };
+
+      registry.register(plugin);
+
+      // Populate cache
+      const updater1 = registry.getNodeUpdater('cache-clear-test');
+      expect(updater1).toBe(MockNodeUpdater);
+
+      // Disable plugin (should clear cache)
+      registry.setEnabled('cache-clear-test', false);
+
+      // Now should return null
+      const updater2 = registry.getNodeUpdater('cache-clear-test');
+      expect(updater2).toBeNull();
     });
   });
 });
