@@ -6,6 +6,7 @@
 
 use crate::mcp::types::MCPError;
 use crate::models::schema::{EnumValue, SchemaField, SchemaProtectionLevel};
+use crate::models::NodeUpdate;
 use crate::services::{CreateNodeParams, NodeService};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -201,6 +202,339 @@ pub async fn handle_create_schema(
             None
         } else {
             Some(warnings)
+        },
+    };
+
+    serde_json::to_value(&output)
+        .map_err(|e| MCPError::internal_error(format!("Failed to serialize output: {}", e)))
+}
+
+// ============================================================================
+// Schema Relationship Operations
+// ============================================================================
+
+/// Parameters for add_schema_relationship
+#[derive(Debug, Deserialize)]
+pub struct AddSchemaRelationshipParams {
+    /// Schema ID to add the relationship to
+    pub schema_id: String,
+    /// Relationship definition to add
+    pub relationship: crate::models::schema::SchemaRelationship,
+}
+
+/// Parameters for remove_schema_relationship
+#[derive(Debug, Deserialize)]
+pub struct RemoveSchemaRelationshipParams {
+    /// Schema ID to remove the relationship from
+    pub schema_id: String,
+    /// Name of the relationship to remove
+    pub relationship_name: String,
+}
+
+/// Parameters for update_schema (batch operations)
+#[derive(Debug, Deserialize)]
+pub struct UpdateSchemaParams {
+    /// Schema ID to update
+    pub schema_id: String,
+    /// Fields to add
+    #[serde(default)]
+    pub add_fields: Option<Vec<SchemaField>>,
+    /// Field names to remove
+    #[serde(default)]
+    pub remove_fields: Option<Vec<String>>,
+    /// Relationships to add
+    #[serde(default)]
+    pub add_relationships: Option<Vec<crate::models::schema::SchemaRelationship>>,
+    /// Relationship names to remove (soft-delete: edge table preserved)
+    #[serde(default)]
+    pub remove_relationships: Option<Vec<String>>,
+    /// New description (optional)
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Output for schema update operations
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaUpdateOutput {
+    pub schema_id: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields_added: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields_removed: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relationships_added: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relationships_removed: Option<usize>,
+}
+
+/// Add a relationship definition to an existing schema
+///
+/// # MCP Tool: add_schema_relationship
+///
+/// Adds a new relationship type to a schema. This creates the edge table DDL
+/// but doesn't create any actual edges - use `create_relationship` for that.
+///
+/// # Parameters
+/// - `schema_id`: ID of the schema to modify
+/// - `relationship`: The relationship definition to add
+pub async fn handle_add_schema_relationship(
+    node_service: &Arc<NodeService>,
+    params: Value,
+) -> Result<Value, MCPError> {
+    let params: AddSchemaRelationshipParams = serde_json::from_value(params)
+        .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
+
+    // Get existing schema
+    let schema = node_service
+        .get_schema_node(&params.schema_id)
+        .await
+        .map_err(|e| MCPError::internal_error(format!("Failed to get schema: {}", e)))?
+        .ok_or_else(|| {
+            MCPError::invalid_params(format!("Schema '{}' not found", params.schema_id))
+        })?;
+
+    // Check if relationship already exists
+    if schema
+        .relationships
+        .iter()
+        .any(|r| r.name == params.relationship.name)
+    {
+        return Err(MCPError::invalid_params(format!(
+            "Relationship '{}' already exists in schema '{}'",
+            params.relationship.name, params.schema_id
+        )));
+    }
+
+    // Build updated relationships
+    let mut relationships = schema.relationships.clone();
+    relationships.push(params.relationship.clone());
+
+    // Update schema node
+    let properties = serde_json::json!({
+        "isCore": schema.is_core,
+        "version": schema.schema_version,
+        "description": schema.description,
+        "fields": schema.fields,
+        "relationships": relationships
+    });
+
+    let update = NodeUpdate {
+        properties: Some(properties),
+        ..Default::default()
+    };
+
+    node_service
+        .update_node(&params.schema_id, update)
+        .await
+        .map_err(|e| MCPError::internal_error(format!("Failed to update schema: {}", e)))?;
+
+    Ok(serde_json::json!({
+        "success": true,
+        "schemaId": params.schema_id,
+        "relationshipAdded": params.relationship.name
+    }))
+}
+
+/// Remove a relationship definition from a schema (soft-delete)
+///
+/// # MCP Tool: remove_schema_relationship
+///
+/// Removes a relationship from the schema definition. The edge table and any
+/// existing edges are preserved (soft-delete) - they're just hidden from the
+/// active schema. Re-adding the relationship will restore access to existing data.
+///
+/// # Parameters
+/// - `schema_id`: ID of the schema to modify
+/// - `relationship_name`: Name of the relationship to remove
+pub async fn handle_remove_schema_relationship(
+    node_service: &Arc<NodeService>,
+    params: Value,
+) -> Result<Value, MCPError> {
+    let params: RemoveSchemaRelationshipParams = serde_json::from_value(params)
+        .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
+
+    // Get existing schema
+    let schema = node_service
+        .get_schema_node(&params.schema_id)
+        .await
+        .map_err(|e| MCPError::internal_error(format!("Failed to get schema: {}", e)))?
+        .ok_or_else(|| {
+            MCPError::invalid_params(format!("Schema '{}' not found", params.schema_id))
+        })?;
+
+    // Check if relationship exists
+    if !schema
+        .relationships
+        .iter()
+        .any(|r| r.name == params.relationship_name)
+    {
+        return Err(MCPError::invalid_params(format!(
+            "Relationship '{}' not found in schema '{}'",
+            params.relationship_name, params.schema_id
+        )));
+    }
+
+    // Build updated relationships (remove the one specified)
+    let relationships: Vec<_> = schema
+        .relationships
+        .into_iter()
+        .filter(|r| r.name != params.relationship_name)
+        .collect();
+
+    // Update schema node
+    let properties = serde_json::json!({
+        "isCore": schema.is_core,
+        "version": schema.schema_version,
+        "description": schema.description,
+        "fields": schema.fields,
+        "relationships": relationships
+    });
+
+    let update = NodeUpdate {
+        properties: Some(properties),
+        ..Default::default()
+    };
+
+    node_service
+        .update_node(&params.schema_id, update)
+        .await
+        .map_err(|e| MCPError::internal_error(format!("Failed to update schema: {}", e)))?;
+
+    Ok(serde_json::json!({
+        "success": true,
+        "schemaId": params.schema_id,
+        "relationshipRemoved": params.relationship_name,
+        "note": "Edge table and existing edges preserved (soft-delete)"
+    }))
+}
+
+/// Update a schema with multiple changes
+///
+/// # MCP Tool: update_schema
+///
+/// Batch update a schema's fields and relationships. Useful when making
+/// multiple changes at once. For single operations, prefer the specific
+/// `add_schema_relationship` or `remove_schema_relationship` tools.
+///
+/// # Parameters
+/// - `schema_id`: ID of the schema to update
+/// - `add_fields`: Fields to add
+/// - `remove_fields`: Field names to remove
+/// - `add_relationships`: Relationships to add
+/// - `remove_relationships`: Relationship names to remove (soft-delete)
+/// - `description`: New description (optional)
+pub async fn handle_update_schema(
+    node_service: &Arc<NodeService>,
+    params: Value,
+) -> Result<Value, MCPError> {
+    let params: UpdateSchemaParams = serde_json::from_value(params)
+        .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
+
+    // Get existing schema
+    let schema = node_service
+        .get_schema_node(&params.schema_id)
+        .await
+        .map_err(|e| MCPError::internal_error(format!("Failed to get schema: {}", e)))?
+        .ok_or_else(|| {
+            MCPError::invalid_params(format!("Schema '{}' not found", params.schema_id))
+        })?;
+
+    // Process fields
+    let mut fields = schema.fields.clone();
+    let mut fields_added = 0;
+    let mut fields_removed = 0;
+
+    if let Some(remove_names) = &params.remove_fields {
+        let before = fields.len();
+        fields.retain(|f| !remove_names.contains(&f.name));
+        fields_removed = before - fields.len();
+    }
+
+    if let Some(ref add_fields) = params.add_fields {
+        // Check for duplicates before adding
+        for field in add_fields {
+            if fields.iter().any(|f| f.name == field.name) {
+                return Err(MCPError::invalid_params(format!(
+                    "Field '{}' already exists in schema '{}'",
+                    field.name, params.schema_id
+                )));
+            }
+        }
+        fields_added = add_fields.len();
+        fields.extend(add_fields.clone());
+    }
+
+    // Process relationships
+    let mut relationships = schema.relationships.clone();
+    let mut relationships_added = 0;
+    let mut relationships_removed = 0;
+
+    if let Some(remove_names) = &params.remove_relationships {
+        let before = relationships.len();
+        relationships.retain(|r| !remove_names.contains(&r.name));
+        relationships_removed = before - relationships.len();
+    }
+
+    if let Some(ref add_rels) = params.add_relationships {
+        // Check for duplicates before adding
+        for rel in add_rels {
+            if relationships.iter().any(|r| r.name == rel.name) {
+                return Err(MCPError::invalid_params(format!(
+                    "Relationship '{}' already exists in schema '{}'",
+                    rel.name, params.schema_id
+                )));
+            }
+        }
+        relationships_added = add_rels.len();
+        relationships.extend(add_rels.clone());
+    }
+
+    // Update description if provided
+    let description = params.description.unwrap_or(schema.description);
+
+    // Update schema node
+    let properties = serde_json::json!({
+        "isCore": schema.is_core,
+        "version": schema.schema_version,
+        "description": description,
+        "fields": fields,
+        "relationships": relationships
+    });
+
+    let update = NodeUpdate {
+        properties: Some(properties),
+        ..Default::default()
+    };
+
+    node_service
+        .update_node(&params.schema_id, update)
+        .await
+        .map_err(|e| MCPError::internal_error(format!("Failed to update schema: {}", e)))?;
+
+    let output = SchemaUpdateOutput {
+        schema_id: params.schema_id,
+        success: true,
+        fields_added: if fields_added > 0 {
+            Some(fields_added)
+        } else {
+            None
+        },
+        fields_removed: if fields_removed > 0 {
+            Some(fields_removed)
+        } else {
+            None
+        },
+        relationships_added: if relationships_added > 0 {
+            Some(relationships_added)
+        } else {
+            None
+        },
+        relationships_removed: if relationships_removed > 0 {
+            Some(relationships_removed)
+        } else {
+            None
         },
     };
 

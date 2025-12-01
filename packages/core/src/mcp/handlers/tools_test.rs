@@ -18,9 +18,9 @@ fn test_tools_list_returns_all_schemas() {
 
     let tools = response["tools"].as_array().unwrap();
 
-    // Verify all 25 tools are present
-    // (19 previous + 6 relationship/NLP discovery tools from Issue #703)
-    assert_eq!(tools.len(), 25);
+    // Verify all 28 tools are present
+    // (19 previous + 6 relationship/NLP discovery tools + 3 schema management tools from Issue #703)
+    assert_eq!(tools.len(), 28);
 
     // Verify tool names
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -65,6 +65,11 @@ fn test_tools_list_returns_all_schemas() {
     assert!(tool_names.contains(&"get_relationship_graph"));
     assert!(tool_names.contains(&"get_inbound_relationships"));
     assert!(tool_names.contains(&"get_all_schemas"));
+
+    // Schema Definition Management - Issue #703
+    assert!(tool_names.contains(&"add_schema_relationship"));
+    assert!(tool_names.contains(&"remove_schema_relationship"));
+    assert!(tool_names.contains(&"update_schema"));
 
     // Verify removed tools are NOT present (Issue #690)
     assert!(!tool_names.contains(&"get_schema_definition"));

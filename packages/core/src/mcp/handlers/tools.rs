@@ -172,6 +172,15 @@ pub async fn handle_tools_call(
         }
         "get_all_schemas" => relationships::handle_get_all_schemas(node_service, arguments).await,
 
+        // Schema Definition Management (Issue #703)
+        "add_schema_relationship" => {
+            schema::handle_add_schema_relationship(node_service, arguments).await
+        }
+        "remove_schema_relationship" => {
+            schema::handle_remove_schema_relationship(node_service, arguments).await
+        }
+        "update_schema" => schema::handle_update_schema(node_service, arguments).await,
+
         _ => {
             return Err(MCPError::invalid_params(format!(
                 "Unknown tool: {}",
@@ -818,6 +827,145 @@ fn get_tool_schemas() -> Value {
                 "type": "object",
                 "properties": {},
                 "required": []
+            }
+        },
+        // Schema Definition Management (Issue #703)
+        {
+            "name": "add_schema_relationship",
+            "description": "Add a relationship definition to an existing schema. This creates the edge table DDL and enables relationship CRUD operations between nodes of this schema and the target type.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "schema_id": {
+                        "type": "string",
+                        "description": "ID of the schema to add the relationship to"
+                    },
+                    "relationship": {
+                        "type": "object",
+                        "description": "Relationship definition",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the relationship (used in API calls, e.g., 'billed_to', 'assigned_to')"
+                            },
+                            "target_type": {
+                                "type": "string",
+                                "description": "Target node type (e.g., 'customer', 'person')"
+                            },
+                            "cardinality": {
+                                "type": "string",
+                                "enum": ["one", "many"],
+                                "description": "Cardinality from source perspective (default: 'many')"
+                            },
+                            "reverse_name": {
+                                "type": "string",
+                                "description": "Optional reverse name for NLP discovery (e.g., 'invoices' when viewed from customer)"
+                            },
+                            "reverse_cardinality": {
+                                "type": "string",
+                                "enum": ["one", "many"],
+                                "description": "Cardinality from target perspective (for NLP understanding)"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Human-readable description of the relationship"
+                            },
+                            "edge_fields": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "field_type": {"type": "string", "enum": ["string", "number", "boolean", "datetime"]},
+                                        "required": {"type": "boolean"},
+                                        "indexed": {"type": "boolean"}
+                                    },
+                                    "required": ["name", "field_type"]
+                                },
+                                "description": "Optional fields stored on the edge (e.g., 'role', 'since')"
+                            }
+                        },
+                        "required": ["name", "target_type"]
+                    }
+                },
+                "required": ["schema_id", "relationship"]
+            }
+        },
+        {
+            "name": "remove_schema_relationship",
+            "description": "Remove a relationship definition from a schema. This is a soft-delete: the edge table and existing data are preserved, but the relationship is hidden from the schema definition. Use this to deprecate relationships without losing historical data.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "schema_id": {
+                        "type": "string",
+                        "description": "ID of the schema to remove the relationship from"
+                    },
+                    "relationship_name": {
+                        "type": "string",
+                        "description": "Name of the relationship to remove"
+                    }
+                },
+                "required": ["schema_id", "relationship_name"]
+            }
+        },
+        {
+            "name": "update_schema",
+            "description": "Update a schema's mutable properties in a single operation. Supports updating description, adding/removing fields, and adding/removing relationships. For bulk changes, this is more efficient than individual operations.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "schema_id": {
+                        "type": "string",
+                        "description": "ID of the schema to update"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "New description for the schema"
+                    },
+                    "add_fields": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "type": {"type": "string", "enum": ["string", "number", "boolean", "datetime", "enum", "array", "object"]},
+                                "required": {"type": "boolean"},
+                                "indexed": {"type": "boolean"},
+                                "description": {"type": "string"}
+                            },
+                            "required": ["name", "type"]
+                        },
+                        "description": "Fields to add to the schema"
+                    },
+                    "remove_fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Names of fields to remove"
+                    },
+                    "add_relationships": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "target_type": {"type": "string"},
+                                "cardinality": {"type": "string", "enum": ["one", "many"]},
+                                "reverse_name": {"type": "string"},
+                                "reverse_cardinality": {"type": "string", "enum": ["one", "many"]},
+                                "description": {"type": "string"}
+                            },
+                            "required": ["name", "target_type"]
+                        },
+                        "description": "Relationships to add to the schema"
+                    },
+                    "remove_relationships": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Names of relationships to remove (soft-delete)"
+                    }
+                },
+                "required": ["schema_id"]
             }
         }
     ])

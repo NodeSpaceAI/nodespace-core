@@ -114,6 +114,10 @@ fn test_all_expected_tools_present() {
         "get_relationship_graph",
         "get_inbound_relationships",
         "get_all_schemas",
+        // Schema Definition Management - Issue #703
+        "add_schema_relationship",
+        "remove_schema_relationship",
+        "update_schema",
     ];
 
     for expected_tool in &expected_tools {
@@ -124,9 +128,9 @@ fn test_all_expected_tools_present() {
         );
     }
 
-    // Verify we have exactly 25 tools
-    // (19 previous + 6 relationship/NLP discovery tools from Issue #703)
-    assert_eq!(tools.len(), 25, "Expected exactly 25 tools");
+    // Verify we have exactly 28 tools
+    // (19 previous + 6 relationship/NLP discovery tools + 3 schema management tools from Issue #703)
+    assert_eq!(tools.len(), 28, "Expected exactly 28 tools");
 }
 
 #[test]
