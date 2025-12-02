@@ -3880,16 +3880,6 @@ where
             sets = hub_sets
         ));
 
-        // Emit domain event for SSE sync
-        transaction_parts.push(format!(
-            r#"CREATE domain_event CONTENT {{
-                event_type: 'NodeUpdated',
-                payload: {{ id: '{}' }},
-                created_at: time::now()
-            }};"#,
-            id
-        ));
-
         transaction_parts.push("COMMIT TRANSACTION;".to_string());
 
         let transaction_query = transaction_parts.join("\n");

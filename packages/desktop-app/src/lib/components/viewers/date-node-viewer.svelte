@@ -17,6 +17,7 @@
 <script lang="ts">
   import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import Icon from '$lib/design/icons/icon.svelte';
+  import { onMount } from 'svelte';
   import { parseDateString, formatDateISO, normalizeDate, formatDateTitle } from '$lib/utils/date-formatting';
 
   // Props using Svelte 5 runes mode - unified NodeViewerProps interface
@@ -30,6 +31,12 @@
     onNodeIdChange?: (_nodeId: string) => void;
     onTitleChange?: (_title: string) => void;
   } = $props();
+
+  // Set initial tab title on mount - viewer is the source of truth for tab titles
+  onMount(() => {
+    const date = parseDateFromNodeId(nodeId);
+    onTitleChange?.(formatDateTitle(date));
+  });
 
   // Parse date from nodeId prop (format: YYYY-MM-DD)
   function parseDateFromNodeId(dateString: string): Date {

@@ -44,6 +44,10 @@ import {
   PatternState,
   type NodeCreationSource
 } from '$lib/state/pattern-state.svelte';
+import {
+  mapViewPositionToEditPosition,
+  stripAllMarkdown
+} from '$lib/utils/view-edit-mapper';
 
 // Module-level command singletons - created once and reused
 const KEYBOARD_COMMANDS = {
@@ -521,10 +525,11 @@ export class TextareaController {
 
     public getCurrentPixelOffset(): number {
       const position = this.element.selectionStart;
-      const textBefore = this.element.value.substring(0, position);
+      const content = this.element.value;
+      const textBefore = content.substring(0, position);
       const lastNewline = textBefore.lastIndexOf('\n');
       const currentLineStart = lastNewline === -1 ? 0 : lastNewline + 1;
-      const textBeforeCursor = this.element.value.substring(currentLineStart, position);
+      const textBeforeCursorOnLine = content.substring(currentLineStart, position);
 
       const rect = this.element.getBoundingClientRect();
 
@@ -545,7 +550,9 @@ export class TextareaController {
         document.body.appendChild(this.measurementElement);
       }
 
-      this.measurementElement.textContent = textBeforeCursor;
+      // Measure the ACTUAL text before cursor (including markdown syntax)
+      // This gives us the true visual position of the cursor on screen
+      this.measurementElement.textContent = textBeforeCursorOnLine;
       const textWidth = this.measurementElement.getBoundingClientRect().width;
 
       this.lastKnownPixelOffset = rect.left + textWidth + window.scrollX;
@@ -559,21 +566,114 @@ export class TextareaController {
       const lineIndex = direction === 'up' ? lines.length - 1 : 0;
       const targetLine = lines[lineIndex];
 
+      // Get the textarea's left edge position
       const rect = this.element.getBoundingClientRect();
       const textareaLeftEdge = rect.left + window.scrollX;
       const relativePixelOffset = pixelOffset - textareaLeftEdge;
 
-      const approximateColumn = Math.max(0, Math.round(relativePixelOffset / 8));
+      // The pixelOffset represents the VISUAL cursor position from source's EDIT mode
+      // But the target node displays in VIEW mode first, then switches to EDIT mode
+      // So we need to:
+      // 1. Find the column in VIEW text that matches the pixel offset
+      // 2. Map that view column to an edit column (accounting for syntax that will appear)
 
-      const column = Math.min(approximateColumn, targetLine.length);
+      // Get the view text (what user sees in display mode - no syntax)
+      const viewLine = stripAllMarkdown(targetLine);
 
+      // Find column in view text that matches the pixel offset
+      const viewColumn = this.findColumnForPixelOffset(viewLine, relativePixelOffset);
+
+      // Map view column to edit column (accounting for markdown syntax)
+      const editColumn = mapViewPositionToEditPosition(viewColumn, viewLine, targetLine);
+
+      // Calculate absolute position
       let position = 0;
       for (let i = 0; i < lineIndex; i++) {
         position += lines[i].length + 1;
       }
-      position += column;
+      position += editColumn;
 
+      this.focus();
       this.setCursorPosition(position);
+    }
+
+    /**
+     * Find the column position in a line that best matches a target pixel offset
+     * Uses binary search with proper text measurement for accurate positioning
+     */
+    private findColumnForPixelOffset(line: string, targetPixelOffset: number): number {
+      if (line.length === 0 || targetPixelOffset <= 0) {
+        return 0;
+      }
+
+      // Create or reuse measurement element with textarea's font styles
+      // In test environments (Happy-DOM), getComputedStyle may not be available
+      // In that case, fall back to approximate character width
+      if (!this.measurementElement) {
+        this.measurementElement = document.createElement('span');
+
+        // Check if getComputedStyle is available (browser environment)
+        if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+          try {
+            const computedStyle = window.getComputedStyle(this.element);
+            this.measurementElement.style.cssText = `
+              position: absolute;
+              visibility: hidden;
+              white-space: pre;
+              font-family: ${computedStyle.fontFamily};
+              font-size: ${computedStyle.fontSize};
+              font-weight: ${computedStyle.fontWeight};
+              letter-spacing: ${computedStyle.letterSpacing};
+              word-spacing: ${computedStyle.wordSpacing};
+              line-height: ${computedStyle.lineHeight};
+            `;
+            document.body.appendChild(this.measurementElement);
+          } catch {
+            // getComputedStyle failed, use fallback
+            this.measurementElement = null;
+          }
+        } else {
+          // Test environment - getComputedStyle not available
+          this.measurementElement = null;
+        }
+      }
+
+      // If measurement element is not available, use approximate calculation
+      // This provides reasonable behavior in test environments
+      if (!this.measurementElement) {
+        const approximateCharWidth = 8; // Average monospace character width
+        const approximateColumn = Math.max(0, Math.round(targetPixelOffset / approximateCharWidth));
+        return Math.min(approximateColumn, line.length);
+      }
+
+      // Binary search for the best column position
+      let low = 0;
+      let high = line.length;
+      let bestColumn = 0;
+      let bestDiff = Infinity;
+
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        this.measurementElement.textContent = line.substring(0, mid);
+        const width = this.measurementElement.getBoundingClientRect().width;
+        const diff = Math.abs(width - targetPixelOffset);
+
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestColumn = mid;
+        }
+
+        if (width < targetPixelOffset) {
+          low = mid + 1;
+        } else if (width > targetPixelOffset) {
+          high = mid - 1;
+        } else {
+          // Exact match
+          return mid;
+        }
+      }
+
+      return bestColumn;
     }
 
     private handleFocus(): void {

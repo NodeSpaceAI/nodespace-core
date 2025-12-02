@@ -111,25 +111,18 @@
 
 <style>
   .backlinks-panel-container {
-    position: sticky;
-    bottom: 0;
+    /* Fixed at bottom of viewer (outside scroll area) */
+    flex-shrink: 0;
     background: hsl(var(--background));
-    z-index: var(--z-sticky);
     display: flex;
     flex-direction: column-reverse; /* Reverse: trigger renders at bottom, content above */
-    margin-top: auto;
-
-    /* Break out of parent padding to achieve full-width border */
-    /* This approach is intentional: keeps component within scroll container for sticky positioning */
-    /* while allowing border to extend edge-to-edge. Coupled to padding variables for maintainability. */
-    width: calc(100% + (var(--viewer-padding-horizontal) * 2));
-    margin-left: calc(-1 * var(--viewer-padding-horizontal));
-    margin-bottom: calc(-1 * var(--viewer-padding-bottom));
+    padding: 0 var(--viewer-padding-horizontal);
   }
 
   .backlinks-panel-container :global([data-collapsible-trigger]) {
-    width: 100%;
-    padding: 0.75rem var(--viewer-padding-horizontal);
+    width: calc(100% + (var(--viewer-padding-horizontal) * 2)); /* Extend to container edges */
+    margin-left: calc(-1 * var(--viewer-padding-horizontal)); /* Break out of container padding */
+    padding: 0.75rem var(--viewer-padding-horizontal); /* Match container padding for content alignment */
     border-top: 1px solid hsl(var(--border));
     background: hsl(var(--background));
     cursor: pointer;

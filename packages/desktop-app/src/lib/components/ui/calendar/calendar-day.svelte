@@ -20,7 +20,6 @@
     // Selected - subtle border with muted background (same as hover)
     'data-[selected]:border-border data-[selected]:bg-muted data-[selected]:text-foreground data-[selected]:opacity-100',
     'data-[selected]:hover:bg-muted data-[selected]:hover:border-border',
-    'data-[selected]:focus-visible:bg-muted data-[selected]:focus-visible:border-border data-[selected]:focus-visible:outline-none',
     // Disabled
     'data-[disabled]:text-muted-foreground data-[disabled]:opacity-50 data-[disabled]:hover:bg-transparent',
     // Unavailable

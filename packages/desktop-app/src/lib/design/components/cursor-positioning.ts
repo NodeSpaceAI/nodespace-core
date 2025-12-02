@@ -31,6 +31,7 @@ export function findCharacterFromClick(
   const relativeY = clickY - editableRect.top;
 
   let bestMatch: PositionResult = { index: 0, distance: Infinity, accuracy: 'approximate' };
+  let bestMatchSpan: HTMLElement | null = null;
 
   // Get all character spans from the mock element
   const allSpans = mockElement.querySelectorAll('[data-position]');
@@ -67,6 +68,21 @@ export function findCharacterFromClick(
         distance,
         accuracy: distance < 5 ? 'exact' : 'approximate' // Within 5px is considered exact
       };
+      bestMatchSpan = span;
+    }
+  }
+
+  // Determine if cursor should go before or after the matched character
+  // based on whether click is to the left or right of the character's center
+  if (bestMatchSpan) {
+    const bestRect = bestMatchSpan.getBoundingClientRect();
+    const bestCenterX = bestRect.left - mockRect.left + bestRect.width / 2;
+    const maxIndex = mockElement.textContent?.length ?? 0;
+
+    // If click is to the right of the character's center, position cursor after it
+    // but ensure we don't exceed content bounds
+    if (relativeX > bestCenterX && bestMatch.index < maxIndex) {
+      bestMatch.index += 1;
     }
   }
 
@@ -93,6 +109,7 @@ export function findCharacterFromClickFast(
   const relativeY = clickY - editableRect.top;
 
   let bestMatch: PositionResult = { index: 0, distance: Infinity, accuracy: 'approximate' };
+  let bestMatchSpan: HTMLElement | null = null;
 
   const allSpans = mockElement.querySelectorAll('[data-position]');
 
@@ -143,10 +160,12 @@ export function findCharacterFromClickFast(
   // Check candidates for best match
   for (const span of candidates) {
     const rect = span.getBoundingClientRect();
-    const spanX = rect.left - mockRect.left + rect.width / 2;
-    const spanY = rect.top - mockRect.top + rect.height / 2;
+    const spanCenterX = rect.left - mockRect.left + rect.width / 2;
+    const spanCenterY = rect.top - mockRect.top + rect.height / 2;
 
-    const distance = Math.sqrt(Math.pow(spanX - relativeX, 2) + Math.pow(spanY - relativeY, 2));
+    const distance = Math.sqrt(
+      Math.pow(spanCenterX - relativeX, 2) + Math.pow(spanCenterY - relativeY, 2)
+    );
 
     if (distance < bestMatch.distance) {
       const position = parseInt(span.dataset.position || '0');
@@ -155,11 +174,26 @@ export function findCharacterFromClickFast(
         distance,
         accuracy: distance < 5 ? 'exact' : 'approximate'
       };
+      bestMatchSpan = span;
     }
 
     // Early exit if we find a very close match
     if (bestMatch.accuracy === 'exact' && bestMatch.distance < 2) {
       break;
+    }
+  }
+
+  // Determine if cursor should go before or after the matched character
+  // based on whether click is to the left or right of the character's center
+  if (bestMatchSpan) {
+    const bestRect = bestMatchSpan.getBoundingClientRect();
+    const bestCenterX = bestRect.left - mockRect.left + bestRect.width / 2;
+    const maxIndex = mockElement.textContent?.length ?? 0;
+
+    // If click is to the right of the character's center, position cursor after it
+    // but ensure we don't exceed content bounds
+    if (relativeX > bestCenterX && bestMatch.index < maxIndex) {
+      bestMatch.index += 1;
     }
   }
 

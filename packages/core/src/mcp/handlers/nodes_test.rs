@@ -595,14 +595,14 @@ mod integration_tests {
             .await
             .unwrap();
 
-        // Create three children: A → B → C (using None = append at end)
+        // Create three children: A → B → C
         let node_a = node_service
             .create_node_with_parent(CreateNodeParams {
                 id: None, // Test generates ID
                 node_type: "text".to_string(),
                 content: "A".to_string(),
                 parent_id: Some(date.clone()),
-                insert_after_node_id: None, // First child
+                insert_after_node_id: None, // First child (insert at beginning)
                 properties: json!({}),
             })
             .await
@@ -614,7 +614,7 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "B".to_string(),
                 parent_id: Some(date.clone()),
-                insert_after_node_id: None, // Append after A
+                insert_after_node_id: Some(node_a.clone()), // Insert after A
                 properties: json!({}),
             })
             .await
@@ -626,7 +626,7 @@ mod integration_tests {
                 node_type: "text".to_string(),
                 content: "C".to_string(),
                 parent_id: Some(date.clone()),
-                insert_after_node_id: None, // Append after B
+                insert_after_node_id: Some(_node_b.clone()), // Insert after B
                 properties: json!({}),
             })
             .await

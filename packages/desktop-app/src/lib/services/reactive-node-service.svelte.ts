@@ -316,8 +316,22 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
       let order: number;
       if (insertAtBeginning) {
-        // Insert at the beginning - use order before first child
-        order = childrenWithOrder.length > 0 ? childrenWithOrder[0].order - 1.0 : 1.0;
+        // Insert directly BEFORE afterNodeId (not at beginning of all siblings)
+        // This handles Enter key at cursor position 0: new node above current node
+        if (afterNodeIndex >= 0) {
+          const afterNodeOrder = childrenWithOrder[afterNodeIndex].order;
+          const prevSibling = childrenWithOrder[afterNodeIndex - 1];
+          if (prevSibling) {
+            // Fractional order between prevSibling and afterNode
+            order = (prevSibling.order + afterNodeOrder) / 2;
+          } else {
+            // afterNode is first, insert before it
+            order = afterNodeOrder - 1.0;
+          }
+        } else {
+          // afterNodeId not found, insert at beginning
+          order = childrenWithOrder.length > 0 ? childrenWithOrder[0].order - 1.0 : 1.0;
+        }
       } else if (afterNodeIndex >= 0) {
         // Insert right after afterNodeId
         const afterNodeOrder = childrenWithOrder[afterNodeIndex].order;
@@ -347,24 +361,29 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // NOTE: Sibling linked list updates removed - backend handles ordering via fractional ordering
 
-    // Bug 4 fix: Transfer children from expanded nodes
-    // When creating a node from a parent with children, transfer those children to the new node
-    // This matches pre-migration behavior: new node appears between parent and children
+    // Transfer children from EXPANDED parent nodes only (per sophisticated-keyboard-handling.md)
+    // - Expanded parent: New node inherits children (new node appears between parent and children)
+    // - Collapsed parent: Children stay with original node (new sibling created after parent)
     const children = sharedNodeStore.getNodesForParent(afterNodeId);
     const structureChildren = structureTree.getChildren(afterNodeId);
+    const afterNodeUIState = _uiState[afterNodeId];
+    const isExpanded = afterNodeUIState?.expanded ?? true; // Default to expanded if no state
 
     console.log('[createNode] Child transfer check:', {
       afterNodeId,
       insertAtBeginning,
+      isExpanded,
       sharedNodeStoreChildren: children.length,
       structureTreeChildren: structureChildren.length,
       children: children.map(c => c.id),
       structureIds: structureChildren
     });
 
-    // IMPORTANT: Always transfer children when not inserting at beginning,
-    // regardless of expanded state (expanded state is UI-only, doesn't affect structure)
-    if (!insertAtBeginning && children.length > 0) {
+    // Only transfer children when:
+    // 1. Not inserting at beginning (cursor not at start of line)
+    // 2. Parent has children
+    // 3. Parent is EXPANDED (collapsed parents keep their children)
+    if (!insertAtBeginning && children.length > 0 && isExpanded) {
         // OPTIMISTIC UI: Update structure tree IMMEDIATELY for instant visual feedback
         // This ensures the UI shows the correct hierarchy without waiting for database
         for (const child of children) {
@@ -619,6 +638,26 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     _uiState[previousNodeId] = { ..._uiState[previousNodeId], autoFocus: false };
 
     // Handle child promotion using shared depth-aware logic
+    // Per sophisticated-keyboard-handling.md:
+    // - Collapsed targets: New children inserted at beginning and target auto-expands
+    // - Expanded targets: New children appended at end
+    const currentChildren = sharedNodeStore.getNodesForParent(currentNodeId);
+    if (currentChildren.length > 0) {
+      const targetUIState = _uiState[previousNodeId];
+      const targetIsCollapsed = !(targetUIState?.expanded ?? true);
+
+      if (targetIsCollapsed) {
+        // Auto-expand collapsed target so promoted children become visible
+        // Note: We directly update _uiState here since setExpanded() is defined later in the file
+        // and we need the immediate effect before promoteChildren() runs
+        _uiState[previousNodeId] = {
+          ..._uiState[previousNodeId],
+          expanded: true
+        };
+        _updateTrigger++;
+      }
+    }
+
     promoteChildren(currentNodeId, previousNodeId);
 
     // CRITICAL: Collect dependencies that must persist before deletion

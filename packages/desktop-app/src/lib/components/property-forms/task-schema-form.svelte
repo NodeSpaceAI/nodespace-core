@@ -288,7 +288,7 @@
 </script>
 
 {#if node}
-  <div class="border-b">
+  <div class="schema-form-wrapper">
     <Collapsible.Root bind:open={isOpen}>
       <Collapsible.Trigger
         class="flex w-full items-center justify-between py-3 font-medium transition-all hover:opacity-80"
@@ -594,3 +594,13 @@
     </Collapsible.Root>
   </div>
 {/if}
+
+<style>
+  /* Extend border to container edges using negative margins */
+  .schema-form-wrapper {
+    width: calc(100% + (var(--viewer-padding-horizontal) * 2));
+    margin-left: calc(-1 * var(--viewer-padding-horizontal));
+    padding: 0 var(--viewer-padding-horizontal);
+    border-bottom: 1px solid hsl(var(--border));
+  }
+</style>

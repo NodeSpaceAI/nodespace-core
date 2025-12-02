@@ -39,17 +39,55 @@ function getMarkerLength(remaining: string): number {
 }
 
 /**
+ * Get the length of any prefix syntax at the start of a line
+ * @param line - The line to check
+ * @returns Length of prefix syntax to skip, or 0 if no prefix found
+ */
+function getPrefixSyntaxLength(line: string): number {
+  // Header prefixes: ### Header (1-6 hashes + space)
+  const headerMatch = line.match(/^#{1,6}\s+/);
+  if (headerMatch) {
+    return headerMatch[0].length;
+  }
+
+  // Quote prefixes: > Quote (handle multiple levels like >> or > > >)
+  const quoteMatch = line.match(/^(?:>\s*)+/);
+  if (quoteMatch) {
+    return quoteMatch[0].length;
+  }
+
+  // Ordered list prefixes: 1. Item, 2. Item, etc.
+  const orderedListMatch = line.match(/^\d+\.\s+/);
+  if (orderedListMatch) {
+    return orderedListMatch[0].length;
+  }
+
+  // Unordered list prefixes: - Item, * Item
+  const unorderedListMatch = line.match(/^[-*]\s+/);
+  if (unorderedListMatch) {
+    return unorderedListMatch[0].length;
+  }
+
+  return 0;
+}
+
+/**
  * Map character position from view content to edit content
  *
- * View content has markdown syntax stripped (e.g., "Hello world")
- * Edit content has markdown syntax visible (e.g., "**Hello** world")
+ * View content has markdown syntax stripped (e.g., "And again" from "### *And* again")
+ * Edit content has markdown syntax visible (e.g., "### *And* again")
  *
- * This function accounts for syntax markers when mapping positions.
+ * This function accounts for BOTH prefix syntax (###, >, 1.) AND inline markers (**,*,~~,`).
  *
  * @param viewPosition - Character position in view content (0-based)
- * @param viewContent - The view content (syntax stripped, from displayContent)
+ * @param viewContent - The view content (all syntax stripped, from stripAllMarkdown)
  * @param editContent - The edit content (with syntax, from content prop)
  * @returns Character position in edit content (0-based)
+ *
+ * @example
+ * // View: "And again" (click at position 0 = 'A')
+ * // Edit: "### *And* again" (should position at 5 = 'A' after ### and *)
+ * mapViewPositionToEditPosition(0, "And again", "### *And* again") // → 5
  *
  * @example
  * // View: "Hello world" (click at position 6 = 'w')
@@ -66,9 +104,11 @@ export function mapViewPositionToEditPosition(
     return viewPosition;
   }
 
-  // Edge case: position 0 - skip leading syntax markers
+  // First, skip any prefix syntax at the start of the edit content
+  let editIndex = getPrefixSyntaxLength(editContent);
+
+  // Edge case: position 0 - skip leading inline syntax markers after prefix
   if (viewPosition === 0) {
-    let editIndex = 0;
     while (editIndex < editContent.length) {
       const markerLength = getMarkerLength(editContent.substring(editIndex));
       if (markerLength > 0) {
@@ -82,12 +122,11 @@ export function mapViewPositionToEditPosition(
   }
 
   // Walk both strings character-by-character for positions > 0
-  // Skip syntax markers in editContent while advancing viewContent
+  // Skip inline syntax markers in editContent while advancing viewContent
   let viewIndex = 0;
-  let editIndex = 0;
 
   while (viewIndex < viewPosition && editIndex < editContent.length) {
-    // Check if we're at a syntax marker in edit content
+    // Check if we're at an inline syntax marker in edit content
     const markerLength = getMarkerLength(editContent.substring(editIndex));
 
     if (markerLength > 0) {
@@ -101,5 +140,150 @@ export function mapViewPositionToEditPosition(
     editIndex++;
   }
 
+  // After reaching target view position, skip any OPENING markers
+  // (markers that are followed by content, not at end/before closing markers)
+  // This ensures cursor lands on actual content, not before an opening marker
+  while (editIndex < editContent.length) {
+    const markerLength = getMarkerLength(editContent.substring(editIndex));
+    if (markerLength > 0) {
+      // Check if this is an opening marker (followed by content)
+      const afterMarker = editIndex + markerLength;
+      if (afterMarker < editContent.length) {
+        // If the character after the marker is NOT another marker or end of string,
+        // this is an opening marker - skip it
+        const nextMarkerLength = getMarkerLength(editContent.substring(afterMarker));
+        if (nextMarkerLength === 0) {
+          // Opening marker followed by content - skip it
+          editIndex += markerLength;
+          continue;
+        }
+      }
+    }
+    break;
+  }
+
   return editIndex;
+}
+
+/**
+ * Map character position from edit content to view content
+ *
+ * Edit content has markdown syntax visible (e.g., "### *And* again")
+ * View content has markdown syntax stripped (e.g., "And again")
+ *
+ * This accounts for BOTH prefix syntax (###, >, 1.) AND inline markers (**,*,~~,`).
+ * This is the reverse of mapViewPositionToEditPosition.
+ *
+ * @param editPosition - Character position in edit content (0-based)
+ * @param editContent - The edit content (with syntax)
+ * @returns Character position in view content (0-based)
+ *
+ * @example
+ * // Edit: "### *And* again" (cursor at position 5 = 'A')
+ * // View: "And again" (corresponds to position 0 = 'A')
+ * mapEditPositionToViewPosition(5, "### *And* again") // → 0
+ *
+ * @example
+ * // Edit: "**Hello** world" (cursor at position 10 = 'w')
+ * // View: "Hello world" (corresponds to position 6 = 'w')
+ * mapEditPositionToViewPosition(10, "**Hello** world") // → 6
+ */
+export function mapEditPositionToViewPosition(editPosition: number, editContent: string): number {
+  if (editPosition === 0) {
+    return 0;
+  }
+
+  // First, skip any prefix syntax at the start
+  const prefixLength = getPrefixSyntaxLength(editContent);
+
+  // If edit position is within the prefix, view position is 0
+  if (editPosition <= prefixLength) {
+    return 0;
+  }
+
+  let viewIndex = 0;
+  let editIndex = prefixLength; // Start after prefix
+
+  while (editIndex < editPosition && editIndex < editContent.length) {
+    // Check if we're at an inline syntax marker in edit content
+    const markerLength = getMarkerLength(editContent.substring(editIndex));
+
+    if (markerLength > 0) {
+      // Skip markdown syntax markers (don't advance viewIndex)
+      editIndex += markerLength;
+      continue;
+    }
+
+    // Regular character - advance both indices
+    viewIndex++;
+    editIndex++;
+  }
+
+  return viewIndex;
+}
+
+/**
+ * Strip inline markdown markers from a line, preserving prefix syntax
+ *
+ * This strips inline formatting (bold, italic, code, strikethrough) but keeps
+ * prefix syntax like headers (###), quotes (>), and list markers (1. -).
+ *
+ * @param line - The line of text to strip
+ * @returns The line with inline formatting removed but prefix preserved
+ *
+ * @example
+ * stripInlineMarkdown("### *And* again") // → "### And again"
+ * stripInlineMarkdown("**Hello** world") // → "Hello world"
+ */
+export function stripInlineMarkdown(line: string): string {
+  // Strip only inline formatting markers, not prefix syntax
+  return line
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/~~(.*?)~~/g, '$1')
+    .replace(/(?<!\*)\*(?!\*)([^*]+)\*(?!\*)/g, '$1')
+    .replace(/(?<!_)_(?!_)([^_]+)_(?!_)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1');
+}
+
+/**
+ * Strip all markdown from a line - both prefix syntax and inline formatting
+ *
+ * This is used for arrow navigation to get the actual view text that users see.
+ * In view mode:
+ * - Header prefixes (###) are rendered as styled text without the syntax
+ * - Quote prefixes (>) are rendered as styled blocks without the syntax
+ * - List prefixes (1., -, *) are rendered as list items without the syntax
+ * - Inline formatting (**bold**, *italic*, etc.) is rendered without markers
+ *
+ * @param line - The line of text to strip
+ * @returns The line with all markdown syntax removed (what user sees in view mode)
+ *
+ * @example
+ * stripAllMarkdown("### *And* again") // → "And again"
+ * stripAllMarkdown("> **Quote** text") // → "Quote text"
+ * stripAllMarkdown("1. List **item**") // → "List item"
+ */
+export function stripAllMarkdown(line: string): string {
+  // First strip prefix syntax
+  let result = line
+    // Header prefixes: ### Header
+    .replace(/^#{1,6}\s+/, '')
+    // Quote prefixes: > Quote (handle multiple levels)
+    .replace(/^(?:>\s*)+/, '')
+    // Ordered list prefixes: 1. Item, 2. Item, etc.
+    .replace(/^\d+\.\s+/, '')
+    // Unordered list prefixes: - Item, * Item
+    .replace(/^[-*]\s+/, '');
+
+  // Then strip inline formatting
+  result = result
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/~~(.*?)~~/g, '$1')
+    .replace(/(?<!\*)\*(?!\*)([^*]+)\*(?!\*)/g, '$1')
+    .replace(/(?<!_)_(?!_)([^_]+)_(?!_)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1');
+
+  return result;
 }

@@ -121,12 +121,7 @@
     border-color: hsl(var(--accent) / 0.3);
   }
 
-  .ns-noderef:focus {
-    outline: none;
-    background: hsl(var(--accent) / 0.1);
-    border-color: hsl(var(--accent));
-    box-shadow: 0 0 0 2px hsl(var(--accent) / 0.2);
-  }
+  /* Focus styling removed - Tab key used for indent/outdent, not UI navigation */
 
   .ns-noderef--disabled {
     opacity: 0.5;

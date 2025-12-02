@@ -104,7 +104,7 @@ pub struct CreateNodeParams {
     pub content: String,
     /// Optional parent node ID (container/root will be auto-derived from parent chain)
     pub parent_id: Option<String>,
-    /// Optional sibling to insert after (if None, appends to end)
+    /// Optional sibling to insert after (None = insert at beginning of siblings)
     pub insert_after_node_id: Option<String>,
     /// Additional node properties as JSON
     pub properties: Value,
@@ -1230,23 +1230,14 @@ where
 
         // Step 6: Create parent edge if parent specified
         if let Some(parent_id) = params.parent_id {
-            // Calculate sibling position: explicit sibling, or last child (append at end)
-            let final_insert_after = if params.insert_after_node_id.is_some() {
-                params.insert_after_node_id
-            } else {
-                // Find last child to append at end
-                let children = self.get_children(&parent_id).await?;
-                // Exclude the node we just created from the list
-                // Use next_back() instead of last() for DoubleEndedIterator efficiency
-                children
-                    .iter()
-                    .filter(|c| c.id != created_id)
-                    .next_back()
-                    .map(|c| c.id.clone())
-            };
-
-            self.create_parent_edge(&created_id, &parent_id, final_insert_after.as_deref())
-                .await?;
+            // Pass insert_after_node_id directly without translation
+            // None means "insert at beginning" (store.move_node semantics)
+            self.create_parent_edge(
+                &created_id,
+                &parent_id,
+                params.insert_after_node_id.as_deref(),
+            )
+            .await?;
         }
 
         Ok(created_id)
@@ -3084,28 +3075,14 @@ where
         parent_id: &str,
         insert_after_node_id: Option<&str>,
     ) -> Result<(), NodeServiceError> {
-        // API semantics (documented in CreateNodeParams):
-        //   insert_after_node_id = Some(id) → "insert AFTER this sibling"
-        //   insert_after_node_id = None → "append at end of list"
-        //
+        // Pass insert_after_node_id directly to store.move_node without translation
         // store.move_node semantics:
         //   insert_after_node_id = Some(id) → "insert AFTER this sibling"
         //   insert_after_node_id = None → "insert at beginning"
-        //
-        // Translation for None case only:
-        //   insert_after_node_id = None → find last child, insert after it (append at end)
-        let final_insert_after_id = if let Some(sibling_id) = insert_after_node_id {
-            // Explicit sibling specified - insert after it (no translation needed)
-            Some(sibling_id.to_string())
-        } else {
-            // None = append at end → find last child and insert after it
-            let children = self.get_children(parent_id).await?;
-            children.last().map(|c| c.id.clone())
-        };
 
         // Use store's move_node which creates the has_child edge atomically
         self.store
-            .move_node(child_id, Some(parent_id), final_insert_after_id.as_deref())
+            .move_node(child_id, Some(parent_id), insert_after_node_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -6759,16 +6736,16 @@ mod tests {
             );
         }
 
-        /// Test that children are appended at end by default
+        /// Test that None inserts at beginning (new behavior)
         #[tokio::test]
-        async fn test_appends_at_end_by_default() {
+        async fn test_insert_at_beginning_by_default() {
             let (service, _temp) = create_test_service().await;
 
             // Create parent
             let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
             let parent_id = service.create_node(parent).await.unwrap();
 
-            // Create first child
+            // Create first child (None = insert at beginning)
             let params1 = CreateNodeParams {
                 id: Some("test-child-1".to_string()),
                 node_type: "text".to_string(),
@@ -6779,7 +6756,7 @@ mod tests {
             };
             service.create_node_with_parent(params1).await.unwrap();
 
-            // Create second child (should be appended after first)
+            // Create second child (None = insert at beginning, so comes BEFORE first)
             let params2 = CreateNodeParams {
                 id: Some("test-child-2".to_string()),
                 node_type: "text".to_string(),
@@ -6790,11 +6767,11 @@ mod tests {
             };
             service.create_node_with_parent(params2).await.unwrap();
 
-            // Verify order: Child 1, Child 2
+            // Verify order: Child 2, Child 1 (reversed - None inserts at beginning)
             let children = service.get_children(&parent_id).await.unwrap();
             assert_eq!(children.len(), 2);
-            assert_eq!(children[0].content, "Child 1");
-            assert_eq!(children[1].content, "Child 2");
+            assert_eq!(children[0].content, "Child 2");
+            assert_eq!(children[1].content, "Child 1");
         }
 
         #[tokio::test]

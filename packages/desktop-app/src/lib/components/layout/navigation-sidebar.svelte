@@ -1,6 +1,6 @@
 <script lang="ts">
   import { layoutState, navigationItems, toggleSidebar } from '$lib/stores/layout.js';
-  import { tabState, setActiveTab, addTab, DEFAULT_PANE_ID } from '$lib/stores/navigation.js';
+  import { tabState, setActiveTab, addTab } from '$lib/stores/navigation.js';
   import { formatDateISO } from '$lib/utils/date-formatting.js';
   import { v4 as uuidv4 } from 'uuid';
 
@@ -13,6 +13,21 @@
    */
   function getTodayDateId(): string {
     return formatDateISO(new Date());
+  }
+
+  /**
+   * Get the target pane ID for new tabs
+   * Uses active pane, or falls back to first available pane
+   */
+  function getTargetPaneId(): string {
+    const currentState = $tabState;
+    // Use active pane if it exists, otherwise use the first pane
+    const paneExists = currentState.panes.some((p) => p.id === currentState.activePaneId);
+    if (paneExists) {
+      return currentState.activePaneId;
+    }
+    // Fallback to first pane (there should always be at least one)
+    return currentState.panes[0]?.id ?? 'pane-1';
   }
 
   /**
@@ -32,7 +47,7 @@
    * Handle Daily Journal navigation
    * 1. First look for existing tab with today's date
    * 2. If found, make it active
-   * 3. If not found, create new tab in left pane (pane-1)
+   * 3. If not found, create new tab in the active pane (or first available pane)
    */
   function handleDailyJournalClick() {
     const existingTab = findTodayDateTab();
@@ -41,18 +56,20 @@
       // Tab with today's date found - activate it
       setActiveTab(existingTab.id, existingTab.paneId);
     } else {
-      // No tab with today's date - create new one in left pane
+      // No tab with today's date - create new one in active/first pane
+      // Title is a placeholder - DateNodeViewer sets the real title on mount
       const todayId = getTodayDateId();
+      const targetPaneId = getTargetPaneId();
       const newTab = {
         id: uuidv4(),
-        title: 'Daily Journal',
+        title: todayId, // Placeholder - viewer will update to "Today" on mount
         type: 'node' as const,
         content: {
           nodeId: todayId,
           nodeType: 'date'
         },
         closeable: true,
-        paneId: DEFAULT_PANE_ID // Always create in left pane
+        paneId: targetPaneId
       };
 
       addTab(newTab, true); // Make it active

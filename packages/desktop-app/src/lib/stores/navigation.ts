@@ -190,9 +190,20 @@ export function createPane(): Pane | null {
       return state;
     }
 
+    // Generate unique pane ID by finding the highest existing pane number and incrementing
+    // This prevents duplicate IDs when panes are closed and recreated
+    const existingPaneNumbers = state.panes
+      .map((p) => {
+        const match = p.id.match(/^pane-(\d+)$/);
+        return match ? parseInt(match[1], 10) : 0;
+      })
+      .filter((n) => !isNaN(n));
+    const maxPaneNumber = existingPaneNumbers.length > 0 ? Math.max(...existingPaneNumbers) : 0;
+    const newPaneId = `pane-${maxPaneNumber + 1}`;
+
     // Create new pane with 50% width
     const newPane: Pane = {
-      id: `pane-${state.panes.length + 1}`,
+      id: newPaneId,
       width: 50,
       tabIds: []
     };

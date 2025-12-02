@@ -252,8 +252,9 @@ describe('Click-to-Cursor Positioning', () => {
 
     // Position 0 -> skip ** -> position 2
     expect(mapViewPositionToEditPosition(0, view, edit)).toBe(2);
-    // Position 6 -> skip **, then space, then skip _ -> position 10
-    expect(mapViewPositionToEditPosition(6, view, edit)).toBe(10);
+    // Position 6 -> skip **, then space, then skip _ opener -> position 11 (the 'w' char)
+    // Position 10 is the _ marker, position 11 is actual 'w' character
+    expect(mapViewPositionToEditPosition(6, view, edit)).toBe(11);
   });
 
   it('full integration: extract text from view with br tags and create mock element', () => {

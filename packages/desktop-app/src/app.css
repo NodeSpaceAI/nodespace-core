@@ -64,11 +64,11 @@
     /* Layout Dimensions - Single source of truth */
     --sidebar-width: 240px; /* Navigation sidebar width */
     --viewer-padding-horizontal: 1.5rem; /* Horizontal padding for node viewer content area */
-    --viewer-padding-vertical: 1.5rem; /* Top padding for node viewer content area */
+    --viewer-padding-vertical: 0.75rem; /* Top padding for node viewer content area (reduced from 1.5rem) */
     --viewer-padding-bottom: 1rem; /* Bottom padding (reduced due to sticky backlinks panel) */
 
     /* Panel Dimensions */
-    --backlinks-panel-height: var(--sidebar-width); /* Match sidebar width for visual consistency */
+    --backlinks-panel-height: 160px; /* Reduced from 240px (sidebar-width) - ~33% smaller */
 
     /* Z-Index Scale - Systematic stacking context management */
     --z-content: 1; /* Base content layer */

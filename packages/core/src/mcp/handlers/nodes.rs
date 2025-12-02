@@ -216,14 +216,13 @@ pub async fn handle_create_node(
 
     // Create node via NodeService (enforces all business rules)
     // Note: root_id is auto-derived from parent chain by backend
-    // Note: Sibling ordering is now handled via has_child edge order field
     let node_id = node_service
         .create_node_with_parent(crate::services::CreateNodeParams {
             id: None, // MCP generates IDs server-side
             node_type: mcp_params.node_type.clone(),
             content: mcp_params.content,
             parent_id: mcp_params.parent_id,
-            insert_after_node_id: None, // Ordering handled by edge order field
+            insert_after_node_id: None, // Insert at beginning (this endpoint doesn't expose positioning)
             properties: mcp_params.properties,
         })
         .await
