@@ -1031,10 +1031,98 @@ impl NodeBehavior for SchemaNodeBehavior {
     }
 }
 
+/// Fallback behavior for schema-defined custom types
+///
+/// This behavior is used for node types that have a schema definition but no
+/// explicit `NodeBehavior` implementation. It provides minimal validation
+/// suitable for user-defined entity types like "person", "invoice", "customer", etc.
+///
+/// # Validation Rules
+///
+/// - Content can be empty (user-defined types may use properties only)
+/// - Properties must be a valid JSON object
+/// - Schema-level validation is handled separately by `NodeService`
+///
+/// # Usage
+///
+/// This behavior is automatically used as a fallback by `NodeBehaviorRegistry`
+/// when no specific behavior is registered for a node type. It enables schema-driven
+/// extensibility without requiring Rust code for each custom type.
+///
+/// # Examples
+///
+/// ```rust
+/// use nodespace_core::behaviors::{NodeBehavior, CustomNodeBehavior};
+/// use nodespace_core::models::Node;
+/// use serde_json::json;
+///
+/// let behavior = CustomNodeBehavior::new("person");
+/// let node = Node::new(
+///     "person".to_string(),
+///     "John Doe".to_string(),
+///     json!({"email": "john@example.com"}),
+/// );
+/// assert!(behavior.validate(&node).is_ok());
+/// ```
+pub struct CustomNodeBehavior {
+    type_name: String,
+}
+
+impl CustomNodeBehavior {
+    /// Creates a new CustomNodeBehavior for a specific type name
+    pub fn new(type_name: &str) -> Self {
+        Self {
+            type_name: type_name.to_string(),
+        }
+    }
+}
+
+impl NodeBehavior for CustomNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        // SAFETY: This is a workaround for the 'static lifetime requirement.
+        // The type_name is stored in the struct and lives as long as the behavior.
+        // We leak the string to get a static reference. This is acceptable because:
+        // 1. CustomNodeBehavior instances are long-lived (stored in registry)
+        // 2. The number of custom types is bounded by user-defined schemas
+        // 3. Memory is reclaimed when the process exits
+        Box::leak(self.type_name.clone().into_boxed_str())
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // Minimal validation for schema-defined custom types:
+        // - Content can be empty (some entity types may use properties only)
+        // - Properties must be a valid JSON object
+        if !node.properties.is_object() {
+            return Err(NodeValidationError::InvalidProperties(
+                "Properties must be a JSON object".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn can_have_children(&self) -> bool {
+        true // Custom types can have children by default
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false // Custom types don't support markdown by default
+    }
+
+    fn default_metadata(&self) -> serde_json::Value {
+        serde_json::json!({})
+    }
+}
+
 /// Registry for managing node behaviors
 ///
 /// The registry provides thread-safe storage and retrieval of node behaviors.
 /// Built-in behaviors (text, task, date) are registered automatically.
+///
+/// # Fallback Behavior
+///
+/// For node types without explicit behavior registration, the registry provides
+/// a `CustomNodeBehavior` fallback. This enables schema-defined custom types
+/// (like "person", "invoice", "customer") to work without Rust code.
 ///
 /// # Thread Safety
 ///
@@ -1072,6 +1160,14 @@ impl NodeBehavior for SchemaNodeBehavior {
 /// assert!(types.contains(&"text".to_string()));
 /// assert!(types.contains(&"task".to_string()));
 /// assert!(types.contains(&"date".to_string()));
+///
+/// // Custom types also validate (fallback behavior)
+/// let custom_node = Node::new(
+///     "person".to_string(),
+///     "Alice".to_string(),
+///     json!({"email": "alice@example.com"}),
+/// );
+/// assert!(registry.validate_node(&custom_node).is_ok());
 /// ```
 pub struct NodeBehaviorRegistry {
     behaviors: HashMap<String, Arc<dyn NodeBehavior>>,
@@ -1181,8 +1277,10 @@ impl NodeBehaviorRegistry {
     ///
     /// # Errors
     ///
-    /// Returns `ValidationError::InvalidNodeType` if no behavior is registered
-    /// for the node's type, or any validation error from the behavior's `validate()` method.
+    /// For unknown types, uses `CustomNodeBehavior` as a fallback. This enables
+    /// schema-defined custom types to work without explicit behavior registration.
+    ///
+    /// Returns validation errors from the behavior's `validate()` method.
     ///
     /// # Examples
     ///
@@ -1200,20 +1298,19 @@ impl NodeBehaviorRegistry {
     /// );
     /// assert!(registry.validate_node(&valid_node).is_ok());
     ///
-    /// let invalid_node = Node::new(
-    ///     "unknown_type".to_string(),
-    ///     "Content".to_string(),
+    /// // Custom types use fallback behavior
+    /// let custom_node = Node::new(
+    ///     "person".to_string(),
+    ///     "Alice".to_string(),
     ///     json!({}),
     /// );
-    /// assert!(registry.validate_node(&invalid_node).is_err());
+    /// assert!(registry.validate_node(&custom_node).is_ok());
     /// ```
     pub fn validate_node(&self, node: &Node) -> Result<(), NodeValidationError> {
-        let behavior = self.get(&node.node_type).ok_or_else(|| {
-            NodeValidationError::InvalidNodeType(format!(
-                "Unknown node type: {}. No behavior registered.",
-                node.node_type
-            ))
-        })?;
+        // Get registered behavior or use fallback for custom types
+        let behavior: Arc<dyn NodeBehavior> = self
+            .get(&node.node_type)
+            .unwrap_or_else(|| Arc::new(CustomNodeBehavior::new(&node.node_type)));
 
         behavior.validate(node)
     }
@@ -1748,13 +1845,23 @@ mod tests {
         );
         assert!(registry.validate_node(&task_node).is_ok());
 
-        // Unknown node type
+        // Unknown node type now uses CustomNodeBehavior fallback and passes basic validation
         let unknown_node = Node::new("unknown".to_string(), "Content".to_string(), json!({}));
         let result = registry.validate_node(&unknown_node);
+        assert!(
+            result.is_ok(),
+            "Unknown node types should use CustomNodeBehavior fallback"
+        );
+
+        // But invalid properties (non-object) still fail
+        let mut bad_properties_node =
+            Node::new("unknown".to_string(), "Content".to_string(), json!({}));
+        bad_properties_node.properties = serde_json::json!("not an object");
+        let result = registry.validate_node(&bad_properties_node);
         assert!(result.is_err());
         assert!(matches!(
             result,
-            Err(NodeValidationError::InvalidNodeType(_))
+            Err(NodeValidationError::InvalidProperties(_))
         ));
     }
 

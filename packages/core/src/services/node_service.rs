@@ -1588,8 +1588,8 @@ where
     /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
-    /// # let service = NodeService::new(db)?;
+    /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(&mut db).await?;
     /// // Update task status
     /// let update = TaskNodeUpdate::new().with_status(TaskStatus::InProgress);
     /// let task = service.update_task_node("task-123", 1, update).await?;
@@ -4162,8 +4162,8 @@ where
     /// # use serde_json::json;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
-    /// # let service = NodeService::new(db)?;
+    /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(&mut db).await?;
     /// // Create relationship with edge field data
     /// service.create_relationship(
     ///     "task-123",
@@ -4224,20 +4224,21 @@ where
             )));
         }
 
+        // Create SurrealDB Thing (record ID) for source and target nodes
+        let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
+        let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
+
         // 6. Check cardinality constraint (application-level enforcement)
         if relationship.cardinality == crate::models::schema::RelationshipCardinality::One {
             // Query existing edges to check if one already exists
             let edge_table = relationship.compute_edge_table_name(schema_id);
-            let query = format!(
-                "SELECT * FROM {} WHERE in = type::thing('node', $source_id)",
-                edge_table
-            );
+            let query = format!("SELECT * FROM {} WHERE in = $source", edge_table);
 
             let mut result = self
                 .store
                 .db()
                 .query(&query)
-                .bind(("source_id", source_id.to_string()))
+                .bind(("source", source_thing.clone()))
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to check cardinality: {}", e))
@@ -4257,27 +4258,20 @@ where
 
         // 7. Create the edge using RELATE
         let edge_table = relationship.compute_edge_table_name(schema_id);
-        let relate_query = if edge_data.is_null()
-            || edge_data.as_object().is_none_or(|o| o.is_empty())
-        {
-            // No edge data, simple RELATE
-            format!(
-                "RELATE type::thing('node', $source_id)->{}->type::thing('node', $target_id)",
-                edge_table
-            )
-        } else {
-            // With edge data, use CONTENT clause
-            format!(
-                "RELATE type::thing('node', $source_id)->{}->type::thing('node', $target_id) CONTENT $edge_data",
-                edge_table
-            )
-        };
+        let relate_query =
+            if edge_data.is_null() || edge_data.as_object().is_none_or(|o| o.is_empty()) {
+                // No edge data, simple RELATE
+                format!("RELATE $source->{}->$target", edge_table)
+            } else {
+                // With edge data, use CONTENT clause
+                format!("RELATE $source->{}->$target CONTENT $edge_data", edge_table)
+            };
 
         self.store
             .db()
             .query(&relate_query)
-            .bind(("source_id", source_id.to_string()))
-            .bind(("target_id", target_id.to_string()))
+            .bind(("source", source_thing))
+            .bind(("target", target_thing))
             .bind(("edge_data", edge_data))
             .await
             .map_err(|e| {
@@ -4322,8 +4316,8 @@ where
     /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
-    /// # let service = NodeService::new(db)?;
+    /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(&mut db).await?;
     /// service.delete_relationship("task-123", "assigned_to", "person-456").await?;
     /// # Ok(())
     /// # }
@@ -4363,17 +4357,20 @@ where
             })?;
 
         // 3. Delete the edge
+        let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
+        let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
+
         let edge_table = relationship.compute_edge_table_name(schema_id);
         let delete_query = format!(
-            "DELETE FROM {} WHERE in = type::thing('node', $source_id) AND out = type::thing('node', $target_id)",
+            "DELETE FROM {} WHERE in = $source AND out = $target",
             edge_table
         );
 
         self.store
             .db()
             .query(&delete_query)
-            .bind(("source_id", source_id.to_string()))
-            .bind(("target_id", target_id.to_string()))
+            .bind(("source", source_thing))
+            .bind(("target", target_thing))
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to delete relationship: {}", e))
@@ -4417,8 +4414,8 @@ where
     /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
-    /// # let service = NodeService::new(db)?;
+    /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(&mut db).await?;
     /// // Get all people assigned to this task
     /// let assigned = service.get_related_nodes("task-123", "assigned_to", "out").await?;
     /// # Ok(())
@@ -4458,22 +4455,20 @@ where
                 ))
             })?;
 
-        // 3. Query related nodes based on direction
+        // 3. Query related node IDs via edge table (same pattern as get_children)
+        let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.to_string()));
+
         let edge_table = relationship.compute_edge_table_name(schema_id);
-        let query = match direction {
+
+        // First query the edge table to get related node Things
+        let edge_query = match direction {
             "out" => {
-                // Forward: node -> relationship -> targets
-                format!(
-                    "SELECT ->{}->node.* AS nodes FROM type::thing('node', $node_id)",
-                    edge_table
-                )
+                // Forward: get 'out' nodes from edges where 'in' = source node
+                format!("SELECT out FROM {} WHERE in = $node;", edge_table)
             }
             "in" => {
-                // Reverse: sources <- relationship <- node
-                format!(
-                    "SELECT <-{}<-node.* AS nodes FROM type::thing('node', $node_id)",
-                    edge_table
-                )
+                // Reverse: get 'in' nodes from edges where 'out' = source node
+                format!("SELECT in AS out FROM {} WHERE out = $node;", edge_table)
             }
             _ => {
                 return Err(NodeServiceError::invalid_update(format!(
@@ -4483,30 +4478,41 @@ where
             }
         };
 
-        let mut result = self
+        let mut edge_result = self
             .store
             .db()
-            .query(&query)
-            .bind(("node_id", node_id.to_string()))
+            .query(&edge_query)
+            .bind(("node", node_thing))
             .await
             .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to get related nodes: {}", e))
+                NodeServiceError::query_failed(format!("Failed to get related edges: {}", e))
             })?;
 
-        // Parse the result - SurrealDB returns nodes in a nested structure
-        let result_value: Vec<Value> = result.take(0).map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to parse related nodes: {}", e))
+        // Parse edge results to get Thing record IDs
+        #[derive(serde::Deserialize)]
+        struct EdgeOut {
+            out: surrealdb::sql::Thing,
+        }
+
+        let edges: Vec<EdgeOut> = edge_result.take(0).map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to parse related edges: {}", e))
         })?;
 
-        // Extract nodes from the nested structure
+        if edges.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Collect Thing IDs for batch fetch
+        let node_things: Vec<surrealdb::sql::Thing> = edges.into_iter().map(|e| e.out).collect();
+
+        // Fetch full node records by calling get_node for each ID
+        // (This is the same N+1 pattern used elsewhere in the codebase for simplicity)
         let mut nodes = Vec::new();
-        for value in result_value {
-            if let Some(nodes_array) = value.get("nodes").and_then(|v| v.as_array()) {
-                for node_value in nodes_array {
-                    if let Ok(node) = serde_json::from_value::<Node>(node_value.clone()) {
-                        nodes.push(node);
-                    }
-                }
+        for thing in node_things {
+            // Extract the ID from the Thing (format: table:id)
+            let node_id = thing.id.to_raw();
+            if let Some(node) = self.get_node(&node_id).await? {
+                nodes.push(node);
             }
         }
 
@@ -4535,8 +4541,8 @@ where
     /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
-    /// # let service = NodeService::new(db)?;
+    /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(&mut db).await?;
     /// // Get all schemas to understand the data model
     /// let schemas = service.get_all_schemas().await?;
     /// for schema in schemas {
@@ -4578,11 +4584,11 @@ where
     /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
-    /// # let service = NodeService::new(db)?;
+    /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(&mut db).await?;
     /// if let Some(schema) = service.get_schema_with_relationships("invoice").await? {
     ///     for rel in &schema.relationships {
-    ///         println!("{} -> {} ({})", rel.name, rel.target_type, rel.cardinality);
+    ///         println!("{} -> {} ({:?})", rel.name, rel.target_type, rel.cardinality);
     ///     }
     /// }
     /// # Ok(())
@@ -4619,8 +4625,8 @@ where
     /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
-    /// # let service = NodeService::new(db)?;
+    /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(&mut db).await?;
     /// // What relationships point TO customer?
     /// let inbound = service.get_inbound_relationships("customer").await?;
     /// for (source_type, rel) in inbound {
@@ -4665,8 +4671,8 @@ where
     /// # use std::sync::Arc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
-    /// # let service = NodeService::new(db)?;
+    /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
+    /// # let service = NodeService::new(&mut db).await?;
     /// let graph = service.get_relationship_graph().await?;
     /// for (source, rel_name, target) in graph {
     ///     println!("{} --{}-> {}", source, rel_name, target);
@@ -5060,12 +5066,16 @@ mod tests {
 
         // Create one valid node and one invalid node
         let valid_node = Node::new("text".to_string(), "Valid".to_string(), json!({}));
-        // Issue #479: Blank content is now valid, so use invalid node type instead
-        let invalid_node = Node::new("invalid-type".to_string(), "Content".to_string(), json!({}));
+        // Issue #712: Unknown node types now use CustomNodeBehavior fallback
+        // CustomNodeBehavior validates that properties is a JSON object
+        // Using an unknown type with non-object properties triggers validation failure
+        let mut invalid_node =
+            Node::new("custom_type".to_string(), "Content".to_string(), json!({}));
+        invalid_node.properties = json!("not an object"); // Properties must be an object
 
         let nodes = vec![valid_node.clone(), invalid_node];
 
-        // Bulk create should fail (due to invalid node type)
+        // Bulk create should fail (due to invalid properties on custom type)
         let result = service.bulk_create(nodes).await;
         assert!(result.is_err());
 
@@ -7135,22 +7145,20 @@ mod tests {
     }
 
     // ============================================================================
-    // Relationship CRUD API Tests (Issue #703 Phase 4)
+    // Relationship CRUD API Tests (Issue #703 Phase 4, enabled by Issue #712)
     // ============================================================================
     //
-    // TODO: These tests require proper schema seeding with registered behaviors
-    // for custom types. For now, the relationship CRUD API has been manually
-    // tested and will be covered by integration tests when Phase 5 (NLP Discovery)
-    // is implemented with proper schema seeding.
+    // These tests verify relationship CRUD operations using custom schema-defined types.
+    // The CustomNodeBehavior fallback enables schema-defined types without explicit
+    // behavior registration.
 
-    /*
     #[tokio::test]
     async fn test_create_relationship_basic() {
-        let (service, _temp) = create_test_service().await();
+        let (service, _temp) = create_test_service().await;
 
-        // Create schemas (using text type for simplicity - it has registered behavior)
+        // Create schemas for custom types
         let person_schema = Node::new_with_id(
-            "person_type".to_string(),
+            "person_basic".to_string(),
             "schema".to_string(),
             "Person".to_string(),
             json!({"isCore": false, "version": 1, "fields": [], "relationships": []}),
@@ -7158,7 +7166,7 @@ mod tests {
         service.create_node(person_schema).await.unwrap();
 
         let doc_schema = Node::new_with_id(
-            "document".to_string(),
+            "document_basic".to_string(),
             "schema".to_string(),
             "Document".to_string(),
             json!({
@@ -7167,7 +7175,7 @@ mod tests {
                 "fields": [],
                 "relationships": [{
                     "name": "authored_by",
-                    "targetType": "person_type",
+                    "targetType": "person_basic",
                     "direction": "out",
                     "cardinality": "many"
                 }]
@@ -7175,10 +7183,10 @@ mod tests {
         );
         service.create_node(doc_schema).await.unwrap();
 
-        // Create nodes using "text" type (has registered behavior)
+        // Create nodes using custom schema-defined types (uses CustomNodeBehavior fallback)
         let doc = Node::new_with_id(
             "doc-1".to_string(),
-            "text".to_string(),
+            "document_basic".to_string(),
             "Architecture Doc".to_string(),
             json!({}),
         );
@@ -7186,7 +7194,7 @@ mod tests {
 
         let person = Node::new_with_id(
             "person-1".to_string(),
-            "person".to_string(),
+            "person_basic".to_string(),
             "Alice".to_string(),
             json!({}),
         );
@@ -7194,13 +7202,13 @@ mod tests {
 
         // Create relationship
         service
-            .create_relationship("task-1", "assigned_to", "person-1", json!({}))
+            .create_relationship("doc-1", "authored_by", "person-1", json!({}))
             .await
             .unwrap();
 
         // Verify relationship exists
         let related = service
-            .get_related_nodes("task-1", "assigned_to", "out")
+            .get_related_nodes("doc-1", "authored_by", "out")
             .await
             .unwrap();
         assert_eq!(related.len(), 1);
@@ -7212,12 +7220,12 @@ mod tests {
     async fn test_create_relationship_with_edge_data() {
         let (service, _temp) = create_test_service().await;
 
-        // Create schemas
+        // Create schemas for custom types with edge fields
         let person_schema = Node::new_with_id(
-            "person".to_string(),
+            "person_edge".to_string(),
             "schema".to_string(),
             "Person".to_string(),
-            json!({"isCore": true, "version": 1, "fields": [], "relationships": []}),
+            json!({"isCore": false, "version": 1, "fields": [], "relationships": []}),
         );
         service.create_node(person_schema).await.unwrap();
 
@@ -7226,17 +7234,17 @@ mod tests {
             "schema".to_string(),
             "Task".to_string(),
             json!({
-                "isCore": true,
+                "isCore": false,
                 "version": 1,
                 "fields": [],
                 "relationships": [{
                     "name": "assigned_to",
-                    "targetType": "person",
+                    "targetType": "person_edge",
                     "direction": "out",
                     "cardinality": "many",
                     "edgeFields": [{
                         "name": "role",
-                        "fieldType": "string",
+                        "type": "string",
                         "required": true
                     }]
                 }]
@@ -7244,7 +7252,7 @@ mod tests {
         );
         service.create_node(task_schema).await.unwrap();
 
-        // Create nodes
+        // Create nodes using custom schema-defined types
         let task = Node::new_with_id(
             "task-2".to_string(),
             "task_edge".to_string(),
@@ -7255,7 +7263,7 @@ mod tests {
 
         let person = Node::new_with_id(
             "person-2".to_string(),
-            "person".to_string(),
+            "person_edge".to_string(),
             "Bob".to_string(),
             json!({}),
         );
@@ -7285,12 +7293,12 @@ mod tests {
     async fn test_delete_relationship() {
         let (service, _temp) = create_test_service().await;
 
-        // Create schemas
+        // Create schemas for custom types
         let person_schema = Node::new_with_id(
-            "person".to_string(),
+            "person_del".to_string(),
             "schema".to_string(),
             "Person".to_string(),
-            json!({"isCore": true, "version": 1, "fields": [], "relationships": []}),
+            json!({"isCore": false, "version": 1, "fields": [], "relationships": []}),
         );
         service.create_node(person_schema).await.unwrap();
 
@@ -7299,12 +7307,12 @@ mod tests {
             "schema".to_string(),
             "Task".to_string(),
             json!({
-                "isCore": true,
+                "isCore": false,
                 "version": 1,
                 "fields": [],
                 "relationships": [{
                     "name": "assigned_to",
-                    "targetType": "person",
+                    "targetType": "person_del",
                     "direction": "out",
                     "cardinality": "many"
                 }]
@@ -7312,7 +7320,7 @@ mod tests {
         );
         service.create_node(task_schema).await.unwrap();
 
-        // Create nodes and relationship
+        // Create nodes using custom schema-defined types
         let task = Node::new_with_id(
             "task-3".to_string(),
             "task_del".to_string(),
@@ -7323,7 +7331,7 @@ mod tests {
 
         let person = Node::new_with_id(
             "person-3".to_string(),
-            "person".to_string(),
+            "person_del".to_string(),
             "Charlie".to_string(),
             json!({}),
         );
@@ -7359,9 +7367,9 @@ mod tests {
     async fn test_relationship_cardinality_one_enforcement() {
         let (service, _temp) = create_test_service().await;
 
-        // Create schemas
+        // Create schemas for custom types with cardinality constraint
         let customer_schema = Node::new_with_id(
-            "customer".to_string(),
+            "customer_card".to_string(),
             "schema".to_string(),
             "Customer".to_string(),
             json!({"isCore": false, "version": 1, "fields": [], "relationships": []}),
@@ -7378,7 +7386,7 @@ mod tests {
                 "fields": [],
                 "relationships": [{
                     "name": "billed_to",
-                    "targetType": "customer",
+                    "targetType": "customer_card",
                     "direction": "out",
                     "cardinality": "one"
                 }]
@@ -7386,7 +7394,7 @@ mod tests {
         );
         service.create_node(invoice_schema).await.unwrap();
 
-        // Create nodes
+        // Create nodes using custom schema-defined types
         let invoice = Node::new_with_id(
             "inv-1".to_string(),
             "invoice_card".to_string(),
@@ -7397,7 +7405,7 @@ mod tests {
 
         let customer1 = Node::new_with_id(
             "cust-1".to_string(),
-            "customer".to_string(),
+            "customer_card".to_string(),
             "Acme Corp".to_string(),
             json!({}),
         );
@@ -7405,7 +7413,7 @@ mod tests {
 
         let customer2 = Node::new_with_id(
             "cust-2".to_string(),
-            "customer".to_string(),
+            "customer_card".to_string(),
             "Initech".to_string(),
             json!({}),
         );
@@ -7431,17 +7439,17 @@ mod tests {
     async fn test_relationship_target_type_validation() {
         let (service, _temp) = create_test_service().await;
 
-        // Create schemas
+        // Create schemas for custom types with target type constraints
         let person_schema = Node::new_with_id(
-            "person".to_string(),
+            "person_valid".to_string(),
             "schema".to_string(),
             "Person".to_string(),
-            json!({"isCore": true, "version": 1, "fields": [], "relationships": []}),
+            json!({"isCore": false, "version": 1, "fields": [], "relationships": []}),
         );
         service.create_node(person_schema).await.unwrap();
 
         let project_schema = Node::new_with_id(
-            "project".to_string(),
+            "project_valid".to_string(),
             "schema".to_string(),
             "Project".to_string(),
             json!({"isCore": false, "version": 1, "fields": [], "relationships": []}),
@@ -7453,12 +7461,12 @@ mod tests {
             "schema".to_string(),
             "Task".to_string(),
             json!({
-                "isCore": true,
+                "isCore": false,
                 "version": 1,
                 "fields": [],
                 "relationships": [{
                     "name": "assigned_to",
-                    "targetType": "person",
+                    "targetType": "person_valid",
                     "direction": "out",
                     "cardinality": "many"
                 }]
@@ -7466,7 +7474,7 @@ mod tests {
         );
         service.create_node(task_schema).await.unwrap();
 
-        // Create nodes
+        // Create nodes using custom schema-defined types
         let task = Node::new_with_id(
             "task-4".to_string(),
             "task_valid".to_string(),
@@ -7477,7 +7485,7 @@ mod tests {
 
         let project = Node::new_with_id(
             "proj-1".to_string(),
-            "project".to_string(),
+            "project_valid".to_string(),
             "NodeSpace".to_string(),
             json!({}),
         );
@@ -7497,12 +7505,12 @@ mod tests {
     async fn test_get_related_nodes_reverse_direction() {
         let (service, _temp) = create_test_service().await;
 
-        // Create schemas
+        // Create schemas for custom types with reverse relationship
         let person_schema = Node::new_with_id(
-            "person".to_string(),
+            "person_rev".to_string(),
             "schema".to_string(),
             "Person".to_string(),
-            json!({"isCore": true, "version": 1, "fields": [], "relationships": []}),
+            json!({"isCore": false, "version": 1, "fields": [], "relationships": []}),
         );
         service.create_node(person_schema).await.unwrap();
 
@@ -7511,12 +7519,12 @@ mod tests {
             "schema".to_string(),
             "Task".to_string(),
             json!({
-                "isCore": true,
+                "isCore": false,
                 "version": 1,
                 "fields": [],
                 "relationships": [{
                     "name": "assigned_to",
-                    "targetType": "person",
+                    "targetType": "person_rev",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "tasks"
@@ -7525,10 +7533,10 @@ mod tests {
         );
         service.create_node(task_schema).await.unwrap();
 
-        // Create nodes
+        // Create nodes using custom schema-defined types
         let person = Node::new_with_id(
             "person-4".to_string(),
-            "person".to_string(),
+            "person_rev".to_string(),
             "Dave".to_string(),
             json!({}),
         );
@@ -7574,7 +7582,6 @@ mod tests {
         // TODO: Implement inbound relationship discovery (Phase 5) for this to work
         // properly from the person's perspective
     }
-    */
 
     /// Tests for type-safe task node CRUD operations (Issue #709)
     ///

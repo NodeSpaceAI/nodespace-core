@@ -647,18 +647,26 @@ where
     }
 
     /// Generate DDL for a single edge table
+    ///
+    /// # Parameters
+    /// - `edge_table`: Name of the edge table to create
+    /// - `_source_type`: Reserved for future type-specific validation (e.g., enforcing
+    ///   that only nodes of the source type can be the `in` side of relationships)
+    /// - `relationship`: Schema relationship definition with edge fields and constraints
     fn generate_edge_table_ddl(
         &self,
         edge_table: &str,
-        source_type: &str,
+        _source_type: &str,
         relationship: &SchemaRelationship,
     ) -> Result<Vec<String>, NodeServiceError> {
         let mut statements = Vec::new();
 
         // 1. Define edge table with RELATION type
+        // Note: All nodes are stored in the universal 'node' table (hub-and-spoke architecture)
+        // so IN and OUT must reference 'node', not the schema type names
         statements.push(format!(
-            "DEFINE TABLE IF NOT EXISTS {} SCHEMAFULL TYPE RELATION IN {} OUT {};",
-            edge_table, source_type, relationship.target_type
+            "DEFINE TABLE IF NOT EXISTS {} SCHEMAFULL TYPE RELATION IN node OUT node;",
+            edge_table
         ));
 
         // 2. Core tracking fields (always generated)
