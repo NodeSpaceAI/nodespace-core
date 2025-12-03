@@ -18,6 +18,7 @@ import AIIcon from './components/ai-icon.svelte';
 import CodeBlockIcon from './components/code-block-icon.svelte';
 import QuoteBlockIcon from './components/quote-block-icon.svelte';
 import OrderedListIcon from './components/ordered-list-icon.svelte';
+import QueryIcon from './components/query-icon.svelte';
 
 // Dynamic node types - can be extended by plugins
 export type NodeType = string;
@@ -140,11 +141,11 @@ class IconRegistry {
 
     // Query nodes - for search queries and filters
     this.register('query', {
-      component: CircleIcon,
+      component: QueryIcon,
       semanticClass: 'node-icon',
       colorVar: 'hsl(var(--node-query, 200 40% 45%))',
       hasState: false,
-      hasRingEffect: true
+      hasRingEffect: false // Query nodes are leaf nodes (no children)
     });
 
     // Code block nodes - for code snippets with language selection

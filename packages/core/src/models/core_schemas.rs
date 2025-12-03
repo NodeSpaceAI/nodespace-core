@@ -248,6 +248,149 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             fields: vec![],
             relationships: vec![],
         },
+        // Query schema - saved query definitions
+        SchemaNode {
+            id: "query".to_string(),
+            content: "Query".to_string(),
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            is_core: true,
+            schema_version: 1,
+            description: "Query definition for filtering and searching nodes".to_string(),
+            fields: vec![
+                SchemaField {
+                    name: "target_type".to_string(),
+                    field_type: "text".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: true, // Creates spoke table column
+                    required: Some(true),
+                    extensible: None,
+                    default: Some(serde_json::json!("*")),
+                    description: Some("Target node type to query (* for all)".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "filters".to_string(),
+                    field_type: "array".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(true),
+                    extensible: None,
+                    default: Some(serde_json::json!([])),
+                    description: Some("Filter conditions array".to_string()),
+                    item_type: Some("object".to_string()),
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "sorting".to_string(),
+                    field_type: "array".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("Sorting configuration array".to_string()),
+                    item_type: Some("object".to_string()),
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "limit".to_string(),
+                    field_type: "number".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: Some(serde_json::json!(50)),
+                    description: Some("Result limit".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "generated_by".to_string(),
+                    field_type: "enum".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: Some(vec![
+                        EnumValue {
+                            value: "ai".to_string(),
+                            label: "AI Generated".to_string(),
+                        },
+                        EnumValue {
+                            value: "user".to_string(),
+                            label: "User Created".to_string(),
+                        },
+                    ]),
+                    user_values: Some(vec![]),
+                    indexed: true,
+                    required: Some(true),
+                    extensible: Some(false),
+                    default: Some(serde_json::json!("user")),
+                    description: Some("Who created the query".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "generator_context".to_string(),
+                    field_type: "text".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: true,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("Parent chat ID for AI-generated queries".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "execution_count".to_string(),
+                    field_type: "number".to_string(),
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: Some(serde_json::json!(0)),
+                    description: Some("Number of times query has been executed".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "last_executed".to_string(),
+                    field_type: "date".to_string(),
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("Timestamp of last execution".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+            ],
+            relationships: vec![],
+        },
     ]
 }
 
@@ -256,9 +399,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_core_schemas_returns_all_seven() {
+    fn test_get_core_schemas_returns_all_eight() {
         let schemas = get_core_schemas();
-        assert_eq!(schemas.len(), 7);
+        assert_eq!(schemas.len(), 8);
     }
 
     #[test]
@@ -299,6 +442,22 @@ mod tests {
                 id
             );
         }
+    }
+
+    #[test]
+    fn test_query_schema_has_fields() {
+        let schemas = get_core_schemas();
+        let query = schemas.iter().find(|s| s.id == "query").unwrap();
+
+        assert_eq!(query.fields.len(), 8);
+        assert!(query.get_field("target_type").is_some());
+        assert!(query.get_field("filters").is_some());
+        assert!(query.get_field("sorting").is_some());
+        assert!(query.get_field("limit").is_some());
+        assert!(query.get_field("generated_by").is_some());
+        assert!(query.get_field("generator_context").is_some());
+        assert!(query.get_field("execution_count").is_some());
+        assert!(query.get_field("last_executed").is_some());
     }
 
     #[test]

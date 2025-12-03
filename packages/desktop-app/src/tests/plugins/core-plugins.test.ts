@@ -124,7 +124,7 @@ describe('Core Plugins Integration', () => {
 
   describe('Core Plugins Collection', () => {
     it('should export all core plugins in corePlugins array', () => {
-      expect(corePlugins).toHaveLength(8); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list
+      expect(corePlugins).toHaveLength(9); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, query
       expect(corePlugins).toContain(textNodePlugin);
       expect(corePlugins).toContain(headerNodePlugin);
       expect(corePlugins).toContain(taskNodePlugin);
@@ -146,7 +146,7 @@ describe('Core Plugins Integration', () => {
     it('should register all core plugins successfully', () => {
       registerCorePlugins(registry);
 
-      expect(registry.getAllPlugins()).toHaveLength(8); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list
+      expect(registry.getAllPlugins()).toHaveLength(9); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, query
 
       // Verify each core plugin is registered
       for (const plugin of corePlugins) {
@@ -161,10 +161,10 @@ describe('Core Plugins Integration', () => {
       expect(consoleSpy).toHaveBeenCalledWith(
         '[UnifiedPluginRegistry] Core plugins registered:',
         expect.objectContaining({
-          plugins: 8, // text, header, task, ai-chat, date, code-block, quote-block, ordered-list
+          plugins: 9, // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, query
           slashCommands: expect.any(Number),
           viewers: 2, // date and task have custom viewers (TaskNodeViewer added in Issue #715)
-          references: 8 // all plugins have references
+          references: 9 // all plugins have references
         })
       );
     });
@@ -174,8 +174,8 @@ describe('Core Plugins Integration', () => {
 
       const stats = registry.getStats();
 
-      // text: 1, header: 3, task: 1, ai-chat: 1, code-block: 1, quote-block: 1, ordered-list: 1, date: 0 = 9 total
-      expect(stats.slashCommandsCount).toBe(9);
+      // text: 1, header: 3, task: 1, ai-chat: 1, code-block: 1, quote-block: 1, ordered-list: 1, query: 1, date: 0 = 10 total
+      expect(stats.slashCommandsCount).toBe(10);
     });
 
     it('should provide all slash commands with proper inheritance', () => {
@@ -183,7 +183,7 @@ describe('Core Plugins Integration', () => {
 
       const commands = registry.getAllSlashCommands();
 
-      expect(commands).toHaveLength(9); // text, header1-3, task, ai-chat, code, quote, ordered-list
+      expect(commands).toHaveLength(10); // text, header1-3, task, ai-chat, code, quote, ordered-list, query
 
       // Verify text node commands from BasicNodeTypeRegistry work
       const textCommands = commands.filter((cmd) =>
@@ -356,7 +356,7 @@ describe('Core Plugins Integration', () => {
       registerExternalPlugin(registry, externalPlugin);
 
       expect(registry.getAllPlugins()).toHaveLength(initialCount + 1);
-      expect(registry.getAllSlashCommands()).toHaveLength(10); // 9 core + 1 external
+      expect(registry.getAllSlashCommands()).toHaveLength(11); // 10 core + 1 external
     });
   });
 
@@ -389,7 +389,7 @@ describe('Core Plugins Integration', () => {
     });
 
     it('should handle registry clearing', () => {
-      expect(registry.getAllPlugins()).toHaveLength(8); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list
+      expect(registry.getAllPlugins()).toHaveLength(9); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, query
 
       registry.clear();
 
