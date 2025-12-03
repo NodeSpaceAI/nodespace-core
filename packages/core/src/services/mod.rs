@@ -9,7 +9,7 @@
 //! - `MigrationRegistry` - Schema migration infrastructure (for future use)
 //! - `InboundRelationshipCache` - Fast NLP discovery of inbound relationships
 //! - `McpServerService` - MCP server lifecycle management (Issue #715)
-//! - `SearchService` - Semantic search and query operations (planned)
+//! - `QueryService` - Query execution with SQL translation (Issue #440)
 //!
 //! Schema nodes are managed via generic NodeService CRUD operations (Issue #690).
 //! Validation is handled by SchemaNodeBehavior. DDL generation by SchemaTableManager.
@@ -24,6 +24,7 @@ pub mod mcp_server_service;
 pub mod migration_registry;
 pub mod migrations;
 pub mod node_service;
+pub mod query_service;
 pub mod relationship_cache;
 pub mod schema_table_manager;
 
@@ -36,5 +37,9 @@ pub use error::NodeServiceError;
 pub use mcp_server_service::{default_mcp_port, McpResponseCallback, McpServerService};
 pub use migration_registry::{MigrationRegistry, MigrationTransform};
 pub use node_service::{CreateNodeParams, NodeService};
+pub use query_service::{
+    FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService, RelationshipType,
+    SortConfig, SortDirection,
+};
 pub use relationship_cache::{CacheStats, InboundRelationship, InboundRelationshipCache};
 pub use schema_table_manager::SchemaTableManager;
