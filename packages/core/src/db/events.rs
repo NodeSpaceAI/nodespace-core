@@ -17,7 +17,6 @@
 //! 3. All subscribers receive the event asynchronously
 //! 4. LiveQueryService (Tauri layer) listens to events and forwards to frontend
 
-use crate::models::Node;
 use serde::{Deserialize, Serialize};
 
 /// Represents hierarchy relationships between nodes (parent-child with ordering)
@@ -56,17 +55,23 @@ pub enum EdgeRelationship {
 ///
 /// Each event includes an optional `source_client_id` to identify the originating client,
 /// allowing event subscribers to filter out their own events (prevent feedback loops).
+///
+/// Node events carry `node_data` as `serde_json::Value` containing type-specific data
+/// (TaskNode with flat status/priority fields, SchemaNode, etc.) instead of generic Node struct.
+/// This eliminates conversion duplication in consumers (SSE bridge, frontend).
 #[derive(Debug, Clone)]
 pub enum DomainEvent {
     /// A new node was created
     NodeCreated {
-        node: Node,
+        node_id: String,
+        node_data: serde_json::Value,
         source_client_id: Option<String>,
     },
 
     /// An existing node was updated
     NodeUpdated {
-        node: Node,
+        node_id: String,
+        node_data: serde_json::Value,
         source_client_id: Option<String>,
     },
 

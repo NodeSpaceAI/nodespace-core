@@ -74,15 +74,18 @@ mod event_emission_tests {
             .expect("Event should be emitted within 1 second")
             .expect("Should receive event");
 
-        // Verify it's a NodeCreated event with correct client_id
+        // Verify it's a NodeCreated event with correct client_id and typed data
         match event {
             DomainEvent::NodeCreated {
-                node: created_node,
+                node_id,
+                node_data,
                 source_client_id,
             } => {
-                assert_eq!(created_node.id, expected_id);
-                assert_eq!(created_node.node_type, "text");
-                assert_eq!(created_node.content, "Test content");
+                assert_eq!(node_id, expected_id);
+                // Verify node_data contains typed JSON with expected fields
+                assert_eq!(node_data["id"], expected_id);
+                assert_eq!(node_data["nodeType"], "text");
+                assert_eq!(node_data["content"], "Test content");
                 assert_eq!(source_client_id, Some(TEST_CLIENT_ID.to_string()));
             }
             _ => panic!("Expected NodeCreated event, got {:?}", event),
@@ -120,14 +123,17 @@ mod event_emission_tests {
             .expect("Event should be emitted within 1 second")
             .expect("Should receive event");
 
-        // Verify it's a NodeUpdated event with correct client_id
+        // Verify it's a NodeUpdated event with correct client_id and typed data
         match event {
             DomainEvent::NodeUpdated {
-                node: updated,
+                node_id: updated_id,
+                node_data,
                 source_client_id,
             } => {
-                assert_eq!(updated.id, node_id);
-                assert_eq!(updated.content, "Updated content");
+                assert_eq!(updated_id, node_id);
+                // Verify node_data contains typed JSON with updated content
+                assert_eq!(node_data["id"], node_id);
+                assert_eq!(node_data["content"], "Updated content");
                 assert_eq!(source_client_id, Some(TEST_CLIENT_ID.to_string()));
             }
             _ => panic!("Expected NodeUpdated event, got {:?}", event),

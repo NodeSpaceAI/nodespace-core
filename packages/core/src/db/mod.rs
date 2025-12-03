@@ -29,4 +29,6 @@ pub use error::DatabaseError;
 pub use events::{DomainEvent, EdgeRelationship, HierarchyRelationship, MentionRelationship};
 pub use fractional_ordering::FractionalOrderCalculator;
 pub use index_manager::IndexManager;
-pub use surreal_store::{EdgeRecord, EmbeddedStore, HttpStore, SurrealStore};
+pub use surreal_store::{
+    EdgeRecord, EmbeddedStore, HttpStore, StoreChange, StoreOperation, SurrealStore,
+};

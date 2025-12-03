@@ -70,7 +70,7 @@ pub enum SseEvent {
         #[serde(rename = "nodeId")]
         node_id: String,
         #[serde(rename = "nodeData")]
-        node_data: Node,
+        node_data: serde_json::Value,
         #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
         client_id: Option<String>,
     },
@@ -79,7 +79,7 @@ pub enum SseEvent {
         #[serde(rename = "nodeId")]
         node_id: String,
         #[serde(rename = "nodeData")]
-        node_data: Node,
+        node_data: serde_json::Value,
         #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
         client_id: Option<String>,
     },
@@ -518,26 +518,28 @@ async fn domain_event_to_sse_bridge(
                 // Convert DomainEvent to SseEvent(s)
                 match event {
                     DomainEvent::NodeCreated {
-                        node,
+                        node_id,
+                        node_data,
                         source_client_id,
                     } => {
                         // Filter out events from dev-proxy (browser operations)
                         if source_client_id.as_deref() == Some("dev-proxy") {
                             tracing::debug!(
                                 "Filtering out NodeCreated event from dev-proxy for node {}",
-                                node.id
+                                node_id
                             );
                             continue;
                         }
 
                         let _ = sse_tx.send(SseEvent::NodeCreated {
-                            node_id: node.id.clone(),
-                            node_data: node,
+                            node_id: node_id.clone(),
+                            node_data,
                             client_id: source_client_id,
                         });
                     }
                     DomainEvent::NodeUpdated {
-                        node,
+                        node_id,
+                        node_data,
                         source_client_id,
                     } => {
                         // Filter out events from dev-proxy (browser operations)
@@ -545,19 +547,19 @@ async fn domain_event_to_sse_bridge(
                         if source_client_id.as_deref() == Some("dev-proxy") {
                             tracing::debug!(
                                 "Filtering out NodeUpdated event from dev-proxy for node {}",
-                                node.id
+                                node_id
                             );
                             continue;
                         }
 
                         tracing::info!(
                             "📤 Broadcasting NodeUpdated SSE event for node {} (source_client_id: {:?})",
-                            node.id,
+                            node_id,
                             source_client_id
                         );
                         let result = sse_tx.send(SseEvent::NodeUpdated {
-                            node_id: node.id.clone(),
-                            node_data: node,
+                            node_id: node_id.clone(),
+                            node_data,
                             client_id: source_client_id,
                         });
                         tracing::debug!("📤 SSE broadcast result: {:?}", result);

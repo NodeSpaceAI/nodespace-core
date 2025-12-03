@@ -26,9 +26,9 @@
 
 use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::events::DomainEvent;
-use crate::db::SurrealStore;
+use crate::db::{StoreChange, StoreOperation, SurrealStore};
 use crate::models::schema::SchemaRelationship;
-use crate::models::{Node, NodeFilter, NodeUpdate};
+use crate::models::{node_to_typed_value, Node, NodeFilter, NodeUpdate};
 use crate::services::error::NodeServiceError;
 use crate::services::migration_registry::MigrationRegistry;
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -435,6 +435,55 @@ where
         // Initialize broadcast channel for domain events
         let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
 
+        // Register store-level notifier for automatic domain event emission (Issue #718)
+        // This callback converts StoreChange notifications to DomainEvents.
+        // Must be set BEFORE seed_core_schemas so schema seeding also emits events.
+        {
+            let tx = event_tx.clone();
+            let notifier = Arc::new(move |change: StoreChange| {
+                // Convert node to typed JSON value for the event payload
+                let node_data = node_to_typed_value(change.node.clone()).unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "Failed to convert node {} to typed value: {}, using generic Node",
+                        change.node.id,
+                        e
+                    );
+                    // SAFETY: Node derives Serialize, so to_value cannot fail.
+                    // This fallback ensures we always emit an event even if typed conversion fails.
+                    serde_json::to_value(&change.node).unwrap()
+                });
+
+                // Map store operation to domain event
+                let event = match change.operation {
+                    StoreOperation::Created => DomainEvent::NodeCreated {
+                        node_id: change.node.id.clone(),
+                        node_data,
+                        source_client_id: change.source,
+                    },
+                    StoreOperation::Updated => DomainEvent::NodeUpdated {
+                        node_id: change.node.id.clone(),
+                        node_data,
+                        source_client_id: change.source,
+                    },
+                    StoreOperation::Deleted => DomainEvent::NodeDeleted {
+                        id: change.node.id.clone(),
+                        source_client_id: change.source,
+                    },
+                };
+
+                // Send to broadcast channel (ignore if no subscribers)
+                let _ = tx.send(event);
+            });
+
+            // Get mutable reference to store to set notifier
+            let store_mut = Arc::get_mut(store).ok_or_else(|| {
+                NodeServiceError::InitializationError(
+                    "Cannot set notifier: SurrealStore Arc has multiple references".to_string(),
+                )
+            })?;
+            store_mut.set_notifier(notifier);
+        }
+
         // Seed core schemas if needed (Issue #704)
         // This must happen BEFORE we clone the Arc into Self, so we can use Arc::get_mut()
         // to update schema caches incrementally during seeding.
@@ -537,7 +586,7 @@ where
 
                 // Atomically create schema node + execute DDL
                 store
-                    .create_schema_node_atomic(node, ddl_statements)
+                    .create_schema_node_atomic(node, ddl_statements, None)
                     .await
                     .map_err(|e| {
                         NodeServiceError::SerializationError(format!(
@@ -643,6 +692,9 @@ where
     fn emit_event(&self, event: DomainEvent) {
         let _ = self.event_tx.send(event);
     }
+
+    // NOTE: emit_node_created and emit_node_updated helpers removed (Issue #718)
+    // Node events are now automatically emitted by store-level notifier in NodeService::new()
 
     /// Create a new node
     ///
@@ -960,7 +1012,7 @@ where
             ..Default::default()
         };
         self.store
-            .update_node(&node.id, update)
+            .update_node(&node.id, update, self.client_id.clone())
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to persist migrated node: {}", e))
@@ -1081,24 +1133,22 @@ where
 
             // Execute atomic create: schema node + spoke DDL + edge DDL in one transaction
             self.store
-                .create_schema_node_atomic(node.clone(), ddl_statements)
+                .create_schema_node_atomic(node.clone(), ddl_statements, self.client_id.clone())
                 .await
                 .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
             tracing::info!("Atomically created schema node '{}' with DDL sync", node.id);
         } else {
             // Regular node creation
-            self.store.create_node(node.clone()).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to insert node: {}", e))
-            })?;
+            self.store
+                .create_node(node.clone(), self.client_id.clone())
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to insert node: {}", e))
+                })?;
         }
 
-        // Emit NodeCreated event (Phase 2 of Issue #665)
-        // source_client_id will be added in Phase 3
-        self.emit_event(DomainEvent::NodeCreated {
-            node: node.clone(),
-            source_client_id: self.client_id.clone(),
-        });
+        // NOTE: NodeCreated event is now automatically emitted by store notifier (Issue #718)
 
         Ok(node.id)
     }
@@ -1856,7 +1906,7 @@ where
 
             // Execute atomic update: node + spoke DDL + edge DDL in one transaction
             self.store
-                .update_schema_node_atomic(id, node_update, ddl_statements)
+                .update_schema_node_atomic(id, node_update, ddl_statements, self.client_id.clone())
                 .await
                 .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -1864,16 +1914,12 @@ where
         } else {
             // Regular node update
             self.store
-                .update_node(id, node_update)
+                .update_node(id, node_update, self.client_id.clone())
                 .await
                 .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
         }
 
-        // Emit NodeUpdated event (Phase 2 of Issue #665)
-        self.emit_event(DomainEvent::NodeUpdated {
-            node: updated.clone(),
-            source_client_id: self.client_id.clone(),
-        });
+        // NOTE: NodeUpdated event is now automatically emitted by store notifier (Issue #718)
 
         // Sync mentions if content changed
         if content_changed {
@@ -2013,7 +2059,12 @@ where
         // Perform atomic update with version check
         let result = self
             .store
-            .update_node_with_version_check(id, expected_version, node_update)
+            .update_node_with_version_check(
+                id,
+                expected_version,
+                node_update,
+                self.client_id.clone(),
+            )
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -2025,11 +2076,7 @@ where
             return Ok(0);
         }
 
-        // Emit NodeUpdated event (Phase 2 of Issue #665)
-        self.emit_event(DomainEvent::NodeUpdated {
-            node: updated.clone(),
-            source_client_id: self.client_id.clone(),
-        });
+        // NOTE: NodeUpdated event is now automatically emitted by store notifier (Issue #718)
 
         // Mark embedding as stale if content changed
         if content_changed {
@@ -2254,19 +2301,17 @@ where
         id: &str,
     ) -> Result<crate::models::DeleteResult, NodeServiceError> {
         // Delegate to SurrealStore
-        let result = self.store.delete_node(id).await.map_err(|e| {
-            NodeServiceError::DatabaseError(crate::db::DatabaseError::SqlExecutionError {
-                context: format!("Database operation failed: {}", e),
-            })
-        })?;
+        let result = self
+            .store
+            .delete_node(id, self.client_id.clone())
+            .await
+            .map_err(|e| {
+                NodeServiceError::DatabaseError(crate::db::DatabaseError::SqlExecutionError {
+                    context: format!("Database operation failed: {}", e),
+                })
+            })?;
 
-        // Emit NodeDeleted event if node was actually deleted (Phase 2 of Issue #665)
-        if result.existed {
-            self.emit_event(DomainEvent::NodeDeleted {
-                id: id.to_string(),
-                source_client_id: self.client_id.clone(),
-            });
-        }
+        // NOTE: NodeDeleted event is now automatically emitted by store notifier (Issue #718)
 
         // Idempotent delete: return success even if node doesn't exist
         // This follows RESTful best practices and prevents race conditions
@@ -2320,7 +2365,7 @@ where
     ) -> Result<usize, NodeServiceError> {
         let rows_affected = self
             .store
-            .delete_with_version_check(id, expected_version)
+            .delete_with_version_check(id, expected_version, self.client_id.clone())
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!(
@@ -2329,13 +2374,7 @@ where
                 ))
             })?;
 
-        // Emit NodeDeleted event if node was actually deleted (Phase 2 of Issue #665)
-        if rows_affected > 0 {
-            self.emit_event(DomainEvent::NodeDeleted {
-                id: id.to_string(),
-                source_client_id: self.client_id.clone(),
-            });
-        }
+        // NOTE: NodeDeleted event is now automatically emitted by store notifier (Issue #718)
 
         Ok(rows_affected)
     }
@@ -3233,7 +3272,12 @@ where
         // Perform atomic update with version check
         let result = self
             .store
-            .update_node_with_version_check(node_id, expected_version, node_update)
+            .update_node_with_version_check(
+                node_id,
+                expected_version,
+                node_update,
+                self.client_id.clone(),
+            )
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -3245,16 +3289,7 @@ where
             )));
         }
 
-        // Emit NodeUpdated event (Phase 2 of Issue #665)
-        // Fetch updated node with new version number
-        let updated_node = self
-            .get_node(node_id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
-        self.emit_event(DomainEvent::NodeUpdated {
-            node: updated_node,
-            source_client_id: self.client_id.clone(),
-        });
+        // NOTE: NodeUpdated event is now automatically emitted by store notifier (Issue #718)
 
         Ok(())
     }
@@ -3542,13 +3577,7 @@ where
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
-        // Emit NodeCreated event for each created node (Phase 2 of Issue #665)
-        for node in &created_nodes {
-            self.emit_event(DomainEvent::NodeCreated {
-                node: node.clone(),
-                source_client_id: self.client_id.clone(),
-            });
-        }
+        // NOTE: NodeCreated events are now automatically emitted by store notifier (Issue #718)
 
         // Extract IDs for return (maintaining backward compatibility)
         Ok(created_nodes.into_iter().map(|n| n.id).collect())
@@ -3654,16 +3683,7 @@ where
             ))
         })?;
 
-        // Emit NodeUpdated event for each updated node (Phase 2 of Issue #665)
-        for (id, _update) in updates {
-            // Fetch the updated node to get current state
-            if let Ok(Some(updated_node)) = self.get_node(&id).await {
-                self.emit_event(DomainEvent::NodeUpdated {
-                    node: updated_node,
-                    source_client_id: self.client_id.clone(),
-                });
-            }
-        }
+        // NOTE: NodeUpdated events are now automatically emitted by store notifier (Issue #718)
 
         Ok(())
     }
@@ -3705,20 +3725,17 @@ where
         // Delete nodes one by one using SurrealStore
         // SurrealDB handles atomicity within each delete operation
         for id in &ids {
-            let result = self.store.delete_node(id).await.map_err(|e| {
-                NodeServiceError::bulk_operation_failed(format!(
-                    "Failed to delete node {}: {}",
-                    id, e
-                ))
-            })?;
+            self.store
+                .delete_node(id, self.client_id.clone())
+                .await
+                .map_err(|e| {
+                    NodeServiceError::bulk_operation_failed(format!(
+                        "Failed to delete node {}: {}",
+                        id, e
+                    ))
+                })?;
 
-            // Emit NodeDeleted event if node was actually deleted (Phase 2 of Issue #665)
-            if result.existed {
-                self.emit_event(DomainEvent::NodeDeleted {
-                    id: id.clone(),
-                    source_client_id: self.client_id.clone(),
-                });
-            }
+            // NOTE: NodeDeleted event is now automatically emitted by store notifier (Issue #718)
         }
 
         Ok(())
@@ -3764,17 +3781,13 @@ where
                 serde_json::json!({}),
             );
             self.store
-                .create_node(parent_node.clone())
+                .create_node(parent_node, self.client_id.clone())
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to create parent node: {}", e))
                 })?;
 
-            // Emit NodeCreated event for parent (Phase 2 of Issue #665)
-            self.emit_event(DomainEvent::NodeCreated {
-                node: parent_node,
-                source_client_id: self.client_id.clone(),
-            });
+            // NOTE: NodeCreated event is now automatically emitted by store notifier (Issue #718)
         }
 
         // Upsert the node (update if exists, create if not)
@@ -3788,20 +3801,13 @@ where
                 ..Default::default()
             };
             self.store
-                .update_node(&existing.id, update)
+                .update_node(&existing.id, update, self.client_id.clone())
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to update node: {}", e))
                 })?;
 
-            // Emit NodeUpdated event (Phase 2 of Issue #665)
-            // Fetch updated node to get current state
-            if let Ok(Some(updated_node)) = self.get_node(node_id).await {
-                self.emit_event(DomainEvent::NodeUpdated {
-                    node: updated_node,
-                    source_client_id: self.client_id.clone(),
-                });
-            }
+            // NOTE: NodeUpdated event is now automatically emitted by store notifier (Issue #718)
 
             // Update parent relationship via edge (handles sibling ordering)
             self.store
@@ -3839,15 +3845,14 @@ where
                 modified_at: chrono::Utc::now(),
                 embedding_vector: None,
             };
-            self.store.create_node(node.clone()).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to create node: {}", e))
-            })?;
+            self.store
+                .create_node(node, self.client_id.clone())
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to create node: {}", e))
+                })?;
 
-            // Emit NodeCreated event (Phase 2 of Issue #665)
-            self.emit_event(DomainEvent::NodeCreated {
-                node: node.clone(),
-                source_client_id: self.client_id.clone(),
-            });
+            // NOTE: NodeCreated event is now automatically emitted by store notifier (Issue #718)
 
             // Create parent relationship via edge (handles sibling ordering)
             self.store

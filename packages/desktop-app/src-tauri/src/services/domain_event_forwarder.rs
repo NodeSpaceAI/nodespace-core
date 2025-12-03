@@ -127,14 +127,20 @@ impl DomainEventForwarder {
 
         // Forward the event to the frontend
         match event {
-            DomainEvent::NodeCreated { node, .. } => {
-                if let Err(e) = self.app.emit("node:created", node) {
-                    error!("Failed to emit node:created: {}", e);
+            DomainEvent::NodeCreated {
+                node_id, node_data, ..
+            } => {
+                // Forward typed node data (already converted by NodeService)
+                if let Err(e) = self.app.emit("node:created", node_data) {
+                    error!("Failed to emit node:created for {}: {}", node_id, e);
                 }
             }
-            DomainEvent::NodeUpdated { node, .. } => {
-                if let Err(e) = self.app.emit("node:updated", node) {
-                    error!("Failed to emit node:updated: {}", e);
+            DomainEvent::NodeUpdated {
+                node_id, node_data, ..
+            } => {
+                // Forward typed node data (already converted by NodeService)
+                if let Err(e) = self.app.emit("node:updated", node_data) {
+                    error!("Failed to emit node:updated for {}: {}", node_id, e);
                 }
             }
             DomainEvent::NodeDeleted { id, .. } => {
