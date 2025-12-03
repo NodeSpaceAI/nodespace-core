@@ -48,10 +48,13 @@ pub struct SearchRootsParams {
 /// let result = handle_search_roots(&embedding_service, params)?;
 /// // Returns top 10 most relevant root nodes
 /// ```
-pub fn handle_search_roots(
-    _service: &Arc<NodeEmbeddingService>,
+pub fn handle_search_roots<C>(
+    _service: &Arc<NodeEmbeddingService<C>>,
     params: Value,
-) -> Result<Value, MCPError> {
+) -> Result<Value, MCPError>
+where
+    C: surrealdb::Connection,
+{
     // Parse parameters
     let params: SearchRootsParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;

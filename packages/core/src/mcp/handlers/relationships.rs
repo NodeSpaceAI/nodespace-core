@@ -169,10 +169,13 @@ pub struct InboundRelationshipInfo {
 ///   "edge_data": {"billing_date": "2025-01-15"}
 /// }
 /// ```
-pub async fn handle_create_relationship(
-    node_service: &Arc<NodeService>,
+pub async fn handle_create_relationship<C>(
+    node_service: &Arc<NodeService<C>>,
     params: Value,
-) -> Result<Value, MCPError> {
+) -> Result<Value, MCPError>
+where
+    C: surrealdb::Connection,
+{
     let params: CreateRelationshipParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -208,10 +211,13 @@ pub async fn handle_create_relationship(
 /// - `source_id` - ID of the source node
 /// - `relationship_name` - Name of the relationship
 /// - `target_id` - ID of the target node
-pub async fn handle_delete_relationship(
-    node_service: &Arc<NodeService>,
+pub async fn handle_delete_relationship<C>(
+    node_service: &Arc<NodeService<C>>,
     params: Value,
-) -> Result<Value, MCPError> {
+) -> Result<Value, MCPError>
+where
+    C: surrealdb::Connection,
+{
     let params: DeleteRelationshipParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -250,10 +256,13 @@ pub async fn handle_delete_relationship(
 ///   "direction": "out"
 /// }
 /// ```
-pub async fn handle_get_related_nodes(
-    node_service: &Arc<NodeService>,
+pub async fn handle_get_related_nodes<C>(
+    node_service: &Arc<NodeService<C>>,
     params: Value,
-) -> Result<Value, MCPError> {
+) -> Result<Value, MCPError>
+where
+    C: surrealdb::Connection,
+{
     let params: GetRelatedNodesParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -299,10 +308,13 @@ pub async fn handle_get_related_nodes(
 ///   "totalEdges": 2
 /// }
 /// ```
-pub async fn handle_get_relationship_graph(
-    node_service: &Arc<NodeService>,
+pub async fn handle_get_relationship_graph<C>(
+    node_service: &Arc<NodeService<C>>,
     _params: Value,
-) -> Result<Value, MCPError> {
+) -> Result<Value, MCPError>
+where
+    C: surrealdb::Connection,
+{
     let graph = node_service.get_relationship_graph().await.map_err(|e| {
         MCPError::internal_error(format!("Failed to get relationship graph: {}", e))
     })?;
@@ -359,10 +371,13 @@ pub async fn handle_get_relationship_graph(
 ///   "count": 1
 /// }
 /// ```
-pub async fn handle_get_inbound_relationships(
-    node_service: &Arc<NodeService>,
+pub async fn handle_get_inbound_relationships<C>(
+    node_service: &Arc<NodeService<C>>,
     params: Value,
-) -> Result<Value, MCPError> {
+) -> Result<Value, MCPError>
+where
+    C: surrealdb::Connection,
+{
     let params: GetInboundRelationshipsParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -407,10 +422,13 @@ pub async fn handle_get_inbound_relationships(
 ///
 /// ## Returns
 /// All schema nodes ordered by ID, with full field and relationship definitions.
-pub async fn handle_get_all_schemas(
-    node_service: &Arc<NodeService>,
+pub async fn handle_get_all_schemas<C>(
+    node_service: &Arc<NodeService<C>>,
     _params: Value,
-) -> Result<Value, MCPError> {
+) -> Result<Value, MCPError>
+where
+    C: surrealdb::Connection,
+{
     let schemas = node_service
         .get_all_schemas()
         .await

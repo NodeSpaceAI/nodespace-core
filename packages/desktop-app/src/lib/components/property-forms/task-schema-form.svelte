@@ -24,6 +24,7 @@
     isSchemaNode
   } from '$lib/types/schema-node';
   import type { TaskNode, TaskStatus } from '$lib/types/task-node';
+  import { nodeToTaskNode } from '$lib/types/task-node';
   import { parseDate, type DateValue } from '@internationalized/date';
 
   // Props - only nodeId needed since we know it's a task
@@ -33,23 +34,27 @@
   let isOpen = $state(false); // Collapsed by default
   let schema = $state<SchemaNode | null>(null);
 
-  // Typed node state - TaskNode (not generic Node)
-  let node = $state<TaskNode | null>(null);
+  // Reactive node data - initialize outside effect (same pattern as schema-property-form)
+  // This prevents the reactive loop that was causing effect_update_depth_exceeded
+  const rawNodeInitial = nodeId ? sharedNodeStore.getNode(nodeId) : null;
+  let node = $state<TaskNode | null>(
+    rawNodeInitial?.nodeType === 'task' ? nodeToTaskNode(rawNodeInitial) : null
+  );
 
-  // Subscribe to node changes with type assertion
+  // Subscribe to node changes
   $effect(() => {
     if (!nodeId) {
       node = null;
       return;
     }
 
-    // Initial load - assert as TaskNode (validated by parent component)
+    // Initial load - convert Node to TaskNode (extracts spoke fields from properties)
     const rawNode = sharedNodeStore.getNode(nodeId);
-    node = rawNode?.nodeType === 'task' ? (rawNode as unknown as TaskNode) : null;
+    node = rawNode?.nodeType === 'task' ? nodeToTaskNode(rawNode) : null;
 
     // Subscribe to updates
     const unsubscribe = sharedNodeStore.subscribe(nodeId, (updatedNode) => {
-      node = updatedNode?.nodeType === 'task' ? (updatedNode as unknown as TaskNode) : null;
+      node = updatedNode?.nodeType === 'task' ? nodeToTaskNode(updatedNode) : null;
     });
 
     return () => {
@@ -76,6 +81,8 @@
   let assigneeOpen = $state(false);
   let assigneeSearch = $state('');
   let dueDateOpen = $state(false);
+  let startedAtOpen = $state(false);
+  let completedAtOpen = $state(false);
 
   /**
    * Assignee options - currently empty placeholder
@@ -87,7 +94,7 @@
   // Core Fields (Hardcoded)
   // ============================================================================
 
-  const CORE_FIELD_NAMES = ['status', 'priority', 'dueDate', 'due_date', 'assignee'];
+  const CORE_FIELD_NAMES = ['status', 'priority', 'dueDate', 'due_date', 'assignee', 'started_at', 'startedAt', 'completed_at', 'completedAt'];
 
   const STATUS_OPTIONS: Array<{ value: TaskStatus; label: string }> = [
     { value: 'open', label: 'Open' },
@@ -151,16 +158,18 @@
 
   // Calculate field completion stats
   const fieldStats = $derived(() => {
-    if (!node) return { filled: 0, total: 4 };
+    if (!node) return { filled: 0, total: 6 };
 
     let filled = 0;
-    let total = 4; // Core fields
+    let total = 6; // Core fields: status, priority, dueDate, assignee, startedAt, completedAt
 
     // Core fields
     if (node.status) filled++;
     if (node.priority !== undefined && node.priority !== null) filled++;
     if (node.dueDate) filled++;
     if (node.assignee) filled++;
+    if (node.startedAt) filled++;
+    if (node.completedAt) filled++;
 
     // User-defined fields
     const userFields = userDefinedFields();
@@ -233,20 +242,29 @@
       .join(' ');
   }
 
+  // Parse date from backend (handles both YYYY-MM-DD and ISO8601 formats)
+  function parseDateFromBackend(value: string | null | undefined): DateValue | undefined {
+    if (!value) return undefined;
+    try {
+      // Extract just the date part (YYYY-MM-DD) if it's a full ISO8601 string
+      const dateOnly = value.includes('T') ? value.split('T')[0] : value;
+      return parseDate(dateOnly);
+    } catch {
+      return undefined;
+    }
+  }
+
   // Format date for display
   function formatDateDisplay(value: string | null | undefined): string {
     if (!value) return 'Pick a date';
-    try {
-      const date = parseDate(value);
-      return date.toString();
-    } catch {
-      return value;
-    }
+    const date = parseDateFromBackend(value);
+    return date ? date.toString() : value;
   }
 
   // Format date value for storage (ISO string)
   function formatDateForStorage(value: DateValue | undefined): string | null {
     if (!value) return null;
+    // Simple YYYY-MM-DD format - backend handles conversion to DateTime
     return `${value.year}-${String(value.month).padStart(2, '0')}-${String(value.day).padStart(2, '0')}`;
   }
 
@@ -282,6 +300,24 @@
     sharedNodeStore.updateNode(
       nodeId,
       { assignee },
+      { type: 'viewer', viewerId: 'task-schema-form' }
+    );
+  }
+
+  function updateStartedAt(startedAt: string | null) {
+    if (!node) return;
+    sharedNodeStore.updateNode(
+      nodeId,
+      { startedAt } as Record<string, unknown>,
+      { type: 'viewer', viewerId: 'task-schema-form' }
+    );
+  }
+
+  function updateCompletedAt(completedAt: string | null) {
+    if (!node) return;
+    sharedNodeStore.updateNode(
+      nodeId,
+      { completedAt } as Record<string, unknown>,
       { type: 'viewer', viewerId: 'task-schema-form' }
     );
   }
@@ -384,7 +420,7 @@
 
           <!-- Due Date Field -->
           {#if node}
-            {@const dateValue = node.dueDate ? parseDate(node.dueDate) : undefined}
+            {@const dateValue = parseDateFromBackend(node.dueDate)}
             <div class="space-y-2">
               <label for="task-due-date" class="text-sm font-medium">Due Date</label>
               <Popover.Root bind:open={dueDateOpen}>
@@ -498,6 +534,98 @@
             </Popover.Root>
           </div>
 
+          <!-- Started At Field -->
+          {#if node}
+            {@const startedAtValue = parseDateFromBackend(node.startedAt)}
+            <div class="space-y-2">
+              <label for="task-started-at" class="text-sm font-medium">Started At</label>
+              <Popover.Root bind:open={startedAtOpen}>
+                <Popover.Trigger
+                  id="task-started-at"
+                  class="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none"
+                >
+                  <span class={startedAtValue ? '' : 'text-muted-foreground'}>
+                    {formatDateDisplay(node.startedAt)}
+                  </span>
+                  <svg class="h-4 w-4 opacity-50" viewBox="0 0 16 16" fill="none">
+                    <rect
+                      x="2"
+                      y="3"
+                      width="12"
+                      height="11"
+                      rx="1"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    />
+                    <path
+                      d="M5 1v3M11 1v3M2 6h12"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                </Popover.Trigger>
+                <Popover.Content class="w-auto p-0" align="start">
+                  <Calendar
+                    value={startedAtValue as never}
+                    onValueChange={(newValue: DateValue | DateValue[] | undefined) => {
+                      const singleValue = Array.isArray(newValue) ? newValue[0] : newValue;
+                      updateStartedAt(formatDateForStorage(singleValue));
+                      startedAtOpen = false;
+                    }}
+                    type="single"
+                  />
+                </Popover.Content>
+              </Popover.Root>
+            </div>
+          {/if}
+
+          <!-- Completed At Field -->
+          {#if node}
+            {@const completedAtValue = parseDateFromBackend(node.completedAt)}
+            <div class="space-y-2">
+              <label for="task-completed-at" class="text-sm font-medium">Completed At</label>
+              <Popover.Root bind:open={completedAtOpen}>
+                <Popover.Trigger
+                  id="task-completed-at"
+                  class="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none"
+                >
+                  <span class={completedAtValue ? '' : 'text-muted-foreground'}>
+                    {formatDateDisplay(node.completedAt)}
+                  </span>
+                  <svg class="h-4 w-4 opacity-50" viewBox="0 0 16 16" fill="none">
+                    <rect
+                      x="2"
+                      y="3"
+                      width="12"
+                      height="11"
+                      rx="1"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    />
+                    <path
+                      d="M5 1v3M11 1v3M2 6h12"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                </Popover.Trigger>
+                <Popover.Content class="w-auto p-0" align="start">
+                  <Calendar
+                    value={completedAtValue as never}
+                    onValueChange={(newValue: DateValue | DateValue[] | undefined) => {
+                      const singleValue = Array.isArray(newValue) ? newValue[0] : newValue;
+                      updateCompletedAt(formatDateForStorage(singleValue));
+                      completedAtOpen = false;
+                    }}
+                    type="single"
+                  />
+                </Popover.Content>
+              </Popover.Root>
+            </div>
+          {/if}
+
           <!-- ============================================================ -->
           <!-- USER-DEFINED FIELDS (Dynamic from Schema) -->
           <!-- ============================================================ -->
@@ -530,7 +658,7 @@
                 </Select.Root>
               {:else if field.type === 'date'}
                 {@const rawDateValue = getUserFieldValue(field.name) as string | null}
-                {@const dateVal = rawDateValue ? parseDate(rawDateValue) : undefined}
+                {@const dateVal = parseDateFromBackend(rawDateValue)}
                 <Popover.Root>
                   <Popover.Trigger
                     id={fieldId}

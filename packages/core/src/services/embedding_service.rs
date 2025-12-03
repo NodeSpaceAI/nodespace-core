@@ -40,20 +40,29 @@ pub const EMBEDDING_DIMENSION: usize = 384;
 pub const DEFAULT_BATCH_SIZE: usize = 50;
 
 /// Node embedding service with SurrealDB integration
-pub struct NodeEmbeddingService {
+///
+/// Generic over the database connection type `C` to support both local
+/// embedded database (Db) and HTTP client connections.
+pub struct NodeEmbeddingService<C = surrealdb::engine::local::Db>
+where
+    C: surrealdb::Connection,
+{
     /// NLP engine for generating embeddings
     nlp_engine: Arc<EmbeddingService>,
     /// SurrealDB store for persisting embeddings
-    store: Arc<SurrealStore>,
+    store: Arc<SurrealStore<C>>,
 }
 
-impl NodeEmbeddingService {
+impl<C> NodeEmbeddingService<C>
+where
+    C: surrealdb::Connection,
+{
     /// Create a new NodeEmbeddingService with SurrealDB integration
     ///
     /// # Arguments
     /// * `nlp_engine` - The NLP engine for generating embeddings
     /// * `store` - The SurrealDB store for persisting embeddings
-    pub fn new(nlp_engine: Arc<EmbeddingService>, store: Arc<SurrealStore>) -> Self {
+    pub fn new(nlp_engine: Arc<EmbeddingService>, store: Arc<SurrealStore<C>>) -> Self {
         tracing::info!("NodeEmbeddingService initialized with SurrealDB and NLP engine");
         Self { nlp_engine, store }
     }
@@ -64,7 +73,7 @@ impl NodeEmbeddingService {
     }
 
     /// Get reference to the SurrealDB store
-    pub fn store(&self) -> &Arc<SurrealStore> {
+    pub fn store(&self) -> &Arc<SurrealStore<C>> {
         &self.store
     }
 

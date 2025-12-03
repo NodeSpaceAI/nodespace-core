@@ -19,8 +19,9 @@
 
 import { sharedNodeStore } from './shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
-import { getClientId } from './client-id';
 import type { SseEvent } from '$lib/types/sse-events';
+import type { Node } from '$lib/types/node';
+import { nodeToTaskNode } from '$lib/types/task-node';
 
 /**
  * Connection state for the SSE client
@@ -138,9 +139,8 @@ class BrowserSyncService {
 
     this.connectionState = 'connecting';
 
-    // Include clientId as query parameter (EventSource doesn't support custom headers)
-    const clientId = getClientId();
-    const sseUrl = `${this.sseEndpoint}?clientId=${encodeURIComponent(clientId)}`;
+    // No clientId needed (Issue #715) - dev-proxy handles filtering server-side
+    const sseUrl = this.sseEndpoint;
 
     console.log('[BrowserSyncService] Connecting to SSE endpoint:', sseUrl);
 
@@ -185,23 +185,52 @@ class BrowserSyncService {
   }
 
   /**
+   * Normalize node data from SSE events to type-specific format
+   *
+   * SSE events send generic Node objects where type-specific fields (like task status)
+   * are stored in `properties`. This function converts them to the flat format
+   * expected by the frontend stores and components.
+   *
+   * @param nodeData - Raw node data from SSE event
+   * @returns Normalized node with flat spoke fields for typed nodes
+   */
+  private normalizeNodeData(nodeData: Node): Node {
+    if (nodeData.nodeType === 'task') {
+      return nodeToTaskNode(nodeData) as unknown as Node;
+    }
+    // Add other type-specific conversions here as needed (e.g., SchemaNode)
+    return nodeData;
+  }
+
+  /**
    * Handle parsed SSE event
    *
    * Routes events to appropriate store/tree handlers to update UI.
+   * Filtering handled server-side by dev-proxy (Issue #715).
    */
   private handleEvent(event: SseEvent): void {
-    switch (event.type) {
-      case 'nodeCreated':
-        console.log('[BrowserSyncService] Node created:', event.nodeId);
-        // Use database source with sse-sync reason to indicate external change via SSE
-        sharedNodeStore.setNode(event.nodeData, { type: 'database', reason: 'sse-sync' }, true);
-        break;
+    // No client-side filtering needed - dev-proxy filters out events from browser operations
+    // Dev-proxy NodeService has client_id="dev-proxy", so all browser HTTP operations
+    // emit events with source_client_id="dev-proxy", which SSE handler filters out.
 
-      case 'nodeUpdated':
-        console.log('[BrowserSyncService] Node updated:', event.nodeId);
-        // Use setNode for full replacement (event contains complete node data)
-        sharedNodeStore.setNode(event.nodeData, { type: 'database', reason: 'sse-sync' }, true);
+    switch (event.type) {
+      case 'nodeCreated': {
+        console.log('[BrowserSyncService] Node created:', event.nodeId);
+        // Normalize node data to type-specific format (e.g., TaskNode with flat status)
+        const normalizedNode = this.normalizeNodeData(event.nodeData);
+        // Use database source with sse-sync reason to indicate external change via SSE
+        sharedNodeStore.setNode(normalizedNode, { type: 'database', reason: 'sse-sync' }, true);
         break;
+      }
+
+      case 'nodeUpdated': {
+        console.log('[BrowserSyncService] Node updated:', event.nodeId);
+        // Normalize node data to type-specific format (e.g., TaskNode with flat status)
+        const normalizedNode = this.normalizeNodeData(event.nodeData);
+        // Use setNode for full replacement (event contains complete node data)
+        sharedNodeStore.setNode(normalizedNode, { type: 'database', reason: 'sse-sync' }, true);
+        break;
+      }
 
       case 'nodeDeleted':
         console.log('[BrowserSyncService] Node deleted:', event.nodeId);

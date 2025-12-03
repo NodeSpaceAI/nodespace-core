@@ -397,6 +397,7 @@ mod tests {
         // Uses camelCase for JSON (matching Node struct convention)
         let json = json!({
             "id": "test-123",
+            "nodeType": "task",
             "content": "Deserialize me",
             "version": 1,
             "createdAt": "2025-01-01T00:00:00Z",

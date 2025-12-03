@@ -725,7 +725,9 @@ export class SharedNodeStore {
           ('status' in changes ||
             'priority' in changes ||
             'dueDate' in changes ||
-            'assignee' in changes);
+            'assignee' in changes ||
+            'startedAt' in changes ||
+            'completedAt' in changes);
         const shouldPersist =
           source.type !== 'viewer' ||
           isStructuralChange ||
@@ -863,7 +865,9 @@ export class SharedNodeStore {
                 if (shouldLogDatabaseErrors()) {
                   console.error(
                     `[SharedNodeStore] Database write failed for node ${nodeId}:`,
-                    error
+                    error,
+                    '\nFull error object:',
+                    JSON.stringify(dbError, null, 2)
                   );
                 }
 

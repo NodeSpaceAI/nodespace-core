@@ -84,11 +84,14 @@ pub fn handle_tools_list(_params: Value) -> Result<Value, MCPError> {
 /// # Returns
 ///
 /// Returns JSON result with content array and isError flag per MCP spec
-pub async fn handle_tools_call(
-    node_service: &Arc<NodeService>,
-    embedding_service: &Arc<NodeEmbeddingService>,
+pub async fn handle_tools_call<C>(
+    node_service: &Arc<NodeService<C>>,
+    embedding_service: &Arc<NodeEmbeddingService<C>>,
     params: Value,
-) -> Result<Value, MCPError> {
+) -> Result<Value, MCPError>
+where
+    C: surrealdb::Connection,
+{
     // Extract tool name from params
     let tool_name = params["name"]
         .as_str()

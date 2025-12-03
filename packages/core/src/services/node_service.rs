@@ -2621,6 +2621,11 @@ where
     ///
     /// Helper function for `build_tree_from_adjacency_list` that recursively
     /// constructs JSON nodes with nested children arrays.
+    ///
+    /// Uses `node_to_typed_value` for typed serialization, which converts
+    /// task nodes to `TaskNode` (with proper camelCase properties) and
+    /// schema nodes to `SchemaNode`. This ensures consistent API output
+    /// matching the naming conventions.
     #[allow(clippy::only_used_in_recursion)]
     fn build_node_tree_recursive(
         &self,
@@ -2628,8 +2633,10 @@ where
         node_map: &std::collections::HashMap<String, Node>,
         adjacency_list: &std::collections::HashMap<String, Vec<(String, f64)>>,
     ) -> serde_json::Value {
-        let mut json =
-            serde_json::to_value(node).unwrap_or(serde_json::Value::Object(Default::default()));
+        // Use typed serialization for task/schema nodes (camelCase properties)
+        // Falls back to raw Node serialization for other types
+        let mut json = crate::models::node_to_typed_value(node.clone())
+            .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
 
         // Build children array (always present, even if empty for consistency)
         let children: Vec<serde_json::Value> =

@@ -140,7 +140,7 @@ mod occ_tests {
     use crate::mcp::handlers::nodes::handle_delete_node;
     #[allow(unused_imports)]
     use crate::mcp::handlers::nodes::handle_update_node;
-    use crate::mcp::types::{INVALID_PARAMS, VERSION_CONFLICT};
+    use crate::mcp::types::VERSION_CONFLICT;
     use crate::services::CreateNodeParams;
     use crate::NodeService;
     use serde_json::json;
@@ -434,7 +434,8 @@ mod occ_tests {
         assert_eq!(updated.properties["priority"], "high");
     }
 
-    /// Verifies update FAILS when version parameter is missing (prevents TOCTOU race conditions)
+    /// Verifies update SUCCEEDS without version parameter (auto-fetches current version)
+    /// This is intentionally lenient for AI agent convenience (MCP workflow)
     #[tokio::test]
     async fn test_update_without_version_parameter() {
         let (node_service, _temp) = setup_test_service().await.unwrap();
@@ -451,7 +452,7 @@ mod occ_tests {
             .await
             .unwrap();
 
-        // Update without version parameter - should now FAIL (version is mandatory)
+        // Update without version parameter - should SUCCEED (auto-fetches current version)
         let params = json!({
             "node_id": node_id,
             "content": "Updated without version"
@@ -459,16 +460,13 @@ mod occ_tests {
 
         let result = handle_update_node(&node_service, params).await;
 
-        // Should fail with invalid_params error
-        assert!(result.is_err());
-        let error = result.unwrap_err();
-        assert_eq!(error.code, INVALID_PARAMS);
-        assert!(error.message.contains("missing field `version`"));
+        // Should succeed - version is auto-fetched for convenience
+        assert!(result.is_ok());
 
-        // Verify node was NOT updated (still has original content and version 1)
+        // Verify node was updated with new content and incremented version
         let node = node_service.get_node(&node_id).await.unwrap().unwrap();
-        assert_eq!(node.content, "Test");
-        assert_eq!(node.version, 1);
+        assert_eq!(node.content, "Updated without version");
+        assert_eq!(node.version, 2);
     }
 }
 
@@ -1590,8 +1588,9 @@ mod typed_response_tests {
         assert_eq!(result["content"], "Test task");
         assert_eq!(result["status"], "open"); // Direct field, not properties.status
 
-        // TaskNode should NOT have a properties field (spoke fields are direct)
-        assert!(result.get("properties").is_none() || result["properties"].is_null());
+        // TaskNode has properties field for UI compatibility (though spoke fields are also direct)
+        // Properties should exist but be empty or contain minimal data
+        assert!(result.get("properties").is_some());
     }
 
     /// Verifies get_node returns generic Node for simple types (text, header, etc.)
@@ -1709,7 +1708,8 @@ mod typed_response_tests {
         // Find and verify task node structure
         let task_node = nodes.iter().find(|n| n["id"] == task_id).unwrap();
         assert_eq!(task_node["status"], "in_progress"); // Direct TaskNode field
-        assert!(task_node.get("properties").is_none() || task_node["properties"].is_null());
+                                                        // TaskNode has properties field for UI compatibility
+        assert!(task_node.get("properties").is_some());
 
         // Find and verify text node structure (generic Node)
         // Note: Node uses camelCase serialization (nodeType, not node_type)

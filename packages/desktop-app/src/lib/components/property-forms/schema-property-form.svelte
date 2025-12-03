@@ -110,14 +110,21 @@
   /**
    * Get property value with backward compatibility (Issue #397)
    *
-   * Supports both formats:
+   * Supports multiple formats:
+   * - Strongly-typed nodes: top-level spoke fields (e.g., task.status)
    * - New nested: properties.task.status
    * - Old flat: properties.status
    */
   function getPropertyValue(fieldName: string): unknown {
     if (!node) return undefined;
 
-    // Try new nested format first: properties[nodeType][fieldName]
+    // For strongly-typed nodes (TaskNode, etc.), check top-level fields first
+    // Spoke fields like status, priority, dueDate are at the top level
+    if (fieldName in node && (node as unknown as Record<string, unknown>)[fieldName] !== undefined) {
+      return (node as unknown as Record<string, unknown>)[fieldName];
+    }
+
+    // Try new nested format: properties[nodeType][fieldName]
     const typeNamespace = node.properties?.[nodeType];
     if (typeNamespace && typeof typeNamespace === 'object' && fieldName in typeNamespace) {
       return (typeNamespace as Record<string, unknown>)[fieldName];
@@ -128,7 +135,7 @@
   }
 
   // Get schema fields directly from typed field (no helper needed)
-  const schemaFields = $derived(() => (schema ? schema.fields : []));
+  const schemaFields = $derived(schema ? schema.fields : []);
 
   // Calculate field completion stats
   const fieldStats = $derived(() => {
@@ -137,7 +144,7 @@
     }
 
     // Count all fields (core, user, and system)
-    const allFields = schemaFields();
+    const allFields = schemaFields;
     const total = allFields.length;
 
     // Count filled fields (non-null, non-undefined, non-empty)
@@ -158,7 +165,7 @@
     if (!schema || !node) return null;
 
     // Find status field (enum type, common in task schemas)
-    const statusField = schemaFields().find((f) => f.name === 'status' && f.type === 'enum');
+    const statusField = schemaFields.find((f) => f.name === 'status' && f.type === 'enum');
     // Use current value or default value from schema
     const statusValue = statusField
       ? getPropertyValue(statusField.name) || statusField.default || null
@@ -181,7 +188,7 @@
     }
 
     // Find due date field
-    const dueDateField = schemaFields().find((f) => f.name === 'dueDate' || f.name === 'due_date');
+    const dueDateField = schemaFields.find((f) => f.name === 'dueDate' || f.name === 'due_date');
     const dueDate = dueDateField ? getPropertyValue(dueDateField.name) : null;
 
     return { status, statusLabel, dueDate };
@@ -201,7 +208,7 @@
 
     if (isOldFormat) {
       // Migrate all schema fields from old flat format to new nested format
-      schemaFields().forEach((field) => {
+      schemaFields.forEach((field) => {
         // Type guard: node is guaranteed non-null due to early return above
         if (!node) return;
         const oldValue = node.properties?.[field.name];
@@ -225,7 +232,7 @@
 
     // If we migrated from old format, remove the old flat properties
     if (isOldFormat) {
-      schemaFields().forEach((field) => {
+      schemaFields.forEach((field) => {
         // Type guard: node is guaranteed non-null due to early return above
         if (!node) return;
         delete updatedProperties[field.name];
@@ -364,7 +371,7 @@
       <Collapsible.Content class="pb-4">
         <!-- Property Grid (2 columns) -->
         <div class="grid grid-cols-2 gap-4">
-          {#each schemaFields() as field (field.name)}
+          {#each schemaFields as field (field.name)}
             {@const fieldId = `property-${nodeId}-${field.name}`}
             <div class="space-y-2">
               <label for={fieldId} class="text-sm font-medium">

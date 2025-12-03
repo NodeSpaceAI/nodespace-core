@@ -24,7 +24,6 @@
 
 import type { Node, NodeWithChildren, TaskNode, TaskNodeUpdate } from '$lib/types';
 import type { SchemaNode } from '$lib/types/schema-node';
-import { getClientId } from './client-id';
 
 // ============================================================================
 // Types
@@ -284,18 +283,16 @@ class TauriAdapter implements BackendAdapter {
 
 class HttpAdapter implements BackendAdapter {
   private readonly baseUrl: string;
-  private readonly clientId: string;
 
   constructor(baseUrl: string = 'http://localhost:3001') {
     this.baseUrl = baseUrl;
-    // Get or create client ID for this browser session
-    this.clientId = getClientId();
   }
 
   private getHeaders(): Record<string, string> {
     return {
-      'Content-Type': 'application/json',
-      'X-Client-Id': this.clientId
+      'Content-Type': 'application/json'
+      // No X-Client-Id header needed (Issue #715)
+      // dev-proxy represents all browser clients as single logical client
     };
   }
 

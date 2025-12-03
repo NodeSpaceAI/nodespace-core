@@ -2575,7 +2575,76 @@ where
             current_level = child_ids;
         }
 
-        Ok(all_descendants)
+        // Enrich nodes with spoke data for types that have spoke tables
+        // This follows the same pattern as get_node() which uses a two-query approach
+        // to properly fetch spoke data for task/schema nodes
+        let enriched_nodes = self.enrich_nodes_with_spoke_data(all_descendants).await?;
+
+        Ok(enriched_nodes)
+    }
+
+    /// Enrich nodes with spoke table data for types that have dedicated spoke tables
+    ///
+    /// For node types like "task" and "schema" that store their type-specific data
+    /// in separate spoke tables, this function batch-fetches the spoke data and
+    /// merges it into the node's properties field.
+    ///
+    /// This is necessary because the FETCH data query doesn't properly populate
+    /// the data field due to SurrealDB's Thing type serialization issues.
+    async fn enrich_nodes_with_spoke_data(&self, mut nodes: Vec<Node>) -> Result<Vec<Node>> {
+        use std::collections::HashMap;
+
+        // Group task node IDs for batch fetching
+        let task_ids: Vec<&str> = nodes
+            .iter()
+            .filter(|n| n.node_type == "task")
+            .map(|n| n.id.as_str())
+            .collect();
+
+        if task_ids.is_empty() {
+            return Ok(nodes);
+        }
+
+        // Batch fetch task spoke data
+        let task_id_list: Vec<String> = task_ids
+            .iter()
+            .map(|id| format!("type::thing('task', '{}')", id))
+            .collect();
+
+        let spoke_query = format!(
+            "SELECT * OMIT id, node FROM task WHERE id IN [{}];",
+            task_id_list.join(", ")
+        );
+
+        let mut spoke_response = self
+            .db
+            .query(&spoke_query)
+            .await
+            .context("Failed to fetch task spoke data")?;
+
+        let spoke_results: Vec<Value> = spoke_response.take(0).unwrap_or_default();
+
+        // Build a map of node_id -> spoke properties
+        // The spoke query returns records where we need to extract the node ID from context
+        // Since we used the same order, we can match by position
+        let mut spoke_map: HashMap<String, Value> = HashMap::new();
+        for (i, spoke_data) in spoke_results.into_iter().enumerate() {
+            if let Some(id) = task_ids.get(i) {
+                spoke_map.insert(id.to_string(), spoke_data);
+            }
+        }
+
+        // Merge spoke data into node properties
+        for node in nodes.iter_mut() {
+            if node.node_type == "task" {
+                if let Some(spoke_data) = spoke_map.remove(&node.id) {
+                    // Replace properties with spoke data (which contains status, priority, etc.)
+                    node.properties = spoke_data;
+                }
+            }
+        }
+
+        Ok(nodes)
     }
 
     /// Get all edges in a subtree using adjacency list strategy
@@ -3719,6 +3788,7 @@ where
             r#"
             SELECT
                 record::id(id) AS id,
+                node.node_type AS nodeType,
                 status,
                 priority,
                 due_date AS dueDate,
@@ -3829,6 +3899,23 @@ where
                     spoke_set_clauses.push(format!("assignee = '{}'", a.replace('\'', "\\'")))
                 }
                 None => spoke_set_clauses.push("assignee = NONE".to_string()),
+            }
+        }
+
+        if let Some(ref started_at_opt) = update.started_at {
+            match started_at_opt {
+                Some(dt) => {
+                    spoke_set_clauses.push(format!("started_at = <datetime>'{}'", dt.to_rfc3339()))
+                }
+                None => spoke_set_clauses.push("started_at = NONE".to_string()),
+            }
+        }
+
+        if let Some(ref completed_at_opt) = update.completed_at {
+            match completed_at_opt {
+                Some(dt) => spoke_set_clauses
+                    .push(format!("completed_at = <datetime>'{}'", dt.to_rfc3339())),
+                None => spoke_set_clauses.push("completed_at = NONE".to_string()),
             }
         }
 

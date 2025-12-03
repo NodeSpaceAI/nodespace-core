@@ -72,8 +72,8 @@ describe('Core Plugins Integration', () => {
       expect(taskNodePlugin.id).toBe('task');
       expect(taskNodePlugin.name).toBe('Task Node');
       expect(taskNodePlugin.config.slashCommands).toHaveLength(1);
-      // Task nodes use BaseNodeViewer (default) - no custom viewer needed
-      expect(taskNodePlugin.viewer).toBeUndefined();
+      // Task nodes have TaskNodeViewer for task-specific UI (Issue #715)
+      expect(taskNodePlugin.viewer).toBeDefined();
       expect(taskNodePlugin.node).toBeDefined(); // Has node component instead
       expect(taskNodePlugin.reference).toBeDefined();
 
@@ -163,7 +163,7 @@ describe('Core Plugins Integration', () => {
         expect.objectContaining({
           plugins: 8, // text, header, task, ai-chat, date, code-block, quote-block, ordered-list
           slashCommands: expect.any(Number),
-          viewers: 1, // Only date has custom viewer - others use BaseNodeViewer (default)
+          viewers: 2, // date and task have custom viewers (TaskNodeViewer added in Issue #715)
           references: 8 // all plugins have references
         })
       );
@@ -204,8 +204,8 @@ describe('Core Plugins Integration', () => {
     });
 
     it('should resolve viewer components for plugins with viewers', async () => {
-      // Only date has a custom viewer - text, task, ai-chat use BaseNodeViewer (default)
-      const viewerPlugins = ['date'];
+      // date and task have custom viewers (TaskNodeViewer added in Issue #715)
+      const viewerPlugins = ['date', 'task'];
 
       for (const pluginId of viewerPlugins) {
         expect(registry.hasViewer(pluginId)).toBe(true);
@@ -215,7 +215,7 @@ describe('Core Plugins Integration', () => {
       }
 
       // These plugins intentionally have no custom viewer - they use BaseNodeViewer
-      const noViewerPlugins = ['text', 'task', 'ai-chat'];
+      const noViewerPlugins = ['text', 'ai-chat'];
       for (const pluginId of noViewerPlugins) {
         expect(registry.hasViewer(pluginId)).toBe(false);
 
@@ -422,15 +422,15 @@ describe('Core Plugins Integration', () => {
       registerCorePlugins(registry);
 
       // Architecture changed: text, task, ai-chat now use BaseNodeViewer (default)
-      // Only date has a custom viewer for specialized navigation UI
-      const customViewerTypes = ['date'];
+      // date and task have custom viewers (TaskNodeViewer added in Issue #715)
+      const customViewerTypes = ['date', 'task'];
 
       for (const viewerType of customViewerTypes) {
         expect(registry.hasViewer(viewerType)).toBe(true);
       }
 
       // These types use BaseNodeViewer fallback (no custom viewer registered)
-      const baseViewerTypes = ['text', 'task', 'ai-chat'];
+      const baseViewerTypes = ['text', 'ai-chat'];
       for (const viewerType of baseViewerTypes) {
         expect(registry.hasViewer(viewerType)).toBe(false);
       }

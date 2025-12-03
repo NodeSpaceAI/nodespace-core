@@ -21,6 +21,10 @@ path = "src/main.rs"
 name = "dev-proxy"
 path = "src/bin/dev-proxy.rs"
 
+[[bin]]
+name = "dev-mcp"
+path = "src/bin/dev-mcp.rs"
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"

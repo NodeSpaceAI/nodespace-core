@@ -83,6 +83,8 @@ pub fn initialize_domain_event_forwarder(
 /// are available in Tauri's managed state. It retrieves the shared NodeService
 /// and NodeEmbeddingService and spawns the MCP server task with them,
 /// ensuring MCP and Tauri commands operate on the same database.
+///
+/// As of Issue #715, uses McpServerService from nodespace-core for managed lifecycle.
 pub fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
     use crate::commands::embeddings::EmbeddingState;
     use futures::FutureExt;
@@ -90,7 +92,7 @@ pub fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
     use std::sync::Arc;
     use tauri::Manager;
 
-    tracing::info!("🔧 Initializing MCP server...");
+    tracing::info!("🔧 Initializing MCP server service...");
 
     // Get shared services from Tauri state
     // This ensures MCP uses the same database and embedding service as Tauri commands
@@ -100,27 +102,34 @@ pub fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
     let embedding_state: tauri::State<EmbeddingState> = app.state();
     let embedding_service_arc = embedding_state.service.clone();
 
-    tracing::info!(
-        "✅ Using shared NodeService and NodeEmbeddingService, spawning MCP stdio task..."
+    // Create MCP service with Tauri event callback
+    let (mcp_service, callback) = mcp_integration::create_mcp_service_with_events(
+        node_service_arc,
+        embedding_service_arc,
+        app.clone(),
     );
 
-    // Spawn MCP stdio server task with Tauri event emissions
+    tracing::info!(
+        "✅ McpServerService created on port {}, spawning background task...",
+        mcp_service.port()
+    );
+
+    // Register MCP service as managed state for potential future access
+    app.manage(mcp_service.clone());
+
+    // Spawn MCP server task with Tauri event emissions
     // Uses panic protection to prevent silent background task failures
     tauri::async_runtime::spawn(async move {
         // Use FutureExt::catch_unwind for proper async panic catching
         // This avoids the deadlock risk of using block_on inside an async task
         // AssertUnwindSafe is needed because services contain non-UnwindSafe types
-        let result = std::panic::AssertUnwindSafe(mcp_integration::run_mcp_server_with_events(
-            node_service_arc,
-            embedding_service_arc,
-            app,
-        ))
-        .catch_unwind()
-        .await;
+        let result = std::panic::AssertUnwindSafe(mcp_service.start_with_callback(callback))
+            .catch_unwind()
+            .await;
 
         match result {
             Ok(Ok(_)) => {
-                tracing::info!("✅ MCP server exited normally (stdin closed)");
+                tracing::info!("✅ MCP server exited normally");
             }
             Ok(Err(e)) => {
                 tracing::error!("❌ MCP server error: {}", e);

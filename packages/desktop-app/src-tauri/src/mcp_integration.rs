@@ -6,9 +6,13 @@
 //!
 //! As of Issue #676, NodeOperations layer was merged into NodeService.
 //! All MCP handlers now use NodeService directly.
+//!
+//! As of Issue #715, MCP server is a managed service (McpServerService).
+//! This module provides the Tauri event callback for UI reactivity.
 
-use nodespace_core::mcp;
-use nodespace_core::services::NodeEmbeddingService;
+use nodespace_core::services::{
+    default_mcp_port, McpResponseCallback, McpServerService, NodeEmbeddingService,
+};
 use nodespace_core::{Node, NodeService};
 use serde::Serialize;
 use serde_json::Value;
@@ -36,49 +40,38 @@ struct NodeDeletedEvent {
 
 // NOTE: SchemaUpdatedEvent removed (Issue #690) - schema mutation commands not used by UI
 
-/// Run MCP server with Tauri event emissions
+/// Create McpServerService with Tauri event callback
 ///
-/// Uses the core MCP server with a callback that emits Tauri events after
-/// successful operations. This ensures the UI updates reactively when AI
-/// agents modify data via MCP.
-///
-/// Implementation: Provides a callback to the core server that inspects
-/// successful responses and emits appropriate Tauri events based on the
-/// method type. Uses HTTP transport for GUI app integration.
+/// Creates the managed MCP service configured with a callback that emits
+/// Tauri events after successful operations. The callback ensures the UI
+/// updates reactively when AI agents modify data via MCP.
 ///
 /// Port configuration: Can be set via `MCP_PORT` environment variable,
 /// defaults to 3100 if not specified (avoids conflict with dev-server on 3001).
-pub async fn run_mcp_server_with_events(
+///
+/// # Arguments
+/// * `node_service` - Shared NodeService for node operations
+/// * `embedding_service` - Shared embedding service for semantic search
+/// * `app` - Tauri AppHandle for event emission
+///
+/// # Returns
+/// * `McpServerService` configured with Tauri event callback
+/// * `McpResponseCallback` for starting the server with events
+pub fn create_mcp_service_with_events(
     node_service: Arc<NodeService>,
     embedding_service: Arc<NodeEmbeddingService>,
     app: AppHandle,
-) -> anyhow::Result<()> {
-    // Get port from environment variable or use default
-    let port = std::env::var("MCP_PORT")
-        .ok()
-        .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(3100);
+) -> (McpServerService, McpResponseCallback) {
+    let port = default_mcp_port();
 
     // Create callback that emits Tauri events
-    let callback = Arc::new(move |method: &str, result: &Value| {
+    let callback: McpResponseCallback = Arc::new(move |method: &str, result: &Value| {
         emit_event_for_method(&app, method, result);
     });
 
-    // Create combined services struct for MCP
-    // (Issue #676: NodeOperations merged into NodeService, now use node_service directly)
-    // (Issue #690: SchemaService removed from MCP - use generic CRUD for schema nodes)
-    let services = mcp::server::McpServices {
-        node_service,
-        embedding_service,
-    };
+    let service = McpServerService::new(node_service, embedding_service, port);
 
-    // Run core MCP server with HTTP transport and event-emitting callback
-    mcp::run_mcp_server_with_callback(
-        services,
-        mcp::server::McpTransport::Http { port },
-        Some(callback),
-    )
-    .await
+    (service, callback)
 }
 
 /// Emit Tauri event based on MCP method and result

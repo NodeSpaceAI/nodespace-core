@@ -144,7 +144,11 @@ export const taskNodePlugin: PluginDefinition = {
     lazyLoad: () => import('../design/components/task-node.svelte'),
     priority: 1
   },
-  // No viewer - task nodes use BaseNodeViewer (default) for page-level display
+  // TaskNodeViewer for task-specific UI (Issue #715)
+  viewer: {
+    lazyLoad: () => import('../components/viewers/task-node-viewer.svelte'),
+    priority: 1
+  },
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
@@ -192,6 +196,8 @@ export const taskNodePlugin: PluginDefinition = {
       if ('priority' in changes) update.priority = changes.priority as TaskNodeUpdate['priority'];
       if ('dueDate' in changes) update.dueDate = changes.dueDate as TaskNodeUpdate['dueDate'];
       if ('assignee' in changes) update.assignee = changes.assignee as TaskNodeUpdate['assignee'];
+      if ('startedAt' in changes) update.startedAt = changes.startedAt as TaskNodeUpdate['startedAt'];
+      if ('completedAt' in changes) update.completedAt = changes.completedAt as TaskNodeUpdate['completedAt'];
       if ('content' in changes && changes.content !== undefined) update.content = changes.content as string;
 
       // Returns TaskNode which has hub fields but not properties (flat structure)

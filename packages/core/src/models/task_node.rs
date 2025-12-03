@@ -59,6 +59,86 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::str::FromStr;
 
+/// Custom deserializer for flexible date parsing
+/// Accepts both "YYYY-MM-DD" (date only) and "YYYY-MM-DDTHH:MM:SSZ" (full ISO8601)
+mod flexible_date {
+    use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    /// Serialize DateTime<Utc> as ISO8601 string
+    #[allow(dead_code)]
+    pub fn serialize<S>(
+        date: &Option<Option<DateTime<Utc>>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match date {
+            None => serializer.serialize_none(),
+            Some(None) => serializer.serialize_none(),
+            Some(Some(dt)) => serializer.serialize_some(&dt.to_rfc3339()),
+        }
+    }
+
+    /// Deserialize from either "YYYY-MM-DD" or full ISO8601 format
+    /// Used with `#[serde(with = "flexible_date")]` - handles field present/absent via serde
+    #[allow(dead_code)]
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Option<DateTime<Utc>>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: Option<Option<String>> = Option::deserialize(deserializer)?;
+        match opt {
+            None => Ok(None),             // Field not present - don't change
+            Some(None) => Ok(Some(None)), // Field is null - clear value
+            Some(Some(s)) => parse_date_string(&s).map_err(serde::de::Error::custom),
+        }
+    }
+
+    /// Deserialize with explicit null handling for `#[serde(deserialize_with = "...")]`
+    ///
+    /// When using `deserialize_with` with `default`, serde calls this function only when
+    /// the field is present. This function properly maps JSON `null` to `Some(None)`.
+    pub fn deserialize_with_null<'de, D>(
+        deserializer: D,
+    ) -> Result<Option<Option<DateTime<Utc>>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // When using deserialize_with, we receive the raw value (null or string)
+        // wrapped in Option only once (not Option<Option<String>>)
+        let opt: Option<String> = Option::deserialize(deserializer)?;
+        match opt {
+            None => Ok(Some(None)), // Field is null - clear value (the key insight!)
+            Some(s) => parse_date_string(&s).map_err(serde::de::Error::custom),
+        }
+    }
+
+    /// Parse a date string into DateTime<Utc>
+    fn parse_date_string(s: &str) -> Result<Option<Option<DateTime<Utc>>>, String> {
+        // Try full ISO8601 first
+        if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+            return Ok(Some(Some(dt.with_timezone(&Utc))));
+        }
+        // Try "YYYY-MM-DDTHH:MM:SSZ" format
+        if let Ok(dt) = s.parse::<DateTime<Utc>>() {
+            return Ok(Some(Some(dt)));
+        }
+        // Try date-only "YYYY-MM-DD" format
+        if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+            let datetime = date.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+            return Ok(Some(Some(DateTime::from_naive_utc_and_offset(
+                datetime, Utc,
+            ))));
+        }
+        Err(format!(
+            "Invalid date format: '{}'. Expected YYYY-MM-DD or ISO8601",
+            s
+        ))
+    }
+}
+
 /// Task status enumeration
 ///
 /// Represents the lifecycle states of a task node.
@@ -277,6 +357,10 @@ pub struct TaskNode {
     /// Unique identifier (matches hub node ID)
     pub id: String,
 
+    /// Node type (always "task" for TaskNode)
+    #[serde(rename = "nodeType")]
+    pub node_type: String,
+
     /// Primary content/text of the task
     pub content: String,
 
@@ -289,6 +373,11 @@ pub struct TaskNode {
 
     /// Last modification timestamp
     pub modified_at: DateTime<Utc>,
+
+    /// Properties object (for schema-driven UI compatibility)
+    /// Contains spoke fields duplicated for generic Node consumers
+    #[serde(default)]
+    pub properties: serde_json::Value,
 
     // ========================================================================
     // Spoke fields (direct from task table)
@@ -308,6 +397,14 @@ pub struct TaskNode {
     /// Assignee node ID
     #[serde(default)]
     pub assignee: Option<String>,
+
+    /// Started at timestamp (when task moved to in_progress)
+    #[serde(default)]
+    pub started_at: Option<DateTime<Utc>>,
+
+    /// Completed at timestamp (when task moved to done)
+    #[serde(default)]
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 fn default_version() -> i64 {
@@ -349,7 +446,7 @@ impl TaskNode {
         let props = task_props.as_ref().unwrap_or(&node.properties);
 
         // Extract status from properties
-        let status = props
+        let status: TaskStatus = props
             .get("status")
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse().ok())
@@ -378,16 +475,55 @@ impl TaskNode {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        // Extract started_at from properties
+        let started_at = props
+            .get("started_at")
+            .and_then(|v| v.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
+
+        // Extract completed_at from properties
+        let completed_at = props
+            .get("completed_at")
+            .and_then(|v| v.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
+
+        // Build properties object with spoke fields for schema-driven UI compatibility
+        // Use camelCase keys per naming conventions (snake_case in DB, camelCase in JSON API)
+        let mut props = serde_json::Map::new();
+        props.insert("status".to_string(), json!(status.as_str()));
+        if let Some(ref p) = priority {
+            props.insert("priority".to_string(), json!(p.as_str()));
+        }
+        if let Some(ref d) = due_date {
+            props.insert("dueDate".to_string(), json!(d.to_rfc3339()));
+        }
+        if let Some(ref a) = assignee {
+            props.insert("assignee".to_string(), json!(a));
+        }
+        if let Some(ref s) = started_at {
+            props.insert("startedAt".to_string(), json!(s.to_rfc3339()));
+        }
+        if let Some(ref c) = completed_at {
+            props.insert("completedAt".to_string(), json!(c.to_rfc3339()));
+        }
+        props.insert("_schemaVersion".to_string(), json!(1));
+
         Ok(Self {
             id: node.id,
+            node_type: "task".to_string(),
             content: node.content,
             version: node.version,
             created_at: node.created_at,
             modified_at: node.modified_at,
+            properties: json!(props),
             status,
             priority,
             due_date,
             assignee,
+            started_at,
+            completed_at,
         })
     }
 
@@ -405,6 +541,7 @@ impl TaskNode {
     /// Convert to universal Node (for backward compatibility with existing APIs)
     ///
     /// This creates a Node with properties populated from the strongly-typed fields.
+    /// Uses camelCase keys per naming conventions (snake_case in DB, camelCase in JSON API).
     pub fn into_node(self) -> Node {
         let mut properties = serde_json::Map::new();
         properties.insert("status".to_string(), json!(self.status.as_str()));
@@ -414,11 +551,19 @@ impl TaskNode {
         }
 
         if let Some(due_date) = self.due_date {
-            properties.insert("due_date".to_string(), json!(due_date.to_rfc3339()));
+            properties.insert("dueDate".to_string(), json!(due_date.to_rfc3339()));
         }
 
         if let Some(assignee) = self.assignee {
             properties.insert("assignee".to_string(), json!(assignee));
+        }
+
+        if let Some(started_at) = self.started_at {
+            properties.insert("startedAt".to_string(), json!(started_at.to_rfc3339()));
+        }
+
+        if let Some(completed_at) = self.completed_at {
+            properties.insert("completedAt".to_string(), json!(completed_at.to_rfc3339()));
         }
 
         Node {
@@ -539,16 +684,37 @@ impl TaskNodeBuilder {
         let now = Utc::now();
         let id = uuid::Uuid::new_v4().to_string();
 
+        let status = self.status.unwrap_or_default();
+
+        // Build properties object with spoke fields for schema-driven UI compatibility
+        // Use camelCase keys per naming conventions (snake_case in DB, camelCase in JSON API)
+        let mut props = serde_json::Map::new();
+        props.insert("status".to_string(), json!(status.as_str()));
+        if let Some(p) = &self.priority {
+            props.insert("priority".to_string(), json!(p.as_str()));
+        }
+        if let Some(d) = &self.due_date {
+            props.insert("dueDate".to_string(), json!(d.to_rfc3339()));
+        }
+        if let Some(a) = &self.assignee {
+            props.insert("assignee".to_string(), json!(a));
+        }
+        props.insert("_schemaVersion".to_string(), json!(1));
+
         TaskNode {
             id,
+            node_type: "task".to_string(),
             content: self.content,
             version: 1,
             created_at: now,
             modified_at: now,
-            status: self.status.unwrap_or_default(),
+            properties: json!(props),
+            status,
             priority: self.priority,
             due_date: self.due_date,
             assignee: self.assignee,
+            started_at: None,
+            completed_at: None,
         }
     }
 }
@@ -596,7 +762,13 @@ pub struct TaskNodeUpdate {
     /// - `None` - Don't change
     /// - `Some(None)` - Clear due date
     /// - `Some(Some(dt))` - Set to specific date
-    #[serde(skip_serializing_if = "Option::is_none")]
+    ///
+    /// Accepts both "YYYY-MM-DD" and full ISO8601 formats
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "flexible_date::deserialize_with_null"
+    )]
     pub due_date: Option<Option<DateTime<Utc>>>,
 
     /// Update assignee (spoke field)
@@ -605,6 +777,32 @@ pub struct TaskNodeUpdate {
     /// - `Some(Some(id))` - Set to specific assignee
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<Option<String>>,
+
+    /// Update started_at date (spoke field)
+    /// - `None` - Don't change
+    /// - `Some(None)` - Clear started_at
+    /// - `Some(Some(dt))` - Set to specific date
+    ///
+    /// Accepts both "YYYY-MM-DD" and full ISO8601 formats
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "flexible_date::deserialize_with_null"
+    )]
+    pub started_at: Option<Option<DateTime<Utc>>>,
+
+    /// Update completed_at date (spoke field)
+    /// - `None` - Don't change
+    /// - `Some(None)` - Clear completed_at
+    /// - `Some(Some(dt))` - Set to specific date
+    ///
+    /// Accepts both "YYYY-MM-DD" and full ISO8601 formats
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "flexible_date::deserialize_with_null"
+    )]
+    pub completed_at: Option<Option<DateTime<Utc>>>,
 
     /// Update content (hub field)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -653,6 +851,8 @@ impl TaskNodeUpdate {
             && self.priority.is_none()
             && self.due_date.is_none()
             && self.assignee.is_none()
+            && self.started_at.is_none()
+            && self.completed_at.is_none()
             && self.content.is_none()
     }
 
@@ -662,10 +862,57 @@ impl TaskNodeUpdate {
             || self.priority.is_some()
             || self.due_date.is_some()
             || self.assignee.is_some()
+            || self.started_at.is_some()
+            || self.completed_at.is_some()
     }
 
     /// Check if this update contains hub fields (requires hub table update)
     pub fn has_hub_fields(&self) -> bool {
         self.content.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_task_node_update_null_started_at() {
+        // This is the JSON sent when user clicks to clear a date
+        let json = r#"{"startedAt": null}"#;
+        let update: TaskNodeUpdate = serde_json::from_str(json).unwrap();
+
+        // started_at should be Some(None) to indicate "clear this field"
+        // NOT None which means "don't change this field"
+        assert!(
+            update.started_at.is_some(),
+            "started_at should be Some(None) for null value, but got None"
+        );
+        assert!(
+            update.started_at.unwrap().is_none(),
+            "Inner value should be None (clear the field)"
+        );
+
+        // is_empty() should return false because we're explicitly clearing the field
+        assert!(
+            !update.is_empty(),
+            "Update should NOT be empty when clearing started_at"
+        );
+    }
+
+    #[test]
+    fn test_task_node_update_absent_started_at() {
+        // When field is absent, it should be None (don't change)
+        let json = r#"{}"#;
+        let update: TaskNodeUpdate = serde_json::from_str(json).unwrap();
+
+        assert!(
+            update.started_at.is_none(),
+            "started_at should be None when absent"
+        );
+        assert!(
+            update.is_empty(),
+            "Empty JSON should result in empty update"
+        );
     }
 }

@@ -64,7 +64,7 @@ impl From<NodeServiceError> for CommandError {
         CommandError {
             message: format!("Node operation failed: {}", err),
             code: code.to_string(),
-            details: Some(format!("{:?}", err)),
+            details: Some(format!("{}", err)),
         }
     }
 }

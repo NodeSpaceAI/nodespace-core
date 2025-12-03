@@ -6,7 +6,12 @@
 //! Architecture:
 //!   Frontend → HTTP (port 3001) → NodeService → SurrealStore (HTTP) → SurrealDB (port 8000)
 //!                                                                              ↓
+//!   AI Agent → HTTP (port 3100) → MCP Server ─────┘                            ↓
+//!                                                                              ↓
 //!   Surrealist ──────────────────────────────────────────────────────────→ SurrealDB (port 8000)
+//!
+//! The MCP server runs within dev-proxy, sharing the same NodeService instance.
+//! This ensures MCP operations trigger SSE events for real-time UI updates.
 //!
 //! # Database Location
 //!
@@ -26,11 +31,15 @@ use axum::{
 };
 use futures::stream::Stream;
 use nodespace_core::{
-    db::HttpStore,
+    db::{events::DomainEvent, HttpStore},
     models,
     models::{Node, NodeFilter, NodeUpdate, SchemaNode, TaskNode, TaskNodeUpdate},
-    services::{CreateNodeParams, NodeService, NodeServiceError},
+    services::{
+        default_mcp_port, CreateNodeParams, McpServerService, NodeEmbeddingService, NodeService,
+        NodeServiceError,
+    },
 };
+use nodespace_nlp_engine::EmbeddingService;
 use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::sync::broadcast;
@@ -357,7 +366,10 @@ async fn main() -> anyhow::Result<()> {
     let node_service = match NodeService::new(&mut store).await {
         Ok(s) => {
             println!("✅ NodeService initialized");
-            Arc::new(s)
+            // Set client_id for dev-proxy - represents all browser clients (Issue #715)
+            // All browser operations emit events with source_client_id: "dev-proxy"
+            // SSE filtering then prevents browsers from receiving their own changes
+            Arc::new(s.with_client("dev-proxy"))
         }
         Err(e) => {
             eprintln!("❌ Failed to initialize NodeService: {}", e);
@@ -368,14 +380,49 @@ async fn main() -> anyhow::Result<()> {
     // NOTE: NodeOperations layer was merged into NodeService (Issue #676)
     // NOTE: SchemaService removed (Issue #690) - schema operations use NodeService directly
 
-    // Create broadcast channel for SSE events (capacity 100 messages)
-    // Lagging receivers will skip missed messages rather than blocking senders
-    let (event_tx, _) = broadcast::channel::<SseEvent>(100);
-    println!("📡 SSE broadcast channel initialized");
+    // Subscribe to NodeService domain events for SSE broadcasting (Issue #715)
+    // This is the correct architecture: NodeService emits events for ALL mutations
+    // (whether from HTTP handlers or MCP), and we forward them to browser clients.
+    let domain_event_rx = node_service.subscribe_to_events();
+    println!("📡 Subscribed to NodeService domain events");
+
+    // Create broadcast channel for SSE events to browser clients
+    // This re-broadcasts domain events filtered by client_id
+    let (sse_tx, _) = broadcast::channel::<SseEvent>(100);
+    let sse_tx_for_domain = sse_tx.clone();
+
+    // Spawn task to convert DomainEvents → SseEvents for browser clients
+    tokio::spawn(async move {
+        domain_event_to_sse_bridge(domain_event_rx, sse_tx_for_domain).await;
+    });
+
+    // Initialize NLP engine for embeddings (used by MCP semantic search)
+    println!("🧠 Initializing NLP engine for embeddings...");
+    let nlp_engine = EmbeddingService::new(Default::default())
+        .map_err(|e| anyhow::anyhow!("Failed to create NLP engine: {}", e))?;
+    // Note: initialize() is called lazily on first use, no need to call explicitly
+    let nlp_engine_arc = Arc::new(nlp_engine);
+    println!("✅ NLP engine initialized");
+
+    // Initialize embedding service for MCP semantic search
+    let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine_arc, store.clone()));
+
+    // Spawn MCP server in background task (shares NodeService for real-time sync)
+    // MCP runs on port 3100 by default (configurable via MCP_PORT env var)
+    // No callback needed - MCP mutations emit DomainEvents via the shared NodeService
+    let mcp_port = default_mcp_port();
+    let mcp_service = McpServerService::new(node_service.clone(), embedding_service, mcp_port);
+
+    tokio::spawn(async move {
+        println!("🔌 Starting MCP server on port {}...", mcp_port);
+        if let Err(e) = mcp_service.start().await {
+            eprintln!("❌ MCP server error: {}", e);
+        }
+    });
 
     let state = AppState {
         node_service: node_service.clone(),
-        event_tx: event_tx.clone(),
+        event_tx: sse_tx.clone(),
     };
 
     // Build HTTP router
@@ -433,14 +480,163 @@ async fn main() -> anyhow::Result<()> {
         })?;
 
     println!("\n🚀 Dev proxy server started!");
-    println!("   Listening on: http://127.0.0.1:3001");
+    println!("   HTTP API:     http://127.0.0.1:3001");
     println!("   SSE endpoint: http://127.0.0.1:3001/api/events");
-    println!("   NodeService → SurrealDB (port 8000)");
-    println!("   Surrealist can connect to port 8000\n");
+    println!("   MCP server:   http://127.0.0.1:{}", mcp_port);
+    println!("   Database:     SurrealDB (port 8000)");
+    println!("\n   AI agents can connect via MCP for real-time sync\n");
 
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+// === Domain Event Bridge ===
+
+/// Bridge that converts NodeService DomainEvents to SSE events for browser clients
+///
+/// This is the correct architecture for Issue #715:
+/// - NodeService emits DomainEvents for ALL mutations (HTTP, MCP, etc.)
+/// - dev-proxy subscribes to these events
+/// - Converts to SseEvent format expected by browser clients
+/// - Broadcasts to connected SSE clients
+///
+/// Note: Tauri desktop app would subscribe directly to DomainEvent and emit Tauri events,
+/// without this conversion layer.
+async fn domain_event_to_sse_bridge(
+    mut domain_rx: broadcast::Receiver<DomainEvent>,
+    sse_tx: broadcast::Sender<SseEvent>,
+) {
+    use nodespace_core::db::events::EdgeRelationship;
+
+    tracing::info!("🌉 Domain event bridge started, waiting for events...");
+
+    loop {
+        match domain_rx.recv().await {
+            Ok(event) => {
+                tracing::debug!("🔔 Received DomainEvent: {:?}", event);
+                // Convert DomainEvent to SseEvent(s)
+                match event {
+                    DomainEvent::NodeCreated {
+                        node,
+                        source_client_id,
+                    } => {
+                        // Filter out events from dev-proxy (browser operations)
+                        if source_client_id.as_deref() == Some("dev-proxy") {
+                            tracing::debug!(
+                                "Filtering out NodeCreated event from dev-proxy for node {}",
+                                node.id
+                            );
+                            continue;
+                        }
+
+                        let _ = sse_tx.send(SseEvent::NodeCreated {
+                            node_id: node.id.clone(),
+                            node_data: node,
+                            client_id: source_client_id,
+                        });
+                    }
+                    DomainEvent::NodeUpdated {
+                        node,
+                        source_client_id,
+                    } => {
+                        // Filter out events from dev-proxy (browser operations)
+                        // Don't send browser's own changes back to it
+                        if source_client_id.as_deref() == Some("dev-proxy") {
+                            tracing::debug!(
+                                "Filtering out NodeUpdated event from dev-proxy for node {}",
+                                node.id
+                            );
+                            continue;
+                        }
+
+                        tracing::info!(
+                            "📤 Broadcasting NodeUpdated SSE event for node {} (source_client_id: {:?})",
+                            node.id,
+                            source_client_id
+                        );
+                        let result = sse_tx.send(SseEvent::NodeUpdated {
+                            node_id: node.id.clone(),
+                            node_data: node,
+                            client_id: source_client_id,
+                        });
+                        tracing::debug!("📤 SSE broadcast result: {:?}", result);
+                    }
+                    DomainEvent::NodeDeleted {
+                        id,
+                        source_client_id,
+                    } => {
+                        // Filter out events from dev-proxy (browser operations)
+                        if source_client_id.as_deref() == Some("dev-proxy") {
+                            tracing::debug!(
+                                "Filtering out NodeDeleted event from dev-proxy for node {}",
+                                id
+                            );
+                            continue;
+                        }
+
+                        let _ = sse_tx.send(SseEvent::NodeDeleted {
+                            node_id: id,
+                            client_id: source_client_id,
+                        });
+                    }
+                    DomainEvent::EdgeCreated {
+                        relationship,
+                        source_client_id,
+                    } => {
+                        // Filter out events from dev-proxy (browser operations)
+                        if source_client_id.as_deref() == Some("dev-proxy") {
+                            tracing::debug!("Filtering out EdgeCreated event from dev-proxy");
+                            continue;
+                        }
+
+                        // Only convert hierarchy edges to SSE (mentions handled differently)
+                        if let EdgeRelationship::Hierarchy(h) = relationship {
+                            let _ = sse_tx.send(SseEvent::EdgeCreated {
+                                parent_id: h.parent_id,
+                                child_id: h.child_id,
+                                client_id: source_client_id,
+                            });
+                        }
+                    }
+                    DomainEvent::EdgeDeleted {
+                        id,
+                        source_client_id,
+                    } => {
+                        // Filter out events from dev-proxy (browser operations)
+                        if source_client_id.as_deref() == Some("dev-proxy") {
+                            tracing::debug!(
+                                "Filtering out EdgeDeleted event from dev-proxy for edge {}",
+                                id
+                            );
+                            continue;
+                        }
+
+                        // EdgeDeleted uses edge ID format "parent_id:child_id"
+                        // Parse and convert to SSE format
+                        if let Some((parent_id, child_id)) = id.split_once(':') {
+                            let _ = sse_tx.send(SseEvent::EdgeDeleted {
+                                parent_id: parent_id.to_string(),
+                                child_id: child_id.to_string(),
+                                client_id: source_client_id,
+                            });
+                        }
+                    }
+                    DomainEvent::EdgeUpdated { .. } => {
+                        // EdgeUpdated events not currently used by SSE clients
+                        // (order changes handled by full node refresh)
+                    }
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                tracing::warn!("Domain event bridge lagged by {} events", n);
+            }
+            Err(broadcast::error::RecvError::Closed) => {
+                tracing::info!("Domain event channel closed, stopping bridge");
+                break;
+            }
+        }
+    }
 }
 
 // === Handler Functions ===
@@ -475,22 +671,19 @@ async fn health_check() -> &'static str {
 /// ```
 async fn sse_handler(
     State(state): State<AppState>,
-    query: axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    // Extract client ID from query parameters (EventSource API doesn't support custom headers)
-    let client_id = query.get("clientId").cloned();
-
-    tracing::debug!("SSE client connected with client_id: {:?}", client_id);
+    tracing::debug!("SSE client connected");
 
     let rx = state.event_tx.subscribe();
 
-    // Transform broadcast messages into SSE events, filtering out events from this client
+    // Transform broadcast messages into SSE events, filtering out events from dev-proxy
+    // (Issue #715: dev-proxy represents all browser clients as single logical client)
     let stream = BroadcastStream::new(rx).filter_map(move |result| {
-        let client_id = client_id.clone();
         // Skip lagged/closed errors, only process actual messages
         match result {
             Ok(sse_event) => {
-                // Filter out events from this client (prevent feedback loop)
+                // Filter out events from dev-proxy itself (prevent feedback loop)
+                // All browser HTTP operations go through dev-proxy NodeService with client_id="dev-proxy"
                 let event_client_id = match &sse_event {
                     SseEvent::NodeCreated { client_id, .. } => client_id,
                     SseEvent::NodeUpdated { client_id, .. } => client_id,
@@ -499,12 +692,11 @@ async fn sse_handler(
                     SseEvent::EdgeDeleted { client_id, .. } => client_id,
                 };
 
-                // Skip if this event came from the same client
-                if let (Some(this_client), Some(event_client)) = (&client_id, event_client_id) {
-                    if this_client == event_client {
+                // Skip if event came from dev-proxy (browser operations)
+                if let Some(event_client) = event_client_id {
+                    if event_client == "dev-proxy" {
                         tracing::debug!(
-                            "Filtering out SSE event from same client: {:?}",
-                            event_client
+                            "Filtering out SSE event from dev-proxy (browser operation)"
                         );
                         return None;
                     }
@@ -546,15 +738,8 @@ async fn init_database() -> Json<serde_json::Value> {
 
 async fn create_node(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
     Json(req): Json<CreateNodeRequest>,
 ) -> ApiResult<String> {
-    // Extract client ID for SSE filtering
-    let client_id = headers
-        .get("x-client-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
     // Use NodeService directly to handle node creation and edge creation
     // (Issue #676: NodeOperations merged into NodeService)
     tracing::debug!(
@@ -573,7 +758,6 @@ async fn create_node(
         properties: req.properties,
     };
 
-    let parent_id_clone = params.parent_id.clone();
     let id = state
         .node_service
         .create_node_with_parent(params)
@@ -585,26 +769,9 @@ async fn create_node(
             )
         })?;
 
-    // Broadcast SSE event for the created node
-    // Fetch the full node data for the event payload
-    if let Ok(Some(node)) = state.node_service.get_node(&id).await {
-        let _ = state.event_tx.send(SseEvent::NodeCreated {
-            node_id: id.clone(),
-            node_data: node,
-            client_id: client_id.clone(),
-        });
-        tracing::debug!("SSE: NodeCreated event sent for node {}", id);
-
-        // If node has a parent, also broadcast edge created event
-        if let Some(parent_id) = parent_id_clone {
-            let _ = state.event_tx.send(SseEvent::EdgeCreated {
-                parent_id,
-                child_id: id.clone(),
-                client_id: client_id.clone(),
-            });
-            tracing::debug!("SSE: EdgeCreated event sent for node {}", id);
-        }
-    }
+    // NOTE: No SSE broadcast needed here - NodeService emits DomainEvent
+    // which is converted to SSE by the domain_event_to_sse_bridge
+    // This prevents duplicate events and enables proper client filtering
 
     Ok(Json(id))
 }
@@ -636,16 +803,9 @@ async fn get_node(
 
 async fn update_node(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(request): Json<UpdateNodeRequest>,
 ) -> ApiResult<serde_json::Value> {
-    // Extract client ID for SSE filtering
-    let client_id = headers
-        .get("x-client-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
     // Use optimistic concurrency control via version check
     let rows_affected = state
         .node_service
@@ -684,13 +844,9 @@ async fn update_node(
             )
         })?;
 
-    // Broadcast SSE event for the updated node
-    let _ = state.event_tx.send(SseEvent::NodeUpdated {
-        node_id: id.clone(),
-        node_data: updated_node.clone(),
-        client_id,
-    });
-    tracing::debug!("SSE: NodeUpdated event sent for node {}", id);
+    // NOTE: No SSE broadcast needed here - NodeService emits DomainEvent
+    // which is converted to SSE by the domain_event_to_sse_bridge
+    // This prevents duplicate events and enables proper client filtering
 
     let typed = node_to_typed_value(updated_node)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(e)))?;
@@ -726,16 +882,9 @@ async fn update_node(
 /// - `500 INTERNAL SERVER ERROR`: Database error
 async fn update_task_node(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(request): Json<UpdateTaskNodeRequest>,
 ) -> ApiResult<TaskNode> {
-    // Extract client ID for SSE filtering
-    let client_id = headers
-        .get("x-client-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
     tracing::debug!(
         "update_task_node: id={}, version={}, update={:?}",
         id,
@@ -750,31 +899,18 @@ async fn update_task_node(
         .await
         .map_err(map_node_service_error)?;
 
-    // Broadcast SSE event for the updated node
-    // Convert TaskNode to Node for the SSE event
-    let node_for_event = updated_task.clone().into_node();
-    let _ = state.event_tx.send(SseEvent::NodeUpdated {
-        node_id: id.clone(),
-        node_data: node_for_event,
-        client_id,
-    });
-    tracing::debug!("SSE: NodeUpdated event sent for task node {}", id);
+    // NOTE: No SSE broadcast needed here - NodeService emits DomainEvent
+    // which is converted to SSE by the domain_event_to_sse_bridge
+    // This prevents duplicate events and enables proper client filtering
 
     Ok(Json(updated_task))
 }
 
 async fn delete_node(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(request): Json<DeleteNodeRequest>,
 ) -> ApiStatusResult {
-    // Extract client ID for SSE filtering
-    let client_id = headers
-        .get("x-client-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
     // Use optimistic concurrency control via version check
     let rows_affected = state
         .node_service
@@ -813,12 +949,9 @@ async fn delete_node(
         }
     }
 
-    // Broadcast SSE event for the deleted node
-    let _ = state.event_tx.send(SseEvent::NodeDeleted {
-        node_id: id.clone(),
-        client_id,
-    });
-    tracing::debug!("SSE: NodeDeleted event sent for node {}", id);
+    // NOTE: No SSE broadcast needed here - NodeService emits DomainEvent
+    // which is converted to SSE by the domain_event_to_sse_bridge
+    // This prevents duplicate events and enables proper client filtering
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -835,25 +968,9 @@ struct SetParentRequest {
 
 async fn set_parent(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
     Path(node_id): Path<String>,
     Json(request): Json<SetParentRequest>,
 ) -> ApiStatusResult {
-    // Extract client ID for SSE filtering
-    let client_id = headers
-        .get("x-client-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
-    // Get current parent before moving (for edge deleted event)
-    let old_parent_id = state
-        .node_service
-        .get_parent(&node_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|n| n.id);
-
     state
         .node_service
         .move_node(
@@ -864,26 +981,9 @@ async fn set_parent(
         .await
         .map_err(map_node_service_error)?;
 
-    // Broadcast SSE edge events
-    // If node had an old parent, send edge deleted event
-    if let Some(old_parent) = old_parent_id {
-        let _ = state.event_tx.send(SseEvent::EdgeDeleted {
-            parent_id: old_parent,
-            child_id: node_id.clone(),
-            client_id: client_id.clone(),
-        });
-        tracing::debug!("SSE: EdgeDeleted event sent for node {}", node_id);
-    }
-
-    // If node has a new parent, send edge created event
-    if let Some(ref new_parent) = request.parent_id {
-        let _ = state.event_tx.send(SseEvent::EdgeCreated {
-            parent_id: new_parent.clone(),
-            child_id: node_id.clone(),
-            client_id: client_id.clone(),
-        });
-        tracing::debug!("SSE: EdgeCreated event sent for node {}", node_id);
-    }
+    // NOTE: No SSE broadcast needed here - NodeService emits DomainEvent
+    // (EdgeCreated/EdgeDeleted) which is converted to SSE by the domain_event_to_sse_bridge
+    // This prevents duplicate events and enables proper client filtering
 
     Ok(StatusCode::NO_CONTENT)
 }

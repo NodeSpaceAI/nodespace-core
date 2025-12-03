@@ -223,10 +223,13 @@ impl ParserContext {
 }
 
 /// Handle create_nodes_from_markdown MCP request
-pub async fn handle_create_nodes_from_markdown(
-    node_service: &Arc<NodeService>,
+pub async fn handle_create_nodes_from_markdown<C>(
+    node_service: &Arc<NodeService<C>>,
     params: Value,
-) -> Result<Value, MCPError> {
+) -> Result<Value, MCPError>
+where
+    C: surrealdb::Connection,
+{
     let params: CreateNodesFromMarkdownParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -442,11 +445,14 @@ fn detect_ordered_list(line: &str) -> Option<usize> {
 /// 2. **Content below headings are children**: Non-heading content becomes child of nearest heading above
 /// 3. **Indentation hints (optional)**: Tab/space count before `-` indicates depth
 /// 4. **Inline syntax preserved**: `**bold**`, `*italic*`, etc. kept intact
-async fn parse_markdown(
+async fn parse_markdown<C>(
     markdown: &str,
-    node_service: &Arc<NodeService>,
+    node_service: &Arc<NodeService<C>>,
     context: &mut ParserContext,
-) -> Result<(), MCPError> {
+) -> Result<(), MCPError>
+where
+    C: surrealdb::Connection,
+{
     // Track indentation-based hierarchy (node_id, indent_level)
     let mut indent_stack: Vec<(String, usize)> = Vec::new();
 
@@ -683,14 +689,17 @@ async fn parse_markdown(
 }
 
 /// Create a node via NodeService
-async fn create_node(
-    node_service: &Arc<NodeService>,
+async fn create_node<C>(
+    node_service: &Arc<NodeService<C>>,
     node_type: &str,
     content: &str,
     parent_id: Option<String>,
     _root_node_id: Option<String>, // Deprecated - kept for backward compat but ignored (root auto-derived from parent)
     _before_sibling_id: Option<String>, // Deprecated - sibling ordering now handled by edge order field
-) -> Result<String, MCPError> {
+) -> Result<String, MCPError>
+where
+    C: surrealdb::Connection,
+{
     // Create node via NodeService (enforces all business rules)
     // Note: container/root is now auto-derived from parent chain by backend
     // Note: sibling ordering is now handled via has_child edge order field
@@ -778,10 +787,13 @@ fn default_max_depth() -> usize {
 /// <!-- task-ghi789 v2 -->
 /// - [ ] Review architecture
 /// ```
-pub async fn handle_get_markdown_from_node_id(
-    node_service: &Arc<NodeService>,
+pub async fn handle_get_markdown_from_node_id<C>(
+    node_service: &Arc<NodeService<C>>,
     params: Value,
-) -> Result<Value, MCPError> {
+) -> Result<Value, MCPError>
+where
+    C: surrealdb::Connection,
+{
     // Parse parameters
     let params: GetMarkdownParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
@@ -844,10 +856,11 @@ pub async fn handle_get_markdown_from_node_id(
         }
     }
 
-    // Return result
+    // Return result with version for easy OCC reference
     Ok(json!({
         "markdown": markdown,
         "root_node_id": params.node_id,
+        "version": root_node.version,
         "node_count": count_nodes_in_markdown(&markdown)
     }))
 }
@@ -855,14 +868,17 @@ pub async fn handle_get_markdown_from_node_id(
 /// Recursively export node hierarchy to markdown
 ///
 /// Uses graph traversal via NodeService to get children in correct order
-fn export_node_hierarchy<'a>(
-    node_service: &'a Arc<NodeService>,
+fn export_node_hierarchy<'a, C>(
+    node_service: &'a Arc<NodeService<C>>,
     node: &Node,
     output: &'a mut String,
     current_depth: usize,
     max_depth: usize,
     include_children: bool,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), MCPError>> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), MCPError>> + Send + 'a>>
+where
+    C: surrealdb::Connection + 'a,
+{
     let node_id = node.id.clone();
     let node_version = node.version;
     let node_content = node.content.clone();
@@ -988,10 +1004,13 @@ pub struct UpdateRootFromMarkdownParams {
 /// // Old children deleted, new structure created
 /// // Returns deletion_failures if any deletes failed
 /// ```
-pub async fn handle_update_root_from_markdown(
-    node_service: &Arc<NodeService>,
+pub async fn handle_update_root_from_markdown<C>(
+    node_service: &Arc<NodeService<C>>,
     params: Value,
-) -> Result<Value, MCPError> {
+) -> Result<Value, MCPError>
+where
+    C: surrealdb::Connection,
+{
     // Parse parameters
     let params: UpdateRootFromMarkdownParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
