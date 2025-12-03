@@ -27,6 +27,7 @@ import { requiresAtomicBatching } from '$lib/utils/placeholder-detection';
 import { shouldLogDatabaseErrors, isTestEnvironment } from '$lib/utils/test-environment';
 import * as tauriCommands from './tauri-commands';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
+import { isVersionConflict } from '$lib/types/errors';
 import type { Node } from '$lib/types';
 import type {
   NodeUpdate,
@@ -411,6 +412,9 @@ export class SharedNodeStore {
 
   // Track pending tree loads to prevent duplicate concurrent loads from multiple tabs
   private pendingTreeLoads = new Map<string, Promise<Node[]>>();
+
+  // Track nodes currently being resynced to prevent concurrent resync operations
+  private resyncingNodes = new Set<string>();
 
   private constructor() {
     // Private constructor for singleton
@@ -861,6 +865,9 @@ export class SharedNodeStore {
               } catch (dbError) {
                 const error = dbError instanceof Error ? dbError : new Error(String(dbError));
 
+                // Check if this is a VERSION_CONFLICT error (OCC)
+                const isOccError = isVersionConflict(dbError);
+
                 // Suppress expected errors in in-memory test mode
                 if (shouldLogDatabaseErrors()) {
                   console.error(
@@ -876,6 +883,23 @@ export class SharedNodeStore {
 
                 // Rollback the optimistic update
                 this.rollbackUpdate(nodeId, update);
+
+                // If this is an OCC error, resync from server to unstuck the node
+                if (isOccError) {
+                  console.warn(
+                    `[SharedNodeStore] OCC error detected for node ${nodeId}. ` +
+                    `Resyncing from server to prevent stuck state...`
+                  );
+
+                  // Resync asynchronously - don't block the error propagation
+                  this.resyncNodeFromServer(nodeId).catch((resyncError) => {
+                    console.error(
+                      `[SharedNodeStore] Failed to resync after OCC error for node ${nodeId}:`,
+                      resyncError
+                    );
+                  });
+                }
+
                 throw error; // Re-throw to mark operation as failed in coordinator
               }
             },
@@ -1804,6 +1828,71 @@ export class SharedNodeStore {
     }
 
     console.debug(`[SharedNodeStore] Update rolled back for node: ${nodeId}`);
+  }
+
+  /**
+   * Resync node from server after OCC error
+   *
+   * Implements a "server-wins" conflict resolution strategy:
+   * - Fetches the current server state and replaces the local node entirely
+   * - User's pending edits are discarded in favor of server state
+   * - This ensures the node is no longer stuck after a version conflict
+   *
+   * Idempotent: Safe to call multiple times for the same node.
+   * Concurrent calls for the same node will be ignored.
+   *
+   * Future enhancement: Implement conflict merge UI (see #720 non-goals)
+   */
+  async resyncNodeFromServer(nodeId: string): Promise<void> {
+    // Idempotency guard: prevent concurrent resync operations on same node
+    if (this.resyncingNodes.has(nodeId)) {
+      console.debug(`[SharedNodeStore] Resync already in progress for node ${nodeId}`);
+      return;
+    }
+
+    this.resyncingNodes.add(nodeId);
+
+    try {
+      const serverNode = await tauriCommands.getNode(nodeId);
+
+      if (serverNode) {
+        // Replace in-memory node with server state
+        this.nodes.set(nodeId, serverNode);
+
+        // Sync version to match server
+        this.versions.set(nodeId, serverNode.version ?? 1);
+
+        // Mark as persisted since we just fetched from server
+        this.persistedNodeIds.add(nodeId);
+
+        // Clear any pending updates for this node
+        this.pendingUpdates.delete(nodeId);
+
+        // Notify subscribers with server state
+        this.notifySubscribers(nodeId, serverNode, {
+          type: 'database',
+          reason: 'occ-resync'
+        });
+
+        console.warn(
+          `[SharedNodeStore] Node ${nodeId} resynced from server after OCC error ` +
+          `(server version: ${serverNode.version ?? 1})`
+        );
+      } else {
+        console.error(
+          `[SharedNodeStore] Failed to resync node ${nodeId}: Node not found on server`
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[SharedNodeStore] Failed to resync node ${nodeId} from server:`,
+        error
+      );
+      throw error;
+    } finally {
+      // Always clean up tracking set, even on error
+      this.resyncingNodes.delete(nodeId);
+    }
   }
 
   /**

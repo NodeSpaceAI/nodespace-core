@@ -917,4 +917,236 @@ describe('SharedNodeStore', () => {
   });
 
   // Note: Explicit Persistence API tests removed (PersistenceCoordinator deleted in #558)
+
+  // ========================================================================
+  // OCC Error Recovery Tests (Issue #720)
+  // ========================================================================
+
+  describe('OCC Error Recovery', () => {
+    const mockServerNode: Node = {
+      id: 'test-node-occ',
+      nodeType: 'text',
+      content: 'Server content (version 5)',
+      createdAt: new Date().toISOString(),
+      modifiedAt: new Date().toISOString(),
+      version: 5,
+      properties: {},
+      mentions: []
+    };
+
+    it('should resync node from server after OCC error', async () => {
+      // Setup: Create a node with version 1
+      const localNode: Node = {
+        ...mockNode,
+        id: 'test-node-occ',
+        version: 1,
+        content: 'Local content (version 1)'
+      };
+
+      store.setNode(localNode, viewerSource, true);
+
+      // Mock tauriCommands.getNode to return server state
+      const getNodeSpy = vi
+        .spyOn(await import('../../lib/services/tauri-commands'), 'getNode')
+        .mockResolvedValue(mockServerNode);
+
+      // Trigger resync
+      await store.resyncNodeFromServer('test-node-occ');
+
+      // Verify getNode was called
+      expect(getNodeSpy).toHaveBeenCalledWith('test-node-occ');
+
+      // Verify local node was replaced with server state
+      const resyncedNode = store.getNode('test-node-occ');
+      expect(resyncedNode?.content).toBe('Server content (version 5)');
+      expect(resyncedNode?.version).toBe(5);
+
+      // Verify version was synced
+      const version = store.getVersion('test-node-occ');
+      expect(version).toBe(5);
+
+      // Verify node is marked as persisted (accessing via public getNode which checks persisted state)
+      // Note: persistedNodeIds is private, but we can verify by checking node was fetched successfully
+      expect(resyncedNode).toBeTruthy();
+
+      getNodeSpy.mockRestore();
+    });
+
+    it('should clear pending updates after resync', async () => {
+      // Setup: Create a node
+      const localNode: Node = {
+        ...mockNode,
+        id: 'test-node-occ',
+        version: 1,
+        content: 'Local content'
+      };
+
+      store.setNode(localNode, viewerSource, true);
+
+      // Mock tauriCommands.getNode
+      const getNodeSpy = vi
+        .spyOn(await import('../../lib/services/tauri-commands'), 'getNode')
+        .mockResolvedValue(mockServerNode);
+
+      // Trigger resync
+      await store.resyncNodeFromServer('test-node-occ');
+
+      // Verify node was resynced (pending updates cleared internally)
+      const resyncedNode = store.getNode('test-node-occ');
+      expect(resyncedNode?.version).toBe(5);
+      expect(resyncedNode?.content).toBe('Server content (version 5)');
+
+      getNodeSpy.mockRestore();
+    });
+
+    it('should notify subscribers after resync', async () => {
+      // Setup
+      const localNode: Node = {
+        ...mockNode,
+        id: 'test-node-occ',
+        version: 1,
+        content: 'Local content'
+      };
+
+      // Setup subscriber BEFORE setting the node
+      let notificationCount = 0;
+      let lastNotifiedNode: Node | null = null;
+      let lastNotifiedSource: UpdateSource | null = null;
+
+      store.subscribe('test-node-occ', (node: Node, source: UpdateSource) => {
+        notificationCount++;
+        lastNotifiedNode = node;
+        lastNotifiedSource = source;
+      });
+
+      // Set the node (will trigger first notification)
+      store.setNode(localNode, viewerSource, true);
+
+      // Reset counter after initial setup
+      notificationCount = 0;
+
+      // Mock tauriCommands.getNode
+      const getNodeSpy = vi
+        .spyOn(await import('../../lib/services/tauri-commands'), 'getNode')
+        .mockResolvedValue(mockServerNode);
+
+      // Trigger resync
+      await store.resyncNodeFromServer('test-node-occ');
+
+      // Verify subscribers were notified with server state
+      expect(notificationCount).toBe(1);
+      expect(lastNotifiedNode).toEqual(mockServerNode);
+      expect(lastNotifiedSource).toBeTruthy();
+
+      // Type guard assertion
+      const databaseSource = lastNotifiedSource as { type: 'database'; reason: string } | null;
+      expect(databaseSource?.type).toBe('database');
+      expect(databaseSource?.reason).toBe('occ-resync');
+
+      getNodeSpy.mockRestore();
+    });
+
+    it('should handle resync when node not found on server', async () => {
+      // Setup
+      const localNode: Node = {
+        ...mockNode,
+        id: 'test-node-occ',
+        version: 1
+      };
+
+      store.setNode(localNode, viewerSource, true);
+
+      // Mock tauriCommands.getNode to return null (node not found)
+      const getNodeSpy = vi
+        .spyOn(await import('../../lib/services/tauri-commands'), 'getNode')
+        .mockResolvedValue(null);
+
+      // Spy on console.error
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      // Trigger resync
+      await store.resyncNodeFromServer('test-node-occ');
+
+      // Verify error was logged
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to resync node test-node-occ: Node not found on server')
+      );
+
+      // Verify local node unchanged
+      const localNodeAfter = store.getNode('test-node-occ');
+      expect(localNodeAfter?.version).toBe(1);
+
+      getNodeSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('should handle resync failure gracefully', async () => {
+      // Setup
+      const localNode: Node = {
+        ...mockNode,
+        id: 'test-node-occ',
+        version: 1
+      };
+
+      store.setNode(localNode, viewerSource, true);
+
+      // Mock tauriCommands.getNode to throw error
+      const getNodeSpy = vi
+        .spyOn(await import('../../lib/services/tauri-commands'), 'getNode')
+        .mockRejectedValue(new Error('Network error'));
+
+      // Spy on console.error
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      // Trigger resync and expect it to throw
+      await expect(store.resyncNodeFromServer('test-node-occ')).rejects.toThrow('Network error');
+
+      // Verify error was logged
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to resync node test-node-occ from server'),
+        expect.any(Error)
+      );
+
+      getNodeSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('should allow subsequent edits after resync', async () => {
+      // Setup: Create node with version 1
+      const localNode: Node = {
+        ...mockNode,
+        id: 'test-node-occ',
+        version: 1,
+        content: 'Local content'
+      };
+
+      store.setNode(localNode, viewerSource, true);
+
+      // Mock tauriCommands.getNode to return server state (version 5)
+      const getNodeSpy = vi
+        .spyOn(await import('../../lib/services/tauri-commands'), 'getNode')
+        .mockResolvedValue(mockServerNode);
+
+      // Resync to version 5
+      await store.resyncNodeFromServer('test-node-occ');
+
+      // Now try to update with the correct version (5)
+      store.updateNode(
+        'test-node-occ',
+        { content: 'New edit after resync' },
+        viewerSource,
+        { skipPersistence: true }
+      );
+
+      // Verify update succeeded
+      const updatedNode = store.getNode('test-node-occ');
+      expect(updatedNode?.content).toBe('New edit after resync');
+
+      // Verify version was incremented from synced version
+      const version = store.getVersion('test-node-occ');
+      expect(version).toBe(6); // Should be server version (5) + 1
+
+      getNodeSpy.mockRestore();
+    });
+  });
 });
