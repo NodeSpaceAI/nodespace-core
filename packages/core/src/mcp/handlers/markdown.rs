@@ -156,10 +156,10 @@ impl ParserContext {
 
     /// Create a parser context for an existing container
     ///
-    /// This is a convenience constructor for update_container_from_markdown
-    /// that properly initializes the parser state for adding children to an
-    /// existing container node. It sets up the heading stack and parser flags
-    /// to treat the existing container as the root of the hierarchy.
+    /// This is a convenience constructor that properly initializes the parser
+    /// state for adding children to an existing container node. It sets up the
+    /// heading stack and parser flags to treat the existing container as the
+    /// root of the hierarchy.
     ///
     /// # Arguments
     ///
@@ -1145,22 +1145,14 @@ fn count_nodes_in_markdown(markdown: &str) -> usize {
 }
 
 // ============================================================================
-// Bulk Container Update (update_container_from_markdown)
+// Bulk Root Update (update_root_from_markdown)
 // ============================================================================
 
 /// Parameters for update_root_from_markdown method
-///
-/// Supports backward compatibility with deprecated `container_id` parameter.
-/// New code should use `root_id` instead.
 #[derive(Debug, Deserialize)]
 pub struct UpdateRootFromMarkdownParams {
-    /// Root node ID to update (preferred)
-    #[serde(default)]
-    pub root_id: Option<String>,
-    /// DEPRECATED: Use root_id instead. Container node ID to update.
-    /// Kept for backward compatibility with existing MCP clients.
-    #[serde(default)]
-    pub container_id: Option<String>,
+    /// Root node ID to update
+    pub root_id: String,
     /// New markdown content (replaces all children)
     pub markdown: String,
 }
@@ -1222,19 +1214,7 @@ where
     let params: UpdateRootFromMarkdownParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    // Resolve root_id with backward compatibility for container_id
-    let root_id = match (params.root_id, params.container_id) {
-        (Some(root_id), _) => root_id, // Prefer root_id
-        (None, Some(container_id)) => {
-            tracing::warn!("Parameter 'container_id' is deprecated. Use 'root_id' instead.");
-            container_id
-        }
-        (None, None) => {
-            return Err(MCPError::invalid_params(
-                "Either 'root_id' or 'container_id' is required".to_string(),
-            ));
-        }
-    };
+    let root_id = params.root_id;
 
     // Validate markdown content size
     if params.markdown.len() > MAX_MARKDOWN_SIZE {
@@ -1330,10 +1310,9 @@ where
         )));
     }
 
-    // Return both root_id (new) and container_id (deprecated) for backward compatibility
+    // Return operation results
     Ok(json!({
         "root_id": root_id,
-        "container_id": root_id,  // DEPRECATED: For backward compatibility
         "nodes_deleted": deleted_count,
         "deletion_failures": deletion_failures,
         "nodes_created": context.nodes.len(),

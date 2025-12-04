@@ -544,14 +544,14 @@ fn get_tool_schemas() -> Value {
                 "properties": {
                     "root_id": {
                         "type": "string",
-                        "description": "Root node ID to update (synonymous with document/page/file ID). Also accepts 'container_id' for backward compatibility."
+                        "description": "Root node ID to update (synonymous with document/page/file ID)"
                     },
                     "markdown": {
                         "type": "string",
                         "description": "New markdown content to parse and replace children. Will be parsed into nodes under the existing root."
                     }
                 },
-                "required": ["markdown"]
+                "required": ["root_id", "markdown"]
             }
         },
         {
