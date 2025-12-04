@@ -32,6 +32,9 @@
 
 import { marked } from 'marked';
 import type { Tokens } from 'marked';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('MarkedConfig');
 
 // Configure marked with custom renderer that uses NodeSpace CSS classes
 marked.use({
@@ -125,11 +128,11 @@ export function markdownToHtml(markdown: string): string {
       return html.replace(/^<p>|<\/p>$/g, '');
     } else {
       // If marked returns a Promise (shouldn't happen with our config, but handle it)
-      console.warn('marked() returned Promise unexpectedly, falling back to plain text');
+      log.warn('marked() returned Promise unexpectedly, falling back to plain text');
       return escapeHtml(markdown);
     }
   } catch (error) {
-    console.warn('marked.js parsing error:', error);
+    log.warn('marked.js parsing error:', error);
     // Fallback to plain text if parsing fails
     return escapeHtml(markdown);
   }

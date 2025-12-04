@@ -8,6 +8,9 @@
 import BaseNodeReference from '../base-node-reference.svelte';
 import { pluginRegistry } from '$lib/plugins/index';
 import type { SvelteComponent } from 'svelte';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('ReferenceRegistry');
 
 // Component type for Svelte components
 export type NodeReferenceComponent = new (...args: unknown[]) => SvelteComponent;
@@ -36,8 +39,8 @@ export const NODE_REFERENCE_COMPONENTS: Record<string, NodeReferenceComponent> =
     },
 
     set(_target, _prop: string, _value: NodeReferenceComponent) {
-      console.warn(
-        `NODE_REFERENCE_COMPONENTS assignment is deprecated. Use the unified plugin system instead.`
+      log.warn(
+        'NODE_REFERENCE_COMPONENTS assignment is deprecated. Use the unified plugin system instead.'
       );
       // We don't support the old API anymore
       return false;
@@ -77,8 +80,8 @@ export function registerNodeReferenceComponent(
   _nodeType: string,
   _component: NodeReferenceComponent
 ): void {
-  console.warn(
-    `registerNodeReferenceComponent() is deprecated. Use the unified plugin system instead.`
+  log.warn(
+    'registerNodeReferenceComponent() is deprecated. Use the unified plugin system instead.'
   );
   // This is a breaking change - we don't support the old API
   throw new Error(

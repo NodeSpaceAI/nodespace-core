@@ -16,6 +16,9 @@ import { stripMarkdown, validateMarkdown } from './markdown-utils.js';
 import { NodeDecoratorFactory } from './base-node-decoration';
 import type { DecorationContext } from './base-node-decoration';
 import type { ComponentDecoration } from '../types/component-decoration';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('ContentProcessor');
 
 // ============================================================================
 // Types previously from node-reference-service.ts (now inline)
@@ -900,10 +903,7 @@ export class ContentProcessor {
               return this.renderComponentDecorationAsHTML(decorationResult, decorationContext);
             }
           } catch (error) {
-            console.warn(
-              'ContentProcessor: Error rendering rich decoration for nodespace reference',
-              { error, refNode }
-            );
+            log.warn('Error rendering rich decoration for nodespace reference', { error, refNode });
             // Fall through to basic rendering
           }
         }
@@ -1163,7 +1163,7 @@ export class ContentProcessor {
         try {
           await this.nodeReferenceService.addReference(sourceNodeId, refNode.nodeId);
         } catch (error) {
-          console.warn('ContentProcessor: Failed to add bidirectional reference', {
+          log.warn(' Failed to add bidirectional reference', {
             error,
             sourceNodeId,
             targetNodeId: refNode.nodeId
@@ -1171,7 +1171,7 @@ export class ContentProcessor {
         }
       }
     } catch (error) {
-      console.error('ContentProcessor: Error resolving nodespace reference', {
+      log.error(' Error resolving nodespace reference', {
         error,
         uri: refNode.uri
       });
@@ -1261,7 +1261,7 @@ export class ContentProcessor {
             resolved = true;
           }
         } catch (error) {
-          console.warn('ContentProcessor: Failed to resolve reference', { error, uri: link.uri });
+          log.warn(' Failed to resolve reference', { error, uri: link.uri });
         }
       }
     }

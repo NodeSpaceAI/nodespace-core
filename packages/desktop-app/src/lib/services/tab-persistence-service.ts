@@ -7,6 +7,9 @@
 
 import type { TabState } from '$lib/stores/navigation';
 import { formatDateTitle, parseDateString } from '$lib/utils/date-formatting';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('TabPersistence');
 
 /**
  * Persisted tab state structure with versioning for future migrations
@@ -23,36 +26,11 @@ export interface PersistedTabState {
  * Service for persisting and loading tab state
  */
 export class TabPersistenceService {
-  private static readonly LOG_PREFIX = '[TabPersistence]';
   private static readonly STORAGE_KEY = 'nodespace:tab-state';
   private static readonly DEBOUNCE_MS = 500;
-  private static readonly DEBUG = import.meta.env.DEV;
 
   private static saveTimer: ReturnType<typeof setTimeout> | null = null;
   private static pendingState: TabState | null = null;
-
-  /**
-   * Log message in development mode only
-   */
-  private static log(message: string): void {
-    if (this.DEBUG) {
-      console.log(`${this.LOG_PREFIX} ${message}`);
-    }
-  }
-
-  /**
-   * Log warning in all environments
-   */
-  private static warn(message: string): void {
-    console.warn(`${this.LOG_PREFIX} ${message}`);
-  }
-
-  /**
-   * Log error in all environments
-   */
-  private static error(message: string, error?: unknown): void {
-    console.error(`${this.LOG_PREFIX} ${message}`, error || '');
-  }
 
   /**
    * Save tab state to persistent storage (debounced)
@@ -91,9 +69,9 @@ export class TabPersistenceService {
       // For now, use localStorage (Tauri store integration can be added later)
       localStorage.setItem(this.STORAGE_KEY, JSON.stringify(persisted));
 
-      this.log('State saved successfully');
+      log.debug('State saved successfully');
     } catch (error) {
-      this.error('Failed to save state:', error);
+      log.error('Failed to save state:', error);
     }
   }
 
@@ -106,7 +84,7 @@ export class TabPersistenceService {
       const stored = localStorage.getItem(this.STORAGE_KEY);
 
       if (!stored) {
-        this.log('No saved state found');
+        log.debug('No saved state found');
         return null;
       }
 
@@ -114,17 +92,17 @@ export class TabPersistenceService {
 
       // Validate the structure
       if (!this.isValidState(parsed)) {
-        this.warn('Invalid state structure, ignoring');
+        log.warn('Invalid state structure, ignoring');
         return null;
       }
 
       // Handle version migrations
       const migrated = this.migrate(parsed);
 
-      this.log('State loaded successfully');
+      log.debug('State loaded successfully');
       return migrated;
     } catch (error) {
-      this.error('Failed to load state:', error);
+      log.error('Failed to load state:', error);
       return null;
     }
   }
@@ -213,7 +191,7 @@ export class TabPersistenceService {
     const seenPaneIds = new Set<string>();
     const uniquePanes = state.panes.filter((pane) => {
       if (seenPaneIds.has(pane.id)) {
-        this.error(`Removing duplicate pane ID: ${pane.id}`);
+        log.error(`Removing duplicate pane ID: ${pane.id}`);
         return false;
       }
       seenPaneIds.add(pane.id);
@@ -227,7 +205,7 @@ export class TabPersistenceService {
 
       if (uniqueTabIds.length !== pane.tabIds.length) {
         const duplicateCount = pane.tabIds.length - uniqueTabIds.length;
-        this.warn(
+        log.warn(
           `Removed ${duplicateCount} duplicate tab ID(s) from pane ${pane.id}'s tabIds array`
         );
       }
@@ -242,7 +220,7 @@ export class TabPersistenceService {
     const seenTabIds = new Set<string>();
     const uniqueTabs = state.tabs.filter((tab) => {
       if (seenTabIds.has(tab.id)) {
-        this.error(`Removing duplicate tab ID: ${tab.id}`);
+        log.error(`Removing duplicate tab ID: ${tab.id}`);
         return false;
       }
       seenTabIds.add(tab.id);
@@ -288,9 +266,9 @@ export class TabPersistenceService {
   static clear(): void {
     try {
       localStorage.removeItem(this.STORAGE_KEY);
-      this.log('State cleared');
+      log.debug('State cleared');
     } catch (error) {
-      this.error('Failed to clear state:', error);
+      log.error('Failed to clear state:', error);
     }
   }
 

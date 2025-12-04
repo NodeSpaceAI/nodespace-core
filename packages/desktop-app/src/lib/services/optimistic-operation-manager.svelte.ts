@@ -25,22 +25,9 @@ import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import type { PersistenceFailedEvent } from '$lib/types/event-types';
 import type { Node } from '$lib/types';
+import { createLogger } from '$lib/utils/logger';
 
-// Development-only logging helper
-const isDev = import.meta.env.DEV;
-const log = (message: string, data?: unknown) => {
-  if (isDev) {
-    console.log(message, data ?? '');
-  }
-};
-const logError = (message: string, error?: unknown) => {
-  // Always log errors, but with less detail in production
-  if (isDev) {
-    console.error(message, error);
-  } else {
-    console.error(message);
-  }
-};
+const log = createLogger('OptimisticOperationManager');
 
 interface OperationSnapshot {
   structure: Map<string, Array<{ nodeId: string; order: number }>>;
@@ -115,7 +102,7 @@ class OptimisticOperationManager {
     // Step 1: Take snapshot for rollback
     const snapshot = this.takeSnapshot(snapshotData);
 
-    log(`[OptimisticOperationManager] Starting operation: ${description}`, {
+    log.debug(`Starting operation: ${description}`, {
       affectedNodes,
       snapshotData,
       timestamp: snapshot.timestamp
@@ -125,7 +112,7 @@ class OptimisticOperationManager {
       // Step 2: Apply optimistic change immediately (UI updates)
       optimisticUpdate();
 
-      log(`[OptimisticOperationManager] Optimistic update applied: ${description}`);
+      log.debug(`Optimistic update applied: ${description}`);
 
       // Step 3: Fire backend operation (don't await - let domain events confirm)
       // We intentionally don't await here so the UI feels instant
@@ -136,10 +123,7 @@ class OptimisticOperationManager {
       });
     } catch (error) {
       // Optimistic update failed (should be rare) - rollback immediately
-      logError(
-        `[OptimisticOperationManager] Optimistic update failed: ${description}`,
-        error
-      );
+      log.error(`Optimistic update failed: ${description}`, error);
       this.restoreSnapshot(snapshot, snapshotData);
       throw error;
     }
@@ -164,7 +148,7 @@ class OptimisticOperationManager {
    * @private
    */
   private restoreSnapshot(snapshot: OperationSnapshot, includeData: boolean): void {
-    log('[OptimisticOperationManager] Rolling back to snapshot', {
+    log.debug('Rolling back to snapshot', {
       timestamp: snapshot.timestamp,
       includeData
     });
@@ -177,7 +161,7 @@ class OptimisticOperationManager {
       sharedNodeStore.restore(snapshot.data);
     }
 
-    log('[OptimisticOperationManager] Rollback complete');
+    log.debug('Rollback complete');
   }
 
   /**
@@ -191,10 +175,7 @@ class OptimisticOperationManager {
     description: string,
     affectedNodes: string[]
   ): void {
-    logError(
-      `[OptimisticOperationManager] Backend operation failed: ${description}`,
-      error
-    );
+    log.error(`Backend operation failed: ${description}`, error);
 
     // Rollback to snapshot
     const includeData = snapshot.data.size > 0;
@@ -239,12 +220,9 @@ class OptimisticOperationManager {
 
     try {
       await emit('error:persistence-failed', event);
-      log('[OptimisticOperationManager] Error event emitted', event);
+      log.debug('Error event emitted', event);
     } catch (emitError) {
-      logError(
-        '[OptimisticOperationManager] Failed to emit error event',
-        emitError
-      );
+      log.error('Failed to emit error event', emitError);
     }
   }
 
@@ -312,14 +290,11 @@ class OptimisticOperationManager {
     );
     const batchDescription = operations.map((op) => op.description).join(', ');
 
-    log(
-      `[OptimisticOperationManager] Starting batch operation: ${batchDescription}`,
-      {
-        operationCount: operations.length,
-        affectedNodes: allAffectedNodes,
-        timestamp: snapshot.timestamp
-      }
-    );
+    log.debug(`Starting batch operation: ${batchDescription}`, {
+      operationCount: operations.length,
+      affectedNodes: allAffectedNodes,
+      timestamp: snapshot.timestamp
+    });
 
     try {
       // Apply all optimistic updates
@@ -327,9 +302,7 @@ class OptimisticOperationManager {
         operation.optimisticUpdate();
       }
 
-      log(
-        `[OptimisticOperationManager] Batch optimistic updates applied: ${batchDescription}`
-      );
+      log.debug(`Batch optimistic updates applied: ${batchDescription}`);
 
       // Fire all backend operations (don't await - let domain events confirm)
       // Use Promise.allSettled to capture all failures for better diagnostics
@@ -344,10 +317,11 @@ class OptimisticOperationManager {
               `${failures.length}/${operations.length} operations failed: ` +
                 failures.map((f) => f.reason?.message || String(f.reason)).join('; ')
             );
-            logError(
-              `[OptimisticOperationManager] Batch backend operation failed: ${batchDescription}`,
-              { failureCount: failures.length, totalCount: operations.length, failures }
-            );
+            log.error(`Batch backend operation failed: ${batchDescription}`, {
+              failureCount: failures.length,
+              totalCount: operations.length,
+              failures
+            });
             this.handleBackendFailure(
               aggregatedError,
               snapshot,
@@ -359,10 +333,7 @@ class OptimisticOperationManager {
       );
     } catch (error) {
       // Optimistic update failed - rollback immediately
-      logError(
-        `[OptimisticOperationManager] Batch optimistic update failed: ${batchDescription}`,
-        error
-      );
+      log.error(`Batch optimistic update failed: ${batchDescription}`, error);
       this.restoreSnapshot(snapshot, false);
       throw error;
     }

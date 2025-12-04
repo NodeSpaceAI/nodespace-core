@@ -11,6 +11,10 @@
  * - Reusable across all node types
  */
 
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('CursorPositioningService');
+
 export interface CursorPosition {
   line: number; // 0-based line index
   column: number; // 0-based character offset within line
@@ -74,7 +78,7 @@ export class CursorPositioningService {
 
       // Validate line number
       if (lineNumber < 0 || lineNumber >= lines.length) {
-        console.warn(`[CursorPositioningService] Invalid line number ${lineNumber}, using 0`);
+        log.warn(`Invalid line number ${lineNumber}, using 0`);
         lineNumber = 0;
       }
 
@@ -164,16 +168,14 @@ export class CursorPositioningService {
       // Validate line number
       let { line, column } = position;
       if (line < 0 || line >= lines.length) {
-        console.warn(`[CursorPositioningService] Invalid line ${line}, using 0`);
+        log.warn(`Invalid line ${line}, using 0`);
         line = 0;
       }
 
       // Validate column
       const lineContent = lines[line];
       if (column < 0 || column > lineContent.length) {
-        console.warn(
-          `[CursorPositioningService] Invalid column ${column} for line ${line}, clamping`
-        );
+        log.warn(`Invalid column ${column} for line ${line}, clamping`);
         column = Math.max(0, Math.min(column, lineContent.length));
       }
 

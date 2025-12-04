@@ -24,10 +24,13 @@ import { ContentProcessor } from './content-processor';
 import { SharedNodeStore } from './shared-node-store.svelte';
 import { getFocusManager } from './focus-manager.svelte';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
+import { createLogger } from '$lib/utils/logger';
 import type { Node, NodeUIState } from '$lib/types';
 import { createDefaultUIState } from '$lib/types';
 import type { UpdateSource } from '$lib/types/update-protocol';
 import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
+
+const log = createLogger('ReactiveNodeService');
 // Schema defaults extraction removed in Issue #690 simplification
 // TODO: Re-add schema defaults if needed via backendAdapter.getSchema() + SchemaNodeHelpers
 import { moveNode as moveNodeCommand } from './tauri-commands';
@@ -369,7 +372,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const afterNodeUIState = _uiState[afterNodeId];
     const isExpanded = afterNodeUIState?.expanded ?? true; // Default to expanded if no state
 
-    console.log('[createNode] Child transfer check:', {
+    log.debug('[createNode] Child transfer check:', {
       afterNodeId,
       insertAtBeginning,
       isExpanded,
@@ -410,7 +413,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
             }
           } catch (error) {
             // ROLLBACK: Revert optimistic UI changes on failure
-            console.error('[createNode] Failed to transfer children to database, rolling back:', error);
+            log.error('[createNode] Failed to transfer children to database, rolling back:', error);
             for (const child of children) {
               // Move children back to original parent in structure tree
               structureTree.moveInMemoryRelationship(nodeId, afterNodeId, child.id);
@@ -898,7 +901,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         // Get fresh node data to ensure we have the latest version
         const freshNode = sharedNodeStore.getNode(nodeId);
         if (!freshNode) {
-          console.warn('[indentNode] Node no longer exists after waiting for save:', nodeId);
+          log.warn('[indentNode] Node no longer exists after waiting for save:', nodeId);
           return;
         }
 
@@ -926,7 +929,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
           events.hierarchyChanged();
           _updateTrigger++;
 
-          console.error('[indentNode] Failed to move node, rolled back:', error);
+          log.error('[indentNode] Failed to move node, rolled back:', error);
         }
         // Ignorable error: keep UI updates (for unit tests without server)
       }
@@ -1042,7 +1045,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         // Get fresh node data to ensure we have the latest versions
         const freshNode = sharedNodeStore.getNode(nodeId);
         if (!freshNode) {
-          console.warn('[outdentNode] Node no longer exists after waiting for save:', nodeId);
+          log.warn('[outdentNode] Node no longer exists after waiting for save:', nodeId);
           return;
         }
 
@@ -1079,7 +1082,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
             oldParentId,
             newParentId
           );
-          console.error('[outdentNode] Failed to move node, rolled back:', error);
+          log.error('[outdentNode] Failed to move node, rolled back:', error);
         }
         // Ignorable error: keep UI updates (for unit tests without server)
       }
@@ -1168,7 +1171,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       // Insert after the node at the same depth to maintain visual order
       // Don't await - let PersistenceCoordinator handle sequencing via deletionDependencies
       moveNodeCommand(child.id, child.version, newParentForChild, insertAfterNodeId).catch((error) => {
-        console.error(`[promoteChildren] Failed to move child ${child.id} to parent ${newParentForChild}:`, error);
+        log.error(`[promoteChildren] Failed to move child ${child.id} to parent ${newParentForChild}:`, error);
       });
 
       // Update local state for immediate UI feedback
@@ -1292,7 +1295,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
       return true;
     } catch (error) {
-      console.error(`[ReactiveNodeService] Error setting expanded state for ${nodeId}:`, error);
+      log.error(` Error setting expanded state for ${nodeId}:`, error);
       return false;
     }
   }
@@ -1330,7 +1333,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
       return changedCount;
     } catch (error) {
-      console.error('[ReactiveNodeService] Error in batch set expanded:', error);
+      log.error(' Error in batch set expanded:', error);
       return 0;
     }
   }
@@ -1348,7 +1351,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
       return true;
     } catch (error) {
-      console.error('Error toggling node expansion:', error);
+      log.error('Error toggling node expansion:', error);
       return false;
     }
   }

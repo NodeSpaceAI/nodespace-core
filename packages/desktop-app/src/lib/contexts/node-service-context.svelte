@@ -43,6 +43,9 @@
   import { ContentProcessor } from '$lib/services/content-processor';
   import { focusManager } from '$lib/services/focus-manager.svelte';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
+  import { createLogger } from '$lib/utils/logger';
+
+  const log = createLogger('NodeServiceContext');
 
   // Get paneId from context (set by PaneContent)
   const paneId = getContext<string>('paneId') ?? DEFAULT_PANE_ID;
@@ -105,7 +108,7 @@
 
       servicesInitialized = true;
     } catch (error) {
-      console.error('NodeServiceContext: Failed to initialize services:', error);
+      log.error('Failed to initialize services:', error);
       initializationError = error instanceof Error ? error.message : 'Unknown error';
     }
   });

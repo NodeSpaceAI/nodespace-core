@@ -27,9 +27,9 @@ import { get } from 'svelte/store';
 import type { Node } from '$lib/types';
 import { formatDateTitle } from '$lib/utils/date-formatting';
 import { formatTabTitle } from '$lib/utils/text-formatting';
+import { createLogger } from '$lib/utils/logger';
 
-// Constants
-const LOG_PREFIX = '[NavigationService]';
+const log = createLogger('NavigationService');
 
 export interface NavigationTarget {
   nodeId: string;
@@ -63,13 +63,13 @@ export class NavigationService {
 
     if (!node) {
       // Not in store, fetch from backend (handles virtual dates automatically)
-      console.log(`${LOG_PREFIX} Node ${nodeId} not in store, fetching from backend...`);
+      log.debug(`Node ${nodeId} not in store, fetching from backend...`);
       const { getNode } = await import('./tauri-commands');
 
       try {
         const fetchedNode = await getNode(nodeId);
         if (!fetchedNode) {
-          console.error(`${LOG_PREFIX} Node ${nodeId} not found in backend`);
+          log.error(`Node ${nodeId} not found in backend`);
           return null;
         }
         node = fetchedNode;
@@ -83,7 +83,7 @@ export class NavigationService {
           true // skipPersistence - already in backend or virtual
         );
       } catch (error) {
-        console.error(`${LOG_PREFIX} Failed to fetch node ${nodeId}:`, error);
+        log.error(`Failed to fetch node ${nodeId}:`, error);
         return null;
       }
     }
@@ -205,11 +205,11 @@ export class NavigationService {
       const newPane = createPane();
 
       if (!newPane) {
-        console.error(`${LOG_PREFIX} Failed to create second pane (max panes reached)`);
+        log.error('Failed to create second pane (max panes reached)');
         return;
       }
 
-      console.log(`${LOG_PREFIX} Created second pane: ${newPane.id}`);
+      log.debug(`Created second pane: ${newPane.id}`);
 
       // Create tab in the new pane
       const newTab = {
@@ -231,11 +231,11 @@ export class NavigationService {
       const otherPane = currentState.panes.find((p) => p.id !== currentPaneId);
 
       if (!otherPane) {
-        console.error(`${LOG_PREFIX} Could not find other pane`);
+        log.error('Could not find other pane');
         return;
       }
 
-      console.log(`${LOG_PREFIX} Opening in other pane: ${otherPane.id}`);
+      log.debug(`Opening in other pane: ${otherPane.id}`);
 
       // Create tab in the other pane
       const newTab = {

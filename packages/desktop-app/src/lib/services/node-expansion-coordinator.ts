@@ -88,6 +88,9 @@
  */
 
 import type { ReactiveNodeService } from './reactive-node-service.svelte';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('NodeExpansionCoordinator');
 
 /**
  * Registry entry for a ReactiveNodeService instance
@@ -101,9 +104,6 @@ interface ViewerRegistryEntry {
  * Coordinator service for node expansion state persistence
  */
 export class NodeExpansionCoordinator {
-  private static readonly LOG_PREFIX = '[NodeExpansionCoordinator]';
-  private static readonly DEBUG = import.meta.env.DEV;
-
   // Memory leak prevention: Warn if registry grows too large
   private static readonly MAX_REGISTRY_SIZE = 100;
   private static readonly STALE_ENTRY_AGE_MS = 30 * 60 * 1000; // 30 minutes
@@ -121,29 +121,6 @@ export class NodeExpansionCoordinator {
    * Value: Array of node IDs to expand
    */
   private static pendingRestorations = new Map<string, string[]>();
-
-  /**
-   * Log message in development mode only
-   */
-  private static log(message: string): void {
-    if (this.DEBUG) {
-      console.log(`${this.LOG_PREFIX} ${message}`);
-    }
-  }
-
-  /**
-   * Log warning in all environments
-   */
-  private static warn(message: string): void {
-    console.warn(`${this.LOG_PREFIX} ${message}`);
-  }
-
-  /**
-   * Log error in all environments
-   */
-  private static error(message: string, error?: unknown): void {
-    console.error(`${this.LOG_PREFIX} ${message}`, error || '');
-  }
 
   /**
    * Register a ReactiveNodeService instance for a viewer
@@ -169,7 +146,7 @@ export class NodeExpansionCoordinator {
     // Check if there are pending expansion states to restore
     const pendingStates = this.pendingRestorations.get(viewerId);
     if (pendingStates && pendingStates.length > 0) {
-      this.log(`Restoring ${pendingStates.length} expansions for viewer: ${viewerId}`);
+      log.debug(`Restoring ${pendingStates.length} expansions for viewer: ${viewerId}`);
       this.restoreExpansionStates(viewerId, pendingStates);
       this.pendingRestorations.delete(viewerId);
     }
@@ -244,7 +221,7 @@ export class NodeExpansionCoordinator {
 
     if (!entry) {
       // Viewer not registered yet - queue the restoration
-      this.log(
+      log.debug(
         `Viewer not yet registered, queueing ${expandedNodeIds.length} expansions: ${viewerId}`
       );
       this.pendingRestorations.set(viewerId, expandedNodeIds);
@@ -262,7 +239,7 @@ export class NodeExpansionCoordinator {
     const changedCount = service.batchSetExpanded(updates);
     const skippedCount = expandedNodeIds.length - updates.length;
 
-    this.log(
+    log.debug(
       `Restored expansions for viewer ${viewerId}: ${changedCount} applied, ${skippedCount} skipped (missing nodes)`
     );
   }
@@ -275,7 +252,7 @@ export class NodeExpansionCoordinator {
    * @param expandedNodeIds - Array of node IDs to mark as expanded
    */
   static scheduleRestoration(viewerId: string, expandedNodeIds: string[]): void {
-    this.log(`Scheduling ${expandedNodeIds.length} expansions for viewer: ${viewerId}`);
+    log.debug(`Scheduling ${expandedNodeIds.length} expansions for viewer: ${viewerId}`);
     this.pendingRestorations.set(viewerId, expandedNodeIds);
   }
 
@@ -284,7 +261,7 @@ export class NodeExpansionCoordinator {
    * Useful for testing or application reset
    */
   static clear(): void {
-    this.log('Clearing all viewer registrations and pending restorations');
+    log.debug('Clearing all viewer registrations and pending restorations');
     this.viewerRegistry.clear();
     this.pendingRestorations.clear();
   }
@@ -314,7 +291,7 @@ export class NodeExpansionCoordinator {
     const size = this.viewerRegistry.size;
 
     if (size > this.MAX_REGISTRY_SIZE) {
-      this.warn(
+      log.warn(
         `Registry size (${size}) exceeds maximum (${this.MAX_REGISTRY_SIZE}). ` +
           'This may indicate a memory leak from missing unregisterViewer() calls. ' +
           'Consider calling cleanupStaleEntries().'
@@ -337,7 +314,7 @@ export class NodeExpansionCoordinator {
     for (const [viewerId, entry] of this.viewerRegistry.entries()) {
       const age = now - entry.registeredAt;
       if (age > maxAgeMs) {
-        this.warn(`Removing stale entry for viewer ${viewerId} (age: ${Math.round(age / 1000)}s)`);
+        log.warn(`Removing stale entry for viewer ${viewerId} (age: ${Math.round(age / 1000)}s)`);
         this.viewerRegistry.delete(viewerId);
         this.pendingRestorations.delete(viewerId);
         removedCount++;
@@ -345,7 +322,7 @@ export class NodeExpansionCoordinator {
     }
 
     if (removedCount > 0) {
-      this.log(`Cleaned up ${removedCount} stale entries`);
+      log.debug(`Cleaned up ${removedCount} stale entries`);
     }
 
     return removedCount;

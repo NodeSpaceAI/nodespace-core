@@ -339,18 +339,11 @@ describe('PluginRegistry - Core Functionality', () => {
 
       registry.register(plugin);
 
-      // Mock console.warn to avoid test output noise
-      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
       const viewer = await registry.getViewer('error-viewer');
 
+      // Verify the actual behavior: getViewer returns null on error
       expect(viewer).toBeNull();
-      expect(consoleSpy).toHaveBeenCalledWith(
-        'Failed to lazy load viewer for error-viewer:',
-        expect.any(Error)
-      );
-
-      consoleSpy.mockRestore();
+      // Note: Logger warnings are silenced during tests by design (enabled: !isTest)
     });
   });
 

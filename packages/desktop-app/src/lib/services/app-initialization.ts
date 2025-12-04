@@ -5,6 +5,10 @@
  * any components try to use Tauri commands.
  */
 
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('AppInit');
+
 // Tauri API types
 interface TauriCore {
   invoke: (command: string, ...args: unknown[]) => Promise<unknown>;
@@ -51,7 +55,7 @@ async function waitForTauriReady(): Promise<void> {
       typeof window.__TAURI__ !== 'undefined' &&
       typeof window.__TAURI__.core?.invoke === 'function'
     ) {
-      console.log('[App Init] Tauri API ready after', attempts * delayMs, 'ms');
+      log.debug(`Tauri API ready after ${attempts * delayMs}ms`);
       return;
     }
 
@@ -60,7 +64,7 @@ async function waitForTauriReady(): Promise<void> {
       typeof window !== 'undefined' &&
       typeof window.__TAURI__?.invoke === 'function'
     ) {
-      console.log('[App Init] Tauri API ready (legacy) after', attempts * delayMs, 'ms');
+      log.debug(`Tauri API ready (legacy) after ${attempts * delayMs}ms`);
       return;
     }
 
@@ -74,7 +78,7 @@ async function waitForTauriReady(): Promise<void> {
   const hasInvokeCore = hasTauri && typeof window.__TAURI__?.core?.invoke === 'function';
   const hasInvokeLegacy = hasTauri && typeof window.__TAURI__?.invoke === 'function';
 
-  console.error('[App Init] Tauri API check results:', {
+  log.error('Tauri API check results:', {
     isWindow,
     hasTauri,
     hasInvokeCore,
@@ -104,7 +108,7 @@ export async function initializeApp(): Promise<void> {
 
   // Skip Tauri initialization in browser mode (using HTTP dev-proxy)
   if (!isTauriEnvironment()) {
-    console.log('[App Init] Running in browser mode, skipping Tauri initialization');
+    log.debug('Running in browser mode, skipping Tauri initialization');
     return;
   }
 
@@ -121,18 +125,18 @@ export async function initializeApp(): Promise<void> {
         throw new Error('Tauri invoke function not available');
       }
       await invoke('initialize_database');
-      console.log('[App Init] Database initialized');
+      log.info('Database initialized');
     } catch (error: unknown) {
       // Check if already initialized (this is expected on subsequent calls)
       const errorMsg = error instanceof Error ? error.message : String(error);
       if (errorMsg.includes('already initialized')) {
-        console.log('[App Init] Database already initialized');
+        log.debug('Database already initialized');
       } else {
-        console.warn('[App Init] Database initialization warning:', error);
+        log.warn('Database initialization warning:', error);
       }
     }
   } catch (error: unknown) {
-    console.error('[App Init] Critical initialization error:', error);
+    log.error('Critical initialization error:', error);
     throw error;
   }
 }

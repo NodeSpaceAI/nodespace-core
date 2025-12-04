@@ -13,6 +13,9 @@
   import Icon, { type IconName } from '$lib/design/icons/icon.svelte';
   import { onMount } from 'svelte';
   import type { Node } from '$lib/types/node';
+  import { createLogger } from '$lib/utils/logger';
+
+  const log = createLogger('BacklinksPanel');
 
   let { nodeId }: { nodeId: string } = $props();
 
@@ -33,7 +36,7 @@
       // Filter out null values (nodes that no longer exist)
       backlinks = nodes.filter((node): node is Node => node !== null);
     } catch (err) {
-      console.error('Failed to load backlinks:', err);
+      log.error('Failed to load backlinks:', err);
       error = err instanceof Error ? err.message : 'Failed to load backlinks';
     } finally {
       loading = false;

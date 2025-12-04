@@ -24,6 +24,9 @@
 
 import type { Node, NodeWithChildren, TaskNode, TaskNodeUpdate } from '$lib/types';
 import type { SchemaNode } from '$lib/types/schema-node';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('BackendAdapter');
 
 // ============================================================================
 // Types
@@ -605,11 +608,11 @@ export function getBackendAdapter(): BackendAdapter {
   }
 
   if (isTauriEnvironment()) {
-    console.debug('[BackendAdapter] Using Tauri IPC adapter');
+    log.debug('Using Tauri IPC adapter');
     return new TauriAdapter();
   }
 
-  console.debug('[BackendAdapter] Using HTTP dev server adapter (port 3001)');
+  log.debug('Using HTTP dev server adapter (port 3001)');
   return new HttpAdapter();
 }
 

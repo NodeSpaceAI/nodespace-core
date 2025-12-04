@@ -12,6 +12,9 @@
  */
 
 import type { HierarchyRelationship } from '$lib/types/event-types';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('ReactiveStructureTree');
 
 interface ChildInfo {
   nodeId: string;
@@ -97,8 +100,8 @@ class ReactiveStructureTree {
     // Check if child already has a DIFFERENT parent (tree invariant violation)
     const currentParent = this.getParent(childId);
     if (currentParent && currentParent !== parentId) {
-      console.error(
-        `[ReactiveStructureTree] Tree invariant violation: ${childId} already has parent ${currentParent}, cannot add to ${parentId}`,
+      log.error(
+        `Tree invariant violation: ${childId} already has parent ${currentParent}, cannot add to ${parentId}`,
         rel
       );
       // In a tree structure, a node can only have one parent

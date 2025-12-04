@@ -3,6 +3,9 @@ import { formatDateISO } from '$lib/utils/date-formatting';
 import { clearScrollPosition, clearPaneScrollPositions } from './scroll-state';
 import { TabPersistenceService } from '$lib/services/tab-persistence-service';
 import { NodeExpansionCoordinator } from '$lib/services/node-expansion-coordinator';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('Navigation');
 
 export interface Tab {
   id: string;
@@ -131,8 +134,8 @@ export function loadPersistedState(): boolean {
         NodeExpansionCoordinator.scheduleRestoration(tab.id, tab.expandedNodeIds);
       } else if (tab.expandedNodeIds && !Array.isArray(tab.expandedNodeIds)) {
         // Log warning for malformed data but don't crash
-        console.warn(
-          `[Navigation] Invalid expandedNodeIds for tab ${tab.id}: expected array, got ${typeof tab.expandedNodeIds}`
+        log.warn(
+          `Invalid expandedNodeIds for tab ${tab.id}: expected array, got ${typeof tab.expandedNodeIds}`
         );
       }
     }
@@ -454,7 +457,7 @@ export function addTab(tab: Tab, makeActive: boolean = true) {
     // Verify pane exists
     const paneExists = state.panes.some((pane) => pane.id === tab.paneId);
     if (!paneExists) {
-      console.error(`Pane ${tab.paneId} does not exist`);
+      log.error(`Pane ${tab.paneId} does not exist`);
       return state;
     }
 

@@ -26,6 +26,9 @@ import type { SseEvent } from '$lib/types/sse-events';
 import type { Node } from '$lib/types/node';
 import { nodeToTaskNode } from '$lib/types/task-node';
 import { backendAdapter } from './backend-adapter';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('BrowserSyncService');
 
 /**
  * Connection state for the SSE client
@@ -113,11 +116,11 @@ class BrowserSyncService {
   async initialize(): Promise<void> {
     // Only run in browser mode (not Tauri)
     if (!this.isBrowserMode()) {
-      console.log('[BrowserSyncService] Skipping - running in Tauri mode');
+      log.debug('Skipping - running in Tauri mode');
       return;
     }
 
-    console.log('[BrowserSyncService] Initializing SSE connection for browser mode');
+    log.debug('Initializing SSE connection for browser mode');
     this.connect();
   }
 
@@ -137,7 +140,7 @@ class BrowserSyncService {
    */
   private connect(): void {
     if (this.connectionState === 'connecting' || this.connectionState === 'connected') {
-      console.log('[BrowserSyncService] Already connected or connecting');
+      log.debug('Already connected or connecting');
       return;
     }
 
@@ -146,13 +149,13 @@ class BrowserSyncService {
     // No clientId needed (Issue #715) - dev-proxy handles filtering server-side
     const sseUrl = this.sseEndpoint;
 
-    console.log('[BrowserSyncService] Connecting to SSE endpoint:', sseUrl);
+    log.debug('Connecting to SSE endpoint:', sseUrl);
 
     try {
       this.eventSource = new EventSource(sseUrl);
 
       this.eventSource.onopen = () => {
-        console.log('[BrowserSyncService] SSE connection established');
+        log.info('SSE connection established');
         this.connectionState = 'connected';
         this.reconnectAttempts = 0;
       };
@@ -162,14 +165,14 @@ class BrowserSyncService {
       };
 
       this.eventSource.onerror = (error) => {
-        console.warn('[BrowserSyncService] SSE connection error:', error);
+        log.warn('SSE connection error:', error);
         this.connectionState = 'disconnected';
         this.eventSource?.close();
         this.eventSource = null;
         this.scheduleReconnect();
       };
     } catch (error) {
-      console.error('[BrowserSyncService] Failed to create EventSource:', error);
+      log.error('Failed to create EventSource:', error);
       this.connectionState = 'disconnected';
       this.scheduleReconnect();
     }
@@ -181,10 +184,10 @@ class BrowserSyncService {
   private handleMessage(event: MessageEvent): void {
     try {
       const data = JSON.parse(event.data) as SseEvent;
-      console.log('[BrowserSyncService] Received event:', data.type);
+      log.debug('Received event:', data.type);
       this.handleEvent(data);
     } catch (error) {
-      console.error('[BrowserSyncService] Failed to parse SSE event:', error, event.data);
+      log.error('Failed to parse SSE event:', { error, data: event.data });
     }
   }
 
@@ -222,7 +225,7 @@ class BrowserSyncService {
 
     switch (event.type) {
       case 'nodeCreated': {
-        console.log('[BrowserSyncService] Node created:', event.nodeId);
+        log.debug('Node created:', event.nodeId);
         // Issue #724: Fetch full node data only if we need to display it
         // For now, always fetch since the node might be in the current view
         this.fetchAndUpdateNode(event.nodeId, 'nodeCreated');
@@ -230,24 +233,24 @@ class BrowserSyncService {
       }
 
       case 'nodeUpdated': {
-        console.log('[BrowserSyncService] Node updated:', event.nodeId);
+        log.debug('Node updated:', event.nodeId);
         // Issue #724: Only fetch if node is already in the store (visible to user)
         // This avoids unnecessary API calls for nodes not in the current view
         if (sharedNodeStore.hasNode(event.nodeId)) {
           this.fetchAndUpdateNode(event.nodeId, 'nodeUpdated');
         } else {
-          console.log('[BrowserSyncService] Node not in store, skipping fetch:', event.nodeId);
+          log.debug('Node not in store, skipping fetch:', event.nodeId);
         }
         break;
       }
 
       case 'nodeDeleted':
-        console.log('[BrowserSyncService] Node deleted:', event.nodeId);
+        log.debug('Node deleted:', event.nodeId);
         sharedNodeStore.deleteNode(event.nodeId, { type: 'database', reason: 'sse-sync' }, true);
         break;
 
       case 'edgeCreated':
-        console.log('[BrowserSyncService] Edge created:', event.parentId, '->', event.childId);
+        log.debug('Edge created:', { from: event.parentId, to: event.childId });
         // Update ReactiveStructureTree with new edge
         // Note: structureTree.addChild expects HierarchyRelationship format
         // IMPORTANT: Check if edge already exists (added optimistically by createNode)
@@ -262,16 +265,13 @@ class BrowserSyncService {
               order: Date.now() // Use timestamp as order (will be sorted properly on next load)
             });
           } else {
-            console.log(
-              '[BrowserSyncService] Edge already exists (optimistic), skipping:',
-              event.childId
-            );
+            log.debug('Edge already exists (optimistic), skipping:', event.childId);
           }
         }
         break;
 
       case 'edgeDeleted':
-        console.log('[BrowserSyncService] Edge deleted:', event.parentId, '->', event.childId);
+        log.debug('Edge deleted:', { from: event.parentId, to: event.childId });
         // Update ReactiveStructureTree by removing edge
         if (structureTree) {
           structureTree.removeChild({
@@ -283,7 +283,7 @@ class BrowserSyncService {
         break;
 
       default:
-        console.warn('[BrowserSyncService] Unknown event type:', (event as SseEvent).type);
+        log.warn('Unknown event type:', (event as SseEvent).type);
     }
   }
 
@@ -301,12 +301,12 @@ class BrowserSyncService {
         const normalizedNode = this.normalizeNodeData(node);
         // Use database source with sse-sync reason to indicate external change via SSE
         sharedNodeStore.setNode(normalizedNode, { type: 'database', reason: 'sse-sync' }, true);
-        console.log(`[BrowserSyncService] ${eventType}: updated store for node`, nodeId);
+        log.debug(`${eventType}: updated store for node`, nodeId);
       } else {
-        console.warn(`[BrowserSyncService] ${eventType}: node not found`, nodeId);
+        log.warn(`${eventType}: node not found`, nodeId);
       }
     } catch (error) {
-      console.error(`[BrowserSyncService] ${eventType}: failed to fetch node`, nodeId, error);
+      log.error(`${eventType}: failed to fetch node`, { nodeId, error });
     }
   }
 
@@ -315,19 +315,15 @@ class BrowserSyncService {
    */
   private scheduleReconnect(): void {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error(
-        '[BrowserSyncService] Max reconnect attempts reached. Real-time sync disabled.'
-      );
-      console.error(
-        '[BrowserSyncService] Please check if dev-proxy is running (bun run dev:browser)'
-      );
+      log.error('Max reconnect attempts reached. Real-time sync disabled.');
+      log.error('Please check if dev-proxy is running (bun run dev:browser)');
       return;
     }
 
     this.reconnectAttempts++;
     const delay = this.baseReconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
-    console.log(
-      `[BrowserSyncService] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`
+    log.info(
+      `Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`
     );
 
     this.reconnectTimeout = setTimeout(() => {
@@ -356,7 +352,7 @@ class BrowserSyncService {
    * Should be called when the app is unmounted to clean up resources.
    */
   destroy(): void {
-    console.log('[BrowserSyncService] Destroying service');
+    log.debug('Destroying service');
 
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);

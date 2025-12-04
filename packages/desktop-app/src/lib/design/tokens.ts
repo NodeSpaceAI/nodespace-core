@@ -6,6 +6,9 @@
  */
 
 import type { NodeType as RegistryNodeType } from './icons/registry.js';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('Tokens');
 
 // Re-export NodeType from registry for consistency
 export type NodeType = RegistryNodeType;
@@ -48,11 +51,11 @@ export function getResolvedTheme(theme: Theme, systemTheme?: 'light' | 'dark'): 
 
 // Legacy compatibility - these functions are deprecated but kept for migration
 export function getTokens() {
-  console.warn('getTokens() is deprecated. Use shadcn-svelte CSS variables instead.');
+  log.warn('getTokens() is deprecated. Use shadcn-svelte CSS variables instead.');
   return null;
 }
 
 export function getNodeTokens() {
-  console.warn('getNodeTokens() is deprecated. Use nodeTypeColors and CSS variables instead.');
+  log.warn('getNodeTokens() is deprecated. Use nodeTypeColors and CSS variables instead.');
   return null;
 }

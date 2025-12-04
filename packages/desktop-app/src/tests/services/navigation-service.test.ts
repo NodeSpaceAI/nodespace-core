@@ -4,7 +4,7 @@
  * Tests the Cmd+Shift+Click behavior for opening nodes in the other pane
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
 import { getNavigationService } from '$lib/services/navigation-service';
 import { tabState, resetTabState, DEFAULT_PANE_ID } from '$lib/stores/navigation';
@@ -187,9 +187,6 @@ describe('NavigationService - navigateToNodeInOtherPane', () => {
 
   describe('Error handling', () => {
     it('handles non-existent node gracefully', async () => {
-      // Spy on console.error
-      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
       const beforeState = get(tabState);
       const initialPaneCount = beforeState.panes.length;
 
@@ -198,13 +195,8 @@ describe('NavigationService - navigateToNodeInOtherPane', () => {
 
       const afterState = get(tabState);
 
-      // Should not create new pane or tabs
+      // Should not create new pane or tabs (navigation fails gracefully)
       expect(afterState.panes.length).toBe(initialPaneCount);
-
-      // Should have logged an error
-      expect(consoleErrorSpy).toHaveBeenCalled();
-
-      consoleErrorSpy.mockRestore();
     });
 
     it('handles invalid UUID format gracefully', async () => {

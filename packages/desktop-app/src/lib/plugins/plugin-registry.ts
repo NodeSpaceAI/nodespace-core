@@ -22,6 +22,9 @@ import type {
   SchemaFormComponent,
   NodeUpdater
 } from './types';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('PluginRegistry');
 
 export class PluginRegistry {
   private plugins = new Map<string, PluginDefinition>();
@@ -111,7 +114,7 @@ export class PluginRegistry {
         this.loadedViewers.set(nodeType, module.default);
         return module.default;
       } catch (error) {
-        console.warn(`Failed to lazy load viewer for ${nodeType}:`, error);
+        log.warn(`Failed to lazy load viewer for ${nodeType}:`, error);
         return null;
       }
     }
@@ -157,7 +160,7 @@ export class PluginRegistry {
         this.loadedNodes.set(nodeType, module.default);
         return module.default;
       } catch (error) {
-        console.warn(`Failed to lazy load node component for ${nodeType}:`, error);
+        log.warn(`Failed to lazy load node component for ${nodeType}:`, error);
         return null;
       }
     }
@@ -546,7 +549,7 @@ export class PluginRegistry {
         this.loadedSchemaForms.set(nodeType, module.default);
         return module.default;
       } catch (error) {
-        console.warn(`Failed to lazy load schema form for ${nodeType}:`, error);
+        log.warn(`Failed to lazy load schema form for ${nodeType}:`, error);
         return null;
       }
     }
@@ -616,9 +619,9 @@ export class PluginRegistry {
 // as the components that use them.
 export const pluginRegistry = new PluginRegistry({
   onRegister: (plugin) => {
-    console.debug(`Plugin registered: ${plugin.name} (${plugin.id})`);
+    log.debug(`Plugin registered: ${plugin.name} (${plugin.id})`);
   },
   onUnregister: (pluginId) => {
-    console.debug(`Plugin unregistered: ${pluginId}`);
+    log.debug(`Plugin unregistered: ${pluginId}`);
   }
 });

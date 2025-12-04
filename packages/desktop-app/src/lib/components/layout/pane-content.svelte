@@ -4,6 +4,9 @@
   import { tabState, updateTabTitle, updateTabContent } from '$lib/stores/navigation.js';
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
   import type { Pane } from '$lib/stores/navigation.js';
+  import { createLogger } from '$lib/utils/logger';
+
+  const log = createLogger('PaneContent');
 
   // ✅ Receive the PANE as a prop - each pane instance gets its own pane object
   let { pane }: { pane: Pane } = $props();
@@ -35,7 +38,7 @@
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error loading viewer';
-      console.error(`[PaneContent] Failed to load viewer for ${nodeType}:`, error);
+      log.error(`Failed to load viewer for ${nodeType}:`, error);
       viewerLoadErrors = new Map(viewerLoadErrors.set(nodeType, errorMessage));
     }
   }

@@ -22,6 +22,9 @@ import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import type { Node } from '$lib/types/node';
 import { nodeToTaskNode } from '$lib/types/task-node';
 import { backendAdapter } from './backend-adapter';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('TauriSync');
 
 /**
  * Normalize node data from domain events to type-specific format
@@ -55,12 +58,12 @@ async function fetchAndUpdateNode(nodeId: string, eventType: string): Promise<vo
       const normalizedNode = normalizeNodeData(node);
       // Use database source with domain-event reason to indicate external change
       sharedNodeStore.setNode(normalizedNode, { type: 'database', reason: 'domain-event' }, true);
-      console.debug(`[TauriSync] ${eventType}: updated store for node`, nodeId);
+      log.debug(`${eventType}: updated store for node`, nodeId);
     } else {
-      console.warn(`[TauriSync] ${eventType}: node not found`, nodeId);
+      log.warn(`${eventType}: node not found`, nodeId);
     }
   } catch (error) {
-    console.error(`[TauriSync] ${eventType}: failed to fetch node`, nodeId, error);
+    log.error(`${eventType}: failed to fetch node`, { nodeId, error });
   }
 }
 
@@ -74,33 +77,33 @@ async function fetchAndUpdateNode(nodeId: string, eventType: string): Promise<vo
  */
 export async function initializeTauriSyncListeners(): Promise<void> {
   if (!isRunningInTauri()) {
-    console.debug('Not running in Tauri environment, skipping sync listener initialization');
+    log.debug('Not running in Tauri environment, skipping sync listener initialization');
     return;
   }
 
-  console.info('Initializing Tauri real-time sync listeners');
+  log.info('Initializing Tauri real-time sync listeners');
 
   try {
     // Listen for node events and update SharedNodeStore
     // Issue #724: Events now send only node_id, fetch full data if needed
     await listen<NodeEventData>('node:created', (event) => {
-      console.debug(`[TauriSync] Node created: ${event.payload.id}`);
+      log.debug(`Node created: ${event.payload.id}`);
       // Fetch full node data since the node might be in the current view
       fetchAndUpdateNode(event.payload.id, 'node:created');
     });
 
     await listen<NodeEventData>('node:updated', (event) => {
-      console.debug(`[TauriSync] Node updated: ${event.payload.id}`);
+      log.debug(`Node updated: ${event.payload.id}`);
       // Issue #724: Only fetch if node is already in the store (visible to user)
       if (sharedNodeStore.hasNode(event.payload.id)) {
         fetchAndUpdateNode(event.payload.id, 'node:updated');
       } else {
-        console.debug('[TauriSync] Node not in store, skipping fetch:', event.payload.id);
+        log.debug('Node not in store, skipping fetch:', event.payload.id);
       }
     });
 
     await listen<{ id: string }>('node:deleted', (event) => {
-      console.debug(`[TauriSync] Node deleted: ${event.payload.id}`);
+      log.debug(`Node deleted: ${event.payload.id}`);
       sharedNodeStore.deleteNode(event.payload.id, { type: 'database', reason: 'domain-event' }, true);
     });
 
@@ -109,9 +112,7 @@ export async function initializeTauriSyncListeners(): Promise<void> {
     await listen<EdgeRelationship>('edge:created', (event) => {
       if (event.payload.type === 'hierarchy') {
         const hierarchyEdge = event.payload;
-        console.debug(
-          `[TauriSync] Hierarchy relationship created: ${hierarchyEdge.parentId} -> ${hierarchyEdge.childId}`
-        );
+        log.debug(`Hierarchy relationship created: ${hierarchyEdge.parentId} -> ${hierarchyEdge.childId}`);
         // Update ReactiveStructureTree with new edge
         if (structureTree) {
           const existingChildren = structureTree.getChildrenWithOrder(hierarchyEdge.parentId);
@@ -123,42 +124,31 @@ export async function initializeTauriSyncListeners(): Promise<void> {
               order: hierarchyEdge.order ?? Date.now()
             });
           } else {
-            console.debug(
-              '[TauriSync] Edge already exists (optimistic), skipping:',
-              hierarchyEdge.childId
-            );
+            log.debug('Edge already exists (optimistic), skipping:', hierarchyEdge.childId);
           }
         }
       } else if (event.payload.type === 'mention') {
         const mentionEdge = event.payload;
-        console.debug(
-          `[TauriSync] Mention relationship created: ${mentionEdge.sourceId} -> ${mentionEdge.targetId}`
-        );
+        log.debug(`Mention relationship created: ${mentionEdge.sourceId} -> ${mentionEdge.targetId}`);
       }
     });
 
     await listen<EdgeRelationship>('edge:updated', (event) => {
       if (event.payload.type === 'hierarchy') {
         const hierarchyEdge = event.payload;
-        console.debug(
-          `[TauriSync] Hierarchy relationship updated: ${hierarchyEdge.parentId} -> ${hierarchyEdge.childId}`
-        );
+        log.debug(`Hierarchy relationship updated: ${hierarchyEdge.parentId} -> ${hierarchyEdge.childId}`);
         // For now, just log - order updates are rare
         // Future: Add updateChildOrder method if needed
       } else if (event.payload.type === 'mention') {
         const mentionEdge = event.payload;
-        console.debug(
-          `[TauriSync] Mention relationship updated: ${mentionEdge.sourceId} -> ${mentionEdge.targetId}`
-        );
+        log.debug(`Mention relationship updated: ${mentionEdge.sourceId} -> ${mentionEdge.targetId}`);
       }
     });
 
     await listen<EdgeRelationship>('edge:deleted', (event) => {
       if (event.payload.type === 'hierarchy') {
         const hierarchyEdge = event.payload;
-        console.debug(
-          `[TauriSync] Hierarchy relationship deleted: ${hierarchyEdge.parentId} -> ${hierarchyEdge.childId}`
-        );
+        log.debug(`Hierarchy relationship deleted: ${hierarchyEdge.parentId} -> ${hierarchyEdge.childId}`);
         // Update ReactiveStructureTree by removing edge
         if (structureTree) {
           structureTree.removeChild({
@@ -169,9 +159,7 @@ export async function initializeTauriSyncListeners(): Promise<void> {
         }
       } else if (event.payload.type === 'mention') {
         const mentionEdge = event.payload;
-        console.debug(
-          `[TauriSync] Mention relationship deleted: ${mentionEdge.sourceId} -> ${mentionEdge.targetId}`
-        );
+        log.debug(`Mention relationship deleted: ${mentionEdge.sourceId} -> ${mentionEdge.targetId}`);
       }
     });
 
@@ -179,19 +167,19 @@ export async function initializeTauriSyncListeners(): Promise<void> {
     await listen<Record<string, unknown>>('sync:error', (event) => {
       const message = String(event.payload.message);
       const errorType = String(event.payload.errorType);
-      console.error(`[TauriSync] Sync error (${errorType}): ${message}`);
+      log.error(`Sync error (${errorType}): ${message}`);
     });
 
     // Listen for synchronization status changes
     await listen<Record<string, unknown>>('sync:status', (event) => {
       const status = String(event.payload.status);
       const reason = event.payload.reason ? String(event.payload.reason) : '';
-      console.info(`[TauriSync] Sync status: ${status}${reason ? ` (${reason})` : ''}`);
+      log.info(`Sync status: ${status}${reason ? ` (${reason})` : ''}`);
     });
 
-    console.info('[TauriSync] Real-time sync listeners initialized successfully');
+    log.info('Real-time sync listeners initialized successfully');
   } catch (error) {
-    console.error('[TauriSync] Failed to initialize sync listeners', error);
+    log.error('Failed to initialize sync listeners', error);
     throw new Error(`Failed to initialize sync listeners: ${error}`);
   }
 }

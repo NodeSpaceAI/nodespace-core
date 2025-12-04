@@ -8,6 +8,9 @@
 // ComponentDecoration import removed - not used
 // componentHydrationSystem import removed - not used
 import { performanceTracker } from './performance-tracker';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('DeveloperInspector');
 
 export interface ComponentInspectionResult {
   placeholder: HTMLElement;
@@ -63,8 +66,8 @@ export class DeveloperInspector {
       version: '1.0.0'
     };
 
-    console.log('🔍 NodeSpace Inspector enabled! Use NodeSpaceInspector in console for debugging.');
-    console.log('💡 Try: NodeSpaceInspector.help() for available commands');
+    log.info('NodeSpace Inspector enabled! Use NodeSpaceInspector in console for debugging.');
+    log.info('Try: NodeSpaceInspector.help() for available commands');
   }
 
   /**
@@ -211,7 +214,7 @@ export class DeveloperInspector {
     }
 
     if (!element) {
-      console.error(`🔍 Component not found: ${identifier}`);
+      log.error(`Component not found: ${identifier}`);
       return null;
     }
 

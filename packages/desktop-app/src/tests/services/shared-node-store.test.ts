@@ -181,16 +181,17 @@ describe('SharedNodeStore', () => {
       expect(store.getNode(node2.id)?.content).toBe('Content 2');
     });
 
-    it('should warn when updating non-existent node', () => {
-      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    it('should handle updating non-existent node gracefully', () => {
+      // Logger is intentionally silenced during tests (enabled: !isTest in logger.ts)
+      // We verify the actual behavior instead of log output
 
-      store.updateNode('non-existent', { content: 'test' }, viewerSource);
+      // Should not throw when updating non-existent node
+      expect(() => {
+        store.updateNode('non-existent', { content: 'test' }, viewerSource);
+      }).not.toThrow();
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Cannot update non-existent node')
-      );
-
-      consoleSpy.mockRestore();
+      // Node should still not exist after attempted update
+      expect(store.hasNode('non-existent')).toBe(false);
     });
   });
 
@@ -261,6 +262,9 @@ describe('SharedNodeStore', () => {
     });
 
     it('should handle subscription callback errors gracefully', () => {
+      // Logger is intentionally silenced during tests (enabled: !isTest in logger.ts)
+      // We verify the actual behavior (error isolation) instead of log output
+
       store.setNode(mockNode, viewerSource);
 
       const errorCallback = vi.fn(() => {
@@ -268,19 +272,14 @@ describe('SharedNodeStore', () => {
       });
       const workingCallback = vi.fn();
 
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
       store.subscribe(mockNode.id, errorCallback);
       store.subscribe(mockNode.id, workingCallback);
 
       store.updateNode(mockNode.id, { content: 'New content' }, viewerSource);
 
-      // Both callbacks should be called despite error
+      // Both callbacks should be called despite error (error is caught and isolated)
       expect(errorCallback).toHaveBeenCalled();
       expect(workingCallback).toHaveBeenCalled();
-      expect(consoleSpy).toHaveBeenCalled();
-
-      consoleSpy.mockRestore();
     });
   });
 
@@ -621,17 +620,17 @@ describe('SharedNodeStore', () => {
         expect(node?.content).toBe('> Second');
       });
 
-      it('should warn if batch does not exist', () => {
-        const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      it('should handle adding to non-existent batch gracefully', () => {
+        // Logger is intentionally silenced during tests (enabled: !isTest in logger.ts)
+        // We verify the actual behavior instead of log output
 
-        store.addToBatch('non-existent-node', { content: 'test' });
+        // Should not throw when adding to non-existent batch
+        expect(() => {
+          store.addToBatch('non-existent-node', { content: 'test' });
+        }).not.toThrow();
 
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Attempted to add to non-existent batch'),
-          expect.any(Object)
-        );
-
-        consoleSpy.mockRestore();
+        // Node should not have been created
+        expect(store.hasNode('non-existent-node')).toBe(false);
       });
     });
 
@@ -713,18 +712,24 @@ describe('SharedNodeStore', () => {
       });
 
       it('should clean up timeout and batch state on commit', () => {
+        // Logger is intentionally silenced during tests (enabled: !isTest in logger.ts)
+        // We verify the actual behavior (batch cleanup) instead of log output
+
         store.setNode(quoteNode, viewerSource);
         store.startBatch('quote-node-1');
 
         store.addToBatch('quote-node-1', { content: '> Test' });
+        const contentBeforeCommit = store.getNode('quote-node-1')?.content;
+
         store.commitBatch('quote-node-1');
 
-        // Trying to add to committed batch should warn
-        const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-        store.addToBatch('quote-node-1', { content: '> After commit' });
+        // Trying to add to committed batch should not throw (graceful handling)
+        expect(() => {
+          store.addToBatch('quote-node-1', { content: '> After commit' });
+        }).not.toThrow();
 
-        expect(consoleSpy).toHaveBeenCalled();
-        consoleSpy.mockRestore();
+        // Content should remain unchanged (batch was committed and cleaned up)
+        expect(store.getNode('quote-node-1')?.content).toBe(contentBeforeCommit);
       });
     });
 
@@ -898,6 +903,9 @@ describe('SharedNodeStore', () => {
 
     describe('Batch cleanup on node deletion', () => {
       it('should cancel batch when node is deleted', () => {
+        // Logger is intentionally silenced during tests (enabled: !isTest in logger.ts)
+        // We verify the actual behavior (batch cleanup on deletion) instead of log output
+
         store.setNode(quoteNode, viewerSource, true);
         store.startBatch('quote-node-1');
 
@@ -906,12 +914,13 @@ describe('SharedNodeStore', () => {
         // Delete node (should cancel batch)
         store.deleteNode('quote-node-1', viewerSource);
 
-        // Batch should be gone
-        const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-        store.addToBatch('quote-node-1', { content: '> After delete' });
+        // Node should be deleted
+        expect(store.hasNode('quote-node-1')).toBe(false);
 
-        expect(consoleSpy).toHaveBeenCalled();
-        consoleSpy.mockRestore();
+        // Batch should be gone - adding to batch should not throw (graceful handling)
+        expect(() => {
+          store.addToBatch('quote-node-1', { content: '> After delete' });
+        }).not.toThrow();
       });
     });
   });
@@ -1047,6 +1056,9 @@ describe('SharedNodeStore', () => {
     });
 
     it('should handle resync when node not found on server', async () => {
+      // Logger is intentionally silenced during tests (enabled: !isTest in logger.ts)
+      // We verify the actual behavior (graceful error handling) instead of log output
+
       // Setup
       const localNode: Node = {
         ...mockNode,
@@ -1061,26 +1073,20 @@ describe('SharedNodeStore', () => {
         .spyOn(await import('../../lib/services/tauri-commands'), 'getNode')
         .mockResolvedValue(null);
 
-      // Spy on console.error
-      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      // Trigger resync - should not throw
+      await expect(store.resyncNodeFromServer('test-node-occ')).resolves.not.toThrow();
 
-      // Trigger resync
-      await store.resyncNodeFromServer('test-node-occ');
-
-      // Verify error was logged
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to resync node test-node-occ: Node not found on server')
-      );
-
-      // Verify local node unchanged
+      // Verify local node unchanged (resync gracefully failed)
       const localNodeAfter = store.getNode('test-node-occ');
       expect(localNodeAfter?.version).toBe(1);
 
       getNodeSpy.mockRestore();
-      consoleErrorSpy.mockRestore();
     });
 
     it('should handle resync failure gracefully', async () => {
+      // Logger is intentionally silenced during tests (enabled: !isTest in logger.ts)
+      // We verify the actual behavior (error propagation) instead of log output
+
       // Setup
       const localNode: Node = {
         ...mockNode,
@@ -1095,20 +1101,10 @@ describe('SharedNodeStore', () => {
         .spyOn(await import('../../lib/services/tauri-commands'), 'getNode')
         .mockRejectedValue(new Error('Network error'));
 
-      // Spy on console.error
-      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-      // Trigger resync and expect it to throw
+      // Trigger resync and expect it to throw (error is propagated to caller)
       await expect(store.resyncNodeFromServer('test-node-occ')).rejects.toThrow('Network error');
 
-      // Verify error was logged
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to resync node test-node-occ from server'),
-        expect.any(Error)
-      );
-
       getNodeSpy.mockRestore();
-      consoleErrorSpy.mockRestore();
     });
 
     it('should allow subsequent edits after resync', async () => {

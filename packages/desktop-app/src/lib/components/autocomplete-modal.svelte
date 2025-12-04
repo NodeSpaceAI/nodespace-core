@@ -71,6 +71,9 @@
   import Separator from '$lib/components/ui/separator/separator.svelte';
   import Icon, { type IconName } from '$lib/design/icons';
   import type { Node } from '$lib/types';
+  import { createLogger } from '$lib/utils/logger';
+
+  const log = createLogger('AutocompleteModal');
 
   // ============================================================================
   // Component Props & Types
@@ -188,7 +191,7 @@
         hasMore = result.hasMore;
         selectedIndex = 0;
       } catch (error) {
-        console.error('AutocompleteModal: Search failed', error);
+        log.error('Search failed', error);
         searchError = 'Search failed. Please try again.';
         searchResults = [];
       } finally {
@@ -228,7 +231,7 @@
       searchResults = suggestions;
       selectedIndex = 0;
     } catch (error) {
-      console.error('AutocompleteModal: Failed to load default results', error);
+      log.error('Failed to load default results', error);
       searchResults = [];
     } finally {
       isLoading = false;
@@ -262,10 +265,10 @@
         dispatch('nodeSelect', { node });
         closeModal();
       } else {
-        console.error('AutocompleteModal: Failed to resolve selected node', suggestion.nodeId);
+        log.error('Failed to resolve selected node', suggestion.nodeId);
       }
     } catch (error) {
-      console.error('AutocompleteModal: Error selecting node', error);
+      log.error('Error selecting node', error);
     }
   }
 

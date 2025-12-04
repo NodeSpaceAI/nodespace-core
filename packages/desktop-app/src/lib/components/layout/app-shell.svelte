@@ -17,9 +17,10 @@
   import type { Node } from '$lib/types';
   import { loadPersistedState } from '$lib/stores/navigation';
   import { TabPersistenceService } from '$lib/services/tab-persistence-service';
+  import { createLogger } from '$lib/utils/logger';
 
-  // Constants
-  const LOG_PREFIX = '[AppShell]';
+  // Logger instance for AppShell component
+  const log = createLogger('AppShell');
 
   /**
    * Sets up MCP event listeners for real-time UI updates
@@ -33,7 +34,7 @@
   function setupMCPListeners(sharedNodeStore: SharedNodeStore): () => Promise<void> {
     // Listen for node creation events from MCP
     const unlistenNodeCreated = listen<{ node: Node }>(MCP_EVENTS.NODE_CREATED, (event) => {
-      console.log(`${LOG_PREFIX} [MCP] Node created:`, event.payload.node.id);
+      log.debug('[MCP] Node created:', event.payload.node.id);
       sharedNodeStore.setNode(
         event.payload.node,
         { type: 'mcp-server' },
@@ -45,30 +46,26 @@
     const unlistenNodeUpdated = listen<{ node_id: string }>(
       MCP_EVENTS.NODE_UPDATED,
       async (event) => {
-        console.log(`${LOG_PREFIX} [MCP] Node updated:`, event.payload.node_id);
+        log.debug('[MCP] Node updated:', event.payload.node_id);
         try {
           const node = await invoke<Node>('get_node', { id: event.payload.node_id });
           if (node) {
             sharedNodeStore.setNode(node, { type: 'mcp-server' }, false);
           } else {
-            console.warn(
-              `${LOG_PREFIX} [MCP] Node not found after update event:`,
+            log.warn(
+              '[MCP] Node not found after update event:',
               event.payload.node_id
             );
           }
         } catch (error) {
-          console.error(
-            `${LOG_PREFIX} [MCP] Failed to fetch node after update event:`,
-            event.payload.node_id,
-            error
-          );
+          log.error(`[MCP] Failed to fetch node after update event: ${event.payload.node_id}`, error);
         }
       }
     );
 
     // Listen for node deletion events from MCP
     const unlistenNodeDeleted = listen<{ node_id: string }>(MCP_EVENTS.NODE_DELETED, (event) => {
-      console.log(`${LOG_PREFIX} [MCP] Node deleted:`, event.payload.node_id);
+      log.debug('[MCP] Node deleted:', event.payload.node_id);
       sharedNodeStore.deleteNode(
         event.payload.node_id,
         { type: 'mcp-server' },
@@ -93,17 +90,17 @@
     // Load persisted tab state from storage
     const stateLoaded = loadPersistedState();
     if (stateLoaded) {
-      console.log(`${LOG_PREFIX} Persisted tab state loaded successfully`);
+      log.debug('Persisted tab state loaded successfully');
     } else {
-      console.log(`${LOG_PREFIX} No persisted tab state found, using default state`);
+      log.debug('No persisted tab state found, using default state');
     }
 
     // Load persisted layout state (sidebar collapsed/expanded) from storage
     const layoutStateLoaded = loadPersistedLayoutState();
     if (layoutStateLoaded) {
-      console.log(`${LOG_PREFIX} Persisted layout state loaded successfully`);
+      log.debug('Persisted layout state loaded successfully');
     } else {
-      console.log(`${LOG_PREFIX} No persisted layout state found, using default state`);
+      log.debug('No persisted layout state found, using default state');
     }
 
     // Initialize the unified plugin registry with core plugins
@@ -127,7 +124,7 @@
       // Browser mode: Initialize SSE-based sync for real-time updates
       // This connects to dev-proxy's /api/events endpoint for external change notifications
       browserSyncService.initialize().catch((error) => {
-        console.error(`${LOG_PREFIX} Failed to initialize browser sync service:`, error);
+        log.error('Failed to initialize browser sync service:', error);
       });
     }
 
@@ -167,7 +164,7 @@
       // Validate node ID is not empty
       // NavigationService will handle resolution (UUIDs, date nodes, etc.)
       if (!nodeId || nodeId.trim() === '') {
-        console.error(`${LOG_PREFIX} Empty node ID in link`);
+        log.error('Empty node ID in link');
         return;
       }
 

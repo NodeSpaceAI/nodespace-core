@@ -6,7 +6,7 @@
  * directly with domain events architecture for real-time sync.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SharedNodeStore } from '../../lib/services/shared-node-store.svelte';
 import type { Node } from '../../lib/types';
 import type { UpdateSource, NodeUpdate } from '../../lib/types/update-protocol';
@@ -95,8 +95,9 @@ describe('Phase 3: MCP Integration (Simulated)', () => {
       expect(updated?.content).toBe('External system update');
     });
 
-    it('should warn for updates to non-existent nodes', () => {
-      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    it('should handle updates to non-existent nodes gracefully', () => {
+      // Logger output is intentionally silenced during tests (enabled: !isTest)
+      // This test verifies the actual behavior: update is rejected, no side effects
 
       const mcpUpdate: NodeUpdate = {
         nodeId: 'non-existent',
@@ -105,13 +106,14 @@ describe('Phase 3: MCP Integration (Simulated)', () => {
         timestamp: Date.now()
       };
 
-      store.handleExternalUpdate('mcp-server', mcpUpdate);
+      // Should not throw error when updating non-existent node
+      expect(() => {
+        store.handleExternalUpdate('mcp-server', mcpUpdate);
+      }).not.toThrow();
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('External update for non-existent node')
-      );
-
-      consoleSpy.mockRestore();
+      // Node should still not exist after attempted update
+      const node = store.getNode('non-existent');
+      expect(node).toBeUndefined();
     });
   });
 

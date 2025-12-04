@@ -6,6 +6,9 @@
  */
 
 import type { LayoutState } from '$lib/stores/layout';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('LayoutPersistence');
 
 /**
  * Persisted layout state structure with versioning for future migrations
@@ -19,36 +22,11 @@ export interface PersistedLayoutState {
  * Service for persisting and loading layout state
  */
 export class LayoutPersistenceService {
-  private static readonly LOG_PREFIX = '[LayoutPersistence]';
   private static readonly STORAGE_KEY = 'nodespace:layout-state';
   private static readonly DEBOUNCE_MS = 300;
-  private static readonly DEBUG = import.meta.env.DEV;
 
   private static saveTimer: ReturnType<typeof setTimeout> | null = null;
   private static pendingState: LayoutState | null = null;
-
-  /**
-   * Log message in development mode only
-   */
-  private static log(message: string): void {
-    if (this.DEBUG) {
-      console.log(`${this.LOG_PREFIX} ${message}`);
-    }
-  }
-
-  /**
-   * Log warning in all environments
-   */
-  private static warn(message: string): void {
-    console.warn(`${this.LOG_PREFIX} ${message}`);
-  }
-
-  /**
-   * Log error in all environments
-   */
-  private static error(message: string, error?: unknown): void {
-    console.error(`${this.LOG_PREFIX} ${message}`, error || '');
-  }
 
   /**
    * Save layout state to persistent storage (debounced)
@@ -82,9 +60,9 @@ export class LayoutPersistenceService {
       };
 
       localStorage.setItem(this.STORAGE_KEY, JSON.stringify(persisted));
-      this.log(`State saved: sidebarCollapsed=${state.sidebarCollapsed}`);
+      log.debug(`State saved: sidebarCollapsed=${state.sidebarCollapsed}`);
     } catch (error) {
-      this.error('Failed to save state:', error);
+      log.error('Failed to save state:', error);
 
       // Clear pending state and timer to prevent retry with potentially stale data
       this.pendingState = null;
@@ -104,7 +82,7 @@ export class LayoutPersistenceService {
       const stored = localStorage.getItem(this.STORAGE_KEY);
 
       if (!stored) {
-        this.log('No saved state found');
+        log.debug('No saved state found');
         return null;
       }
 
@@ -112,17 +90,17 @@ export class LayoutPersistenceService {
 
       // Validate the structure
       if (!this.isValidState(parsed)) {
-        this.warn('Invalid state structure, ignoring');
+        log.warn('Invalid state structure, ignoring');
         return null;
       }
 
       // Handle version migrations
       const migrated = this.migrate(parsed);
 
-      this.log(`State loaded: sidebarCollapsed=${migrated.sidebarCollapsed}`);
+      log.debug(`State loaded: sidebarCollapsed=${migrated.sidebarCollapsed}`);
       return migrated;
     } catch (error) {
-      this.error('Failed to load state:', error);
+      log.error('Failed to load state:', error);
       return null;
     }
   }
@@ -165,9 +143,9 @@ export class LayoutPersistenceService {
   static clear(): void {
     try {
       localStorage.removeItem(this.STORAGE_KEY);
-      this.log('State cleared');
+      log.debug('State cleared');
     } catch (error) {
-      this.error('Failed to clear state:', error);
+      log.error('Failed to clear state:', error);
     }
   }
 

@@ -21,6 +21,10 @@
  * @module databaseWriteQueue
  */
 
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('DatabaseWriteQueue');
+
 // Module-level state
 let pendingDatabaseWritePromise: Promise<void> | null = null;
 let queueDepth = 0;
@@ -44,8 +48,8 @@ export async function queueDatabaseWrite<T>(operation: () => Promise<T>): Promis
   // Track queue depth for monitoring
   queueDepth++;
   if (queueDepth > QUEUE_DEPTH_WARNING_THRESHOLD) {
-    console.warn(
-      `[DatabaseWriteQueue] High queue depth detected: ${queueDepth} (threshold: ${QUEUE_DEPTH_WARNING_THRESHOLD})`
+    log.warn(
+      `High queue depth detected: ${queueDepth} (threshold: ${QUEUE_DEPTH_WARNING_THRESHOLD})`
     );
   }
 

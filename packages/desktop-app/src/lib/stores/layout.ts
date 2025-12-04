@@ -1,5 +1,8 @@
 import { writable } from 'svelte/store';
 import { LayoutPersistenceService } from '$lib/services/layout-persistence-service';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('Layout');
 
 export interface LayoutState {
   sidebarCollapsed: boolean;
@@ -43,7 +46,7 @@ layoutState.subscribe((state) => {
 export function loadPersistedLayoutState(): boolean {
   // Guard against multiple initializations (e.g., component remounting)
   if (isInitialized) {
-    console.warn('[Layout] loadPersistedLayoutState called after initialization, ignoring');
+    log.warn('loadPersistedLayoutState called after initialization, ignoring');
     return false;
   }
 

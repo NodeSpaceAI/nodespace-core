@@ -8,6 +8,9 @@
 // Import the unified plugin system
 import { pluginRegistry } from '$lib/plugins/index';
 import type { NodeViewerComponent, ViewerRegistration } from '../../types/node-viewers';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('ViewerRegistry');
 
 /**
  * Legacy ViewerRegistry class - forwards to unified plugin system
@@ -18,7 +21,7 @@ class ViewerRegistry {
    * @deprecated Use pluginRegistry.register() with full plugin definition instead
    */
   register(_nodeType: string, _registration: ViewerRegistration): void {
-    console.warn(`ViewerRegistry.register() is deprecated. Use pluginRegistry.register() instead.`);
+    log.warn('ViewerRegistry.register() is deprecated. Use pluginRegistry.register() instead.');
     // This is a breaking change - we don't support the old API
     throw new Error(
       'ViewerRegistry.register() is no longer supported. Use the unified plugin system.'

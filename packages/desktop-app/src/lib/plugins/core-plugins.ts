@@ -16,6 +16,9 @@ import type { CoreTaskStatus, TaskNodeUpdate } from '../types/task-node';
 import { PatternRegistry } from '../patterns/registry';
 import { backendAdapter } from '../services/backend-adapter';
 import BaseNodeReference from '../components/base-node-reference.svelte';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('CorePlugins');
 
 // Core plugins for built-in node types
 // Incorporates slash command definitions from recent BasicNodeTypeRegistry work
@@ -510,13 +513,13 @@ export function registerCorePlugins(registry: import('./plugin-registry').Plugin
   // Log registration statistics
   const stats = registry.getStats();
   const patternStats = patternRegistry.getStats();
-  console.log('[UnifiedPluginRegistry] Core plugins registered:', {
+  log.debug('Core plugins registered:', {
     plugins: stats.pluginsCount,
     slashCommands: stats.slashCommandsCount,
     viewers: stats.viewersCount,
     references: stats.referencesCount
   });
-  console.log('[PatternRegistry] Patterns registered:', {
+  log.debug('Patterns registered:', {
     patterns: patternStats.patternCount,
     registeredNodeTypes: patternStats.registeredNodeTypes
   });
@@ -531,5 +534,5 @@ export function registerExternalPlugin(
   plugin: PluginDefinition
 ): void {
   registry.register(plugin);
-  console.log(`[UnifiedPluginRegistry] External plugin registered: ${plugin.name} (${plugin.id})`);
+  log.debug(`External plugin registered: ${plugin.name} (${plugin.id})`);
 }

@@ -42,6 +42,9 @@ import type { PluginDefinition } from './types';
 import { pluginRegistry } from './plugin-registry';
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { type SchemaNode, isSchemaNode } from '$lib/types/schema-node';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('SchemaPluginLoader');
 
 /**
  * Plugin priority constants
@@ -165,38 +168,29 @@ export async function registerSchemaPlugin(schemaId: string): Promise<void> {
 
     // Verify it's a schema node
     if (!isSchemaNode(node)) {
-      console.warn(`[SchemaPluginLoader] Node ${schemaId} is not a schema node`);
+      log.warn(`Node ${schemaId} is not a schema node`);
       return;
     }
 
     // Don't register core types (already registered in core-plugins.ts)
     // Access typed field directly (no helper needed)
     if (node.isCore) {
-      console.debug(
-        `[SchemaPluginLoader] Skipping core type registration: ${schemaId}`
-      );
+      log.debug(`Skipping core type registration: ${schemaId}`);
       return;
     }
 
     // Check if already registered (idempotent)
     if (pluginRegistry.hasPlugin(schemaId)) {
-      console.debug(
-        `[SchemaPluginLoader] Plugin already registered: ${schemaId}`
-      );
+      log.debug(`Plugin already registered: ${schemaId}`);
       return;
     }
 
     const plugin = createPluginFromSchema(node);
     pluginRegistry.register(plugin);
 
-    console.log(
-      `[SchemaPluginLoader] Registered plugin for custom entity: ${schemaId}`
-    );
+    log.info(`Registered plugin for custom entity: ${schemaId}`);
   } catch (error) {
-    console.error(
-      `[SchemaPluginLoader] Failed to register schema plugin: ${schemaId}`,
-      error
-    );
+    log.error(`Failed to register schema plugin: ${schemaId}`, error);
     throw error;
   }
 }
@@ -218,14 +212,12 @@ export async function registerSchemaPlugin(schemaId: string): Promise<void> {
  */
 export function unregisterSchemaPlugin(schemaId: string): void {
   if (!pluginRegistry.hasPlugin(schemaId)) {
-    console.warn(
-      `[SchemaPluginLoader] Attempted to unregister non-existent plugin: ${schemaId}`
-    );
+    log.warn(`Attempted to unregister non-existent plugin: ${schemaId}`);
     return;
   }
 
   pluginRegistry.unregister(schemaId);
-  console.log(`[SchemaPluginLoader] Unregistered plugin: ${schemaId}`);
+  log.info(`Unregistered plugin: ${schemaId}`);
 }
 
 /**
@@ -248,7 +240,7 @@ export function unregisterSchemaPlugin(schemaId: string): void {
  */
 async function _registerExistingSchemas(): Promise<void> {
   try {
-    console.log('[SchemaPluginLoader] Registering existing custom entity schemas...');
+    log.debug('Registering existing custom entity schemas...');
 
     const nodes = await backendAdapter.getAllSchemas();
 
@@ -263,14 +255,9 @@ async function _registerExistingSchemas(): Promise<void> {
       customSchemas.map((node) => registerSchemaPlugin(node.id))
     );
 
-    console.log(
-      `[SchemaPluginLoader] Registered ${customSchemas.length} custom entity schemas`
-    );
+    log.info(`Registered ${customSchemas.length} custom entity schemas`);
   } catch (error) {
-    console.error(
-      '[SchemaPluginLoader] Failed to register existing schemas:',
-      error
-    );
+    log.error('Failed to register existing schemas:', error);
     throw error;
   }
 }
@@ -310,7 +297,7 @@ export interface InitializationResult {
  */
 export async function initializeSchemaPluginSystem(): Promise<InitializationResult> {
   try {
-    console.log('[SchemaPluginLoader] Initializing schema plugin system...');
+    log.debug('Initializing schema plugin system...');
 
     // Register existing custom entity schemas on startup
     const nodes = await backendAdapter.getAllSchemas();
@@ -337,8 +324,8 @@ export async function initializeSchemaPluginSystem(): Promise<InitializationResu
     //   unregisterSchemaPlugin(event.payload.schema_id);
     // });
 
-    console.log(
-      `[SchemaPluginLoader] Schema plugin system initialized (${customSchemas.length} custom entities registered)`
+    log.info(
+      `Schema plugin system initialized (${customSchemas.length} custom entities registered)`
     );
 
     return {
@@ -347,7 +334,7 @@ export async function initializeSchemaPluginSystem(): Promise<InitializationResu
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('[SchemaPluginLoader] Failed to initialize:', error);
+    log.error('Failed to initialize:', error);
 
     return {
       success: false,

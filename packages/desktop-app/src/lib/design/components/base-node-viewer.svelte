@@ -13,6 +13,10 @@
   import BaseNode from '$lib/design/components/base-node.svelte';
   import BacklinksPanel from '$lib/design/components/backlinks-panel.svelte';
   import SchemaPropertyForm from '$lib/components/property-forms/schema-property-form.svelte';
+  import { createLogger } from '$lib/utils/logger';
+
+  // Logger instance for BaseNodeViewer component
+  const log = createLogger('BaseNodeViewer');
   // Plugin registry provides all node components dynamically
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
   import type { SchemaFormComponent } from '$lib/plugins/types';
@@ -310,7 +314,7 @@
           updateTabTitle(node.content);
         }
       } catch (error) {
-        console.error('[BaseNodeViewer] Failed to load children:', error);
+        log.error('Failed to load children:', error);
       }
     })();
 
@@ -359,7 +363,7 @@
       try {
         nodeManager.updateNodeContent(nodeId, newValue);
       } catch (error) {
-        console.error('[BaseNodeViewer] Failed to update header content:', error);
+        log.error('Failed to update header content:', error);
         // TODO: Show user-facing error notification via toast/notification system
       }
     }
@@ -567,7 +571,7 @@
       // Only register once per viewer instance (coordinator handles re-registration gracefully)
       NodeExpansionCoordinator.registerViewer(tabId, nodeManager);
     } catch (error) {
-      console.error('[BaseNodeViewer] Failed to load children for parent:', nodeId, error);
+      log.error(`Failed to load children for parent: ${nodeId}`, error);
     }
   }
 
@@ -645,7 +649,7 @@
 
     // Validate node creation parameters
     if (!afterNodeId || !nodeType) {
-      console.error('Invalid node creation parameters:', { afterNodeId, nodeType });
+      log.error('Invalid node creation parameters:', { afterNodeId, nodeType });
       return;
     }
 
@@ -654,7 +658,7 @@
     // If afterNodeId matches the placeholder, promote it first
     const currentPlaceholder = viewerPlaceholder;
     if (currentPlaceholder && afterNodeId === currentPlaceholder.id && nodeId) {
-      console.log('[handleCreateNewNode] Promoting placeholder before creating new node:', afterNodeId);
+      log.debug('Promoting placeholder before creating new node:', afterNodeId);
 
       // Set promotion flag to prevent duplicate placeholder creation
       isPromoting = true;
@@ -681,7 +685,7 @@
 
     // Verify the target node exists (should now exist after promotion)
     if (!nodeManager.nodes.has(afterNodeId)) {
-      console.error('Target node does not exist:', afterNodeId);
+      log.error('Target node does not exist:', afterNodeId);
       return;
     }
 
@@ -726,7 +730,7 @@
 
     // Validate that node creation succeeded
     if (!newNodeId || !nodeManager.nodes.has(newNodeId)) {
-      console.error('Node creation failed for afterNodeId:', afterNodeId, 'newNodeId:', newNodeId);
+      log.error(`Node creation failed for afterNodeId: ${afterNodeId}, newNodeId: ${newNodeId}`);
       return;
     }
 
@@ -773,7 +777,7 @@
     try {
       // Validate node exists before indenting
       if (!nodeManager.nodes.has(nodeId)) {
-        console.error('Cannot indent non-existent node:', nodeId);
+        log.error('Cannot indent non-existent node:', nodeId);
         return;
       }
 
@@ -791,7 +795,7 @@
         setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
       }
     } catch (error) {
-      console.error('Error during node indentation:', error);
+      log.error('Error during node indentation:', error);
     }
   }
 
@@ -870,7 +874,7 @@
     try {
       // Validate node exists before outdenting
       if (!nodeManager.nodes.has(nodeId)) {
-        console.error('Cannot outdent non-existent node:', nodeId);
+        log.error('Cannot outdent non-existent node:', nodeId);
         return;
       }
 
@@ -889,7 +893,7 @@
         setTimeout(() => restoreCursorPosition(nodeId, cursorPosition), 0);
       }
     } catch (error) {
-      console.error('Error during node outdentation:', error);
+      log.error('Error during node outdentation:', error);
     }
   }
 
@@ -943,7 +947,7 @@
     // Find the target node
     const targetNode = nodeManager.findNode(targetNodeId);
     if (!targetNode) {
-      console.warn(`[Navigation] Target node ${targetNodeId} not found`);
+      log.warn(`Target node ${targetNodeId} not found`);
       return;
     }
 
@@ -1002,7 +1006,7 @@
 
       // Validate node exists before combining
       if (!nodeManager.nodes.has(eventNodeId)) {
-        console.error('Cannot combine non-existent node:', eventNodeId);
+        log.error('Cannot combine non-existent node:', eventNodeId);
         return;
       }
 
@@ -1016,7 +1020,7 @@
       const previousNode = currentVisibleNodes[currentIndex - 1];
 
       if (!previousNode || !nodeManager.nodes.has(previousNode.id)) {
-        console.error('Previous node not found or invalid:', previousNode?.id);
+        log.error('Previous node not found or invalid:', previousNode?.id);
         return;
       }
 
@@ -1042,7 +1046,7 @@
         requestNodeFocus(previousNode.id, cursorPositionAfterMerge);
       }, 0);
     } catch (error) {
-      console.error('Error during node combination:', error);
+      log.error('Error during node combination:', error);
     }
   }
 
@@ -1053,7 +1057,7 @@
 
       // Validate node exists before deletion
       if (!nodeManager.nodes.has(eventNodeId)) {
-        console.error('Cannot delete non-existent node:', eventNodeId);
+        log.error('Cannot delete non-existent node:', eventNodeId);
         return;
       }
 
@@ -1065,7 +1069,7 @@
       const previousNode = currentVisibleNodes[currentIndex - 1];
 
       if (!previousNode || !nodeManager.nodes.has(previousNode.id)) {
-        console.error('Previous node not found for focus after deletion:', previousNode?.id);
+        log.error('Previous node not found for focus after deletion:', previousNode?.id);
         // Can't combine without previous node - this shouldn't happen in normal usage
         return;
       }
@@ -1082,7 +1086,7 @@
       nodeManager.combineNodes(eventNodeId, previousNode.id, paneId);
       requestNodeFocus(previousNode.id, previousNode.content.length);
     } catch (error) {
-      console.error('Error during node deletion:', error);
+      log.error('Error during node deletion:', error);
     }
   }
 
@@ -1119,7 +1123,7 @@
         loadedNodes = { ...loadedNodes, [nodeType]: component };
       }
     } catch (error) {
-      console.warn(`[BaseNodeViewer] Failed to load component for ${nodeType}:`, error);
+      log.warn(`Failed to load component for ${nodeType}:`, error);
     }
   }
 
@@ -1203,7 +1207,7 @@
       loadedSchemaForms = { ...loadedSchemaForms, [nodeType]: null };
       return false;
     } catch (error) {
-      console.warn(`[BaseNodeViewer] Failed to load schema form for ${nodeType}:`, error);
+      log.warn(`Failed to load schema form for ${nodeType}:`, error);
       loadedSchemaForms = { ...loadedSchemaForms, [nodeType]: null };
       return false;
     }
@@ -1474,7 +1478,7 @@
                   // This ensures focus manager state is ready when the new component mounts
                   focusManager.setEditingNodeFromTypeConversion(node.id, cursorPosition, paneId);
 
-                  console.log('[BaseNodeViewer] slashCommandSelected:', {
+                  log.debug('slashCommandSelected:', {
                     nodeId: node.id,
                     newType: e.detail.nodeType,
                     isPlaceholder: node.isPlaceholder,
@@ -1497,8 +1501,8 @@
                     // ATOMIC PROMOTION: Set flag to block new placeholder creation
                     isPromoting = true;
 
-                    console.log(
-                      '[BaseNodeViewer] Promoting placeholder to real node with type:',
+                    log.debug(
+                      'Promoting placeholder to real node with type:',
                       e.detail.nodeType
                     );
                     // Promote placeholder to real node with the new type
@@ -1533,7 +1537,7 @@
                       isPromoting = false;
                     });
                   } else {
-                    console.log('[BaseNodeViewer] Updating node type for real node');
+                    log.debug('Updating node type for real node');
                     // For real nodes, update node type with full persistence
                     nodeManager.updateNodeType(node.id, e.detail.nodeType);
                   }
@@ -1696,7 +1700,7 @@
                   // This ensures focus manager state is ready when the new component mounts
                   focusManager.setEditingNodeFromTypeConversion(node.id, cursorPosition, paneId);
 
-                  console.log('[BaseNodeViewer] slashCommandSelected:', {
+                  log.debug('slashCommandSelected:', {
                     nodeId: node.id,
                     newType: e.detail.nodeType,
                     isPlaceholder: node.isPlaceholder,
@@ -1719,8 +1723,8 @@
                     // ATOMIC PROMOTION: Set flag to block new placeholder creation
                     isPromoting = true;
 
-                    console.log(
-                      '[BaseNodeViewer] Promoting placeholder to real node with type:',
+                    log.debug(
+                      'Promoting placeholder to real node with type:',
                       e.detail.nodeType
                     );
                     // Promote placeholder to real node with the new type
@@ -1755,7 +1759,7 @@
                       isPromoting = false;
                     });
                   } else {
-                    console.log('[BaseNodeViewer] Updating node type for real node');
+                    log.debug('Updating node type for real node');
                     // For real nodes, update node type with full persistence
                     nodeManager.updateNodeType(node.id, e.detail.nodeType);
                   }

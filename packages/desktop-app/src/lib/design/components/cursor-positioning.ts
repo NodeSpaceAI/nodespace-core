@@ -6,6 +6,10 @@
  * Optimized for cross-browser compatibility and < 50ms performance.
  */
 
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('CursorPositioning');
+
 export interface PositionResult {
   index: number;
   distance: number;
@@ -37,7 +41,7 @@ export function findCharacterFromClick(
   const allSpans = mockElement.querySelectorAll('[data-position]');
 
   if (allSpans.length === 0) {
-    console.warn('No character spans found in mock element');
+    log.warn('No character spans found in mock element');
     return { index: 0, distance: 0, accuracy: 'approximate' };
   }
 
@@ -203,11 +207,8 @@ export function findCharacterFromClickFast(
   // Use performance monitor for consistent logging
   if (performanceMonitor.shouldWarnAboutPerformance()) {
     const stats = performanceMonitor.getStats();
-    console.warn(
-      `Cursor positioning performance degrading: ` +
-        `avg=${stats.average.toFixed(2)}ms, ` +
-        `recent=${stats.recent.toFixed(2)}ms, ` +
-        `max=${stats.max.toFixed(2)}ms`
+    log.warn(
+      `Cursor positioning performance degrading: avg=${stats.average.toFixed(2)}ms, recent=${stats.recent.toFixed(2)}ms, max=${stats.max.toFixed(2)}ms`
     );
   }
 
@@ -333,7 +334,7 @@ export function createMockElementForView(
     }
   } catch (e) {
     // Gracefully handle errors in test environments
-    console.warn('Could not copy computed styles for mock element:', e);
+    log.warn('Could not copy computed styles for mock element', e);
   }
 
   mockElement.style.cssText = cssText;

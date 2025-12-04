@@ -460,6 +460,9 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 
 ### 6. Development Standards
 
+> **📖 Complete Standards Documentation:**
+> - [`/docs/architecture/development/standards/code-quality.md`](docs/architecture/development/standards/code-quality.md) - Full code quality standards including logging
+
 **Code Quality:**
 - Follow Rust formatting standards (rustfmt)
 - Use TypeScript for frontend type safety
@@ -471,6 +474,13 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 - **NO EXCEPTIONS** - All lint warnings and errors must be fixed with proper solutions
 - Use proper TypeScript types instead of `any`
 - Follow Svelte best practices and avoid unsafe patterns like `{@html}`
+
+**Logging Policy:**
+- **NO raw `console.log/debug/info/warn/error`** in production code - Use Logger utility
+- Import: `import { createLogger } from '$lib/utils/logger';`
+- Create logger: `const log = createLogger('ServiceName');`
+- Use: `log.debug()`, `log.info()`, `log.warn()`, `log.error()`
+- Test files and DeveloperInspector are exempt
 
 **Runtime and Package Manager:**
 - **MANDATORY: Bun-only development** - Node.js not required

@@ -26,6 +26,10 @@
   import type { TaskNode, TaskStatus } from '$lib/types/task-node';
   import { nodeToTaskNode } from '$lib/types/task-node';
   import { parseDate, type DateValue } from '@internationalized/date';
+  import { createLogger } from '$lib/utils/logger';
+
+  // Logger instance for TaskSchemaForm component
+  const log = createLogger('TaskSchemaForm');
 
   // Props - only nodeId needed since we know it's a task
   let { nodeId }: { nodeId: string } = $props();
@@ -71,7 +75,7 @@
           schema = schemaNode;
         }
       } catch (error) {
-        console.error('[TaskSchemaForm] Failed to load schema:', error);
+        log.error('Failed to load schema:', error);
       }
     }
     loadSchema();

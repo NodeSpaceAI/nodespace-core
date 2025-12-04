@@ -7,6 +7,9 @@
 
 import type { TextareaController } from '$lib/design/components/textarea-controller';
 import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('KeyboardCommandRegistry');
 
 /**
  * Context provided to keyboard commands during execution
@@ -170,17 +173,13 @@ export class KeyboardCommandRegistry {
       // Execute the command
       const handled = await command.execute(context);
 
-      // Only log in development mode to reduce production overhead
-      if (handled && import.meta.env.DEV) {
-        console.debug(
-          `[KeyboardCommandRegistry] Command executed: ${command.id} (${command.description})`
-        );
+      if (handled) {
+        log.debug(`Command executed: ${command.id} (${command.description})`);
       }
 
       return handled;
     } catch (error) {
-      // Always log errors, even in production
-      console.error(`[KeyboardCommandRegistry] Error executing command ${command.id}:`, error);
+      log.error(`Error executing command ${command.id}:`, error);
       return false;
     }
   }

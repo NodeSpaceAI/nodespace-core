@@ -216,8 +216,6 @@ describe('KeyboardCommandRegistry', () => {
     });
 
     it('should handle command execution errors gracefully', async () => {
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
       const mockCommand: KeyboardCommand = {
         id: 'test-error',
         description: 'Test error command',
@@ -234,13 +232,10 @@ describe('KeyboardCommandRegistry', () => {
 
       const result = await registry.execute(mockEvent, mockController);
 
+      // Verify error is caught and doesn't propagate
       expect(result).toBe(false);
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Error executing command'),
-        expect.any(Error)
-      );
-
-      consoleSpy.mockRestore();
+      // Note: Logger output is not tested here as Logger is intentionally
+      // silenced during tests (enabled: !isTest in logger config)
     });
   });
 

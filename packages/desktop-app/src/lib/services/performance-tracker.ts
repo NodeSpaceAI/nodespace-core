@@ -5,6 +5,10 @@
  * enabling performance optimization and debugging.
  */
 
+import { createLogger } from '$lib/utils/logger';
+
+const log = createLogger('PerformanceTracker');
+
 export interface ComponentPerformanceMetrics {
   componentType: string;
   hydrationTime: number;
@@ -196,19 +200,15 @@ export class PerformanceTracker {
    */
   private checkForPerformanceIssues(metric: ComponentPerformanceMetrics): void {
     if (metric.hydrationTime > this.SLOW_HYDRATION_THRESHOLD) {
-      console.warn(
-        `🐌 Slow component hydration detected: ${metric.componentType} took ${metric.hydrationTime}ms`
-      );
+      log.warn(`Slow component hydration detected: ${metric.componentType} took ${metric.hydrationTime}ms`);
     }
 
     if (metric.propsSize > this.LARGE_PROPS_THRESHOLD) {
-      console.warn(
-        `📦 Large props detected: ${metric.componentType} has ${metric.propsSize} bytes of props`
-      );
+      log.warn(`Large props detected: ${metric.componentType} has ${metric.propsSize} bytes of props`);
     }
 
     if (!metric.success && metric.error) {
-      console.error(`❌ Component hydration failed: ${metric.componentType} - ${metric.error}`);
+      log.error(`Component hydration failed: ${metric.componentType} - ${metric.error}`);
     }
   }
 

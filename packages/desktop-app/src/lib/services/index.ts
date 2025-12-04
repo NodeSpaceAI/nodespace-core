@@ -22,7 +22,3 @@ export * from './content-processor';
 export * from './markdown-pattern-detector';
 export * from './markdown-utils';
 
-// ============================================================================
-// Performance and Monitoring
-// ============================================================================
-export * from './performance-monitor';

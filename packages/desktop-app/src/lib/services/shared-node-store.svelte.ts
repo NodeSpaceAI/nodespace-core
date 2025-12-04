@@ -28,6 +28,7 @@ import { shouldLogDatabaseErrors, isTestEnvironment } from '$lib/utils/test-envi
 import * as tauriCommands from './tauri-commands';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { isVersionConflict } from '$lib/types/errors';
+import { createLogger } from '$lib/utils/logger';
 import type { Node } from '$lib/types';
 import type {
   NodeUpdate,
@@ -39,6 +40,8 @@ import type {
   StoreMetrics,
   UpdateOptions
 } from '$lib/types/update-protocol';
+
+const log = createLogger('SharedNodeStore');
 
 // ============================================================================
 // Simple Debounce Utility
@@ -653,7 +656,7 @@ export class SharedNodeStore {
       // Get existing node
       const existingNode = this.nodes.get(nodeId);
       if (!existingNode) {
-        console.warn(`[SharedNodeStore] Cannot update non-existent node: ${nodeId}`);
+        log.warn(`Cannot update non-existent node: ${nodeId}`);
         return;
       }
 
@@ -695,7 +698,7 @@ export class SharedNodeStore {
       // Notify subscribers
       this.notifySubscribers(nodeId, updatedNode, source);
 
-      console.debug(`[SharedNodeStore] Node updated: ${nodeId}, type: ${this.determineUpdateType(changes)}`);
+      log.debug(`Node updated: ${nodeId}, type: ${this.determineUpdateType(changes)}`);
 
       // Update metrics
       this.metrics.updateCount++;
@@ -801,7 +804,7 @@ export class SharedNodeStore {
                     if (typeUpdater) {
                       // Type-specific path → spoke table update
                       // The plugin updater handles mapping changes to type-specific fields
-                      console.debug(`[SharedNodeStore] Using type-specific updater for ${nodeType}`);
+                      log.debug(`Using type-specific updater for ${nodeType}`);
                       updatedNodeFromBackend = await typeUpdater.update(
                         nodeId,
                         currentVersion,
@@ -833,8 +836,8 @@ export class SharedNodeStore {
                       (updateError.message.includes('NodeNotFound') ||
                         updateError.message.includes('does not exist'))
                     ) {
-                      console.warn(
-                        `[SharedNodeStore] Node ${nodeId} not found in database, creating instead of updating`
+                      log.warn(
+                        `Node ${nodeId} not found in database, creating instead of updating`
                       );
                       await tauriCommands.createNode(updatedNode);
                       this.persistedNodeIds.add(nodeId); // Now it's persisted
@@ -870,11 +873,9 @@ export class SharedNodeStore {
 
                 // Suppress expected errors in in-memory test mode
                 if (shouldLogDatabaseErrors()) {
-                  console.error(
-                    `[SharedNodeStore] Database write failed for node ${nodeId}:`,
-                    error,
-                    '\nFull error object:',
-                    JSON.stringify(dbError, null, 2)
+                  log.error(
+                    `Database write failed for node ${nodeId}:`,
+                    { error, fullError: dbError }
                   );
                 }
 
@@ -886,15 +887,15 @@ export class SharedNodeStore {
 
                 // If this is an OCC error, resync from server to unstuck the node
                 if (isOccError) {
-                  console.warn(
-                    `[SharedNodeStore] OCC error detected for node ${nodeId}. ` +
+                  log.warn(
+                    `OCC error detected for node ${nodeId}. ` +
                     `Resyncing from server to prevent stuck state...`
                   );
 
                   // Resync asynchronously - don't block the error propagation
                   this.resyncNodeFromServer(nodeId).catch((resyncError) => {
-                    console.error(
-                      `[SharedNodeStore] Failed to resync after OCC error for node ${nodeId}:`,
+                    log.error(
+                      `Failed to resync after OCC error for node ${nodeId}:`,
                       resyncError
                     );
                   });
@@ -921,7 +922,7 @@ export class SharedNodeStore {
         }
       }
     } catch (error) {
-      console.error(`[SharedNodeStore] Error updating node ${nodeId}:`, error);
+      log.error(`Error updating node ${nodeId}:`, error);
       throw error;
     } finally {
       const duration = performance.now() - startTime;
@@ -958,7 +959,7 @@ export class SharedNodeStore {
     this.notifySubscribers(node.id, node, source);
 
     if (isHierarchyChange) {
-      console.debug(`[SharedNodeStore] Hierarchy change for node: ${node.id}`);
+      log.debug(`Hierarchy change for node: ${node.id}`);
     }
 
     // Determine persistence behavior using new explicit API
@@ -1027,8 +1028,8 @@ export class SharedNodeStore {
                     errorMessage.includes('does not exist');
 
                   if (isNodeNotFound) {
-                    console.warn(
-                      `[SharedNodeStore] Node ${node.id} not found in database, creating instead of updating (error: ${errorMessage})`
+                    log.warn(
+                      `Node ${node.id} not found in database, creating instead of updating (error: ${errorMessage})`
                     );
                     await tauriCommands.createNode(node);
                     this.persistedNodeIds.add(node.id);
@@ -1059,10 +1060,7 @@ export class SharedNodeStore {
 
               // Suppress expected errors in in-memory test mode
               if (shouldLogDatabaseErrors()) {
-                console.error(
-                  `[SharedNodeStore] Database write failed for node ${node.id}:`,
-                  errorMessage
-                );
+                log.error(`Database write failed for node ${node.id}:`, errorMessage);
               }
 
               // Always track errors in test environment for verification
@@ -1147,7 +1145,7 @@ export class SharedNodeStore {
 
     // Single hierarchy change log for entire batch
     if (hasHierarchyChanges) {
-      console.debug(`[SharedNodeStore] Batch hierarchy change: ${nodes.length} nodes added`);
+      log.debug(`Batch hierarchy change: ${nodes.length} nodes added`);
     }
 
     // Notify all subscribers once per node (but all in same microtask)
@@ -1185,7 +1183,7 @@ export class SharedNodeStore {
       this.persistedNodeIds.delete(nodeId); // Remove from tracking set
       this.notifySubscribers(nodeId, node, source);
 
-      console.debug(`[SharedNodeStore] Node deleted: ${nodeId}`);
+      log.debug(`Node deleted: ${nodeId}`);
 
       // Phase 2.4: Persist deletion to database
       const persistBehavior = this.determinePersistenceBehavior(source, { skipPersistence });
@@ -1209,10 +1207,7 @@ export class SharedNodeStore {
 
               // Suppress expected errors in in-memory test mode
               if (shouldLogDatabaseErrors()) {
-                console.error(
-                  `[SharedNodeStore] Database deletion failed for node ${nodeId}:`,
-                  error
-                );
+                log.error(`Database deletion failed for node ${nodeId}:`, error);
               }
 
               // Always track errors in test environment for verification
@@ -1262,12 +1257,12 @@ export class SharedNodeStore {
   ): void {
     const existingNode = this.nodes.get(nodeId);
     if (!existingNode) {
-      console.warn(`[SharedNodeStore] Cannot update non-existent task node: ${nodeId}`);
+      log.warn(`Cannot update non-existent task node: ${nodeId}`);
       return;
     }
 
     if (existingNode.nodeType !== 'task') {
-      console.warn(`[SharedNodeStore] updateTaskNode called on non-task node: ${nodeId} (type: ${existingNode.nodeType})`);
+      log.warn(`updateTaskNode called on non-task node: ${nodeId} (type: ${existingNode.nodeType})`);
       return;
     }
 
@@ -1332,10 +1327,7 @@ export class SharedNodeStore {
 
           // Suppress expected errors in in-memory test mode
           if (shouldLogDatabaseErrors()) {
-            console.error(
-              `[SharedNodeStore] Task update failed for node ${nodeId}:`,
-              error
-            );
+            log.error(`Task update failed for node ${nodeId}:`, error);
           }
 
           // Always track errors in test environment for verification
@@ -1407,7 +1399,7 @@ export class SharedNodeStore {
     } catch (error) {
       // Suppress expected errors in in-memory test mode
       if (shouldLogDatabaseErrors()) {
-        console.error(`[SharedNodeStore] Failed to load children for parent ${parentId}:`, error);
+        log.error(`Failed to load children for parent ${parentId}:`, error);
       }
 
       throw error;
@@ -1531,7 +1523,7 @@ export class SharedNodeStore {
     } catch (error) {
       // Suppress expected errors in in-memory test mode
       if (shouldLogDatabaseErrors()) {
-        console.error(`[SharedNodeStore] Failed to load children tree for parent ${parentId}:`, error);
+        log.error(`Failed to load children tree for parent ${parentId}:`, error);
       }
 
       throw error;
@@ -1665,9 +1657,7 @@ export class SharedNodeStore {
   ): void {
     // Validate the node exists
     if (!this.nodes.has(update.nodeId)) {
-      console.warn(
-        `[SharedNodeStore] External update for non-existent node: ${update.nodeId} from ${sourceType}`
-      );
+      log.warn(`External update for non-existent node: ${update.nodeId} from ${sourceType}`);
       return;
     }
 
@@ -1755,9 +1745,7 @@ export class SharedNodeStore {
     // Get existing node for type-safe resolution
     const existingNode = this.nodes.get(conflict.nodeId);
     if (!existingNode) {
-      console.warn(
-        `[SharedNodeStore] Cannot resolve conflict for non-existent node: ${conflict.nodeId}`
-      );
+      log.warn(`Cannot resolve conflict for non-existent node: ${conflict.nodeId}`);
       return;
     }
 
@@ -1768,7 +1756,7 @@ export class SharedNodeStore {
     this.nodes.set(conflict.nodeId, resolution.resolvedNode);
     this.versions.set(conflict.nodeId, this.getNextVersion(conflict.nodeId));
 
-    console.debug(`[SharedNodeStore] Conflict resolved for node: ${conflict.nodeId}, strategy: ${resolution.strategy}`);
+    log.debug(`Conflict resolved for node: ${conflict.nodeId}, strategy: ${resolution.strategy}`);
 
     // Notify subscribers
     this.notifySubscribers(conflict.nodeId, resolution.resolvedNode, conflict.remoteUpdate.source);
@@ -1827,7 +1815,7 @@ export class SharedNodeStore {
       this.notifySubscribers(nodeId, currentNode, updateToRollback.source);
     }
 
-    console.debug(`[SharedNodeStore] Update rolled back for node: ${nodeId}`);
+    log.debug(`Update rolled back for node: ${nodeId}`);
   }
 
   /**
@@ -1846,7 +1834,7 @@ export class SharedNodeStore {
   async resyncNodeFromServer(nodeId: string): Promise<void> {
     // Idempotency guard: prevent concurrent resync operations on same node
     if (this.resyncingNodes.has(nodeId)) {
-      console.debug(`[SharedNodeStore] Resync already in progress for node ${nodeId}`);
+      log.debug(`Resync already in progress for node ${nodeId}`);
       return;
     }
 
@@ -1874,20 +1862,15 @@ export class SharedNodeStore {
           reason: 'occ-resync'
         });
 
-        console.warn(
-          `[SharedNodeStore] Node ${nodeId} resynced from server after OCC error ` +
+        log.warn(
+          `Node ${nodeId} resynced from server after OCC error ` +
           `(server version: ${serverNode.version ?? 1})`
         );
       } else {
-        console.error(
-          `[SharedNodeStore] Failed to resync node ${nodeId}: Node not found on server`
-        );
+        log.error(`Failed to resync node ${nodeId}: Node not found on server`);
       }
     } catch (error) {
-      console.error(
-        `[SharedNodeStore] Failed to resync node ${nodeId} from server:`,
-        error
-      );
+      log.error(`Failed to resync node ${nodeId} from server:`, error);
       throw error;
     } finally {
       // Always clean up tracking set, even on error
@@ -1981,7 +1964,7 @@ export class SharedNodeStore {
           sub.callback(node, source);
           sub.callCount++;
         } catch (error) {
-          console.error(`[SharedNodeStore] Subscription callback error:`, error);
+          log.error(`Subscription callback error:`, error);
         }
       }
     }
@@ -1992,7 +1975,7 @@ export class SharedNodeStore {
         sub.callback(node, source);
         sub.callCount++;
       } catch (error) {
-        console.error(`[SharedNodeStore] Wildcard subscription callback error:`, error);
+        log.error(`Wildcard subscription callback error:`, error);
       }
     }
   }
@@ -2009,7 +1992,7 @@ export class SharedNodeStore {
           try {
             sub.callback(node, { type: 'database', reason: 'store-cleared' });
           } catch (error) {
-            console.error(`[SharedNodeStore] Subscription callback error:`, error);
+            log.error(`Subscription callback error:`, error);
           }
         }
       }
@@ -2140,7 +2123,7 @@ export class SharedNodeStore {
 
     // Auto-commit after timeout to prevent abandoned batches
     const timeout = setTimeout(() => {
-      console.warn('[SharedNodeStore] Auto-committing batch after inactivity timeout', {
+      log.warn(' Auto-committing batch after inactivity timeout', {
         batchId,
         nodeId,
         timeoutMs,
@@ -2180,7 +2163,7 @@ export class SharedNodeStore {
   addToBatch(nodeId: string, changes: Partial<Node>): void {
     const batch = this.activeBatches.get(nodeId);
     if (!batch) {
-      console.warn('[SharedNodeStore] Attempted to add to non-existent batch', {
+      log.warn(' Attempted to add to non-existent batch', {
         nodeId,
         changes: Object.keys(changes)
       });
@@ -2230,7 +2213,7 @@ export class SharedNodeStore {
       // Get final node state after all batch changes
       const finalNode = this.nodes.get(nodeId);
       if (!finalNode) {
-        console.warn('[SharedNodeStore] Batch commit aborted - node not found', {
+        log.warn(' Batch commit aborted - node not found', {
           nodeId,
           batchId: batch.batchId
         });
@@ -2247,7 +2230,7 @@ export class SharedNodeStore {
       // The viewer-local placeholder never enters batch system
       this.persistBatchedChanges(nodeId, batch.changes, finalNode);
     } catch (error) {
-      console.error('[SharedNodeStore] Batch commit error', {
+      log.error(' Batch commit error', {
         nodeId,
         batchId: batch.batchId,
         error
@@ -2277,7 +2260,7 @@ export class SharedNodeStore {
    */
   commitAllBatches(): void {
     const nodeIds = Array.from(this.activeBatches.keys());
-    console.log('[SharedNodeStore] Committing all batches:', nodeIds.length, 'active');
+    log.debug(`Committing all batches: ${nodeIds.length} active`);
     for (const nodeId of nodeIds) {
       this.commitBatch(nodeId);
     }
@@ -2412,7 +2395,7 @@ export class SharedNodeStore {
 
           // Suppress expected errors in in-memory test mode
           if (shouldLogDatabaseErrors()) {
-            console.error(`[SharedNodeStore] Batch persistence failed for node ${nodeId}:`, error);
+            log.error(`Batch persistence failed for node ${nodeId}:`, error);
           }
 
           // Always track errors in test environment for verification

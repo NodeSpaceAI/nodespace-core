@@ -28,6 +28,10 @@
   import { type SchemaNode, type SchemaField, type EnumValue, isSchemaNode } from '$lib/types/schema-node';
   import type { Node } from '$lib/types';
   import { parseDate, type DateValue } from '@internationalized/date';
+  import { createLogger } from '$lib/utils/logger';
+
+  // Logger instance for SchemaPropertyForm component
+  const log = createLogger('SchemaPropertyForm');
 
   // Props
   let {
@@ -98,7 +102,7 @@
           schema = null;
         }
       } catch (error) {
-        console.error('[SchemaPropertyForm] Failed to load schema:', error);
+        log.error('Failed to load schema:', error);
         schemaError = error instanceof Error ? error.message : 'Failed to load schema';
         schema = null;
       }

@@ -48,6 +48,9 @@
   import { backendAdapter } from '$lib/services/backend-adapter';
   import type { NodeComponentProps } from '$lib/types/node-viewers';
   import { type SchemaNode, isSchemaNode } from '$lib/types/schema-node';
+  import { createLogger } from '$lib/utils/logger';
+
+  const log = createLogger('CustomEntityNode');
 
   // Component props match NodeComponentProps interface
   let { nodeId, nodeType, content, children }: NodeComponentProps = $props();
@@ -74,7 +77,7 @@
           schema = null;
         }
       } catch (error) {
-        console.error(`[CustomEntityNode] Failed to load schema for ${nodeType}:`, error);
+        log.error(`Failed to load schema for ${nodeType}:`, error);
         schemaError = error instanceof Error ? error.message : 'Failed to load schema';
         schema = null;
       } finally {

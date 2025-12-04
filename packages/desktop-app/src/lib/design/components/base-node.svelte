@@ -35,6 +35,7 @@
   } from './textarea-controller.svelte.js';
   import { NodeAutocomplete, type NodeResult } from '$lib/components/ui/node-autocomplete';
   import { SlashCommandDropdown } from '$lib/components/ui/slash-command-dropdown';
+  import { createLogger } from '$lib/utils/logger';
   // Use shadcn Calendar component (official date picker pattern)
   import { Calendar } from '$lib/components/ui/calendar';
   import { type DateValue } from '@internationalized/date';
@@ -53,6 +54,9 @@
   import { createMockElementForView, findCharacterFromClickFast } from './cursor-positioning';
   import { mapViewPositionToEditPosition } from '$lib/utils/view-edit-mapper';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
+
+  // Logger instance for BaseNode component
+  const log = createLogger('BaseNode');
 
   // Props (Svelte 5 runes syntax)
   let {
@@ -332,7 +336,7 @@
       // Combine: date shortcuts first, then search results
       autocompleteResults = [...dateShortcuts, ...nodeResults];
     } catch (error) {
-      console.error('[NodeSearch] Search failed:', error);
+      log.error('Search failed:', error);
       autocompleteResults = [];
     }
   }
@@ -428,7 +432,7 @@
 
       return newNodeId;
     } catch (error) {
-      console.error('[NodeCreation] Failed to create node:', error);
+      log.error('Failed to create node:', error);
       return null;
     }
   }

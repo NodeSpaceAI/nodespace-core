@@ -25,16 +25,13 @@ import type { NodeViewerComponent, NodeReferenceComponent } from '$lib/plugins/t
 
 describe('Core Plugins Integration', () => {
   let registry: PluginRegistry;
-  let consoleSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     registry = new PluginRegistry();
-    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
   afterEach(() => {
     registry.clear();
-    consoleSpy.mockRestore();
   });
 
   describe('Individual Core Plugin Definitions', () => {
@@ -155,18 +152,16 @@ describe('Core Plugins Integration', () => {
       }
     });
 
-    it('should log registration statistics', () => {
+    it('should register with correct statistics', () => {
       registerCorePlugins(registry);
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        '[UnifiedPluginRegistry] Core plugins registered:',
-        expect.objectContaining({
-          plugins: 9, // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, query
-          slashCommands: expect.any(Number),
-          viewers: 2, // date and task have custom viewers (TaskNodeViewer added in Issue #715)
-          references: 9 // all plugins have references
-        })
-      );
+      // Verify registration statistics through the registry API
+      // Note: Logger output is intentionally silenced during tests
+      const stats = registry.getStats();
+      expect(stats.pluginsCount).toBe(9); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, query
+      expect(stats.slashCommandsCount).toBe(10); // text: 1, header: 3, task: 1, ai-chat: 1, code-block: 1, quote-block: 1, ordered-list: 1, query: 1
+      expect(stats.viewersCount).toBe(2); // date and task have custom viewers (TaskNodeViewer added in Issue #715)
+      expect(stats.referencesCount).toBe(9); // all plugins have references
     });
 
     it('should provide correct slash command count', () => {
@@ -325,10 +320,15 @@ describe('Core Plugins Integration', () => {
 
       registerExternalPlugin(registry, externalPlugin);
 
+      // Verify the plugin was registered successfully
+      // Note: Logger output is intentionally silenced during tests
       expect(registry.hasPlugin('whiteboard')).toBe(true);
-      expect(consoleSpy).toHaveBeenCalledWith(
-        '[UnifiedPluginRegistry] External plugin registered: WhiteBoard Node (whiteboard)'
-      );
+      expect(registry.isEnabled('whiteboard')).toBe(true);
+
+      // Verify slash command is available
+      const command = registry.findSlashCommand('whiteboard');
+      expect(command).toBeDefined();
+      expect(command?.name).toBe('WhiteBoard');
     });
 
     it('should work alongside core plugins', () => {

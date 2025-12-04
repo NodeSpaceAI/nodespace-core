@@ -44,6 +44,10 @@
   import type { Tab, Pane } from '$lib/stores/navigation.js';
   import type { Snippet } from 'svelte';
   import { draggable, droppable, type DragDropState } from '@thisux/sveltednd';
+  import { createLogger } from '$lib/utils/logger';
+
+  // Logger instance for TabSystem component
+  const log = createLogger('TabSystem');
 
   // Props - when used inside PaneManager
   let {
@@ -176,7 +180,7 @@
 
       // Early validation: check for required state
       if (!draggedItem || !targetContainer || !sourceContainer) {
-        console.warn('[TabSystem] Invalid drop operation: missing required state', {
+        log.warn('Invalid drop operation: missing required state', {
           hasDraggedItem: !!draggedItem,
           hasTargetContainer: !!targetContainer,
           hasSourceContainer: !!sourceContainer
@@ -190,7 +194,7 @@
       const targetIndex = parseInt(targetContainer.replace('tab-', ''));
 
       if (isNaN(sourceIndex) || isNaN(targetIndex)) {
-        console.error('[TabSystem] Invalid drop operation: could not parse container indices', {
+        log.error('Invalid drop operation: could not parse container indices', {
           sourceContainer,
           targetContainer,
           sourceIndex,
@@ -211,7 +215,7 @@
       const targetPaneExists = $tabState.panes.some((p) => p.id === currentPaneId);
 
       if (!sourcePaneExists || !targetPaneExists) {
-        console.error('[TabSystem] Invalid drop operation: pane not found', {
+        log.error('Invalid drop operation: pane not found', {
           sourcePaneId,
           targetPaneId: currentPaneId,
           sourcePaneExists,
@@ -258,7 +262,7 @@
         moveTabBetweenPanes(tabId, sourcePaneId, currentPaneId, targetIndex);
       }
     } catch (error) {
-      console.error('[TabSystem] Drop operation failed:', error);
+      log.error('Drop operation failed:', error);
       // Could show user-facing toast notification here in the future
     } finally {
       // Always clear drag-over state
