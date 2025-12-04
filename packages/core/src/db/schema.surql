@@ -115,26 +115,58 @@ DEFINE INDEX IF NOT EXISTS idx_mentions_out ON TABLE mentions COLUMNS out;
 DEFINE INDEX IF NOT EXISTS idx_unique_mention ON TABLE mentions COLUMNS in, out UNIQUE;
 
 -- ============================================================================
--- EMBEDDINGS TABLE (Vector storage for semantic search)
+-- EMBEDDINGS TABLE (Root-Aggregate Model for Semantic Search)
+-- ============================================================================
+--
+-- NodeSpace uses a root-aggregate embedding model:
+-- - Only ROOT nodes (no parent edge) of embeddable types get embedded
+-- - Embeddings represent the semantic content of the entire subtree
+-- - Chunking support for content > 512 tokens
+-- - Backend-managed queue with debouncing (no frontend involvement)
+--
+-- Embeddable types: text, header, code-block, schema
+-- NOT embeddable: task, date, person, ai-chat, any child node
 -- ============================================================================
 
--- Embeddings table: Stores vector embeddings for semantic search
--- Separate from node table for flexibility in multi-model support and efficient vector operations
 DEFINE TABLE IF NOT EXISTS embedding SCHEMAFULL;
 
--- Required fields
-DEFINE FIELD IF NOT EXISTS node_id ON TABLE embedding TYPE record<node> ASSERT $value != NONE;
+-- Link to root node (consistent with spoke pattern)
+-- Uses record<node> type for SurrealDB record link semantics
+DEFINE FIELD IF NOT EXISTS node ON TABLE embedding TYPE record<node>;
+
+-- Vector data
+DEFINE FIELD IF NOT EXISTS vector ON TABLE embedding TYPE array<float>;
+DEFINE FIELD IF NOT EXISTS dimension ON TABLE embedding TYPE int DEFAULT 384;
+
+-- Model info (future multi-model support)
 DEFINE FIELD IF NOT EXISTS model_name ON TABLE embedding TYPE string DEFAULT 'bge-small-en-v1.5';
-DEFINE FIELD IF NOT EXISTS vector ON TABLE embedding TYPE array<float> ASSERT $value != NONE;
-DEFINE FIELD IF NOT EXISTS dimension ON TABLE embedding TYPE int ASSERT $value > 0;
+
+-- Chunking support (for content > 512 tokens)
+DEFINE FIELD IF NOT EXISTS chunk_index ON TABLE embedding TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS chunk_start ON TABLE embedding TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS chunk_end ON TABLE embedding TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS total_chunks ON TABLE embedding TYPE int DEFAULT 1;
+
+-- Content tracking (for change detection)
+DEFINE FIELD IF NOT EXISTS content_hash ON TABLE embedding TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS token_count ON TABLE embedding TYPE option<int>;
+
+-- Staleness tracking (for re-embedding queue)
+DEFINE FIELD IF NOT EXISTS stale ON TABLE embedding TYPE bool DEFAULT true;
+
+-- Error tracking
+DEFINE FIELD IF NOT EXISTS error_count ON TABLE embedding TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS last_error ON TABLE embedding TYPE option<string>;
+
+-- Timestamps
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE embedding TYPE datetime DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS modified_at ON TABLE embedding TYPE datetime DEFAULT time::now();
 
 -- Indexes for efficient lookups
-DEFINE INDEX IF NOT EXISTS idx_embedding_node ON TABLE embedding COLUMNS node_id;
-DEFINE INDEX IF NOT EXISTS idx_embedding_model ON TABLE embedding COLUMNS model_name;
--- Unique constraint: one embedding per node per model
-DEFINE INDEX IF NOT EXISTS idx_embedding_unique ON TABLE embedding COLUMNS node_id, model_name UNIQUE;
+DEFINE INDEX IF NOT EXISTS idx_embedding_node ON TABLE embedding COLUMNS node;
+DEFINE INDEX IF NOT EXISTS idx_embedding_stale ON TABLE embedding COLUMNS stale;
+-- Unique constraint: one embedding per (node, model, chunk_index) combination
+DEFINE INDEX IF NOT EXISTS idx_embedding_unique ON TABLE embedding COLUMNS node, model_name, chunk_index UNIQUE;
 
 -- ============================================================================
 -- Schema Version Tracking

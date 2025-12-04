@@ -1376,7 +1376,6 @@ mod integration_tests {
                         content: Some("- [x] Updated task".to_string()),
                         node_type: None,
                         properties: None,
-                        embedding_vector: None,
                     },
                 )
                 .await
@@ -1395,7 +1394,6 @@ mod integration_tests {
                         content: Some("- [ ] Task".to_string()),
                         node_type: None,
                         properties: None,
-                        embedding_vector: None,
                     },
                 )
                 .await
@@ -1470,7 +1468,6 @@ mod integration_tests {
                     content: Some("warmup".to_string()),
                     node_type: None,
                     properties: None,
-                    embedding_vector: None,
                 },
             )
             .await
@@ -1490,7 +1487,6 @@ mod integration_tests {
                         content: Some(format!("Update {}", i)),
                         node_type: None,
                         properties: None,
-                        embedding_vector: None,
                     },
                 )
                 .await

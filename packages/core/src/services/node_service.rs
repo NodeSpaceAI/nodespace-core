@@ -1274,7 +1274,6 @@ where
             mentioned_by: vec![],
             created_at: chrono::Utc::now(),
             modified_at: chrono::Utc::now(),
-            embedding_vector: None,
         };
 
         let created_id = self.create_node(node).await?;
@@ -1544,7 +1543,6 @@ where
                     created_at: chrono::Utc::now(),
                     modified_at: chrono::Utc::now(),
                     properties: serde_json::json!({}),
-                    embedding_vector: None,
                     mentions: vec![],
                     mentioned_by: vec![],
                 };
@@ -1828,10 +1826,6 @@ where
             }
         }
 
-        if let Some(embedding_vector) = update.embedding_vector {
-            updated.embedding_vector = embedding_vector;
-        }
-
         // Step 1: Core behavior validation (PROTECTED)
         self.behaviors.validate_node(&updated)?;
 
@@ -1864,11 +1858,6 @@ where
             node_type: Some(updated.node_type.clone()),
             content: Some(updated.content.clone()),
             properties: Some(updated.properties.clone()),
-            embedding_vector: if updated.embedding_vector.is_some() {
-                Some(updated.embedding_vector.clone())
-            } else {
-                None
-            },
         };
 
         // For schema nodes, use atomic update with DDL generation (Issue #690, #703)
@@ -2033,10 +2022,6 @@ where
             }
         }
 
-        if let Some(embedding_vector) = update.embedding_vector {
-            updated.embedding_vector = embedding_vector;
-        }
-
         // Step 1: Core behavior validation (PROTECTED)
         self.behaviors.validate_node(&updated)?;
 
@@ -2050,11 +2035,6 @@ where
             node_type: Some(updated.node_type.clone()),
             content: Some(updated.content.clone()),
             properties: Some(updated.properties.clone()),
-            embedding_vector: if updated.embedding_vector.is_some() {
-                Some(updated.embedding_vector.clone())
-            } else {
-                None
-            },
         };
 
         // Perform atomic update with version check
@@ -3294,11 +3274,6 @@ where
             node_type: Some(node.node_type.clone()),
             content: Some(node.content.clone()),
             properties: Some(node.properties.clone()),
-            embedding_vector: if node.embedding_vector.is_some() {
-                Some(node.embedding_vector.clone())
-            } else {
-                None
-            },
         };
 
         // Perform atomic update with version check
@@ -3653,10 +3628,6 @@ where
                 updated.properties = properties.clone();
             }
 
-            if let Some(embedding_vector) = &update.embedding_vector {
-                updated.embedding_vector = embedding_vector.clone();
-            }
-
             // Validate behavior (PROTECTED rules)
             self.behaviors.validate_node(&updated).map_err(|e| {
                 NodeServiceError::bulk_operation_failed(format!(
@@ -3846,7 +3817,6 @@ where
                 mentioned_by: vec![],
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
-                embedding_vector: None,
             };
             self.store
                 .create_node(node, self.client_id.clone())

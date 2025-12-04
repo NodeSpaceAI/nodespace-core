@@ -85,17 +85,20 @@ pub async fn generate_root_embedding(
         })?
         .ok_or_else(|| command_error(format!("Node not found: {}", root_id), "NOT_FOUND"))?;
 
-    // Generate and store embedding
-    // Note: NodeEmbeddingService method still uses legacy name, will be updated in Phase 6
-    state.service.embed_container(&node).await.map_err(|e| {
-        command_error_with_details(
-            format!("Failed to generate embedding: {}", e),
-            "EMBEDDING_ERROR",
-            format!("{:?}", e),
-        )
-    })?;
+    // Queue node's root for embedding via root-aggregate model (Issue #729)
+    state
+        .service
+        .queue_for_embedding(&node.id)
+        .await
+        .map_err(|e| {
+            command_error_with_details(
+                format!("Failed to queue embedding: {}", e),
+                "EMBEDDING_ERROR",
+                format!("{:?}", e),
+            )
+        })?;
 
-    tracing::info!("Generated embedding for node: {}", root_id);
+    tracing::info!("Queued embedding for node: {}", root_id);
     Ok(())
 }
 
@@ -196,15 +199,15 @@ pub async fn search_roots(
             )
         })?;
 
-    // Search with default/custom parameters (embedding already Vec<f32>, no blob conversion needed)
+    // Search with default/custom parameters using new root-aggregate model (Issue #729)
     let limit = params.limit.unwrap_or(20) as i64;
     let threshold = params.threshold.map(|t| t as f64);
 
-    // Execute search
+    // Execute search using new embedding table
     let service_with_client = node_service.with_client(TAURI_CLIENT_ID);
     let store = service_with_client.store();
-    let results = store
-        .search_by_embedding(&query_embedding, limit, threshold)
+    let search_results = store
+        .search_embeddings(&query_embedding, limit, threshold)
         .await
         .map_err(|e| {
             command_error_with_details(
@@ -214,8 +217,15 @@ pub async fn search_roots(
             )
         })?;
 
-    // Return only nodes (discard similarity scores for now)
-    Ok(results.into_iter().map(|(node, _score)| node).collect())
+    // Fetch actual nodes for each search result
+    let mut nodes = Vec::with_capacity(search_results.len());
+    for result in search_results {
+        if let Ok(Some(node)) = store.get_node(&result.node_id).await {
+            nodes.push(node);
+        }
+    }
+
+    Ok(nodes)
 }
 
 /// Update embedding for a topic/root node immediately
@@ -257,17 +267,20 @@ pub async fn update_root_embedding(
         })?
         .ok_or_else(|| command_error(format!("Node not found: {}", root_id), "NOT_FOUND"))?;
 
-    // Generate and store embedding
-    // Note: NodeEmbeddingService method still uses legacy name, will be updated in Phase 6
-    state.service.embed_container(&node).await.map_err(|e| {
-        command_error_with_details(
-            format!("Failed to update embedding: {}", e),
-            "EMBEDDING_ERROR",
-            format!("{:?}", e),
-        )
-    })?;
+    // Queue node's root for embedding via root-aggregate model (Issue #729)
+    state
+        .service
+        .queue_for_embedding(&node.id)
+        .await
+        .map_err(|e| {
+            command_error_with_details(
+                format!("Failed to queue embedding update: {}", e),
+                "EMBEDDING_ERROR",
+                format!("{:?}", e),
+            )
+        })?;
 
-    tracing::info!("Updated embedding for node: {}", root_id);
+    tracing::info!("Queued embedding update for node: {}", root_id);
     Ok(())
 }
 
@@ -355,17 +368,20 @@ pub async fn on_root_closed(
         })?
         .ok_or_else(|| command_error(format!("Node not found: {}", root_id), "NOT_FOUND"))?;
 
-    // Generate embedding (will be marked as stale by background if content changes)
-    // Note: NodeEmbeddingService method still uses legacy name, will be updated in Phase 6
-    state.service.embed_container(&node).await.map_err(|e| {
-        command_error_with_details(
-            format!("Failed to regenerate embedding: {}", e),
-            "EMBEDDING_ERROR",
-            format!("{:?}", e),
-        )
-    })?;
+    // Queue node's root for embedding via root-aggregate model (Issue #729)
+    state
+        .service
+        .queue_for_embedding(&node.id)
+        .await
+        .map_err(|e| {
+            command_error_with_details(
+                format!("Failed to queue embedding regeneration: {}", e),
+                "EMBEDDING_ERROR",
+                format!("{:?}", e),
+            )
+        })?;
 
-    tracing::info!("Generated embedding on close for node: {}", root_id);
+    tracing::info!("Queued embedding on close for node: {}", root_id);
     Ok(())
 }
 
@@ -412,17 +428,20 @@ pub async fn on_root_idle(
         })?
         .ok_or_else(|| command_error(format!("Node not found: {}", root_id), "NOT_FOUND"))?;
 
-    // Generate embedding (returns true to indicate processing was triggered)
-    // Note: NodeEmbeddingService method still uses legacy name, will be updated in Phase 6
-    state.service.embed_container(&node).await.map_err(|e| {
-        command_error_with_details(
-            format!("Failed to regenerate embedding: {}", e),
-            "EMBEDDING_ERROR",
-            format!("{:?}", e),
-        )
-    })?;
+    // Queue node's root for embedding via root-aggregate model (Issue #729)
+    state
+        .service
+        .queue_for_embedding(&node.id)
+        .await
+        .map_err(|e| {
+            command_error_with_details(
+                format!("Failed to queue embedding regeneration: {}", e),
+                "EMBEDDING_ERROR",
+                format!("{:?}", e),
+            )
+        })?;
 
-    tracing::info!("Generated embedding on idle for node: {}", root_id);
+    tracing::info!("Queued embedding on idle for node: {}", root_id);
     Ok(true)
 }
 
@@ -534,15 +553,14 @@ pub async fn batch_generate_embeddings(
             .await
         {
             Ok(Some(node)) => {
-                // Generate and store embedding
-                // Note: NodeEmbeddingService method still uses legacy name, will be updated in Phase 6
-                match state.service.embed_container(&node).await {
+                // Queue node's root for embedding via root-aggregate model (Issue #729)
+                match state.service.queue_for_embedding(&node.id).await {
                     Ok(_) => {
                         success_count += 1;
-                        tracing::debug!("Embedded node: {}", root_id);
+                        tracing::debug!("Queued embedding for node: {}", root_id);
                     }
                     Err(e) => {
-                        let error_msg = format!("Failed to generate embedding: {}", e);
+                        let error_msg = format!("Failed to queue embedding: {}", e);
                         tracing::error!("Node {}: {}", root_id, error_msg);
                         failed_embeddings.push(BatchEmbeddingError {
                             root_id: root_id.clone(),

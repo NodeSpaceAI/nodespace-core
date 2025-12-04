@@ -1,36 +1,43 @@
-//! Node Embedding Service
+//! Root-Aggregate Embedding Service (Issue #729)
 //!
-//! **STATUS: Fully integrated with SurrealDB and NLP engine (Issue #489)**
+//! ## Overview
 //!
-//! ## Features
+//! This service implements root-aggregate embedding for semantic search:
+//! - Only ROOT nodes (no parent edge) of embeddable types get embedded
+//! - Embeddings represent the semantic content of the entire subtree
+//! - Uses the dedicated `embedding` table (not node.embedding_vector)
+//! - Supports chunking for content > 512 tokens
 //!
-//! - ✅ Database-level staleness tracking (`mark_embedding_stale`, `get_nodes_with_stale_embeddings`)
-//! - ✅ Embedding vector storage in SurrealDB (`update_embedding` method)
-//! - ✅ Atomic update operations with version control
-//! - ✅ NLP engine integration for embedding generation
-//! - ✅ Background batch processing of stale embeddings
-//! - ✅ Two-level embeddability (Issue #573) - behavior-driven embedding decisions
+//! ## Embeddable Types
 //!
-//! ## Two-Level Embeddability (Issue #573)
+//! - `text`, `header`, `code-block`, `schema` - embeddable when roots
+//! - `task`, `date`, `person`, `ai-chat` - NOT embeddable
+//! - Child nodes are NEVER directly embedded (contribute to parent's embedding)
 //!
-//! The embedding service uses the NodeBehavior trait to determine:
-//! 1. **Root Embeddability**: Whether a node should be embedded as a standalone unit
-//! 2. **Parent Contribution**: What content a node contributes to its parent's embedding
+//! ## Queue System
 //!
-//! This enables intelligent embedding where:
-//! - Text/header nodes are embeddable and contribute to parent embeddings
-//! - Task nodes are NOT embedded (action items, not semantic content)
-//! - Date nodes are NOT embedded (containers, not content)
+//! The embedding queue is managed via the `embedding` table's `stale` flag:
+//! - New root nodes get a stale marker created
+//! - Content changes mark existing embeddings as stale
+//! - Background processor re-embeds stale entries
 //!
-//! ## Out of Scope (Future Issues)
+//! ## Content Aggregation
 //!
-//! - ⏳ Vector similarity search implementation (Issue #107 - SurrealDB native vector search)
+//! When embedding a root node:
+//! 1. Fetch root + all descendants via `get_nodes_in_subtree()`
+//! 2. Aggregate content in hierarchical order
+//! 3. Chunk if > 512 tokens with ~100 token overlap
+//! 4. Generate embedding per chunk
+//! 5. Store in `embedding` table
 
-use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::SurrealStore;
-use crate::models::Node;
+use crate::models::{
+    is_embeddable_type, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding, Node,
+};
 use crate::services::error::NodeServiceError;
 use nodespace_nlp_engine::EmbeddingService;
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Embedding vector dimension for BAAI/bge-small-en-v1.5 model
@@ -39,10 +46,14 @@ pub const EMBEDDING_DIMENSION: usize = 384;
 /// Default batch size for processing stale embeddings
 pub const DEFAULT_BATCH_SIZE: usize = 50;
 
-/// Node embedding service with SurrealDB integration
+/// Maximum depth for parent chain traversal (safety limit to prevent infinite loops)
+pub const MAX_PARENT_CHAIN_DEPTH: usize = 100;
+
+/// Root-aggregate embedding service
 ///
-/// Generic over the database connection type `C` to support both local
-/// embedded database (Db) and HTTP client connections.
+/// Manages semantic embeddings using the root-aggregate model where only
+/// root nodes of embeddable types get embedded, with their entire subtree
+/// content aggregated into the embedding.
 pub struct NodeEmbeddingService<C = surrealdb::engine::local::Db>
 where
     C: surrealdb::Connection,
@@ -51,6 +62,8 @@ where
     nlp_engine: Arc<EmbeddingService>,
     /// SurrealDB store for persisting embeddings
     store: Arc<SurrealStore<C>>,
+    /// Configuration for embedding behavior
+    config: EmbeddingConfig,
 }
 
 impl<C> NodeEmbeddingService<C>
@@ -63,11 +76,32 @@ where
     /// * `nlp_engine` - The NLP engine for generating embeddings
     /// * `store` - The SurrealDB store for persisting embeddings
     pub fn new(nlp_engine: Arc<EmbeddingService>, store: Arc<SurrealStore<C>>) -> Self {
-        tracing::info!("NodeEmbeddingService initialized with SurrealDB and NLP engine");
-        Self { nlp_engine, store }
+        tracing::info!("NodeEmbeddingService initialized with root-aggregate model");
+        Self {
+            nlp_engine,
+            store,
+            config: EmbeddingConfig::default(),
+        }
     }
 
-    /// Get reference to the NLP engine for direct embedding operations
+    /// Create with custom configuration
+    pub fn with_config(
+        nlp_engine: Arc<EmbeddingService>,
+        store: Arc<SurrealStore<C>>,
+        config: EmbeddingConfig,
+    ) -> Self {
+        tracing::info!(
+            "NodeEmbeddingService initialized with custom config (debounce: {}s)",
+            config.debounce_duration_secs
+        );
+        Self {
+            nlp_engine,
+            store,
+            config,
+        }
+    }
+
+    /// Get reference to the NLP engine
     pub fn nlp_engine(&self) -> &Arc<EmbeddingService> {
         &self.nlp_engine
     }
@@ -77,459 +111,482 @@ where
         &self.store
     }
 
-    /// Extract text content from node for embedding
+    // =========================================================================
+    // Root Node Detection
+    // =========================================================================
+
+    /// Check if a node is a root (has no parent)
+    pub async fn is_root_node(&self, node_id: &str) -> Result<bool, NodeServiceError> {
+        let parent =
+            self.store.get_parent(node_id).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to get parent: {}", e))
+            })?;
+        Ok(parent.is_none())
+    }
+
+    /// Find the root node ID for any node in a tree
     ///
-    /// Uses the node's content field. If empty, returns empty string.
-    fn extract_text_from_node(node: &Node) -> String {
-        if node.content.trim().is_empty() {
-            String::new()
-        } else {
-            node.content.clone()
+    /// Traverses up the parent chain until finding a node with no parent.
+    pub async fn find_root_id(&self, node_id: &str) -> Result<String, NodeServiceError> {
+        let mut current_id = node_id.to_string();
+
+        for _ in 0..MAX_PARENT_CHAIN_DEPTH {
+            let parent = self.store.get_parent(&current_id).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to get parent: {}", e))
+            })?;
+
+            match parent {
+                Some(parent_node) => {
+                    current_id = parent_node.id;
+                }
+                None => {
+                    return Ok(current_id);
+                }
+            }
         }
+
+        Err(NodeServiceError::query_failed(format!(
+            "Max parent chain depth ({}) exceeded",
+            MAX_PARENT_CHAIN_DEPTH
+        )))
+    }
+
+    /// Check if a root node should be embedded based on its type
+    pub fn should_embed_root(&self, node: &Node) -> bool {
+        is_embeddable_type(&node.node_type)
     }
 
     // =========================================================================
-    // Two-Level Embeddability Methods (Issue #573)
+    // Content Aggregation
     // =========================================================================
 
-    /// Determine if a node should be embedded as a root node
+    /// Aggregate content from a root node and all its descendants
     ///
-    /// Uses the NodeBehavior trait to check if this node type is embeddable.
-    ///
-    /// Returns true if:
-    /// - Node's behavior says it's embeddable (via get_embeddable_content)
-    /// - Node content is not empty
-    ///
-    /// Returns false if:
-    /// - Node behavior says it's not embeddable (e.g., tasks, dates)
-    /// - Node content is empty
-    ///
-    /// # Arguments
-    /// * `registry` - The behavior registry for looking up node type behaviors
-    /// * `node` - The node to check
-    ///
-    /// # Examples
-    /// ```rust,no_run
-    /// # use nodespace_core::services::NodeEmbeddingService;
-    /// # use nodespace_core::behaviors::NodeBehaviorRegistry;
-    /// # use nodespace_core::models::Node;
-    /// # use serde_json::json;
-    /// # async fn example(service: &NodeEmbeddingService, registry: &NodeBehaviorRegistry) {
-    /// let text_node = Node::new("text".to_string(), "Hello world".to_string(), json!({}));
-    /// assert!(service.should_embed_node(registry, &text_node)); // Text is embeddable
-    ///
-    /// let task_node = Node::new("task".to_string(), "Buy milk".to_string(), json!({}));
-    /// assert!(!service.should_embed_node(registry, &task_node)); // Task is NOT embeddable
-    /// # }
-    /// ```
-    pub fn should_embed_node(&self, registry: &NodeBehaviorRegistry, node: &Node) -> bool {
-        if let Some(behavior) = registry.get(&node.node_type) {
-            behavior.get_embeddable_content(node).is_some()
-        } else {
-            // Unknown node type - use default behavior (embeddable if has content)
-            !node.content.trim().is_empty()
-        }
-    }
-
-    /// Build embeddable content by combining node + immediate children contributions
-    ///
-    /// Combines content from the node and its direct children:
-    /// 1. Node's own embeddable content (if it's a root)
-    /// 2. Each immediate child's contribution to this node
-    ///
-    /// Note: Only processes direct children (one level deep), not grandchildren.
-    /// This keeps embeddings focused on the node's immediate context.
-    ///
-    /// The two-level system means:
-    /// - Level 1: Root embeddability (should this node be embedded?)
-    /// - Level 2: Parent contribution (what does this node add to parent's embedding?)
-    ///
-    /// # Arguments
-    /// * `registry` - The behavior registry for looking up node type behaviors
-    /// * `node` - The node to build content for
-    ///
-    /// # Returns
-    /// Combined text with paragraph separation (double newlines)
-    ///
-    /// # Errors
-    /// Returns error if database operations fail
-    pub async fn build_embeddable_content(
+    /// Combines content from the entire subtree into a single text for embedding.
+    /// Content is ordered hierarchically (parent before children).
+    pub async fn aggregate_subtree_content(
         &self,
-        registry: &NodeBehaviorRegistry,
-        node: &Node,
+        root_id: &str,
     ) -> Result<String, NodeServiceError> {
+        // Get root node
+        let root = self
+            .store
+            .get_node(root_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(format!("Failed to get root node: {}", e)))?
+            .ok_or_else(|| NodeServiceError::node_not_found(root_id))?;
+
+        // Get all descendants
+        let descendants = self
+            .store
+            .get_nodes_in_subtree(root_id)
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to get descendants: {}", e))
+            })?;
+
+        // Check descendant limit
+        if descendants.len() > self.config.max_descendants {
+            tracing::warn!(
+                "Root {} has {} descendants, exceeding limit of {}. Truncating.",
+                root_id,
+                descendants.len(),
+                self.config.max_descendants
+            );
+        }
+
+        // Collect content parts
         let mut parts = Vec::new();
 
-        // Add node's own content if it should be embedded
-        if let Some(behavior) = registry.get(&node.node_type) {
-            if let Some(content) = behavior.get_embeddable_content(node) {
-                parts.push(content);
-            }
-        } else if !node.content.trim().is_empty() {
-            // Unknown node type - use content directly
-            parts.push(node.content.clone());
+        // Add root content first
+        if !root.content.trim().is_empty() {
+            parts.push(root.content.clone());
         }
 
-        // Get children and add their contributions
-        let children = self.store.get_children(Some(&node.id)).await.map_err(|e| {
-            NodeServiceError::SerializationError(format!("Failed to get children: {}", e))
-        })?;
-
-        for child in children {
-            if let Some(child_behavior) = registry.get(&child.node_type) {
-                // Add child's direct contribution to parent
-                if let Some(contribution) = child_behavior.get_parent_contribution(&child) {
-                    parts.push(contribution);
-                }
-            } else if !child.content.trim().is_empty() {
-                // Unknown node type - contribute content directly
-                parts.push(child.content.clone());
+        // Add descendant content
+        let limit = self.config.max_descendants.min(descendants.len());
+        for node in descendants.into_iter().take(limit) {
+            if !node.content.trim().is_empty() {
+                parts.push(node.content);
             }
         }
 
-        Ok(parts.join("\n\n"))
+        let aggregated = parts.join("\n\n");
+
+        // Check size limit
+        if aggregated.len() > self.config.max_content_size {
+            tracing::warn!(
+                "Aggregated content for {} exceeds max size ({} > {}). Truncating.",
+                root_id,
+                aggregated.len(),
+                self.config.max_content_size
+            );
+            return Ok(aggregated[..self.config.max_content_size].to_string());
+        }
+
+        Ok(aggregated)
     }
 
-    /// Generate and store embedding for a single node
-    ///
-    /// Extracts text from the node, generates an embedding using the NLP engine,
-    /// converts to binary format, and stores in SurrealDB.
-    ///
-    /// # Arguments
-    /// * `node` - The node to embed
-    ///
-    /// # Errors
-    /// Returns error if:
-    /// - Text extraction fails
-    /// - Embedding generation fails
-    /// - Database storage fails
-    pub async fn embed_container(&self, node: &Node) -> Result<(), NodeServiceError> {
-        let text = Self::extract_text_from_node(node);
+    /// Compute content hash for change detection
+    fn compute_content_hash(content: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(content.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
 
-        if text.trim().is_empty() {
-            tracing::debug!("Skipping empty node: {}", node.id);
+    // =========================================================================
+    // Chunking
+    // =========================================================================
+
+    /// Split content into chunks for embedding
+    ///
+    /// Uses approximate token counting (4 chars ≈ 1 token) and overlaps
+    /// chunks by `overlap_tokens` to maintain context across boundaries.
+    fn chunk_content(&self, content: &str) -> Vec<(i32, i32, String)> {
+        // Approximate token count (rough estimate: 4 chars ≈ 1 token)
+        let chars_per_token = 4;
+        let max_chars = self.config.max_tokens_per_chunk * chars_per_token;
+        let overlap_chars = self.config.overlap_tokens * chars_per_token;
+
+        if content.len() <= max_chars {
+            // Single chunk
+            return vec![(0, content.len() as i32, content.to_string())];
+        }
+
+        let mut chunks = Vec::new();
+        let mut start = 0;
+
+        while start < content.len() {
+            let end = (start + max_chars).min(content.len());
+
+            // Try to find a good break point (newline or space)
+            let actual_end = if end < content.len() {
+                // Look for paragraph break first
+                if let Some(pos) = content[start..end].rfind("\n\n") {
+                    start + pos + 2
+                }
+                // Then sentence break
+                else if let Some(pos) = content[start..end].rfind(". ") {
+                    start + pos + 2
+                }
+                // Then word break
+                else if let Some(pos) = content[start..end].rfind(' ') {
+                    start + pos + 1
+                } else {
+                    end
+                }
+            } else {
+                end
+            };
+
+            chunks.push((
+                start as i32,
+                actual_end as i32,
+                content[start..actual_end].to_string(),
+            ));
+
+            // Move forward with overlap
+            start = if actual_end >= content.len() {
+                actual_end
+            } else {
+                (actual_end - overlap_chars).max(start + 1)
+            };
+        }
+
+        chunks
+    }
+
+    // =========================================================================
+    // Embedding Generation
+    // =========================================================================
+
+    /// Generate and store embeddings for a root node
+    ///
+    /// This is the main entry point for embedding a root node's content.
+    /// Aggregates content, chunks if necessary, generates embeddings,
+    /// and stores in the embedding table.
+    pub async fn embed_root_node(&self, root_id: &str) -> Result<(), NodeServiceError> {
+        // Get root node and verify it exists
+        let root = self
+            .store
+            .get_node(root_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(format!("Failed to get root: {}", e)))?
+            .ok_or_else(|| NodeServiceError::node_not_found(root_id))?;
+
+        // Check if this type should be embedded
+        if !self.should_embed_root(&root) {
+            tracing::debug!(
+                "Skipping non-embeddable root: {} (type: {})",
+                root_id,
+                root.node_type
+            );
+            // Delete any existing embeddings for this node
+            self.store.delete_embeddings(root_id).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to delete embeddings: {}", e))
+            })?;
             return Ok(());
         }
 
-        // Generate embedding using NLP engine
-        let embedding = self.nlp_engine.generate_embedding(&text).map_err(|e| {
-            NodeServiceError::SerializationError(format!("Embedding generation failed: {}", e))
-        })?;
+        // Aggregate content from subtree
+        let content = self.aggregate_subtree_content(root_id).await?;
 
-        // Store embedding directly as Vec<f32> (no blob conversion needed)
+        if content.trim().is_empty() {
+            tracing::debug!("Skipping root with empty content: {}", root_id);
+            self.store.delete_embeddings(root_id).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to delete embeddings: {}", e))
+            })?;
+            return Ok(());
+        }
+
+        // Compute content hash
+        let content_hash = Self::compute_content_hash(&content);
+
+        // Chunk content
+        let chunks = self.chunk_content(&content);
+        let total_chunks = chunks.len() as i32;
+
+        tracing::debug!(
+            "Embedding root {} with {} chunks ({} chars)",
+            root_id,
+            total_chunks,
+            content.len()
+        );
+
+        // Generate embeddings for all chunks
+        let mut new_embeddings = Vec::new();
+        for (idx, (start, end, chunk_text)) in chunks.into_iter().enumerate() {
+            // Estimate token count
+            let token_count = (chunk_text.len() / 4) as i32;
+
+            // Generate embedding
+            let vector = self
+                .nlp_engine
+                .generate_embedding(&chunk_text)
+                .map_err(|e| {
+                    NodeServiceError::SerializationError(format!(
+                        "Embedding generation failed: {}",
+                        e
+                    ))
+                })?;
+
+            new_embeddings.push(NewEmbedding::chunk(
+                root_id,
+                vector,
+                idx as i32,
+                start,
+                end,
+                total_chunks,
+                &content_hash,
+                token_count,
+            ));
+        }
+
+        // Store embeddings (replaces any existing)
         self.store
-            .update_embedding(&node.id, &embedding)
+            .upsert_embeddings(root_id, new_embeddings)
             .await
             .map_err(|e| {
-                NodeServiceError::SerializationError(format!("Failed to store embedding: {}", e))
+                NodeServiceError::query_failed(format!("Failed to store embeddings: {}", e))
             })?;
 
-        tracing::debug!("Embedded node: {} ({} floats)", node.id, embedding.len());
+        tracing::debug!(
+            "Successfully embedded root {} ({} chunks)",
+            root_id,
+            total_chunks
+        );
+
         Ok(())
     }
 
-    /// Batch process stale embeddings
+    /// Process all stale embeddings
     ///
-    /// Retrieves stale nodes from the database, generates embeddings in batch
-    /// using the NLP engine for efficiency, and stores all results.
-    ///
-    /// # Arguments
-    /// * `limit` - Maximum number of nodes to process (defaults to DEFAULT_BATCH_SIZE)
-    ///
-    /// # Returns
-    /// Number of successfully embedded nodes
-    ///
-    /// # Errors
-    /// Logs individual failures but continues processing. Returns error only if
-    /// the database query for stale nodes fails.
-    pub async fn batch_embed_containers(
+    /// Fetches root node IDs with stale embeddings and re-generates them.
+    pub async fn process_stale_embeddings(
         &self,
         limit: Option<usize>,
     ) -> Result<usize, NodeServiceError> {
         let batch_size = limit.unwrap_or(DEFAULT_BATCH_SIZE);
 
-        // Get stale nodes from database
-        let stale_nodes = self
+        // Get stale root IDs from embedding table
+        let stale_ids = self
             .store
-            .get_nodes_with_stale_embeddings(Some(batch_size as i64))
+            .get_stale_embedding_root_ids(Some(batch_size as i64))
             .await
             .map_err(|e| {
-                NodeServiceError::SerializationError(format!("Failed to query stale nodes: {}", e))
+                NodeServiceError::query_failed(format!("Failed to query stale embeddings: {}", e))
             })?;
 
-        if stale_nodes.is_empty() {
+        if stale_ids.is_empty() {
             tracing::debug!("No stale embeddings to process");
             return Ok(0);
         }
 
-        tracing::info!("Processing {} stale embeddings", stale_nodes.len());
+        tracing::info!("Processing {} stale embeddings", stale_ids.len());
 
-        // Extract text from all nodes (owned strings to avoid lifetime issues)
-        let texts: Vec<String> = stale_nodes
-            .iter()
-            .map(Self::extract_text_from_node)
-            .collect();
-
-        // Create references for the batch call
-        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-
-        // Generate embeddings in batch for efficiency
-        let embeddings = self.nlp_engine.generate_batch(text_refs).map_err(|e| {
-            NodeServiceError::SerializationError(format!(
-                "Batch embedding generation failed: {}",
-                e
-            ))
-        })?;
-
-        // Store each embedding (no blob conversion needed)
         let mut success_count = 0;
-        for (node, embedding) in stale_nodes.iter().zip(embeddings.iter()) {
-            match self.store.update_embedding(&node.id, embedding).await {
+        for root_id in stale_ids {
+            match self.embed_root_node(&root_id).await {
                 Ok(_) => {
                     success_count += 1;
-                    tracing::debug!("Embedded node: {} ({} floats)", node.id, embedding.len());
                 }
                 Err(e) => {
-                    tracing::error!("Failed to store embedding for node {}: {}", node.id, e);
-                    // Continue processing other nodes
+                    tracing::error!("Failed to embed root {}: {}", root_id, e);
+                    // Record error but continue processing
+                    if let Err(record_err) = self
+                        .store
+                        .record_embedding_error(&root_id, &e.to_string())
+                        .await
+                    {
+                        tracing::error!("Failed to record error for {}: {}", root_id, record_err);
+                    }
                 }
             }
         }
 
         tracing::info!(
-            "Successfully embedded {}/{} nodes",
+            "Successfully processed {}/{} stale embeddings",
             success_count,
-            stale_nodes.len()
+            batch_size
         );
+
         Ok(success_count)
     }
 
     // =========================================================================
-    // Two-Level Embeddability Versions (Issue #573)
+    // Queue Management
     // =========================================================================
 
-    /// Generate and store embedding for a single node with two-level embeddability
+    /// Queue a node for embedding
     ///
-    /// Uses the NodeBehavior trait to determine:
-    /// 1. Whether this node should be embedded (root embeddability)
-    /// 2. What content to include from children (parent contribution)
-    ///
-    /// This method is behavior-aware and respects node type semantics:
-    /// - Text nodes: Embedded with their children's contributions
-    /// - Task nodes: Skipped (not semantically meaningful to embed)
-    /// - Date nodes: Skipped (containers, not content)
-    ///
-    /// # Arguments
-    /// * `registry` - The behavior registry for looking up node type behaviors
-    /// * `node` - The node to embed
-    ///
-    /// # Errors
-    /// Returns error if:
-    /// - Building embeddable content fails (database error)
-    /// - Embedding generation fails
-    /// - Database storage fails
-    pub async fn embed_container_with_behavior(
-        &self,
-        registry: &NodeBehaviorRegistry,
-        node: &Node,
-    ) -> Result<(), NodeServiceError> {
-        // Check if this node should be embedded using behavior system
-        if !self.should_embed_node(registry, node) {
+    /// If the node is a root of an embeddable type, marks its embedding as stale.
+    /// If the node is a child, finds its root and marks that as stale.
+    pub async fn queue_for_embedding(&self, node_id: &str) -> Result<(), NodeServiceError> {
+        // Find the root of this node's tree
+        let root_id = self.find_root_id(node_id).await?;
+
+        // Get the root node to check its type
+        let root = match self
+            .store
+            .get_node(&root_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(format!("Failed to get root: {}", e)))?
+        {
+            Some(node) => node,
+            None => {
+                tracing::debug!("Root node {} not found, skipping embedding queue", root_id);
+                return Ok(());
+            }
+        };
+
+        // Check if root type is embeddable
+        if !self.should_embed_root(&root) {
             tracing::debug!(
-                "Skipping non-embeddable node: {} (type: {})",
-                node.id,
-                node.node_type
+                "Root {} is not embeddable (type: {}), skipping queue",
+                root_id,
+                root.node_type
             );
             return Ok(());
         }
 
-        // Build embeddable content (node + children contributions)
-        let text = self.build_embeddable_content(registry, node).await?;
-
-        if text.trim().is_empty() {
-            tracing::debug!("Skipping empty embeddable content for node: {}", node.id);
-            return Ok(());
-        }
-
-        // Generate embedding using NLP engine
-        let embedding = self.nlp_engine.generate_embedding(&text).map_err(|e| {
-            NodeServiceError::SerializationError(format!("Embedding generation failed: {}", e))
+        // Check if embedding exists for this root
+        let has_embedding = self.store.has_embeddings(&root_id).await.map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to check embeddings: {}", e))
         })?;
 
-        // Store embedding directly as Vec<f32>
-        self.store
-            .update_embedding(&node.id, &embedding)
-            .await
-            .map_err(|e| {
-                NodeServiceError::SerializationError(format!("Failed to store embedding: {}", e))
-            })?;
+        if has_embedding {
+            // Mark existing embedding as stale
+            self.store
+                .mark_root_embedding_stale(&root_id)
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to mark embedding stale: {}", e))
+                })?;
+        } else {
+            // Create new stale marker
+            self.store
+                .create_stale_embedding_marker(&root_id)
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to create stale marker: {}", e))
+                })?;
+        }
 
         tracing::debug!(
-            "Embedded node: {} ({} floats, {} chars of content)",
-            node.id,
-            embedding.len(),
-            text.len()
+            "Queued root {} for embedding (via node {})",
+            root_id,
+            node_id
         );
+
         Ok(())
     }
 
-    /// Batch process stale embeddings with two-level embeddability
+    /// Queue multiple nodes for embedding
     ///
-    /// Uses the NodeBehavior trait to determine which nodes should be embedded
-    /// and what content to include. Non-embeddable nodes (tasks, dates) are
-    /// skipped automatically.
-    ///
-    /// # Arguments
-    /// * `registry` - The behavior registry for looking up node type behaviors
-    /// * `limit` - Maximum number of nodes to process (defaults to DEFAULT_BATCH_SIZE)
-    ///
-    /// # Returns
-    /// Number of successfully embedded nodes
-    ///
-    /// # Errors
-    /// Logs individual failures but continues processing. Returns error only if
-    /// the database query for stale nodes fails.
-    pub async fn batch_embed_containers_with_behavior(
+    /// Efficiently handles multiple nodes by deduplicating roots.
+    pub async fn queue_nodes_for_embedding(
         &self,
-        registry: &NodeBehaviorRegistry,
-        limit: Option<usize>,
-    ) -> Result<usize, NodeServiceError> {
-        let batch_size = limit.unwrap_or(DEFAULT_BATCH_SIZE);
+        node_ids: &[&str],
+    ) -> Result<(), NodeServiceError> {
+        let mut roots_to_queue: HashSet<String> = HashSet::new();
 
-        // Get stale nodes from database
-        let stale_nodes = self
-            .store
-            .get_nodes_with_stale_embeddings(Some(batch_size as i64))
-            .await
-            .map_err(|e| {
-                NodeServiceError::SerializationError(format!("Failed to query stale nodes: {}", e))
-            })?;
-
-        if stale_nodes.is_empty() {
-            tracing::debug!("No stale embeddings to process");
-            return Ok(0);
-        }
-
-        tracing::info!(
-            "Processing {} stale embeddings (with behavior)",
-            stale_nodes.len()
-        );
-
-        // Filter to embeddable nodes and build their content
-        let mut texts = Vec::new();
-        let mut embeddable_nodes = Vec::new();
-
-        for node in stale_nodes {
-            if self.should_embed_node(registry, &node) {
-                match self.build_embeddable_content(registry, &node).await {
-                    Ok(text) if !text.trim().is_empty() => {
-                        texts.push(text);
-                        embeddable_nodes.push(node);
-                    }
-                    Ok(_) => {
-                        tracing::debug!(
-                            "Skipping empty content for node: {} (type: {})",
-                            node.id,
-                            node.node_type
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to build content for node {}: {}", node.id, e);
-                    }
-                }
-            } else {
-                tracing::debug!(
-                    "Skipping non-embeddable node: {} (type: {})",
-                    node.id,
-                    node.node_type
-                );
-            }
-        }
-
-        if texts.is_empty() {
-            tracing::debug!("No embeddable content found in stale nodes");
-            return Ok(0);
-        }
-
-        // Create references for the batch call
-        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-
-        // Generate embeddings in batch for efficiency
-        let embeddings = self.nlp_engine.generate_batch(text_refs).map_err(|e| {
-            NodeServiceError::SerializationError(format!(
-                "Batch embedding generation failed: {}",
-                e
-            ))
-        })?;
-
-        // Store each embedding
-        let mut success_count = 0;
-        for (node, embedding) in embeddable_nodes.iter().zip(embeddings.iter()) {
-            match self.store.update_embedding(&node.id, embedding).await {
-                Ok(_) => {
-                    success_count += 1;
-                    tracing::debug!("Embedded node: {} ({} floats)", node.id, embedding.len());
+        // Find unique roots
+        for node_id in node_ids {
+            match self.find_root_id(node_id).await {
+                Ok(root_id) => {
+                    roots_to_queue.insert(root_id);
                 }
                 Err(e) => {
-                    tracing::error!("Failed to store embedding for node {}: {}", node.id, e);
-                    // Continue processing other nodes
+                    tracing::warn!("Failed to find root for {}: {}", node_id, e);
                 }
             }
         }
 
-        tracing::info!(
-            "Successfully embedded {}/{} embeddable nodes",
-            success_count,
-            embeddable_nodes.len()
-        );
-        Ok(success_count)
+        // Queue each unique root
+        for root_id in roots_to_queue {
+            if let Err(e) = self.queue_for_embedding(&root_id).await {
+                tracing::error!("Failed to queue root {} for embedding: {}", root_id, e);
+            }
+        }
+
+        Ok(())
     }
+
+    // =========================================================================
+    // Search
+    // =========================================================================
 
     /// Search for nodes by semantic similarity
     ///
-    /// Generates an embedding for the query text using the NLP engine,
-    /// then searches the database for nodes with similar embeddings.
-    ///
-    /// # Arguments
-    /// * `query` - Natural language search query
-    /// * `limit` - Maximum number of results to return
-    /// * `threshold` - Minimum similarity threshold (0.0-1.0)
-    ///
-    /// # Returns
-    /// Vector of (Node, similarity_score) tuples, sorted by similarity descending
-    ///
-    /// # Errors
-    /// Returns error if:
-    /// - Embedding generation fails (NLP engine not initialized)
-    /// - Database search fails
+    /// Generates an embedding for the query text and searches for similar
+    /// root nodes. Returns the node IDs and similarity scores.
     pub async fn semantic_search(
         &self,
         query: &str,
         limit: usize,
         threshold: f32,
-    ) -> Result<Vec<(Node, f64)>, NodeServiceError> {
-        // Validate query
+    ) -> Result<Vec<EmbeddingSearchResult>, NodeServiceError> {
         if query.trim().is_empty() {
             return Err(NodeServiceError::invalid_update(
                 "Search query cannot be empty",
             ));
         }
 
-        // Generate embedding for the query text using NLP engine
-        let query_embedding = self.nlp_engine.generate_embedding(query).map_err(|e| {
+        // Generate query embedding
+        let query_vector = self.nlp_engine.generate_embedding(query).map_err(|e| {
             NodeServiceError::SerializationError(format!(
                 "Failed to generate query embedding: {}",
                 e
             ))
         })?;
 
-        // Search database using the query embedding
+        // Search embedding table
         let results = self
             .store
-            .search_by_embedding(&query_embedding, limit as i64, Some(threshold as f64))
+            .search_embeddings(&query_vector, limit as i64, Some(threshold as f64))
             .await
             .map_err(|e| {
-                NodeServiceError::SerializationError(format!("Semantic search failed: {}", e))
+                NodeServiceError::query_failed(format!("Semantic search failed: {}", e))
             })?;
 
         tracing::debug!(
@@ -539,5 +596,106 @@ where
         );
 
         Ok(results)
+    }
+
+    /// Search and return full nodes
+    ///
+    /// Convenience method that fetches the full Node objects for search results.
+    pub async fn semantic_search_nodes(
+        &self,
+        query: &str,
+        limit: usize,
+        threshold: f32,
+    ) -> Result<Vec<(Node, f64)>, NodeServiceError> {
+        let results = self.semantic_search(query, limit, threshold).await?;
+
+        let mut nodes_with_scores = Vec::new();
+        for result in results {
+            if let Ok(Some(node)) = self.store.get_node(&result.node_id).await {
+                nodes_with_scores.push((node, result.similarity));
+            }
+        }
+
+        Ok(nodes_with_scores)
+    }
+
+    // =========================================================================
+    // Cleanup
+    // =========================================================================
+
+    /// Delete embeddings for a node
+    ///
+    /// Called when a node is deleted.
+    pub async fn delete_node_embeddings(&self, node_id: &str) -> Result<(), NodeServiceError> {
+        self.store.delete_embeddings(node_id).await.map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to delete embeddings: {}", e))
+        })?;
+        Ok(())
+    }
+
+    // =========================================================================
+    // Legacy Compatibility (Issue #729 - to be removed in Phase 6)
+    // =========================================================================
+
+    // Note: The following methods exist for backward compatibility during the
+    // transition to root-aggregate embedding. They will be removed in a
+    // follow-up issue after the Tauri commands are updated.
+
+    /// Deprecated: Use embed_root_node instead
+    ///
+    /// This method is for backward compatibility with existing Tauri commands.
+    /// It now queues the node's root for embedding via the new system.
+    #[deprecated(
+        since = "2.0.0",
+        note = "Use queue_for_embedding() instead. Root-aggregate model (Issue #729)."
+    )]
+    pub async fn embed_container(&self, node: &Node) -> Result<(), NodeServiceError> {
+        tracing::debug!(
+            "Legacy embed_container called for node: {} (delegating to queue_for_embedding)",
+            node.id
+        );
+        self.queue_for_embedding(&node.id).await
+    }
+
+    /// Deprecated: Use semantic_search_nodes instead
+    #[deprecated(note = "Use semantic_search_nodes instead")]
+    #[allow(deprecated)]
+    pub async fn search_by_embedding(
+        &self,
+        query: &str,
+        limit: usize,
+        threshold: f32,
+    ) -> Result<Vec<(Node, f64)>, NodeServiceError> {
+        self.semantic_search_nodes(query, limit, threshold).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chunk_content_single() {
+        // Create a minimal service for testing chunking logic
+        let config = EmbeddingConfig::default();
+
+        // Test content under limit
+        let short_content = "Hello world";
+        // Approximate: 11 chars / 4 = ~3 tokens, well under 512
+        assert!(short_content.len() < config.max_tokens_per_chunk * 4);
+    }
+
+    #[test]
+    fn test_content_hash() {
+        let hash1 =
+            NodeEmbeddingService::<surrealdb::engine::local::Db>::compute_content_hash("hello");
+        let hash2 =
+            NodeEmbeddingService::<surrealdb::engine::local::Db>::compute_content_hash("hello");
+        let hash3 =
+            NodeEmbeddingService::<surrealdb::engine::local::Db>::compute_content_hash("world");
+
+        assert_eq!(hash1, hash2);
+        assert_ne!(hash1, hash3);
+        assert_eq!(hash1.len(), 64); // SHA256 hex = 64 chars
     }
 }

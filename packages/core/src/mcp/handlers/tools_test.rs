@@ -20,12 +20,12 @@ fn test_tools_list_returns_tier1_core_tools() {
 
     let tools = response["tools"].as_array().unwrap();
 
-    // Verify exactly 10 Tier 1 (Core) tools are present
+    // Verify exactly 12 Tier 1 (Core) tools are present
     // Tier 2 tools are discoverable via search_tools
     assert_eq!(
         tools.len(),
-        10,
-        "Expected 10 Tier 1 tools, got {}",
+        12,
+        "Expected 12 Tier 1 tools, got {}",
         tools.len()
     );
 
@@ -47,6 +47,10 @@ fn test_tools_list_returns_tier1_core_tools() {
 
     // Tier 1: Semantic search (core value proposition)
     assert!(tool_names.contains(&"search_semantic"));
+
+    // Tier 1: Markdown import/export
+    assert!(tool_names.contains(&"create_nodes_from_markdown"));
+    assert!(tool_names.contains(&"get_markdown_from_node_id"));
 
     // Tier 1: Schema & Discovery
     assert!(tool_names.contains(&"get_all_schemas"));

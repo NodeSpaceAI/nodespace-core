@@ -31,6 +31,7 @@ uuid = { workspace = true }
 async-trait = { workspace = true }
 regex = "1.0"
 pulldown-cmark = "0.11"
+sha2 = "0.10"
 
 # Logging
 tracing = { workspace = true }

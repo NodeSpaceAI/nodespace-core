@@ -3,6 +3,7 @@
 //! This module contains the core data structures used throughout NodeSpace:
 //!
 //! - `Node` - Universal node model for all content types
+//! - `Embedding` - Vector embeddings for semantic search (root-aggregate model)
 //! - Type-safe wrappers (TaskNode, TextNode, DateNode, CodeBlockNode, QuoteBlockNode, OrderedListNode) for ergonomic access
 //! - Core schema definitions for built-in node types
 //!
@@ -10,6 +11,7 @@
 //! `properties` field of the universal `nodes` table.
 
 pub mod core_schemas;
+pub mod embedding;
 mod node;
 pub mod schema;
 pub mod time;
@@ -60,6 +62,10 @@ pub use time::{SystemTimeProvider, TimeProvider};
 
 // Export type-safe wrappers
 pub use date_node::DateNode;
+pub use embedding::{
+    is_embeddable_type, Embedding, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding,
+    EMBEDDABLE_NODE_TYPES,
+};
 pub use schema_node::SchemaNode;
 pub use task_node::{TaskNode, TaskNodeUpdate, TaskPriority, TaskStatus};
 pub use text_node::TextNode;

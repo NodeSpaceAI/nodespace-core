@@ -36,7 +36,7 @@
 //! ```
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -77,7 +77,7 @@ pub enum ValidationError {
 /// - `created_at`: Timestamp when node was created
 /// - `modified_at`: Timestamp when node was last modified
 /// - `properties`: JSON object containing all entity-specific fields
-/// - `embedding_vector`: Optional vector embedding for AI semantic search
+/// - Embeddings: Stored in separate `embedding` table (root-aggregate model)
 ///
 /// # Sibling Ordering
 ///
@@ -144,11 +144,6 @@ pub struct Node {
     /// All entity-specific fields (Pure JSON schema)
     pub properties: serde_json::Value,
 
-    /// Optional vector embedding for semantic search
-    /// Stored as f32 array for JSON API compatibility (SurrealDB stores as array<float>)
-    /// Note: Serializes as explicit null when None (required for frontend null checks)
-    pub embedding_vector: Option<Vec<f32>>,
-
     /// Outgoing mentions - IDs of nodes that THIS node references
     /// Example: If this node's content includes "@node-123", then mentions = ["node-123"]
     /// Stored in node_mentions table as (this.id, mentioned_node_id)
@@ -205,7 +200,6 @@ impl Node {
             created_at: now,
             modified_at: now,
             properties,
-            embedding_vector: None,
             mentions: Vec::new(),
             mentioned_by: Vec::new(),
         }
@@ -248,7 +242,6 @@ impl Node {
             created_at: now,
             modified_at: now,
             properties,
-            embedding_vector: None,
             mentions: Vec::new(),
             mentioned_by: Vec::new(),
         }
@@ -326,49 +319,12 @@ impl Node {
             self.modified_at = Utc::now();
         }
     }
-
-    /// Set the embedding vector
-    pub fn set_embedding(&mut self, embedding: Vec<f32>) {
-        self.embedding_vector = Some(embedding);
-        self.modified_at = Utc::now();
-    }
-}
-
-/// Custom deserializer for optional fields that accepts both plain values and nested Options
-///
-/// This enables TypeScript frontend to send `{"embeddingVector": [1.0, 2.0]}` instead of
-/// requiring the more complex `{"embeddingVector": {"value": [1.0, 2.0]}}` structure.
-///
-/// Maps three input formats to the double-Option pattern:
-/// - Missing field → None (don't update)
-/// - null → Some(None) (set to NULL)
-/// - value → Some(Some(value)) (set to value)
-fn deserialize_optional_field<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    // Accept either T or Option<T> from JSON
-    // Missing field is handled by #[serde(default)] on the struct field
-    Ok(Some(Option::<T>::deserialize(deserializer)?))
 }
 
 /// Partial node update structure for PATCH operations
 ///
 /// All fields are optional to support partial updates. Only provided fields
 /// will be updated in the database.
-///
-/// # Double-Option Pattern for Nullable Fields
-///
-/// The `embedding_vector` field uses a double-`Option` pattern to distinguish
-/// between three states:
-///
-/// - `None`: Don't change this field (omit from update)
-/// - `Some(None)`: Set the field to NULL (remove the reference)
-/// - `Some(Some(value))`: Set the field to the specified value
-///
-/// This pattern is essential for PATCH operations where you need to distinguish
-/// between "don't update" and "set to NULL".
 ///
 /// # Examples
 ///
@@ -402,19 +358,6 @@ pub struct NodeUpdate {
     /// Update or merge properties
     #[serde(skip_serializing_if = "Option::is_none")]
     pub properties: Option<serde_json::Value>,
-
-    /// Update embedding vector
-    ///
-    /// Uses double-Option pattern:
-    /// - `None`: Don't change embedding_vector
-    /// - `Some(None)`: Set embedding_vector to NULL (remove embedding)
-    /// - `Some(Some(vec))`: Set embedding_vector to the specified f32 array
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_optional_field"
-    )]
-    pub embedding_vector: Option<Option<Vec<f32>>>,
 }
 
 impl NodeUpdate {
@@ -443,10 +386,7 @@ impl NodeUpdate {
 
     /// Check if update contains any changes
     pub fn is_empty(&self) -> bool {
-        self.node_type.is_none()
-            && self.content.is_none()
-            && self.properties.is_none()
-            && self.embedding_vector.is_none()
+        self.node_type.is_none() && self.content.is_none() && self.properties.is_none()
     }
 }
 
@@ -1009,27 +949,6 @@ mod tests {
 
         assert_eq!(node.properties["status"], "done");
         assert_eq!(node.properties["priority"], "low"); // Original value preserved
-    }
-
-    #[test]
-    fn test_node_set_embedding() {
-        let mut node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
-
-        assert!(node.embedding_vector.is_none());
-        let original_modified = node.modified_at;
-
-        // Set embedding vector
-        let embedding = vec![0.1f32, 0.2f32, 0.3f32, 0.4f32];
-        node.set_embedding(embedding.clone());
-
-        assert_eq!(node.embedding_vector, Some(embedding));
-        // Modified time should be >= original (might be equal on fast systems)
-        assert!(node.modified_at >= original_modified);
-
-        // Verify serialization works
-        let json = serde_json::to_string(&node).unwrap();
-        let deserialized: Node = serde_json::from_str(&json).unwrap();
-        assert_eq!(node.embedding_vector, deserialized.embedding_vector);
     }
 
     #[test]

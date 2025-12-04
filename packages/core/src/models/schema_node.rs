@@ -186,7 +186,6 @@ impl SchemaNode {
             created_at: self.created_at,
             modified_at: self.modified_at,
             properties,
-            embedding_vector: None,
             mentions: Vec::new(),
             mentioned_by: Vec::new(),
         }

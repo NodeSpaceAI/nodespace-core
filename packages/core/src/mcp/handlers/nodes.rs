@@ -305,11 +305,11 @@ where
     // Use MCP only for content/property updates. Use separate operations for structural changes.
 
     // Build NodeUpdate from params
+    // Note: Embeddings are auto-generated via root-aggregate model (Issue #729)
     let update = NodeUpdate {
         content: params.content,
         node_type: params.node_type,
         properties: params.properties,
-        embedding_vector: None, // Don't change embeddings via MCP update (auto-generated)
     };
 
     // If version not provided, fetch current version (convenient for AI agents)
@@ -1093,11 +1093,11 @@ where
 
         // Build NodeUpdate from batch update item
         // NodeService.update_node_with_occ validates against schema automatically
+        // Embeddings are auto-generated via root-aggregate model (Issue #729)
         let node_update = NodeUpdate {
             content: update.content,
             node_type: update.node_type,
             properties: update.properties,
-            embedding_vector: None, // Don't change embeddings via MCP batch update
         };
 
         // Apply update via NodeService (enforces all business rules)
