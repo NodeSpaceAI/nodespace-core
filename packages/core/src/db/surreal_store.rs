@@ -2486,81 +2486,6 @@ where
         Ok(Some(node))
     }
 
-    /// Check which nodes have parents in a single batch query
-    ///
-    /// Returns a HashMap mapping node_id -> has_parent (bool).
-    /// This is significantly more efficient than calling get_parent() for each node.
-    ///
-    /// # Performance
-    ///
-    /// - **1 query** for all nodes (vs N queries with individual get_parent calls)
-    /// - 30x faster for 30 nodes compared to N+1 approach
-    ///
-    /// # Arguments
-    ///
-    /// * `node_ids` - Slice of node IDs to check
-    ///
-    /// # Returns
-    ///
-    /// HashMap where key is node_id and value is true if the node has a parent, false otherwise
-    pub async fn check_has_parent_batch(
-        &self,
-        node_ids: &[String],
-    ) -> Result<std::collections::HashMap<String, bool>> {
-        use std::collections::HashMap;
-        use surrealdb::sql::Thing;
-
-        if node_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        // Query all has_child edges where out matches any of our node IDs
-        // This gives us all parent-child relationships in a single query
-        // Then build the map of which nodes have parents
-
-        let mut parent_map = HashMap::new();
-
-        // First, initialize all nodes as having no parent
-        for node_id in node_ids {
-            parent_map.insert(node_id.clone(), false);
-        }
-
-        // Build array of Things for the query
-        let node_things: Vec<Thing> = node_ids
-            .iter()
-            .map(|id| Thing::from(("node".to_string(), id.clone())))
-            .collect();
-
-        // Query: Get all has_child edges where 'out' (child) is in our list of nodes
-        // This efficiently checks which nodes are children (have parents) in one query
-        let query = "SELECT out FROM has_child WHERE out IN $nodes";
-
-        let mut response = self
-            .db
-            .query(query)
-            .bind(("nodes", node_things))
-            .await
-            .context("Failed to check parent status in batch")?;
-
-        #[derive(serde::Deserialize)]
-        struct EdgeOut {
-            out: Thing,
-        }
-
-        let edges: Vec<EdgeOut> = response.take(0).context("Failed to extract edge data")?;
-
-        // Mark all nodes that appear in 'out' as having a parent
-        for edge in edges {
-            // Extract node ID from Thing (format: "node:id")
-            let node_id = edge.out.id.to_string();
-            if let Some(has_parent) = parent_map.get_mut(&node_id) {
-                *has_parent = true;
-            }
-        }
-
-        Ok(parent_map)
-    }
-
     /// Get entire node tree recursively in a SINGLE query
     ///
     /// This method leverages SurrealDB's recursive graph traversal to fetch
@@ -3008,6 +2933,74 @@ where
         let surreal_nodes: Vec<SurrealNode> = response
             .take(0)
             .context("Failed to extract search results from response")?;
+        Ok(surreal_nodes.into_iter().map(Into::into).collect())
+    }
+
+    /// Search nodes for mention autocomplete with proper filtering
+    ///
+    /// Applies mention-specific filtering rules:
+    /// - Excludes: date, schema node types (always)
+    /// - Text-based types (text, header, code-block, quote-block, ordered-list): only root nodes
+    /// - Other types (task, query, etc.): included regardless of hierarchy
+    ///
+    /// # Arguments
+    ///
+    /// * `search_query` - Content search string (case-insensitive)
+    /// * `limit` - Maximum number of results
+    ///
+    /// # Returns
+    ///
+    /// Filtered nodes matching mention autocomplete criteria
+    pub async fn mention_autocomplete(
+        &self,
+        search_query: &str,
+        limit: Option<i64>,
+    ) -> Result<Vec<Node>> {
+        // Node types that are always excluded from mention autocomplete
+        const EXCLUDED_TYPES: &[&str] = &["date", "schema"];
+
+        // Text-based types that must be root nodes (no parent) to be included
+        const TEXT_TYPES: &[&str] = &[
+            "text",
+            "header",
+            "code-block",
+            "quote-block",
+            "ordered-list",
+        ];
+
+        // Build SQL with filtering logic:
+        // 1. Content search (case-insensitive)
+        // 2. Exclude date and schema types
+        // 3. For text types: only include if root (count(<-has_child) = 0)
+        // 4. For other types: include regardless of hierarchy
+        let sql = r#"
+            SELECT * FROM node
+            WHERE string::lowercase(content) CONTAINS string::lowercase($search_query)
+              AND node_type NOT IN $excluded_types
+              AND (
+                node_type NOT IN $text_types
+                OR
+                count(<-has_child) = 0
+              )
+            LIMIT $limit;
+        "#;
+
+        let effective_limit = limit.unwrap_or(10);
+
+        let mut response = self
+            .db
+            .query(sql)
+            .bind(("search_query", search_query.to_string()))
+            .bind(("excluded_types", EXCLUDED_TYPES.to_vec()))
+            .bind(("text_types", TEXT_TYPES.to_vec()))
+            .bind(("limit", effective_limit))
+            .await
+            .context("Failed to search nodes for mention autocomplete")?;
+
+        let surreal_nodes: Vec<SurrealNode> = response
+            .take(0)
+            .context("Failed to extract mention autocomplete results")?;
+
         Ok(surreal_nodes.into_iter().map(Into::into).collect())
     }
 
@@ -5316,6 +5309,300 @@ mod tests {
             edge_pairs.contains(&(child.id.clone(), grandchild.id.clone())),
             "Should contain child->grandchild edge"
         );
+
+        Ok(())
+    }
+
+    // ==================== Mention Autocomplete Tests ====================
+
+    #[tokio::test]
+    async fn test_mention_autocomplete_excludes_date_and_schema_types() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        // Create nodes of different types with matching content
+        let text_node = Node::new(
+            "text".to_string(),
+            "searchable content".to_string(),
+            json!({}),
+        );
+        let date_node = Node::new(
+            "date".to_string(),
+            "searchable content".to_string(),
+            json!({}),
+        );
+        let schema_node = Node::new(
+            "schema".to_string(),
+            "searchable content".to_string(),
+            json!({}),
+        );
+        let task_node = Node::new(
+            "task".to_string(),
+            "searchable content".to_string(),
+            json!({}),
+        );
+
+        store.create_node(text_node.clone(), None).await?;
+        store.create_node(date_node.clone(), None).await?;
+        store.create_node(schema_node.clone(), None).await?;
+        store.create_node(task_node.clone(), None).await?;
+
+        // Search for matching content
+        let results = store.mention_autocomplete("searchable", None).await?;
+
+        // Should find text and task, but NOT date or schema
+        let result_ids: Vec<_> = results.iter().map(|n| &n.id).collect();
+        assert!(
+            result_ids.contains(&&text_node.id),
+            "Should include text node"
+        );
+        assert!(
+            result_ids.contains(&&task_node.id),
+            "Should include task node"
+        );
+        assert!(
+            !result_ids.contains(&&date_node.id),
+            "Should NOT include date node"
+        );
+        assert!(
+            !result_ids.contains(&&schema_node.id),
+            "Should NOT include schema node"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mention_autocomplete_text_types_only_root_nodes() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        // Create root text nodes
+        let root_text = Node::new("text".to_string(), "findable root".to_string(), json!({}));
+        let root_header = Node::new(
+            "header".to_string(),
+            "findable header".to_string(),
+            json!({}),
+        );
+        let root_code = Node::new(
+            "code-block".to_string(),
+            "findable code".to_string(),
+            json!({}),
+        );
+        let root_quote = Node::new(
+            "quote-block".to_string(),
+            "findable quote root".to_string(),
+            json!({}),
+        );
+        let root_ordered = Node::new(
+            "ordered-list".to_string(),
+            "1. findable ordered".to_string(),
+            json!({}),
+        );
+
+        // Create nested text nodes (have parent)
+        let parent = Node::new("text".to_string(), "parent node".to_string(), json!({}));
+        let nested_text = Node::new("text".to_string(), "findable nested".to_string(), json!({}));
+        let nested_quote = Node::new(
+            "quote-block".to_string(),
+            "findable quote".to_string(),
+            json!({}),
+        );
+
+        store.create_node(root_text.clone(), None).await?;
+        store.create_node(root_header.clone(), None).await?;
+        store.create_node(root_code.clone(), None).await?;
+        store.create_node(root_quote.clone(), None).await?;
+        store.create_node(root_ordered.clone(), None).await?;
+        store.create_node(parent.clone(), None).await?;
+        store.create_node(nested_text.clone(), None).await?;
+        store.create_node(nested_quote.clone(), None).await?;
+
+        // Make nested nodes children of parent
+        store
+            .move_node(&nested_text.id, Some(&parent.id), None)
+            .await?;
+        store
+            .move_node(&nested_quote.id, Some(&parent.id), None)
+            .await?;
+
+        // Search for "findable"
+        let results = store.mention_autocomplete("findable", None).await?;
+
+        let result_ids: Vec<_> = results.iter().map(|n| &n.id).collect();
+
+        // Root text-type nodes should be included
+        assert!(
+            result_ids.contains(&&root_text.id),
+            "Should include root text node"
+        );
+        assert!(
+            result_ids.contains(&&root_header.id),
+            "Should include root header node"
+        );
+        assert!(
+            result_ids.contains(&&root_code.id),
+            "Should include root code-block node"
+        );
+        assert!(
+            result_ids.contains(&&root_quote.id),
+            "Should include root quote-block node"
+        );
+        assert!(
+            result_ids.contains(&&root_ordered.id),
+            "Should include root ordered-list node"
+        );
+
+        // Nested text-type nodes should NOT be included
+        assert!(
+            !result_ids.contains(&&nested_text.id),
+            "Should NOT include nested text node"
+        );
+        assert!(
+            !result_ids.contains(&&nested_quote.id),
+            "Should NOT include nested quote-block node"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mention_autocomplete_non_text_types_include_nested() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        // Create parent node
+        let parent = Node::new("text".to_string(), "parent node".to_string(), json!({}));
+
+        // Create task nodes - one root, one nested
+        let root_task = Node::new(
+            "task".to_string(),
+            "findme root task".to_string(),
+            json!({}),
+        );
+        let nested_task = Node::new(
+            "task".to_string(),
+            "findme nested task".to_string(),
+            json!({}),
+        );
+
+        // Create query node - nested
+        let nested_query = Node::new(
+            "query".to_string(),
+            "findme nested query".to_string(),
+            json!({}),
+        );
+
+        store.create_node(parent.clone(), None).await?;
+        store.create_node(root_task.clone(), None).await?;
+        store.create_node(nested_task.clone(), None).await?;
+        store.create_node(nested_query.clone(), None).await?;
+
+        // Make tasks and query children of parent
+        store
+            .move_node(&nested_task.id, Some(&parent.id), None)
+            .await?;
+        store
+            .move_node(&nested_query.id, Some(&parent.id), None)
+            .await?;
+
+        // Search for "findme"
+        let results = store.mention_autocomplete("findme", None).await?;
+
+        let result_ids: Vec<_> = results.iter().map(|n| &n.id).collect();
+
+        // Both root and nested task/query nodes should be included
+        assert!(
+            result_ids.contains(&&root_task.id),
+            "Should include root task"
+        );
+        assert!(
+            result_ids.contains(&&nested_task.id),
+            "Should include nested task"
+        );
+        assert!(
+            result_ids.contains(&&nested_query.id),
+            "Should include nested query"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mention_autocomplete_case_insensitive() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        let node1 = Node::new(
+            "text".to_string(),
+            "UPPERCASE content".to_string(),
+            json!({}),
+        );
+        let node2 = Node::new(
+            "task".to_string(),
+            "lowercase content".to_string(),
+            json!({}),
+        );
+        let node3 = Node::new(
+            "text".to_string(),
+            "MixedCase Content".to_string(),
+            json!({}),
+        );
+
+        store.create_node(node1.clone(), None).await?;
+        store.create_node(node2.clone(), None).await?;
+        store.create_node(node3.clone(), None).await?;
+
+        // Search with lowercase should find all
+        let results = store.mention_autocomplete("content", None).await?;
+        assert_eq!(results.len(), 3, "Should find all 3 nodes with 'content'");
+
+        // Search with uppercase should also find all
+        let results = store.mention_autocomplete("CONTENT", None).await?;
+        assert_eq!(
+            results.len(),
+            3,
+            "Should find all 3 nodes with 'CONTENT' (case insensitive)"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mention_autocomplete_respects_limit() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        // Create multiple matching nodes
+        for i in 0..5 {
+            let node = Node::new(
+                "task".to_string(),
+                format!("searchterm item {}", i),
+                json!({}),
+            );
+            store.create_node(node, None).await?;
+        }
+
+        // Search with limit
+        let results = store.mention_autocomplete("searchterm", Some(3)).await?;
+        assert_eq!(results.len(), 3, "Should respect limit of 3");
+
+        // Default limit (10) with fewer results
+        let results = store.mention_autocomplete("searchterm", None).await?;
+        assert_eq!(
+            results.len(),
+            5,
+            "Should return all 5 when under default limit"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mention_autocomplete_no_results() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        let node = Node::new("text".to_string(), "some content".to_string(), json!({}));
+        store.create_node(node, None).await?;
+
+        // Search for non-existent term
+        let results = store.mention_autocomplete("nonexistent", None).await?;
+        assert!(results.is_empty(), "Should return empty for no matches");
 
         Ok(())
     }

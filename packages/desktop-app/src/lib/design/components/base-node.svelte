@@ -310,13 +310,12 @@
         return;
       }
 
-      // Query backend for mentionable nodes (tasks and containers)
-      // Backend applies SQL-level filtering for performance and scalability
-      // Rules (applied in Rust): Exclude dates (by default), include tasks + container nodes
-      const backendResults: NodeData[] = await tauriCommands.queryNodes({
-        contentContains: query,
-        limit: 10
-      });
+      // Query backend for mentionable nodes using dedicated mention autocomplete
+      // Backend applies SQL-level filtering for performance and scalability:
+      // - Excludes: date, schema node types
+      // - Text-based types (text, header, code-block, quote-block, ordered-list): only root nodes
+      // - Other types (task, query, etc.): included regardless of hierarchy
+      const backendResults: NodeData[] = await tauriCommands.mentionAutocomplete(query, 10);
 
       // Convert to NodeResult format
       const nodeResults: NodeResult[] = backendResults.map((node: NodeData) => ({

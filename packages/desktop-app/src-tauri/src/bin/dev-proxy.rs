@@ -1060,22 +1060,15 @@ async fn mention_autocomplete(
     State(state): State<AppState>,
     Json(request): Json<MentionAutocompleteRequest>,
 ) -> ApiResult<Vec<Node>> {
-    // Use NodeService to search nodes by content
-    // Case-insensitive search is handled by SurrealStore using string::lowercase()
+    // Use NodeService mention_autocomplete which applies proper filtering at DB level:
+    // - Excludes: date, schema node types
+    // - Text-based types: only root nodes
+    // - Other types (task, query, etc.): included regardless of hierarchy
     let nodes = state
         .node_service
-        .store()
-        .search_nodes_by_content(&request.query, request.limit)
+        .mention_autocomplete(&request.query, request.limit.map(|l| l as usize))
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError::new(
-                    "SEARCH_ERROR",
-                    format!("Search failed: {}", e),
-                )),
-            )
-        })?;
+        .map_err(map_node_service_error)?;
 
     Ok(Json(nodes))
 }

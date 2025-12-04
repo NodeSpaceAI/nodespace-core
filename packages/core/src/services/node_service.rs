@@ -2747,29 +2747,28 @@ where
         Ok(parent)
     }
 
-    /// Check which nodes have parents in a single batch query
+    /// Search nodes for mention autocomplete with proper filtering
     ///
-    /// Returns a HashMap mapping node_id -> has_parent (bool).
-    /// This is significantly more efficient than calling get_parent() for each node.
-    ///
-    /// # Performance
-    ///
-    /// - **1 query** for all nodes (vs N queries with individual get_parent calls)
-    /// - 30x faster for 30 nodes compared to N+1 approach
+    /// Applies mention-specific filtering rules at the database level:
+    /// - Excludes: date, schema node types (always)
+    /// - Text-based types (text, header, code-block, quote-block, ordered-list): only root nodes
+    /// - Other types (task, query, etc.): included regardless of hierarchy
     ///
     /// # Arguments
     ///
-    /// * `node_ids` - Slice of node IDs to check
+    /// * `query` - Content search string (case-insensitive)
+    /// * `limit` - Maximum number of results (defaults to 10)
     ///
     /// # Returns
     ///
-    /// HashMap where key is node_id and value is true if the node has a parent, false otherwise
-    pub async fn check_has_parent_batch(
+    /// Filtered nodes matching mention autocomplete criteria
+    pub async fn mention_autocomplete(
         &self,
-        node_ids: &[String],
-    ) -> Result<std::collections::HashMap<String, bool>, NodeServiceError> {
+        query: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<Node>, NodeServiceError> {
         self.store
-            .check_has_parent_batch(node_ids)
+            .mention_autocomplete(query, limit.map(|l| l as i64))
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
