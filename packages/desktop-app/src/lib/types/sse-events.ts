@@ -4,9 +4,10 @@
  * These types define the structure of Server-Sent Events received from
  * the dev-proxy's `/api/events` endpoint. They mirror the Rust SseEvent
  * enum in dev-proxy.rs.
+ *
+ * Issue #724: Events send only node_id (not full payload) for efficiency.
+ * Frontend fetches full node data via get_node() API if needed.
  */
-
-import type { Node } from '$lib/types';
 
 /**
  * Base interface for all SSE events
@@ -16,22 +17,20 @@ export interface SseEventBase {
 }
 
 /**
- * Event sent when a new node is created
+ * Event sent when a new node is created (ID only)
  */
 export interface NodeCreatedEvent extends SseEventBase {
   type: 'nodeCreated';
   nodeId: string;
-  nodeData: Node;
   clientId?: string;
 }
 
 /**
- * Event sent when an existing node is updated
+ * Event sent when an existing node is updated (ID only)
  */
 export interface NodeUpdatedEvent extends SseEventBase {
   type: 'nodeUpdated';
   nodeId: string;
-  nodeData: Node;
   clientId?: string;
 }
 

@@ -620,11 +620,11 @@ where
     /// let mut rx = store.subscribe_to_events();
     /// while let Ok(event) = rx.recv().await {
     ///     match event {
-    ///         DomainEvent::NodeCreated { node_id, node_data, .. } => {
-    ///             println!("Node created: {}, data: {:?}", node_id, node_data)
+    ///         DomainEvent::NodeCreated { node_id, .. } => {
+    ///             println!("Node created: {}", node_id)
     ///         }
-    ///         DomainEvent::NodeUpdated { node_id, node_data, .. } => {
-    ///             println!("Node updated: {}, data: {:?}", node_id, node_data)
+    ///         DomainEvent::NodeUpdated { node_id, .. } => {
+    ///             println!("Node updated: {}", node_id)
     ///         }
     ///         // ... handle other events
     ///         _ => {}

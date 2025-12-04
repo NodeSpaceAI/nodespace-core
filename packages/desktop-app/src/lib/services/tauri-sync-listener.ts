@@ -10,6 +10,9 @@
  * - Edge events (hierarchy, mentions) → updates ReactiveStructureTree
  *
  * This enables real-time sync when external sources (MCP, other windows) modify data.
+ *
+ * Issue #724: Events now send only node_id (not full payload) for efficiency.
+ * Frontend fetches full node data via getNode() API only when the node is in the active view.
  */
 
 import { listen } from '@tauri-apps/api/event';
@@ -18,6 +21,7 @@ import { sharedNodeStore } from './shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import type { Node } from '$lib/types/node';
 import { nodeToTaskNode } from '$lib/types/task-node';
+import { backendAdapter } from './backend-adapter';
 
 /**
  * Normalize node data from domain events to type-specific format
@@ -38,6 +42,29 @@ function normalizeNodeData(nodeData: Node): Node {
 }
 
 /**
+ * Fetch full node data from API and update SharedNodeStore
+ *
+ * Issue #724: Events now send only node_id. This function fetches the full
+ * node data and updates the store.
+ */
+async function fetchAndUpdateNode(nodeId: string, eventType: string): Promise<void> {
+  try {
+    const node = await backendAdapter.getNode(nodeId);
+    if (node) {
+      // Normalize node data to type-specific format (e.g., TaskNode with flat status)
+      const normalizedNode = normalizeNodeData(node);
+      // Use database source with domain-event reason to indicate external change
+      sharedNodeStore.setNode(normalizedNode, { type: 'database', reason: 'domain-event' }, true);
+      console.debug(`[TauriSync] ${eventType}: updated store for node`, nodeId);
+    } else {
+      console.warn(`[TauriSync] ${eventType}: node not found`, nodeId);
+    }
+  } catch (error) {
+    console.error(`[TauriSync] ${eventType}: failed to fetch node`, nodeId, error);
+  }
+}
+
+/**
  * Initialize Tauri real-time synchronization event listeners
  *
  * Sets up listeners for logging/debugging sync events.
@@ -55,20 +82,21 @@ export async function initializeTauriSyncListeners(): Promise<void> {
 
   try {
     // Listen for node events and update SharedNodeStore
+    // Issue #724: Events now send only node_id, fetch full data if needed
     await listen<NodeEventData>('node:created', (event) => {
       console.debug(`[TauriSync] Node created: ${event.payload.id}`);
-      // Normalize node data to type-specific format (e.g., TaskNode with flat status)
-      const normalizedNode = normalizeNodeData(event.payload as unknown as Node);
-      // Use database source with domain-event reason to indicate external change
-      sharedNodeStore.setNode(normalizedNode, { type: 'database', reason: 'domain-event' }, true);
+      // Fetch full node data since the node might be in the current view
+      fetchAndUpdateNode(event.payload.id, 'node:created');
     });
 
     await listen<NodeEventData>('node:updated', (event) => {
-      console.debug(`[TauriSync] Node updated: ${event.payload.id} (v${event.payload.version})`);
-      // Normalize node data to type-specific format (e.g., TaskNode with flat status)
-      const normalizedNode = normalizeNodeData(event.payload as unknown as Node);
-      // Use setNode for full replacement (event contains complete node data)
-      sharedNodeStore.setNode(normalizedNode, { type: 'database', reason: 'domain-event' }, true);
+      console.debug(`[TauriSync] Node updated: ${event.payload.id}`);
+      // Issue #724: Only fetch if node is already in the store (visible to user)
+      if (sharedNodeStore.hasNode(event.payload.id)) {
+        fetchAndUpdateNode(event.payload.id, 'node:updated');
+      } else {
+        console.debug('[TauriSync] Node not in store, skipping fetch:', event.payload.id);
+      }
     });
 
     await listen<{ id: string }>('node:deleted', (event) => {

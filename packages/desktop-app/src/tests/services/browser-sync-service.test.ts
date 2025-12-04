@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { browserSyncService } from '$lib/services/browser-sync-service';
 import { SharedNodeStore, sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import { getClientId } from '$lib/services/client-id';
 import type { SseEvent } from '$lib/types/sse-events';
 import type { Node } from '$lib/types';
+import * as backendAdapterModule from '$lib/services/backend-adapter';
 
 /**
  * Tests for BrowserSyncService SSE Event Ordering
@@ -33,8 +34,8 @@ import type { Node } from '$lib/types';
  *
  * ## Testing Strategy
  *
- * Tests verify that the system handles out-of-order events without crashes
- * or data loss, even when events arrive in wrong order.
+ * Issue #724: Events now send only nodeId (not full payload).
+ * Tests mock backendAdapter.getNode to return test data.
  */
 
 /**
@@ -53,11 +54,31 @@ function createTestNode(id: string, content = 'Test node'): Node {
   };
 }
 
+/**
+ * Mock getNode to return test data based on nodeId
+ */
+const mockNodes = new Map<string, Node>();
+
+function setupMockGetNode() {
+  vi.spyOn(backendAdapterModule.backendAdapter, 'getNode').mockImplementation(async (id: string) => {
+    return mockNodes.get(id) || null;
+  });
+}
+
+/**
+ * Register a node to be returned by mocked getNode
+ */
+function registerMockNode(node: Node) {
+  mockNodes.set(node.id, node);
+}
+
 describe('BrowserSyncService - SSE Event Ordering', () => {
   beforeEach(() => {
     // Reset and clear stores before each test
     SharedNodeStore.resetInstance();
     structureTree.children.clear();
+    mockNodes.clear();
+    setupMockGetNode();
   });
 
   afterEach(() => {
@@ -65,6 +86,8 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
     sharedNodeStore.clearAll();
     structureTree.children.clear();
     SharedNodeStore.resetInstance();
+    mockNodes.clear();
+    vi.restoreAllMocks();
   });
 
   describe('Event Ordering Guarantees', () => {
@@ -86,9 +109,10 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(browserSyncService).toBeDefined();
     });
 
-    it('should handle network latency causing events to arrive out of order', () => {
+    it('should handle network latency causing events to arrive out of order', async () => {
       // Simulate: Create node, then create edge (correct order)
       const nodeData = createTestNode('node1');
+      registerMockNode(nodeData);
 
       // But events arrive in reverse order (edge first, then node)
       // First, the edge event arrives
@@ -98,11 +122,10 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
         childId: 'node1'
       };
 
-      // Then, the node event arrives
+      // Then, the node event arrives (Issue #724: ID-only)
       const nodeEvent: SseEvent = {
         type: 'nodeCreated',
-        nodeId: 'node1',
-        nodeData
+        nodeId: 'node1'
       };
 
       // Call handleEvent in reverse order (simulating network latency)
@@ -114,20 +137,27 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(structureTree.hasChildren('parent1')).toBe(true);
       expect(structureTree.getChildren('parent1')).toContain('node1');
 
-      // Now the node arrives
+      // Now the node arrives (triggers async fetch)
       // @ts-expect-error - accessing private method for testing
       browserSyncService.handleEvent(nodeEvent);
 
+      // Wait for async fetch to complete
+      await vi.waitFor(() => {
+        expect(sharedNodeStore.getNode('node1')).toBeDefined();
+      });
+
       // Both should now be in sync
-      expect(sharedNodeStore.getNode('node1')).toBeDefined();
       expect(structureTree.getChildren('parent1')).toContain('node1');
     });
   });
 
   describe('Edge before Node Race Condition', () => {
-    it('should handle edge created before referenced node exists', () => {
+    it('should handle edge created before referenced node exists', async () => {
       // Scenario: Backend creates node N1 with parent P1, but SSE delivers
       // edge:created event before nodeCreated event
+
+      const nodeData = createTestNode('child1', 'Created after edge');
+      registerMockNode(nodeData);
 
       const edgeEvent: SseEvent = {
         type: 'edgeCreated',
@@ -146,28 +176,32 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       // Node doesn't exist in store yet
       expect(sharedNodeStore.getNode('child1')).toBeUndefined();
 
-      // Now create the node
-      const nodeData = createTestNode('child1', 'Created after edge');
-
+      // Now create the node event (Issue #724: ID-only)
       const nodeEvent: SseEvent = {
         type: 'nodeCreated',
-        nodeId: 'child1',
-        nodeData
+        nodeId: 'child1'
       };
 
       // @ts-expect-error - accessing private method for testing
       browserSyncService.handleEvent(nodeEvent);
 
+      // Wait for async fetch to complete
+      await vi.waitFor(() => {
+        expect(sharedNodeStore.getNode('child1')).toBeDefined();
+      });
+
       // Now everything is in sync
-      expect(sharedNodeStore.getNode('child1')).toBeDefined();
       expect(structureTree.getChildren('parent1')).toContain('child1');
     });
 
-    it('should handle duplicate edge to same parent (second edge rejected due to tree invariant)', () => {
+    it('should handle duplicate edge to same parent (second edge rejected due to tree invariant)', async () => {
       // Scenario: Two edges to the same parent (duplicate) before node:created
       // Note: ReactiveStructureTree enforces a tree structure (not DAG),
       // so a node can only have one parent. Attempting to add a second parent
       // is logged as a tree invariant violation and rejected.
+
+      const nodeData = createTestNode('child');
+      registerMockNode(nodeData);
 
       const edge1: SseEvent = {
         type: 'edgeCreated',
@@ -195,18 +229,19 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       // Second parent relationship is rejected (tree invariant violation)
       expect(structureTree.getChildren('parent2')).not.toContain('child');
 
-      // Now create the node
-      const nodeData = createTestNode('child');
-
+      // Now create the node (Issue #724: ID-only)
       // @ts-expect-error - accessing private method for testing
       browserSyncService.handleEvent({
         type: 'nodeCreated',
-        nodeId: 'child',
-        nodeData
+        nodeId: 'child'
+      });
+
+      // Wait for async fetch
+      await vi.waitFor(() => {
+        expect(sharedNodeStore.getNode('child')).toBeDefined();
       });
 
       // Verify state is consistent with tree structure
-      expect(sharedNodeStore.getNode('child')).toBeDefined();
       expect(structureTree.getChildren('parent1')).toContain('child');
       expect(structureTree.getChildren('parent2')).not.toContain('child');
     });
@@ -288,7 +323,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
   });
 
   describe('Bulk Operations with Interleaved Events', () => {
-    it('should handle bulk create of multiple nodes with edges arriving interleaved', () => {
+    it('should handle bulk create of multiple nodes with edges arriving interleaved', async () => {
       // Scenario: Creating a tree:
       //   P
       //  / \
@@ -298,6 +333,11 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       //
       // But events arrive interleaved:
       // - edge P->N1, edge P->N2, edge N2->N3, node N1, node N2, node N3
+
+      // Register mock nodes
+      registerMockNode(createTestNode('N1', 'Node 1'));
+      registerMockNode(createTestNode('N2', 'Node 2'));
+      registerMockNode(createTestNode('N3', 'Node 3'));
 
       // Edges arrive first
       const edges: SseEvent[] = [
@@ -315,23 +355,11 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(structureTree.getChildren('P').sort()).toEqual(['N1', 'N2']);
       expect(structureTree.getChildren('N2')).toEqual(['N3']);
 
-      // Now nodes arrive in random order
+      // Now nodes arrive in random order (Issue #724: ID-only)
       const nodes: SseEvent[] = [
-        {
-          type: 'nodeCreated',
-          nodeId: 'N2',
-          nodeData: createTestNode('N2', 'Node 2')
-        },
-        {
-          type: 'nodeCreated',
-          nodeId: 'N1',
-          nodeData: createTestNode('N1', 'Node 1')
-        },
-        {
-          type: 'nodeCreated',
-          nodeId: 'N3',
-          nodeData: createTestNode('N3', 'Node 3')
-        }
+        { type: 'nodeCreated', nodeId: 'N2' },
+        { type: 'nodeCreated', nodeId: 'N1' },
+        { type: 'nodeCreated', nodeId: 'N3' }
       ];
 
       for (const node of nodes) {
@@ -339,10 +367,14 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
         browserSyncService.handleEvent(node);
       }
 
+      // Wait for all async fetches to complete
+      await vi.waitFor(() => {
+        expect(sharedNodeStore.getNode('N1')).toBeDefined();
+        expect(sharedNodeStore.getNode('N2')).toBeDefined();
+        expect(sharedNodeStore.getNode('N3')).toBeDefined();
+      });
+
       // Everything should be in place
-      expect(sharedNodeStore.getNode('N1')).toBeDefined();
-      expect(sharedNodeStore.getNode('N2')).toBeDefined();
-      expect(sharedNodeStore.getNode('N3')).toBeDefined();
       expect(structureTree.getChildren('P').sort()).toEqual(['N1', 'N2']);
       expect(structureTree.getChildren('N2')).toEqual(['N3']);
     });
@@ -375,7 +407,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(structureTree.getChildren('parent1')).toEqual(['child1']);
     });
 
-    it('should handle node update events preserving structure', () => {
+    it('should handle node update events preserving structure', async () => {
       // Scenario: Node is updated while structure events arrive
 
       const initialNode = createTestNode('node1', 'Original content');
@@ -384,24 +416,27 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       sharedNodeStore.setNode(initialNode, { type: 'database', reason: 'sse-sync' });
       structureTree.addChild({ parentId: 'parent1', childId: 'node1', order: 1 });
 
-      // Update event arrives
+      // Update mock data
       const updatedNode: Node = {
         ...initialNode,
         content: 'Updated content',
         modifiedAt: new Date().toISOString(),
         version: 2
       };
+      registerMockNode(updatedNode);
 
+      // Update event arrives (Issue #724: ID-only)
       // @ts-expect-error - accessing private method for testing
       browserSyncService.handleEvent({
         type: 'nodeUpdated',
-        nodeId: 'node1',
-        nodeData: updatedNode
+        nodeId: 'node1'
       });
 
-      // Content should be updated
-      const retrieved = sharedNodeStore.getNode('node1');
-      expect(retrieved?.content).toBe('Updated content');
+      // Wait for async fetch
+      await vi.waitFor(() => {
+        const retrieved = sharedNodeStore.getNode('node1');
+        expect(retrieved?.content).toBe('Updated content');
+      });
 
       // Structure should be preserved
       expect(structureTree.getChildren('parent1')).toContain('node1');
@@ -409,39 +444,29 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
   });
 
   describe('Concurrent Operations', () => {
-    it('should handle concurrent modifications to multiple node trees', () => {
+    it('should handle concurrent modifications to multiple node trees', async () => {
       // Scenario: Two independent trees are modified simultaneously:
       // Tree 1: P1 -> N1 -> N2
       // Tree 2: P2 -> N3 -> N4
 
-      // Interleaved events
+      // Register mock nodes
+      registerMockNode(createTestNode('P1', 'Parent 1'));
+      registerMockNode(createTestNode('P2', 'Parent 2'));
+      registerMockNode(createTestNode('N1', 'Node 1'));
+      registerMockNode(createTestNode('N3', 'Node 3'));
+
+      // Interleaved events (Issue #724: ID-only for node events)
       const events: SseEvent[] = [
         // Tree 1 setup
-        {
-          type: 'nodeCreated',
-          nodeId: 'P1',
-          nodeData: createTestNode('P1', 'Parent 1')
-        },
+        { type: 'nodeCreated', nodeId: 'P1' },
         // Tree 2 setup
-        {
-          type: 'nodeCreated',
-          nodeId: 'P2',
-          nodeData: createTestNode('P2', 'Parent 2')
-        },
+        { type: 'nodeCreated', nodeId: 'P2' },
         // Tree 1 edges and nodes
         { type: 'edgeCreated', parentId: 'P1', childId: 'N1' },
-        {
-          type: 'nodeCreated',
-          nodeId: 'N1',
-          nodeData: createTestNode('N1', 'Node 1')
-        },
+        { type: 'nodeCreated', nodeId: 'N1' },
         // Tree 2 edges and nodes
         { type: 'edgeCreated', parentId: 'P2', childId: 'N3' },
-        {
-          type: 'nodeCreated',
-          nodeId: 'N3',
-          nodeData: createTestNode('N3', 'Node 3')
-        }
+        { type: 'nodeCreated', nodeId: 'N3' }
       ];
 
       for (const event of events) {
@@ -449,11 +474,15 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
         browserSyncService.handleEvent(event);
       }
 
+      // Wait for all async fetches to complete
+      await vi.waitFor(() => {
+        expect(sharedNodeStore.getNode('N1')).toBeDefined();
+        expect(sharedNodeStore.getNode('N3')).toBeDefined();
+      });
+
       // Both trees should exist independently
       expect(structureTree.getChildren('P1')).toContain('N1');
       expect(structureTree.getChildren('P2')).toContain('N3');
-      expect(sharedNodeStore.getNode('N1')).toBeDefined();
-      expect(sharedNodeStore.getNode('N3')).toBeDefined();
     });
   });
 
@@ -486,48 +515,56 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(clientId.length).toBeGreaterThan(0);
     });
 
-    it('should process events with different clientId (from other clients)', () => {
+    it('should process events with different clientId (from other clients)', async () => {
       // When an event arrives with a different clientId (or no clientId),
       // it means the server determined this client should receive it.
       // The client should process it normally.
 
       const nodeData = createTestNode('other-client-node', 'Created by another client');
+      registerMockNode(nodeData);
 
+      // Issue #724: ID-only event
       const event: SseEvent = {
         type: 'nodeCreated',
         nodeId: 'other-client-node',
-        nodeData,
         clientId: 'different-client-123' // Different from our test-client ID
       };
 
       // @ts-expect-error - accessing private method for testing
       browserSyncService.handleEvent(event);
 
+      // Wait for async fetch
+      await vi.waitFor(() => {
+        expect(sharedNodeStore.getNode('other-client-node')).toBeDefined();
+      });
+
       // Event should be processed - node should be in store
-      expect(sharedNodeStore.getNode('other-client-node')).toBeDefined();
       expect(sharedNodeStore.getNode('other-client-node')?.content).toBe(
         'Created by another client'
       );
     });
 
-    it('should process events with no clientId (backward compatibility)', () => {
+    it('should process events with no clientId (backward compatibility)', async () => {
       // Events without clientId should still be processed
       // This ensures backward compatibility with older event sources
 
       const nodeData = createTestNode('legacy-node', 'Legacy event without clientId');
+      registerMockNode(nodeData);
 
+      // Issue #724: ID-only event, no clientId
       const event: SseEvent = {
         type: 'nodeCreated',
-        nodeId: 'legacy-node',
-        nodeData
+        nodeId: 'legacy-node'
         // Note: no clientId field
       };
 
       // @ts-expect-error - accessing private method for testing
       browserSyncService.handleEvent(event);
 
-      // Event should be processed
-      expect(sharedNodeStore.getNode('legacy-node')).toBeDefined();
+      // Wait for async fetch
+      await vi.waitFor(() => {
+        expect(sharedNodeStore.getNode('legacy-node')).toBeDefined();
+      });
     });
 
     it('should document that events with matching clientId are filtered server-side', () => {

@@ -56,22 +56,20 @@ pub enum EdgeRelationship {
 /// Each event includes an optional `source_client_id` to identify the originating client,
 /// allowing event subscribers to filter out their own events (prevent feedback loops).
 ///
-/// Node events carry `node_data` as `serde_json::Value` containing type-specific data
-/// (TaskNode with flat status/priority fields, SchemaNode, etc.) instead of generic Node struct.
-/// This eliminates conversion duplication in consumers (SSE bridge, frontend).
+/// Node events send only the `node_id` (not full payload) for efficiency.
+/// Subscribers fetch the full node data via `get_node()` if needed (Issue #724).
+/// This reduces bandwidth during bulk operations and lets clients decide what they need.
 #[derive(Debug, Clone)]
 pub enum DomainEvent {
     /// A new node was created
     NodeCreated {
         node_id: String,
-        node_data: serde_json::Value,
         source_client_id: Option<String>,
     },
 
     /// An existing node was updated
     NodeUpdated {
         node_id: String,
-        node_data: serde_json::Value,
         source_client_id: Option<String>,
     },
 

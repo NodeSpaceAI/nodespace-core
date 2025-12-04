@@ -60,26 +60,25 @@ type HttpNodeService = NodeService<surrealdb::engine::remote::http::Client>;
 /// Events are broadcast after each successful database operation to notify
 /// all connected browser clients of changes.
 ///
+/// Issue #724: Events send only node_id (not full payload) for efficiency.
+/// Frontend fetches full node data via get_node() API if needed.
+///
 /// Each event includes an optional client_id field to identify the originating client,
 /// allowing SSE handlers to filter out their own events (prevent feedback loop).
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SseEvent {
-    /// A new node was created
+    /// A new node was created (ID only, fetch full data via API)
     NodeCreated {
         #[serde(rename = "nodeId")]
         node_id: String,
-        #[serde(rename = "nodeData")]
-        node_data: serde_json::Value,
         #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
         client_id: Option<String>,
     },
-    /// An existing node was updated
+    /// An existing node was updated (ID only, fetch full data via API)
     NodeUpdated {
         #[serde(rename = "nodeId")]
         node_id: String,
-        #[serde(rename = "nodeData")]
-        node_data: serde_json::Value,
         #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
         client_id: Option<String>,
     },
@@ -519,7 +518,6 @@ async fn domain_event_to_sse_bridge(
                 match event {
                     DomainEvent::NodeCreated {
                         node_id,
-                        node_data,
                         source_client_id,
                     } => {
                         // Filter out events from dev-proxy (browser operations)
@@ -531,15 +529,14 @@ async fn domain_event_to_sse_bridge(
                             continue;
                         }
 
+                        // Issue #724: Send only node_id (no payload)
                         let _ = sse_tx.send(SseEvent::NodeCreated {
                             node_id: node_id.clone(),
-                            node_data,
                             client_id: source_client_id,
                         });
                     }
                     DomainEvent::NodeUpdated {
                         node_id,
-                        node_data,
                         source_client_id,
                     } => {
                         // Filter out events from dev-proxy (browser operations)
@@ -557,9 +554,9 @@ async fn domain_event_to_sse_bridge(
                             node_id,
                             source_client_id
                         );
+                        // Issue #724: Send only node_id (no payload)
                         let result = sse_tx.send(SseEvent::NodeUpdated {
                             node_id: node_id.clone(),
-                            node_data,
                             client_id: source_client_id,
                         });
                         tracing::debug!("📤 SSE broadcast result: {:?}", result);

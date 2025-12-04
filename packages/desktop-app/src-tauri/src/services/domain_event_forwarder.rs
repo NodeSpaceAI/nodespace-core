@@ -7,9 +7,12 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info};
 
-/// Payload for deleted node/edge events
+/// Payload for ID-only node/edge events (Issue #724)
+///
+/// Used for all node events (created, updated, deleted) to minimize payload size.
+/// Frontend fetches full node data via get_node() API if needed.
 #[derive(Serialize)]
-struct DeletedPayload {
+struct NodeIdPayload {
     id: String,
 }
 
@@ -125,26 +128,28 @@ impl DomainEventForwarder {
             }
         }
 
-        // Forward the event to the frontend
+        // Forward the event to the frontend (Issue #724: ID-only payloads)
         match event {
-            DomainEvent::NodeCreated {
-                node_id, node_data, ..
-            } => {
-                // Forward typed node data (already converted by NodeService)
-                if let Err(e) = self.app.emit("node:created", node_data) {
+            DomainEvent::NodeCreated { node_id, .. } => {
+                // Send only node_id - frontend fetches full data if needed
+                let payload = NodeIdPayload {
+                    id: node_id.clone(),
+                };
+                if let Err(e) = self.app.emit("node:created", &payload) {
                     error!("Failed to emit node:created for {}: {}", node_id, e);
                 }
             }
-            DomainEvent::NodeUpdated {
-                node_id, node_data, ..
-            } => {
-                // Forward typed node data (already converted by NodeService)
-                if let Err(e) = self.app.emit("node:updated", node_data) {
+            DomainEvent::NodeUpdated { node_id, .. } => {
+                // Send only node_id - frontend fetches full data if needed
+                let payload = NodeIdPayload {
+                    id: node_id.clone(),
+                };
+                if let Err(e) = self.app.emit("node:updated", &payload) {
                     error!("Failed to emit node:updated for {}: {}", node_id, e);
                 }
             }
             DomainEvent::NodeDeleted { id, .. } => {
-                let payload = DeletedPayload { id: id.clone() };
+                let payload = NodeIdPayload { id: id.clone() };
                 if let Err(e) = self.app.emit("node:deleted", &payload) {
                     error!("Failed to emit node:deleted: {}", e);
                 }
@@ -160,7 +165,7 @@ impl DomainEventForwarder {
                 }
             }
             DomainEvent::EdgeDeleted { id, .. } => {
-                let payload = DeletedPayload { id: id.clone() };
+                let payload = NodeIdPayload { id: id.clone() };
                 if let Err(e) = self.app.emit("edge:deleted", &payload) {
                     error!("Failed to emit edge:deleted: {}", e);
                 }

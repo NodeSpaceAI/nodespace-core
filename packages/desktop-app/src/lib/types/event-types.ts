@@ -15,15 +15,13 @@
 // ============================================================================
 
 /**
- * Node event data from domain events
- * Contains minimal fields for real-time sync
+ * Node event data from domain events (Issue #724)
+ *
+ * Events now send only node ID for efficiency.
+ * Frontend fetches full node data via get_node() API if needed.
  */
 export interface NodeEventData {
   id: string;
-  nodeType: string;
-  content: string;
-  version: number;
-  modifiedAt: string;
 }
 
 // ============================================================================

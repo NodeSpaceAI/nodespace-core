@@ -13,6 +13,9 @@
  * The dev-proxy forwards domain events from SurrealStore as SSE to connected browsers,
  * which update the SharedNodeStore and ReactiveStructureTree. This allows browser dev mode
  * to have the same real-time sync as the desktop app.
+ *
+ * Issue #724: Events now send only node_id (not full payload) for efficiency.
+ * Frontend fetches full node data via getNode() API only when the node is in the active view.
  */
 
 /* global EventSource, MessageEvent */
@@ -22,6 +25,7 @@ import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import type { SseEvent } from '$lib/types/sse-events';
 import type { Node } from '$lib/types/node';
 import { nodeToTaskNode } from '$lib/types/task-node';
+import { backendAdapter } from './backend-adapter';
 
 /**
  * Connection state for the SSE client
@@ -207,6 +211,9 @@ class BrowserSyncService {
    *
    * Routes events to appropriate store/tree handlers to update UI.
    * Filtering handled server-side by dev-proxy (Issue #715).
+   *
+   * Issue #724: Events now send only node_id. Frontend fetches full data
+   * via getNode() API only when the node is in the active view (SharedNodeStore).
    */
   private handleEvent(event: SseEvent): void {
     // No client-side filtering needed - dev-proxy filters out events from browser operations
@@ -216,19 +223,21 @@ class BrowserSyncService {
     switch (event.type) {
       case 'nodeCreated': {
         console.log('[BrowserSyncService] Node created:', event.nodeId);
-        // Normalize node data to type-specific format (e.g., TaskNode with flat status)
-        const normalizedNode = this.normalizeNodeData(event.nodeData);
-        // Use database source with sse-sync reason to indicate external change via SSE
-        sharedNodeStore.setNode(normalizedNode, { type: 'database', reason: 'sse-sync' }, true);
+        // Issue #724: Fetch full node data only if we need to display it
+        // For now, always fetch since the node might be in the current view
+        this.fetchAndUpdateNode(event.nodeId, 'nodeCreated');
         break;
       }
 
       case 'nodeUpdated': {
         console.log('[BrowserSyncService] Node updated:', event.nodeId);
-        // Normalize node data to type-specific format (e.g., TaskNode with flat status)
-        const normalizedNode = this.normalizeNodeData(event.nodeData);
-        // Use setNode for full replacement (event contains complete node data)
-        sharedNodeStore.setNode(normalizedNode, { type: 'database', reason: 'sse-sync' }, true);
+        // Issue #724: Only fetch if node is already in the store (visible to user)
+        // This avoids unnecessary API calls for nodes not in the current view
+        if (sharedNodeStore.hasNode(event.nodeId)) {
+          this.fetchAndUpdateNode(event.nodeId, 'nodeUpdated');
+        } else {
+          console.log('[BrowserSyncService] Node not in store, skipping fetch:', event.nodeId);
+        }
         break;
       }
 
@@ -245,7 +254,7 @@ class BrowserSyncService {
         // to avoid overwriting the correct order with Date.now()
         if (structureTree) {
           const existingChildren = structureTree.getChildrenWithOrder(event.parentId);
-          const alreadyExists = existingChildren.some(c => c.nodeId === event.childId);
+          const alreadyExists = existingChildren.some((c) => c.nodeId === event.childId);
           if (!alreadyExists) {
             structureTree.addChild({
               parentId: event.parentId,
@@ -253,7 +262,10 @@ class BrowserSyncService {
               order: Date.now() // Use timestamp as order (will be sorted properly on next load)
             });
           } else {
-            console.log('[BrowserSyncService] Edge already exists (optimistic), skipping:', event.childId);
+            console.log(
+              '[BrowserSyncService] Edge already exists (optimistic), skipping:',
+              event.childId
+            );
           }
         }
         break;
@@ -272,6 +284,29 @@ class BrowserSyncService {
 
       default:
         console.warn('[BrowserSyncService] Unknown event type:', (event as SseEvent).type);
+    }
+  }
+
+  /**
+   * Fetch full node data from API and update SharedNodeStore
+   *
+   * Issue #724: Events now send only node_id. This method fetches the full
+   * node data and updates the store.
+   */
+  private async fetchAndUpdateNode(nodeId: string, eventType: string): Promise<void> {
+    try {
+      const node = await backendAdapter.getNode(nodeId);
+      if (node) {
+        // Normalize node data to type-specific format (e.g., TaskNode with flat status)
+        const normalizedNode = this.normalizeNodeData(node);
+        // Use database source with sse-sync reason to indicate external change via SSE
+        sharedNodeStore.setNode(normalizedNode, { type: 'database', reason: 'sse-sync' }, true);
+        console.log(`[BrowserSyncService] ${eventType}: updated store for node`, nodeId);
+      } else {
+        console.warn(`[BrowserSyncService] ${eventType}: node not found`, nodeId);
+      }
+    } catch (error) {
+      console.error(`[BrowserSyncService] ${eventType}: failed to fetch node`, nodeId, error);
     }
   }
 

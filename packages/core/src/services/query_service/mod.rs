@@ -20,7 +20,7 @@
 //! # Examples
 //!
 //! ```rust,no_run
-//! use nodespace_core::services::QueryService;
+//! use nodespace_core::services::{QueryService, QueryDefinition};
 //! use nodespace_core::db::SurrealStore;
 //! use std::sync::Arc;
 //!

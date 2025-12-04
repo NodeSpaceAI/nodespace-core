@@ -28,7 +28,7 @@ use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::events::DomainEvent;
 use crate::db::{StoreChange, StoreOperation, SurrealStore};
 use crate::models::schema::SchemaRelationship;
-use crate::models::{node_to_typed_value, Node, NodeFilter, NodeUpdate};
+use crate::models::{Node, NodeFilter, NodeUpdate};
 use crate::services::error::NodeServiceError;
 use crate::services::migration_registry::MigrationRegistry;
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -450,31 +450,20 @@ where
         // Register store-level notifier for automatic domain event emission (Issue #718)
         // This callback converts StoreChange notifications to DomainEvents.
         // Must be set BEFORE seed_core_schemas so schema seeding also emits events.
+        //
+        // Issue #724: Events now send only node_id (not full payload) for efficiency.
+        // Subscribers fetch full node data via get_node() if needed.
         {
             let tx = event_tx.clone();
             let notifier = Arc::new(move |change: StoreChange| {
-                // Convert node to typed JSON value for the event payload
-                let node_data = node_to_typed_value(change.node.clone()).unwrap_or_else(|e| {
-                    tracing::warn!(
-                        "Failed to convert node {} to typed value: {}, using generic Node",
-                        change.node.id,
-                        e
-                    );
-                    // SAFETY: Node derives Serialize, so to_value cannot fail.
-                    // This fallback ensures we always emit an event even if typed conversion fails.
-                    serde_json::to_value(&change.node).unwrap()
-                });
-
-                // Map store operation to domain event
+                // Map store operation to domain event (ID-only, no payload conversion)
                 let event = match change.operation {
                     StoreOperation::Created => DomainEvent::NodeCreated {
                         node_id: change.node.id.clone(),
-                        node_data,
                         source_client_id: change.source,
                     },
                     StoreOperation::Updated => DomainEvent::NodeUpdated {
                         node_id: change.node.id.clone(),
-                        node_data,
                         source_client_id: change.source,
                     },
                     StoreOperation::Deleted => DomainEvent::NodeDeleted {
