@@ -112,6 +112,9 @@ fn test_tier1_core_tools_present() {
         "insert_child_at_index",
         // Semantic search (core value proposition)
         "search_semantic",
+        // Markdown import/export (primary workflows)
+        "create_nodes_from_markdown",
+        "get_markdown_from_node_id",
         // Schema & Discovery
         "get_all_schemas",
         "search_tools",
@@ -125,9 +128,9 @@ fn test_tier1_core_tools_present() {
         );
     }
 
-    // Verify we have exactly 10 Tier 1 tools (reduced from 26 for token savings)
+    // Verify we have exactly 12 Tier 1 tools (reduced from 26 for token savings)
     // Other tools are discoverable via search_tools
-    assert_eq!(tools.len(), 10, "Expected exactly 10 Tier 1 (Core) tools");
+    assert_eq!(tools.len(), 12, "Expected exactly 12 Tier 1 (Core) tools");
 }
 
 #[test]
@@ -141,8 +144,6 @@ fn test_search_tools_discovers_tier2_tools() {
         "get_child_at_index",
         "move_child_to_index",
         "get_node_tree",
-        "create_nodes_from_markdown",
-        "get_markdown_from_node_id",
         "get_nodes_batch",
         "update_nodes_batch",
         "update_root_from_markdown",
@@ -159,8 +160,8 @@ fn test_search_tools_discovers_tier2_tools() {
         .count();
 
     assert!(
-        found_count >= 10,
-        "Expected at least 10 discoverable tools, found {}",
+        found_count >= 8,
+        "Expected at least 8 discoverable tools, found {}",
         found_count
     );
 }
@@ -173,8 +174,8 @@ fn test_all_schemas_have_required_fields() {
 
     assert_eq!(
         tools.len(),
-        10,
-        "Should have exactly 10 Tier 1 tool schemas, found {}",
+        12,
+        "Should have exactly 12 Tier 1 tool schemas, found {}",
         tools.len()
     );
 
@@ -296,11 +297,8 @@ fn test_update_node_schema_structure() {
 
 #[test]
 fn test_markdown_import_schema_structure() {
-    // create_nodes_from_markdown is a Tier 2 tool, must use search_tools
-    let result = crate::mcp::handlers::tools::handle_search_tools(json!({
-        "query": "markdown"
-    }))
-    .unwrap();
+    // create_nodes_from_markdown is now a Tier 1 core tool
+    let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
     let tools = result["tools"].as_array().unwrap();
 
     let markdown_import = tools

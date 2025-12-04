@@ -78,6 +78,10 @@ fn default_search_limit() -> usize {
 }
 
 /// Get the tier for a given tool
+///
+/// FUTURE: This will be user-configurable, allowing users to customize which tools
+/// are exposed as "core" vs "discoverable" based on their workflows and preferences.
+/// For now, we hardcode based on common use cases (CRUD, markdown, search).
 fn get_tool_tier(tool_name: &str) -> ToolTier {
     match tool_name {
         // Tier 1: Core CRUD operations
@@ -91,6 +95,9 @@ fn get_tool_tier(tool_name: &str) -> ToolTier {
 
         // Tier 1: Semantic search (core value proposition)
         "search_semantic" => ToolTier::Core,
+
+        // Tier 1: Markdown import/export (primary workflows)
+        "create_nodes_from_markdown" | "get_markdown_from_node_id" => ToolTier::Core,
 
         // Tier 1: Discovery
         "get_all_schemas" | "search_tools" => ToolTier::Core,
