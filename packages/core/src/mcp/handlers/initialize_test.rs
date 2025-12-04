@@ -1,10 +1,23 @@
 //! Tests for MCP Initialize Handler
 
 use super::*;
+use crate::db::SurrealStore;
+use crate::services::NodeService;
 use serde_json::json;
+use std::sync::Arc;
+use tempfile::TempDir;
 
-#[test]
-fn test_initialize_success() {
+// Helper to create test NodeService
+async fn create_test_service() -> Arc<NodeService> {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let mut store = Arc::new(SurrealStore::new(db_path).await.unwrap());
+    Arc::new(NodeService::new(&mut store).await.unwrap())
+}
+
+#[tokio::test]
+async fn test_initialize_success() {
+    let node_service = create_test_service().await;
     let params = json!({
         "protocolVersion": "2024-11-05",
         "clientInfo": {
@@ -13,7 +26,7 @@ fn test_initialize_success() {
         }
     });
 
-    let result = handle_initialize(params).unwrap();
+    let result = handle_initialize(&node_service, params).await.unwrap();
 
     // Verify protocol version
     assert_eq!(result["protocolVersion"], "2024-11-05");
@@ -29,8 +42,9 @@ fn test_initialize_success() {
     assert!(result["capabilities"]["prompts"].is_object());
 }
 
-#[test]
-fn test_initialize_wrong_version() {
+#[tokio::test]
+async fn test_initialize_wrong_version() {
+    let node_service = create_test_service().await;
     let params = json!({
         "protocolVersion": "1999-01-01",  // Unsupported version
         "clientInfo": {
@@ -38,7 +52,7 @@ fn test_initialize_wrong_version() {
         }
     });
 
-    let result = handle_initialize(params);
+    let result = handle_initialize(&node_service, params).await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -48,15 +62,16 @@ fn test_initialize_wrong_version() {
     assert!(err.message.contains("2024-11-05"));
 }
 
-#[test]
-fn test_initialize_missing_version() {
+#[tokio::test]
+async fn test_initialize_missing_version() {
+    let node_service = create_test_service().await;
     let params = json!({
         "clientInfo": {
             "name": "test-client"
         }
     });
 
-    let result = handle_initialize(params);
+    let result = handle_initialize(&node_service, params).await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -64,11 +79,12 @@ fn test_initialize_missing_version() {
     assert!(err.message.contains("Missing protocolVersion"));
 }
 
-#[test]
-fn test_initialize_empty_params() {
+#[tokio::test]
+async fn test_initialize_empty_params() {
+    let node_service = create_test_service().await;
     let params = json!({});
 
-    let result = handle_initialize(params);
+    let result = handle_initialize(&node_service, params).await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -319,8 +335,9 @@ mod integration_tests {
         }
     }
 
-    #[test]
-    fn test_full_initialization_handshake() {
+    #[tokio::test]
+    async fn test_full_initialization_handshake() {
+        let node_service = create_test_service().await;
         let state = TestServerState::new();
 
         // Step 1: Verify initial state - not initialized
@@ -355,7 +372,7 @@ mod integration_tests {
             }
         });
 
-        let init_result = handle_initialize(init_params).unwrap();
+        let init_result = handle_initialize(&node_service, init_params).await.unwrap();
 
         // Verify initialize response structure
         assert_eq!(init_result["protocolVersion"], "2024-11-05");
@@ -429,8 +446,9 @@ mod integration_tests {
         }
     }
 
-    #[test]
-    fn test_initialize_then_wrong_version() {
+    #[tokio::test]
+    async fn test_initialize_then_wrong_version() {
+        let node_service = create_test_service().await;
         let state = TestServerState::new();
 
         // First initialize with correct version
@@ -438,7 +456,7 @@ mod integration_tests {
             "protocolVersion": "2024-11-05",
             "clientInfo": {"name": "test"}
         });
-        let result = handle_initialize(params);
+        let result = handle_initialize(&node_service, params).await;
         assert!(result.is_ok(), "First initialize should succeed");
 
         state.mark_initialized();
@@ -448,7 +466,7 @@ mod integration_tests {
             "protocolVersion": "1999-01-01",
             "clientInfo": {"name": "test"}
         });
-        let result_wrong = handle_initialize(params_wrong);
+        let result_wrong = handle_initialize(&node_service, params_wrong).await;
         assert!(
             result_wrong.is_err(),
             "Initialize with wrong version should fail even after initialization"
@@ -459,8 +477,9 @@ mod integration_tests {
         assert!(err.message.contains("Unsupported protocol version"));
     }
 
-    #[test]
-    fn test_initialize_idempotent() {
+    #[tokio::test]
+    async fn test_initialize_idempotent() {
+        let node_service = create_test_service().await;
         let state = TestServerState::new();
 
         let params = json!({
@@ -469,11 +488,11 @@ mod integration_tests {
         });
 
         // First initialize
-        let result1 = handle_initialize(params.clone()).unwrap();
+        let result1 = handle_initialize(&node_service, params.clone()).await.unwrap();
         state.mark_initialized();
 
         // Second initialize (should succeed - idempotent)
-        let result2 = handle_initialize(params).unwrap();
+        let result2 = handle_initialize(&node_service, params).await.unwrap();
 
         // Both should return same structure
         assert_eq!(result1["protocolVersion"], result2["protocolVersion"]);

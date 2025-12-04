@@ -553,13 +553,13 @@ fn get_tool_schemas() -> Value {
         },
         {
             "name": "update_root_from_markdown",
-            "description": "Replace all root node children with new structure parsed from markdown (bulk replacement, GitHub-style). Deletes existing children and creates new hierarchy. Use this when AI needs to reorganize or rewrite entire document structures.",
+            "description": "Replace all children of a root node (document/page/file) with new structure parsed from markdown (bulk replacement, GitHub-style). Deletes all existing children and creates new hierarchy. Use this when AI needs to reorganize or rewrite entire document structures. Note: The root node itself is preserved - only its children are replaced.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "root_id": {
                         "type": "string",
-                        "description": "Root node ID to update (also accepts 'container_id' for backward compatibility)"
+                        "description": "Root node ID to update (synonymous with document/page/file ID). Also accepts 'container_id' for backward compatibility."
                     },
                     "markdown": {
                         "type": "string",
@@ -589,7 +589,7 @@ fn get_tool_schemas() -> Value {
         },
         {
             "name": "search_roots",
-            "description": "Search root nodes using natural language semantic similarity (vector embeddings). Examples: 'Q4 planning tasks', 'machine learning research notes', 'budget discussions'",
+            "description": "Search root nodes (documents/pages/files) using natural language semantic similarity (vector embeddings). Examples: 'Q4 planning documents', 'machine learning research notes', 'budget meeting notes'",
             "inputSchema": {
                 "type": "object",
                 "properties": {
