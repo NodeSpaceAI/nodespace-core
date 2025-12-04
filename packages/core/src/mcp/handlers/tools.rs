@@ -43,7 +43,7 @@ pub enum ToolCategory {
     Hierarchy,
     /// Markdown import/export (create_nodes_from_markdown, etc.)
     Markdown,
-    /// Search operations (search_roots)
+    /// Semantic search operations (search_semantic)
     Search,
     /// Schema management (create_schema, get_all_schemas, update_schema)
     Schema,
@@ -89,6 +89,9 @@ fn get_tool_tier(tool_name: &str) -> ToolTier {
         // Tier 1: Basic hierarchy
         "get_children" | "insert_child_at_index" => ToolTier::Core,
 
+        // Tier 1: Semantic search (core value proposition)
+        "search_semantic" => ToolTier::Core,
+
         // Tier 1: Discovery
         "get_all_schemas" | "search_tools" => ToolTier::Core,
 
@@ -104,19 +107,27 @@ fn get_tool_category(tool_name: &str) -> ToolCategory {
 
         "query_nodes" | "get_nodes_batch" | "update_nodes_batch" => ToolCategory::Query,
 
-        "get_children" | "insert_child_at_index" | "move_child_to_index"
-        | "get_child_at_index" | "get_node_tree" => ToolCategory::Hierarchy,
+        "get_children"
+        | "insert_child_at_index"
+        | "move_child_to_index"
+        | "get_child_at_index"
+        | "get_node_tree" => ToolCategory::Hierarchy,
 
-        "create_nodes_from_markdown" | "get_markdown_from_node_id"
+        "create_nodes_from_markdown"
+        | "get_markdown_from_node_id"
         | "update_root_from_markdown" => ToolCategory::Markdown,
 
-        "search_roots" => ToolCategory::Search,
+        "search_semantic" => ToolCategory::Search,
 
         "create_schema" | "get_all_schemas" | "update_schema" => ToolCategory::Schema,
 
-        "create_relationship" | "delete_relationship" | "get_related_nodes"
-        | "get_relationship_graph" | "get_inbound_relationships"
-        | "add_schema_relationship" | "remove_schema_relationship" => ToolCategory::Relationships,
+        "create_relationship"
+        | "delete_relationship"
+        | "get_related_nodes"
+        | "get_relationship_graph"
+        | "get_inbound_relationships"
+        | "add_schema_relationship"
+        | "remove_schema_relationship" => ToolCategory::Relationships,
 
         "search_tools" => ToolCategory::Discovery,
 
@@ -358,7 +369,7 @@ where
         "update_nodes_batch" => nodes::handle_update_nodes_batch(node_service, arguments).await,
 
         // Search
-        "search_roots" => search::handle_search_roots(embedding_service, arguments),
+        "search_semantic" => search::handle_search_semantic(embedding_service, arguments),
 
         // Discovery
         "search_tools" => handle_search_tools(arguments),
@@ -781,8 +792,8 @@ fn get_tool_schemas() -> Value {
             }
         },
         {
-            "name": "search_roots",
-            "description": "Search root nodes (documents/pages/files) using natural language semantic similarity (vector embeddings). Examples: 'Q4 planning documents', 'machine learning research notes', 'budget meeting notes'",
+            "name": "search_semantic",
+            "description": "Search all nodes using natural language semantic similarity (vector embeddings). Find relevant content across your knowledge base. Examples: 'Q4 planning documents', 'machine learning research notes', 'budget meeting notes'",
             "inputSchema": {
                 "type": "object",
                 "properties": {

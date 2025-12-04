@@ -122,15 +122,15 @@ where
         },
         "instructions": format!(
             "NodeSpace is a knowledge management system where all content is stored as nodes in a hierarchical tree structure.\n\n\
-            PROGRESSIVE TOOL DISCOVERY: The tools/list response includes only core tools (create_node, get_node, update_node, delete_node, query_nodes, get_children, insert_child_at_index, get_all_schemas, search_tools). Use search_tools to discover additional specialized tools by category, keyword, or node type. This reduces initial context and improves performance.\n\n\
+            PROGRESSIVE TOOL DISCOVERY: The tools/list response includes only 10 core tools (create_node, get_node, update_node, delete_node, query_nodes, get_children, insert_child_at_index, search_semantic, get_all_schemas, search_tools). Use search_tools to discover additional specialized tools by category, keyword, or node type. This reduces initial context and improves performance.\n\n\
+            SEMANTIC SEARCH: Use search_semantic (core tool) to find relevant content across your knowledge base using natural language queries. Examples: 'Q4 planning documents', 'machine learning research notes'. This is a core value proposition of NodeSpace.\n\n\
             NODE ARCHITECTURE: Nodes are generic data structures with a type field. You can create custom node types via create_schema tool (discoverable via search_tools).\n\n\
             AVAILABLE NODE TYPES: {}. Use get_all_schemas to see full schema definitions with fields and relationships.\n\n\
             ROOT NODES (DOCUMENTS/PAGES/FILES): A root node represents a document, page, or file. It's a node with children but no parent (root_id = NULL). Two main patterns: (1) Date roots (YYYY-MM-DD format) for daily notes, (2) Topic roots for projects/notes. For markdown import/export workflows, use search_tools with query='markdown'.\n\n\
             DATE NODES: YYYY-MM-DD roots auto-exist. Just reference them as parent_id or root_id - no need to create them explicitly. Perfect for daily notes and time-based organization.\n\n\
             HIERARCHY CONTROL: Core tools include insert_child_at_index and get_children. For advanced operations (move_child_to_index, get_node_tree), use search_tools with category='hierarchy'.\n\n\
             LINKING NODES: Use nodespace://node-id syntax to create bidirectional links. Example: 'See nodespace://abc-123' - automatically tracked in mentions/mentioned_by fields for graph navigation.\n\n\
-            RELATIONSHIPS: For explicit typed relationships between nodes (beyond hierarchy), use search_tools with category='relationships' to discover create_relationship, get_related_nodes, and graph discovery tools.\n\n\
-            SEARCH: For semantic search, use search_tools to discover search_roots (vector embeddings across documents/pages).",
+            RELATIONSHIPS: For explicit typed relationships between nodes (beyond hierarchy), use search_tools with category='relationships' to discover create_relationship, get_related_nodes, and graph discovery tools.",
             node_types_str
         )
     }))

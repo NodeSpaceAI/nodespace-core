@@ -110,6 +110,8 @@ fn test_tier1_core_tools_present() {
         // Hierarchy operations
         "get_children",
         "insert_child_at_index",
+        // Semantic search (core value proposition)
+        "search_semantic",
         // Schema & Discovery
         "get_all_schemas",
         "search_tools",
@@ -123,9 +125,9 @@ fn test_tier1_core_tools_present() {
         );
     }
 
-    // Verify we have exactly 9 Tier 1 tools (reduced from 26 for token savings)
+    // Verify we have exactly 10 Tier 1 tools (reduced from 26 for token savings)
     // Other tools are discoverable via search_tools
-    assert_eq!(tools.len(), 9, "Expected exactly 9 Tier 1 (Core) tools");
+    assert_eq!(tools.len(), 10, "Expected exactly 10 Tier 1 (Core) tools");
 }
 
 #[test]
@@ -144,7 +146,6 @@ fn test_search_tools_discovers_tier2_tools() {
         "get_nodes_batch",
         "update_nodes_batch",
         "update_root_from_markdown",
-        "search_roots",
         "create_schema",
         "create_relationship",
         "delete_relationship",
@@ -172,8 +173,8 @@ fn test_all_schemas_have_required_fields() {
 
     assert_eq!(
         tools.len(),
-        9,
-        "Should have exactly 9 Tier 1 tool schemas, found {}",
+        10,
+        "Should have exactly 10 Tier 1 tool schemas, found {}",
         tools.len()
     );
 

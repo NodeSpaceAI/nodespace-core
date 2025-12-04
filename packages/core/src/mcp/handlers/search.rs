@@ -9,9 +9,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// Parameters for search_roots method (formerly search_containers)
+/// Parameters for search_semantic method
 #[derive(Debug, Deserialize)]
-pub struct SearchRootsParams {
+pub struct SearchSemanticParams {
     /// Natural language search query
     pub query: String,
 
@@ -45,10 +45,10 @@ pub struct SearchRootsParams {
 ///     "threshold": 0.7,
 ///     "limit": 10
 /// });
-/// let result = handle_search_roots(&embedding_service, params)?;
+/// let result = handle_search_semantic(&embedding_service, params)?;
 /// // Returns top 10 most relevant root nodes
 /// ```
-pub fn handle_search_roots<C>(
+pub fn handle_search_semantic<C>(
     _service: &Arc<NodeEmbeddingService<C>>,
     params: Value,
 ) -> Result<Value, MCPError>
@@ -56,7 +56,7 @@ where
     C: surrealdb::Connection,
 {
     // Parse parameters
-    let params: SearchRootsParams = serde_json::from_value(params)
+    let params: SearchSemanticParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
     // Apply defaults (authoritative - schema defaults are client hints only)
@@ -126,12 +126,12 @@ mod search_tests {
     // Parameter Parsing Tests
 
     #[tokio::test]
-    async fn test_search_roots_basic_params() {
+    async fn test_search_semantic_basic_params() {
         let params = json!({
             "query": "machine learning"
         });
 
-        let search_params: Result<SearchRootsParams, _> = serde_json::from_value(params);
+        let search_params: Result<SearchSemanticParams, _> = serde_json::from_value(params);
         assert!(search_params.is_ok());
 
         let p = search_params.unwrap();
@@ -142,7 +142,7 @@ mod search_tests {
     }
 
     #[tokio::test]
-    async fn test_search_roots_custom_params() {
+    async fn test_search_semantic_custom_params() {
         let params = json!({
             "query": "project planning",
             "threshold": 0.6,
@@ -150,7 +150,7 @@ mod search_tests {
             "exact": true
         });
 
-        let search_params: Result<SearchRootsParams, _> = serde_json::from_value(params);
+        let search_params: Result<SearchSemanticParams, _> = serde_json::from_value(params);
         assert!(search_params.is_ok());
 
         let p = search_params.unwrap();
@@ -161,12 +161,12 @@ mod search_tests {
     }
 
     #[tokio::test]
-    async fn test_search_roots_defaults_applied() {
+    async fn test_search_semantic_defaults_applied() {
         let params = json!({
             "query": "test query"
         });
 
-        let search_params: Result<SearchRootsParams, _> = serde_json::from_value(params);
+        let search_params: Result<SearchSemanticParams, _> = serde_json::from_value(params);
         assert!(search_params.is_ok());
 
         let p = search_params.unwrap();
@@ -213,7 +213,7 @@ mod search_tests {
     fn test_search_empty_query_validation() {
         // Test parameter validation for empty query
         let params = json!({"query": ""});
-        let parsed: SearchRootsParams = serde_json::from_value(params).unwrap();
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
 
         // Verify the validation logic we implemented
         assert!(parsed.query.trim().is_empty());
@@ -224,7 +224,7 @@ mod search_tests {
     fn test_search_whitespace_query_validation() {
         // Test parameter validation for whitespace-only query
         let params = json!({"query": "   "});
-        let parsed: SearchRootsParams = serde_json::from_value(params).unwrap();
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
 
         // Verify the validation logic we implemented
         assert!(parsed.query.trim().is_empty());
@@ -238,7 +238,7 @@ mod search_tests {
             "threshold": 1.5
         });
 
-        let parsed: SearchRootsParams = serde_json::from_value(params).unwrap();
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
         let threshold = parsed.threshold.unwrap_or(0.7);
 
         // Verify validation would catch this
@@ -253,7 +253,7 @@ mod search_tests {
             "threshold": -0.1
         });
 
-        let parsed: SearchRootsParams = serde_json::from_value(params).unwrap();
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
         let threshold = parsed.threshold.unwrap_or(0.7);
 
         // Verify validation would catch this
@@ -267,7 +267,7 @@ mod search_tests {
             "limit": 5000
         });
 
-        let parsed: SearchRootsParams = serde_json::from_value(params).unwrap();
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
         let limit = parsed.limit.unwrap_or(20);
 
         // Verify validation would catch this
@@ -303,7 +303,7 @@ mod search_tests {
     fn test_search_defaults_match_schema() {
         // Verify Rust defaults match schema defaults
         let params = json!({"query": "test"});
-        let parsed: SearchRootsParams = serde_json::from_value(params).unwrap();
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
 
         // Apply defaults as the handler does
         let threshold = parsed.threshold.unwrap_or(0.7);
@@ -331,7 +331,7 @@ mod search_tests {
         ];
 
         for (params, description) in test_cases {
-            let result: Result<SearchRootsParams, _> = serde_json::from_value(params);
+            let result: Result<SearchSemanticParams, _> = serde_json::from_value(params);
             assert!(result.is_ok(), "Failed to parse: {}", description);
         }
     }
