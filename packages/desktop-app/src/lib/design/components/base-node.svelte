@@ -54,7 +54,7 @@
   import { mapViewPositionToEditPosition } from '$lib/utils/view-edit-mapper';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
 
-  // Props (Svelte 5 runes syntax) - nodeReferenceService removed
+  // Props (Svelte 5 runes syntax)
   let {
     nodeId,
     nodeType = $bindable('text'),
@@ -96,9 +96,6 @@
   // In test environment, enable mock service to allow autocomplete testing
   // In production, use real service from context
   const services = getNodeServices();
-  const nodeReferenceService =
-    services?.nodeReferenceService ||
-    (import.meta.env.VITEST ? ({} as Record<string, never>) : null);
 
   /**
    * Extract text from view element while preserving line breaks from <br> tags
@@ -614,24 +611,21 @@
       triggerContext: TriggerContext;
       cursorPosition: { x: number; y: number };
     }) => {
-      if (nodeReferenceService) {
-        currentQuery = data.triggerContext.query;
-        autocompletePosition = data.cursorPosition;
-        showAutocomplete = true;
+      currentQuery = data.triggerContext.query;
+      autocompletePosition = data.cursorPosition;
+      showAutocomplete = true;
 
-        // Notify controller that autocomplete is active
-        if (controller) {
-          controller.setAutocompleteDropdownActive(true);
-        }
+      // Notify controller that autocomplete is active
+      if (controller) {
+        controller.setAutocompleteDropdownActive(true);
+      }
 
-        // REMOVED: Effect that watched showAutocomplete - now call directly
-        // Use real search if services are available
-        if (services?.nodeManager) {
-          performRealSearch(currentQuery);
-        } else {
-          // Fallback to mock results ONLY in test mode when nodeManager is not available
-          autocompleteResults = generateMockResultsForTests(currentQuery);
-        }
+      // Use real search if services are available
+      if (services?.nodeManager) {
+        performRealSearch(currentQuery);
+      } else {
+        // Fallback to mock results ONLY in test mode when nodeManager is not available
+        autocompleteResults = generateMockResultsForTests(currentQuery);
       }
     },
     triggerHidden: () => {
@@ -912,16 +906,14 @@
 </div>
 
 <!-- Professional Node Autocomplete Component -->
-{#if nodeReferenceService}
-  <NodeAutocomplete
-    position={autocompletePosition}
-    query={currentQuery}
-    results={autocompleteResults}
-    visible={showAutocomplete}
-    onselect={handleAutocompleteSelect}
-    onclose={handleAutocompleteClose}
-  />
-{/if}
+<NodeAutocomplete
+  position={autocompletePosition}
+  query={currentQuery}
+  results={autocompleteResults}
+  visible={showAutocomplete}
+  onselect={handleAutocompleteSelect}
+  onclose={handleAutocompleteClose}
+/>
 
 <!-- Slash Command Dropdown Component -->
 <SlashCommandDropdown

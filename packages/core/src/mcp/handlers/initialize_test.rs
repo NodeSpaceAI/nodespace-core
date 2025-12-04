@@ -280,9 +280,9 @@ fn test_markdown_import_schema_structure() {
     let input_schema = &markdown_import["inputSchema"];
     let required = input_schema["required"].as_array().unwrap();
 
+    // Only markdown_content is required; title is optional
     assert!(required.contains(&json!("markdown_content")));
-    assert!(required.contains(&json!("container_title")));
-    assert_eq!(required.len(), 2);
+    assert_eq!(required.len(), 1);
 }
 
 // Integration test for full MCP initialization handshake flow

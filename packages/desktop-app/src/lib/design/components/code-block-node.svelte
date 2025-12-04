@@ -27,12 +27,14 @@
   // Alphabetically sorted with 'plaintext' as default first option
   const LANGUAGES = [
     'plaintext', // Default - always first
+    'bash',
     'cpp',
     'css',
     'go',
     'html',
     'java',
     'javascript',
+    'json',
     'kotlin',
     'markdown',
     'php',
@@ -42,7 +44,9 @@
     'shell',
     'sql',
     'swift',
-    'typescript'
+    'toml',
+    'typescript',
+    'yaml'
   ];
 
   /**
@@ -364,13 +368,15 @@
 
 <style>
   /* Code block wrapper - icon outside, content with background */
-  .code-block-node-wrapper {
+  /* CRITICAL: Use :global() to prevent Svelte scoping issues during HMR/navigation */
+  /* Scoped styles can be removed from DOM when component unmounts, breaking child code-blocks */
+  :global(.code-block-node-wrapper) {
     position: relative;
     /* width: 100% handled by parent .node-content-wrapper flex child rule */
   }
 
   /* Apply muted background to the content area only (BaseNode wraps it) */
-  .code-block-node-wrapper :global(.node__content) {
+  :global(.code-block-node-wrapper .node__content) {
     background: hsl(var(--muted));
     padding: 0.25rem;
     border-radius: var(--radius);
@@ -381,7 +387,7 @@
   }
 
   /* Language selector button (top-right, appears on hover) */
-  .code-language-button {
+  :global(.code-block-node-wrapper .code-language-button) {
     position: absolute;
     top: 0.5rem;
     right: 3.9375rem;
@@ -400,7 +406,7 @@
   }
 
   /* Show language button on hover, but hide while actively typing */
-  .code-block-node-wrapper:hover:not(.typing) .code-language-button {
+  :global(.code-block-node-wrapper:hover:not(.typing) .code-language-button) {
     opacity: 1;
   }
 
@@ -448,7 +454,7 @@
   }
 
   /* Copy button (top-right, appears on hover) */
-  .code-copy-button {
+  :global(.code-block-node-wrapper .code-copy-button) {
     position: absolute;
     top: 0.5rem;
     right: 0.5rem;
@@ -465,12 +471,12 @@
   }
 
   /* Show copy button on hover, but hide while actively typing */
-  .code-block-node-wrapper:hover:not(.typing) .code-copy-button {
+  :global(.code-block-node-wrapper:hover:not(.typing) .code-copy-button) {
     opacity: 1;
   }
 
   /* Copied state - green background with success color */
-  .code-copy-button.copied {
+  :global(.code-block-node-wrapper .code-copy-button.copied) {
     opacity: 1;
     background: hsl(var(--success, 142 76% 36%));
     color: hsl(var(--success-foreground, 0 0% 100%));

@@ -33,6 +33,9 @@ const ELLIPSIS = '...';
  * formatTabTitle('Short title')
  * // Returns: 'Short title'
  *
+ * formatTabTitle('## Header Title')
+ * // Returns: 'Header Title' (markdown header syntax stripped)
+ *
  * formatTabTitle('This is a very long title that exceeds the maximum length allowed')
  * // Returns: 'This is a very long title that exc...'
  *
@@ -48,9 +51,13 @@ const ELLIPSIS = '...';
  */
 export function formatTabTitle(content: string, fallback: string = 'Untitled'): string {
   // Extract first line and trim whitespace
-  const firstLine = content.split('\n')[0].trim();
+  let firstLine = content.split('\n')[0].trim();
 
-  // Return fallback if empty
+  // Strip markdown header syntax (## Header -> Header)
+  // This handles header nodes whose content starts with # symbols
+  firstLine = firstLine.replace(/^#+\s*/, '');
+
+  // Return fallback if empty (after stripping markdown)
   if (!firstLine) {
     return fallback;
   }

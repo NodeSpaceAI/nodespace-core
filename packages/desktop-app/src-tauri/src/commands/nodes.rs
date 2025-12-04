@@ -710,8 +710,11 @@ pub async fn query_nodes_simple(
 /// * `Err(CommandError)` - Error if query fails
 ///
 /// # Filter Behavior
-/// - Includes: Task nodes and container nodes (top-level documents)
-/// - Excludes: Date nodes (accessible via date shortcuts), nested text children
+/// - Includes: Task nodes (any level in hierarchy)
+/// - Includes: Root nodes (root_id is None) that are NOT date or schema types
+/// - Excludes: Date nodes (accessible via date shortcuts)
+/// - Excludes: Schema nodes
+/// - Excludes: Nested children of other node types (text, header, etc.)
 /// - Search: Case-insensitive content matching
 ///
 /// # Future Enhancements (Phase 2)
@@ -732,10 +735,16 @@ pub async fn mention_autocomplete(
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<Value>, CommandError> {
+    let target_limit = limit.unwrap_or(10);
+
+    // Request more nodes than limit to account for filtering
+    // We'll filter down to the requested limit after applying mention rules
+    let fetch_limit = Some(target_limit * 3);
+
     // Build NodeQuery with mention-specific defaults
     let node_query = NodeQuery {
         content_contains: if query.is_empty() { None } else { Some(query) },
-        limit,
+        limit: fetch_limit,
         ..Default::default()
     };
 
@@ -744,7 +753,51 @@ pub async fn mention_autocomplete(
         .await
         .map_err(CommandError::from)?;
 
-    nodes_to_typed_values(nodes)
+    // Apply mention-specific filtering:
+    // - Task nodes: included regardless of hierarchy level
+    // - Root nodes (no parent): included if NOT date or schema type
+    // - Other nested nodes: excluded (they should be accessed via their parent)
+    //
+    // Root nodes are identified by having no incoming has_child edge (check_has_parent_batch)
+
+    // First pass: Collect task nodes and filter out date/schema nodes
+    let mut task_nodes = Vec::new();
+    let mut non_task_nodes = Vec::new();
+
+    for node in nodes {
+        // Exclude date and schema nodes always
+        if node.node_type == "date" || node.node_type == "schema" {
+            continue;
+        }
+
+        // Separate task nodes (always included) from other nodes (need parent check)
+        if node.node_type == "task" {
+            task_nodes.push(node);
+        } else {
+            non_task_nodes.push(node);
+        }
+    }
+
+    // Batch check parent status for non-task nodes (fixes N+1 query problem)
+    let node_ids: Vec<String> = non_task_nodes.iter().map(|n| n.id.clone()).collect();
+    let parent_map = service
+        .check_has_parent_batch(&node_ids)
+        .await
+        .map_err(CommandError::from)?;
+
+    // Second pass: Filter non-task nodes to only root nodes (no parent)
+    let mut filtered_nodes = task_nodes;
+    for node in non_task_nodes {
+        let has_parent = parent_map.get(&node.id).copied().unwrap_or(false);
+        if !has_parent {
+            filtered_nodes.push(node);
+        }
+    }
+
+    // Limit to requested number
+    filtered_nodes.truncate(target_limit);
+
+    nodes_to_typed_values(filtered_nodes)
 }
 
 /// Save a node with automatic parent creation - unified upsert operation

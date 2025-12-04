@@ -34,9 +34,21 @@ use crate::services::migration_registry::MigrationRegistry;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use regex::Regex;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::broadcast;
+
+/// Type alias for subtree data returned by `get_subtree_data`
+///
+/// Contains (root_node, node_map, adjacency_list) where:
+/// - root_node: Option<Node> - the root node if it exists
+/// - node_map: HashMap<String, Node> - all nodes indexed by ID
+/// - adjacency_list: HashMap<String, Vec<String>> - children IDs indexed by parent ID (sorted by order)
+pub type SubtreeData = (
+    Option<Node>,
+    HashMap<String, Node>,
+    HashMap<String, Vec<String>>,
+);
 
 /// Parameters for creating a node
 ///
@@ -2566,82 +2578,8 @@ where
         &self,
         parent_id: &str,
     ) -> Result<serde_json::Value, NodeServiceError> {
-        // Fetch all nodes and edges in the subtree efficiently
-        let nodes = self
-            .store
-            .get_nodes_in_subtree(parent_id)
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to fetch subtree nodes: {}", e))
-            })?;
-
-        let edges = self
-            .store
-            .get_edges_in_subtree(parent_id)
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to fetch subtree edges: {}", e))
-            })?;
-
-        // Build tree structure using adjacency list strategy
-        let tree = self
-            .build_tree_from_adjacency_list(parent_id, &nodes, &edges)
-            .await?;
-        Ok(tree)
-    }
-
-    /// Build a nested tree structure from nodes and edges using adjacency list strategy
-    ///
-    /// Constructs a nested JSON tree by:
-    /// 1. Creating a HashMap mapping parent_id → Vec<child_id> (adjacency list)
-    /// 2. Recursively walking the tree structure using the adjacency list
-    /// 3. Building JSON nodes with `children` arrays
-    ///
-    /// This separates data fetching from tree construction, making the logic testable
-    /// and enabling client-side tree modifications.
-    ///
-    /// # Arguments
-    ///
-    /// * `root_id` - The root node ID
-    /// * `nodes` - All nodes in the subtree (flat list)
-    /// * `edges` - All parent-child relationships in the subtree
-    ///
-    /// # Returns
-    ///
-    /// JSON structure with nested children arrays, or empty object if root not found
-    async fn build_tree_from_adjacency_list(
-        &self,
-        root_id: &str,
-        nodes: &[Node],
-        edges: &[crate::EdgeRecord],
-    ) -> Result<serde_json::Value, NodeServiceError> {
-        use std::collections::HashMap;
-
-        // Create a map of node_id → Node for O(1) lookup
-        let mut node_map: HashMap<String, Node> = HashMap::new();
-        for node in nodes {
-            node_map.insert(node.id.clone(), node.clone());
-        }
-
-        // Create adjacency list: parent_id → Vec of (child_id, order)
-        // Sorted by order to maintain sibling sequence
-        let mut adjacency_list: HashMap<String, Vec<(String, f64)>> = HashMap::new();
-        for edge in edges {
-            adjacency_list
-                .entry(edge.in_node.clone())
-                .or_default()
-                .push((edge.out_node.clone(), edge.order));
-        }
-
-        // Sort children by order for each parent
-        for children in adjacency_list.values_mut() {
-            children.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        }
-
-        // Fetch root node to include in response
-        let root_node = self.get_node(root_id).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to fetch root node: {}", e))
-        })?;
+        // Use shared subtree data fetching
+        let (root_node, node_map, adjacency_list) = self.get_subtree_data(parent_id).await?;
 
         match root_node {
             Some(root) => {
@@ -2656,10 +2594,89 @@ where
         }
     }
 
+    /// Fetch all data needed to traverse a subtree efficiently
+    ///
+    /// This is the core data-fetching method used by both `get_children_tree` (JSON output)
+    /// and MCP markdown export. It performs exactly 3 database queries regardless of tree
+    /// depth or node count:
+    ///
+    /// 1. Fetch root node
+    /// 2. Fetch all descendant nodes in subtree
+    /// 3. Fetch all edges in subtree
+    ///
+    /// Returns data structures optimized for in-memory traversal:
+    /// - Node map for O(1) node lookup by ID
+    /// - Adjacency list for O(1) children lookup by parent ID (sorted by order)
+    ///
+    /// # Arguments
+    ///
+    /// * `root_id` - The root node ID to fetch subtree for
+    ///
+    /// # Returns
+    ///
+    /// Tuple of (root_node, node_map, adjacency_list) where:
+    /// - root_node: Option<Node> - the root node if it exists
+    /// - node_map: HashMap<String, Node> - all nodes indexed by ID
+    /// - adjacency_list: HashMap<String, Vec<String>> - children IDs indexed by parent ID, sorted by order
+    pub async fn get_subtree_data(&self, root_id: &str) -> Result<SubtreeData, NodeServiceError> {
+        use std::collections::HashMap;
+
+        // Fetch root node
+        let root_node = self.get_node(root_id).await.map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to fetch root node: {}", e))
+        })?;
+
+        // Fetch all nodes in subtree
+        let nodes = self
+            .store
+            .get_nodes_in_subtree(root_id)
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to fetch subtree nodes: {}", e))
+            })?;
+
+        // Fetch all edges in subtree
+        let edges = self
+            .store
+            .get_edges_in_subtree(root_id)
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to fetch subtree edges: {}", e))
+            })?;
+
+        // Create a map of node_id → Node for O(1) lookup
+        let mut node_map: HashMap<String, Node> = HashMap::new();
+        for node in nodes {
+            node_map.insert(node.id.clone(), node);
+        }
+        // Include root node in the map
+        if let Some(ref root) = root_node {
+            node_map.insert(root.id.clone(), root.clone());
+        }
+
+        // Create adjacency list: parent_id → Vec of child_ids (sorted by order)
+        let mut adjacency_with_order: HashMap<String, Vec<(String, f64)>> = HashMap::new();
+        for edge in edges {
+            adjacency_with_order
+                .entry(edge.in_node.clone())
+                .or_default()
+                .push((edge.out_node.clone(), edge.order));
+        }
+
+        // Sort children by order for each parent, then extract just the IDs
+        let mut adjacency_list: HashMap<String, Vec<String>> = HashMap::new();
+        for (parent_id, mut children) in adjacency_with_order {
+            children.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            adjacency_list.insert(parent_id, children.into_iter().map(|(id, _)| id).collect());
+        }
+
+        Ok((root_node, node_map, adjacency_list))
+    }
+
     /// Recursively build a tree node with its children
     ///
-    /// Helper function for `build_tree_from_adjacency_list` that recursively
-    /// constructs JSON nodes with nested children arrays.
+    /// Helper function for `get_children_tree` that recursively constructs
+    /// JSON nodes with nested children arrays.
     ///
     /// Uses `node_to_typed_value` for typed serialization, which converts
     /// task nodes to `TaskNode` (with proper camelCase properties) and
@@ -2669,8 +2686,8 @@ where
     fn build_node_tree_recursive(
         &self,
         node: &Node,
-        node_map: &std::collections::HashMap<String, Node>,
-        adjacency_list: &std::collections::HashMap<String, Vec<(String, f64)>>,
+        node_map: &HashMap<String, Node>,
+        adjacency_list: &HashMap<String, Vec<String>>,
     ) -> serde_json::Value {
         // Use typed serialization for task/schema nodes (camelCase properties)
         // Falls back to raw Node serialization for other types
@@ -2682,7 +2699,7 @@ where
             if let Some(children_ids) = adjacency_list.get(&node.id) {
                 children_ids
                     .iter()
-                    .filter_map(|(child_id, _order)| {
+                    .filter_map(|child_id| {
                         node_map.get(child_id).map(|child_node| {
                             self.build_node_tree_recursive(child_node, node_map, adjacency_list)
                         })
@@ -2739,6 +2756,33 @@ where
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         Ok(parent)
+    }
+
+    /// Check which nodes have parents in a single batch query
+    ///
+    /// Returns a HashMap mapping node_id -> has_parent (bool).
+    /// This is significantly more efficient than calling get_parent() for each node.
+    ///
+    /// # Performance
+    ///
+    /// - **1 query** for all nodes (vs N queries with individual get_parent calls)
+    /// - 30x faster for 30 nodes compared to N+1 approach
+    ///
+    /// # Arguments
+    ///
+    /// * `node_ids` - Slice of node IDs to check
+    ///
+    /// # Returns
+    ///
+    /// HashMap where key is node_id and value is true if the node has a parent, false otherwise
+    pub async fn check_has_parent_batch(
+        &self,
+        node_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, bool>, NodeServiceError> {
+        self.store
+            .check_has_parent_batch(node_ids)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 
     /// Get the root (root ancestor) of a node
@@ -3408,41 +3452,12 @@ where
     /// 2. `mentioned_by` - Nodes that reference the specified node
     /// 3. `content_contains` + optional `node_type` - Full-text content search
     /// 4. `node_type` - Filter by node type
-    /// 5. `include_containers_and_tasks` - Filter-only query (returns all matching nodes)
-    /// 6. Empty query - Returns empty vec (safer than returning all nodes)
+    /// 5. Empty query - Returns empty vec (safer than returning all nodes)
     ///
     /// # Note on Empty Queries
     ///
     /// Queries with no parameters (all fields `None` or `false`) will return an empty vector.
     /// This is intentional to prevent accidentally fetching all nodes from the database.
-    /// To query all containers and tasks, use `include_containers_and_tasks: Some(true)`.
-    /// Helper function to generate container/task filter SQL clause
-    ///
-    /// Returns a SQL WHERE clause fragment that filters to only include:
-    /// - Task nodes (node_type = 'task')
-    /// - Root nodes (root_id IS NULL)
-    ///
-    /// # Arguments
-    /// * `enabled` - Whether to apply the filter
-    /// * `table_alias` - Optional table alias (e.g., Some("n") for "n.node_type")
-    ///
-    /// # Safety
-    /// This function only generates hardcoded SQL fragments - no user input is interpolated.
-    /// The filter is applied via string concatenation (not parameterized) because it's
-    /// structural SQL (column names and operators), not user data.
-    #[allow(dead_code)]
-    fn build_container_task_filter(enabled: bool, table_alias: Option<&str>) -> String {
-        if !enabled {
-            return String::new();
-        }
-
-        let prefix = table_alias.map(|a| format!("{}.", a)).unwrap_or_default();
-        format!(
-            " AND ({}node_type = 'task' OR ({}root_id IS NULL AND {}node_type NOT IN ('date', 'schema')))",
-            prefix, prefix, prefix
-        )
-    }
-
     pub async fn query_nodes_simple(
         &self,
         query: crate::models::NodeQuery,
@@ -5331,27 +5346,14 @@ mod tests {
         );
     }
 
-    /// Tests for include_containers_and_tasks filter functionality
+    /// Tests for basic node query functionality
     ///
-    /// These tests verify the filter that restricts query results to only
-    /// task nodes and container nodes (nodes with no parent), excluding
-    /// regular text children and other non-referenceable content.
-    ///
-    /// # Test Organization
-    ///
-    /// - `basic_filter()` - Core filter behavior (includes/excludes correct nodes)
-    /// - `content_contains_with_filter()` - Filter + full-text search integration
-    /// - `mentioned_by_with_filter()` - Filter + mention query integration
-    /// - `node_type_with_filter()` - Filter + type query interaction (edge case: tasks always included)
-    /// - `default_behavior()` - Verifies filter defaults to false (no filtering)
+    /// These tests verify that query_nodes_simple returns matching nodes correctly.
+    /// Content search returns ALL matching nodes regardless of type or hierarchy level.
     ///
     /// All tests use unique content markers (e.g., "UniqueBasicFilter") to prevent
     /// cross-test contamination and ensure proper test isolation.
-    /// Tests for basic node query functionality
-    ///
-    /// Note: The include_containers_and_tasks filter was removed. These tests now
-    /// verify that content search returns ALL matching nodes regardless of type.
-    mod container_task_filter_tests {
+    mod node_query_tests {
         use super::*;
 
         #[tokio::test]
@@ -5594,11 +5596,11 @@ mod tests {
             };
             let results = service.query_nodes_simple(query).await.unwrap();
 
-            // Should return all nodes (filter defaults to false via unwrap_or)
+            // Should return all nodes matching the content query
             assert_eq!(
                 results.len(),
                 2,
-                "Default behavior should not filter (include_containers_and_tasks defaults to false)"
+                "Content search should return all matching nodes"
             );
         }
     }

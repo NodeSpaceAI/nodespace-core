@@ -60,7 +60,37 @@
    Base Node Reference Styles
    ============================================================================ */
 
-.ns-noderef {
+/* Simple inline link style (for markdown links in text nodes) */
+.ns-noderef:not([class*='ns-noderef--']) {
+  /* Minimal inline styling - no background or border */
+  display: inline;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+
+  /* Subtle link color */
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+
+  /* Smooth transitions */
+  transition: color var(--transition-fast), text-decoration-color var(--transition-fast);
+  cursor: pointer;
+}
+
+.ns-noderef:not([class*='ns-noderef--']):hover {
+  color: hsl(var(--primary) / 0.8);
+  text-decoration-color: hsl(var(--primary) / 0.5);
+  transform: none;
+  box-shadow: none;
+}
+
+/* Rich node reference pill style (for decorated references with icons/metadata) */
+.ns-noderef[class*='ns-noderef--'] {
   /* Base layout and positioning */
   display: inline-flex;
   align-items: center;
@@ -88,8 +118,8 @@
   position: relative;
 }
 
-/* Hover and focus states */
-.ns-noderef:hover {
+/* Hover and focus states (only for rich node references with modifiers) */
+.ns-noderef[class*='ns-noderef--']:hover {
   background: hsl(var(--accent));
   color: hsl(var(--accent-foreground));
   border-color: hsl(var(--border));
@@ -99,7 +129,7 @@
 
 /* Removed :focus-visible border - Tab key used for indent/outdent, not UI navigation */
 
-.ns-noderef:active {
+.ns-noderef[class*='ns-noderef--']:active {
   transform: translateY(0);
   box-shadow: 0 1px 2px hsl(var(--border) / 0.1);
 }

@@ -194,7 +194,10 @@
           sourceContainer,
           targetContainer,
           sourceIndex,
-          targetIndex
+          targetIndex,
+          draggedTab: draggedItem.tab.title,
+          currentPaneId,
+          totalTabs: displayTabs.length
         });
         dragOverIndex = null;
         return;
@@ -212,7 +215,11 @@
           sourcePaneId,
           targetPaneId: currentPaneId,
           sourcePaneExists,
-          targetPaneExists
+          targetPaneExists,
+          draggedTab: draggedItem.tab.title,
+          sourceIndex,
+          targetIndex,
+          totalPanes: $tabState.panes.length
         });
         dragOverIndex = null;
         return;
@@ -227,7 +234,25 @@
       // Perform the drop operation
       if (sourcePaneId === currentPaneId) {
         // Within-pane reorder
-        reorderTab(tabId, targetIndex, currentPaneId);
+        // When dragging forward (left to right), we need to adjust the target index
+        // because removing the source shifts all subsequent indices down by 1
+        // The visual drop indicator shows "insert before target", so:
+        // - If dragging forward (source < target), final position is target - 1
+        // - If dragging backward (source > target), final position is target (no adjustment needed)
+        //
+        // Example 1: Dragging forward [A, B, C] - drag A to position of C
+        //   sourceIndex = 0, targetIndex = 2
+        //   Visual: user sees drop indicator before C (wants A at index 2 after drop)
+        //   Reality: removing A → [B, C], then insert at adjusted index 1 → [B, A, C]
+        //   Formula: adjustedTargetIndex = 2 - 1 = 1 ✓
+        //
+        // Example 2: Dragging backward [A, B, C] - drag C to position of A
+        //   sourceIndex = 2, targetIndex = 0
+        //   Visual: user sees drop indicator before A (wants C at index 0 after drop)
+        //   Reality: [A, B, C] → remove C → [A, B] → insert at index 0 → [C, A, B]
+        //   Formula: adjustedTargetIndex = 0 (no adjustment) ✓
+        const adjustedTargetIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex;
+        reorderTab(tabId, adjustedTargetIndex, currentPaneId);
       } else {
         // Cross-pane move
         moveTabBetweenPanes(tabId, sourcePaneId, currentPaneId, targetIndex);

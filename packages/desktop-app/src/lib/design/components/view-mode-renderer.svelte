@@ -41,7 +41,8 @@
     | { type: 'italic'; children: ViewNode[] }
     | { type: 'strikethrough'; children: ViewNode[] }
     | { type: 'code'; content: string }
-    | { type: 'bold-italic'; children: ViewNode[] };
+    | { type: 'bold-italic'; children: ViewNode[] }
+    | { type: 'link'; href: string; children: ViewNode[] };
 
   /**
    * Parse content into ViewNode array for rendering
@@ -283,13 +284,17 @@
         }
 
         case 'link': {
-          // For links, just render the text content (links are handled elsewhere in NodeSpace)
+          // Render as actual link node to preserve nodespace:// URIs and other links
           const link = token as Tokens.Link;
-          if (link.tokens) {
-            nodes.push(...processInlineTokens(link.tokens, blankPlaceholder));
-          } else {
-            nodes.push({ type: 'text', content: link.text });
-          }
+          const children = link.tokens
+            ? processInlineTokens(link.tokens, blankPlaceholder)
+            : [{ type: 'text' as const, content: link.text }];
+
+          nodes.push({
+            type: 'link',
+            href: link.href,
+            children
+          });
           break;
         }
 
@@ -377,6 +382,8 @@
     <span class="markdown-bold markdown-italic">{#each node.children as child}{@render renderNode(child)}{/each}</span>
   {:else if node.type === 'code'}
     <code class="markdown-code-inline">{node.content}</code>
+  {:else if node.type === 'link'}
+    <a href={node.href} class="ns-noderef">{#each node.children as child}{@render renderNode(child)}{/each}</a>
   {/if}
 {/snippet}
 

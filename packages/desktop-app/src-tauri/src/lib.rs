@@ -164,6 +164,15 @@ pub fn run() {
                 .accelerator("CmdOrCtrl+Q")
                 .build(app)?;
 
+            // Standard Edit menu items for clipboard operations
+            // These are required on macOS for Cmd+C/V/X to work in WebView
+            let cut = PredefinedMenuItem::cut(app, Some("Cut"))?;
+            let copy = PredefinedMenuItem::copy(app, Some("Copy"))?;
+            let paste = PredefinedMenuItem::paste(app, Some("Paste"))?;
+            let select_all = PredefinedMenuItem::select_all(app, Some("Select All"))?;
+            let undo = PredefinedMenuItem::undo(app, Some("Undo"))?;
+            let redo = PredefinedMenuItem::redo(app, Some("Redo"))?;
+
             // Create submenus
             let view_menu = SubmenuBuilder::new(app, "View")
                 .items(&[&toggle_sidebar])
@@ -171,9 +180,14 @@ pub fn run() {
 
             let file_menu = SubmenuBuilder::new(app, "File").items(&[&quit]).build()?;
 
+            // Edit menu with standard shortcuts (required for macOS WebView clipboard)
+            let edit_menu = SubmenuBuilder::new(app, "Edit")
+                .items(&[&undo, &redo, &cut, &copy, &paste, &select_all])
+                .build()?;
+
             // Create main menu
             let menu = MenuBuilder::new(app)
-                .items(&[&file_menu, &view_menu])
+                .items(&[&file_menu, &edit_menu, &view_menu])
                 .build()?;
 
             // Set the menu

@@ -176,11 +176,12 @@ describe('text-formatting utils', () => {
         expect(result.length).toBe(MAX_TAB_TITLE_LENGTH);
       });
 
-      it('should extract first line from markdown content', () => {
+      it('should extract first line from markdown content and strip header syntax', () => {
         const markdown = '# Header Title\n\nSome content here\n\nMore content';
         const result = formatTabTitle(markdown);
 
-        expect(result).toBe('# Header Title');
+        // Markdown header syntax (# symbols) are stripped for cleaner tab titles
+        expect(result).toBe('Header Title');
       });
 
       it('should handle node content with prefixes', () => {

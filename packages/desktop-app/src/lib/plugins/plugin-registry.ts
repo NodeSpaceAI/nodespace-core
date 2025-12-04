@@ -126,6 +126,14 @@ export class PluginRegistry {
   }
 
   /**
+   * Get a loaded node component synchronously (no lazy loading)
+   * Returns null if not yet loaded - used by BaseNodeViewer to sync from registry cache
+   */
+  getLoadedNodeComponent(nodeType: string): NodeComponent | null {
+    return this.loadedNodes.get(nodeType) || null;
+  }
+
+  /**
    * Get a node component for a node type
    * Returns null if no node component is registered (fallback to base node)
    */

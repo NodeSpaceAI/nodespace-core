@@ -151,6 +151,9 @@
   // Use $state for reactive Set mutations
   let autoFocusNodes = $state(new Set<string>());
 
+  // Track if the viewer header input is being edited (for view/edit mode display)
+  let isHeaderBeingEdited = $state(false);
+
   /**
    * Visible nodes derived from ReactiveStructureTree + ReactiveNodeData (Issue #555)
    *
@@ -230,6 +233,17 @@
   // ============================================================================
 
   onMount(() => {
+    // CRITICAL FIX: Populate loadedNodes from registry's cache immediately
+    // This prevents race condition where template renders before async loadNodeComponent completes
+    // The registry maintains a persistent cache that survives component remounts
+    const types = ['text', 'header', 'task', 'date', 'code-block', 'quote-block', 'ordered-list'];
+    for (const type of types) {
+      const component = pluginRegistry.getLoadedNodeComponent(type);
+      if (component) {
+        loadedNodes[type] = component;
+      }
+    }
+
     // Set up scroll position management
     // Restore scroll position when viewer becomes active
     let scrollCleanup: (() => void) | null = null;
@@ -318,6 +332,18 @@
       onTitleChange(formatTabTitle(content));
     }
   }
+
+  /**
+   * Compute header display value (view mode - strips markdown syntax)
+   * Similar to HeaderNode pattern: show clean title when not editing
+   */
+  let headerDisplayValue = $derived.by(() => {
+    const rawContent = currentViewedNode?.content || '';
+    if (!rawContent) return '';
+
+    // Strip markdown header syntax (same logic as formatTabTitle)
+    return rawContent.replace(/^#+\s*/, '');
+  });
 
   /**
    * Handle header content changes (for default editable header)
@@ -1097,6 +1123,53 @@
     }
   }
 
+  /**
+   * Extract display content for fallback BaseNode rendering (when plugin component hasn't loaded yet)
+   * Strips syntax markers that would normally be stripped by the specialized component
+   *
+   * This addresses the race condition where lazy-loaded components haven't finished loading
+   * but we need to render content without raw syntax markers (like ``` for code-blocks)
+   */
+  function extractFallbackDisplayContent(content: string, nodeType: string): string | undefined {
+    switch (nodeType) {
+      case 'code-block': {
+        // Strip code fence markers for view mode (matches code-block-node.svelte logic)
+        // Replace ```language with empty, keep content, replace closing ``` with newline
+        const result = content.replace(/^```\w*/, '').replace(/```$/, '\n');
+        return result;
+      }
+
+      case 'header':
+        // Strip leading # symbols for header display (matches header node display)
+        return content.replace(/^#+\s*/, '');
+
+      case 'quote-block':
+        // Strip leading > for quote blocks
+        return content.replace(/^>\s*/, '');
+
+      default:
+        // No stripping needed for other types
+        return undefined;
+    }
+  }
+
+  /**
+   * Get fallback metadata for BaseNode when plugin component hasn't loaded yet
+   * Provides essential flags like disableMarkdown for code-blocks
+   */
+  function extractFallbackMetadata(nodeType: string, properties: Record<string, unknown> | undefined): Record<string, unknown> {
+    const base = properties || {};
+
+    switch (nodeType) {
+      case 'code-block':
+        // Code blocks should not process markdown
+        return { ...base, disableMarkdown: true };
+
+      default:
+        return base;
+    }
+  }
+
   // Issue #709: Type-specific schema forms loaded via plugin registry
   // Core types (task, date, entity) use hardcoded forms for compile-time type safety
   // User-defined types fall back to generic SchemaPropertyForm
@@ -1225,8 +1298,10 @@
       <input
         type="text"
         class="header-input"
-        value={currentViewedNode?.content || ''}
+        value={isHeaderBeingEdited ? (currentViewedNode?.content || '') : headerDisplayValue}
         oninput={(e) => handleHeaderInput(e.currentTarget.value)}
+        onfocus={() => (isHeaderBeingEdited = true)}
+        onblur={() => (isHeaderBeingEdited = false)}
         placeholder="Untitled"
         aria-label="Page title"
       />
@@ -1474,14 +1549,16 @@
             {/key}
           {:else}
             <!-- Final fallback to BaseNode with key for re-rendering -->
+            <!-- Fallback applies syntax stripping for known types (code-block, header, quote-block) -->
             {#key `${node.id}-${node.nodeType}`}
               <BaseNode
                 nodeId={node.id}
                 nodeType={node.nodeType}
                 autoFocus={node.autoFocus}
                 content={node.content}
+                displayContent={extractFallbackDisplayContent(node.content, node.nodeType)}
                 children={node.children}
-                metadata={node.properties || {}}
+                metadata={extractFallbackMetadata(node.nodeType, node.properties)}
                 editableConfig={{ allowMultiline: true }}
                 on:createNewNode={handleCreateNewNode}
                 on:indentNode={handleIndentNode}

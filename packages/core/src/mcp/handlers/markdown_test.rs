@@ -32,7 +32,7 @@ Some content under subtitle."#;
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Test Document"
+            "title": "Test Document"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -40,7 +40,7 @@ Some content under subtitle."#;
             .unwrap();
 
         assert_eq!(result["success"], true);
-        // New behavior: container_title creates container node, then markdown_content creates children
+        // New behavior: title creates container node, then markdown_content creates children
         // 1. "Test Document" (text container)
         // 2. "# Main Title" (header, child of container)
         // 3. "## Subtitle" (header, child of Main Title)
@@ -68,7 +68,7 @@ Text under second H2"#;
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Hierarchy Test"
+            "title": "Hierarchy Test"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -76,14 +76,14 @@ Text under second H2"#;
             .unwrap();
 
         assert_eq!(result["success"], true);
-        // Container from container_title + 3 headers + 1 text + 1 text (Another H2 content)
+        // Container from title + 3 headers + 1 text + 1 text (Another H2 content)
         assert_eq!(result["nodes_created"], 6);
 
-        // Get the container node (created from container_title)
+        // Get the container node (created from title)
         let root_id = result["root_id"].as_str().unwrap();
         let container = node_service.get_node(root_id).await.unwrap().unwrap();
 
-        assert_eq!(container.content, "Hierarchy Test"); // Container from container_title
+        assert_eq!(container.content, "Hierarchy Test"); // Container from title
         assert_eq!(container.node_type, "text");
         // Container is root (no parent relationship in edges)
     }
@@ -104,7 +104,7 @@ Content under H3"#;
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "# Container H1"
+            "title": "# Container H1"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -209,7 +209,7 @@ Content under H3"#;
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Complex Test"
+            "title": "Complex Test"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -301,7 +301,7 @@ code block
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Content Test"
+            "title": "Content Test"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -327,8 +327,14 @@ code block
                     assert!(node.content.starts_with("##"));
                 }
                 "task" => {
-                    // Should have - [ ] format
-                    assert!(node.content.starts_with("- [ ]"));
+                    // Task content should be clean (no "- [ ]" prefix)
+                    // The checkbox state is stored in the `completed` property
+                    assert!(
+                        !node.content.starts_with("- [ ]") && !node.content.starts_with("- [x]"),
+                        "Task content should not have checkbox prefix, got: {}",
+                        node.content
+                    );
+                    assert_eq!(node.content, "Task item");
                 }
                 "code-block" => {
                     // Should have ``` fence
@@ -355,7 +361,7 @@ code block
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "List Test"
+            "title": "List Test"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -363,7 +369,7 @@ code block
             .unwrap();
 
         assert_eq!(result["success"], true);
-        // Container from container_title + 4 list items
+        // Container from title + 4 list items
         assert_eq!(result["nodes_created"], 5);
     }
 
@@ -377,7 +383,7 @@ code block
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Task List"
+            "title": "Task List"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -385,16 +391,16 @@ code block
             .unwrap();
 
         assert_eq!(result["success"], true);
-        // Container from container_title + 3 tasks
+        // Container from title + 3 tasks
         assert_eq!(result["nodes_created"], 4);
 
-        // Verify task content (checkboxes in content, no properties)
+        // Verify task content - content is clean, completed state is in properties
         let node_ids = result["node_ids"].as_array().unwrap();
 
-        let mut checked_count = 0;
-        let mut unchecked_count = 0;
+        let mut completed_count = 0;
+        let mut not_completed_count = 0;
 
-        // Skip the first node (container from container_title)
+        // Skip the first node (root from title)
         for node_id in node_ids.iter().skip(1) {
             let node = node_service
                 .get_node(node_id.as_str().unwrap())
@@ -403,16 +409,36 @@ code block
                 .unwrap();
 
             if node.node_type == "task" {
-                if node.content.contains("[x]") {
-                    checked_count += 1;
-                } else if node.content.contains("[ ]") {
-                    unchecked_count += 1;
+                // Content should be clean (no checkbox prefix)
+                assert!(
+                    !node.content.starts_with("- [ ]") && !node.content.starts_with("- [x]"),
+                    "Task content should not have checkbox prefix, got: {}",
+                    node.content
+                );
+
+                // Check the status property (status: "done" means completed)
+                let status = node
+                    .properties
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("open");
+
+                if status == "done" {
+                    completed_count += 1;
+                } else {
+                    not_completed_count += 1;
                 }
             }
         }
 
-        assert_eq!(checked_count, 1);
-        assert_eq!(unchecked_count, 2);
+        assert_eq!(
+            completed_count, 1,
+            "Should have 1 completed task (status: done)"
+        );
+        assert_eq!(
+            not_completed_count, 2,
+            "Should have 2 uncompleted tasks (status: open)"
+        );
     }
 
     #[tokio::test]
@@ -427,7 +453,7 @@ fn main() {
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Code Test"
+            "title": "Code Test"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -435,7 +461,7 @@ fn main() {
             .unwrap();
 
         assert_eq!(result["success"], true);
-        // Container from container_title + code block
+        // Container from title + code block
         assert_eq!(result["nodes_created"], 2);
 
         // Verify code block node (second node, after container)
@@ -463,7 +489,7 @@ plain code
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Plain Code Test"
+            "title": "Plain Code Test"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -471,7 +497,7 @@ plain code
             .unwrap();
 
         assert_eq!(result["success"], true);
-        // Container from container_title + code block
+        // Container from title + code block
         assert_eq!(result["nodes_created"], 2);
 
         // Verify code block content (no language fence) - second node after container
@@ -509,7 +535,7 @@ Regular paragraph text."#;
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Mixed Content"
+            "title": "Mixed Content"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -518,7 +544,7 @@ Regular paragraph text."#;
 
         assert_eq!(result["success"], true);
 
-        // Container from container_title + 3 headers + 2 tasks + code block + quote + 1 text node (paragraph)
+        // Container from title + 3 headers + 2 tasks + code block + quote + 1 text node (paragraph)
         // Note: Quote is a single quote-block node (old parser created duplicates)
         assert_eq!(result["nodes_created"], 9);
     }
@@ -529,12 +555,12 @@ Regular paragraph text."#;
 
         let params = json!({
             "markdown_content": "",
-            "container_title": "Empty Document"
+            "title": "Empty Document"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params).await;
 
-        // Empty markdown is now OK - container_title creates the container node
+        // Empty markdown is now OK - title creates the container node
         // and empty markdown_content just means no child nodes
         assert!(result.is_ok());
         let result = result.unwrap();
@@ -549,7 +575,7 @@ Regular paragraph text."#;
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Container Test"
+            "title": "Container Test"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -559,7 +585,7 @@ Regular paragraph text."#;
         let root_id = result["root_id"].as_str().unwrap();
         let container = node_service.get_node(root_id).await.unwrap().unwrap();
 
-        // Container should be a root node created from container_title
+        // Container should be a root node created from title
         assert_eq!(container.node_type, "text"); // "Container Test" is plain text
         assert_eq!(container.content, "Container Test");
         // Container is root (no parent edges)
@@ -575,7 +601,7 @@ Text content
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Shared Container"
+            "title": "Shared Container"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -598,16 +624,43 @@ Text content
     }
 
     #[tokio::test]
-    async fn test_invalid_params() {
+    async fn test_auto_extract_title_from_first_line() {
         let (node_service, _temp_dir) = setup_test_service().await;
 
-        // Missing container_title
+        // No title provided - should use first line as root
         let params = json!({
-            "markdown_content": "# Test"
+            "markdown_content": "# My Document\n\n## Section 1\n\nSome text"
+        });
+
+        let result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+        // First line becomes root ("# My Document"), rest become children
+        // "# My Document" (root) + "## Section 1" + "Some text"
+        assert_eq!(result["nodes_created"], 3);
+
+        // Verify root node content is the first line
+        let root_id = result["root_id"].as_str().unwrap();
+        let root_node = node_service.get_node(root_id).await.unwrap().unwrap();
+        assert_eq!(root_node.content, "# My Document");
+        assert_eq!(root_node.node_type, "header");
+    }
+
+    #[tokio::test]
+    async fn test_empty_markdown_without_title_is_error() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        // Empty markdown without title should error
+        let params = json!({
+            "markdown_content": ""
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params).await;
         assert!(result.is_err());
+        let error_msg = format!("{:?}", result.unwrap_err());
+        assert!(error_msg.contains("empty"));
     }
 
     #[tokio::test]
@@ -618,7 +671,7 @@ Text content
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Inline Code Test"
+            "title": "Inline Code Test"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -626,7 +679,7 @@ Text content
             .unwrap();
 
         assert_eq!(result["success"], true);
-        // Container from container_title + text node with inline code
+        // Container from title + text node with inline code
         assert_eq!(result["nodes_created"], 2);
 
         // Find the text node (second node, after container)
@@ -661,7 +714,7 @@ Third paragraph"#;
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Sibling Order Test"
+            "title": "Sibling Order Test"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -669,7 +722,7 @@ Third paragraph"#;
             .unwrap();
 
         assert_eq!(result["success"], true);
-        // Container from container_title + 3 paragraphs from markdown_content
+        // Container from title + 3 paragraphs from markdown_content
         assert_eq!(result["nodes_created"], 4);
 
         let node_ids = result["node_ids"].as_array().unwrap();
@@ -702,9 +755,24 @@ Third paragraph"#;
         assert_eq!(second.content, "Second paragraph");
         assert_eq!(third.content, "Third paragraph");
 
-        // Note: Sibling ordering is now on has_child edge order field, not node.before_sibling_id
-        // Verify content nodes are children of the container via get_children ordering
-        // All content nodes should have the same parent (the container - verified via edges)
+        // Verify ordering via get_children - this is the key test!
+        // get_children returns nodes ordered by has_child edge order field (ORDER BY order ASC)
+        let children = node_service.get_children(&container.id).await.unwrap();
+        assert_eq!(children.len(), 3, "Expected 3 children");
+
+        // Verify document order is preserved (not reversed!)
+        assert_eq!(
+            children[0].content, "First paragraph",
+            "First child should be 'First paragraph'"
+        );
+        assert_eq!(
+            children[1].content, "Second paragraph",
+            "Second child should be 'Second paragraph'"
+        );
+        assert_eq!(
+            children[2].content, "Third paragraph",
+            "Third child should be 'Third paragraph'"
+        );
     }
 
     #[tokio::test]
@@ -721,7 +789,7 @@ Text under H6"#;
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Deep Hierarchy Test"
+            "title": "Deep Hierarchy Test"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -729,7 +797,7 @@ Text under H6"#;
             .unwrap();
 
         assert_eq!(result["success"], true);
-        // Container from container_title + 6 headers + 1 text
+        // Container from title + 6 headers + 1 text
         assert_eq!(result["nodes_created"], 8);
 
         let node_ids = result["node_ids"].as_array().unwrap();
@@ -806,7 +874,7 @@ Text under H6"#;
 
         let params = json!({
             "markdown_content": large_markdown,
-            "container_title": "Large Document"
+            "title": "Large Document"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params).await;
@@ -827,7 +895,7 @@ Text paragraph
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Metadata Test"
+            "title": "Metadata Test"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -836,7 +904,7 @@ Text paragraph
 
         // Verify nodes array exists with metadata
         let nodes = result["nodes"].as_array().unwrap();
-        // Container from container_title + header + text + list
+        // Container from title + header + text + list
         assert_eq!(nodes.len(), 4);
 
         // Verify metadata structure
@@ -866,7 +934,7 @@ Text paragraph
         let markdown = "# Hello World\n\n- Item 1";
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Test"
+            "title": "Test"
         });
 
         let import_result = handle_create_nodes_from_markdown(&node_service, params)
@@ -913,7 +981,7 @@ Text paragraph
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Deep Hierarchy"
+            "title": "Deep Hierarchy"
         });
 
         let import_result = handle_create_nodes_from_markdown(&node_service, params)
@@ -956,7 +1024,7 @@ Text paragraph
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "Test"
+            "title": "Test"
         });
 
         let import_result = handle_create_nodes_from_markdown(&node_service, params)
@@ -997,7 +1065,7 @@ Text paragraph
         // Import
         let import_params = json!({
             "markdown_content": original,
-            "container_title": "Test"
+            "title": "Test"
         });
         let import_result = handle_create_nodes_from_markdown(&node_service, import_params)
             .await
@@ -1086,7 +1154,7 @@ Text under section 1
 
         let import_params = json!({
             "markdown_content": markdown,
-            "container_title": "Hierarchy Test"
+            "title": "Hierarchy Test"
         });
 
         let import_result = handle_create_nodes_from_markdown(&node_service, import_params)
@@ -1143,7 +1211,7 @@ Text under section 1
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "# Container"
+            "title": "# Container"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -1193,7 +1261,7 @@ Text under section 1
 
         let params = json!({
             "markdown_content": markdown,
-            "container_title": "# Container"
+            "title": "# Container"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -1221,7 +1289,7 @@ Text under section 1
         // Import
         let import_params = json!({
             "markdown_content": "Text paragraph\n- Bullet 1\n- Bullet 2",
-            "container_title": "# Header"
+            "title": "# Header"
         });
 
         let import_result = handle_create_nodes_from_markdown(&node_service, import_params)
@@ -1270,7 +1338,7 @@ Regular text after code."#;
 
         let import_params = json!({
             "markdown_content": markdown,
-            "container_title": "Code Test"
+            "title": "Code Test"
         });
 
         let import_result = handle_create_nodes_from_markdown(&node_service, import_params)
@@ -1322,7 +1390,7 @@ Regular text after code."#;
         // Create root with some children
         let create_params = json!({
             "markdown_content": "- Old item 1\n- Old item 2",
-            "container_title": "# Test Container"
+            "title": "# Test Container"
         });
 
         let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
@@ -1373,7 +1441,7 @@ Regular text after code."#;
         // Create root with some children
         let create_params = json!({
             "markdown_content": "- Old item",
-            "container_title": "# Test"
+            "title": "# Test"
         });
 
         let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
@@ -1403,7 +1471,7 @@ Regular text after code."#;
         // Create root with simple structure
         let create_params = json!({
             "markdown_content": "Simple text",
-            "container_title": "# Document"
+            "title": "# Document"
         });
 
         let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
@@ -1496,7 +1564,7 @@ Regular text after code."#;
         // Create root with children
         let create_params = json!({
             "markdown_content": "- Item 1\n- Item 2",
-            "container_title": "# Container"
+            "title": "# Container"
         });
 
         let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
@@ -1530,7 +1598,7 @@ Regular text after code."#;
         // Create root
         let create_params = json!({
             "markdown_content": "Test",
-            "container_title": "# Container"
+            "title": "# Container"
         });
 
         let create_result = handle_create_nodes_from_markdown(&node_service, create_params)

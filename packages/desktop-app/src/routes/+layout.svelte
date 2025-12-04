@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import '../app.css';
+  import '$lib/styles/noderef.css';
   import AppShell from '$lib/components/layout/app-shell.svelte';
   import { initializeSchemaPluginSystem } from '$lib/plugins/schema-plugin-loader';
   import { initializeTauriSyncListeners } from '$lib/services/tauri-sync-listener';

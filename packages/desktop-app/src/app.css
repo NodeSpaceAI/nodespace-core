@@ -537,3 +537,85 @@
   --node-date: 200 40% 55%; /* Date nodes use Scheme 3 blue-gray dark */
   --node-document: 200 40% 55%; /* Document nodes use Scheme 3 blue-gray dark */
 }
+
+/* =============================================================================
+ * Code Block Node Styles
+ *
+ * CRITICAL: These styles MUST be in app.css (not in component) because:
+ * - code-block-node.svelte is lazy-loaded via plugin registry
+ * - Child code-blocks may render before the component is loaded
+ * - :global() styles only work when the containing component is loaded
+ *
+ * This ensures code-block styling works regardless of component loading order.
+ * ============================================================================= */
+
+/* Code block wrapper - icon outside, content with background */
+.code-block-node-wrapper {
+  position: relative;
+  /* width: 100% handled by parent .node-content-wrapper flex child rule */
+}
+
+/* Apply muted background to the content area only (BaseNode wraps it) */
+.code-block-node-wrapper .node__content {
+  background: hsl(var(--muted));
+  padding: 0.25rem;
+  border-radius: var(--radius);
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  padding-right: 10rem; /* Space for buttons */
+}
+
+/* Language selector button (top-right, appears on hover) */
+.code-block-node-wrapper .code-language-button {
+  position: absolute;
+  top: 0.5rem;
+  right: 3.9375rem;
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  color: hsl(var(--foreground));
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  width: 8rem;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+/* Show language button on hover, but hide while actively typing */
+.code-block-node-wrapper:hover:not(.typing) .code-language-button {
+  opacity: 1;
+}
+
+/* Copy button (top-right, appears on hover) */
+.code-block-node-wrapper .code-copy-button {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  color: hsl(var(--foreground));
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  text-transform: lowercase;
+}
+
+/* Show copy button on hover, but hide while actively typing */
+.code-block-node-wrapper:hover:not(.typing) .code-copy-button {
+  opacity: 1;
+}
+
+/* Copied state - green background with success color */
+.code-block-node-wrapper .code-copy-button.copied {
+  opacity: 1;
+  background: hsl(var(--success, 142 76% 36%));
+  color: hsl(var(--success-foreground, 0 0% 100%));
+  border-color: hsl(var(--success, 142 76% 36%));
+}
