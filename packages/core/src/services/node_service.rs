@@ -318,10 +318,10 @@ pub fn extract_mentions(content: &str) -> Vec<String> {
     mentions.into_iter().collect()
 }
 
-/// Parse timestamp from database - handles both SQLite and RFC3339 formats
+/// Parse timestamp from database - handles both SurrealDB and RFC3339 formats
 #[allow(dead_code)]
 fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, String> {
-    // Try SQLite format first: "YYYY-MM-DD HH:MM:SS"
+    // Try SurrealDB format first: "YYYY-MM-DD HH:MM:SS"
     if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
         return Ok(naive.and_utc());
     }
@@ -332,7 +332,7 @@ fn parse_timestamp(s: &str) -> Result<DateTime<Utc>, String> {
     }
 
     Err(format!(
-        "Unable to parse timestamp '{}' as SQLite or RFC3339 format",
+        "Unable to parse timestamp '{}' as SurrealDB or RFC3339 format",
         s
     ))
 }

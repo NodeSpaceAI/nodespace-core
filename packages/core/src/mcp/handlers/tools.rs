@@ -4,19 +4,226 @@
 //! This module centralizes tool discovery and execution according to the
 //! MCP 2024-11-05 specification.
 //!
+//! ## Progressive Disclosure
+//!
+//! Following Anthropic's advanced tool use patterns, tools are organized into tiers:
+//! - **Tier 1 (Core)**: Always exposed in tools/list (~450-900 tokens)
+//! - **Tier 2 (Discoverable)**: Found via search_tools (~1,700 tokens saved initially)
+//!
+//! All tools remain callable via tools/call regardless of tier.
+//!
 //! As of Issue #676, all handlers use NodeService directly instead of NodeOperations.
 //! As of Issue #690, SchemaService was removed - schema nodes use generic CRUD.
 
 use crate::mcp::handlers::{markdown, nodes, relationships, schema, search};
 use crate::mcp::types::MCPError;
 use crate::services::{NodeEmbeddingService, NodeService};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+/// Tool exposure tier for progressive disclosure
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolTier {
+    /// Core tools always exposed in tools/list (Tier 1)
+    Core,
+    /// Discoverable tools found via search_tools (Tier 2)
+    Discoverable,
+}
+
+/// Tool category for filtering and organization
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolCategory {
+    /// Basic CRUD operations (create_node, get_node, update_node, delete_node)
+    Crud,
+    /// Query and batch operations (query_nodes, get_nodes_batch, update_nodes_batch)
+    Query,
+    /// Hierarchy operations (get_children, insert_child_at_index, etc.)
+    Hierarchy,
+    /// Markdown import/export (create_nodes_from_markdown, etc.)
+    Markdown,
+    /// Search operations (search_roots)
+    Search,
+    /// Schema management (create_schema, get_all_schemas, update_schema)
+    Schema,
+    /// Relationship operations (create_relationship, get_related_nodes, etc.)
+    Relationships,
+    /// Discovery and meta-tools (search_tools)
+    Discovery,
+}
+
+/// Parameters for search_tools
+#[derive(Debug, Deserialize)]
+pub struct SearchToolsParams {
+    /// Search query (searches names and descriptions)
+    #[serde(default)]
+    pub query: Option<String>,
+
+    /// Filter by category
+    #[serde(default)]
+    pub category: Option<ToolCategory>,
+
+    /// Filter by node type (returns type-specific tools)
+    #[serde(default)]
+    pub node_type: Option<String>,
+
+    /// Maximum results to return
+    #[serde(default = "default_search_limit")]
+    pub limit: usize,
+}
+
+fn default_search_limit() -> usize {
+    10
+}
+
+/// Get the tier for a given tool
+fn get_tool_tier(tool_name: &str) -> ToolTier {
+    match tool_name {
+        // Tier 1: Core CRUD operations
+        "create_node" | "get_node" | "update_node" | "delete_node" => ToolTier::Core,
+
+        // Tier 1: Essential query
+        "query_nodes" => ToolTier::Core,
+
+        // Tier 1: Basic hierarchy
+        "get_children" | "insert_child_at_index" => ToolTier::Core,
+
+        // Tier 1: Discovery
+        "get_all_schemas" | "search_tools" => ToolTier::Core,
+
+        // Tier 2: Everything else is discoverable
+        _ => ToolTier::Discoverable,
+    }
+}
+
+/// Get the category for a given tool
+fn get_tool_category(tool_name: &str) -> ToolCategory {
+    match tool_name {
+        "create_node" | "get_node" | "update_node" | "delete_node" => ToolCategory::Crud,
+
+        "query_nodes" | "get_nodes_batch" | "update_nodes_batch" => ToolCategory::Query,
+
+        "get_children" | "insert_child_at_index" | "move_child_to_index"
+        | "get_child_at_index" | "get_node_tree" => ToolCategory::Hierarchy,
+
+        "create_nodes_from_markdown" | "get_markdown_from_node_id"
+        | "update_root_from_markdown" => ToolCategory::Markdown,
+
+        "search_roots" => ToolCategory::Search,
+
+        "create_schema" | "get_all_schemas" | "update_schema" => ToolCategory::Schema,
+
+        "create_relationship" | "delete_relationship" | "get_related_nodes"
+        | "get_relationship_graph" | "get_inbound_relationships"
+        | "add_schema_relationship" | "remove_schema_relationship" => ToolCategory::Relationships,
+
+        "search_tools" => ToolCategory::Discovery,
+
+        _ => ToolCategory::Query, // Default fallback
+    }
+}
+
+/// Check if a tool supports a specific node type
+/// Currently returns true for generic tools, false for type-specific tools that don't match
+fn tool_supports_node_type(_tool_name: &str, _node_type: &str) -> bool {
+    // Future: When we have type-specific tools like set_task_status
+    // match (tool_name, node_type) {
+    //     ("set_task_status", "task") => true,
+    //     ("get_tasks_by_status", "task") => true,
+    //     _ => false
+    // }
+
+    // For now, all tools support all types (generic operations)
+    true
+}
+
+/// Handle search_tools request
+///
+/// Progressive discovery tool that allows AI agents to find tools dynamically
+/// instead of loading all tool definitions upfront.
+///
+/// # Parameters
+///
+/// - `query`: Optional text search across tool names and descriptions
+/// - `category`: Optional filter by tool category (crud, query, hierarchy, etc.)
+/// - `node_type`: Optional filter for type-specific tools
+/// - `limit`: Maximum number of results (default: 10)
+///
+/// # Returns
+///
+/// Returns filtered tool definitions matching the search criteria
+pub fn handle_search_tools(params: Value) -> Result<Value, MCPError> {
+    let params: SearchToolsParams = serde_json::from_value(params)
+        .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
+
+    // Get all tool schemas
+    let all_tools = get_tool_schemas();
+    let tools_array = all_tools
+        .as_array()
+        .ok_or_else(|| MCPError::internal_error("Tool schemas not an array".to_string()))?;
+
+    // Apply filters (only return Tier 2 Discoverable tools)
+    let filtered: Vec<Value> = tools_array
+        .iter()
+        .filter(|tool| {
+            let name = tool["name"].as_str().unwrap_or("");
+            let desc = tool["description"].as_str().unwrap_or("");
+            let category = get_tool_category(name);
+
+            // Only include Tier 2 (Discoverable) tools
+            // Tier 1 tools are already exposed via tools/list
+            if matches!(get_tool_tier(name), ToolTier::Core) {
+                return false;
+            }
+
+            // Query filter (case-insensitive search in name and description)
+            if let Some(q) = &params.query {
+                let query_lower = q.to_lowercase();
+                if !name.to_lowercase().contains(&query_lower)
+                    && !desc.to_lowercase().contains(&query_lower)
+                {
+                    return false;
+                }
+            }
+
+            // Category filter
+            if let Some(cat) = &params.category {
+                if category != *cat {
+                    return false;
+                }
+            }
+
+            // Node type filter
+            if let Some(node_type) = &params.node_type {
+                if !tool_supports_node_type(name, node_type) {
+                    return false;
+                }
+            }
+
+            true
+        })
+        .take(params.limit)
+        .cloned()
+        .collect();
+
+    Ok(json!({
+        "tools": filtered,
+        "total": filtered.len(),
+        "query": params.query,
+        "category": params.category
+    }))
+}
+
 /// Handle tools/list MCP request
 ///
-/// Returns all available tool schemas for client discovery.
+/// Returns Tier 1 (core) tool schemas for progressive disclosure.
 /// This is called after initialize to discover what tools the server provides.
+///
+/// ## Progressive Disclosure
+///
+/// Only Tier 1 tools are exposed initially (~450-900 tokens).
+/// AI agents can discover Tier 2 tools via search_tools (~1,700 token savings).
 ///
 /// # MCP Spec Compliance
 ///
@@ -33,8 +240,24 @@ use std::sync::Arc;
 /// }
 /// ```
 pub fn handle_tools_list(_params: Value) -> Result<Value, MCPError> {
+    // Get all tool schemas
+    let all_tools = get_tool_schemas();
+    let tools_array = all_tools
+        .as_array()
+        .ok_or_else(|| MCPError::internal_error("Tool schemas not an array".to_string()))?;
+
+    // Filter to only Tier 1 (Core) tools
+    let tier1_tools: Vec<Value> = tools_array
+        .iter()
+        .filter(|tool| {
+            let name = tool["name"].as_str().unwrap_or("");
+            matches!(get_tool_tier(name), ToolTier::Core)
+        })
+        .cloned()
+        .collect();
+
     Ok(json!({
-        "tools": get_tool_schemas()
+        "tools": tier1_tools
     }))
 }
 
@@ -136,6 +359,9 @@ where
 
         // Search
         "search_roots" => search::handle_search_roots(embedding_service, arguments),
+
+        // Discovery
+        "search_tools" => handle_search_tools(arguments),
 
         // Schema creation (uses generic node creation)
         "create_schema" => schema::handle_create_schema(node_service, arguments).await,
@@ -583,6 +809,36 @@ fn get_tool_schemas() -> Value {
                     }
                 },
                 "required": ["query"]
+            }
+        },
+        // Progressive disclosure - tool discovery
+        {
+            "name": "search_tools",
+            "description": "Discover additional NodeSpace tools by category, node type, or keyword search. Use this to find specialized tools beyond the core set (create_node, get_node, update_node, delete_node, query_nodes, get_children, insert_child_at_index, get_all_schemas).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Optional search query to match against tool names and descriptions (e.g., 'markdown', 'relationship', 'batch')"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Optional category filter",
+                        "enum": ["crud", "query", "hierarchy", "markdown", "search", "schema", "relationships", "discovery"]
+                    },
+                    "node_type": {
+                        "type": "string",
+                        "description": "Optional filter for tools relevant to a specific node type (e.g., 'task', 'text', 'date')"
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of tools to return (default: 10)",
+                        "default": 10,
+                        "minimum": 1,
+                        "maximum": 50
+                    }
+                }
             }
         },
         // Schema creation tool

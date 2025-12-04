@@ -92,71 +92,88 @@ async fn test_initialize_empty_params() {
 }
 
 #[test]
-fn test_all_expected_tools_present() {
-    // Use tools/list to get tool schemas (per MCP spec, tools are discovered via tools/list)
+fn test_tier1_core_tools_present() {
+    // Use tools/list to get Tier 1 (Core) tool schemas for progressive disclosure
+    // AI agents can discover additional tools via search_tools
     let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
     let tools = result["tools"].as_array().unwrap();
 
-    // Verify all expected methods are present
-    let expected_tools = [
-        // Core CRUD
+    // Verify all Tier 1 (Core) tools are present
+    let expected_tier1_tools = [
+        // Core CRUD (always exposed)
         "create_node",
         "get_node",
         "update_node",
         "delete_node",
+        // Query
         "query_nodes",
         // Hierarchy operations
         "get_children",
-        "get_child_at_index",
         "insert_child_at_index",
-        "move_child_to_index",
-        "get_node_tree",
-        // Markdown
-        "create_nodes_from_markdown",
-        "get_markdown_from_node_id",
-        // Batch operations
-        "get_nodes_batch",
-        "update_nodes_batch",
-        "update_root_from_markdown",
-        // Search
-        "search_roots",
-        // Schema creation - Issue #703: renamed and extended with relationships
-        "create_schema",
-        // Relationship CRUD - Issue #703
-        "create_relationship",
-        "delete_relationship",
-        "get_related_nodes",
-        // NLP Discovery API - Issue #703
-        "get_relationship_graph",
-        "get_inbound_relationships",
+        // Schema & Discovery
         "get_all_schemas",
-        // Schema Definition Management - Issue #703
-        "add_schema_relationship",
-        "remove_schema_relationship",
-        "update_schema",
+        "search_tools",
     ];
 
-    for expected_tool in &expected_tools {
+    for expected_tool in &expected_tier1_tools {
         assert!(
             tools.iter().any(|t| t["name"] == *expected_tool),
-            "Missing tool: {}",
+            "Missing Tier 1 tool: {}",
             expected_tool
         );
     }
 
-    // Verify we have exactly 26 tools
-    // (28 previous - 2 deprecated tools removed: update_container_from_markdown, search_containers)
-    assert_eq!(tools.len(), 26, "Expected exactly 26 tools");
+    // Verify we have exactly 9 Tier 1 tools (reduced from 26 for token savings)
+    // Other tools are discoverable via search_tools
+    assert_eq!(tools.len(), 9, "Expected exactly 9 Tier 1 (Core) tools");
+}
+
+#[test]
+fn test_search_tools_discovers_tier2_tools() {
+    // Verify search_tools can discover Tier 2 (Discoverable) tools
+    let result = crate::mcp::handlers::tools::handle_search_tools(json!({})).unwrap();
+    let tools = result["tools"].as_array().unwrap();
+
+    // Should find some discoverable tools (not exhaustive check)
+    let discoverable_examples = [
+        "get_child_at_index",
+        "move_child_to_index",
+        "get_node_tree",
+        "create_nodes_from_markdown",
+        "get_markdown_from_node_id",
+        "get_nodes_batch",
+        "update_nodes_batch",
+        "update_root_from_markdown",
+        "search_roots",
+        "create_schema",
+        "create_relationship",
+        "delete_relationship",
+        "get_related_nodes",
+    ];
+
+    // At least some discoverable tools should be present
+    let found_count = discoverable_examples
+        .iter()
+        .filter(|tool_name| tools.iter().any(|t| t["name"] == **tool_name))
+        .count();
+
+    assert!(
+        found_count >= 10,
+        "Expected at least 10 discoverable tools, found {}",
+        found_count
+    );
 }
 
 #[test]
 fn test_all_schemas_have_required_fields() {
+    // Verify Tier 1 tool schemas have proper structure
     let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
     let tools = result["tools"].as_array().unwrap();
 
-    assert!(
-        tools.len() >= 6,
-        "Should have at least 6 tool schemas, found {}",
+    assert_eq!(
+        tools.len(),
+        9,
+        "Should have exactly 9 Tier 1 tool schemas, found {}",
         tools.len()
     );
 
@@ -278,7 +295,11 @@ fn test_update_node_schema_structure() {
 
 #[test]
 fn test_markdown_import_schema_structure() {
-    let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
+    // create_nodes_from_markdown is a Tier 2 tool, must use search_tools
+    let result = crate::mcp::handlers::tools::handle_search_tools(json!({
+        "query": "markdown"
+    }))
+    .unwrap();
     let tools = result["tools"].as_array().unwrap();
 
     let markdown_import = tools
