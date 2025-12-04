@@ -570,7 +570,13 @@ where
 
     let result = match request.method.as_str() {
         // CRITICAL: Initialize must be first interaction (now fetches schemas for dynamic instructions)
-        "initialize" => crate::mcp::handlers::initialize::handle_initialize(&services.node_service, request.params).await,
+        "initialize" => {
+            crate::mcp::handlers::initialize::handle_initialize(
+                &services.node_service,
+                request.params,
+            )
+            .await
+        }
 
         // Ping for connection health checks (doesn't need services or initialization)
         "ping" => Ok(json!({})),

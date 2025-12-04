@@ -87,7 +87,7 @@ where
             .iter()
             .map(|schema| {
                 let type_id = &schema.id; // Schema ID is the type name (e.g., "task", "text")
-                // Add brief description for built-in types
+                                          // Add brief description for built-in types
                 let desc = match type_id.as_str() {
                     "text" => "paragraphs",
                     "header" => "# headings",

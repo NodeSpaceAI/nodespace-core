@@ -117,9 +117,9 @@ fn test_all_expected_tools_present() {
         // Batch operations
         "get_nodes_batch",
         "update_nodes_batch",
-        "update_container_from_markdown",
+        "update_root_from_markdown",
         // Search
-        "search_containers",
+        "search_roots",
         // Schema creation - Issue #703: renamed and extended with relationships
         "create_schema",
         // Relationship CRUD - Issue #703
@@ -144,9 +144,9 @@ fn test_all_expected_tools_present() {
         );
     }
 
-    // Verify we have exactly 28 tools
-    // (19 previous + 6 relationship/NLP discovery tools + 3 schema management tools from Issue #703)
-    assert_eq!(tools.len(), 28, "Expected exactly 28 tools");
+    // Verify we have exactly 26 tools
+    // (28 previous - 2 deprecated tools removed: update_container_from_markdown, search_containers)
+    assert_eq!(tools.len(), 26, "Expected exactly 26 tools");
 }
 
 #[test]
@@ -488,7 +488,9 @@ mod integration_tests {
         });
 
         // First initialize
-        let result1 = handle_initialize(&node_service, params.clone()).await.unwrap();
+        let result1 = handle_initialize(&node_service, params.clone())
+            .await
+            .unwrap();
         state.mark_initialized();
 
         // Second initialize (should succeed - idempotent)

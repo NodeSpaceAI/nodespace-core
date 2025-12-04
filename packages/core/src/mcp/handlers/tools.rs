@@ -125,16 +125,8 @@ where
         "get_markdown_from_node_id" => {
             markdown::handle_get_markdown_from_node_id(node_service, arguments).await
         }
-        // New preferred tool name for root updates
+        // Root node bulk replacement
         "update_root_from_markdown" => {
-            markdown::handle_update_root_from_markdown(node_service, arguments).await
-        }
-        // DEPRECATED: Use update_root_from_markdown instead
-        // Kept for backward compatibility - logs deprecation warning
-        "update_container_from_markdown" => {
-            tracing::warn!(
-                "Tool 'update_container_from_markdown' is deprecated. Use 'update_root_from_markdown' instead."
-            );
             markdown::handle_update_root_from_markdown(node_service, arguments).await
         }
 
@@ -143,14 +135,7 @@ where
         "update_nodes_batch" => nodes::handle_update_nodes_batch(node_service, arguments).await,
 
         // Search
-        // New preferred tool name for root search
         "search_roots" => search::handle_search_roots(embedding_service, arguments),
-        // DEPRECATED: Use search_roots instead
-        // Kept for backward compatibility - logs deprecation warning
-        "search_containers" => {
-            tracing::warn!("Tool 'search_containers' is deprecated. Use 'search_roots' instead.");
-            search::handle_search_roots(embedding_service, arguments)
-        }
 
         // Schema creation (uses generic node creation)
         "create_schema" => schema::handle_create_schema(node_service, arguments).await,
@@ -570,24 +555,6 @@ fn get_tool_schemas() -> Value {
             }
         },
         {
-            "name": "update_container_from_markdown",
-            "description": "[DEPRECATED: Use update_root_from_markdown instead] Replace all container children with new structure parsed from markdown.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "container_id": {
-                        "type": "string",
-                        "description": "[DEPRECATED: Use root_id with update_root_from_markdown] Container node ID to update"
-                    },
-                    "markdown": {
-                        "type": "string",
-                        "description": "New markdown content to parse and replace children."
-                    }
-                },
-                "required": ["container_id", "markdown"]
-            }
-        },
-        {
             "name": "search_roots",
             "description": "Search root nodes (documents/pages/files) using natural language semantic similarity (vector embeddings). Examples: 'Q4 planning documents', 'machine learning research notes', 'budget meeting notes'",
             "inputSchema": {
@@ -612,37 +579,6 @@ fn get_tool_schemas() -> Value {
                     "exact": {
                         "type": "boolean",
                         "description": "Use exact cosine distance instead of approximate DiskANN (default: false)",
-                        "default": false
-                    }
-                },
-                "required": ["query"]
-            }
-        },
-        {
-            "name": "search_containers",
-            "description": "[DEPRECATED: Use search_roots instead] Search containers using natural language semantic similarity.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Natural language search query"
-                    },
-                    "threshold": {
-                        "type": "number",
-                        "description": "Similarity threshold 0.0-1.0 (default: 0.7)",
-                        "minimum": 0.0,
-                        "maximum": 1.0,
-                        "default": 0.7
-                    },
-                    "limit": {
-                        "type": "number",
-                        "description": "Maximum number of results (default: 20)",
-                        "default": 20
-                    },
-                    "exact": {
-                        "type": "boolean",
-                        "description": "Use exact search (default: false)",
                         "default": false
                     }
                 },
