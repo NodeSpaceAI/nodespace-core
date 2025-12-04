@@ -1408,9 +1408,8 @@ Regular text after code."#;
             .await
             .unwrap();
 
-        // Response should include both root_id (new) and container_id (deprecated)
+        // Response should include root_id
         assert_eq!(result["root_id"], root_id);
-        assert_eq!(result["container_id"], root_id); // Backward compatibility
         assert_eq!(result["nodes_deleted"].as_u64().unwrap(), 2); // 2 old items
         assert_eq!(result["nodes_created"].as_u64().unwrap(), 3); // 3 new items
 
@@ -1432,36 +1431,6 @@ Regular text after code."#;
             contents.iter().any(|c| c.contains("New item 3")),
             "Missing 'New item 3'"
         );
-    }
-
-    #[tokio::test]
-    async fn test_update_root_from_markdown_backward_compat_container_id() {
-        let (node_service, _temp_dir) = setup_test_service().await;
-
-        // Create root with some children
-        let create_params = json!({
-            "markdown_content": "- Old item",
-            "title": "# Test"
-        });
-
-        let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
-            .await
-            .unwrap();
-        let root_id = create_result["root_id"].as_str().unwrap();
-
-        // Update using deprecated container_id parameter (backward compatibility)
-        let update_params = json!({
-            "container_id": root_id,  // DEPRECATED but should still work
-            "markdown": "- New item"
-        });
-
-        let result = handle_update_root_from_markdown(&node_service, update_params)
-            .await
-            .unwrap();
-
-        // Should work with deprecated container_id
-        assert_eq!(result["root_id"], root_id);
-        assert_eq!(result["nodes_created"].as_u64().unwrap(), 1);
     }
 
     #[tokio::test]

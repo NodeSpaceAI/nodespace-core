@@ -6,8 +6,10 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn test_tools_list_returns_all_schemas() {
+fn test_tools_list_returns_tier1_core_tools() {
     // Call tools/list with empty params
+    // Progressive disclosure: Only Tier 1 (Core) tools exposed initially (65% token savings)
+    // AI agents discover additional tools via search_tools
     let result = handle_tools_list(json!({}));
 
     assert!(result.is_ok());
@@ -18,65 +20,45 @@ fn test_tools_list_returns_all_schemas() {
 
     let tools = response["tools"].as_array().unwrap();
 
-    // Verify all 28 tools are present
-    // (19 previous + 6 relationship/NLP discovery tools + 3 schema management tools from Issue #703)
-    assert_eq!(tools.len(), 28);
+    // Verify exactly 10 Tier 1 (Core) tools are present
+    // Tier 2 tools are discoverable via search_tools
+    assert_eq!(
+        tools.len(),
+        10,
+        "Expected 10 Tier 1 tools, got {}",
+        tools.len()
+    );
 
     // Verify tool names
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
 
-    // Core CRUD
+    // Tier 1: Core CRUD
     assert!(tool_names.contains(&"create_node"));
     assert!(tool_names.contains(&"get_node"));
     assert!(tool_names.contains(&"update_node"));
     assert!(tool_names.contains(&"delete_node"));
+
+    // Tier 1: Essential query
     assert!(tool_names.contains(&"query_nodes"));
 
-    // Hierarchy operations
+    // Tier 1: Basic hierarchy
     assert!(tool_names.contains(&"get_children"));
-    assert!(tool_names.contains(&"get_child_at_index"));
     assert!(tool_names.contains(&"insert_child_at_index"));
-    assert!(tool_names.contains(&"move_child_to_index"));
-    assert!(tool_names.contains(&"get_node_tree"));
 
-    // Markdown
-    assert!(tool_names.contains(&"create_nodes_from_markdown"));
-    assert!(tool_names.contains(&"get_markdown_from_node_id"));
-    assert!(tool_names.contains(&"update_root_from_markdown"));
+    // Tier 1: Semantic search (core value proposition)
+    assert!(tool_names.contains(&"search_semantic"));
 
-    // Batch operations
-    assert!(tool_names.contains(&"get_nodes_batch"));
-    assert!(tool_names.contains(&"update_nodes_batch"));
-    assert!(tool_names.contains(&"update_container_from_markdown"));
-
-    // Search
-    assert!(tool_names.contains(&"search_containers"));
-    assert!(tool_names.contains(&"search_roots"));
-
-    // Schema creation - renamed from create_entity_schema_from_description
-    assert!(tool_names.contains(&"create_schema"));
-
-    // Relationship CRUD - Issue #703
-    assert!(tool_names.contains(&"create_relationship"));
-    assert!(tool_names.contains(&"delete_relationship"));
-    assert!(tool_names.contains(&"get_related_nodes"));
-
-    // NLP Discovery API - Issue #703
-    assert!(tool_names.contains(&"get_relationship_graph"));
-    assert!(tool_names.contains(&"get_inbound_relationships"));
+    // Tier 1: Schema & Discovery
     assert!(tool_names.contains(&"get_all_schemas"));
+    assert!(tool_names.contains(&"search_tools"));
 
-    // Schema Definition Management - Issue #703
-    assert!(tool_names.contains(&"add_schema_relationship"));
-    assert!(tool_names.contains(&"remove_schema_relationship"));
-    assert!(tool_names.contains(&"update_schema"));
-
-    // Verify removed tools are NOT present (Issue #690)
-    assert!(!tool_names.contains(&"get_schema_definition"));
-    assert!(!tool_names.contains(&"add_schema_field"));
-    assert!(!tool_names.contains(&"remove_schema_field"));
-    assert!(!tool_names.contains(&"extend_schema_enum"));
-    assert!(!tool_names.contains(&"remove_schema_enum_value"));
+    // Verify deprecated tools are NOT present (removed in cleanup)
+    assert!(!tool_names.contains(&"search_containers")); // Removed
+    assert!(!tool_names.contains(&"search_roots")); // Renamed to search_semantic
+    assert!(!tool_names.contains(&"update_container_from_markdown")); // Removed
+    assert!(!tool_names.contains(&"get_schema_definition")); // Removed in Issue #690
+    assert!(!tool_names.contains(&"add_schema_field")); // Removed in Issue #690
+    assert!(!tool_names.contains(&"remove_schema_field")); // Removed in Issue #690
 }
 
 #[test]

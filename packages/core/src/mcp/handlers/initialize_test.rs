@@ -1,10 +1,23 @@
 //! Tests for MCP Initialize Handler
 
 use super::*;
+use crate::db::SurrealStore;
+use crate::services::NodeService;
 use serde_json::json;
+use std::sync::Arc;
+use tempfile::TempDir;
 
-#[test]
-fn test_initialize_success() {
+// Helper to create test NodeService
+async fn create_test_service() -> Arc<NodeService> {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let mut store = Arc::new(SurrealStore::new(db_path).await.unwrap());
+    Arc::new(NodeService::new(&mut store).await.unwrap())
+}
+
+#[tokio::test]
+async fn test_initialize_success() {
+    let node_service = create_test_service().await;
     let params = json!({
         "protocolVersion": "2024-11-05",
         "clientInfo": {
@@ -13,7 +26,7 @@ fn test_initialize_success() {
         }
     });
 
-    let result = handle_initialize(params).unwrap();
+    let result = handle_initialize(&node_service, params).await.unwrap();
 
     // Verify protocol version
     assert_eq!(result["protocolVersion"], "2024-11-05");
@@ -29,8 +42,9 @@ fn test_initialize_success() {
     assert!(result["capabilities"]["prompts"].is_object());
 }
 
-#[test]
-fn test_initialize_wrong_version() {
+#[tokio::test]
+async fn test_initialize_wrong_version() {
+    let node_service = create_test_service().await;
     let params = json!({
         "protocolVersion": "1999-01-01",  // Unsupported version
         "clientInfo": {
@@ -38,7 +52,7 @@ fn test_initialize_wrong_version() {
         }
     });
 
-    let result = handle_initialize(params);
+    let result = handle_initialize(&node_service, params).await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -48,15 +62,16 @@ fn test_initialize_wrong_version() {
     assert!(err.message.contains("2024-11-05"));
 }
 
-#[test]
-fn test_initialize_missing_version() {
+#[tokio::test]
+async fn test_initialize_missing_version() {
+    let node_service = create_test_service().await;
     let params = json!({
         "clientInfo": {
             "name": "test-client"
         }
     });
 
-    let result = handle_initialize(params);
+    let result = handle_initialize(&node_service, params).await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -64,11 +79,12 @@ fn test_initialize_missing_version() {
     assert!(err.message.contains("Missing protocolVersion"));
 }
 
-#[test]
-fn test_initialize_empty_params() {
+#[tokio::test]
+async fn test_initialize_empty_params() {
+    let node_service = create_test_service().await;
     let params = json!({});
 
-    let result = handle_initialize(params);
+    let result = handle_initialize(&node_service, params).await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -76,71 +92,90 @@ fn test_initialize_empty_params() {
 }
 
 #[test]
-fn test_all_expected_tools_present() {
-    // Use tools/list to get tool schemas (per MCP spec, tools are discovered via tools/list)
+fn test_tier1_core_tools_present() {
+    // Use tools/list to get Tier 1 (Core) tool schemas for progressive disclosure
+    // AI agents can discover additional tools via search_tools
     let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
     let tools = result["tools"].as_array().unwrap();
 
-    // Verify all expected methods are present
-    let expected_tools = [
-        // Core CRUD
+    // Verify all Tier 1 (Core) tools are present
+    let expected_tier1_tools = [
+        // Core CRUD (always exposed)
         "create_node",
         "get_node",
         "update_node",
         "delete_node",
+        // Query
         "query_nodes",
         // Hierarchy operations
         "get_children",
-        "get_child_at_index",
         "insert_child_at_index",
-        "move_child_to_index",
-        "get_node_tree",
-        // Markdown
+        // Semantic search (core value proposition)
+        "search_semantic",
+        // Markdown import/export (primary workflows)
         "create_nodes_from_markdown",
         "get_markdown_from_node_id",
-        // Batch operations
-        "get_nodes_batch",
-        "update_nodes_batch",
-        "update_container_from_markdown",
-        // Search
-        "search_containers",
-        // Schema creation - Issue #703: renamed and extended with relationships
-        "create_schema",
-        // Relationship CRUD - Issue #703
-        "create_relationship",
-        "delete_relationship",
-        "get_related_nodes",
-        // NLP Discovery API - Issue #703
-        "get_relationship_graph",
-        "get_inbound_relationships",
+        // Schema & Discovery
         "get_all_schemas",
-        // Schema Definition Management - Issue #703
-        "add_schema_relationship",
-        "remove_schema_relationship",
-        "update_schema",
+        "search_tools",
     ];
 
-    for expected_tool in &expected_tools {
+    for expected_tool in &expected_tier1_tools {
         assert!(
             tools.iter().any(|t| t["name"] == *expected_tool),
-            "Missing tool: {}",
+            "Missing Tier 1 tool: {}",
             expected_tool
         );
     }
 
-    // Verify we have exactly 28 tools
-    // (19 previous + 6 relationship/NLP discovery tools + 3 schema management tools from Issue #703)
-    assert_eq!(tools.len(), 28, "Expected exactly 28 tools");
+    // Verify we have exactly 12 Tier 1 tools (reduced from 26 for token savings)
+    // Other tools are discoverable via search_tools
+    assert_eq!(tools.len(), 12, "Expected exactly 12 Tier 1 (Core) tools");
+}
+
+#[test]
+fn test_search_tools_discovers_tier2_tools() {
+    // Verify search_tools can discover Tier 2 (Discoverable) tools
+    let result = crate::mcp::handlers::tools::handle_search_tools(json!({})).unwrap();
+    let tools = result["tools"].as_array().unwrap();
+
+    // Should find some discoverable tools (not exhaustive check)
+    let discoverable_examples = [
+        "get_child_at_index",
+        "move_child_to_index",
+        "get_node_tree",
+        "get_nodes_batch",
+        "update_nodes_batch",
+        "update_root_from_markdown",
+        "create_schema",
+        "create_relationship",
+        "delete_relationship",
+        "get_related_nodes",
+    ];
+
+    // At least some discoverable tools should be present
+    let found_count = discoverable_examples
+        .iter()
+        .filter(|tool_name| tools.iter().any(|t| t["name"] == **tool_name))
+        .count();
+
+    assert!(
+        found_count >= 8,
+        "Expected at least 8 discoverable tools, found {}",
+        found_count
+    );
 }
 
 #[test]
 fn test_all_schemas_have_required_fields() {
+    // Verify Tier 1 tool schemas have proper structure
     let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
     let tools = result["tools"].as_array().unwrap();
 
-    assert!(
-        tools.len() >= 6,
-        "Should have at least 6 tool schemas, found {}",
+    assert_eq!(
+        tools.len(),
+        12,
+        "Should have exactly 12 Tier 1 tool schemas, found {}",
         tools.len()
     );
 
@@ -262,6 +297,7 @@ fn test_update_node_schema_structure() {
 
 #[test]
 fn test_markdown_import_schema_structure() {
+    // create_nodes_from_markdown is now a Tier 1 core tool
     let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
     let tools = result["tools"].as_array().unwrap();
 
@@ -319,8 +355,9 @@ mod integration_tests {
         }
     }
 
-    #[test]
-    fn test_full_initialization_handshake() {
+    #[tokio::test]
+    async fn test_full_initialization_handshake() {
+        let node_service = create_test_service().await;
         let state = TestServerState::new();
 
         // Step 1: Verify initial state - not initialized
@@ -355,7 +392,7 @@ mod integration_tests {
             }
         });
 
-        let init_result = handle_initialize(init_params).unwrap();
+        let init_result = handle_initialize(&node_service, init_params).await.unwrap();
 
         // Verify initialize response structure
         assert_eq!(init_result["protocolVersion"], "2024-11-05");
@@ -429,8 +466,9 @@ mod integration_tests {
         }
     }
 
-    #[test]
-    fn test_initialize_then_wrong_version() {
+    #[tokio::test]
+    async fn test_initialize_then_wrong_version() {
+        let node_service = create_test_service().await;
         let state = TestServerState::new();
 
         // First initialize with correct version
@@ -438,7 +476,7 @@ mod integration_tests {
             "protocolVersion": "2024-11-05",
             "clientInfo": {"name": "test"}
         });
-        let result = handle_initialize(params);
+        let result = handle_initialize(&node_service, params).await;
         assert!(result.is_ok(), "First initialize should succeed");
 
         state.mark_initialized();
@@ -448,7 +486,7 @@ mod integration_tests {
             "protocolVersion": "1999-01-01",
             "clientInfo": {"name": "test"}
         });
-        let result_wrong = handle_initialize(params_wrong);
+        let result_wrong = handle_initialize(&node_service, params_wrong).await;
         assert!(
             result_wrong.is_err(),
             "Initialize with wrong version should fail even after initialization"
@@ -459,8 +497,9 @@ mod integration_tests {
         assert!(err.message.contains("Unsupported protocol version"));
     }
 
-    #[test]
-    fn test_initialize_idempotent() {
+    #[tokio::test]
+    async fn test_initialize_idempotent() {
+        let node_service = create_test_service().await;
         let state = TestServerState::new();
 
         let params = json!({
@@ -469,11 +508,13 @@ mod integration_tests {
         });
 
         // First initialize
-        let result1 = handle_initialize(params.clone()).unwrap();
+        let result1 = handle_initialize(&node_service, params.clone())
+            .await
+            .unwrap();
         state.mark_initialized();
 
         // Second initialize (should succeed - idempotent)
-        let result2 = handle_initialize(params).unwrap();
+        let result2 = handle_initialize(&node_service, params).await.unwrap();
 
         // Both should return same structure
         assert_eq!(result1["protocolVersion"], result2["protocolVersion"]);
