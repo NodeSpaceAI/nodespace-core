@@ -57,9 +57,10 @@
   // Prevent merging into quote-blocks (structured content can't accept arbitrary merges)
   const editableConfig = { allowMultiline: true, allowMergeInto: false };
 
-  // Quote metadata - enable markdown processing
+  // Quote metadata - enable markdown processing and block-level elements
   let quoteMetadata = $derived({
-    disableMarkdown: false // Quote blocks support inline markdown
+    disableMarkdown: false, // Quote blocks support inline markdown
+    enableBlockElements: true // Quote blocks render headings, lists, etc. as proper HTML elements
   });
 
   /**

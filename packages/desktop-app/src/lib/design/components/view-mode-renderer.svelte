@@ -18,6 +18,12 @@
   - disableMarkdown mode (raw text with line breaks only)
   - Header syntax preserved as text (# Header stays as text)
   - List syntax preserved as text (1. Item stays as text)
+
+  Block-level rendering (enableBlockElements: true):
+  - Used by quote-blocks to render full markdown within quoted content
+  - ## Heading → <h2 class="quote-heading">
+  - - item → <ul><li> bullet list
+  - Enables proper display of rich content in quote blocks
 -->
 
 <script lang="ts">
@@ -29,9 +35,10 @@
     content: string;
     displayContent?: string | null;
     disableMarkdown?: boolean;
+    enableBlockElements?: boolean; // Enable h2, bullet lists for quote-blocks
   }
 
-  let { content, displayContent = null, disableMarkdown = false }: Props = $props();
+  let { content, displayContent = null, disableMarkdown = false, enableBlockElements = false }: Props = $props();
 
   // Node types for structured rendering
   type ViewNode =
@@ -42,12 +49,16 @@
     | { type: 'strikethrough'; children: ViewNode[] }
     | { type: 'code'; content: string }
     | { type: 'bold-italic'; children: ViewNode[] }
-    | { type: 'link'; href: string; children: ViewNode[] };
+    | { type: 'link'; href: string; children: ViewNode[] }
+    // Block-level elements (enabled via enableBlockElements prop)
+    | { type: 'heading'; level: number; children: ViewNode[] }
+    | { type: 'list'; ordered: boolean; items: ViewNode[][] }
+    | { type: 'paragraph'; children: ViewNode[] };
 
   /**
    * Parse content into ViewNode array for rendering
    */
-  function parseContent(rawContent: string, markdown: boolean): ViewNode[] {
+  function parseContent(rawContent: string, markdown: boolean, blockElements: boolean): ViewNode[] {
     if (!rawContent) return [];
 
     // Use displayContent if provided, otherwise use content
@@ -81,7 +92,7 @@
 
     // Process tokens
     for (const token of tokens) {
-      nodes.push(...processToken(token, BLANK_LINE_PLACEHOLDER));
+      nodes.push(...processToken(token, BLANK_LINE_PLACEHOLDER, blockElements));
     }
 
     // Handle trailing newlines
@@ -117,14 +128,20 @@
   /**
    * Process a marked token into ViewNodes
    */
-  function processToken(token: Token, blankPlaceholder: string): ViewNode[] {
+  function processToken(token: Token, blankPlaceholder: string, blockElements: boolean = false): ViewNode[] {
     const nodes: ViewNode[] = [];
 
     switch (token.type) {
       case 'paragraph': {
         const para = token as Tokens.Paragraph;
         if (para.tokens) {
-          nodes.push(...processInlineTokens(para.tokens, blankPlaceholder));
+          if (blockElements) {
+            // Render as proper paragraph block
+            const children = processInlineTokens(para.tokens, blankPlaceholder);
+            nodes.push({ type: 'paragraph', children });
+          } else {
+            nodes.push(...processInlineTokens(para.tokens, blankPlaceholder));
+          }
         }
         break;
       }
@@ -150,43 +167,69 @@
       }
 
       case 'heading': {
-        // Preserve header syntax as plain text (NodeSpace handles headers separately)
         const heading = token as Tokens.Heading;
-        const level = '#'.repeat(heading.depth);
-        nodes.push({ type: 'text', content: level + ' ' });
-        if (heading.tokens) {
-          nodes.push(...processInlineTokens(heading.tokens, blankPlaceholder));
+        if (blockElements) {
+          // Render as proper heading element (h1-h6)
+          const children = heading.tokens
+            ? processInlineTokens(heading.tokens, blankPlaceholder)
+            : [{ type: 'text' as const, content: heading.text }];
+          nodes.push({ type: 'heading', level: heading.depth, children });
+        } else {
+          // Preserve header syntax as plain text (NodeSpace handles headers separately)
+          const level = '#'.repeat(heading.depth);
+          nodes.push({ type: 'text', content: level + ' ' });
+          if (heading.tokens) {
+            nodes.push(...processInlineTokens(heading.tokens, blankPlaceholder));
+          }
         }
         break;
       }
 
       case 'list': {
-        // Preserve list syntax as plain text
         const list = token as Tokens.List;
-        for (let i = 0; i < list.items.length; i++) {
-          const item = list.items[i];
-          if (i > 0) {
-            nodes.push({ type: 'br' });
+        if (blockElements) {
+          // Render as proper list element
+          const items: ViewNode[][] = [];
+          for (const item of list.items) {
+            const itemNodes: ViewNode[] = [];
+            // Add task checkbox if present
+            if (item.task) {
+              const checkbox = item.checked ? '☑ ' : '☐ ';
+              itemNodes.push({ type: 'text', content: checkbox });
+            }
+            if (item.tokens) {
+              itemNodes.push(...processTokens(item.tokens, blankPlaceholder, blockElements));
+            }
+            items.push(itemNodes);
           }
+          nodes.push({ type: 'list', ordered: list.ordered, items });
+        } else {
+          // Preserve list syntax as plain text
+          for (let i = 0; i < list.items.length; i++) {
+            const item = list.items[i];
+            if (i > 0) {
+              nodes.push({ type: 'br' });
+            }
 
-          // Add list marker
-          let marker = '';
-          if (list.ordered) {
-            const itemNumber = (list.start || 1) + i;
-            marker = `${itemNumber}. `;
-          } else {
-            marker = '- ';
-          }
+            // Add list marker
+            let marker = '';
+            if (list.ordered) {
+              const itemNumber = (list.start || 1) + i;
+              marker = `${itemNumber}. `;
+            } else {
+              marker = '- ';
+            }
 
-          // Add task checkbox if present
-          if (item.task) {
-            marker += item.checked ? '[x] ' : '[ ] ';
-          }
+            // Add task checkbox if present
+            if (item.task) {
+              marker += item.checked ? '[x] ' : '[ ] ';
+            }
 
-          nodes.push({ type: 'text', content: marker });
+            nodes.push({ type: 'text', content: marker });
 
-          if (item.tokens) {
-            nodes.push(...processTokens(item.tokens, blankPlaceholder));
+            if (item.tokens) {
+              nodes.push(...processTokens(item.tokens, blankPlaceholder, blockElements));
+            }
           }
         }
         break;
@@ -207,10 +250,10 @@
   /**
    * Process multiple tokens
    */
-  function processTokens(tokens: Token[], blankPlaceholder: string): ViewNode[] {
+  function processTokens(tokens: Token[], blankPlaceholder: string, blockElements: boolean = false): ViewNode[] {
     const nodes: ViewNode[] = [];
     for (const token of tokens) {
-      nodes.push(...processToken(token, blankPlaceholder));
+      nodes.push(...processToken(token, blankPlaceholder, blockElements));
     }
     return nodes;
   }
@@ -362,7 +405,7 @@
   // Compute nodes from content using $derived
   let viewNodes = $derived.by(() => {
     const sourceContent = displayContent ?? content;
-    return parseContent(sourceContent, !disableMarkdown);
+    return parseContent(sourceContent, !disableMarkdown, enableBlockElements);
   });
 </script>
 
@@ -384,6 +427,28 @@
     <code class="markdown-code-inline">{node.content}</code>
   {:else if node.type === 'link'}
     <a href={node.href} class="ns-noderef">{#each node.children as child}{@render renderNode(child)}{/each}</a>
+  {:else if node.type === 'heading'}
+    {#if node.level === 1}
+      <h1 class="quote-heading">{#each node.children as child}{@render renderNode(child)}{/each}</h1>
+    {:else if node.level === 2}
+      <h2 class="quote-heading">{#each node.children as child}{@render renderNode(child)}{/each}</h2>
+    {:else if node.level === 3}
+      <h3 class="quote-heading">{#each node.children as child}{@render renderNode(child)}{/each}</h3>
+    {:else if node.level === 4}
+      <h4 class="quote-heading">{#each node.children as child}{@render renderNode(child)}{/each}</h4>
+    {:else if node.level === 5}
+      <h5 class="quote-heading">{#each node.children as child}{@render renderNode(child)}{/each}</h5>
+    {:else}
+      <h6 class="quote-heading">{#each node.children as child}{@render renderNode(child)}{/each}</h6>
+    {/if}
+  {:else if node.type === 'list'}
+    {#if node.ordered}
+      <ol class="quote-list">{#each node.items as item}<li>{#each item as child}{@render renderNode(child)}{/each}</li>{/each}</ol>
+    {:else}
+      <ul class="quote-list">{#each node.items as item}<li>{#each item as child}{@render renderNode(child)}{/each}</li>{/each}</ul>
+    {/if}
+  {:else if node.type === 'paragraph'}
+    <p class="quote-paragraph">{#each node.children as child}{@render renderNode(child)}{/each}</p>
   {/if}
 {/snippet}
 
@@ -391,3 +456,79 @@
 {#each viewNodes as node}
   {@render renderNode(node)}
 {/each}
+
+<style>
+  /* Block-level element styles for quote blocks */
+
+  /* Headings within quote blocks */
+  .quote-heading {
+    margin: 0.5em 0 0.25em 0;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  h1.quote-heading {
+    font-size: 1.5em;
+  }
+
+  h2.quote-heading {
+    font-size: 1.25em;
+  }
+
+  h3.quote-heading {
+    font-size: 1.1em;
+  }
+
+  h4.quote-heading,
+  h5.quote-heading,
+  h6.quote-heading {
+    font-size: 1em;
+  }
+
+  /* First heading in a quote block shouldn't have top margin */
+  .quote-heading:first-child {
+    margin-top: 0;
+  }
+
+  /* Lists within quote blocks */
+  .quote-list {
+    margin: 0.25em 0;
+    padding-left: 1.5em;
+  }
+
+  .quote-list li {
+    margin: 0.125em 0;
+    line-height: 1.5;
+  }
+
+  /* Unordered list styling */
+  ul.quote-list {
+    list-style-type: disc;
+  }
+
+  /* Nested unordered lists use different markers */
+  ul.quote-list ul.quote-list {
+    list-style-type: circle;
+  }
+
+  /* Ordered list styling */
+  ol.quote-list {
+    list-style-type: decimal;
+  }
+
+  /* Paragraphs within quote blocks */
+  .quote-paragraph {
+    margin: 0.25em 0;
+    line-height: 1.5;
+  }
+
+  /* First paragraph shouldn't have top margin */
+  .quote-paragraph:first-child {
+    margin-top: 0;
+  }
+
+  /* Last paragraph shouldn't have bottom margin */
+  .quote-paragraph:last-child {
+    margin-bottom: 0;
+  }
+</style>

@@ -904,6 +904,7 @@
         {content}
         {displayContent}
         disableMarkdown={metadata?.disableMarkdown === true}
+        enableBlockElements={metadata?.enableBlockElements === true}
       /></div>
   {/if}
 </div>
