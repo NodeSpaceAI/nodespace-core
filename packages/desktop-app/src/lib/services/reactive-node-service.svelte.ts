@@ -706,6 +706,120 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
   // NOTE: removeFromSiblingChain function removed - backend handles sibling ordering via fractional ordering
 
+  // ============================================================================
+  // INDENT/OUTDENT HELPER TYPES AND FUNCTIONS
+  // ============================================================================
+
+  /**
+   * Result of outdent validation - contains all data needed for the operation.
+   * Returned by validateOutdent() to provide type-safe access to validated data.
+   */
+  type OutdentValidationResult = {
+    oldParentId: string;
+    newParentId: string | null;
+    siblingsBelow: string[];
+    newDepth: number;
+  };
+
+  /**
+   * Validates whether a node can be outdented and gathers all required data.
+   *
+   * @param nodeId - The ID of the node to validate for outdent
+   * @returns OutdentValidationResult if valid, null if outdent is not possible
+   *
+   * Validation checks:
+   * - Node must exist
+   * - Node must have a parent (cannot outdent root nodes)
+   *
+   * Data gathered:
+   * - oldParentId: Current parent to move away from
+   * - newParentId: Grandparent to move to (null if becoming root)
+   * - siblingsBelow: Siblings after this node that will become children
+   * - newDepth: The depth the node will have after outdenting
+   */
+  function validateOutdent(nodeId: string): OutdentValidationResult | null {
+    const node = sharedNodeStore.getNode(nodeId);
+    if (!node) return null;
+
+    // Get parent information
+    const parents = sharedNodeStore.getParentsForNode(nodeId);
+    if (parents.length === 0) return null; // Cannot outdent root nodes
+
+    const parent = parents[0];
+    const oldParentId = parent.id;
+
+    // CRITICAL FIX: Use structureTree as authoritative source for parent hierarchy
+    // The Node.parentId field can be stale during rapid operations because:
+    // 1. indentNode updates structureTree synchronously via moveInMemoryRelationship
+    // 2. But Node.parentId in SharedNodeStore may not reflect the latest hierarchy
+    // ReactiveStructureTree is the single source of truth for hierarchy during rapid edits
+    const structureTreeParentId = structureTree.getParent(oldParentId);
+    const newParentId = structureTreeParentId ?? parent.parentId ?? null;
+
+    // Find siblings that come after this node (they will become children)
+    // Backend returns children already sorted via fractional ordering
+    const siblings = sharedNodeStore.getNodesForParent(oldParentId).map((n) => n.id);
+    const nodeIndex = siblings.indexOf(nodeId);
+    const siblingsBelow = nodeIndex >= 0 ? siblings.slice(nodeIndex + 1) : [];
+
+    const newDepth = newParentId ? (_uiState[newParentId]?.depth || 0) + 1 : 0;
+
+    return {
+      oldParentId,
+      newParentId,
+      siblingsBelow,
+      newDepth
+    };
+  }
+
+  /**
+   * Rolls back optimistic UI changes made during a failed outdent operation.
+   *
+   * @param nodeId - The node that was being outdented
+   * @param originalUIState - The UI state before outdent was attempted
+   * @param originalRootNodeIds - The root node IDs before outdent was attempted
+   * @param siblingsBelow - The siblings that were transferred (need depth rollback)
+   * @param oldParentId - The original parent ID (for depth calculation)
+   * @param newParentId - The target parent ID (for structure tree rollback)
+   */
+  function rollbackOutdentChanges(
+    nodeId: string,
+    originalUIState: NodeUIState,
+    originalRootNodeIds: string[],
+    siblingsBelow: string[],
+    oldParentId: string,
+    newParentId: string | null
+  ): void {
+    // Restore main node UI state
+    _uiState[nodeId] = originalUIState;
+    _rootNodeIds = originalRootNodeIds;
+    updateDescendantDepths(nodeId);
+
+    // Rollback sibling depths
+    for (const siblingId of siblingsBelow) {
+      const sibling = sharedNodeStore.getNode(siblingId);
+      if (sibling) {
+        _uiState[siblingId] = {
+          ..._uiState[siblingId],
+          depth: (_uiState[oldParentId]?.depth || 0) + 1
+        };
+        updateDescendantDepths(siblingId);
+      }
+    }
+
+    // Rollback structure tree if we moved to a new parent
+    if (newParentId) {
+      structureTree.moveInMemoryRelationship(newParentId, oldParentId, nodeId);
+    }
+
+    events.hierarchyChanged();
+    _updateTrigger++;
+  }
+
+  // ============================================================================
+  // INDENT/OUTDENT OPERATIONS
+  // ============================================================================
+
   async function indentNode(nodeId: string): Promise<boolean> {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return false;
@@ -825,42 +939,22 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   }
 
   async function outdentNode(nodeId: string): Promise<boolean> {
-    const node = sharedNodeStore.getNode(nodeId);
-    if (!node) return false;
+    // Validate and gather all required data
+    const validation = validateOutdent(nodeId);
+    if (!validation) return false;
 
-    // Get parent information
-    const parents = sharedNodeStore.getParentsForNode(nodeId);
-    if (parents.length === 0) return false;
-
-    const parent = parents[0];
-    const oldParentId = parent.id;
-
-    // CRITICAL FIX: Use structureTree as authoritative source for parent hierarchy
-    // The Node.parentId field can be stale during rapid operations because:
-    // 1. indentNode updates structureTree synchronously via moveInMemoryRelationship
-    // 2. But Node.parentId in SharedNodeStore may not reflect the latest hierarchy
-    // ReactiveStructureTree is the single source of truth for hierarchy during rapid edits
-    const structureTreeParentId = structureTree.getParent(oldParentId);
-    const newParentId = structureTreeParentId ?? parent.parentId ?? null;
-
-    // Find siblings that come after this node (they will become children)
-    // Backend returns children already sorted via fractional ordering
-    const siblings = sharedNodeStore.getNodesForParent(oldParentId).map((n) => n.id);
-    const nodeIndex = siblings.indexOf(nodeId);
-    const siblingsBelow = nodeIndex >= 0 ? siblings.slice(nodeIndex + 1) : [];
+    const { oldParentId, newParentId, siblingsBelow, newDepth } = validation;
 
     // Save current state for rollback
     const originalUIState = { ..._uiState[nodeId] };
     const originalRootNodeIds = [..._rootNodeIds];
-
-    const newDepth = newParentId ? (_uiState[newParentId]?.depth || 0) + 1 : 0;
 
     // Optimistic UI updates for main node
     _uiState[nodeId] = { ..._uiState[nodeId], depth: newDepth };
     updateDescendantDepths(nodeId);
 
     if (!newParentId) {
-      const parentIndex = _rootNodeIds.indexOf(parent.id);
+      const parentIndex = _rootNodeIds.indexOf(oldParentId);
       _rootNodeIds = [
         ..._rootNodeIds.slice(0, parentIndex + 1),
         nodeId,
@@ -977,25 +1071,14 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
         if (!isIgnorableError) {
           // Non-ignorable error: rollback all changes
-          _uiState[nodeId] = originalUIState;
-          _rootNodeIds = originalRootNodeIds;
-          updateDescendantDepths(nodeId);
-
-          // Rollback siblings
-          for (const siblingId of siblingsBelow) {
-            const sibling = sharedNodeStore.getNode(siblingId);
-            if (sibling) {
-              _uiState[siblingId] = { ..._uiState[siblingId], depth: (_uiState[oldParentId]?.depth || 0) + 1 };
-              updateDescendantDepths(siblingId);
-            }
-          }
-
-          if (newParentId) {
-            structureTree.moveInMemoryRelationship(newParentId, oldParentId, nodeId);
-          }
-          events.hierarchyChanged();
-          _updateTrigger++;
-
+          rollbackOutdentChanges(
+            nodeId,
+            originalUIState,
+            originalRootNodeIds,
+            siblingsBelow,
+            oldParentId,
+            newParentId
+          );
           console.error('[outdentNode] Failed to move node, rolled back:', error);
         }
         // Ignorable error: keep UI updates (for unit tests without server)
