@@ -376,7 +376,7 @@ where
         "update_nodes_batch" => nodes::handle_update_nodes_batch(node_service, arguments).await,
 
         // Search
-        "search_semantic" => search::handle_search_semantic(embedding_service, arguments),
+        "search_semantic" => search::handle_search_semantic(embedding_service, arguments).await,
 
         // Discovery
         "search_tools" => handle_search_tools(arguments),
@@ -732,6 +732,11 @@ fn get_tool_schemas() -> Value {
                         "type": "number",
                         "description": "Maximum recursion depth (default: 20)",
                         "default": 20
+                    },
+                    "include_node_ids": {
+                        "type": "boolean",
+                        "description": "Include node ID comments in markdown output (default: true). When true, adds HTML comments with node IDs and versions for OCC. When false, produces clean markdown without metadata.",
+                        "default": true
                     }
                 },
                 "required": ["node_id"]
@@ -800,7 +805,7 @@ fn get_tool_schemas() -> Value {
         },
         {
             "name": "search_semantic",
-            "description": "Search all nodes using natural language semantic similarity (vector embeddings). Find relevant content across your knowledge base. Examples: 'Q4 planning documents', 'machine learning research notes', 'budget meeting notes'",
+            "description": "Search root nodes by semantic similarity using vector embeddings. Returns only root nodes (documents/pages) - use get_markdown_from_node_id with the returned node ID to retrieve the full document content. Examples: 'Q4 planning documents', 'machine learning research notes'",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -810,7 +815,7 @@ fn get_tool_schemas() -> Value {
                     },
                     "threshold": {
                         "type": "number",
-                        "description": "Similarity threshold 0.0-1.0, lower = more similar (default: 0.7)",
+                        "description": "Minimum similarity threshold 0.0-1.0. Results must have similarity > this value. Higher = stricter (default: 0.7)",
                         "minimum": 0.0,
                         "maximum": 1.0,
                         "default": 0.7
@@ -819,11 +824,6 @@ fn get_tool_schemas() -> Value {
                         "type": "number",
                         "description": "Maximum number of results (default: 20)",
                         "default": 20
-                    },
-                    "exact": {
-                        "type": "boolean",
-                        "description": "Use exact cosine distance instead of approximate DiskANN (default: false)",
-                        "default": false
                     }
                 },
                 "required": ["query"]

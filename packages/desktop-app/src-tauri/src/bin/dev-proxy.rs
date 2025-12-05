@@ -35,8 +35,8 @@ use nodespace_core::{
     models,
     models::{Node, NodeFilter, NodeUpdate, SchemaNode, TaskNode, TaskNodeUpdate},
     services::{
-        default_mcp_port, CreateNodeParams, McpServerService, NodeEmbeddingService, NodeService,
-        NodeServiceError,
+        default_mcp_port, CreateNodeParams, EmbeddingProcessor, McpServerService,
+        NodeEmbeddingService, NodeService, NodeServiceError,
     },
 };
 use nodespace_nlp_engine::EmbeddingService;
@@ -354,13 +354,13 @@ async fn main() -> anyhow::Result<()> {
     // NodeService has ALL the logic (virtual dates, schema backfill, etc.)
     // NodeService::new() takes &mut Arc to enable cache updates during seeding (Issue #704)
     println!("🧠 Initializing NodeService...");
-    let node_service = match NodeService::new(&mut store).await {
+    let mut node_service = match NodeService::new(&mut store).await {
         Ok(s) => {
             println!("✅ NodeService initialized");
             // Set client_id for dev-proxy - represents all browser clients (Issue #715)
             // All browser operations emit events with source_client_id: "dev-proxy"
             // SSE filtering then prevents browsers from receiving their own changes
-            Arc::new(s.with_client("dev-proxy"))
+            s.with_client("dev-proxy")
         }
         Err(e) => {
             eprintln!("❌ Failed to initialize NodeService: {}", e);
@@ -370,6 +370,39 @@ async fn main() -> anyhow::Result<()> {
 
     // NOTE: NodeOperations layer was merged into NodeService (Issue #676)
     // NOTE: SchemaService removed (Issue #690) - schema operations use NodeService directly
+
+    // Initialize NLP engine for embeddings (used by MCP semantic search)
+    // IMPORTANT: Initialize embedding components BEFORE wrapping NodeService in Arc
+    // so we can wire up the waker (Issue #729)
+    println!("🧠 Initializing NLP engine for embeddings...");
+    let mut nlp_engine = EmbeddingService::new(Default::default())
+        .map_err(|e| anyhow::anyhow!("Failed to create NLP engine: {}", e))?;
+
+    // Initialize the model (loads ONNX model and tokenizer)
+    nlp_engine
+        .initialize()
+        .map_err(|e| anyhow::anyhow!("Failed to initialize NLP engine: {}", e))?;
+
+    let nlp_engine_arc = Arc::new(nlp_engine);
+    println!("✅ NLP engine initialized");
+
+    // Initialize embedding service for MCP semantic search
+    let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine_arc, store.clone()));
+
+    // Initialize background embedding processor (event-driven, Issue #729)
+    // Processes stale embeddings in the background - no polling, wakes on demand
+    println!("🔄 Starting embedding processor...");
+    let embedding_processor = EmbeddingProcessor::new(embedding_service.clone())
+        .map_err(|e| anyhow::anyhow!("Failed to initialize embedding processor: {}", e))?;
+
+    // Wire up NodeService to wake processor on embedding changes (Issue #729)
+    // This enables event-driven embedding processing without polling
+    // CRITICAL: Must be done BEFORE wrapping NodeService in Arc
+    node_service.set_embedding_waker(embedding_processor.waker());
+    println!("✅ EmbeddingProcessor waker connected to NodeService");
+
+    // NOW wrap NodeService in Arc after waker is configured
+    let node_service = Arc::new(node_service);
 
     // Subscribe to NodeService domain events for SSE broadcasting (Issue #715)
     // This is the correct architecture: NodeService emits events for ALL mutations
@@ -387,16 +420,12 @@ async fn main() -> anyhow::Result<()> {
         domain_event_to_sse_bridge(domain_event_rx, sse_tx_for_domain).await;
     });
 
-    // Initialize NLP engine for embeddings (used by MCP semantic search)
-    println!("🧠 Initializing NLP engine for embeddings...");
-    let nlp_engine = EmbeddingService::new(Default::default())
-        .map_err(|e| anyhow::anyhow!("Failed to create NLP engine: {}", e))?;
-    // Note: initialize() is called lazily on first use, no need to call explicitly
-    let nlp_engine_arc = Arc::new(nlp_engine);
-    println!("✅ NLP engine initialized");
+    // Trigger processing of any existing stale embeddings from previous sessions
+    embedding_processor.wake();
 
-    // Initialize embedding service for MCP semantic search
-    let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine_arc, store.clone()));
+    // Keep processor alive for duration of server (dropped on shutdown)
+    let _embedding_processor = embedding_processor;
+    println!("✅ Embedding processor started");
 
     // Spawn MCP server in background task (shares NodeService for real-time sync)
     // MCP runs on port 3100 by default (configurable via MCP_PORT env var)

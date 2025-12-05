@@ -1309,6 +1309,15 @@ where
                         created_id,
                         e
                     );
+                } else {
+                    // Wake the embedding processor to process the new root
+                    tracing::debug!(
+                        "Queued new root {} for embedding (direct creation)",
+                        created_id
+                    );
+                    if let Some(ref waker) = self.embedding_waker {
+                        waker.wake();
+                    }
                 }
             }
         }
@@ -3691,11 +3700,26 @@ where
             }
         }
 
+        // Collect unique parent IDs for embedding queue (before moving nodes)
+        let unique_parent_ids: std::collections::HashSet<String> = nodes
+            .iter()
+            .filter_map(|(_, _, _, parent_id, _, _)| parent_id.clone())
+            .collect();
+
         // Delegate to store for atomic batch insert
-        self.store
+        let result = self
+            .store
             .bulk_create_hierarchy(nodes)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        // Queue roots for embedding regeneration (Issue #729)
+        // Each unique parent's root should be queued once
+        for parent_id in unique_parent_ids {
+            self.queue_root_for_embedding(&parent_id).await;
+        }
+
+        Ok(result)
     }
 
     /// Bulk update multiple nodes in a transaction

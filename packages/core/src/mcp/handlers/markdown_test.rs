@@ -1140,6 +1140,83 @@ Text paragraph
     }
 
     #[tokio::test]
+    async fn test_get_markdown_without_node_ids() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        // Create test nodes
+        let markdown = "# Hello World\n\n- Item 1\n- Item 2";
+        let params = json!({
+            "markdown_content": markdown,
+            "title": "Test Container"
+        });
+
+        let import_result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+        let root_id = import_result["root_id"].as_str().unwrap();
+
+        // Export WITH node IDs (default)
+        let with_ids_params = json!({
+            "node_id": root_id,
+            "include_children": true,
+            "include_node_ids": true
+        });
+        let with_ids_result = handle_get_markdown_from_node_id(&node_service, with_ids_params)
+            .await
+            .unwrap();
+        let with_ids_markdown = with_ids_result["markdown"].as_str().unwrap();
+
+        // Export WITHOUT node IDs
+        let without_ids_params = json!({
+            "node_id": root_id,
+            "include_children": true,
+            "include_node_ids": false
+        });
+        let without_ids_result =
+            handle_get_markdown_from_node_id(&node_service, without_ids_params)
+                .await
+                .unwrap();
+        let without_ids_markdown = without_ids_result["markdown"].as_str().unwrap();
+
+        // Verify with_ids version has HTML comments
+        assert!(
+            with_ids_markdown.contains("<!--"),
+            "Markdown with node IDs should contain HTML comments"
+        );
+
+        // Verify without_ids version has NO HTML comments
+        assert!(
+            !without_ids_markdown.contains("<!--"),
+            "Markdown without node IDs should not contain HTML comments"
+        );
+
+        // Both should contain the actual content
+        assert!(
+            with_ids_markdown.contains("# Hello World"),
+            "With IDs markdown should contain content"
+        );
+        assert!(
+            without_ids_markdown.contains("# Hello World"),
+            "Without IDs markdown should contain content"
+        );
+        assert!(
+            with_ids_markdown.contains("Test Container"),
+            "With IDs markdown should contain container content"
+        );
+        assert!(
+            without_ids_markdown.contains("Test Container"),
+            "Without IDs markdown should contain container content"
+        );
+
+        // Verify node count is the same
+        assert_eq!(
+            with_ids_result["node_count"].as_u64().unwrap(),
+            without_ids_result["node_count"].as_u64().unwrap(),
+            "Node count should be the same regardless of include_node_ids"
+        );
+    }
+
+    #[tokio::test]
     async fn test_get_markdown_preserves_hierarchy() {
         let (node_service, _temp_dir) = setup_test_service().await;
 

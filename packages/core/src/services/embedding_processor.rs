@@ -65,12 +65,21 @@ impl EmbeddingWaker {
 ///
 /// Processes stale embeddings in the background using the root-aggregate model.
 /// Event-driven: sleeps until triggered, then processes until queue is empty.
-pub struct EmbeddingProcessor {
+///
+/// Generic over connection type `C` to support both local and HTTP SurrealDB connections.
+pub struct EmbeddingProcessor<C = surrealdb::engine::local::Db>
+where
+    C: surrealdb::Connection + 'static,
+{
     waker: EmbeddingWaker,
     _shutdown_tx: mpsc::Sender<()>,
+    _phantom: std::marker::PhantomData<C>,
 }
 
-impl EmbeddingProcessor {
+impl<C> EmbeddingProcessor<C>
+where
+    C: surrealdb::Connection + 'static,
+{
     /// Create and start embedding processor with background task
     ///
     /// Spawns an event-driven background task that:
@@ -95,7 +104,7 @@ impl EmbeddingProcessor {
     ///
     /// # Returns
     /// A new EmbeddingProcessor instance with active background task
-    pub fn new(embedding_service: Arc<NodeEmbeddingService>) -> Result<Self, NodeServiceError> {
+    pub fn new(embedding_service: Arc<NodeEmbeddingService<C>>) -> Result<Self, NodeServiceError> {
         tracing::info!("EmbeddingProcessor initializing (event-driven model)");
 
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<()>(10);
@@ -131,6 +140,7 @@ impl EmbeddingProcessor {
         Ok(Self {
             waker,
             _shutdown_tx: shutdown_tx,
+            _phantom: std::marker::PhantomData,
         })
     }
 
@@ -147,7 +157,7 @@ impl EmbeddingProcessor {
     /// Keeps processing batches until `process_stale_embeddings` returns 0.
     /// This ensures the queue is fully drained before returning to sleep.
     /// Yields between batches to prevent starving other async tasks.
-    async fn process_until_empty(service: &Arc<NodeEmbeddingService>) {
+    async fn process_until_empty(service: &Arc<NodeEmbeddingService<C>>) {
         const BATCH_SIZE: usize = 10;
         let mut total_processed = 0;
 

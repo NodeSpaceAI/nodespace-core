@@ -1283,6 +1283,12 @@ pub struct GetMarkdownParams {
     /// Maximum recursion depth to prevent infinite loops (default: 20)
     #[serde(default = "default_max_depth")]
     pub max_depth: usize,
+
+    /// Include node ID comments in markdown output (default: true)
+    /// When true, adds HTML comments with node IDs and versions: `<!-- uuid v1 -->`
+    /// When false, produces clean markdown without metadata
+    #[serde(default = "default_include_node_ids")]
+    pub include_node_ids: bool,
 }
 
 fn default_include_children() -> bool {
@@ -1290,6 +1296,9 @@ fn default_include_children() -> bool {
 }
 fn default_max_depth() -> usize {
     20
+}
+fn default_include_node_ids() -> bool {
+    true
 }
 
 /// Export node hierarchy as markdown with minimal metadata
@@ -1334,12 +1343,15 @@ where
 
     // Build markdown by traversing hierarchy in memory (no database calls)
     let mut markdown = String::new();
+    let mut node_count: usize = 1; // Start with root node
 
-    // Export the container node itself with version for OCC
-    markdown.push_str(&format!(
-        "<!-- {} v{} -->\n",
-        root_node.id, root_node.version
-    ));
+    // Export the container node itself with version for OCC (if node IDs enabled)
+    if params.include_node_ids {
+        markdown.push_str(&format!(
+            "<!-- {} v{} -->\n",
+            root_node.id, root_node.version
+        ));
+    }
     markdown.push_str(&root_node.content);
     markdown.push_str("\n\n");
 
@@ -1350,7 +1362,7 @@ where
             // Export each child and its descendants (children are already in correct order)
             for child_id in child_ids {
                 if let Some(child) = node_map.get(child_id) {
-                    export_node_hierarchy(
+                    node_count += export_node_hierarchy(
                         child,
                         &node_map,
                         &adjacency_list,
@@ -1358,6 +1370,7 @@ where
                         1, // Start at depth 1 (container is depth 0)
                         params.max_depth,
                         true, // Always include children when recursing
+                        params.include_node_ids,
                     );
                 }
             }
@@ -1369,7 +1382,7 @@ where
         "markdown": markdown,
         "root_node_id": params.node_id,
         "version": root_node.version,
-        "node_count": count_nodes_in_markdown(&markdown)
+        "node_count": node_count
     }))
 }
 
@@ -1392,6 +1405,8 @@ fn format_task_checkbox(node: &Node) -> &'static str {
 ///
 /// Uses pre-fetched data from get_subtree_data for efficient in-memory traversal.
 /// Automatically adds bullet formatting for text nodes under headers when appropriate.
+/// Returns the number of nodes exported (for accurate node_count in response).
+#[allow(clippy::too_many_arguments)]
 fn export_node_hierarchy(
     node: &Node,
     node_map: &std::collections::HashMap<String, Node>,
@@ -1400,7 +1415,8 @@ fn export_node_hierarchy(
     current_depth: usize,
     max_depth: usize,
     include_children: bool,
-) {
+    include_node_ids: bool,
+) -> usize {
     // Prevent infinite recursion
     if current_depth >= max_depth {
         let content_preview: String = node.content.chars().take(50).collect();
@@ -1411,8 +1427,10 @@ fn export_node_hierarchy(
             content_preview,
             if node.content.len() > 50 { "..." } else { "" }
         );
-        return;
+        return 0; // Node not exported due to max_depth
     }
+
+    let mut count: usize = 1; // This node is being exported
 
     // Get children from adjacency list (already sorted by order)
     let child_ids = if include_children {
@@ -1424,8 +1442,10 @@ fn export_node_hierarchy(
         &[]
     };
 
-    // Add minimal metadata comment with ID and version for OCC
-    output.push_str(&format!("<!-- {} v{} -->\n", node.id, node.version));
+    // Add minimal metadata comment with ID and version for OCC (if enabled)
+    if include_node_ids {
+        output.push_str(&format!("<!-- {} v{} -->\n", node.id, node.version));
+    }
 
     // Handle task nodes specially - render with checkbox syntax
     if node.node_type == "task" {
@@ -1454,10 +1474,12 @@ fn export_node_hierarchy(
 
         for child_id in child_ids {
             if let Some(child) = node_map.get(child_id) {
-                export_node_with_context(child, &params, output, current_depth + 1, export_ctx);
+                count += export_node_with_context(child, &params, output, current_depth + 1, export_ctx, include_node_ids);
             }
         }
     }
+
+    count
 }
 
 /// Context for exporting nodes with bullet formatting
@@ -1483,13 +1505,16 @@ struct ExportParams<'a> {
 /// 2. Parent is a header node
 /// 3. Parent has 2+ children (indicates a list, not single descriptive text)
 /// 4. Node has no children itself
+///
+/// Returns the number of nodes exported (for accurate node_count in response).
 fn export_node_with_context(
     node: &Node,
     params: &ExportParams<'_>,
     output: &mut String,
     current_depth: usize,
     context: ExportContext<'_>,
-) {
+    include_node_ids: bool,
+) -> usize {
     // Prevent infinite recursion
     if current_depth >= params.max_depth {
         let content_preview: String = node.content.chars().take(50).collect();
@@ -1500,8 +1525,10 @@ fn export_node_with_context(
             content_preview,
             if node.content.len() > 50 { "..." } else { "" }
         );
-        return;
+        return 0; // Node not exported due to max_depth
     }
+
+    let mut count: usize = 1; // This node is being exported
 
     // Get children from adjacency list (already sorted by order)
     let child_ids = params
@@ -1520,8 +1547,10 @@ fn export_node_with_context(
         && context.sibling_count >= 2
         && !has_children;
 
-    // Add minimal metadata comment with ID and version for OCC
-    output.push_str(&format!("<!-- {} v{} -->\n", node.id, node.version));
+    // Add minimal metadata comment with ID and version for OCC (if enabled)
+    if include_node_ids {
+        output.push_str(&format!("<!-- {} v{} -->\n", node.id, node.version));
+    }
 
     // Handle task nodes specially - render with checkbox syntax
     if node.node_type == "task" {
@@ -1547,19 +1576,16 @@ fn export_node_with_context(
 
         for child_id in child_ids {
             if let Some(child) = params.node_map.get(child_id) {
-                export_node_with_context(child, params, output, current_depth + 1, child_ctx);
+                count += export_node_with_context(child, params, output, current_depth + 1, child_ctx, include_node_ids);
             }
         }
     }
+
+    count
 }
 
 // NOTE: sort_by_sibling_chain removed - sibling ordering is now handled via
 // has_child edge order field. Children are returned in order from database.
-
-/// Count number of nodes in markdown (by counting HTML comments)
-fn count_nodes_in_markdown(markdown: &str) -> usize {
-    markdown.matches("<!--").count()
-}
 
 // ============================================================================
 // Bulk Root Update (update_root_from_markdown)

@@ -424,8 +424,10 @@ impl SurrealStore<Db> {
             .context("Failed to initialize SurrealDB with RocksDB backend")?;
 
         // Use namespace and database
+        // Note: Both embedded and HTTP modes use "nodespace" for namespace and database
+        // to ensure consistency between Tauri desktop app and browser development mode
         db.use_ns("nodespace")
-            .use_db("nodes")
+            .use_db("nodespace")
             .await
             .context("Failed to set namespace/database")?;
 
@@ -461,7 +463,7 @@ impl SurrealStore<Client> {
     ///
     /// * `endpoint` - SurrealDB server address (e.g., "127.0.0.1:8000")
     /// * `namespace` - Database namespace (e.g., "nodespace")
-    /// * `database` - Database name (e.g., "nodes")
+    /// * `database` - Database name (e.g., "nodespace")
     /// * `username` - Auth username (e.g., "root")
     /// * `password` - Auth password (e.g., "root")
     ///
@@ -475,7 +477,7 @@ impl SurrealStore<Client> {
     ///     let store = SurrealStore::new_http(
     ///         "127.0.0.1:8000",
     ///         "nodespace",
-    ///         "nodes",
+    ///         "nodespace",
     ///         "root",
     ///         "root"
     ///     ).await?;
@@ -4253,10 +4255,12 @@ where
     ///
     /// Returns node IDs that need re-embedding.
     pub async fn get_stale_embedding_root_ids(&self, limit: Option<i64>) -> Result<Vec<String>> {
+        // Use GROUP BY node for uniqueness since DISTINCT doesn't work with record::id() in SurrealDB
+        // Must include `node` in SELECT to satisfy GROUP BY requirements
         let sql = if limit.is_some() {
-            "SELECT DISTINCT record::id(node) AS node_id FROM embedding WHERE stale = true LIMIT $limit;"
+            "SELECT node, record::id(node) AS node_id FROM embedding WHERE stale = true GROUP BY node LIMIT $limit;"
         } else {
-            "SELECT DISTINCT record::id(node) AS node_id FROM embedding WHERE stale = true;"
+            "SELECT node, record::id(node) AS node_id FROM embedding WHERE stale = true GROUP BY node;"
         };
 
         let mut query_builder = self.db.query(sql);
@@ -4352,15 +4356,27 @@ where
     ) -> Result<Vec<crate::models::EmbeddingSearchResult>> {
         let min_similarity = threshold.unwrap_or(0.5);
 
+        // Intermediate struct for raw SurrealDB results
+        // Note: We select `node` directly instead of `record::id(node)` because
+        // SurrealDB 2.3 doesn't allow function calls in SELECT with GROUP BY
+        #[derive(Debug, serde::Deserialize)]
+        struct RawSearchResult {
+            node: surrealdb::sql::Thing,
+            similarity: f64,
+        }
+
         // Query to get best similarity per node across all chunks
+        // Note: SurrealDB doesn't support HAVING, so we use a subquery with WHERE
         let query = r#"
-            SELECT
-                record::id(node) AS node_id,
-                math::max(vector::similarity::cosine(vector, $query_vector)) AS similarity
-            FROM embedding
-            WHERE stale = false
-            GROUP BY node
-            HAVING similarity > $threshold
+            SELECT * FROM (
+                SELECT
+                    node,
+                    math::max(vector::similarity::cosine(vector, $query_vector)) AS similarity
+                FROM embedding
+                WHERE stale = false
+                GROUP BY node
+            )
+            WHERE similarity > $threshold
             ORDER BY similarity DESC
             LIMIT $limit;
         "#;
@@ -4374,9 +4390,18 @@ where
             .await
             .context("Failed to execute embedding search")?;
 
-        let results: Vec<crate::models::EmbeddingSearchResult> = response
+        let raw_results: Vec<RawSearchResult> = response
             .take(0)
             .context("Failed to extract embedding search results")?;
+
+        // Convert Thing to node_id string
+        let results = raw_results
+            .into_iter()
+            .map(|r| crate::models::EmbeddingSearchResult {
+                node_id: r.node.id.to_raw(),
+                similarity: r.similarity,
+            })
+            .collect();
 
         Ok(results)
     }
