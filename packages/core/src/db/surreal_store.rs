@@ -53,6 +53,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use surrealdb::engine::local::{Db, RocksDb};
@@ -1171,6 +1172,73 @@ where
         Ok(node)
     }
 
+    /// Builds a Node from hub data and properties.
+    ///
+    /// This helper extracts the common node construction logic used by both
+    /// `get_node()` and `get_nodes_by_ids()`, ensuring consistent behavior
+    /// for timestamp parsing, mentions extraction, and fallback handling.
+    ///
+    /// # Arguments
+    /// * `node_id` - The node's ID string
+    /// * `node_type` - The node's type (text, task, date, etc.)
+    /// * `hub` - The hub table row as a JSON Value
+    /// * `properties` - The node's properties (from spoke table or hub.properties)
+    fn build_node_from_hub(
+        &self,
+        node_id: String,
+        node_type: String,
+        hub: &Value,
+        properties: Value,
+    ) -> Node {
+        let created_at = hub["created_at"]
+            .as_str()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|| {
+                warn!(node_id = %node_id, "Missing or invalid created_at timestamp, using current time");
+                Utc::now()
+            });
+
+        let modified_at = hub["modified_at"]
+            .as_str()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|| {
+                warn!(node_id = %node_id, "Missing or invalid modified_at timestamp, using current time");
+                Utc::now()
+            });
+
+        let mentions = hub["mentions"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mentioned_by = hub["mentioned_by"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Node {
+            id: node_id,
+            node_type,
+            content: hub["content"].as_str().unwrap_or("").to_string(),
+            version: hub["version"].as_i64().unwrap_or(1),
+            created_at,
+            modified_at,
+            properties,
+            mentions,
+            mentioned_by,
+        }
+    }
+
     pub async fn get_node(&self, id: &str) -> Result<Option<Node>> {
         // Two-query approach: hub first, then spoke if needed
         //
@@ -1220,53 +1288,121 @@ where
                 .unwrap_or(serde_json::json!({}))
         };
 
-        let created_at = hub["created_at"]
-            .as_str()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|| {
-                warn!(node_id = %id, "Missing or invalid created_at timestamp, using current time");
-                Utc::now()
-            });
-
-        let modified_at = hub["modified_at"]
-            .as_str()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|| {
-                warn!(node_id = %id, "Missing or invalid modified_at timestamp, using current time");
-                Utc::now()
-            });
-
-        let mentions = hub["mentions"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let mentioned_by = hub["mentioned_by"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(Some(Node {
-            id: id.to_string(),
+        Ok(Some(self.build_node_from_hub(
+            id.to_string(),
             node_type,
-            content: hub["content"].as_str().unwrap_or("").to_string(),
-            version: hub["version"].as_i64().unwrap_or(1),
-            created_at,
-            modified_at,
+            &hub,
             properties,
-            mentions,
-            mentioned_by,
-        }))
+        )))
+    }
+
+    /// Batch-fetch multiple nodes by their IDs in a single query.
+    ///
+    /// Returns a HashMap mapping node IDs to their Node data. IDs that don't exist
+    /// are simply not included in the result (no error is raised).
+    ///
+    /// This method optimizes bulk operations by avoiding N+1 query patterns.
+    /// For nodes with spoke tables (task, schema), spoke data is fetched in batches
+    /// grouped by node type.
+    pub async fn get_nodes_by_ids(&self, ids: &[String]) -> Result<HashMap<String, Node>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Build ID list for SurrealQL IN clause: [node:`id1`, node:`id2`, ...]
+        let id_list: Vec<String> = ids.iter().map(|id| format!("node:`{}`", id)).collect();
+        let id_clause = id_list.join(", ");
+
+        // Query all hub nodes in one batch
+        // Note: We use record::id(id) AS id to extract the string ID for result mapping
+        // The raw id field is an object/Thing that doesn't serialize to a simple string
+        let hub_query = format!(
+            "SELECT *, record::id(id) AS node_id OMIT id, data FROM node WHERE id IN [{}];",
+            id_clause
+        );
+        let mut response = self
+            .db
+            .query(&hub_query)
+            .await
+            .context("Failed to batch query hub nodes")?;
+
+        let results: Vec<Value> = response.take(0).unwrap_or_default();
+
+        // Group nodes by type for efficient spoke queries
+        let mut nodes_by_type: HashMap<String, Vec<(String, Value)>> = HashMap::new();
+        for hub in results {
+            // Extract ID from the node_id alias (set via record::id(id) AS node_id)
+            let node_id = hub["node_id"].as_str().unwrap_or("").to_string();
+            if node_id.is_empty() {
+                continue; // Skip if no ID found
+            }
+            let node_type = hub["node_type"].as_str().unwrap_or("text").to_string();
+
+            nodes_by_type
+                .entry(node_type)
+                .or_default()
+                .push((node_id, hub));
+        }
+
+        let mut result_map: HashMap<String, Node> = HashMap::new();
+
+        // Process each node type group
+        for (node_type, hubs) in nodes_by_type {
+            let has_spoke = self.has_spoke_table(&node_type);
+
+            // Batch fetch spoke data if needed
+            let spoke_data: HashMap<String, Value> = if has_spoke {
+                let spoke_ids: Vec<String> = hubs
+                    .iter()
+                    .map(|(id, _)| format!("{}:`{}`", node_type, id))
+                    .collect();
+                let spoke_clause = spoke_ids.join(", ");
+                // Use record::id(id) AS spoke_id to extract string ID for result mapping
+                let spoke_query = format!(
+                    "SELECT *, record::id(id) AS spoke_id OMIT id, node FROM {} WHERE id IN [{}];",
+                    node_type, spoke_clause
+                );
+
+                let mut spoke_response = self
+                    .db
+                    .query(&spoke_query)
+                    .await
+                    .context("Failed to batch query spoke table")?;
+
+                let spoke_results: Vec<Value> = spoke_response.take(0).unwrap_or_default();
+
+                spoke_results
+                    .into_iter()
+                    .filter_map(|spoke| {
+                        // Extract ID from spoke_id alias (set via record::id(id) AS spoke_id)
+                        let spoke_id = spoke["spoke_id"].as_str()?.to_string();
+                        Some((spoke_id, spoke))
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            };
+
+            // Convert hub + spoke data to Node structs using the shared helper
+            for (node_id, hub) in hubs {
+                let properties = if has_spoke {
+                    spoke_data
+                        .get(&node_id)
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({}))
+                } else {
+                    hub.get("properties")
+                        .cloned()
+                        .unwrap_or(serde_json::json!({}))
+                };
+
+                let node =
+                    self.build_node_from_hub(node_id.clone(), node_type.clone(), &hub, properties);
+                result_map.insert(node_id, node);
+            }
+        }
+
+        Ok(result_map)
     }
 
     pub async fn update_node(
@@ -5323,6 +5459,162 @@ mod tests {
         // Search for non-existent term
         let results = store.mention_autocomplete("nonexistent", None).await?;
         assert!(results.is_empty(), "Should return empty for no matches");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_nodes_by_ids_basic() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        // Create multiple nodes
+        let node1 = Node::new("text".to_string(), "Content 1".to_string(), json!({}));
+        let node2 = Node::new("text".to_string(), "Content 2".to_string(), json!({}));
+        let node3 = Node::new("text".to_string(), "Content 3".to_string(), json!({}));
+
+        let created1 = store.create_node(node1, None).await?;
+        let created2 = store.create_node(node2, None).await?;
+        let created3 = store.create_node(node3, None).await?;
+
+        // Batch fetch all three nodes
+        let ids = vec![
+            created1.id.clone(),
+            created2.id.clone(),
+            created3.id.clone(),
+        ];
+        let result = store.get_nodes_by_ids(&ids).await?;
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result.get(&created1.id).unwrap().content, "Content 1");
+        assert_eq!(result.get(&created2.id).unwrap().content, "Content 2");
+        assert_eq!(result.get(&created3.id).unwrap().content, "Content 3");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_nodes_by_ids_with_nonexistent() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        // Create one node
+        let node = Node::new("text".to_string(), "Existing node".to_string(), json!({}));
+        let created = store.create_node(node, None).await?;
+
+        // Try to fetch existing and non-existent nodes
+        let ids = vec![
+            created.id.clone(),
+            "nonexistent-id-1".to_string(),
+            "nonexistent-id-2".to_string(),
+        ];
+        let result = store.get_nodes_by_ids(&ids).await?;
+
+        // Should only return the existing node
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key(&created.id));
+        assert!(!result.contains_key("nonexistent-id-1"));
+        assert!(!result.contains_key("nonexistent-id-2"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_nodes_by_ids_empty_list() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        let result = store.get_nodes_by_ids(&[]).await?;
+        assert!(result.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_nodes_by_ids_with_task_nodes() -> Result<()> {
+        // Test that spoke tables (task) are correctly fetched in batch
+        let (store, _temp_dir) = create_test_store().await?;
+
+        let task1 = Node::new(
+            "task".to_string(),
+            "Task 1".to_string(),
+            json!({"status": "open"}),
+        );
+        let task2 = Node::new(
+            "task".to_string(),
+            "Task 2".to_string(),
+            json!({"status": "done"}),
+        );
+
+        let created1 = store.create_node(task1, None).await?;
+        let created2 = store.create_node(task2, None).await?;
+
+        let ids = vec![created1.id.clone(), created2.id.clone()];
+        let result = store.get_nodes_by_ids(&ids).await?;
+
+        assert_eq!(result.len(), 2);
+        let fetched1 = result.get(&created1.id).unwrap();
+        let fetched2 = result.get(&created2.id).unwrap();
+
+        assert_eq!(fetched1.node_type, "task");
+        assert_eq!(fetched1.content, "Task 1");
+        assert_eq!(fetched1.properties["status"], "open");
+
+        assert_eq!(fetched2.node_type, "task");
+        assert_eq!(fetched2.content, "Task 2");
+        assert_eq!(fetched2.properties["status"], "done");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_nodes_by_ids_with_mixed_types() -> Result<()> {
+        // Test batch fetch with mixed node types (text and task)
+        let (store, _temp_dir) = create_test_store().await?;
+
+        let text_node = Node::new("text".to_string(), "Text content".to_string(), json!({}));
+        let task_node = Node::new(
+            "task".to_string(),
+            "Task content".to_string(),
+            json!({"status": "pending"}),
+        );
+
+        let text_created = store.create_node(text_node, None).await?;
+        let task_created = store.create_node(task_node, None).await?;
+
+        let ids = vec![text_created.id.clone(), task_created.id.clone()];
+        let result = store.get_nodes_by_ids(&ids).await?;
+
+        assert_eq!(result.len(), 2);
+
+        let text_fetched = result.get(&text_created.id).unwrap();
+        assert_eq!(text_fetched.node_type, "text");
+        assert_eq!(text_fetched.content, "Text content");
+
+        let task_fetched = result.get(&task_created.id).unwrap();
+        assert_eq!(task_fetched.node_type, "task");
+        assert_eq!(task_fetched.content, "Task content");
+        assert_eq!(task_fetched.properties["status"], "pending");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_nodes_by_ids_larger_batch() -> Result<()> {
+        // Test with a larger batch (20 nodes)
+        let (store, _temp_dir) = create_test_store().await?;
+
+        let mut ids = Vec::new();
+        for i in 0..20 {
+            let node = Node::new("text".to_string(), format!("Content {}", i), json!({}));
+            let created = store.create_node(node, None).await?;
+            ids.push(created.id);
+        }
+
+        let result = store.get_nodes_by_ids(&ids).await?;
+
+        assert_eq!(result.len(), 20);
+        for (i, id) in ids.iter().enumerate() {
+            let node = result.get(id).unwrap();
+            assert_eq!(node.content, format!("Content {}", i));
+        }
 
         Ok(())
     }

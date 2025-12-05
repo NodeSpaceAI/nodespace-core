@@ -3762,13 +3762,22 @@ where
             return Ok(());
         }
 
-        // Step 1: Validate all nodes BEFORE performing atomic update
+        // Step 1: Batch-fetch all nodes in a single query (Issue #143)
+        // This replaces the N+1 pattern where we called get_node() for each update
+        let ids: Vec<String> = updates.iter().map(|(id, _)| id.clone()).collect();
+        let existing_nodes = self.store.get_nodes_by_ids(&ids).await.map_err(|e| {
+            NodeServiceError::bulk_operation_failed(format!(
+                "Failed to batch fetch nodes for validation: {}",
+                e
+            ))
+        })?;
+
+        // Step 2: Validate all nodes BEFORE performing atomic update
         // This ensures we fail fast before any database changes
         for (id, update) in &updates {
-            // Fetch existing node
-            let existing = self
-                .get_node(id)
-                .await?
+            // Look up existing node from batch result
+            let existing = existing_nodes
+                .get(id)
                 .ok_or_else(|| NodeServiceError::node_not_found(id))?;
 
             let mut updated = existing.clone();
@@ -3810,7 +3819,7 @@ where
             }
         }
 
-        // Step 2: All validations passed - perform atomic bulk update
+        // Step 3: All validations passed - perform atomic bulk update
         self.store.bulk_update(updates.clone()).await.map_err(|e| {
             NodeServiceError::bulk_operation_failed(format!(
                 "Failed to execute bulk update transaction: {}",
@@ -5174,6 +5183,170 @@ mod tests {
 
         assert_eq!(updated1.content, "Updated 1");
         assert_eq!(updated2.content, "Updated 2");
+    }
+
+    #[tokio::test]
+    async fn test_bulk_update_with_larger_batch() {
+        // Test with 10+ nodes to verify batch fetch works at scale
+        let (service, _temp) = create_test_service().await;
+
+        // Create 15 nodes
+        let mut ids = Vec::new();
+        for i in 0..15 {
+            let node = Node::new(
+                "text".to_string(),
+                format!("Original content {}", i),
+                json!({}),
+            );
+            let id = service.create_node(node).await.unwrap();
+            ids.push(id);
+        }
+
+        // Build updates for all nodes
+        let updates: Vec<(String, NodeUpdate)> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                (
+                    id.clone(),
+                    NodeUpdate::new().with_content(format!("Updated content {}", i)),
+                )
+            })
+            .collect();
+
+        // Bulk update should succeed
+        service.bulk_update(updates).await.unwrap();
+
+        // Verify all nodes were updated correctly
+        for (i, id) in ids.iter().enumerate() {
+            let node = service.get_node(id).await.unwrap().unwrap();
+            assert_eq!(node.content, format!("Updated content {}", i));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bulk_update_with_nonexistent_node() {
+        // Test that bulk_update fails when one of the nodes doesn't exist
+        let (service, _temp) = create_test_service().await;
+
+        let node1 = Node::new("text".to_string(), "Original 1".to_string(), json!({}));
+        let id1 = service.create_node(node1).await.unwrap();
+
+        let updates = vec![
+            (
+                id1.clone(),
+                NodeUpdate::new().with_content("Updated 1".to_string()),
+            ),
+            (
+                "nonexistent-node-id".to_string(),
+                NodeUpdate::new().with_content("Should fail".to_string()),
+            ),
+        ];
+
+        let result = service.bulk_update(updates).await;
+        assert!(result.is_err());
+
+        // Verify the first node was NOT updated (transaction should have failed before any changes)
+        let node = service.get_node(&id1).await.unwrap().unwrap();
+        assert_eq!(node.content, "Original 1");
+    }
+
+    #[tokio::test]
+    async fn test_bulk_update_empty_list() {
+        // Edge case: empty updates list should succeed immediately
+        let (service, _temp) = create_test_service().await;
+
+        let result = service.bulk_update(vec![]).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_bulk_update_with_task_nodes() {
+        // Test bulk update works correctly with nodes that have spoke tables (tasks)
+        // Note: The store's bulk_update only updates hub table fields (content, node_type).
+        // Spoke table properties (like task status) are not updated by bulk_update.
+        // This test verifies that task nodes can be bulk-updated without error.
+        let (service, _temp) = create_test_service().await;
+
+        let task1 = Node::new(
+            "task".to_string(),
+            "Task 1".to_string(),
+            json!({"status": "open"}),
+        );
+        let task2 = Node::new(
+            "task".to_string(),
+            "Task 2".to_string(),
+            json!({"status": "open"}),
+        );
+
+        let id1 = service.create_node(task1).await.unwrap();
+        let id2 = service.create_node(task2).await.unwrap();
+
+        // Update content (spoke table properties like status are NOT updated by bulk_update)
+        let updates = vec![
+            (
+                id1.clone(),
+                NodeUpdate::new().with_content("Updated Task 1".to_string()),
+            ),
+            (
+                id2.clone(),
+                NodeUpdate::new().with_content("Updated Task 2".to_string()),
+            ),
+        ];
+
+        service.bulk_update(updates).await.unwrap();
+
+        let updated1 = service.get_node(&id1).await.unwrap().unwrap();
+        let updated2 = service.get_node(&id2).await.unwrap().unwrap();
+
+        // Verify content was updated
+        assert_eq!(updated1.content, "Updated Task 1");
+        assert_eq!(updated2.content, "Updated Task 2");
+        // Verify properties are preserved (status should still be "open")
+        assert_eq!(updated1.properties["status"], "open");
+        assert_eq!(updated2.properties["status"], "open");
+    }
+
+    #[tokio::test]
+    async fn test_bulk_update_with_mixed_node_types() {
+        // Test bulk update with mixed text and task nodes (different spoke table handling)
+        // Note: bulk_update only updates hub table fields (content, node_type).
+        // This test verifies that mixed node types work together in the batch fetch.
+        let (service, _temp) = create_test_service().await;
+
+        let text_node = Node::new("text".to_string(), "Text content".to_string(), json!({}));
+        let task_node = Node::new(
+            "task".to_string(),
+            "Task content".to_string(),
+            json!({"status": "open"}),
+        );
+
+        let text_id = service.create_node(text_node).await.unwrap();
+        let task_id = service.create_node(task_node).await.unwrap();
+
+        // Update content only (spoke table properties are NOT updated by bulk_update)
+        let updates = vec![
+            (
+                text_id.clone(),
+                NodeUpdate::new().with_content("Updated text".to_string()),
+            ),
+            (
+                task_id.clone(),
+                NodeUpdate::new().with_content("Updated task".to_string()),
+            ),
+        ];
+
+        service.bulk_update(updates).await.unwrap();
+
+        let updated_text = service.get_node(&text_id).await.unwrap().unwrap();
+        let updated_task = service.get_node(&task_id).await.unwrap().unwrap();
+
+        assert_eq!(updated_text.content, "Updated text");
+        assert_eq!(updated_text.node_type, "text");
+        assert_eq!(updated_task.content, "Updated task");
+        assert_eq!(updated_task.node_type, "task");
+        // Properties are preserved, not updated by bulk_update
+        assert_eq!(updated_task.properties["status"], "open");
     }
 
     #[tokio::test]

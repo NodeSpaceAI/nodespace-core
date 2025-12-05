@@ -1474,7 +1474,14 @@ fn export_node_hierarchy(
 
         for child_id in child_ids {
             if let Some(child) = node_map.get(child_id) {
-                count += export_node_with_context(child, &params, output, current_depth + 1, export_ctx, include_node_ids);
+                count += export_node_with_context(
+                    child,
+                    &params,
+                    output,
+                    current_depth + 1,
+                    export_ctx,
+                    include_node_ids,
+                );
             }
         }
     }
@@ -1576,7 +1583,14 @@ fn export_node_with_context(
 
         for child_id in child_ids {
             if let Some(child) = params.node_map.get(child_id) {
-                count += export_node_with_context(child, params, output, current_depth + 1, child_ctx, include_node_ids);
+                count += export_node_with_context(
+                    child,
+                    params,
+                    output,
+                    current_depth + 1,
+                    child_ctx,
+                    include_node_ids,
+                );
             }
         }
     }
