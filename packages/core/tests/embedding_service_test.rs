@@ -23,30 +23,57 @@ use serde_json::json;
 use std::sync::Arc;
 use tempfile::TempDir;
 
-/// Test helper: Create a test database and NodeService
-async fn create_test_service() -> Result<(NodeService, TempDir)> {
-    let temp_dir = TempDir::new()?;
-    let db_path = temp_dir.path().join("test.db");
-    let mut store = Arc::new(SurrealStore::new(db_path).await?);
-    let service = NodeService::new(&mut store).await?;
-    Ok((service, temp_dir))
-}
-
 /// Test helper: Create a test NLP engine (uninitialized for testing)
 fn create_test_nlp_engine() -> Arc<EmbeddingService> {
     let config = NlpConfig::default();
     Arc::new(EmbeddingService::new(config).unwrap())
 }
 
-/// Test helper: Create a test embedding service
-async fn create_test_embedding_service(
-) -> Result<(NodeEmbeddingService, Arc<SurrealStore>, TempDir)> {
+/// Test helper: Create a unified test environment with shared database
+///
+/// Returns (NodeEmbeddingService, NodeService, Arc<SurrealStore>, TempDir)
+/// Both services share the same database instance for proper test isolation.
+async fn create_unified_test_env() -> Result<(
+    NodeEmbeddingService,
+    NodeService,
+    Arc<SurrealStore>,
+    TempDir,
+)> {
     let temp_dir = TempDir::new()?;
     let db_path = temp_dir.path().join("test.db");
-    let store = Arc::new(SurrealStore::new(db_path).await?);
+    let mut store = Arc::new(SurrealStore::new(db_path).await?);
+
+    // Create NodeService first (it may set up schema)
+    let node_service = NodeService::new(&mut store).await?;
+
+    // Create embedding service using the SAME store
     let nlp_engine = create_test_nlp_engine();
     let embedding_service = NodeEmbeddingService::new(nlp_engine, store.clone());
-    Ok((embedding_service, store, temp_dir))
+
+    Ok((embedding_service, node_service, store, temp_dir))
+}
+
+/// Test helper: Create a unified test environment with custom embedding config
+async fn create_unified_test_env_with_config(
+    config: EmbeddingConfig,
+) -> Result<(
+    NodeEmbeddingService,
+    NodeService,
+    Arc<SurrealStore>,
+    TempDir,
+)> {
+    let temp_dir = TempDir::new()?;
+    let db_path = temp_dir.path().join("test.db");
+    let mut store = Arc::new(SurrealStore::new(db_path).await?);
+
+    // Create NodeService first (it may set up schema)
+    let node_service = NodeService::new(&mut store).await?;
+
+    // Create embedding service with custom config using the SAME store
+    let nlp_engine = create_test_nlp_engine();
+    let embedding_service = NodeEmbeddingService::with_config(nlp_engine, store.clone(), config);
+
+    Ok((embedding_service, node_service, store, temp_dir))
 }
 
 /// Test helper: Create a test node via NodeService
@@ -83,8 +110,7 @@ async fn create_child_node(
 
 #[tokio::test]
 async fn test_is_root_node_with_no_parent() -> Result<()> {
-    let (embedding_service, _store, _temp_dir) = create_test_embedding_service().await?;
-    let (node_service, _node_temp_dir) = create_test_service().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
 
     let root = create_root_node(&node_service, "text", "Root content").await?;
 
@@ -95,8 +121,7 @@ async fn test_is_root_node_with_no_parent() -> Result<()> {
 
 #[tokio::test]
 async fn test_is_root_node_with_parent() -> Result<()> {
-    let (embedding_service, _store, _temp_dir) = create_test_embedding_service().await?;
-    let (node_service, _node_temp_dir) = create_test_service().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
 
     let root = create_root_node(&node_service, "text", "Root").await?;
     let child = create_child_node(&node_service, &root.id, "text", "Child").await?;
@@ -111,8 +136,7 @@ async fn test_is_root_node_with_parent() -> Result<()> {
 
 #[tokio::test]
 async fn test_find_root_id_for_root_node() -> Result<()> {
-    let (embedding_service, _store, _temp_dir) = create_test_embedding_service().await?;
-    let (node_service, _node_temp_dir) = create_test_service().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
 
     let root = create_root_node(&node_service, "text", "Root").await?;
 
@@ -123,8 +147,7 @@ async fn test_find_root_id_for_root_node() -> Result<()> {
 
 #[tokio::test]
 async fn test_find_root_id_for_deep_child() -> Result<()> {
-    let (embedding_service, _store, _temp_dir) = create_test_embedding_service().await?;
-    let (node_service, _node_temp_dir) = create_test_service().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
 
     // Create a tree: root -> child1 -> child2 -> child3
     let root = create_root_node(&node_service, "text", "Root").await?;
@@ -142,7 +165,7 @@ async fn test_find_root_id_for_deep_child() -> Result<()> {
 
 #[tokio::test]
 async fn test_should_embed_root_for_embeddable_types() -> Result<()> {
-    let (embedding_service, _store, _temp_dir) = create_test_embedding_service().await?;
+    let (embedding_service, _node_service, _store, _temp_dir) = create_unified_test_env().await?;
 
     // Test embeddable types
     let embeddable_types = vec!["text", "header", "code-block", "schema"];
@@ -159,7 +182,7 @@ async fn test_should_embed_root_for_embeddable_types() -> Result<()> {
 
 #[tokio::test]
 async fn test_should_embed_root_for_non_embeddable_types() -> Result<()> {
-    let (embedding_service, _store, _temp_dir) = create_test_embedding_service().await?;
+    let (embedding_service, _node_service, _store, _temp_dir) = create_unified_test_env().await?;
 
     // Test non-embeddable types
     let non_embeddable_types = vec!["task", "date", "person", "ai-chat"];
@@ -180,8 +203,7 @@ async fn test_should_embed_root_for_non_embeddable_types() -> Result<()> {
 
 #[tokio::test]
 async fn test_aggregate_subtree_content_single_node() -> Result<()> {
-    let (embedding_service, _store, _temp_dir) = create_test_embedding_service().await?;
-    let (node_service, _node_temp_dir) = create_test_service().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
 
     let root = create_root_node(&node_service, "text", "Root content").await?;
 
@@ -194,8 +216,7 @@ async fn test_aggregate_subtree_content_single_node() -> Result<()> {
 
 #[tokio::test]
 async fn test_aggregate_subtree_content_with_children() -> Result<()> {
-    let (embedding_service, _store, _temp_dir) = create_test_embedding_service().await?;
-    let (node_service, _node_temp_dir) = create_test_service().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
 
     // Create tree: root -> child1, child2
     let root = create_root_node(&node_service, "text", "Root").await?;
@@ -216,8 +237,7 @@ async fn test_aggregate_subtree_content_with_children() -> Result<()> {
 
 #[tokio::test]
 async fn test_aggregate_subtree_content_skips_empty() -> Result<()> {
-    let (embedding_service, _store, _temp_dir) = create_test_embedding_service().await?;
-    let (node_service, _node_temp_dir) = create_test_service().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
 
     let root = create_root_node(&node_service, "text", "Root").await?;
     let _empty_child = create_child_node(&node_service, &root.id, "text", "   ").await?;
@@ -236,17 +256,14 @@ async fn test_aggregate_subtree_content_skips_empty() -> Result<()> {
 
 #[tokio::test]
 async fn test_aggregate_subtree_content_respects_max_descendants() -> Result<()> {
-    let (_, store, _temp_dir) = create_test_embedding_service().await?;
-    let (node_service, _node_temp_dir) = create_test_service().await?;
-
     // Create a config with small max_descendants limit
-    let nlp_engine = create_test_nlp_engine();
     let config = EmbeddingConfig {
         max_descendants: 2,
         max_retries: 3,
         ..Default::default()
     };
-    let embedding_service = NodeEmbeddingService::with_config(nlp_engine, store, config);
+    let (embedding_service, node_service, _store, _temp_dir) =
+        create_unified_test_env_with_config(config).await?;
 
     // Create root with 5 children
     let root = create_root_node(&node_service, "text", "Root").await?;
@@ -266,16 +283,13 @@ async fn test_aggregate_subtree_content_respects_max_descendants() -> Result<()>
 
 #[tokio::test]
 async fn test_aggregate_subtree_content_respects_max_size() -> Result<()> {
-    let (_, store, _temp_dir) = create_test_embedding_service().await?;
-    let (node_service, _node_temp_dir) = create_test_service().await?;
-
-    let nlp_engine = create_test_nlp_engine();
     let config = EmbeddingConfig {
         max_content_size: 50, // Very small limit
         max_retries: 3,
         ..Default::default()
     };
-    let embedding_service = NodeEmbeddingService::with_config(nlp_engine, store, config);
+    let (embedding_service, node_service, _store, _temp_dir) =
+        create_unified_test_env_with_config(config).await?;
 
     // Create a root with long content
     let long_content = "a".repeat(100);
@@ -296,8 +310,7 @@ async fn test_aggregate_subtree_content_respects_max_size() -> Result<()> {
 
 #[tokio::test]
 async fn test_queue_for_embedding_root_node() -> Result<()> {
-    let (embedding_service, store, _temp_dir) = create_test_embedding_service().await?;
-    let (node_service, _node_temp_dir) = create_test_service().await?;
+    let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
 
     let root = create_root_node(&node_service, "text", "Content").await?;
 
@@ -311,8 +324,7 @@ async fn test_queue_for_embedding_root_node() -> Result<()> {
 
 #[tokio::test]
 async fn test_queue_for_embedding_child_node() -> Result<()> {
-    let (embedding_service, store, _temp_dir) = create_test_embedding_service().await?;
-    let (node_service, _node_temp_dir) = create_test_service().await?;
+    let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
 
     let root = create_root_node(&node_service, "text", "Root").await?;
     let child = create_child_node(&node_service, &root.id, "text", "Child").await?;
@@ -328,8 +340,7 @@ async fn test_queue_for_embedding_child_node() -> Result<()> {
 
 #[tokio::test]
 async fn test_queue_for_embedding_non_embeddable() -> Result<()> {
-    let (embedding_service, store, _temp_dir) = create_test_embedding_service().await?;
-    let (node_service, _node_temp_dir) = create_test_service().await?;
+    let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
 
     let task = create_root_node(&node_service, "task", "Do something").await?;
 
@@ -343,8 +354,7 @@ async fn test_queue_for_embedding_non_embeddable() -> Result<()> {
 
 #[tokio::test]
 async fn test_queue_nodes_for_embedding_deduplicates_roots() -> Result<()> {
-    let (embedding_service, store, _temp_dir) = create_test_embedding_service().await?;
-    let (node_service, _node_temp_dir) = create_test_service().await?;
+    let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
 
     let root = create_root_node(&node_service, "text", "Root").await?;
     let child1 = create_child_node(&node_service, &root.id, "text", "Child1").await?;
@@ -369,7 +379,7 @@ async fn test_queue_nodes_for_embedding_deduplicates_roots() -> Result<()> {
 
 #[tokio::test]
 async fn test_process_stale_embeddings_empty_queue() -> Result<()> {
-    let (embedding_service, _store, _temp_dir) = create_test_embedding_service().await?;
+    let (embedding_service, _node_service, _store, _temp_dir) = create_unified_test_env().await?;
 
     let processed = embedding_service.process_stale_embeddings(None).await?;
     assert_eq!(processed, 0, "Should process 0 items from empty queue");
@@ -382,11 +392,6 @@ async fn test_process_stale_embeddings_empty_queue() -> Result<()> {
 
 #[tokio::test]
 async fn test_service_with_custom_config() -> Result<()> {
-    let temp_dir = TempDir::new()?;
-    let db_path = temp_dir.path().join("test.db");
-    let store = Arc::new(SurrealStore::new(db_path).await?);
-    let nlp_engine = create_test_nlp_engine();
-
     let custom_config = EmbeddingConfig {
         max_tokens_per_chunk: 256,
         overlap_tokens: 25,
@@ -396,7 +401,8 @@ async fn test_service_with_custom_config() -> Result<()> {
         max_retries: 5,
     };
 
-    let service = NodeEmbeddingService::with_config(nlp_engine, store, custom_config);
+    let (service, _node_service, _store, _temp_dir) =
+        create_unified_test_env_with_config(custom_config).await?;
 
     // Verify accessors exist and return valid references
     let _ = service.nlp_engine();
@@ -412,8 +418,7 @@ async fn test_service_with_custom_config() -> Result<()> {
 async fn test_concurrent_queue_operations() -> Result<()> {
     use tokio::task::JoinSet;
 
-    let (embedding_service, _store, _temp_dir) = create_test_embedding_service().await?;
-    let (node_service, _node_temp_dir) = create_test_service().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
     let embedding_service = Arc::new(embedding_service);
 
     // Create multiple roots

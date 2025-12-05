@@ -203,10 +203,249 @@ fn bench_occ_overhead(c: &mut Criterion) {
     });
 }
 
+/// Benchmark batch GET operations vs sequential calls
+///
+/// Compares performance of get_nodes_batch (single call for 50 nodes)
+/// vs 50 individual get_node calls.
+///
+/// Note: In-memory operations show modest speedup (1.0-1.5x).
+/// Real-world speedup over MCP/IPC is much higher (2-10x) due to network overhead.
+fn bench_batch_get(c: &mut Criterion) {
+    use nodespace_core::mcp::handlers::nodes::handle_get_nodes_batch;
+
+    let rt = Runtime::new().unwrap();
+
+    let mut group = c.benchmark_group("batch_operations");
+    group.sample_size(20);
+
+    // Benchmark sequential individual calls
+    group.bench_function("get_50_nodes_sequential", |b| {
+        b.iter_custom(|iters| {
+            rt.block_on(async {
+                let mut total = std::time::Duration::ZERO;
+
+                for _ in 0..iters {
+                    let (node_service, _temp) = setup_test_service().await;
+
+                    // Create 50 test nodes
+                    let mut node_ids = Vec::new();
+                    for i in 0..50 {
+                        let node_id = node_service
+                            .create_node_with_parent(CreateNodeParams {
+                                id: None,
+                                node_type: "text".to_string(),
+                                content: format!("Node {}", i),
+                                parent_id: None,
+                                insert_after_node_id: None,
+                                properties: json!({}),
+                            })
+                            .await
+                            .unwrap();
+                        node_ids.push(node_id);
+                    }
+
+                    let start = std::time::Instant::now();
+                    for node_id in &node_ids {
+                        black_box(node_service.get_node(node_id).await.unwrap());
+                    }
+                    total += start.elapsed();
+                }
+
+                total
+            })
+        });
+    });
+
+    // Benchmark single batch call
+    group.bench_function("get_50_nodes_batch", |b| {
+        b.iter_custom(|iters| {
+            rt.block_on(async {
+                let mut total = std::time::Duration::ZERO;
+
+                for _ in 0..iters {
+                    let (node_service, _temp) = setup_test_service().await;
+
+                    // Create 50 test nodes
+                    let mut node_ids = Vec::new();
+                    for i in 0..50 {
+                        let node_id = node_service
+                            .create_node_with_parent(CreateNodeParams {
+                                id: None,
+                                node_type: "text".to_string(),
+                                content: format!("Node {}", i),
+                                parent_id: None,
+                                insert_after_node_id: None,
+                                properties: json!({}),
+                            })
+                            .await
+                            .unwrap();
+                        node_ids.push(node_id);
+                    }
+
+                    let params = json!({ "node_ids": node_ids });
+
+                    let start = std::time::Instant::now();
+                    black_box(handle_get_nodes_batch(&node_service, params).await.unwrap());
+                    total += start.elapsed();
+                }
+
+                total
+            })
+        });
+    });
+
+    group.finish();
+}
+
+/// Benchmark batch UPDATE operations vs sequential calls
+///
+/// Compares performance of update_nodes_batch (single call for 50 nodes)
+/// vs 50 individual update_node_with_occ calls.
+fn bench_batch_update(c: &mut Criterion) {
+    use nodespace_core::mcp::handlers::nodes::handle_update_nodes_batch;
+
+    let rt = Runtime::new().unwrap();
+
+    let mut group = c.benchmark_group("batch_operations");
+    group.sample_size(20);
+
+    // Benchmark sequential individual updates
+    group.bench_function("update_50_nodes_sequential", |b| {
+        b.iter_custom(|iters| {
+            rt.block_on(async {
+                let mut total = std::time::Duration::ZERO;
+
+                for _ in 0..iters {
+                    let (node_service, _temp) = setup_test_service().await;
+
+                    // Create root
+                    let root = node_service
+                        .create_node_with_parent(CreateNodeParams {
+                            id: None,
+                            node_type: "text".to_string(),
+                            content: "# Benchmark Root".to_string(),
+                            parent_id: None,
+                            insert_after_node_id: None,
+                            properties: json!({}),
+                        })
+                        .await
+                        .unwrap();
+
+                    // Create 50 test nodes
+                    let mut node_ids = Vec::new();
+                    for i in 0..50 {
+                        let node_id = node_service
+                            .create_node_with_parent(CreateNodeParams {
+                                id: None,
+                                node_type: "task".to_string(),
+                                content: format!("- [ ] Task {}", i),
+                                parent_id: Some(root.clone()),
+                                insert_after_node_id: None,
+                                properties: json!({}),
+                            })
+                            .await
+                            .unwrap();
+                        node_ids.push(node_id);
+                    }
+
+                    let start = std::time::Instant::now();
+                    for node_id in &node_ids {
+                        let node = node_service.get_node(node_id).await.unwrap().unwrap();
+                        node_service
+                            .update_node_with_occ(
+                                node_id,
+                                node.version,
+                                NodeUpdate {
+                                    content: Some("- [x] Updated task".to_string()),
+                                    node_type: None,
+                                    properties: None,
+                                },
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    total += start.elapsed();
+                }
+
+                total
+            })
+        });
+    });
+
+    // Benchmark single batch update
+    group.bench_function("update_50_nodes_batch", |b| {
+        b.iter_custom(|iters| {
+            rt.block_on(async {
+                let mut total = std::time::Duration::ZERO;
+
+                for _ in 0..iters {
+                    let (node_service, _temp) = setup_test_service().await;
+
+                    // Create root
+                    let root = node_service
+                        .create_node_with_parent(CreateNodeParams {
+                            id: None,
+                            node_type: "text".to_string(),
+                            content: "# Benchmark Root".to_string(),
+                            parent_id: None,
+                            insert_after_node_id: None,
+                            properties: json!({}),
+                        })
+                        .await
+                        .unwrap();
+
+                    // Create 50 test nodes
+                    let mut node_ids = Vec::new();
+                    for i in 0..50 {
+                        let node_id = node_service
+                            .create_node_with_parent(CreateNodeParams {
+                                id: None,
+                                node_type: "task".to_string(),
+                                content: format!("- [ ] Task {}", i),
+                                parent_id: Some(root.clone()),
+                                insert_after_node_id: None,
+                                properties: json!({}),
+                            })
+                            .await
+                            .unwrap();
+                        node_ids.push(node_id);
+                    }
+
+                    let updates: Vec<serde_json::Value> = node_ids
+                        .iter()
+                        .map(|id| {
+                            json!({
+                                "id": id,
+                                "content": "- [x] Updated task"
+                            })
+                        })
+                        .collect();
+
+                    let params = json!({ "updates": updates });
+
+                    let start = std::time::Instant::now();
+                    black_box(
+                        handle_update_nodes_batch(&node_service, params)
+                            .await
+                            .unwrap(),
+                    );
+                    total += start.elapsed();
+                }
+
+                total
+            })
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_atomic_operations,
     bench_markdown_import,
-    bench_occ_overhead
+    bench_occ_overhead,
+    bench_batch_get,
+    bench_batch_update
 );
 criterion_main!(benches);
