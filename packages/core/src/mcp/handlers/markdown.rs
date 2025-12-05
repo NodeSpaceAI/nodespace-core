@@ -55,6 +55,356 @@ const MAX_NODES_PER_IMPORT: usize = 1000;
 /// This helps distinguish between short list items and longer descriptive text.
 const MAX_BULLET_CONTENT_LENGTH: usize = 100;
 
+// ============================================================================
+// Two-Phase Batch Creation (Issue #737)
+// ============================================================================
+
+/// A node prepared for bulk insertion with pre-calculated hierarchy
+///
+/// This struct represents a node that has been parsed from markdown but not yet
+/// inserted into the database. All IDs, parent references, and ordering are
+/// pre-calculated in memory for efficient batch insertion.
+#[derive(Debug, Clone)]
+pub struct PreparedNode {
+    /// Pre-assigned UUID (generated before DB access)
+    pub id: String,
+    /// Node type (text, header, task, etc.)
+    pub node_type: String,
+    /// Node content
+    pub content: String,
+    /// Parent node ID (references another PreparedNode.id or existing node)
+    pub parent_id: Option<String>,
+    /// Pre-calculated fractional order for sibling positioning
+    pub order: f64,
+    /// Node properties (status for tasks, etc.)
+    pub properties: Value,
+}
+
+impl PreparedNode {
+    /// Create a new prepared node with pre-assigned ID
+    pub fn new(
+        id: String,
+        node_type: &str,
+        content: String,
+        parent_id: Option<String>,
+        order: f64,
+        properties: Value,
+    ) -> Self {
+        Self {
+            id,
+            node_type: node_type.to_string(),
+            content,
+            parent_id,
+            order,
+            properties,
+        }
+    }
+}
+
+/// Context for in-memory node preparation (no database access)
+///
+/// Similar to ParserContext but designed for the batch preparation phase.
+/// Tracks hierarchy purely in memory with pre-assigned IDs.
+struct PrepareContext {
+    /// Stack tracking heading hierarchy (h1 → h2 → h3)
+    heading_stack: Vec<(String, usize)>, // (node_id, level)
+    /// Counter for fractional ordering per parent
+    order_per_parent: HashMap<String, f64>,
+}
+
+impl PrepareContext {
+    fn new(_root_id: Option<String>) -> Self {
+        Self {
+            heading_stack: Vec::new(),
+            order_per_parent: HashMap::new(),
+        }
+    }
+
+    /// Get current parent ID from heading stack
+    fn current_parent_id(&self) -> Option<String> {
+        self.heading_stack.last().map(|(id, _)| id.clone())
+    }
+
+    /// Pop headings at same or higher level for new heading insertion
+    fn pop_headings_for_level(&mut self, level: usize) {
+        while let Some((_, stack_level)) = self.heading_stack.last() {
+            if *stack_level >= level {
+                self.heading_stack.pop();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Add heading to hierarchy stack
+    fn push_heading(&mut self, node_id: String, level: usize) {
+        self.heading_stack.push((node_id, level));
+    }
+
+    /// Get next order value for a parent
+    fn next_order(&mut self, parent_id: &Option<String>) -> f64 {
+        let key = parent_id.clone().unwrap_or_default();
+        let current = self.order_per_parent.get(&key).copied().unwrap_or(0.0);
+        let next = current + 1.0;
+        self.order_per_parent.insert(key, next);
+        next
+    }
+}
+
+/// Parse markdown into prepared nodes without any database access (Phase 1)
+///
+/// This is the first phase of the two-phase batch creation optimization.
+/// All nodes are prepared in memory with pre-assigned UUIDs and calculated
+/// fractional orders, ready for bulk insertion.
+///
+/// # Arguments
+///
+/// * `markdown` - The markdown content to parse
+/// * `root_id` - Optional existing root node ID (nodes will be children of this)
+///
+/// # Returns
+///
+/// Vector of PreparedNode ready for bulk database insertion
+pub fn prepare_nodes_from_markdown(
+    markdown: &str,
+    root_id: Option<String>,
+) -> Result<Vec<PreparedNode>, MCPError> {
+    let mut prepared_nodes = Vec::new();
+    let mut context = PrepareContext::new(root_id.clone());
+
+    // If we have a root_id, treat it as a level-0 heading parent
+    if let Some(ref rid) = root_id {
+        context.push_heading(rid.clone(), 0);
+    }
+
+    // Track indentation-based hierarchy (node_id, indent_level)
+    let mut indent_stack: Vec<(String, usize)> = Vec::new();
+
+    // Track last text paragraph for bullet/ordered-list hierarchy
+    let mut last_text_node: Option<(String, usize)> = None;
+
+    // Track last content node for code-block/quote-block hierarchy
+    let mut last_content_node: Option<String> = None;
+
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        // Skip empty lines
+        while i < lines.len() && lines[i].trim().is_empty() {
+            i += 1;
+        }
+
+        if i >= lines.len() {
+            break;
+        }
+
+        let line = lines[i];
+        let indent_level = calculate_indent(line);
+        let trimmed = line.trim_start();
+
+        // Check for bullet list item
+        let is_bullet = is_bullet_line(trimmed);
+        let content_line = if is_bullet {
+            trimmed.strip_prefix("- ").unwrap_or(trimmed)
+        } else {
+            trimmed
+        };
+
+        // Detect node type and extract content
+        let (node_type, content, heading_level, is_multiline, properties) =
+            if let Some(level) = detect_heading(content_line) {
+                ("header", content_line.to_string(), Some(level), false, None)
+            } else if is_task_line(content_line) {
+                let (task_content, task_status) = if content_line.starts_with("- [x] ") {
+                    (
+                        content_line.strip_prefix("- [x] ").unwrap_or(content_line),
+                        "done",
+                    )
+                } else if content_line.starts_with("- [ ] ") {
+                    (
+                        content_line.strip_prefix("- [ ] ").unwrap_or(content_line),
+                        "open",
+                    )
+                } else {
+                    (content_line, "open")
+                };
+                (
+                    "task",
+                    task_content.to_string(),
+                    None,
+                    false,
+                    Some(json!({"status": task_status})),
+                )
+            } else if content_line.starts_with("```") {
+                // Code block
+                let mut code_lines = vec![content_line];
+                i += 1;
+                while i < lines.len() {
+                    let code_line = lines[i];
+                    code_lines.push(code_line);
+                    if code_line.trim_start().starts_with("```") {
+                        break;
+                    }
+                    i += 1;
+                }
+                ("code-block", code_lines.join("\n"), None, true, None)
+            } else if content_line.starts_with("> ") {
+                // Quote block
+                let mut quote_lines = vec![content_line];
+                while i + 1 < lines.len() && lines[i + 1].trim_start().starts_with("> ") {
+                    i += 1;
+                    quote_lines.push(lines[i].trim_start());
+                }
+                ("quote-block", quote_lines.join("\n"), None, true, None)
+            } else if let Some(num_end) = detect_ordered_list(content_line) {
+                // Ordered list
+                let first_item_content = &content_line[num_end + 2..];
+                let mut list_items = vec![format!("1. {}", first_item_content)];
+                let mut j = i + 1;
+                while j < lines.len() {
+                    if lines[j].trim().is_empty() {
+                        j += 1;
+                        continue;
+                    }
+                    let next_line = lines[j].trim_start();
+                    if let Some(next_num_end) = detect_ordered_list(next_line) {
+                        i = j;
+                        list_items.push(format!("1. {}", &next_line[next_num_end + 2..]));
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                ("ordered-list", list_items.join("\n"), None, true, None)
+            } else {
+                // Text paragraph
+                let mut text_lines = vec![content_line];
+                let mut j = i + 1;
+                while j < lines.len() {
+                    let mut empty_count = 0;
+                    while j < lines.len() && lines[j].trim().is_empty() {
+                        empty_count += 1;
+                        j += 1;
+                    }
+                    if empty_count >= 1 || j >= lines.len() {
+                        break;
+                    }
+                    let next_line = lines[j].trim_start();
+                    let is_special = detect_heading(next_line).is_some()
+                        || next_line.starts_with("- ")
+                        || next_line.starts_with("```")
+                        || next_line.starts_with("> ")
+                        || detect_ordered_list(next_line).is_some();
+                    if is_special {
+                        break;
+                    }
+                    text_lines.push(next_line);
+                    i = j;
+                    j += 1;
+                }
+                (
+                    "text",
+                    text_lines.join("\n"),
+                    None,
+                    text_lines.len() > 1,
+                    None,
+                )
+            };
+
+        // Pop indent stack for same or lower indentation
+        while let Some((_, stack_indent)) = indent_stack.last() {
+            if *stack_indent >= indent_level {
+                indent_stack.pop();
+            } else {
+                break;
+            }
+        }
+
+        // Determine parent based on hierarchy rules
+        let parent_id = if node_type == "code-block" || node_type == "quote-block" {
+            last_content_node
+                .clone()
+                .or_else(|| context.current_parent_id())
+        } else if is_bullet && !is_multiline {
+            if indent_level > 0 {
+                indent_stack
+                    .last()
+                    .map(|(id, _)| id.clone())
+                    .or_else(|| last_text_node.as_ref().map(|(id, _)| id.clone()))
+                    .or_else(|| context.current_parent_id())
+            } else {
+                last_text_node
+                    .as_ref()
+                    .map(|(id, _)| id.clone())
+                    .or_else(|| context.current_parent_id())
+            }
+        } else if node_type == "ordered-list" {
+            last_text_node
+                .as_ref()
+                .map(|(id, _)| id.clone())
+                .or_else(|| context.current_parent_id())
+        } else if let Some(h_level) = heading_level {
+            context.pop_headings_for_level(h_level);
+            indent_stack
+                .last()
+                .map(|(id, _)| id.clone())
+                .or_else(|| context.current_parent_id())
+        } else {
+            indent_stack
+                .last()
+                .map(|(id, _)| id.clone())
+                .or_else(|| context.current_parent_id())
+        };
+
+        // Generate UUID and calculate order
+        let node_id = uuid::Uuid::new_v4().to_string();
+        let order = context.next_order(&parent_id);
+
+        // Build properties
+        let final_properties = properties.unwrap_or_else(|| {
+            if node_type == "task" {
+                json!({"status": "open"})
+            } else {
+                json!({})
+            }
+        });
+
+        // Create prepared node
+        prepared_nodes.push(PreparedNode::new(
+            node_id.clone(),
+            node_type,
+            content,
+            parent_id,
+            order,
+            final_properties,
+        ));
+
+        // Update hierarchy tracking
+        if let Some(h_level) = heading_level {
+            context.push_heading(node_id.clone(), h_level);
+        }
+
+        if node_type == "text" && !is_multiline && !is_bullet {
+            last_text_node = Some((node_id.clone(), indent_level));
+        } else if node_type != "text" {
+            last_text_node = None;
+        }
+
+        if node_type == "header" || (node_type == "text" && !is_bullet) {
+            last_content_node = Some(node_id.clone());
+        }
+
+        if heading_level.is_none() && (indent_level > 0 || is_bullet) {
+            indent_stack.push((node_id, indent_level));
+        }
+
+        i += 1;
+    }
+
+    Ok(prepared_nodes)
+}
+
 /// Parameters for create_nodes_from_markdown method
 #[derive(Debug, Deserialize)]
 pub struct CreateNodesFromMarkdownParams {
@@ -293,64 +643,137 @@ where
         ContainerStrategy::TitleAsContainer(title.clone())
     };
 
-    let mut context = ParserContext::new_with_strategy(container_strategy.clone());
+    // ============================================================================
+    // Two-Phase Batch Creation (Issue #737)
+    // Phase 1: Create container/root node (single node, uses existing path)
+    // Phase 2: Batch create all children in a single transaction
+    // ============================================================================
 
-    // For TitleAsContainer, parse the title first to create the container node
-    if let ContainerStrategy::TitleAsContainer(ref title) = container_strategy {
-        // Temporarily clear root_id so the container node itself is created as a root
-        // (with root_id = None, which is required for root nodes)
-        context.root_id = None;
+    let mut all_node_ids: Vec<String> = Vec::new();
+    let mut all_nodes: Vec<NodeMetadata> = Vec::new();
+    let root_id: String;
 
-        parse_markdown(title, node_service, &mut context).await?;
+    match container_strategy {
+        ContainerStrategy::DateContainer(ref date_id) => {
+            // Date container - ensure it exists
+            node_service
+                .ensure_date_exists(date_id)
+                .await
+                .map_err(|e| {
+                    MCPError::internal_error(format!("Failed to create date container: {}", e))
+                })?;
+            root_id = date_id.clone();
+        }
+        ContainerStrategy::TitleAsContainer(ref title_content) => {
+            // Parse title to determine node type (header or text)
+            let title_prepared = prepare_nodes_from_markdown(title_content, None)?;
 
-        // Validate that exactly one node was created and it's a valid container type
-        if context.nodes.len() != 1 {
+            if title_prepared.is_empty() {
+                return Err(MCPError::invalid_params(
+                    "title could not be parsed into a node".to_string(),
+                ));
+            }
+
+            if title_prepared.len() != 1 {
+                return Err(MCPError::invalid_params(format!(
+                    "container_title must parse to exactly one node, got {}",
+                    title_prepared.len()
+                )));
+            }
+
+            let container = &title_prepared[0];
+            if !is_valid_container_type(&container.node_type) {
+                return Err(MCPError::invalid_params(format!(
+                    "container_title parsed to '{}' which cannot be a container. Only text, header, or date nodes can be containers.",
+                    container.node_type
+                )));
+            }
+
+            // Create the root/container node (single node, not batched)
+            // Root nodes have no parent
+            let container_id = node_service
+                .create_node_with_parent(CreateNodeParams {
+                    id: Some(container.id.clone()),
+                    node_type: container.node_type.clone(),
+                    content: container.content.clone(),
+                    parent_id: None, // Root node
+                    insert_after_node_id: None,
+                    properties: container.properties.clone(),
+                })
+                .await
+                .map_err(|e| {
+                    MCPError::node_creation_failed(format!("Failed to create container: {}", e))
+                })?;
+
+            root_id = container_id.clone();
+            all_node_ids.push(container_id.clone());
+            all_nodes.push(NodeMetadata {
+                id: container_id,
+                node_type: container.node_type.clone(),
+            });
+        }
+    }
+
+    // Phase 2: Prepare and batch-insert all children
+    if !remaining_content.trim().is_empty() {
+        let prepared_children =
+            prepare_nodes_from_markdown(&remaining_content, Some(root_id.clone()))?;
+
+        // Validate node count limit
+        if prepared_children.len() + all_nodes.len() > MAX_NODES_PER_IMPORT {
             return Err(MCPError::invalid_params(format!(
-                "container_title must parse to exactly one node, got {}",
-                context.nodes.len()
+                "Import would create {} nodes, exceeding maximum of {}",
+                prepared_children.len() + all_nodes.len(),
+                MAX_NODES_PER_IMPORT
             )));
         }
 
-        let container_node = &context.nodes[0];
-        if !is_valid_container_type(&container_node.node_type) {
-            return Err(MCPError::invalid_params(format!(
-                "container_title parsed to '{}' which cannot be a container. Only text, header, or date nodes can be containers.",
-                container_node.node_type
-            )));
+        if !prepared_children.is_empty() {
+            // Convert PreparedNode to tuple format for bulk_create_hierarchy
+            let nodes_for_bulk: Vec<(
+                String,
+                String,
+                String,
+                Option<String>,
+                f64,
+                serde_json::Value,
+            )> = prepared_children
+                .iter()
+                .map(|n| {
+                    (
+                        n.id.clone(),
+                        n.node_type.clone(),
+                        n.content.clone(),
+                        n.parent_id.clone(),
+                        n.order,
+                        n.properties.clone(),
+                    )
+                })
+                .collect();
+
+            // Batch insert all children in a single transaction
+            let created_ids = node_service
+                .bulk_create_hierarchy(nodes_for_bulk)
+                .await
+                .map_err(|e| MCPError::internal_error(format!("Bulk creation failed: {}", e)))?;
+
+            // Track all created nodes
+            for (i, child) in prepared_children.iter().enumerate() {
+                all_node_ids.push(created_ids[i].clone());
+                all_nodes.push(NodeMetadata {
+                    id: created_ids[i].clone(),
+                    node_type: child.node_type.clone(),
+                });
+            }
         }
-
-        // Set this node as the root for subsequent nodes
-        context.root_id = Some(container_node.id.clone());
-
-        // CRITICAL: Set the container as the initial parent for top-level nodes in markdown_content
-        // This makes the first heading in markdown_content a CHILD of the container, not a sibling
-        context.push_heading(container_node.id.clone(), 0);
-
-        context.first_node_created = true;
     }
-
-    // Parse the remaining markdown content (children of the root node)
-    parse_markdown(&remaining_content, node_service, &mut context).await?;
-
-    // Validate we didn't exceed max nodes
-    if context.nodes.len() > MAX_NODES_PER_IMPORT {
-        return Err(MCPError::invalid_params(format!(
-            "Import created {} nodes, exceeding maximum of {}",
-            context.nodes.len(),
-            MAX_NODES_PER_IMPORT
-        )));
-    }
-
-    let root_id = context
-        .root_id
-        .ok_or_else(|| MCPError::internal_error("No root node created".to_string()))?;
 
     Ok(json!({
         "success": true,
         "root_id": root_id,
-        "nodes_created": context.nodes.len(),
-        "node_ids": context.node_ids,
-        "nodes": context.nodes
+        "nodes_created": all_nodes.len(),
+        "node_ids": all_node_ids,
+        "nodes": all_nodes
     }))
 }
 
@@ -1324,3 +1747,7 @@ where
 #[cfg(test)]
 #[path = "markdown_test.rs"]
 mod markdown_test;
+
+#[cfg(test)]
+#[path = "markdown_perf_test.rs"]
+mod markdown_perf_test;
