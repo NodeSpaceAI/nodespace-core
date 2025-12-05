@@ -1282,7 +1282,6 @@ Text under section 1
     }
 
     #[tokio::test]
-    #[ignore = "Bullet roundtrip not implemented - bullets are stored as text nodes without marker"]
     async fn test_bullet_roundtrip() {
         let (node_service, _temp_dir) = setup_test_service().await;
 

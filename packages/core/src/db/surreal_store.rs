@@ -752,27 +752,6 @@ where
         Ok(())
     }
 
-    /// Parse SurrealDB Record ID into (table, uuid) components
-    ///
-    /// # Arguments
-    ///
-    /// * `record_id` - SurrealDB Record ID (e.g., "task:uuid")
-    ///
-    /// # Returns
-    ///
-    /// Tuple of (table_name, uuid_portion)
-    #[allow(dead_code)]
-    fn parse_record_id(record_id: &str) -> Result<(String, String)> {
-        let parts: Vec<&str> = record_id.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return Err(anyhow::anyhow!(
-                "Invalid Record ID format: {}. Expected 'table:uuid'",
-                record_id
-            ));
-        }
-        Ok((parts[0].to_string(), parts[1].to_string()))
-    }
-
     /// Add a node type to schema caches (called during schema seeding)
     ///
     /// When NodeService seeds schema records on first launch, it populates the caches
@@ -835,8 +814,6 @@ where
                 version: $version,
                 created_at: time::now(),
                 modified_at: time::now(),
-                embedding_vector: [],
-                embedding_stale: false,
                 mentions: [],
                 mentioned_by: [],
                 data: $data
@@ -1477,8 +1454,6 @@ where
                 version: 1,
                 created_at: time::now(),
                 modified_at: time::now(),
-                embedding_vector: [],
-                embedding_stale: false,
                 mentions: [],
                 mentioned_by: [],
                 data: type::thing('schema', $id)
@@ -3543,143 +3518,18 @@ where
         Ok(())
     }
 
-    pub async fn get_nodes_without_embeddings(&self, limit: Option<i64>) -> Result<Vec<Node>> {
-        let sql = if limit.is_some() {
-            "SELECT * FROM node WHERE embedding_vector IS NONE LIMIT $limit;"
-        } else {
-            "SELECT * FROM node WHERE embedding_vector IS NONE;"
-        };
-
-        let mut query_builder = self.db.query(sql);
-
-        if let Some(lim) = limit {
-            query_builder = query_builder.bind(("limit", lim));
-        }
-
-        let mut response = query_builder
-            .await
-            .context("Failed to get nodes without embeddings")?;
-        let surreal_nodes: Vec<SurrealNode> = response
-            .take(0)
-            .context("Failed to extract nodes without embeddings from response")?;
-        Ok(surreal_nodes.into_iter().map(Into::into).collect())
-    }
-
-    pub async fn update_embedding(&self, node_id: &str, embedding: &[f32]) -> Result<()> {
-        // embedding is already f32 array, no conversion needed
-        // Update using record ID
-        self.db
-            .query("UPDATE type::thing('node', $id) SET embedding_vector = $embedding, embedding_stale = false;")
-            .bind(("id", node_id.to_string()))
-            .bind(("embedding", embedding.to_vec()))
-            .await
-            .context("Failed to update embedding")?;
-
-        Ok(())
-    }
-
-    /// Mark a node's embedding as stale (needing regeneration)
-    ///
-    /// Called when node content changes, signaling that the embedding vector
-    /// needs to be regenerated. The embedding processor can then query for
-    /// stale nodes and regenerate embeddings in batches.
-    ///
-    /// # Arguments
-    ///
-    /// * `node_id` - UUID of the node to mark as stale
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// # use nodespace_core::db::SurrealStore;
-    /// # use std::path::PathBuf;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let store = SurrealStore::new(PathBuf::from("./data/surreal.db")).await?;
-    /// // Mark embedding as stale after content change
-    /// store.mark_embedding_stale("node-id").await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn mark_embedding_stale(&self, node_id: &str) -> Result<()> {
-        // Update using record ID
-        self.db
-            .query("UPDATE type::thing('node', $id) SET embedding_stale = true;")
-            .bind(("id", node_id.to_string()))
-            .await
-            .context("Failed to mark embedding as stale")?;
-
-        Ok(())
-    }
-
-    /// Get nodes with stale embeddings
-    ///
-    /// Returns nodes where content has changed since the embedding was generated,
-    /// allowing the embedding processor to regenerate embeddings in batches.
-    ///
-    /// # Arguments
-    ///
-    /// * `limit` - Optional limit on number of nodes to return
-    ///
-    /// # Returns
-    ///
-    /// Vector of nodes with stale embeddings (embedding_stale = true)
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// # use nodespace_core::db::SurrealStore;
-    /// # use std::path::PathBuf;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let store = SurrealStore::new(PathBuf::from("./data/surreal.db")).await?;
-    /// // Get up to 100 nodes needing embedding regeneration
-    /// let stale_nodes = store.get_nodes_with_stale_embeddings(Some(100)).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn get_nodes_with_stale_embeddings(&self, limit: Option<i64>) -> Result<Vec<Node>> {
-        let sql = if limit.is_some() {
-            "SELECT * FROM node WHERE embedding_stale = true LIMIT $limit;"
-        } else {
-            "SELECT * FROM node WHERE embedding_stale = true;"
-        };
-
-        let mut query_builder = self.db.query(sql);
-
-        if let Some(lim) = limit {
-            query_builder = query_builder.bind(("limit", lim));
-        }
-
-        let mut response = query_builder
-            .await
-            .context("Failed to get nodes with stale embeddings")?;
-        let surreal_nodes: Vec<SurrealNode> = response
-            .take(0)
-            .context("Failed to extract nodes with stale embeddings from response")?;
-        Ok(surreal_nodes.into_iter().map(Into::into).collect())
-    }
-
-    /// DEPRECATED: Search for nodes by embedding similarity
-    ///
-    /// This method is deprecated as of Issue #729. Embeddings are now stored in a
-    /// dedicated `embedding` table using the root-aggregate model.
-    ///
-    /// Use `search_embeddings()` instead for semantic search.
-    #[deprecated(
-        since = "2.0.0",
-        note = "Use search_embeddings() instead. Embeddings are now stored in a dedicated table."
-    )]
-    #[allow(clippy::unused_async)]
-    pub async fn search_by_embedding(
-        &self,
-        _embedding: &[f32],
-        _limit: i64,
-        _threshold: Option<f64>,
-    ) -> Result<Vec<(Node, f64)>> {
-        tracing::warn!("search_by_embedding is deprecated. Use search_embeddings() instead.");
-        Ok(vec![])
-    }
+    // NOTE: Old node-based embedding methods REMOVED (Issue #729)
+    // The following methods operated on node.embedding_vector and node.embedding_stale:
+    // - get_nodes_without_embeddings() - queried node WHERE embedding_vector IS NONE
+    // - update_embedding() - set node.embedding_vector and embedding_stale = false
+    // - get_nodes_with_stale_embeddings() - queried node WHERE embedding_stale = true
+    //
+    // Root-aggregate model now uses the `embedding` table with:
+    // - get_stale_embedding_root_ids() - query embedding table for stale roots
+    // - mark_root_embedding_stale() - mark embedding record stale
+    // - create_stale_embedding_marker() - create stale embedding for new roots
+    // - upsert_embeddings() - store embeddings in embedding table
+    // NodeService.queue_root_for_embedding() orchestrates the logic.
 
     /// Atomic bulk update using SurrealDB transactions
     ///
@@ -4475,7 +4325,6 @@ where
 }
 
 #[cfg(test)]
-#[allow(deprecated)] // Tests use deprecated search_by_embedding for backward compatibility testing
 mod tests {
     use super::*;
     use serde_json::json;
@@ -4613,328 +4462,22 @@ mod tests {
         Ok(())
     }
 
-    // Vector Similarity Search Tests
-
-    #[tokio::test]
-    async fn test_search_empty_database() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-
-        // Create a dummy embedding (384 floats)
-        let query_vector = vec![0.5f32; 384];
-
-        // Search empty database
-        let results = store.search_by_embedding(&query_vector, 10, None).await?;
-
-        assert_eq!(results.len(), 0, "Empty database should return no results");
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore = "Vector search requires SurrealDB vector functions - separate issue"]
-    async fn test_search_with_similar_nodes() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-
-        // Create nodes with different embeddings
-        let base_vector = vec![1.0f32; 384];
-        let similar_vector = vec![0.99f32; 384]; // Very similar
-        let dissimilar_vector = vec![-1.0f32; 384]; // Opposite direction
-
-        // Create nodes (test is ignored as it tests deprecated per-node embedding)
-        let node1 = Node::new("text".to_string(), "Base content".to_string(), json!({}));
-        let created1 = store.create_node(node1, None).await?;
-        store
-            .update_embedding(&created1.id, &similar_vector)
-            .await?;
-
-        let node2 = Node::new(
-            "text".to_string(),
-            "Dissimilar content".to_string(),
-            json!({}),
-        );
-        let _created2 = store.create_node(node2, None).await?;
-        store
-            .update_embedding(&created1.id, &dissimilar_vector)
-            .await?;
-
-        // Search with base embedding
-        let results = store.search_by_embedding(&base_vector, 10, None).await?;
-
-        // Should return nodes sorted by similarity (highest first)
-        assert!(!results.is_empty(), "Should find at least one similar node");
-
-        // First result should be more similar (higher score)
-        if results.len() > 1 {
-            assert!(
-                results[0].1 > results[1].1,
-                "Results should be sorted by similarity descending"
-            );
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore = "Vector search requires SurrealDB vector functions - separate issue"]
-    async fn test_search_with_threshold_filter() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-
-        // Create query vector
-        let query_vector = vec![1.0f32; 384];
-
-        // Create node with similar embedding
-        let similar_vector = vec![0.99f32; 384];
-
-        let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
-        let created = store.create_node(node, None).await?;
-        store.update_embedding(&created.id, &similar_vector).await?;
-
-        // Search with high threshold (0.99) - should find the node
-        let results_high_threshold = store
-            .search_by_embedding(&query_vector, 10, Some(0.9))
-            .await?;
-        assert!(
-            !results_high_threshold.is_empty(),
-            "Should find node with similarity > 0.9"
-        );
-
-        // Search with very high threshold (0.999) - might not find it
-        let results_very_high = store
-            .search_by_embedding(&query_vector, 10, Some(0.999))
-            .await?;
-        // This test is lenient because exact similarity depends on normalization
-        assert!(
-            results_very_high.len() <= results_high_threshold.len(),
-            "Higher threshold should return fewer or equal results"
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_search_respects_limit() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-
-        // Create 5 nodes with embeddings
-        let base_vector = vec![1.0f32; 384];
-
-        for i in 0..5 {
-            let node = Node::new("text".to_string(), format!("Content {}", i), json!({}));
-            let created = store.create_node(node, None).await?;
-            store.update_embedding(&created.id, &base_vector).await?;
-        }
-
-        // Search with limit of 3
-        let results = store
-            .search_by_embedding(&base_vector, 3, Some(0.5))
-            .await?;
-
-        assert!(
-            results.len() <= 3,
-            "Should respect limit parameter (expected <= 3, got {})",
-            results.len()
-        );
-
-        Ok(())
-    }
-
-    // Performance Benchmark Tests
+    // ============================================================================
+    // NOTE: Old per-node embedding tests REMOVED (Issue #729)
     //
-    // These tests measure search query performance on databases of varying sizes.
-    // Current implementation uses linear scan (O(n)) without vector indexes.
-    // Performance targets are based on real-world measurements on RocksDB storage.
-
-    #[tokio::test]
-    async fn test_search_performance_1k_nodes() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-
-        // Create 1,000 nodes with embeddings
-        let base_vector = vec![1.0f32; 384];
-
-        tracing::info!("Creating 1,000 nodes for performance test...");
-        for i in 0..1000 {
-            let node = Node::new(
-                "text".to_string(),
-                format!("Performance test content {}", i),
-                json!({}),
-            );
-            let created = store.create_node(node, None).await?;
-            store.update_embedding(&created.id, &base_vector).await?;
-
-            if i % 100 == 0 {
-                tracing::info!("Created {} nodes", i);
-            }
-        }
-
-        tracing::info!("Starting performance benchmark...");
-
-        // Measure search time (after data is created)
-        let start = std::time::Instant::now();
-        let results = store
-            .search_by_embedding(&base_vector, 20, Some(0.5))
-            .await?;
-        let elapsed = start.elapsed();
-
-        tracing::info!(
-            "Search completed in {:?} with {} results",
-            elapsed,
-            results.len()
-        );
-
-        // Performance target: < 1500ms for 1,000 nodes (linear scan on RocksDB)
-        // Real-world measurement: ~950ms
-        // Note: This is the search query time only, not data creation time
-        assert!(
-            elapsed.as_millis() < 1500,
-            "Search should complete in < 1500ms (took {:?})",
-            elapsed
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore = "Vector search requires SurrealDB vector functions - separate issue"]
-    async fn test_search_with_real_nlp_embeddings() -> Result<()> {
-        use nodespace_nlp_engine::EmbeddingService;
-        use std::sync::Arc;
-
-        let (store, _temp_dir) = create_test_store().await?;
-
-        // Initialize real NLP engine
-        let mut nlp_service = EmbeddingService::new(Default::default())?;
-        nlp_service.initialize()?;
-        let nlp = Arc::new(nlp_service);
-
-        // Create nodes with semantically similar and dissimilar content
-        let similar_text_1 = "Machine learning algorithms for data analysis";
-        let similar_text_2 = "Deep learning neural networks and AI models";
-        let dissimilar_text = "The weather forecast predicts sunny skies tomorrow";
-
-        // Generate real embeddings
-        let emb1 = nlp.generate_embedding(similar_text_1)?;
-        let emb2 = nlp.generate_embedding(similar_text_2)?;
-        let emb3 = nlp.generate_embedding(dissimilar_text)?;
-
-        // Create nodes
-        // Note: These tests are ignored anyway as they test deprecated per-node embedding
-        let node1 = Node::new("text".to_string(), similar_text_1.to_string(), json!({}));
-        let created1 = store.create_node(node1, None).await?;
-        store.update_embedding(&created1.id, &emb1).await?;
-
-        let node2 = Node::new("text".to_string(), similar_text_2.to_string(), json!({}));
-        let created2 = store.create_node(node2, None).await?;
-        store.update_embedding(&created2.id, &emb2).await?;
-
-        let node3 = Node::new("text".to_string(), dissimilar_text.to_string(), json!({}));
-        let created3 = store.create_node(node3, None).await?;
-        store.update_embedding(&created3.id, &emb3).await?;
-
-        // Search with first embedding (machine learning topic)
-        let results = store.search_by_embedding(&emb1, 10, Some(0.3)).await?;
-
-        // Verify results
-        assert!(!results.is_empty(), "Should find at least one similar node");
-
-        // The most similar should be the ML/AI content (node2), not the weather content
-        let (top_node, top_similarity) = &results[0];
-        tracing::info!(
-            "Top result: content='{}', similarity={:.3}",
-            top_node.content,
-            top_similarity
-        );
-
-        // Find similarity scores for each content type
-        let ml_similarity = results
-            .iter()
-            .find(|(n, _)| n.id == created2.id)
-            .map(|(_, s)| *s);
-        let weather_similarity = results
-            .iter()
-            .find(|(n, _)| n.id == created3.id)
-            .map(|(_, s)| *s);
-
-        tracing::info!(
-            "ML/AI similarity: {:?}, Weather similarity: {:?}",
-            ml_similarity,
-            weather_similarity
-        );
-
-        // ML/AI content should be more similar to the query than weather content
-        if let (Some(ml_sim), Some(weather_sim)) = (ml_similarity, weather_similarity) {
-            assert!(
-                ml_sim > weather_sim,
-                "ML/AI content (sim={:.3}) should rank higher than weather content (sim={:.3})",
-                ml_sim,
-                weather_sim
-            );
-        }
-
-        // Top result should have high similarity (> 0.7 for semantically related content)
-        assert!(
-            top_similarity > &0.5,
-            "Top result should have similarity > 0.5 (got {:.3})",
-            top_similarity
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_search_performance_10k_nodes() -> Result<()> {
-        // Skip this test unless RUN_LONG_TESTS=1 is set
-        // Reason: Test takes ~10 minutes total (10K node creation + search)
-        // The search itself is fast (~9.5s), but setup is slow
-        if std::env::var("RUN_LONG_TESTS").unwrap_or_default() != "1" {
-            return Ok(());
-        }
-
-        let (store, _temp_dir) = create_test_store().await?;
-
-        // Create 10,000 nodes with embeddings
-        let base_vector = vec![1.0f32; 384];
-
-        tracing::info!("Creating 10,000 nodes for performance test...");
-        for i in 0..10000 {
-            let node = Node::new(
-                "text".to_string(),
-                format!("Performance test content {}", i),
-                json!({}),
-            );
-            let created = store.create_node(node, None).await?;
-            store.update_embedding(&created.id, &base_vector).await?;
-
-            if i % 1000 == 0 {
-                tracing::info!("Created {} nodes", i);
-            }
-        }
-
-        tracing::info!("Starting performance benchmark...");
-
-        // Measure search time
-        let start = std::time::Instant::now();
-        let results = store
-            .search_by_embedding(&base_vector, 20, Some(0.5))
-            .await?;
-        let elapsed = start.elapsed();
-
-        tracing::info!(
-            "Search completed in {:?} with {} results",
-            elapsed,
-            results.len()
-        );
-
-        // Performance target: < 15000ms (15 seconds) for 10,000 nodes (linear scan)
-        // Estimated: ~9.5 seconds based on 1K node measurements (linear scaling)
-        // Note: This is acceptable for MVP without vector indexes
-        assert!(
-            elapsed.as_millis() < 15000,
-            "Search should complete in < 15s (took {:?})",
-            elapsed
-        );
-
-        Ok(())
-    }
+    // The following tests were removed as they tested the deprecated per-node
+    // embedding model (node.embedding_vector, update_embedding(), search_by_embedding):
+    // - test_search_empty_database
+    // - test_search_with_similar_nodes
+    // - test_search_with_threshold_filter
+    // - test_search_respects_limit
+    // - test_search_performance_1k_nodes
+    // - test_search_with_real_nlp_embeddings
+    // - test_search_performance_10k_nodes
+    //
+    // The new root-aggregate embedding model uses the `embedding` table.
+    // See NodeEmbeddingService tests for the new search functionality.
+    // ============================================================================
 
     // ============================================================================
     // Atomic Transactional Operations Tests (Issue #532)

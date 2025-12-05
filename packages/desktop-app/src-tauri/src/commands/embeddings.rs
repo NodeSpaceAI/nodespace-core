@@ -284,54 +284,6 @@ pub async fn update_root_embedding(
     Ok(())
 }
 
-/// Schedule a debounced embedding update (DEPRECATED - Will be removed in v0.2.0)
-///
-/// **DEPRECATED**: This command will be removed in version 0.2.0.
-/// Use `on_root_closed` or `on_root_idle` smart triggers instead.
-///
-/// This is now a no-op. Content changes automatically mark topics as stale in the backend.
-/// The stale flag system replaces the old debounce approach.
-///
-/// # Migration Guide
-///
-/// Replace:
-/// ```typescript
-/// await invoke('schedule_root_embedding_update', { rootId });
-/// ```
-///
-/// With:
-/// ```typescript
-/// // When topic is closed/unfocused:
-/// await invoke('on_root_closed', { rootId });
-///
-/// // After 30 seconds of idle time:
-/// await invoke('on_root_idle', { rootId });
-/// ```
-///
-/// # Deprecation Timeline
-///
-/// - v0.1.x: Deprecated, logs warning, no-op
-/// - v0.2.0: Will be removed entirely
-#[tauri::command]
-#[deprecated(
-    since = "0.1.0",
-    note = "Use on_root_closed or on_root_idle smart triggers instead. Will be removed in v0.2.0."
-)]
-pub async fn schedule_root_embedding_update(
-    _state: State<'_, EmbeddingState>,
-    root_id: String,
-) -> Result<(), CommandError> {
-    // Log deprecation warning
-    tracing::warn!(
-        root_id = %root_id,
-        "DEPRECATED: schedule_root_embedding_update called. Use on_root_closed or on_root_idle instead. This command will be removed in v0.2.0."
-    );
-
-    // No-op for backward compatibility
-    // Content changes now mark topics as stale automatically in the backend
-    Ok(())
-}
-
 /// Smart trigger: Topic/root closed/unfocused
 ///
 /// Called when user closes or navigates away from a topic/root.
@@ -447,12 +399,15 @@ pub async fn on_root_idle(
 
 /// Manually sync all stale topics
 ///
-/// Processes all stale topics immediately. Useful for explicit user action
-/// like "Sync All" button or app startup.
+/// Trigger embedding sync for all stale topics
+///
+/// Wakes the background embedding processor to process all stale embeddings.
+/// This is a fire-and-forget operation - the processor runs asynchronously.
+/// Useful for explicit user actions like "Sync All" button or app startup.
 ///
 /// # Returns
 ///
-/// Number of topics re-embedded
+/// Unit `()` on success (processing happens asynchronously in background)
 ///
 /// # Example (from frontend)
 ///
@@ -460,13 +415,13 @@ pub async fn on_root_idle(
 /// import { invoke } from '@tauri-apps/api/tauri';
 ///
 /// // User clicks "Sync All Embeddings" button
-/// const count = await invoke('sync_embeddings');
-/// console.log(`Synced ${count} topics`);
+/// await invoke('sync_embeddings');
+/// console.log('Sync triggered (processing in background)');
 /// ```
 #[tauri::command]
-pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<usize, CommandError> {
-    // Trigger batch embedding and wait for completion
-    state.processor.trigger_batch_embed().await.map_err(|e| {
+pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<(), CommandError> {
+    // Trigger batch embedding (fire-and-forget, wakes the processor)
+    state.processor.trigger_batch_embed().map_err(|e| {
         command_error_with_details(
             format!("Failed to trigger sync: {}", e),
             "EMBEDDING_ERROR",
@@ -474,10 +429,8 @@ pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<usize, 
         )
     })?;
 
-    // For now, return 0 as we don't wait for completion
-    // The background task will process asynchronously
     tracing::info!("Triggered batch embedding sync");
-    Ok(0)
+    Ok(())
 }
 
 /// Get count of stale topics/roots
@@ -497,22 +450,21 @@ pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<usize, 
 pub async fn get_stale_root_count(
     node_service: State<'_, NodeService>,
 ) -> Result<usize, CommandError> {
-    // Get store from NodeService to query stale embeddings
-    // Note: This is a workaround - ideally we'd have a count method
+    // Use new embedding table model (Issue #729)
     let service_with_client = node_service.with_client(TAURI_CLIENT_ID);
     let store = service_with_client.store();
-    let stale_nodes = store
-        .get_nodes_with_stale_embeddings(None)
+    let stale_root_ids = store
+        .get_stale_embedding_root_ids(None)
         .await
         .map_err(|e| {
             command_error_with_details(
-                format!("Failed to count stale nodes: {}", e),
+                format!("Failed to count stale roots: {}", e),
                 "DATABASE_ERROR",
                 format!("{:?}", e),
             )
         })?;
 
-    Ok(stale_nodes.len())
+    Ok(stale_root_ids.len())
 }
 
 /// Batch generate embeddings for multiple topics/roots

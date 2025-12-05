@@ -138,7 +138,6 @@ mod tests {
 mod occ_tests {
     use crate::db::SurrealStore;
     use crate::mcp::handlers::nodes::handle_delete_node;
-    #[allow(unused_imports)]
     use crate::mcp::handlers::nodes::handle_update_node;
     use crate::mcp::types::VERSION_CONFLICT;
     use crate::services::CreateNodeParams;

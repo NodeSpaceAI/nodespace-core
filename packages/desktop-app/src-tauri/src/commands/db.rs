@@ -55,11 +55,9 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     // Initialize node service with SurrealStore
     // NodeService::new() takes &mut Arc to enable cache updates during seeding (Issue #704)
     tracing::info!("🔧 [init_services] Initializing NodeService...");
-    let node_service = NodeService::new(&mut store)
+    let mut node_service = NodeService::new(&mut store)
         .await
         .map_err(|e| format!("Failed to initialize node service: {}", e))?;
-
-    let node_service_arc = Arc::new(node_service);
     tracing::info!("✅ [init_services] NodeService initialized");
 
     // NOTE: NodeOperations layer removed (Issue #676) - NodeService contains all business logic
@@ -82,9 +80,16 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     let embedding_service = NodeEmbeddingService::new(nlp_engine_arc.clone(), store.clone());
     let embedding_service_arc = Arc::new(embedding_service);
 
-    // Initialize background embedding processor
+    // Initialize background embedding processor (event-driven, Issue #729)
     let processor = EmbeddingProcessor::new(embedding_service_arc.clone())
         .map_err(|e| format!("Failed to initialize embedding processor: {}", e))?;
+
+    // Wire up NodeService to wake processor on embedding changes (Issue #729)
+    // This enables event-driven embedding processing without polling
+    node_service.set_embedding_waker(processor.waker());
+    tracing::info!("✅ [init_services] EmbeddingProcessor waker connected to NodeService");
+
+    let node_service_arc = Arc::new(node_service);
     let processor_arc = Arc::new(processor);
 
     // Manage all services

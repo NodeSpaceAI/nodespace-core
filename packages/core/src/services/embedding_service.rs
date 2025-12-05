@@ -632,42 +632,6 @@ where
         })?;
         Ok(())
     }
-
-    // =========================================================================
-    // Legacy Compatibility (Issue #729 - to be removed in Phase 6)
-    // =========================================================================
-
-    // Note: The following methods exist for backward compatibility during the
-    // transition to root-aggregate embedding. They will be removed in a
-    // follow-up issue after the Tauri commands are updated.
-
-    /// Deprecated: Use embed_root_node instead
-    ///
-    /// This method is for backward compatibility with existing Tauri commands.
-    /// It now queues the node's root for embedding via the new system.
-    #[deprecated(
-        since = "2.0.0",
-        note = "Use queue_for_embedding() instead. Root-aggregate model (Issue #729)."
-    )]
-    pub async fn embed_container(&self, node: &Node) -> Result<(), NodeServiceError> {
-        tracing::debug!(
-            "Legacy embed_container called for node: {} (delegating to queue_for_embedding)",
-            node.id
-        );
-        self.queue_for_embedding(&node.id).await
-    }
-
-    /// Deprecated: Use semantic_search_nodes instead
-    #[deprecated(note = "Use semantic_search_nodes instead")]
-    #[allow(deprecated)]
-    pub async fn search_by_embedding(
-        &self,
-        query: &str,
-        limit: usize,
-        threshold: f32,
-    ) -> Result<Vec<(Node, f64)>, NodeServiceError> {
-        self.semantic_search_nodes(query, limit, threshold).await
-    }
 }
 
 #[cfg(test)]

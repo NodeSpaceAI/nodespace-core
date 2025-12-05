@@ -1,9 +1,19 @@
 //! Background Embedding Processor (Issue #729)
 //!
-//! Provides background processing of stale root-aggregate embeddings with:
-//! - Periodic batch processing (30-second interval)
-//! - Manual trigger support for explicit user actions
-//! - Graceful shutdown with tokio::select!
+//! Provides event-driven background processing of stale root-aggregate embeddings:
+//! - Sleeps until woken by a trigger (no polling when idle)
+//! - Processes all stale embeddings until queue is empty
+//! - Returns to sleep waiting for next trigger
+//! - Graceful shutdown support
+//!
+//! ## Event-Driven Model
+//!
+//! Instead of polling every N seconds, the processor:
+//! 1. Sleeps waiting for a wake signal
+//! 2. When woken, processes ALL stale embeddings until none remain
+//! 3. Returns to sleep
+//!
+//! This is more efficient than polling - no CPU/DB overhead when idle.
 //!
 //! ## Root-Aggregate Model
 //!
@@ -15,28 +25,63 @@
 use crate::services::error::NodeServiceError;
 use crate::services::NodeEmbeddingService;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// Background interval for processing stale embeddings (30 seconds)
-const BACKGROUND_INTERVAL_SECS: u64 = 30;
+/// Handle to wake the embedding processor
+///
+/// This is a lightweight, cloneable handle that can be passed to other services
+/// (like `NodeService`) to trigger embedding processing when nodes change.
+///
+/// Multiple wakes are coalesced - the processor will process all stale embeddings
+/// in a single run regardless of how many wake signals were sent.
+#[derive(Clone)]
+pub struct EmbeddingWaker {
+    trigger_tx: mpsc::Sender<()>,
+}
+
+impl EmbeddingWaker {
+    /// Wake the embedding processor to start processing
+    ///
+    /// Non-blocking. If the processor is already awake or has pending work,
+    /// this is a no-op (signals are coalesced).
+    pub fn wake(&self) {
+        // Use try_send to avoid blocking - if channel is full, processor is already awake
+        match self.trigger_tx.try_send(()) {
+            Ok(_) => {
+                tracing::debug!("EmbeddingProcessor wake signal sent");
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                // Channel full means processor will wake up anyway
+                tracing::debug!("EmbeddingProcessor already has pending wake");
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                tracing::warn!("EmbeddingProcessor has shut down, wake ignored");
+            }
+        }
+    }
+}
 
 /// Embedding processor for background tasks
 ///
 /// Processes stale embeddings in the background using the root-aggregate model.
+/// Event-driven: sleeps until triggered, then processes until queue is empty.
 pub struct EmbeddingProcessor {
-    #[allow(dead_code)]
-    embedding_service: Arc<NodeEmbeddingService>,
-    trigger_tx: mpsc::Sender<()>,
+    waker: EmbeddingWaker,
     _shutdown_tx: mpsc::Sender<()>,
 }
 
 impl EmbeddingProcessor {
     /// Create and start embedding processor with background task
     ///
-    /// Spawns a background task that periodically processes stale embeddings
-    /// every 30 seconds. The task can be triggered manually via `trigger_batch_embed()`
-    /// and will gracefully shutdown when the processor is dropped.
+    /// Spawns an event-driven background task that:
+    /// 1. Sleeps until triggered via `wake()` or `trigger_batch_embed()`
+    /// 2. Processes ALL stale embeddings until queue is empty
+    /// 3. Returns to sleep waiting for next trigger
+    ///
+    /// ## Event-Driven Model
+    ///
+    /// Unlike polling, this approach has zero overhead when idle. The processor
+    /// only runs when there's actual work to do.
     ///
     /// ## Root-Aggregate Model (Issue #729)
     ///
@@ -51,90 +96,115 @@ impl EmbeddingProcessor {
     /// # Returns
     /// A new EmbeddingProcessor instance with active background task
     pub fn new(embedding_service: Arc<NodeEmbeddingService>) -> Result<Self, NodeServiceError> {
-        tracing::info!("EmbeddingProcessor initializing with root-aggregate model");
+        tracing::info!("EmbeddingProcessor initializing (event-driven model)");
 
-        let (trigger_tx, mut trigger_rx) = mpsc::channel(10);
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<()>(10);
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
 
-        // Spawn background task for periodic processing
+        // Spawn event-driven background task
         let service_clone = embedding_service.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(BACKGROUND_INTERVAL_SECS));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
             loop {
+                // Sleep until triggered or shutdown
                 tokio::select! {
-                    // Periodic processing
-                    _ = interval.tick() => {
-                        tracing::debug!("Background embedding processor tick");
-                        if let Err(e) = Self::process_batch(&service_clone).await {
-                            tracing::error!("Background embedding processing failed: {}", e);
-                        }
-                    }
+                    biased; // Check shutdown first
 
-                    // Manual trigger
-                    Some(_) = trigger_rx.recv() => {
-                        tracing::info!("Manual embedding batch triggered");
-                        if let Err(e) = Self::process_batch(&service_clone).await {
-                            tracing::error!("Manual embedding processing failed: {}", e);
-                        }
-                    }
-
-                    // Graceful shutdown
                     _ = shutdown_rx.recv() => {
                         tracing::info!("EmbeddingProcessor shutting down");
                         break;
+                    }
+
+                    Some(_) = trigger_rx.recv() => {
+                        tracing::debug!("EmbeddingProcessor woken up");
+                        // Drain any additional pending triggers (coalesce rapid triggers)
+                        while trigger_rx.try_recv().is_ok() {}
+
+                        // Process until no more stale embeddings
+                        Self::process_until_empty(&service_clone).await;
                     }
                 }
             }
         });
 
+        let waker = EmbeddingWaker { trigger_tx };
+
         Ok(Self {
-            embedding_service,
-            trigger_tx,
+            waker,
             _shutdown_tx: shutdown_tx,
         })
     }
 
-    /// Internal helper to process a batch of stale embeddings
+    /// Get a cloneable waker handle
     ///
-    /// Uses `None` for batch limit to process ALL stale entries in a single run.
-    /// This is intentional for background processing: the task runs periodically
-    /// (every 30 seconds), not per-request, so we want to catch up on the full
-    /// backlog each time.
-    async fn process_batch(service: &Arc<NodeEmbeddingService>) -> Result<usize, NodeServiceError> {
-        match service.process_stale_embeddings(None).await {
-            Ok(0) => {
-                tracing::debug!("No stale embeddings to process");
-                Ok(0)
-            }
-            Ok(count) => {
-                tracing::info!("Processed {} stale embeddings", count);
-                Ok(count)
-            }
-            Err(e) => {
-                tracing::error!("Batch embedding failed: {}", e);
-                Err(e)
+    /// Use this to pass to other services (like `NodeService`) so they can
+    /// wake the processor when embedding work is queued.
+    pub fn waker(&self) -> EmbeddingWaker {
+        self.waker.clone()
+    }
+
+    /// Process all stale embeddings until none remain
+    ///
+    /// Keeps processing batches until `process_stale_embeddings` returns 0.
+    /// This ensures the queue is fully drained before returning to sleep.
+    /// Yields between batches to prevent starving other async tasks.
+    async fn process_until_empty(service: &Arc<NodeEmbeddingService>) {
+        const BATCH_SIZE: usize = 10;
+        let mut total_processed = 0;
+
+        loop {
+            match service.process_stale_embeddings(Some(BATCH_SIZE)).await {
+                Ok(0) => {
+                    // No more stale embeddings - done
+                    if total_processed > 0 {
+                        tracing::info!(
+                            "EmbeddingProcessor finished - processed {} total embeddings",
+                            total_processed
+                        );
+                    } else {
+                        tracing::debug!("EmbeddingProcessor woke but no stale embeddings found");
+                    }
+                    break;
+                }
+                Ok(count) => {
+                    total_processed += count;
+                    tracing::debug!(
+                        "Processed {} embeddings (total: {})",
+                        count,
+                        total_processed
+                    );
+                    // Yield to allow other async tasks to run (backpressure)
+                    tokio::task::yield_now().await;
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Embedding processing failed after {} embeddings: {}",
+                        total_processed,
+                        e
+                    );
+                    // Stop processing on error - will retry on next wake
+                    break;
+                }
             }
         }
     }
 
-    /// Trigger batch embedding immediately
+    /// Wake the processor to start processing stale embeddings
+    ///
+    /// This is the primary way to trigger embedding processing. Call this
+    /// after creating stale markers (e.g., after node create/update/delete).
+    ///
+    /// The wake signal is coalesced - multiple rapid wakes result in a single
+    /// processing run that drains all stale embeddings.
+    pub fn wake(&self) {
+        self.waker.wake();
+    }
+
+    /// Trigger batch embedding immediately (alias for wake)
     ///
     /// Useful for explicit user actions like "Sync All" button or app startup.
-    /// Sends a trigger signal to the background task to process stale embeddings.
-    ///
-    /// # Returns
-    /// Ok(()) if trigger was sent successfully (does not wait for completion)
-    ///
-    /// # Errors
-    /// Returns error if the background task has shut down
-    pub async fn trigger_batch_embed(&self) -> Result<(), NodeServiceError> {
-        self.trigger_tx.send(()).await.map_err(|_| {
-            NodeServiceError::SerializationError("Background task has shut down".to_string())
-        })?;
-
-        tracing::debug!("Batch embedding trigger sent");
+    #[inline]
+    pub fn trigger_batch_embed(&self) -> Result<(), NodeServiceError> {
+        self.waker.wake();
         Ok(())
     }
 
@@ -146,5 +216,79 @@ impl EmbeddingProcessor {
         tracing::info!("Shutting down EmbeddingProcessor");
         // Channels will be dropped, signaling shutdown
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    /// Test that EmbeddingWaker sends a signal when woken
+    #[test]
+    fn test_waker_wake_sends_signal() {
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<()>(10);
+        let waker = EmbeddingWaker { trigger_tx };
+
+        // Wake should send signal
+        waker.wake();
+
+        // Verify signal was sent (non-blocking check)
+        assert!(
+            trigger_rx.try_recv().is_ok(),
+            "Wake should have sent a signal"
+        );
+    }
+
+    /// Test that multiple rapid wakes are coalesced (channel capacity behavior)
+    #[test]
+    fn test_waker_coalesces_multiple_wakes() {
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<()>(2); // Small capacity
+        let waker = EmbeddingWaker { trigger_tx };
+
+        // Send multiple wakes rapidly
+        waker.wake();
+        waker.wake();
+        waker.wake(); // Should be coalesced (channel full)
+
+        // Drain and count - should be at most 2 (channel capacity)
+        let mut count = 0;
+        while trigger_rx.try_recv().is_ok() {
+            count += 1;
+        }
+
+        assert!(
+            count <= 2,
+            "Excess wakes should be coalesced, got {} signals",
+            count
+        );
+    }
+
+    /// Test that waker handles closed channel gracefully
+    #[test]
+    fn test_waker_handles_closed_channel() {
+        let (trigger_tx, trigger_rx) = mpsc::channel::<()>(10);
+        let waker = EmbeddingWaker { trigger_tx };
+
+        // Close the receiver
+        drop(trigger_rx);
+
+        // Wake should not panic, just log warning
+        waker.wake(); // Should complete without panic
+    }
+
+    /// Test that waker is cloneable and all clones work
+    #[test]
+    fn test_waker_is_cloneable() {
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<()>(10);
+        let waker1 = EmbeddingWaker { trigger_tx };
+        let waker2 = waker1.clone();
+
+        waker1.wake();
+        waker2.wake();
+
+        // Both wakes should have sent signals
+        assert!(trigger_rx.try_recv().is_ok(), "First wake should send");
+        assert!(trigger_rx.try_recv().is_ok(), "Second wake should send");
     }
 }

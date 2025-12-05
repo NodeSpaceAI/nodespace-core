@@ -221,8 +221,6 @@ pub fn run() {
             commands::embeddings::generate_root_embedding,
             commands::embeddings::search_roots,
             commands::embeddings::update_root_embedding,
-            #[allow(deprecated)]
-            commands::embeddings::schedule_root_embedding_update,
             commands::embeddings::batch_generate_embeddings,
             commands::embeddings::on_root_closed,
             commands::embeddings::on_root_idle,

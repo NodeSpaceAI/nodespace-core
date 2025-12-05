@@ -13,6 +13,8 @@
 - ❌ **NO version support** - Don't maintain multiple versions of any API/method
 - ❌ **NO "soak periods"** - No waiting weeks between changes
 - ❌ **NO phased migrations** - Unless coordinating across multiple active worktrees
+- ❌ **NO `#[deprecated]` attributes** - Delete old code, don't deprecate it
+- ❌ **NO `#[allow(dead_code)]`** - Delete unused code, don't suppress warnings
 
 ### What This Means for Implementation
 
