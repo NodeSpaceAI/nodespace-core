@@ -185,8 +185,7 @@ fn nodes_to_typed_values(nodes: Vec<Node>) -> Result<Vec<serde_json::Value>, Api
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateNodeRequest {
-    /// Expected version for optimistic concurrency control (currently unused - TODO)
-    #[allow(dead_code)]
+    /// Expected version for optimistic concurrency control
     pub version: i64,
     /// Fields to update
     #[serde(flatten)]
@@ -210,8 +209,7 @@ struct UpdateTaskNodeRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeleteNodeRequest {
-    /// Expected version for optimistic concurrency control (currently unused - TODO)
-    #[allow(dead_code)]
+    /// Expected version for optimistic concurrency control
     pub version: i64,
 }
 
@@ -303,8 +301,7 @@ fn map_node_service_error(err: NodeServiceError) -> (StatusCode, Json<ApiError>)
 ///   "nodeType": "text",
 ///   "content": "",
 ///   "parentId": "550e8400-e29b-41d4-a716-446655440000",
-///   "properties": {},
-///   "mentions": []
+///   "properties": {}
 /// }
 /// ```
 #[derive(Debug, Deserialize)]
@@ -322,11 +319,6 @@ struct CreateNodeRequest {
     pub parent_id: Option<String>,
     pub insert_after_node_id: Option<String>,
     pub properties: serde_json::Value,
-    // TODO: Implement embedding_vector and mentions support in operations layer
-    #[allow(dead_code)]
-    pub embedding_vector: Option<Vec<f32>>,
-    #[allow(dead_code)]
-    pub mentions: Vec<String>,
 }
 
 #[tokio::main]

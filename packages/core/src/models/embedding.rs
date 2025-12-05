@@ -105,6 +105,19 @@ fn default_stale() -> bool {
     true
 }
 
+/// Chunk positioning information for multi-chunk embeddings
+#[derive(Debug, Clone)]
+pub struct ChunkInfo {
+    /// Chunk index (0 for single-chunk, 0..N for multi-chunk)
+    pub chunk_index: i32,
+    /// Character start position
+    pub chunk_start: i32,
+    /// Character end position
+    pub chunk_end: i32,
+    /// Total chunks for this node
+    pub total_chunks: i32,
+}
+
 /// Parameters for creating a new embedding
 #[derive(Debug, Clone)]
 pub struct NewEmbedding {
@@ -151,14 +164,10 @@ impl NewEmbedding {
     }
 
     /// Create a new embedding for multi-chunk content
-    #[allow(clippy::too_many_arguments)]
     pub fn chunk(
         node_id: impl Into<String>,
         vector: Vec<f32>,
-        chunk_index: i32,
-        chunk_start: i32,
-        chunk_end: i32,
-        total_chunks: i32,
+        chunk_info: ChunkInfo,
         content_hash: impl Into<String>,
         token_count: i32,
     ) -> Self {
@@ -166,10 +175,10 @@ impl NewEmbedding {
             node_id: node_id.into(),
             vector,
             model_name: None,
-            chunk_index,
-            chunk_start,
-            chunk_end,
-            total_chunks,
+            chunk_index: chunk_info.chunk_index,
+            chunk_start: chunk_info.chunk_start,
+            chunk_end: chunk_info.chunk_end,
+            total_chunks: chunk_info.total_chunks,
             content_hash: content_hash.into(),
             token_count,
         }
@@ -268,16 +277,14 @@ mod tests {
 
     #[test]
     fn test_new_embedding_multi_chunk() {
-        let embedding = NewEmbedding::chunk(
-            "node-456",
-            vec![0.1, 0.2, 0.3],
-            1,    // chunk_index
-            500,  // chunk_start
-            1000, // chunk_end
-            3,    // total_chunks
-            "def456",
-            200,
-        );
+        let chunk_info = ChunkInfo {
+            chunk_index: 1,
+            chunk_start: 500,
+            chunk_end: 1000,
+            total_chunks: 3,
+        };
+        let embedding =
+            NewEmbedding::chunk("node-456", vec![0.1, 0.2, 0.3], chunk_info, "def456", 200);
 
         assert_eq!(embedding.node_id, "node-456");
         assert_eq!(embedding.chunk_index, 1);

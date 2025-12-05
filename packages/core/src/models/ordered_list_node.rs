@@ -10,7 +10,7 @@
 //! use serde_json::json;
 //!
 //! // Create an ordered list
-//! let ordered_list = OrderedListNode::new("First item in the list".to_string())
+//! let ordered_list = OrderedListNode::builder("First item in the list".to_string())
 //!     .build();
 //!
 //! assert_eq!(ordered_list.as_node().content, "First item in the list");
@@ -42,7 +42,7 @@ pub struct OrderedListNode {
 }
 
 impl OrderedListNode {
-    /// Create a new ordered list node
+    /// Create a new ordered list node builder
     ///
     /// # Arguments
     ///
@@ -53,11 +53,10 @@ impl OrderedListNode {
     /// ```rust
     /// use nodespace_core::models::OrderedListNode;
     ///
-    /// let ordered_list = OrderedListNode::new("First step: gather requirements".to_string())
+    /// let ordered_list = OrderedListNode::builder("First step: gather requirements".to_string())
     ///     .build();
     /// ```
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new(content: String) -> OrderedListNodeBuilder {
+    pub fn builder(content: String) -> OrderedListNodeBuilder {
         OrderedListNodeBuilder { content }
     }
 
@@ -100,7 +99,7 @@ impl OrderedListNode {
     /// ```rust
     /// use nodespace_core::models::OrderedListNode;
     ///
-    /// let ordered_list = OrderedListNode::new("list item".to_string()).build();
+    /// let ordered_list = OrderedListNode::builder("list item".to_string()).build();
     /// let node_id = &ordered_list.as_node().id;
     /// ```
     pub fn as_node(&self) -> &Node {
@@ -116,7 +115,7 @@ impl OrderedListNode {
     /// ```rust
     /// use nodespace_core::models::OrderedListNode;
     ///
-    /// let mut ordered_list = OrderedListNode::new("list item".to_string()).build();
+    /// let mut ordered_list = OrderedListNode::builder("list item".to_string()).build();
     /// ordered_list.as_node_mut().content = "updated item".to_string();
     /// ```
     pub fn as_node_mut(&mut self) -> &mut Node {
@@ -132,7 +131,7 @@ impl OrderedListNode {
     /// ```rust
     /// use nodespace_core::models::OrderedListNode;
     ///
-    /// let ordered_list = OrderedListNode::new("list item".to_string())
+    /// let ordered_list = OrderedListNode::builder("list item".to_string())
     ///     .build();
     ///
     /// let node = ordered_list.into_node();
@@ -160,7 +159,7 @@ impl OrderedListNodeBuilder {
     /// ```rust
     /// use nodespace_core::models::OrderedListNode;
     ///
-    /// let ordered_list = OrderedListNode::new("Complete the first task".to_string())
+    /// let ordered_list = OrderedListNode::builder("Complete the first task".to_string())
     ///     .build();
     /// ```
     pub fn build(self) -> OrderedListNode {

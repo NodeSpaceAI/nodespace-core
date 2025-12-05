@@ -1445,18 +1445,16 @@ fn export_node_hierarchy(
             sibling_count: child_ids.len(),
         };
 
+        let params = ExportParams {
+            node_map,
+            adjacency_list,
+            max_depth,
+            include_children,
+        };
+
         for child_id in child_ids {
             if let Some(child) = node_map.get(child_id) {
-                export_node_with_context(
-                    child,
-                    node_map,
-                    adjacency_list,
-                    output,
-                    current_depth + 1,
-                    max_depth,
-                    include_children,
-                    export_ctx,
-                );
+                export_node_with_context(child, &params, output, current_depth + 1, export_ctx);
             }
         }
     }
@@ -1469,6 +1467,14 @@ struct ExportContext<'a> {
     sibling_count: usize,
 }
 
+/// Parameters for tree traversal during export
+struct ExportParams<'a> {
+    node_map: &'a std::collections::HashMap<String, Node>,
+    adjacency_list: &'a std::collections::HashMap<String, Vec<String>>,
+    max_depth: usize,
+    include_children: bool,
+}
+
 /// Export node with parent context for bullet formatting
 ///
 /// Uses pre-fetched data from get_subtree_data for efficient in-memory traversal.
@@ -1477,23 +1483,19 @@ struct ExportContext<'a> {
 /// 2. Parent is a header node
 /// 3. Parent has 2+ children (indicates a list, not single descriptive text)
 /// 4. Node has no children itself
-#[allow(clippy::too_many_arguments)]
 fn export_node_with_context(
     node: &Node,
-    node_map: &std::collections::HashMap<String, Node>,
-    adjacency_list: &std::collections::HashMap<String, Vec<String>>,
+    params: &ExportParams<'_>,
     output: &mut String,
     current_depth: usize,
-    max_depth: usize,
-    include_children: bool,
     context: ExportContext<'_>,
 ) {
     // Prevent infinite recursion
-    if current_depth >= max_depth {
+    if current_depth >= params.max_depth {
         let content_preview: String = node.content.chars().take(50).collect();
         tracing::warn!(
             "Max depth {} reached at node {} (content: {}{})",
-            max_depth,
+            params.max_depth,
             node.id,
             content_preview,
             if node.content.len() > 50 { "..." } else { "" }
@@ -1502,7 +1504,8 @@ fn export_node_with_context(
     }
 
     // Get children from adjacency list (already sorted by order)
-    let child_ids = adjacency_list
+    let child_ids = params
+        .adjacency_list
         .get(&node.id)
         .map(|v| v.as_slice())
         .unwrap_or(&[]);
@@ -1536,24 +1539,15 @@ fn export_node_with_context(
     }
 
     // Recursively export children with context
-    if include_children && !child_ids.is_empty() {
+    if params.include_children && !child_ids.is_empty() {
         let child_ctx = ExportContext {
             parent_type: &node.node_type,
             sibling_count: child_ids.len(),
         };
 
         for child_id in child_ids {
-            if let Some(child) = node_map.get(child_id) {
-                export_node_with_context(
-                    child,
-                    node_map,
-                    adjacency_list,
-                    output,
-                    current_depth + 1,
-                    max_depth,
-                    include_children,
-                    child_ctx,
-                );
+            if let Some(child) = params.node_map.get(child_id) {
+                export_node_with_context(child, params, output, current_depth + 1, child_ctx);
             }
         }
     }
@@ -1747,7 +1741,3 @@ where
 #[cfg(test)]
 #[path = "markdown_test.rs"]
 mod markdown_test;
-
-#[cfg(test)]
-#[path = "markdown_perf_test.rs"]
-mod markdown_perf_test;

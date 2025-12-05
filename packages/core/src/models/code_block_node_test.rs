@@ -7,7 +7,7 @@ mod tests {
 
     #[test]
     fn test_new_creates_default_code_block() {
-        let code_block = CodeBlockNode::new("print('hello')".to_string()).build();
+        let code_block = CodeBlockNode::builder("print('hello')".to_string()).build();
 
         assert_eq!(code_block.as_node().node_type, "code-block");
         assert_eq!(code_block.as_node().content, "print('hello')");
@@ -16,7 +16,7 @@ mod tests {
 
     #[test]
     fn test_with_language_sets_language() {
-        let code_block = CodeBlockNode::new("print('hello')".to_string())
+        let code_block = CodeBlockNode::builder("print('hello')".to_string())
             .with_language("python")
             .build();
 
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_as_node_provides_immutable_reference() {
-        let code_block = CodeBlockNode::new("code".to_string()).build();
+        let code_block = CodeBlockNode::builder("code".to_string()).build();
 
         let node_ref = code_block.as_node();
         assert_eq!(node_ref.node_type, "code-block");
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_as_node_mut_allows_modification() {
-        let mut code_block = CodeBlockNode::new("code".to_string()).build();
+        let mut code_block = CodeBlockNode::builder("code".to_string()).build();
 
         // Test that we can get mutable reference
         let node_mut = code_block.as_node_mut();
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_builder_pattern_chains_correctly() {
-        let code_block = CodeBlockNode::new("#!/bin/bash\necho 'test'".to_string())
+        let code_block = CodeBlockNode::builder("#!/bin/bash\necho 'test'".to_string())
             .with_language("bash")
             .build();
 
@@ -180,7 +180,7 @@ mod tests {
         ];
 
         for lang in languages {
-            let code_block = CodeBlockNode::new(format!("code in {}", lang))
+            let code_block = CodeBlockNode::builder(format!("code in {}", lang))
                 .with_language(lang)
                 .build();
 
@@ -197,7 +197,7 @@ mod tests {
 
 console.log(fibonacci(10));"#;
 
-        let code_block = CodeBlockNode::new(multiline_code.to_string())
+        let code_block = CodeBlockNode::builder(multiline_code.to_string())
             .with_language("javascript")
             .build();
 
@@ -209,7 +209,7 @@ console.log(fibonacci(10));"#;
     fn test_empty_code_content() {
         // The wrapper doesn't enforce content validation (that's NodeBehavior's job)
         // But we should be able to create nodes with empty content
-        let code_block = CodeBlockNode::new("".to_string())
+        let code_block = CodeBlockNode::builder("".to_string())
             .with_language("plaintext")
             .build();
 
@@ -220,7 +220,7 @@ console.log(fibonacci(10));"#;
     #[test]
     fn test_special_characters_in_language() {
         // Languages might have special naming (c++, c#, etc.)
-        let code_block = CodeBlockNode::new("int main() {}".to_string())
+        let code_block = CodeBlockNode::builder("int main() {}".to_string())
             .with_language("c++")
             .build();
 

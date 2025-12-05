@@ -1587,4 +1587,61 @@ Regular text after code."#;
         let error = result.unwrap_err();
         assert!(error.message.contains("exceeds maximum size"));
     }
+
+    /// Helper to generate markdown with N nodes for testing
+    fn generate_large_markdown(node_count: usize) -> String {
+        let mut md = String::new();
+        let sections = node_count / 4;
+
+        for i in 0..sections {
+            let depth = (i % 3) + 2;
+            let prefix = "#".repeat(depth);
+            md.push_str(&format!("{} Section {}\n\n", prefix, i + 1));
+            md.push_str(&format!(
+                "This is content paragraph {} with some descriptive text.\n\n",
+                i + 1
+            ));
+            if i % 2 == 0 {
+                md.push_str(&format!("- [ ] Task {} - incomplete\n", i * 2 + 1));
+            }
+            md.push_str(&format!("- [x] Task {} - completed\n\n", i * 2 + 2));
+        }
+
+        md
+    }
+
+    /// Verify hierarchy integrity after large import
+    #[tokio::test]
+    async fn test_large_import_hierarchy_integrity() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        // Use smaller set for verification (faster)
+        let markdown = generate_large_markdown(50);
+        let params = json!({
+            "markdown_content": markdown,
+            "title": "Hierarchy Test"
+        });
+
+        let result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+
+        let root_id = result["root_id"].as_str().unwrap();
+        let nodes_created = result["nodes_created"].as_i64().unwrap() as usize;
+
+        // Verify root exists
+        let root = node_service.get_node(root_id).await.unwrap();
+        assert!(root.is_some(), "Root node should exist");
+        assert_eq!(root.unwrap().content, "Hierarchy Test");
+
+        // Verify all nodes are reachable (no orphans)
+        let descendants = node_service.get_descendants(root_id).await.unwrap();
+
+        // nodes_created includes the root, descendants does not
+        assert_eq!(
+            descendants.len(),
+            nodes_created - 1,
+            "All created nodes (except root) should be descendants of root"
+        );
+    }
 }

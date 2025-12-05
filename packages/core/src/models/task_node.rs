@@ -63,38 +63,7 @@ use std::str::FromStr;
 /// Accepts both "YYYY-MM-DD" (date only) and "YYYY-MM-DDTHH:MM:SSZ" (full ISO8601)
 mod flexible_date {
     use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
-    use serde::{self, Deserialize, Deserializer, Serializer};
-
-    /// Serialize DateTime<Utc> as ISO8601 string
-    #[allow(dead_code)]
-    pub fn serialize<S>(
-        date: &Option<Option<DateTime<Utc>>>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match date {
-            None => serializer.serialize_none(),
-            Some(None) => serializer.serialize_none(),
-            Some(Some(dt)) => serializer.serialize_some(&dt.to_rfc3339()),
-        }
-    }
-
-    /// Deserialize from either "YYYY-MM-DD" or full ISO8601 format
-    /// Used with `#[serde(with = "flexible_date")]` - handles field present/absent via serde
-    #[allow(dead_code)]
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Option<DateTime<Utc>>>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let opt: Option<Option<String>> = Option::deserialize(deserializer)?;
-        match opt {
-            None => Ok(None),             // Field not present - don't change
-            Some(None) => Ok(Some(None)), // Field is null - clear value
-            Some(Some(s)) => parse_date_string(&s).map_err(serde::de::Error::custom),
-        }
-    }
+    use serde::{self, Deserialize, Deserializer};
 
     /// Deserialize with explicit null handling for `#[serde(deserialize_with = "...")]`
     ///

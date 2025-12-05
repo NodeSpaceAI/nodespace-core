@@ -370,13 +370,16 @@ where
                     ))
                 })?;
 
+            let chunk_info = crate::models::ChunkInfo {
+                chunk_index: idx as i32,
+                chunk_start: start,
+                chunk_end: end,
+                total_chunks,
+            };
             new_embeddings.push(NewEmbedding::chunk(
                 root_id,
                 vector,
-                idx as i32,
-                start,
-                end,
-                total_chunks,
+                chunk_info,
                 &content_hash,
                 token_count,
             ));

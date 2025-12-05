@@ -10,7 +10,7 @@
 //! use serde_json::json;
 //!
 //! // Create a quote block
-//! let quote_block = QuoteBlockNode::new("To be or not to be".to_string())
+//! let quote_block = QuoteBlockNode::builder("To be or not to be".to_string())
 //!     .build();
 //!
 //! assert_eq!(quote_block.as_node().content, "To be or not to be");
@@ -42,7 +42,7 @@ pub struct QuoteBlockNode {
 }
 
 impl QuoteBlockNode {
-    /// Create a new quote block node
+    /// Create a new quote block node builder
     ///
     /// # Arguments
     ///
@@ -53,11 +53,10 @@ impl QuoteBlockNode {
     /// ```rust
     /// use nodespace_core::models::QuoteBlockNode;
     ///
-    /// let quote_block = QuoteBlockNode::new("The only thing we have to fear is fear itself".to_string())
+    /// let quote_block = QuoteBlockNode::builder("The only thing we have to fear is fear itself".to_string())
     ///     .build();
     /// ```
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new(content: String) -> QuoteBlockNodeBuilder {
+    pub fn builder(content: String) -> QuoteBlockNodeBuilder {
         QuoteBlockNodeBuilder { content }
     }
 
@@ -100,7 +99,7 @@ impl QuoteBlockNode {
     /// ```rust
     /// use nodespace_core::models::QuoteBlockNode;
     ///
-    /// let quote_block = QuoteBlockNode::new("quote".to_string()).build();
+    /// let quote_block = QuoteBlockNode::builder("quote".to_string()).build();
     /// let node_id = &quote_block.as_node().id;
     /// ```
     pub fn as_node(&self) -> &Node {
@@ -116,7 +115,7 @@ impl QuoteBlockNode {
     /// ```rust
     /// use nodespace_core::models::QuoteBlockNode;
     ///
-    /// let mut quote_block = QuoteBlockNode::new("quote".to_string()).build();
+    /// let mut quote_block = QuoteBlockNode::builder("quote".to_string()).build();
     /// quote_block.as_node_mut().content = "updated quote".to_string();
     /// ```
     pub fn as_node_mut(&mut self) -> &mut Node {
@@ -132,7 +131,7 @@ impl QuoteBlockNode {
     /// ```rust
     /// use nodespace_core::models::QuoteBlockNode;
     ///
-    /// let quote_block = QuoteBlockNode::new("quote".to_string())
+    /// let quote_block = QuoteBlockNode::builder("quote".to_string())
     ///     .build();
     ///
     /// let node = quote_block.into_node();
@@ -160,7 +159,7 @@ impl QuoteBlockNodeBuilder {
     /// ```rust
     /// use nodespace_core::models::QuoteBlockNode;
     ///
-    /// let quote_block = QuoteBlockNode::new("A journey of a thousand miles begins with a single step".to_string())
+    /// let quote_block = QuoteBlockNode::builder("A journey of a thousand miles begins with a single step".to_string())
     ///     .build();
     /// ```
     pub fn build(self) -> QuoteBlockNode {

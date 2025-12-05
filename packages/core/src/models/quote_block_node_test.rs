@@ -7,7 +7,7 @@ mod tests {
 
     #[test]
     fn test_new_creates_default_quote_block() {
-        let quote_block = QuoteBlockNode::new("To be or not to be".to_string()).build();
+        let quote_block = QuoteBlockNode::builder("To be or not to be".to_string()).build();
 
         assert_eq!(quote_block.as_node().node_type, "quote-block");
         assert_eq!(quote_block.as_node().content, "To be or not to be");
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn test_as_node_provides_immutable_reference() {
-        let quote_block = QuoteBlockNode::new("quote".to_string()).build();
+        let quote_block = QuoteBlockNode::builder("quote".to_string()).build();
 
         let node_ref = quote_block.as_node();
         assert_eq!(node_ref.node_type, "quote-block");
@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn test_as_node_mut_allows_modification() {
-        let mut quote_block = QuoteBlockNode::new("quote".to_string()).build();
+        let mut quote_block = QuoteBlockNode::builder("quote".to_string()).build();
 
         // Test that we can get mutable reference
         let node_mut = quote_block.as_node_mut();
@@ -82,7 +82,8 @@ mod tests {
 
     #[test]
     fn test_builder_pattern_chains_correctly() {
-        let quote_block = QuoteBlockNode::new("A journey of a thousand miles".to_string()).build();
+        let quote_block =
+            QuoteBlockNode::builder("A journey of a thousand miles".to_string()).build();
 
         assert_eq!(
             quote_block.as_node().content,
@@ -96,7 +97,7 @@ mod tests {
 It is better to be hated for what you are
 than to be loved for what you are not."#;
 
-        let quote_block = QuoteBlockNode::new(multiline_quote.to_string()).build();
+        let quote_block = QuoteBlockNode::builder(multiline_quote.to_string()).build();
 
         assert_eq!(quote_block.as_node().content, multiline_quote);
     }
@@ -105,7 +106,7 @@ than to be loved for what you are not."#;
     fn test_empty_quote_content() {
         // The wrapper doesn't enforce content validation (that's NodeBehavior's job)
         // But we should be able to create nodes with empty content
-        let quote_block = QuoteBlockNode::new("".to_string()).build();
+        let quote_block = QuoteBlockNode::builder("".to_string()).build();
 
         assert_eq!(quote_block.as_node().content, "");
     }
@@ -113,7 +114,7 @@ than to be loved for what you are not."#;
     #[test]
     fn test_quote_with_special_characters() {
         let quote_with_special = "He said, \"Don't quote me on this!\" — Anonymous";
-        let quote_block = QuoteBlockNode::new(quote_with_special.to_string()).build();
+        let quote_block = QuoteBlockNode::builder(quote_with_special.to_string()).build();
 
         assert_eq!(quote_block.as_node().content, quote_with_special);
     }
@@ -127,7 +128,7 @@ than to be loved for what you are not."#;
         ];
 
         for quote in quotes {
-            let quote_block = QuoteBlockNode::new(quote.to_string()).build();
+            let quote_block = QuoteBlockNode::builder(quote.to_string()).build();
 
             assert_eq!(quote_block.as_node().content, quote);
             assert_eq!(quote_block.as_node().node_type, "quote-block");

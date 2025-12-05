@@ -98,24 +98,6 @@ pub enum DomainEvent {
     },
 }
 
-impl DomainEvent {
-    /// Get a string representation of the event type
-    ///
-    /// Currently unused but provides useful API surface for debugging, logging,
-    /// and future consumers of domain events (e.g., MCP servers, webhooks).
-    #[allow(dead_code)]
-    pub fn event_type(&self) -> &str {
-        match self {
-            DomainEvent::NodeCreated { .. } => "node:created",
-            DomainEvent::NodeUpdated { .. } => "node:updated",
-            DomainEvent::NodeDeleted { .. } => "node:deleted",
-            DomainEvent::EdgeCreated { .. } => "edge:created",
-            DomainEvent::EdgeUpdated { .. } => "edge:updated",
-            DomainEvent::EdgeDeleted { .. } => "edge:deleted",
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

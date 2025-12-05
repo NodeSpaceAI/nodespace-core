@@ -48,3 +48,7 @@ tokio-test = { workspace = true }
 http-body-util = "0.1"
 criterion = { workspace = true }
 tempfile = "3.0"
+
+[[bench]]
+name = "performance"
+harness = false

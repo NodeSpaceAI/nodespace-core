@@ -80,10 +80,8 @@ mod hub_spoke_tests {
 
     /// Test helper struct for spoke→hub queries with Record Link reference
     #[derive(Debug, Deserialize)]
-    #[allow(dead_code)]
     struct TaskWithNode {
         status: String,
-        priority: Option<String>,
         node: Thing,
     }
 

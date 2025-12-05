@@ -63,7 +63,7 @@ pub use time::{SystemTimeProvider, TimeProvider};
 // Export type-safe wrappers
 pub use date_node::DateNode;
 pub use embedding::{
-    is_embeddable_type, Embedding, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding,
+    is_embeddable_type, ChunkInfo, Embedding, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding,
     EMBEDDABLE_NODE_TYPES,
 };
 pub use schema_node::SchemaNode;

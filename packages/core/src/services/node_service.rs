@@ -2588,7 +2588,7 @@ where
         match root_node {
             Some(root) => {
                 // Recursively build tree structure
-                let tree_json = self.build_node_tree_recursive(&root, &node_map, &adjacency_list);
+                let tree_json = build_node_tree_recursive(&root, &node_map, &adjacency_list);
                 Ok(tree_json)
             }
             None => {
@@ -2656,49 +2656,6 @@ where
         }
 
         Ok((root_node, node_map, adjacency_list))
-    }
-
-    /// Recursively build a tree node with its children
-    ///
-    /// Helper function for `get_children_tree` that recursively constructs
-    /// JSON nodes with nested children arrays.
-    ///
-    /// Uses `node_to_typed_value` for typed serialization, which converts
-    /// task nodes to `TaskNode` (with proper camelCase properties) and
-    /// schema nodes to `SchemaNode`. This ensures consistent API output
-    /// matching the naming conventions.
-    #[allow(clippy::only_used_in_recursion)]
-    fn build_node_tree_recursive(
-        &self,
-        node: &Node,
-        node_map: &HashMap<String, Node>,
-        adjacency_list: &HashMap<String, Vec<String>>,
-    ) -> serde_json::Value {
-        // Use typed serialization for task/schema nodes (camelCase properties)
-        // Falls back to raw Node serialization for other types
-        let mut json = crate::models::node_to_typed_value(node.clone())
-            .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
-
-        // Build children array (always present, even if empty for consistency)
-        let children: Vec<serde_json::Value> =
-            if let Some(children_ids) = adjacency_list.get(&node.id) {
-                children_ids
-                    .iter()
-                    .filter_map(|child_id| {
-                        node_map.get(child_id).map(|child_node| {
-                            self.build_node_tree_recursive(child_node, node_map, adjacency_list)
-                        })
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
-        if let Some(obj) = json.as_object_mut() {
-            obj.insert("children".to_string(), serde_json::Value::Array(children));
-        }
-
-        json
     }
 
     /// Check if a node is a root node (has no parent)
@@ -4863,6 +4820,45 @@ where
 
         Ok(edges)
     }
+}
+
+/// Recursively build a tree structure from flat node data
+///
+/// Converts flat node map and adjacency list into nested JSON tree.
+/// Uses `node_to_typed_value` for typed serialization, which converts
+/// task nodes to `TaskNode` (with proper camelCase properties) and
+/// schema nodes to `SchemaNode`. This ensures consistent API output
+/// matching the naming conventions.
+fn build_node_tree_recursive(
+    node: &Node,
+    node_map: &HashMap<String, Node>,
+    adjacency_list: &HashMap<String, Vec<String>>,
+) -> serde_json::Value {
+    // Use typed serialization for task/schema nodes (camelCase properties)
+    // Falls back to raw Node serialization for other types
+    let mut json = crate::models::node_to_typed_value(node.clone())
+        .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
+
+    // Build children array (always present, even if empty for consistency)
+    let children: Vec<serde_json::Value> = if let Some(children_ids) = adjacency_list.get(&node.id)
+    {
+        children_ids
+            .iter()
+            .filter_map(|child_id| {
+                node_map.get(child_id).map(|child_node| {
+                    build_node_tree_recursive(child_node, node_map, adjacency_list)
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    if let Some(obj) = json.as_object_mut() {
+        obj.insert("children".to_string(), serde_json::Value::Array(children));
+    }
+
+    json
 }
 
 #[cfg(test)]

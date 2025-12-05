@@ -10,7 +10,7 @@
 //! use serde_json::json;
 //!
 //! // Create a code block with TypeScript syntax
-//! let code_block = CodeBlockNode::new("const x: number = 42;".to_string())
+//! let code_block = CodeBlockNode::builder("const x: number = 42;".to_string())
 //!     .with_language("typescript")
 //!     .build();
 //!
@@ -44,7 +44,7 @@ pub struct CodeBlockNode {
 }
 
 impl CodeBlockNode {
-    /// Create a new code block node with default language (plaintext)
+    /// Create a new code block node builder with default language (plaintext)
     ///
     /// # Arguments
     ///
@@ -55,12 +55,11 @@ impl CodeBlockNode {
     /// ```rust
     /// use nodespace_core::models::CodeBlockNode;
     ///
-    /// let code_block = CodeBlockNode::new("print('Hello, World!')".to_string())
+    /// let code_block = CodeBlockNode::builder("print('Hello, World!')".to_string())
     ///     .with_language("python")
     ///     .build();
     /// ```
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new(content: String) -> CodeBlockNodeBuilder {
+    pub fn builder(content: String) -> CodeBlockNodeBuilder {
         CodeBlockNodeBuilder {
             content,
             language: "plaintext".to_string(),
@@ -106,7 +105,7 @@ impl CodeBlockNode {
     /// ```rust
     /// use nodespace_core::models::CodeBlockNode;
     ///
-    /// let code_block = CodeBlockNode::new("SELECT * FROM users;".to_string())
+    /// let code_block = CodeBlockNode::builder("SELECT * FROM users;".to_string())
     ///     .with_language("sql")
     ///     .build();
     ///
@@ -160,7 +159,7 @@ impl CodeBlockNode {
     /// ```rust
     /// use nodespace_core::models::CodeBlockNode;
     ///
-    /// let code_block = CodeBlockNode::new("code".to_string()).build();
+    /// let code_block = CodeBlockNode::builder("code".to_string()).build();
     /// let node_id = &code_block.as_node().id;
     /// ```
     pub fn as_node(&self) -> &Node {
@@ -176,7 +175,7 @@ impl CodeBlockNode {
     /// ```rust
     /// use nodespace_core::models::CodeBlockNode;
     ///
-    /// let mut code_block = CodeBlockNode::new("code".to_string()).build();
+    /// let mut code_block = CodeBlockNode::builder("code".to_string()).build();
     /// code_block.as_node_mut().content = "updated code".to_string();
     /// ```
     pub fn as_node_mut(&mut self) -> &mut Node {
@@ -192,7 +191,7 @@ impl CodeBlockNode {
     /// ```rust
     /// use nodespace_core::models::CodeBlockNode;
     ///
-    /// let code_block = CodeBlockNode::new("code".to_string())
+    /// let code_block = CodeBlockNode::builder("code".to_string())
     ///     .with_language("rust")
     ///     .build();
     ///
@@ -220,7 +219,7 @@ impl CodeBlockNodeBuilder {
     /// ```rust
     /// use nodespace_core::models::CodeBlockNode;
     ///
-    /// let code_block = CodeBlockNode::new("#!/bin/bash\necho 'Hello'".to_string())
+    /// let code_block = CodeBlockNode::builder("#!/bin/bash\necho 'Hello'".to_string())
     ///     .with_language("bash")
     ///     .build();
     /// ```
@@ -238,7 +237,7 @@ impl CodeBlockNodeBuilder {
     /// ```rust
     /// use nodespace_core::models::CodeBlockNode;
     ///
-    /// let code_block = CodeBlockNode::new("const x = 1;".to_string())
+    /// let code_block = CodeBlockNode::builder("const x = 1;".to_string())
     ///     .with_language("javascript")
     ///     .build();
     /// ```

@@ -7,7 +7,7 @@ mod tests {
 
     #[test]
     fn test_new_creates_default_ordered_list() {
-        let ordered_list = OrderedListNode::new("First item".to_string()).build();
+        let ordered_list = OrderedListNode::builder("First item".to_string()).build();
 
         assert_eq!(ordered_list.as_node().node_type, "ordered-list");
         assert_eq!(ordered_list.as_node().content, "First item");
@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn test_as_node_provides_immutable_reference() {
-        let ordered_list = OrderedListNode::new("list item".to_string()).build();
+        let ordered_list = OrderedListNode::builder("list item".to_string()).build();
 
         let node_ref = ordered_list.as_node();
         assert_eq!(node_ref.node_type, "ordered-list");
@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn test_as_node_mut_allows_modification() {
-        let mut ordered_list = OrderedListNode::new("list item".to_string()).build();
+        let mut ordered_list = OrderedListNode::builder("list item".to_string()).build();
 
         // Test that we can get mutable reference
         let node_mut = ordered_list.as_node_mut();
@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn test_builder_pattern_chains_correctly() {
-        let ordered_list = OrderedListNode::new("Third step in process".to_string()).build();
+        let ordered_list = OrderedListNode::builder("Third step in process".to_string()).build();
 
         assert_eq!(ordered_list.as_node().content, "Third step in process");
     }
@@ -92,7 +92,7 @@ mod tests {
 - Sub-point a
 - Sub-point b"#;
 
-        let ordered_list = OrderedListNode::new(multiline_item.to_string()).build();
+        let ordered_list = OrderedListNode::builder(multiline_item.to_string()).build();
 
         assert_eq!(ordered_list.as_node().content, multiline_item);
     }
@@ -101,7 +101,7 @@ mod tests {
     fn test_empty_list_content() {
         // The wrapper doesn't enforce content validation (that's NodeBehavior's job)
         // But we should be able to create nodes with empty content
-        let ordered_list = OrderedListNode::new("".to_string()).build();
+        let ordered_list = OrderedListNode::builder("".to_string()).build();
 
         assert_eq!(ordered_list.as_node().content, "");
     }
@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn test_list_with_special_characters() {
         let item_with_special = "Step #1: Review @mentions & <tags>";
-        let ordered_list = OrderedListNode::new(item_with_special.to_string()).build();
+        let ordered_list = OrderedListNode::builder(item_with_special.to_string()).build();
 
         assert_eq!(ordered_list.as_node().content, item_with_special);
     }
@@ -125,7 +125,7 @@ mod tests {
         ];
 
         for (index, item) in items.iter().enumerate() {
-            let ordered_list = OrderedListNode::new(item.to_string()).build();
+            let ordered_list = OrderedListNode::builder(item.to_string()).build();
 
             assert_eq!(ordered_list.as_node().content, *item);
             assert_eq!(ordered_list.as_node().node_type, "ordered-list");
@@ -168,7 +168,7 @@ mod tests {
         ];
 
         for item in items_with_numbers {
-            let ordered_list = OrderedListNode::new(item.to_string()).build();
+            let ordered_list = OrderedListNode::builder(item.to_string()).build();
             assert_eq!(ordered_list.as_node().content, item);
         }
     }
@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn test_long_list_item() {
         let long_item = "This is a very long list item that contains multiple sentences and detailed information. It might span several lines when rendered and include various punctuation marks, numbers like 123, and special characters like @, #, and $.";
-        let ordered_list = OrderedListNode::new(long_item.to_string()).build();
+        let ordered_list = OrderedListNode::builder(long_item.to_string()).build();
 
         assert_eq!(ordered_list.as_node().content, long_item);
     }
