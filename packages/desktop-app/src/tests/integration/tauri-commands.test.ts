@@ -8,21 +8,44 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// Mock Tauri API for testing
+/**
+ * Type-safe Tauri mock types for testing
+ * These match the actual Tauri API signatures used in production
+ */
+interface TauriInvokeArgs {
+  name?: string | null;
+  [key: string]: unknown;
+}
+
+interface TauriEventApi {
+  listen: ReturnType<typeof vi.fn>;
+  emit: ReturnType<typeof vi.fn>;
+}
+
+interface TauriMock {
+  invoke: (cmd: string, args?: TauriInvokeArgs) => Promise<unknown>;
+  event: TauriEventApi;
+}
+
+interface GlobalWithTauri {
+  __TAURI__?: TauriMock;
+  window?: { __TAURI__?: TauriMock };
+}
+
+// Mock Tauri API for testing - using simple vi.fn() which is compatible with any signature
 const mockInvoke = vi.fn();
 
-const mockTauri = {
-  invoke: mockInvoke,
+const mockTauri: TauriMock = {
+  invoke: mockInvoke as TauriMock['invoke'],
   event: {
     listen: vi.fn(),
     emit: vi.fn()
   }
 };
 
-// Set up global mock (bypassing type conflicts with as any for test isolation)
+// Set up global mock with proper typing
 if (typeof global !== 'undefined') {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (global as any).__TAURI__ = mockTauri;
+  (global as GlobalWithTauri).__TAURI__ = mockTauri;
 }
 
 describe('Tauri Command Integration', () => {
@@ -146,21 +169,24 @@ describe('Tauri Command Integration', () => {
   });
 });
 
+// Type for window with Tauri
+interface WindowWithTauri {
+  __TAURI__?: TauriMock;
+}
+
 // Helper function for frontend integration (would be in actual app code)
 export async function callGreetCommand(name: string): Promise<string> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (typeof window !== 'undefined' && (window as any).__TAURI__?.invoke) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return await (window as any).__TAURI__.invoke('greet', { name });
+  const win = typeof window !== 'undefined' ? (window as unknown as WindowWithTauri) : undefined;
+  if (win?.__TAURI__?.invoke) {
+    return (await win.__TAURI__.invoke('greet', { name })) as string;
   }
   throw new Error('Tauri not available');
 }
 
 export async function callToggleSidebarCommand(): Promise<string> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (typeof window !== 'undefined' && (window as any).__TAURI__?.invoke) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return await (window as any).__TAURI__.invoke('toggle_sidebar');
+  const win = typeof window !== 'undefined' ? (window as unknown as WindowWithTauri) : undefined;
+  if (win?.__TAURI__?.invoke) {
+    return (await win.__TAURI__.invoke('toggle_sidebar')) as string;
   }
   throw new Error('Tauri not available');
 }
@@ -169,8 +195,7 @@ export async function callToggleSidebarCommand(): Promise<string> {
 describe('Frontend Helper Functions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (global as any).window = { __TAURI__: mockTauri };
+    (global as GlobalWithTauri).window = { __TAURI__: mockTauri };
   });
 
   it('should call greet through helper function', async () => {
@@ -190,8 +215,7 @@ describe('Frontend Helper Functions', () => {
   });
 
   it('should throw error when Tauri not available', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (global as any).window = {};
+    (global as GlobalWithTauri).window = {};
 
     await expect(callGreetCommand('Test')).rejects.toThrow('Tauri not available');
     await expect(callToggleSidebarCommand()).rejects.toThrow('Tauri not available');

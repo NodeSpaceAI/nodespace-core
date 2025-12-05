@@ -8,6 +8,17 @@ import type { Node } from '$lib/types';
 import * as backendAdapterModule from '$lib/services/backend-adapter';
 
 /**
+ * Type-safe test interface for accessing private methods.
+ * This explicit type cast is the approved pattern for testing private methods
+ * without requiring @ts-expect-error annotations throughout tests.
+ */
+interface TestableBrowserSyncService {
+  handleEvent(event: SseEvent): void;
+}
+
+const testableService = browserSyncService as unknown as TestableBrowserSyncService;
+
+/**
  * Tests for BrowserSyncService SSE Event Ordering
  *
  * Verifies that BrowserSyncService correctly handles SSE events that arrive
@@ -129,8 +140,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       };
 
       // Call handleEvent in reverse order (simulating network latency)
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent(edgeEvent);
+      testableService.handleEvent(edgeEvent);
 
       // At this point, edge references a node that hasn't been created yet
       // This should not crash
@@ -138,8 +148,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(structureTree.getChildren('parent1')).toContain('node1');
 
       // Now the node arrives (triggers async fetch)
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent(nodeEvent);
+      testableService.handleEvent(nodeEvent);
 
       // Wait for async fetch to complete
       await vi.waitFor(() => {
@@ -166,8 +175,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       };
 
       // Add edge first (node doesn't exist yet)
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent(edgeEvent);
+      testableService.handleEvent(edgeEvent);
 
       // Verify edge was added even though node doesn't exist
       expect(structureTree.hasChildren('parent1')).toBe(true);
@@ -182,8 +190,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
         nodeId: 'child1'
       };
 
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent(nodeEvent);
+      testableService.handleEvent(nodeEvent);
 
       // Wait for async fetch to complete
       await vi.waitFor(() => {
@@ -216,13 +223,11 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       };
 
       // First edge arrives
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent(edge1);
+      testableService.handleEvent(edge1);
 
       // Second edge to different parent arrives (violates tree structure)
       // This is logged as an error but doesn't crash
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent(edge2);
+      testableService.handleEvent(edge2);
 
       // First parent relationship exists
       expect(structureTree.getChildren('parent1')).toContain('child');
@@ -230,8 +235,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(structureTree.getChildren('parent2')).not.toContain('child');
 
       // Now create the node (Issue #724: ID-only)
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent({
+      testableService.handleEvent({
         type: 'nodeCreated',
         nodeId: 'child'
       });
@@ -263,8 +267,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(structureTree.getChildren('parent1')).toContain('child1');
 
       // Node is deleted first
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent({
+      testableService.handleEvent({
         type: 'nodeDeleted',
         nodeId: 'child1'
       });
@@ -275,8 +278,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(structureTree.getChildren('parent1')).toContain('child1');
 
       // Now the edge is deleted (arriving late)
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent({
+      testableService.handleEvent({
         type: 'edgeDeleted',
         parentId: 'parent1',
         childId: 'child1'
@@ -297,8 +299,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       structureTree.addChild({ parentId: 'parent1', childId: 'child1', order: 1 });
 
       // Edge is deleted first
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent({
+      testableService.handleEvent({
         type: 'edgeDeleted',
         parentId: 'parent1',
         childId: 'child1'
@@ -310,8 +311,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(sharedNodeStore.getNode('child1')).toBeDefined();
 
       // Node is deleted (arriving late)
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent({
+      testableService.handleEvent({
         type: 'nodeDeleted',
         nodeId: 'child1'
       });
@@ -347,8 +347,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       ];
 
       for (const edge of edges) {
-        // @ts-expect-error - accessing private method for testing
-        browserSyncService.handleEvent(edge);
+        testableService.handleEvent(edge);
       }
 
       // All edges should be in place
@@ -363,8 +362,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       ];
 
       for (const node of nodes) {
-        // @ts-expect-error - accessing private method for testing
-        browserSyncService.handleEvent(node);
+        testableService.handleEvent(node);
       }
 
       // Wait for all async fetches to complete
@@ -394,14 +392,12 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
         childId: 'child1'
       };
 
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent(edgeEvent);
+      testableService.handleEvent(edgeEvent);
 
       expect(structureTree.getChildren('parent1')).toEqual(['child1']);
 
       // Duplicate edge event arrives (idempotent operation)
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent(edgeEvent);
+      testableService.handleEvent(edgeEvent);
 
       // Should still have one edge, not duplicated
       expect(structureTree.getChildren('parent1')).toEqual(['child1']);
@@ -426,8 +422,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       registerMockNode(updatedNode);
 
       // Update event arrives (Issue #724: ID-only)
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent({
+      testableService.handleEvent({
         type: 'nodeUpdated',
         nodeId: 'node1'
       });
@@ -470,8 +465,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       ];
 
       for (const event of events) {
-        // @ts-expect-error - accessing private method for testing
-        browserSyncService.handleEvent(event);
+        testableService.handleEvent(event);
       }
 
       // Wait for all async fetches to complete
@@ -530,8 +524,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
         clientId: 'different-client-123' // Different from our test-client ID
       };
 
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent(event);
+      testableService.handleEvent(event);
 
       // Wait for async fetch
       await vi.waitFor(() => {
@@ -558,8 +551,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
         // Note: no clientId field
       };
 
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent(event);
+      testableService.handleEvent(event);
 
       // Wait for async fetch
       await vi.waitFor(() => {
@@ -605,8 +597,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       };
 
       // Should not crash
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent(edgeEvent);
+      testableService.handleEvent(edgeEvent);
 
       // No errors, state unchanged
       expect(structureTree.getChildren('non-existent-parent')).toEqual([]);
@@ -621,8 +612,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       sharedNodeStore.setNode(nodeData, { type: 'database', reason: 'sse-sync' });
 
       // Delete it
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent({
+      testableService.handleEvent({
         type: 'nodeDeleted',
         nodeId: 'node1'
       });
@@ -630,8 +620,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(sharedNodeStore.getNode('node1')).toBeUndefined();
 
       // Delete it again (should not crash)
-      // @ts-expect-error - accessing private method for testing
-      browserSyncService.handleEvent({
+      testableService.handleEvent({
         type: 'nodeDeleted',
         nodeId: 'node1'
       });
